@@ -1,0 +1,55 @@
+name: Vercel Sub-Hourly Crons
+
+on:
+  schedule:
+    # sow-stall: hourly, on the hour
+    - cron: '0 * * * *'
+    # co-stall: hourly, offset 30 minutes
+    - cron: '30 * * * *'
+    # guardian-health: every 15 minutes
+    - cron: '*/15 * * * *'
+  workflow_dispatch: {} # allows manual trigger from the Actions tab for testing
+
+jobs:
+  trigger-cron:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine which endpoint(s) to call
+        id: route
+        run: |
+          MIN=$(date -u +%M)
+          HOUR_MARK=false
+          HALF_HOUR_MARK=false
+          QUARTER_MARK=false
+
+          if [ "$MIN" = "00" ]; then HOUR_MARK=true; fi
+          if [ "$MIN" = "30" ]; then HALF_HOUR_MARK=true; fi
+          if [ "$MIN" = "00" ] || [ "$MIN" = "15" ] || [ "$MIN" = "30" ] || [ "$MIN" = "45" ]; then QUARTER_MARK=true; fi
+
+          echo "hour_mark=$HOUR_MARK" >> "$GITHUB_OUTPUT"
+          echo "half_hour_mark=$HALF_HOUR_MARK" >> "$GITHUB_OUTPUT"
+          echo "quarter_mark=$QUARTER_MARK" >> "$GITHUB_OUTPUT"
+
+      - name: Call sow-stall (hourly)
+        if: steps.route.outputs.hour_mark == 'true'
+        run: |
+          curl -sS -o /dev/null -w "sow-stall: %{http_code}\n" --fail \
+            -X POST \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.APP_BASE_URL }}/api/cron/sow-stall"
+
+      - name: Call co-stall (hourly, :30)
+        if: steps.route.outputs.half_hour_mark == 'true'
+        run: |
+          curl -sS -o /dev/null -w "co-stall: %{http_code}\n" --fail \
+            -X POST \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.APP_BASE_URL }}/api/cron/co-stall"
+
+      - name: Call guardian-health (every 15 min)
+        if: steps.route.outputs.quarter_mark == 'true'
+        run: |
+          curl -sS -o /dev/null -w "guardian-health: %{http_code}\n" --fail \
+            -X POST \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.APP_BASE_URL }}/api/cron/guardian-health"

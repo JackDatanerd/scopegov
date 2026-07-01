@@ -9,20 +9,8 @@
       "schedule": "0 9 * * *"
     },
     {
-      "path": "/api/cron/sow-stall",
-      "schedule": "0 * * * *"
-    },
-    {
-      "path": "/api/cron/co-stall",
-      "schedule": "30 * * * *"
-    },
-    {
       "path": "/api/cron/invite-cleanup",
       "schedule": "0 2 * * *"
-    },
-    {
-      "path": "/api/cron/guardian-health",
-      "schedule": "*/15 * * * *"
     },
     {
       "path": "/api/cron/retainer-milestones",
