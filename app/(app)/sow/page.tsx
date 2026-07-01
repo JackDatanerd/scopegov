@@ -1,0 +1,135 @@
+import { getSession } from '@/lib/auth/session'
+import { createServiceClient } from '@/lib/supabase/server'
+import { redirect } from 'next/navigation'
+import Link from 'next/link'
+import { formatDate, formatCurrency, sowStatusLabel, sowStatusColour } from '@/lib/utils/format'
+
+export const metadata = { title: 'SOW Registry' }
+
+export default async function SowPage() {
+  const session = await getSession()
+  if (!session) redirect('/login')
+
+  const service = createServiceClient()
+
+  // Solo cap: last 10 workspace-wide (spec §13.1 — only on THIS screen)
+  const isSoloCapped = session.planTier === 'solo'
+  const limit        = isSoloCapped ? 10 : 500
+
+  const { data: sows = [] } = await (service as any)
+    .from('sow_documents')
+    .select(`id, version, status, sent_at, signed_at, created_at,
+      projects(id, name, contract_value, currency, clients(name))`)
+    .eq('workspace_id', session.workspaceId)
+    .order('created_at', { ascending: false })
+    .limit(limit)
+
+  const stats = {
+    total:  (sows || []).length,
+    signed: (sows || []).filter((s: any) => s.status === 'signed').length,
+    pending:(sows || []).filter((s: any) => s.status === 'awaiting_signature').length,
+  }
+
+  return (
+    <div className="page" style={{ maxWidth: 960 }}>
+      <div className="page-hd">
+        <div>
+          <h1 className="page-title">SOW Registry</h1>
+          <p className="page-sub">All Statements of Work across your workspace</p>
+        </div>
+      </div>
+
+      {/* Solo cap notice */}
+      {isSoloCapped && (
+        <div className="banner banner-info" style={{ marginBottom: 20 }}>
+          <span>Showing the 10 most recent SOWs. <strong>Upgrade to Starter or above</strong> to see the full history.</span>
+          <Link href="/settings?tab=billing">
+            <button className="btn btn-primary btn-sm">Upgrade</button>
+          </Link>
+        </div>
+      )}
+
+      {/* Stats */}
+      <div className="mstrip mstrip-3" style={{ marginBottom: 22 }}>
+        <div className="mc">
+          <div className="mc-lbl">Total SOWs</div>
+          <div className="mc-val">{stats.total}</div>
+          <div className="mc-sub">All versions</div>
+        </div>
+        <div className="mc">
+          <div className="mc-lbl">Signed</div>
+          <div className="mc-val green">{stats.signed}</div>
+          <div className="mc-sub">Active agreements</div>
+        </div>
+        <div className="mc">
+          <div className="mc-lbl">Awaiting signature</div>
+          <div className="mc-val gold">{stats.pending}</div>
+          <div className="mc-sub">Pending client action</div>
+        </div>
+      </div>
+
+      {/* Table */}
+      {!(sows || []).length ? (
+        <div className="surface">
+          <div className="empty-state">
+            <i className="ti ti-file-description empty-state-icon" />
+            <p className="empty-state-title">No SOWs yet</p>
+            <p className="empty-state-sub">SOWs are generated when you create a project and complete the scope brief.</p>
+            <Link href="/projects/new">
+              <button className="btn btn-primary"><i className="ti ti-plus" style={{ fontSize: 13 }} /> New project</button>
+            </Link>
+          </div>
+        </div>
+      ) : (
+        <div className="surface" style={{ overflow: 'hidden' }}>
+          <table className="gov-table" style={{ width: '100%' }}>
+            <thead>
+              <tr>
+                <th>Project</th>
+                <th>Client</th>
+                <th>Version</th>
+                <th>Status</th>
+                <th>Sent</th>
+                <th>Signed</th>
+                <th>Value</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(sows || []).map((s: any) => (
+                <tr key={s.id} onClick={() => {}}>
+                  <td>
+                    <Link href={`/projects/${s.projects?.id}?tab=sow`}>
+                      <div className="td-primary">{s.projects?.name || '—'}</div>
+                    </Link>
+                  </td>
+                  <td style={{ color: 'var(--text-2)', fontSize: 13 }}>{s.projects?.clients?.name || '—'}</td>
+                  <td className="td-mono" style={{ fontSize: 12 }}>v{s.version}</td>
+                  <td>
+                    <span className={`pill pill-${pillVariant(s.status)}`}>
+                      {sowStatusLabel(s.status)}
+                    </span>
+                  </td>
+                  <td style={{ color: 'var(--text-3)', fontSize: 12 }}>{s.sent_at ? formatDate(s.sent_at) : '—'}</td>
+                  <td style={{ color: 'var(--text-3)', fontSize: 12 }}>{s.signed_at ? formatDate(s.signed_at) : '—'}</td>
+                  <td className="td-mono" style={{ textAlign: 'right', fontSize: 12 }}>
+                    {s.projects?.contract_value
+                      ? formatCurrency(s.projects.contract_value, s.projects.currency)
+                      : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function pillVariant(status: string): string {
+  const m: Record<string, string> = {
+    draft: 'slate', awaiting_signature: 'amber', signed: 'green',
+    declined: 'red', changes_requested: 'amber', withdrawn: 'slate', expired: 'red',
+  }
+  return m[status] || 'slate'
+}

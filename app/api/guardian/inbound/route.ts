@@ -1,0 +1,225 @@
+export const runtime = 'nodejs'
+
+import { createServiceClient } from '@/lib/supabase/server'
+import { NextResponse, type NextRequest } from 'next/server'
+import { classifyGuardianCheck, getEmbedding, cosineSimilarity, type Sensitivity } from '@/lib/ai/guardian'
+import { stripHtml } from '@/lib/utils/format'
+import { sendGuardianFlagEmail } from '@/lib/email/templates'
+import { logAudit } from '@/lib/utils/audit'
+import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
+
+// BUG-016: verify Postmark webhook signature before processing
+function verifyPostmarkSignature(body: string, signature: string | null): boolean {
+  if (!signature) return false
+  const secret = process.env.POSTMARK_INBOUND_WEBHOOK_SECRET
+  if (!secret) return false
+  // Postmark uses HMAC-SHA256
+  const crypto = require('crypto')
+  const expected = crypto.createHmac('sha256', secret).update(body).digest('hex')
+  return expected === signature
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const rawBody  = await request.text()
+    const sig      = request.headers.get('x-postmark-signature')
+
+    if (!verifyPostmarkSignature(rawBody, sig)) {
+      console.warn('Postmark signature verification failed')
+      return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
+    }
+
+    let payload: any
+    try { payload = JSON.parse(rawBody) }
+    catch { return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 }) }
+
+    const toEmail    = payload.OriginalRecipient || payload.To || ''
+    const fromEmail  = payload.From || ''
+    const subject    = payload.Subject || ''
+    const textBody   = payload.TextBody || ''
+    const htmlBody   = payload.HtmlBody || ''
+    const content    = textBody || stripHtml(htmlBody)
+
+    if (!content.trim()) {
+      return NextResponse.json({ ok: true, message: 'Empty content — skipped' })
+    }
+
+    // Extract project ID from guardian email address
+    // Format: proj-{8chars}@guard.scopegov.app
+    const guardianDomain = process.env.NEXT_PUBLIC_GUARDIAN_EMAIL_DOMAIN || 'guard.scopegov.app'
+    const emailMatch     = toEmail.match(new RegExp(`proj-([a-z0-9]+)@${guardianDomain.replace('.', '\\.')}`, 'i'))
+    if (!emailMatch) {
+      return NextResponse.json({ ok: true, message: 'Not a Guardian address — ignored' })
+    }
+
+    const guardianPrefix = emailMatch[1]
+    const service        = createServiceClient()
+
+    // Find project by guardian_email
+    const { data: project } = await (service as any)
+      .from('projects')
+      .select(`id, name, status, workspace_id,
+        workspaces(id, agency_name, guardian_sensitivity_tier),
+        project_scope_snapshot(deliverables, out_of_scope)`)
+      .ilike('guardian_email', `proj-${guardianPrefix}@%`)
+      .single()
+
+    if (!project) {
+      console.warn(`No project found for guardian email prefix: ${guardianPrefix}`)
+      return NextResponse.json({ ok: true, message: 'No matching project' })
+    }
+
+    // Auto-reply if project is Archived/Complete
+    if (['Archived','Complete'].includes(project.status)) {
+      // Spec §5.2: archived/completed projects auto-reply
+      return NextResponse.json({ ok: true, message: 'Project inactive — auto-reply handled by Postmark' })
+    }
+
+    // Strip quoted replies — take first 500 chars of unquoted content
+    const cleanContent = extractUnquotedContent(content)
+    if (!cleanContent.trim() || cleanContent.length < 20) {
+      return NextResponse.json({ ok: true, message: 'Only quoted reply — skipped' })
+    }
+
+    const sensitivity = (project.workspaces?.guardian_sensitivity_tier || 'medium') as Sensitivity
+    const snapshot    = project.project_scope_snapshot?.[0]
+
+    // ── Embedding + dedup ─────────────────────────────────────
+    let embedding: number[] | null = null
+    try { embedding = await getEmbedding(cleanContent.slice(0, 500)) }
+    catch { /* non-fatal */ }
+
+    let isDuplicate    = false
+    let duplicateOfId: string | null = null
+
+    if (embedding) {
+      const { data: recentChecks } = await (service as any)
+        .from('guardian_checks')
+        .select('id, embedding')
+        .eq('project_id', project.id)
+        .eq('is_duplicate', false)
+        .not('embedding', 'is', null)
+        .gte('created_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
+        .limit(100)
+
+      for (const check of (recentChecks || [])) {
+        if (!check.embedding) continue
+        if (cosineSimilarity(embedding, check.embedding) > 0.85) {
+          isDuplicate = true; duplicateOfId = check.id; break
+        }
+      }
+    }
+
+    // Write check row
+    const { data: checkRow } = await (service as any).from('guardian_checks').insert({
+      project_id:      project.id,
+      workspace_id:    project.workspace_id,
+      content:         cleanContent,
+      source:          'email',
+      source_metadata: { from: fromEmail, subject, to: toEmail },
+      submitted_by:    null, // inbound — no user session
+      submitted_at:    new Date().toISOString(),
+      is_duplicate:    isDuplicate,
+      duplicate_of_id: duplicateOfId,
+      embedding:       isDuplicate ? null : embedding,
+      outcome:         'pending',
+    }).select('id').single()
+
+    if (isDuplicate || !snapshot || !checkRow) {
+      return NextResponse.json({ ok: true, outcome: isDuplicate ? 'duplicate' : 'pending' })
+    }
+
+    // ── Classify ──────────────────────────────────────────────
+    const { data: amendments } = await (service as any)
+      .from('amendments').select('id,title,added_deliverables').eq('project_id', project.id)
+
+    let classification
+    try {
+      classification = await classifyGuardianCheck({
+        content: cleanContent,
+        snapshot: { deliverables: snapshot.deliverables || [], outOfScope: snapshot.out_of_scope || [] },
+        amendments: amendments || [],
+        sensitivity,
+      })
+    } catch {
+      await (service as any).from('guardian_checks')
+        .update({ classification_failed: true }).eq('id', checkRow.id)
+      return NextResponse.json({ ok: true, outcome: 'classification_failed' })
+    }
+
+    await (service as any).from('guardian_checks').update({
+      match_confidence:  classification.matchConfidence,
+      creep_confidence:  classification.creepConfidence,
+      matched_against:   classification.matchedAgainst,
+      matched_reference: classification.matchedReference,
+      outcome:           classification.outcome,
+      classified_at:     new Date().toISOString(),
+    }).eq('id', checkRow.id)
+
+    // ── Create flag if out_of_scope ───────────────────────────
+    if (classification.outcome === 'out_of_scope') {
+      const severity = classification.creepConfidence >= 0.90 ? 'high'
+        : classification.creepConfidence >= 0.75 ? 'medium' : 'low'
+
+      const { data: flag } = await (service as any).from('guardian_flags').insert({
+        project_id:    project.id,
+        workspace_id:  project.workspace_id,
+        check_id:      checkRow.id,
+        type:          'scope_creep',
+        severity,
+        description:   classification.reasoning,
+        sow_reference: classification.matchedReference || 'General scope',
+        status:        'open',
+      }).select('id').single()
+
+      if (flag) {
+        await (service as any).from('guardian_checks').update({ flag_id: flag.id }).eq('id', checkRow.id)
+
+        // Notify APPROVE_FLAGS holders
+        const emails = await getMemberEmailsWithPermission(service, project.workspace_id, 'APPROVE_FLAGS')
+        if (emails.length) {
+          try {
+            await sendGuardianFlagEmail({
+              to: emails,
+              agencyName:   project.workspaces?.agency_name || '',
+              projectName:  project.name,
+              severity,
+              description:  classification.reasoning,
+              sowReference: classification.matchedReference || 'General scope',
+              projectUrl:   `${process.env.NEXT_PUBLIC_APP_URL}/projects/${project.id}?tab=guardian`,
+              path:         `Email from ${fromEmail}`,
+            })
+          } catch (e) { console.error('Flag email failed:', e) }
+        }
+
+        await logAudit(service, {
+          workspaceId: project.workspace_id, actorId: 'system',
+          actorEmail: 'guardian@scopegov.app', actorName: 'Guardian',
+          eventType: 'flag.raised', entityType: 'guardian_flag',
+          entityId: flag.id, entityName: project.name,
+          metadata: { severity, source: 'email', from: fromEmail },
+        })
+      }
+    }
+
+    return NextResponse.json({ ok: true, checkId: checkRow.id, outcome: classification.outcome })
+  } catch (err) {
+    console.error('Guardian inbound error:', err)
+    return NextResponse.json({ error: 'Internal error' }, { status: 500 })
+  }
+}
+
+function extractUnquotedContent(text: string): string {
+  // Remove quoted reply lines (starting with >) and forwarded message headers
+  const lines = text.split('\n')
+  const unquoted = lines.filter(line => {
+    const trimmed = line.trim()
+    if (trimmed.startsWith('>')) return false
+    if (trimmed.match(/^On .+ wrote:$/)) return false
+    if (trimmed.match(/^-{3,}/)) return false
+    if (trimmed.match(/^From:\s/i)) return false
+    if (trimmed.match(/^Sent:\s/i)) return false
+    return true
+  })
+  return unquoted.join('\n').trim()
+}

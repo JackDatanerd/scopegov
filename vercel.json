@@ -1,0 +1,40 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/trial-warning",
+      "schedule": "0 8 * * *"
+    },
+    {
+      "path": "/api/cron/payment-overdue",
+      "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/cron/sow-stall",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/co-stall",
+      "schedule": "30 * * * *"
+    },
+    {
+      "path": "/api/cron/invite-cleanup",
+      "schedule": "0 2 * * *"
+    },
+    {
+      "path": "/api/cron/guardian-health",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/cron/retainer-milestones",
+      "schedule": "0 6 1 * *"
+    },
+    {
+      "path": "/api/cron/project-purge",
+      "schedule": "0 3 * * *"
+    },
+    {
+      "path": "/api/cron/workspace-purge",
+      "schedule": "0 4 * * 0"
+    }
+  ]
+}
