@@ -195,7 +195,9 @@ export async function POST(request: NextRequest) {
           workspaceId: session.workspaceId, actorId: session.id,
           actorEmail: session.email, actorName: session.name,
           eventType: 'flag.raised', entityType: 'guardian_flag',
-          entityId: flagId, entityName: project.name,
+          // FIX: logAudit's entityId is `string | undefined`; flagId is `string | null`
+          // (declared type wins over `any`-typed flag.id during narrowing). Coerce here.
+          entityId: flagId ?? undefined, entityName: project.name,
           metadata: { severity, creep_confidence: classification.creepConfidence },
         })
 
