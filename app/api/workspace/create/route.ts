@@ -46,8 +46,14 @@ export async function POST(request: NextRequest) {
     })
 
     if (rpcError) {
-      console.error('create_workspace_atomic failed:', rpcError)
-      return NextResponse.json({ error: 'Failed to create workspace' }, { status: 500 })
+      console.error('create_workspace_atomic failed:', JSON.stringify(rpcError))
+      // Return the actual Postgres error so we can diagnose in the browser
+      return NextResponse.json({
+        error: 'Failed to create workspace',
+        detail: rpcError.message || null,
+        code:   rpcError.code   || null,
+        hint:   rpcError.hint   || null,
+      }, { status: 500 })
     }
 
     // Update user's active workspace
