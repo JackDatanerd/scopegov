@@ -70,7 +70,17 @@ export async function middleware(request: NextRequest) {
 
   // ── Authenticated → redirect away from auth pages ─────────────────────────
   if (user && isAuthRoute) {
-    return withRef(NextResponse.redirect(new URL('/dashboard', request.url)))
+    // Check if they have a workspace before sending to dashboard
+    const { data: member } = await (supabase as any)
+      .from('workspace_members')
+      .select('id')
+      .eq('user_id', user.id)
+      .eq('status', 'active')
+      .limit(1)
+      .single()
+
+    const dest = member ? '/dashboard' : '/onboarding'
+    return withRef(NextResponse.redirect(new URL(dest, request.url)))
   }
 
   // ── Authenticated → check onboarding ─────────────────────────────────────
@@ -86,6 +96,13 @@ export async function middleware(request: NextRequest) {
         .order('created_at', { ascending: true })
         .limit(1)
         .single()
+
+      // No workspace_members row at all → user signed up but never completed
+      // onboarding. Redirect to /onboarding instead of falling through to the
+      // app (which would call getSession() → null → redirect to /login → loop).
+      if (!member) {
+        return withRef(NextResponse.redirect(new URL('/onboarding', request.url)))
+      }
 
       if (member && !member.workspace?.onboarding_completed_at) {
         if (pathname !== '/onboarding') {
