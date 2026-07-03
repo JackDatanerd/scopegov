@@ -4,7 +4,10 @@
 -- ============================================================
 
 -- ── EXTENSIONS ────────────────────────────────────────────────
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+-- uuid-ossp is NOT used — gen_random_uuid() is a PostgreSQL built-in
+-- available without any extension in PG 13+ (all Supabase projects).
+-- uuid-ossp installs in the 'extensions' schema; functions with
+-- SET search_path = public can't see it, causing runtime errors.
 CREATE EXTENSION IF NOT EXISTS "vector";
 
 -- ── ENUMS ─────────────────────────────────────────────────────
@@ -37,7 +40,7 @@ CREATE TABLE IF NOT EXISTS public.users (
 
 -- ── WORKSPACES ────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS public.workspaces (
-  id                          uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id                          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   name                        text NOT NULL,
   slug                        text NOT NULL UNIQUE,
   slug_changed_at             timestamptz,
@@ -64,7 +67,7 @@ CREATE TABLE IF NOT EXISTS public.workspaces (
 
 -- ── ROLES ─────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS public.roles (
-  id            uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   workspace_id  uuid NOT NULL REFERENCES public.workspaces(id) ON DELETE CASCADE,
   name          text NOT NULL,
   description   text,
@@ -80,7 +83,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS roles_one_default
 
 -- ── WORKSPACE MEMBERS ─────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS public.workspace_members (
-  id                    uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id                    uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   workspace_id          uuid NOT NULL REFERENCES public.workspaces(id) ON DELETE CASCADE,
   -- Nullable: a pending invite for someone without a ScopeGov account yet has
   -- no user_id until they accept. invited_email carries the target address
@@ -170,7 +173,7 @@ CREATE OR REPLACE TRIGGER trg_role_permissions_propagate
 
 -- ── CLIENTS ───────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS public.clients (
-  id              uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   workspace_id    uuid NOT NULL REFERENCES public.workspaces(id) ON DELETE RESTRICT,
   name            text NOT NULL,
   company_name    text,
@@ -189,7 +192,7 @@ CREATE TABLE IF NOT EXISTS public.clients (
 );
 
 CREATE TABLE IF NOT EXISTS public.client_contacts (
-  id          uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   client_id   uuid NOT NULL REFERENCES public.clients(id) ON DELETE CASCADE,
   name        text NOT NULL,
   email       text NOT NULL,
@@ -202,7 +205,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS client_contacts_one_primary
 
 -- ── PROJECTS ──────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS public.projects (
-  id                      uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id                      uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   workspace_id            uuid NOT NULL REFERENCES public.workspaces(id) ON DELETE RESTRICT,
   client_id               uuid NOT NULL REFERENCES public.clients(id),
   name                    text NOT NULL,
@@ -225,7 +228,7 @@ CREATE TABLE IF NOT EXISTS public.projects (
 CREATE INDEX IF NOT EXISTS projects_workspace ON public.projects(workspace_id) WHERE deleted_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS public.project_members (
-  id          uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id  uuid NOT NULL REFERENCES public.projects(id) ON DELETE CASCADE,
   member_id   uuid NOT NULL REFERENCES public.workspace_members(id),
   added_at    timestamptz NOT NULL DEFAULT now(),
@@ -236,7 +239,7 @@ CREATE INDEX IF NOT EXISTS project_members_member ON public.project_members(memb
 
 -- ── SOW DOCUMENTS ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS public.sow_documents (
-  id                  uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id          uuid NOT NULL REFERENCES public.projects(id),
   workspace_id        uuid NOT NULL REFERENCES public.workspaces(id) ON DELETE RESTRICT,
   version             integer NOT NULL DEFAULT 1,
@@ -262,7 +265,7 @@ CREATE TABLE IF NOT EXISTS public.sow_documents (
 CREATE INDEX IF NOT EXISTS sow_documents_project ON public.sow_documents(project_id, version DESC);
 
 CREATE TABLE IF NOT EXISTS public.sow_attachments (
-  id           uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   sow_id       uuid NOT NULL REFERENCES public.sow_documents(id) ON DELETE CASCADE,
   file_name    text NOT NULL,
   file_size    integer NOT NULL,
@@ -273,7 +276,7 @@ CREATE TABLE IF NOT EXISTS public.sow_attachments (
 );
 
 CREATE TABLE IF NOT EXISTS public.sow_templates (
-  id           uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   workspace_id uuid NOT NULL REFERENCES public.workspaces(id) ON DELETE CASCADE,
   name         text NOT NULL,
   project_type project_type NOT NULL,
@@ -288,7 +291,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS sow_templates_one_default
   ON public.sow_templates(workspace_id, project_type) WHERE is_default = true;
 
 CREATE TABLE IF NOT EXISTS public.workspace_defaults (
-  id                  uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   workspace_id        uuid NOT NULL REFERENCES public.workspaces(id) ON DELETE CASCADE,
   project_type        project_type,
   revision_policy     text,
@@ -306,7 +309,7 @@ CREATE TABLE IF NOT EXISTS public.workspace_defaults (
 
 -- ── PAYMENT MILESTONES ────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS public.payment_milestones (
-  id           uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id   uuid NOT NULL REFERENCES public.projects(id) ON DELETE CASCADE,
   sow_id       uuid NOT NULL REFERENCES public.sow_documents(id),
   title        text NOT NULL,
@@ -328,7 +331,7 @@ CREATE INDEX IF NOT EXISTS payment_milestones_project ON public.payment_mileston
 
 -- ── CHANGE ORDERS ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS public.change_orders (
-  id                  uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id          uuid NOT NULL REFERENCES public.projects(id),
   workspace_id        uuid NOT NULL REFERENCES public.workspaces(id) ON DELETE RESTRICT,
   flag_id             uuid,
@@ -371,7 +374,7 @@ CREATE TABLE IF NOT EXISTS public.change_orders (
 CREATE INDEX IF NOT EXISTS change_orders_project_status ON public.change_orders(project_id, status);
 
 CREATE TABLE IF NOT EXISTS public.amendments (
-  id                  uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id          uuid NOT NULL REFERENCES public.projects(id),
   workspace_id        uuid NOT NULL REFERENCES public.workspaces(id) ON DELETE RESTRICT,
   change_order_id     uuid NOT NULL REFERENCES public.change_orders(id),
@@ -387,7 +390,7 @@ CREATE TABLE IF NOT EXISTS public.amendments (
 CREATE INDEX IF NOT EXISTS amendments_project ON public.amendments(project_id);
 
 CREATE TABLE IF NOT EXISTS public.co_attachments (
-  id           uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   co_id        uuid NOT NULL REFERENCES public.change_orders(id) ON DELETE CASCADE,
   file_name    text NOT NULL,
   file_size    integer NOT NULL,
@@ -399,7 +402,7 @@ CREATE TABLE IF NOT EXISTS public.co_attachments (
 
 -- ── GUARDIAN ──────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS public.guardian_flags (
-  id            uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id    uuid NOT NULL REFERENCES public.projects(id),
   workspace_id  uuid NOT NULL REFERENCES public.workspaces(id) ON DELETE RESTRICT,
   check_id      uuid,
@@ -428,7 +431,7 @@ ALTER TABLE public.change_orders
   ADD CONSTRAINT fk_co_flag FOREIGN KEY (flag_id) REFERENCES public.guardian_flags(id);
 
 CREATE TABLE IF NOT EXISTS public.guardian_checks (
-  id                    uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id                    uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id            uuid NOT NULL REFERENCES public.projects(id),
   workspace_id          uuid NOT NULL REFERENCES public.workspaces(id) ON DELETE RESTRICT,
   content               text NOT NULL,
@@ -461,7 +464,7 @@ ALTER TABLE public.guardian_flags
   ADD CONSTRAINT fk_flag_check FOREIGN KEY (check_id) REFERENCES public.guardian_checks(id);
 
 CREATE TABLE IF NOT EXISTS public.project_scope_snapshot (
-  id              uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id      uuid NOT NULL REFERENCES public.projects(id) UNIQUE,
   deliverables    jsonb[] NOT NULL DEFAULT '{}',
   out_of_scope    jsonb[] NOT NULL DEFAULT '{}',
@@ -470,7 +473,7 @@ CREATE TABLE IF NOT EXISTS public.project_scope_snapshot (
 );
 
 CREATE TABLE IF NOT EXISTS public.scope_adjustments (
-  id           uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id   uuid NOT NULL REFERENCES public.projects(id),
   workspace_id uuid NOT NULL REFERENCES public.workspaces(id) ON DELETE RESTRICT,
   deliverable  text NOT NULL,
@@ -483,7 +486,7 @@ CREATE TABLE IF NOT EXISTS public.scope_adjustments (
 CREATE INDEX IF NOT EXISTS scope_adjustments_project ON public.scope_adjustments(project_id);
 
 CREATE TABLE IF NOT EXISTS public.exceptions_log (
-  id           uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id   uuid NOT NULL REFERENCES public.projects(id),
   workspace_id uuid NOT NULL REFERENCES public.workspaces(id) ON DELETE RESTRICT,
   flag_id      uuid REFERENCES public.guardian_flags(id),
@@ -497,7 +500,7 @@ CREATE TABLE IF NOT EXISTS public.exceptions_log (
 
 -- ── NOTIFICATIONS ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS public.notifications (
-  id           uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   workspace_id uuid NOT NULL REFERENCES public.workspaces(id) ON DELETE CASCADE,
   recipient_id uuid NOT NULL REFERENCES public.users(id),
   type         text NOT NULL,
@@ -513,7 +516,7 @@ CREATE INDEX IF NOT EXISTS notifications_recipient
   ON public.notifications(recipient_id, workspace_id, created_at DESC) WHERE read = false;
 
 CREATE TABLE IF NOT EXISTS public.workspace_notification_defaults (
-  id            uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   workspace_id  uuid NOT NULL REFERENCES public.workspaces(id) ON DELETE CASCADE,
   event_type    text NOT NULL,
   email_enabled boolean NOT NULL DEFAULT true,
@@ -523,7 +526,7 @@ CREATE TABLE IF NOT EXISTS public.workspace_notification_defaults (
 );
 
 CREATE TABLE IF NOT EXISTS public.notification_preferences (
-  id             uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id        uuid NOT NULL REFERENCES public.users(id),
   workspace_id   uuid NOT NULL REFERENCES public.workspaces(id) ON DELETE CASCADE,
   event_type     text NOT NULL,
@@ -534,7 +537,7 @@ CREATE TABLE IF NOT EXISTS public.notification_preferences (
 
 -- ── AUDIT LOG ─────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS public.audit_log (
-  id           uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   workspace_id uuid NOT NULL REFERENCES public.workspaces(id) ON DELETE RESTRICT,
   actor_id     uuid REFERENCES public.users(id),
   actor_email  text NOT NULL,
@@ -553,7 +556,7 @@ CREATE INDEX IF NOT EXISTS audit_log_actor ON public.audit_log(actor_id) WHERE a
 
 -- ── REVOKED TOKENS ────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS public.revoked_tokens (
-  id         uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   token      text NOT NULL UNIQUE,
   token_type text NOT NULL CHECK (token_type IN ('sow','co')),
   revoked_at timestamptz NOT NULL DEFAULT now(),
@@ -564,7 +567,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS revoked_tokens_token ON public.revoked_tokens(
 
 -- ── DOCUMENT EDIT LOCKS ───────────────────────────────────────
 CREATE TABLE IF NOT EXISTS public.document_edit_locks (
-  id          uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   document_id uuid NOT NULL,
   document_type text NOT NULL CHECK (document_type IN ('sow','co')),
   locked_by   uuid NOT NULL REFERENCES public.users(id),
@@ -575,7 +578,7 @@ CREATE TABLE IF NOT EXISTS public.document_edit_locks (
 
 -- ── BILLING ───────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS public.billing (
-  id                          uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id                          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   workspace_id                uuid NOT NULL REFERENCES public.workspaces(id) ON DELETE CASCADE UNIQUE,
   paystack_customer_code      text,
   paystack_subscription_code  text,
@@ -647,7 +650,7 @@ BEGIN
 
   -- 2. Create Owner role
   INSERT INTO public.roles (id, workspace_id, name, permissions, is_default, created_by)
-  VALUES (uuid_generate_v4(), p_workspace_id, 'Owner', all_permissions, false, p_user_id)
+  VALUES (gen_random_uuid(), p_workspace_id, 'Owner', all_permissions, false, p_user_id)
   RETURNING id INTO owner_role_id;
 
   -- Also create preset roles

@@ -1,27 +1,29 @@
-import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
+import { getSession } from '@/lib/auth/session'
 
 export async function PATCH(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient()
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    const session = await getSession()
+    if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-    const { workspaceId, brandColour, logoStoragePath } = await request.json()
+    const { brandColour, logoStoragePath } = await request.json()
     const service = createServiceClient()
 
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
     if (brandColour) updates.brand_colour = brandColour
-    if (logoStoragePath) updates.logo_storage_path = logoStoragePath
+    if (logoStoragePath && typeof logoStoragePath === 'string') {
+      updates.logo_storage_path = logoStoragePath
+    }
 
     const { error } = await (service as any)
       .from('workspaces')
       .update(updates)
-      .eq('id', workspaceId)
+      .eq('id', session.workspaceId)  // ← from session, not body
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
     return NextResponse.json({ ok: true })
-  } catch {
+  } catch (err) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
