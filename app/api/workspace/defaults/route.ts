@@ -1,6 +1,29 @@
+// app/api/workspace/defaults/route.ts
+
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
+
+// C5: extracted so both POST and PATCH read their own body before calling this,
+// avoiding the double-consume bug where PATCH called POST(request) and the
+// body stream was already exhausted.
+async function upsertDefaults(session: any, body: any) {
+  const { revisionRounds, paymentStructure, governingLaw } = body
+  const service = createServiceClient()
+
+  const { error } = await (service as any)
+    .from('workspace_defaults')
+    .upsert({
+      workspace_id:      session.workspaceId,
+      project_type:      null,
+      revision_rounds:   revisionRounds   ?? 2,
+      payment_structure: paymentStructure ?? '50_50',
+      governing_law:     governingLaw     ?? 'United States', // C15: was 'Republic of Kenya'
+      updated_at:        new Date().toISOString(),
+    }, { onConflict: 'workspace_id,project_type' })
+
+  if (error) throw new Error(error.message)
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -9,19 +32,8 @@ export async function POST(request: NextRequest) {
     if (!hasPermission(session, 'MANAGE_WORKSPACE_SETTINGS'))
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
 
-    const { workspaceId, revisionRounds, paymentStructure, governingLaw } = await request.json()
-    const wsId   = workspaceId || session.workspaceId
-    const service = createServiceClient()
-
-    await (service as any).from('workspace_defaults').upsert({
-      workspace_id:      wsId,
-      project_type:      null, // null = global default
-      revision_rounds:   revisionRounds || 2,
-      payment_structure: paymentStructure || '50_50',
-      governing_law:     governingLaw || 'Republic of Kenya',
-      updated_at:        new Date().toISOString(),
-    }, { onConflict: 'workspace_id,project_type' })
-
+    const body = await request.json()
+    await upsertDefaults(session, body)
     return NextResponse.json({ ok: true })
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
@@ -29,5 +41,16 @@ export async function POST(request: NextRequest) {
 }
 
 export async function PATCH(request: NextRequest) {
-  return POST(request)
+  try {
+    const session = await getSession()
+    if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!hasPermission(session, 'MANAGE_WORKSPACE_SETTINGS'))
+      return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
+
+    const body = await request.json() // read body here before passing — not inside upsertDefaults
+    await upsertDefaults(session, body)
+    return NextResponse.json({ ok: true })
+  } catch (err) {
+    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+  }
 }

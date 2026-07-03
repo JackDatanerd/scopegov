@@ -1,8 +1,10 @@
+// app/(app)/sow/page.tsx
+
 import { getSession } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
-import { formatDate, formatCurrency, sowStatusLabel, sowStatusColour } from '@/lib/utils/format'
+import { formatDate, formatCurrency, sowStatusLabel } from '@/lib/utils/format' // C6: removed sowStatusColour
 
 export const metadata = { title: 'SOW Registry' }
 
@@ -12,11 +14,10 @@ export default async function SowPage() {
 
   const service = createServiceClient()
 
-  // Solo cap: last 10 workspace-wide (spec §13.1 — only on THIS screen)
   const isSoloCapped = session.planTier === 'solo'
   const limit        = isSoloCapped ? 10 : 500
 
-  const { data: sows = [] } = await (service as any)
+  const { data: sows = [], error: sowErr } = await (service as any)
     .from('sow_documents')
     .select(`id, version, status, sent_at, signed_at, created_at,
       projects(id, name, contract_value, currency, clients(name))`)
@@ -24,10 +25,17 @@ export default async function SowPage() {
     .order('created_at', { ascending: false })
     .limit(limit)
 
+  // C6: render empty state rather than crash if query fails
+  if (sowErr) {
+    console.error('SOW registry error:', sowErr)
+  }
+
+  const safeSows = sows || []
+
   const stats = {
-    total:  (sows || []).length,
-    signed: (sows || []).filter((s: any) => s.status === 'signed').length,
-    pending:(sows || []).filter((s: any) => s.status === 'awaiting_signature').length,
+    total:   safeSows.length,
+    signed:  safeSows.filter((s: any) => s.status === 'signed').length,
+    pending: safeSows.filter((s: any) => s.status === 'awaiting_signature').length,
   }
 
   return (
@@ -39,7 +47,6 @@ export default async function SowPage() {
         </div>
       </div>
 
-      {/* Solo cap notice */}
       {isSoloCapped && (
         <div className="banner banner-info" style={{ marginBottom: 20 }}>
           <span>Showing the 10 most recent SOWs. <strong>Upgrade to Starter or above</strong> to see the full history.</span>
@@ -49,7 +56,6 @@ export default async function SowPage() {
         </div>
       )}
 
-      {/* Stats */}
       <div className="mstrip mstrip-3" style={{ marginBottom: 22 }}>
         <div className="mc">
           <div className="mc-lbl">Total SOWs</div>
@@ -68,8 +74,7 @@ export default async function SowPage() {
         </div>
       </div>
 
-      {/* Table */}
-      {!(sows || []).length ? (
+      {!safeSows.length ? (
         <div className="surface">
           <div className="empty-state">
             <i className="ti ti-file-description empty-state-icon" />
@@ -95,8 +100,8 @@ export default async function SowPage() {
               </tr>
             </thead>
             <tbody>
-              {(sows || []).map((s: any) => (
-                <tr key={s.id} onClick={() => {}}>
+              {safeSows.map((s: any) => (
+                <tr key={s.id}>
                   <td>
                     <Link href={`/projects/${s.projects?.id}?tab=sow`}>
                       <div className="td-primary">{s.projects?.name || '—'}</div>
@@ -128,8 +133,13 @@ export default async function SowPage() {
 
 function pillVariant(status: string): string {
   const m: Record<string, string> = {
-    draft: 'slate', awaiting_signature: 'amber', signed: 'green',
-    declined: 'red', changes_requested: 'amber', withdrawn: 'slate', expired: 'red',
+    draft:              'slate',
+    awaiting_signature: 'amber',
+    signed:             'green',
+    declined:           'red',
+    changes_requested:  'amber',
+    withdrawn:          'slate',
+    expired:            'red',
   }
   return m[status] || 'slate'
 }
