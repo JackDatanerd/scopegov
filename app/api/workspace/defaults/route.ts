@@ -4,25 +4,41 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 
-// C5: extracted so both POST and PATCH read their own body before calling this,
-// avoiding the double-consume bug where PATCH called POST(request) and the
-// body stream was already exhausted.
+// C5: PostgreSQL unique constraints treat NULL != NULL, so upsert with
+// onConflict on project_type (which is null here) silently inserts duplicates
+// instead of updating. Fix: explicit check-then-update-or-insert.
 async function upsertDefaults(session: any, body: any) {
   const { revisionRounds, paymentStructure, governingLaw } = body
   const service = createServiceClient()
 
-  const { error } = await (service as any)
+  const { data: existing } = await (service as any)
     .from('workspace_defaults')
-    .upsert({
-      workspace_id:      session.workspaceId,
-      project_type:      null,
-      revision_rounds:   revisionRounds   ?? 2,
-      payment_structure: paymentStructure ?? '50_50',
-      governing_law:     governingLaw     ?? 'United States', // C15: was 'Republic of Kenya'
-      updated_at:        new Date().toISOString(),
-    }, { onConflict: 'workspace_id,project_type' })
+    .select('id')
+    .eq('workspace_id', session.workspaceId)
+    .is('project_type', null)
+    .maybeSingle()
 
-  if (error) throw new Error(error.message)
+  const payload = {
+    workspace_id:      session.workspaceId,
+    project_type:      null,
+    revision_rounds:   revisionRounds   ?? 2,
+    payment_structure: paymentStructure ?? '50_50',
+    governing_law:     governingLaw     ?? 'United States',
+    updated_at:        new Date().toISOString(),
+  }
+
+  if (existing?.id) {
+    const { error } = await (service as any)
+      .from('workspace_defaults')
+      .update(payload)
+      .eq('id', existing.id)
+    if (error) throw new Error(error.message)
+  } else {
+    const { error } = await (service as any)
+      .from('workspace_defaults')
+      .insert(payload)
+    if (error) throw new Error(error.message)
+  }
 }
 
 export async function POST(request: NextRequest) {
@@ -47,7 +63,7 @@ export async function PATCH(request: NextRequest) {
     if (!hasPermission(session, 'MANAGE_WORKSPACE_SETTINGS'))
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
 
-    const body = await request.json() // read body here before passing — not inside upsertDefaults
+    const body = await request.json()
     await upsertDefaults(session, body)
     return NextResponse.json({ ok: true })
   } catch (err) {

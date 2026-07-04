@@ -1,3 +1,8 @@
+// app/invite/[token]/page.tsx
+// C7: handleNewUser replaced — calls server-side signup route instead of
+// supabase.auth.signUp() directly, which returns data.session = null when
+// email confirmations are enabled, causing "Could not create session" error.
+
 'use client'
 import { useState, useEffect } from 'react'
 import { createClient } from '@/lib/supabase/client'
@@ -10,12 +15,12 @@ export default function InvitePage() {
   const token    = params.token as string
   const supabase = createClient()
 
-  const [invite,    setInvite]    = useState<{ email: string; workspaceName: string; agencyName: string; inviterName: string } | null>(null)
-  const [mode,      setMode]      = useState<'loading' | 'expired' | 'new-user' | 'existing-user' | 'done'>('loading')
-  const [name,      setName]      = useState('')
-  const [password,  setPassword]  = useState('')
-  const [loading,   setLoading]   = useState(false)
-  const [error,     setError]     = useState('')
+  const [invite,   setInvite]   = useState<{ email: string; workspaceName: string; agencyName: string; inviterName: string } | null>(null)
+  const [mode,     setMode]     = useState<'loading' | 'expired' | 'new-user' | 'existing-user' | 'done'>('loading')
+  const [name,     setName]     = useState('')
+  const [password, setPassword] = useState('')
+  const [loading,  setLoading]  = useState(false)
+  const [error,    setError]    = useState('')
 
   useEffect(() => {
     fetch(`/api/team/invite/${token}`)
@@ -23,29 +28,34 @@ export default function InvitePage() {
       .then(json => {
         if (json.error || json.expired) { setMode('expired'); return }
         setInvite(json.invite)
-        // Check if this email already has an account
         setMode(json.hasAccount ? 'existing-user' : 'new-user')
       })
       .catch(() => setMode('expired'))
   }, [token])
 
-  /* ── New user: create account + accept invite ─────────────── */
+  /* ── New user: server creates account + accepts invite ─── */
   async function handleNewUser(e: React.FormEvent) {
     e.preventDefault()
     if (password.length < 8) { setError('Password must be at least 8 characters.'); return }
     setLoading(true); setError('')
     try {
-      // Sign up — email already verified via invite (spec §16.0)
-      const { data, error: signupErr } = await supabase.auth.signUp({
-        email: invite!.email, password,
-        options: { data: { name } },
+      // Server-side signup: creates user with email_confirm=true via Admin API,
+      // activates the workspace membership, returns { ok, email }
+      const res  = await fetch(`/api/team/invite/${token}/signup`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ name, password }),
       })
-      if (signupErr) throw signupErr
-      if (!data.session) throw new Error('Could not create session')
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error)
 
-      // Accept the invite
-      const res = await fetch(`/api/team/invite/${token}/accept`, { method: 'POST' })
-      if (!res.ok) { const j = await res.json(); throw new Error(j.error) }
+      // Server created and confirmed account — sign in client-side with password
+      const { error: signInErr } = await supabase.auth.signInWithPassword({
+        email: invite!.email,
+        password,
+      })
+      if (signInErr) throw new Error(signInErr.message)
+
       setMode('done')
       setTimeout(() => router.push('/dashboard'), 1500)
     } catch (err: unknown) {
@@ -53,7 +63,7 @@ export default function InvitePage() {
     } finally { setLoading(false) }
   }
 
-  /* ── Existing user: sign in + accept invite ───────────────── */
+  /* ── Existing user: sign in + accept invite ───────────── */
   async function handleExistingUser(e: React.FormEvent) {
     e.preventDefault()
     setLoading(true); setError('')
@@ -146,7 +156,6 @@ export default function InvitePage() {
     )
   }
 
-  /* ── New user form ────────────────────────────────────────── */
   if (mode === 'new-user') {
     return (
       <div className="auth-root">
@@ -193,7 +202,6 @@ export default function InvitePage() {
     )
   }
 
-  /* ── Existing user form ───────────────────────────────────── */
   return (
     <div className="auth-root">
       <PanelLeft />

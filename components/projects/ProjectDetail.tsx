@@ -1,3 +1,7 @@
+// components/projects/ProjectDetail.tsx
+// C14: TeamTab "Add member" button wired — loads available members,
+//      shows modal, posts to /api/projects/[id]/members
+
 'use client'
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
@@ -11,11 +15,11 @@ import {
 
 const TABS = [
   { key: 'overview', label: 'Overview',      icon: 'ti-layout-dashboard' },
-  { key: 'sow',       label: 'SOW',           icon: 'ti-file-description' },
-  { key: 'guardian',  label: 'Guardian',      icon: 'ti-shield-bolt' },
-  { key: 'co',        label: 'Change Orders', icon: 'ti-git-merge' },
-  { key: 'activity',  label: 'Activity',      icon: 'ti-clock' },
-  { key: 'team',      label: 'Team',          icon: 'ti-users' },
+  { key: 'sow',      label: 'SOW',           icon: 'ti-file-description' },
+  { key: 'guardian', label: 'Guardian',      icon: 'ti-shield-bolt' },
+  { key: 'co',       label: 'Change Orders', icon: 'ti-git-merge' },
+  { key: 'activity', label: 'Activity',      icon: 'ti-clock' },
+  { key: 'team',     label: 'Team',          icon: 'ti-users' },
 ]
 
 function projectPill(status: string): string {
@@ -71,18 +75,18 @@ export default function ProjectDetail({
   effectiveContractValue, initialTab, permissions,
 }: Props) {
   const router = useRouter()
-  const [tab, setTab] = useState(initialTab)
+  const [tab,        setTab]        = useState(initialTab)
   const [completing, setCompleting] = useState(false)
-  const [error, setError] = useState('')
+  const [error,      setError]      = useState('')
 
-  const currency       = project.currency || 'USD'
-  const isActive        = ['Active', 'Stalled'].includes(project.status)
-  const guardianActive  = project.status === 'Active'
+  const currency      = project.currency || 'USD'
+  const isActive      = ['Active', 'Stalled'].includes(project.status)
+  const guardianActive = project.status === 'Active'
 
-  const recoveredAmt = amendments.reduce((s: number, a: any) => s + (a.financial_impact || 0), 0)
-  const openCos = (project.change_orders || []).filter((co: any) => ['awaiting_response','countered'].includes(co.status))
-  const atRiskAmt = openCos.reduce((s: number, co: any) => s + (co.total || 0), 0)
-  const baseValue = project.contract_value || 0
+  const recoveredAmt  = amendments.reduce((s: number, a: any) => s + (a.financial_impact || 0), 0)
+  const openCos       = (project.change_orders || []).filter((co: any) => ['awaiting_response','countered'].includes(co.status))
+  const atRiskAmt     = openCos.reduce((s: number, co: any) => s + (co.total || 0), 0)
+  const baseValue     = project.contract_value || 0
   const openFlagCount = (project.guardian_flags || []).filter((f: any) => f.status === 'open').length
 
   async function handleMarkComplete() {
@@ -132,7 +136,6 @@ export default function ProjectDetail({
               {project.internal_ref && <> · {project.internal_ref}</>}
             </div>
           </div>
-
           <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
             {permissions.createCo && isActive && (
               <Link href={`/projects/${project.id}/co/new`}>
@@ -149,7 +152,6 @@ export default function ProjectDetail({
 
         {error && <div className="auth-error" style={{ marginBottom: 12 }}>{error}</div>}
 
-        {/* Metrics */}
         {permissions.viewFinancials && (
           <div style={{ display: 'flex', gap: 28, marginBottom: 16, flexWrap: 'wrap' }}>
             <MetricBlock label="Original value" value={formatCurrency(baseValue, currency)} />
@@ -159,7 +161,6 @@ export default function ProjectDetail({
           </div>
         )}
 
-        {/* Ledger bar */}
         {permissions.viewFinancials && effectiveContractValue > 0 && (
           <div style={{ marginBottom: 16 }}>
             <div className="lb-track">
@@ -175,7 +176,6 @@ export default function ProjectDetail({
           </div>
         )}
 
-        {/* Tabs */}
         <div className="tabbar">
           {TABS.map(t => (
             <button key={t.key} className={`tabi${tab === t.key ? ' act' : ''}`} onClick={() => setTab(t.key)}>
@@ -189,20 +189,12 @@ export default function ProjectDetail({
 
       {/* Tab content */}
       <div style={{ padding: '24px 40px', maxWidth: 1080 }}>
-        {tab === 'overview' && (
-          <OverviewTab project={project} milestones={milestones} amendments={amendments} permissions={permissions} currency={currency} />
-        )}
-        {tab === 'sow' && (
-          <SowTab project={project} sows={project.sow_documents || []} amendments={amendments} permissions={permissions} router={router} />
-        )}
-        {tab === 'guardian' && (
-          <GuardianTab project={project} flags={project.guardian_flags || []} permissions={permissions} router={router} />
-        )}
-        {tab === 'co' && (
-          <CoTab project={project} cos={project.change_orders || []} permissions={permissions} currency={currency} />
-        )}
+        {tab === 'overview' && <OverviewTab project={project} milestones={milestones} amendments={amendments} permissions={permissions} currency={currency} />}
+        {tab === 'sow'      && <SowTab project={project} sows={project.sow_documents || []} amendments={amendments} permissions={permissions} router={router} />}
+        {tab === 'guardian' && <GuardianTab project={project} flags={project.guardian_flags || []} permissions={permissions} router={router} />}
+        {tab === 'co'       && <CoTab project={project} cos={project.change_orders || []} permissions={permissions} currency={currency} />}
         {tab === 'activity' && <ActivityTab activity={activity} />}
-        {tab === 'team' && <TeamTab project={project} team={team} permissions={permissions} />}
+        {tab === 'team'     && <TeamTab project={project} team={team} permissions={permissions} />}
       </div>
     </div>
   )
@@ -217,16 +209,14 @@ function MetricBlock({ label, value, color, bold }: { label: string; value: stri
   )
 }
 
-// ── OVERVIEW TAB ──────────────────────────────────────────────────────────
-
+// ── OVERVIEW TAB ──────────────────────────────────────────────
 function OverviewTab({ project, milestones, amendments, permissions, currency }: any) {
   const snapshot     = project.project_scope_snapshot?.[0]
   const deliverables = snapshot?.deliverables || []
   const outOfScope   = snapshot?.out_of_scope || []
   const hasSigned    = (project.sow_documents || []).some((s: any) => s.status === 'signed')
-
-  const paidAmount    = milestones.filter((m: any) => m.status === 'paid').reduce((s: number, m: any) => s + (m.amount || 0), 0)
-  const overdueAmount = milestones.filter((m: any) => m.status === 'overdue').reduce((s: number, m: any) => s + (m.amount || 0), 0)
+  const paidAmount   = milestones.filter((m: any) => m.status === 'paid').reduce((s: number, m: any) => s + (m.amount || 0), 0)
+  const overdueAmount= milestones.filter((m: any) => m.status === 'overdue').reduce((s: number, m: any) => s + (m.amount || 0), 0)
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 20, alignItems: 'start' }}>
@@ -264,7 +254,6 @@ function OverviewTab({ project, milestones, amendments, permissions, currency }:
             )}
           </div>
         )}
-
         {!hasSigned && (
           <div className="surface">
             <div className="empty-state" style={{ padding: '36px 24px' }}>
@@ -274,7 +263,6 @@ function OverviewTab({ project, milestones, amendments, permissions, currency }:
             </div>
           </div>
         )}
-
         {amendments.length > 0 && (
           <div className="surface surface-p" style={{ marginTop: 16 }}>
             <div className="sec-title" style={{ marginBottom: 12 }}>Amendments ({amendments.length})</div>
@@ -295,7 +283,6 @@ function OverviewTab({ project, milestones, amendments, permissions, currency }:
           </div>
         )}
       </div>
-
       <div>
         <div className="surface surface-p">
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
@@ -333,13 +320,12 @@ function OverviewTab({ project, milestones, amendments, permissions, currency }:
 }
 
 function MilestonePill({ status }: { status: string }) {
-  const map: Record<string, string> = { pending: 'slate', invoiced: 'blue', paid: 'green', overdue: 'red' }
+  const map:   Record<string, string> = { pending: 'slate', invoiced: 'blue', paid: 'green', overdue: 'red' }
   const label: Record<string, string> = { pending: 'Pending', invoiced: 'Invoiced', paid: 'Paid', overdue: 'Overdue' }
   return <span className={`pill pill-${map[status] || 'slate'} pill-sm`}>{label[status] || status}</span>
 }
 
-// ── SOW TAB ───────────────────────────────────────────────────────────────
-
+// ── SOW TAB ───────────────────────────────────────────────────
 function SowTab({ project, sows, amendments, permissions, router }: any) {
   const [sending, setSending] = useState(false)
   const [error,   setError]   = useState('')
@@ -370,7 +356,6 @@ function SowTab({ project, sows, amendments, permissions, router }: any) {
   return (
     <div>
       {error && <div className="auth-error" style={{ marginBottom: 14 }}>{error}</div>}
-
       {sows.length === 0 ? (
         <div className="surface">
           <div className="empty-state">
@@ -421,7 +406,6 @@ function SowTab({ project, sows, amendments, permissions, router }: any) {
               </div>
             </div>
           )}
-
           {sows.length > 1 && (
             <div>
               <div className="sec-title" style={{ marginBottom: 10 }}>Version history</div>
@@ -441,7 +425,6 @@ function SowTab({ project, sows, amendments, permissions, router }: any) {
               ))}
             </div>
           )}
-
           {amendments.length > 0 && (
             <div style={{ marginTop: 16 }}>
               <div className="sec-title" style={{ marginBottom: 10 }}>Amendments ({amendments.length})</div>
@@ -461,17 +444,16 @@ function SowTab({ project, sows, amendments, permissions, router }: any) {
   )
 }
 
-// ── GUARDIAN TAB ──────────────────────────────────────────────────────────
-
+// ── GUARDIAN TAB ──────────────────────────────────────────────
 function GuardianTab({ project, flags, permissions, router }: any) {
-  const [pasteMode, setPasteMode] = useState(false)
-  const [pasteText, setPasteText] = useState('')
-  const [submitting, setSubmitting] = useState(false)
-  const [submitError, setSubmitError] = useState('')
+  const [pasteMode,    setPasteMode]    = useState(false)
+  const [pasteText,    setPasteText]    = useState('')
+  const [submitting,   setSubmitting]   = useState(false)
+  const [submitError,  setSubmitError]  = useState('')
   const [filterStatus, setFilterStatus] = useState('all')
 
-  const isActive  = project.status === 'Active'
-  const openFlags = flags.filter((f: any) => f.status === 'open')
+  const isActive   = project.status === 'Active'
+  const openFlags  = flags.filter((f: any) => f.status === 'open')
   const filteredFlags = filterStatus === 'all' ? flags : flags.filter((f: any) => f.status === filterStatus)
 
   async function handlePasteSubmit() {
@@ -542,8 +524,7 @@ function GuardianTab({ project, flags, permissions, router }: any) {
       {flags.length > 0 && (
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 16 }}>
           {['all','open','converted_to_co','resolved','closed'].map(s => (
-            <button key={s}
-              onClick={() => setFilterStatus(s)}
+            <button key={s} onClick={() => setFilterStatus(s)}
               style={{
                 padding: '4px 11px', borderRadius: 99, fontSize: 12, cursor: 'pointer',
                 border: `1px solid ${filterStatus === s ? 'var(--green)' : 'var(--border)'}`,
@@ -579,12 +560,12 @@ function GuardianTab({ project, flags, permissions, router }: any) {
 function FlagCard({ flag, permissions, router, projectId }: any) {
   const [acting, setActing] = useState(false)
 
-  async function handleAction(action: string, body?: Record<string, unknown>) {
+  async function handleAction(action: string) {
     setActing(true)
     try {
       await fetch(`/api/guardian/flags/${flag.id}`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, projectId, ...body }),
+        body: JSON.stringify({ action, projectId }),
       })
       router.refresh()
     } finally { setActing(false) }
@@ -624,8 +605,7 @@ function FlagCard({ flag, permissions, router, projectId }: any) {
   )
 }
 
-// ── CO TAB ────────────────────────────────────────────────────────────────
-
+// ── CO TAB ────────────────────────────────────────────────────
 function CoTab({ project, cos, permissions, currency }: any) {
   return (
     <div>
@@ -637,7 +617,6 @@ function CoTab({ project, cos, permissions, currency }: any) {
           </Link>
         )}
       </div>
-
       {cos.length === 0 ? (
         <div className="surface">
           <div className="empty-state" style={{ padding: '32px 24px' }}>
@@ -707,8 +686,7 @@ function CoCard({ co, currency, permissions, projectId }: any) {
   )
 }
 
-// ── ACTIVITY TAB ──────────────────────────────────────────────────────────
-
+// ── ACTIVITY TAB ──────────────────────────────────────────────
 function ActivityTab({ activity }: { activity: any[] }) {
   function eventColour(type: string) {
     if (type.includes('signed') || type.includes('accepted') || type.includes('completed')) return 'var(--green)'
@@ -716,7 +694,6 @@ function ActivityTab({ activity }: { activity: any[] }) {
     if (type.includes('flag') || type.includes('guardian')) return 'var(--amber)'
     return 'var(--blue)'
   }
-
   return (
     <div>
       {activity.length === 0 ? (
@@ -746,15 +723,44 @@ function ActivityTab({ activity }: { activity: any[] }) {
   )
 }
 
-// ── TEAM TAB ──────────────────────────────────────────────────────────────
+// ── TEAM TAB ──────────────────────────────────────────────────
+// C14: "Add member" button now loads available members and opens a modal.
+function TeamTab({ project, team, permissions }: any) {
+  const router = useRouter()
+  const [adding,       setAdding]       = useState(false)
+  const [available,    setAvailable]    = useState<any[]>([])
+  const [loadingModal, setLoadingModal] = useState(false)
+  const [addingId,     setAddingId]     = useState<string | null>(null)
 
-function TeamTab({ team, permissions }: any) {
+  async function openAddModal() {
+    setLoadingModal(true)
+    try {
+      const res  = await fetch(`/api/projects/${project.id}/members/available`)
+      const json = await res.json()
+      setAvailable(json.members || [])
+      setAdding(true)
+    } finally { setLoadingModal(false) }
+  }
+
+  async function addMember(memberId: string) {
+    setAddingId(memberId)
+    try {
+      const res = await fetch(`/api/projects/${project.id}/members`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ memberId }),
+      })
+      if (res.ok) { setAdding(false); router.refresh() }
+    } finally { setAddingId(null) }
+  }
+
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
         <div className="sec-title">Project team ({team.length})</div>
         {permissions.assignTeam && (
-          <button className="btn btn-ghost btn-sm"><i className="ti ti-plus" style={{ fontSize: 12 }} /> Add member</button>
+          <button className="btn btn-ghost btn-sm" onClick={openAddModal} disabled={loadingModal}>
+            {loadingModal ? <span className="spin spin-dark" /> : <><i className="ti ti-plus" style={{ fontSize: 12 }} /> Add member</>}
+          </button>
         )}
       </div>
 
@@ -778,6 +784,46 @@ function TeamTab({ team, permissions }: any) {
             ) : null
           })}
         </div>
+      )}
+
+      {/* C14: Add member modal */}
+      {adding && (
+        <>
+          <div className="modal-bg" onClick={() => setAdding(false)} />
+          <div className="modal">
+            <h2 className="modal-title">Add team member</h2>
+            <p className="modal-sub">Select a workspace member to assign to this project.</p>
+            {available.length === 0 ? (
+              <p style={{ fontSize: 13, color: 'var(--text-3)', padding: '16px 0' }}>
+                All workspace members are already on this project.
+              </p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 320, overflowY: 'auto' }}>
+                {available.map((m: any) => {
+                  const u = m.users
+                  return (
+                    <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', cursor: 'pointer' }}
+                      onClick={() => addMember(m.id)}>
+                      <div style={{ width: 30, height: 30, borderRadius: '50%', background: 'var(--green)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#FFF', fontSize: 11, fontWeight: 600, flexShrink: 0 }}>
+                        {u?.name?.split(' ').map((p: string) => p[0]).join('').toUpperCase().slice(0, 2) || '?'}
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 13, fontWeight: 500 }}>{u?.name || '—'}</div>
+                        <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{u?.email} · {m.roles?.name || 'No role'}</div>
+                      </div>
+                      {addingId === m.id
+                        ? <span className="spin spin-dark" />
+                        : <i className="ti ti-plus" style={{ fontSize: 13, color: 'var(--green)' }} />}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+            <div className="modal-footer">
+              <button className="btn btn-ghost" onClick={() => setAdding(false)}>Close</button>
+            </div>
+          </div>
+        </>
       )}
     </div>
   )

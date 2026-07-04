@@ -1,9 +1,20 @@
+// components/settings/SettingsClient.tsx
+// C10: notification toggles wired with local state
+// C11: billing upgrade buttons connected to Paystack inline checkout
+// C12: danger zone delete button wired; app/api/workspace/delete/route.ts handles server side
+// C15: DefaultsTab governing law default changed from 'Republic of Kenya' to 'United States'
+//
+// MANUAL STEP REQUIRED FOR C11:
+// Add to app/layout.tsx <head>:
+//   import Script from 'next/script'
+//   <Script src="https://js.paystack.co/v1/inline.js" strategy="beforeInteractive" />
+
 'use client'
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { SessionUser } from '@/lib/supabase/types'
-import { PLAN_LABELS, PLAN_LIMITS, formatDate, formatCurrency } from '@/lib/utils/format'
+import { PLAN_LABELS, PLAN_LIMITS, formatDate } from '@/lib/utils/format'
 
 type SettingsTab = 'account' | 'workspace' | 'branding' | 'defaults' | 'guardian' | 'billing' | 'notifications' | 'integrations' | 'danger'
 
@@ -32,12 +43,10 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
   const searchParams = useSearchParams()
   const router       = useRouter()
   const supabase     = createClient()
-  const [tab,        setTab]        = useState<SettingsTab>((searchParams.get('tab') as SettingsTab) || 'account')
-  const [saving,     setSaving]     = useState(false)
-  const [saved,      setSaved]      = useState(false)
-  const [error,      setError]      = useState('')
-
-  function save(msg?: string) { setSaved(true); setTimeout(() => setSaved(false), 2000) }
+  const [tab,    setTab]    = useState<SettingsTab>((searchParams.get('tab') as SettingsTab) || 'account')
+  const [saving, setSaving] = useState(false)
+  const [saved,  setSaved]  = useState(false)
+  const [error,  setError]  = useState('')
 
   async function patch(path: string, body: any) {
     setSaving(true); setError('')
@@ -45,7 +54,8 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
       const res  = await fetch(path, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error)
-      save(); router.refresh()
+      setSaved(true); setTimeout(() => setSaved(false), 2000)
+      router.refresh()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Save failed')
     } finally { setSaving(false) }
@@ -53,7 +63,6 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
 
   return (
     <div className="settings-layout">
-      {/* Sidebar nav */}
       <div>
         <div className="settings-nav">
           {TABS.map(t => (
@@ -65,18 +74,16 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
           ))}
         </div>
       </div>
-
-      {/* Content */}
       <div>
         {error && <div className="auth-error" style={{ marginBottom: 14 }}>{error}</div>}
         {saved && <div className="auth-success" style={{ marginBottom: 14 }}>Changes saved.</div>}
 
-        {tab === 'account'   && <AccountTab session={session} supabase={supabase} router={router} />}
-        {tab === 'workspace' && <WorkspaceTab workspace={workspace} permissions={permissions} onSave={patch} saving={saving} />}
-        {tab === 'branding'  && <BrandingTab workspace={workspace} logoUrl={logoUrl} permissions={permissions} onSave={patch} saving={saving} />}
-        {tab === 'defaults'  && <DefaultsTab defaults={defaults} permissions={permissions} onSave={patch} saving={saving} />}
-        {tab === 'guardian'  && <GuardianTab workspace={workspace} permissions={permissions} onSave={patch} saving={saving} />}
-        {tab === 'billing'   && <BillingTab workspace={workspace} billing={billing} session={session} permissions={permissions} />}
+        {tab === 'account'       && <AccountTab session={session} supabase={supabase} router={router} />}
+        {tab === 'workspace'     && <WorkspaceTab workspace={workspace} permissions={permissions} onSave={patch} saving={saving} />}
+        {tab === 'branding'      && <BrandingTab workspace={workspace} logoUrl={logoUrl} permissions={permissions} onSave={patch} saving={saving} />}
+        {tab === 'defaults'      && <DefaultsTab defaults={defaults} permissions={permissions} onSave={patch} saving={saving} />}
+        {tab === 'guardian'      && <GuardianTab workspace={workspace} permissions={permissions} onSave={patch} saving={saving} />}
+        {tab === 'billing'       && <BillingTab workspace={workspace} billing={billing} session={session} permissions={permissions} />}
         {tab === 'notifications' && <NotificationsTab />}
         {tab === 'integrations'  && <IntegrationsTab session={session} />}
         {tab === 'danger'        && <DangerTab workspace={workspace} permissions={permissions} />}
@@ -88,7 +95,6 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
 // ── ACCOUNT ──────────────────────────────────────────────────
 function AccountTab({ session, supabase, router }: any) {
   const [name,        setName]        = useState(session.name)
-  const [currentPw,   setCurrentPw]   = useState('')
   const [newPw,       setNewPw]       = useState('')
   const [confirmPw,   setConfirmPw]   = useState('')
   const [pwLoading,   setPwLoading]   = useState(false)
@@ -114,8 +120,8 @@ function AccountTab({ session, supabase, router }: any) {
     try {
       const { error } = await supabase.auth.updateUser({ password: newPw })
       if (error) throw error
-      setMsg('Password updated. Please sign in again.') // spec §16.2: all sessions invalidated
-      setCurrentPw(''); setNewPw(''); setConfirmPw('')
+      setMsg('Password updated.')
+      setNewPw(''); setConfirmPw('')
       await supabase.auth.signOut()
       router.push('/login?message=Password+updated.+Please+sign+in+again.')
     } catch (e: any) { setErr(e.message) } finally { setPwLoading(false) }
@@ -125,8 +131,7 @@ function AccountTab({ session, supabase, router }: any) {
     <div>
       <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, marginBottom: 20 }}>Account settings</h2>
       {msg && <div className="auth-success" style={{ marginBottom: 14 }}>{msg}</div>}
-      {err && <div className="auth-error" style={{ marginBottom: 14 }}>{err}</div>}
-
+      {err && <div className="auth-error"  style={{ marginBottom: 14 }}>{err}</div>}
       <div className="settings-section">
         <div className="settings-section-title">Profile</div>
         <form onSubmit={saveName}>
@@ -145,18 +150,21 @@ function AccountTab({ session, supabase, router }: any) {
           </button>
         </form>
       </div>
-
       <div className="settings-section">
         <div className="settings-section-title">Change password</div>
         <form onSubmit={savePassword}>
           <div className="fgrp">
             <label className="flbl">New password <span className="fhint">— 8 characters minimum</span></label>
-            <input type="password" className="finp" value={newPw} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewPw(e.target.value)} placeholder="New password" autoComplete="new-password" />
+            <input type="password" className="finp" value={newPw}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewPw(e.target.value)}
+              placeholder="New password" autoComplete="new-password" />
           </div>
           <div className="fgrp">
             <label className="flbl">Confirm new password</label>
             <input type="password" className={`finp${confirmPw && confirmPw !== newPw ? ' err' : ''}`}
-              value={confirmPw} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setConfirmPw(e.target.value)} placeholder="Repeat password" autoComplete="new-password" />
+              value={confirmPw}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setConfirmPw(e.target.value)}
+              placeholder="Repeat password" autoComplete="new-password" />
             {confirmPw && confirmPw !== newPw && <p className="ferr">Passwords don&apos;t match.</p>}
           </div>
           <button type="submit" className="btn btn-primary btn-sm"
@@ -178,9 +186,7 @@ function WorkspaceTab({ workspace, permissions, onSave, saving }: any) {
   const [currency,     setCurrency]     = useState(workspace?.currency || 'USD')
   const [governingLaw, setGoverningLaw] = useState(workspace?.governing_law || '')
 
-  if (!permissions.manageWorkspace) {
-    return <Restricted />
-  }
+  if (!permissions.manageWorkspace) return <Restricted />
 
   return (
     <div>
@@ -303,7 +309,8 @@ function BrandingTab({ workspace, logoUrl, permissions, onSave, saving }: any) {
 function DefaultsTab({ defaults, permissions, onSave, saving }: any) {
   const [revRounds,    setRevRounds]    = useState(String(defaults?.revision_rounds || 2))
   const [payStructure, setPayStructure] = useState(defaults?.payment_structure || '50_50')
-  const [govLaw,       setGovLaw]       = useState(defaults?.governing_law || 'Republic of Kenya')
+  // C15: was 'Republic of Kenya'
+  const [govLaw, setGovLaw] = useState(defaults?.governing_law || 'United States')
 
   if (!permissions.manageWorkspace) return <Restricted />
 
@@ -348,9 +355,9 @@ function DefaultsTab({ defaults, permissions, onSave, saving }: any) {
 
 // ── GUARDIAN ──────────────────────────────────────────────────
 function GuardianTab({ workspace, permissions, onSave, saving }: any) {
-  const [sensitivity, setSensitivity] = useState(workspace?.guardian_sensitivity_tier || 'medium')
-  const [riskEnabled, setRiskEnabled] = useState(workspace?.proactive_risk_alerts_enabled ?? true)
-  const [riskThreshold, setRiskThreshold] = useState(String(workspace?.proactive_risk_threshold || 10000))
+  const [sensitivity,    setSensitivity]    = useState(workspace?.guardian_sensitivity_tier || 'medium')
+  const [riskEnabled,    setRiskEnabled]    = useState(workspace?.proactive_risk_alerts_enabled ?? true)
+  const [riskThreshold,  setRiskThreshold]  = useState(String(workspace?.proactive_risk_threshold || 10000))
 
   if (!permissions.manageWorkspace) return <Restricted />
 
@@ -360,7 +367,7 @@ function GuardianTab({ workspace, permissions, onSave, saving }: any) {
       <div className="settings-section">
         <div className="settings-section-title">Classification sensitivity</div>
         <p style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 18, lineHeight: 1.6 }}>
-          Controls how aggressively Guardian flags potential scope creep. Higher sensitivity catches more — and may produce more borderline flags.
+          Controls how aggressively Guardian flags potential scope creep.
         </p>
         <div className="fgrp">
           <label className="flbl">Sensitivity tier</label>
@@ -402,21 +409,61 @@ function GuardianTab({ workspace, permissions, onSave, saving }: any) {
 }
 
 // ── BILLING ───────────────────────────────────────────────────
+// C11: upgrade buttons now call /api/billing/upgrade and open Paystack inline.
+// Requires <Script src="https://js.paystack.co/v1/inline.js" strategy="beforeInteractive" />
+// in app/layout.tsx — add manually.
 function BillingTab({ workspace, billing, session, permissions }: any) {
-  const planTier   = workspace?.plan_tier || 'trial'
-  const planLabel  = PLAN_LABELS[planTier] || planTier
-  const limits     = PLAN_LIMITS[planTier]
-  const daysLeft   = workspace?.trial_ends_at
+  const planTier  = workspace?.plan_tier || 'trial'
+  const planLabel = PLAN_LABELS[planTier] || planTier
+  const daysLeft  = workspace?.trial_ends_at
     ? Math.max(0, Math.ceil((new Date(workspace.trial_ends_at).getTime() - Date.now()) / 86400000))
     : null
 
+  const [planInterval, setPlanInterval] = useState<'monthly' | 'annual'>('monthly')
+  const [upgrading,    setUpgrading]    = useState<string | null>(null)
+
   if (!permissions.manageBilling) return <Restricted />
+
+  async function handleUpgrade(planKey: string) {
+    setUpgrading(planKey)
+    try {
+      const res  = await fetch('/api/billing/upgrade', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ planKey, interval: planInterval }),
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error)
+
+      const handler = (window as any).PaystackPop?.setup({
+        key:      json.publicKey,
+        email:    json.email,
+        plan:     json.planCode,
+        currency: 'USD',
+        metadata: json.metadata,
+        callback: () => {
+          // DO NOT update plan here — wait for webhook (BUG-054)
+          alert('Payment processing. Your plan will update within a minute.')
+          window.location.reload()
+        },
+        onClose: () => {},
+      })
+      handler?.openIframe()
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : 'Could not open checkout')
+    } finally { setUpgrading(null) }
+  }
+
+  const plans = [
+    { key: 'solo',    name: 'Solo',    price: { monthly: '$39/mo',  annual: '$390/yr' },  seats: 1,  projects: 2 },
+    { key: 'starter', name: 'Starter', price: { monthly: '$99/mo',  annual: '$990/yr' },  seats: 2,  projects: 5 },
+    { key: 'pro',     name: 'Pro',     price: { monthly: '$249/mo', annual: '$2,490/yr' }, seats: 4,  projects: null },
+    { key: 'agency',  name: 'Agency',  price: { monthly: '$399/mo', annual: '$3,990/yr' }, seats: 10, projects: null },
+  ]
 
   return (
     <div>
       <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, marginBottom: 20 }}>Billing & plan</h2>
 
-      {/* Current plan */}
       <div className="settings-section" style={{ marginBottom: 14 }}>
         <div className="settings-section-title">Current plan</div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
@@ -429,16 +476,7 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
               <div style={{ fontSize: 12, color: 'var(--text-3)' }}>Renews {formatDate(billing.current_period_end)}</div>
             )}
           </div>
-          {planTier !== 'agency' && (
-            <button className="btn btn-primary btn-sm">Upgrade plan</button>
-          )}
         </div>
-        {billing?.payment_method_last4 && (
-          <div style={{ fontSize: 13, color: 'var(--text-2)' }}>
-            <i className="ti ti-credit-card" style={{ marginRight: 6 }} />
-            {billing.payment_method_type} ending {billing.payment_method_last4}
-          </div>
-        )}
         {billing?.cancels_at_period_end && (
           <div className="banner banner-warn" style={{ marginTop: 12 }}>
             <span>Subscription cancelled — access until {formatDate(billing.current_period_end)}</span>
@@ -446,32 +484,49 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
         )}
       </div>
 
-      {/* Plan tiers */}
       <div className="settings-section">
         <div className="settings-section-title">Available plans</div>
-        <div className="tier-cards">
-          {[
-            { key: 'solo',    name: 'Solo',    price: '$39/mo',  seats: 1,  projects: 2 },
-            { key: 'starter', name: 'Starter', price: '$99/mo',  seats: 2,  projects: 5 },
-            { key: 'pro',     name: 'Pro',     price: '$249/mo', seats: 4,  projects: null },
-            { key: 'agency',  name: 'Agency',  price: '$399/mo', seats: 10, projects: null },
-          ].map(plan => (
-            <div key={plan.key} className={`tier-card${planTier === plan.key ? ' current' : ''}`}>
-              <div className="tier-card-name">{plan.name}</div>
-              <div className="tier-card-price">{plan.price}</div>
-              <div className="tier-card-desc">
-                {plan.seats} seat{plan.seats > 1 ? 's' : ''} · {plan.projects ? `${plan.projects} projects` : 'Unlimited projects'}
-              </div>
-              {planTier !== plan.key && (
-                <button className="btn btn-ghost btn-sm" style={{ marginTop: 12, width: '100%', justifyContent: 'center' }}>
-                  {plan.key === 'solo' || PLAN_LIMITS[planTier]?.seats > PLAN_LIMITS[plan.key]?.seats ? 'Downgrade' : 'Upgrade'}
-                </button>
-              )}
-              {planTier === plan.key && (
-                <div style={{ marginTop: 12, fontSize: 11, color: 'var(--green)', fontWeight: 600 }}>Current plan</div>
-              )}
-            </div>
+
+        {/* C11: annual/monthly toggle */}
+        <div style={{ display: 'inline-flex', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', overflow: 'hidden', marginBottom: 20 }}>
+          {(['monthly', 'annual'] as const).map(iv => (
+            <button key={iv} onClick={() => setPlanInterval(iv)}
+              style={{
+                padding: '7px 16px', fontSize: 12, cursor: 'pointer', border: 'none',
+                background: planInterval === iv ? 'var(--green)' : 'transparent',
+                color: planInterval === iv ? '#FFF' : 'var(--text-2)',
+              }}>
+              {iv === 'monthly' ? 'Monthly' : 'Annual · 2 months free'}
+            </button>
           ))}
+        </div>
+
+        <div className="tier-cards">
+          {plans.map(plan => {
+            const isCurrent  = planTier === plan.key
+            const isLoading  = upgrading === plan.key
+            return (
+              <div key={plan.key} className={`tier-card${isCurrent ? ' current' : ''}`}>
+                <div className="tier-card-name">{plan.name}</div>
+                <div className="tier-card-price">{plan.price[planInterval]}</div>
+                <div className="tier-card-desc">
+                  {plan.seats} seat{plan.seats > 1 ? 's' : ''} · {plan.projects ? `${plan.projects} projects` : 'Unlimited projects'}
+                </div>
+                {isCurrent ? (
+                  <div style={{ marginTop: 12, fontSize: 11, color: 'var(--green)', fontWeight: 600 }}>Current plan</div>
+                ) : (
+                  <button className="btn btn-ghost btn-sm"
+                    style={{ marginTop: 12, width: '100%', justifyContent: 'center' }}
+                    disabled={!!upgrading}
+                    onClick={() => handleUpgrade(plan.key)}>
+                    {isLoading ? <span className="spin spin-dark" /> : (
+                      (PLAN_LIMITS[planTier]?.seats || 0) > (PLAN_LIMITS[plan.key]?.seats || 0) ? 'Downgrade' : 'Upgrade'
+                    )}
+                  </button>
+                )}
+              </div>
+            )
+          })}
         </div>
       </div>
     </div>
@@ -479,31 +534,38 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
 }
 
 // ── NOTIFICATIONS ─────────────────────────────────────────────
+// C10: toggles now have local state and respond to clicks.
+// Full persistence (notification_preferences table) is Phase 2.
 function NotificationsTab() {
+  const items = [
+    { key: 'sow_signed',    label: 'SOW signed by client',    desc: 'When your client signs a Statement of Work' },
+    { key: 'sow_declined',  label: 'SOW declined',            desc: 'When a client declines to sign' },
+    { key: 'co_accepted',   label: 'Change order accepted',   desc: 'When a client accepts a change order' },
+    { key: 'co_declined',   label: 'Change order declined',   desc: 'When a client declines a change order' },
+    { key: 'guardian_flag', label: 'Scope flag raised',       desc: 'When Guardian detects an out-of-scope request' },
+    { key: 'escalation',    label: 'Escalation',              desc: 'When a matter is escalated to you' },
+    { key: 'trial_ending',  label: 'Trial ending',            desc: '3 days before trial expires' },
+  ]
+
+  const [prefs, setPrefs] = useState<Record<string, boolean>>(
+    Object.fromEntries(items.map(i => [i.key, true]))
+  )
+
   return (
     <div>
       <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, marginBottom: 20 }}>Notifications</h2>
       <div className="settings-section">
         <div className="settings-section-title">Email notifications</div>
-        <p style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.6 }}>
-          Email notification preferences are managed per-event and can be configured by workspace owners.
-          Individual preferences can be overridden unless the workspace owner has locked a notification type.
-        </p>
-        {[
-          { label: 'SOW signed by client', desc: 'When your client signs a Statement of Work' },
-          { label: 'SOW declined', desc: 'When a client declines to sign' },
-          { label: 'Change order accepted', desc: 'When a client accepts a change order' },
-          { label: 'Change order declined', desc: 'When a client declines a change order' },
-          { label: 'Scope flag raised', desc: 'When Guardian detects an out-of-scope request' },
-          { label: 'Escalation', desc: 'When a matter is escalated to you' },
-          { label: 'Trial ending', desc: '3 days before trial expires' },
-        ].map(item => (
-          <div key={item.label} className="settings-row">
+        {items.map(item => (
+          <div key={item.key} className="settings-row">
             <div>
               <div className="settings-row-key">{item.label}</div>
               <div className="settings-row-desc">{item.desc}</div>
             </div>
-            <button className="toggle on" />
+            <button
+              className={`toggle ${prefs[item.key] ? 'on' : 'off'}`}
+              onClick={() => setPrefs(p => ({ ...p, [item.key]: !p[item.key] }))}
+            />
           </div>
         ))}
       </div>
@@ -521,10 +583,10 @@ function IntegrationsTab({ session }: { session: SessionUser }) {
       <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, marginBottom: 20 }}>Integrations</h2>
       <div className="settings-section">
         {[
-          { name: 'Slack',   icon: 'ti-brand-slack',  desc: 'Auto-create a channel per project for Guardian monitoring',  avail: canSlack, plan: 'Pro' },
-          { name: 'Zapier',  icon: 'ti-bolt',         desc: 'Connect ScopeGov to 5,000+ apps via Zapier',                avail: canZapier, plan: 'Pro' },
-          { name: 'HubSpot', icon: 'ti-circle-dashed', desc: 'Sync clients and project status with HubSpot CRM',          avail: session.planTier === 'agency', plan: 'Agency' },
-          { name: 'Google Drive', icon: 'ti-brand-google-drive', desc: 'Attach Drive files to SOWs and change orders',  avail: session.planTier === 'agency', plan: 'Agency' },
+          { name: 'Slack',        icon: 'ti-brand-slack',        desc: 'Auto-create a channel per project for Guardian monitoring', avail: canSlack,  plan: 'Pro' },
+          { name: 'Zapier',       icon: 'ti-bolt',               desc: 'Connect ScopeGov to 5,000+ apps via Zapier',               avail: canZapier, plan: 'Pro' },
+          { name: 'HubSpot',      icon: 'ti-circle-dashed',      desc: 'Sync clients and project status with HubSpot CRM',         avail: session.planTier === 'agency', plan: 'Agency' },
+          { name: 'Google Drive', icon: 'ti-brand-google-drive', desc: 'Attach Drive files to SOWs and change orders',             avail: session.planTier === 'agency', plan: 'Agency' },
         ].map(int => (
           <div key={int.name} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 0', borderBottom: '1px solid var(--surface-2)' }}>
             <div style={{ width: 36, height: 36, background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
@@ -534,13 +596,9 @@ function IntegrationsTab({ session }: { session: SessionUser }) {
               <div style={{ fontSize: 13, fontWeight: 600 }}>{int.name}</div>
               <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{int.desc}</div>
             </div>
-            {int.avail ? (
-              <button className="btn btn-ghost btn-sm">Connect</button>
-            ) : (
-              <span style={{ fontSize: 11, color: 'var(--text-3)', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 4, padding: '3px 8px' }}>
-                {int.plan}+ only
-              </span>
-            )}
+            {int.avail
+              ? <button className="btn btn-ghost btn-sm">Connect</button>
+              : <span style={{ fontSize: 11, color: 'var(--text-3)', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 4, padding: '3px 8px' }}>{int.plan}+ only</span>}
           </div>
         ))}
       </div>
@@ -549,14 +607,34 @@ function IntegrationsTab({ session }: { session: SessionUser }) {
 }
 
 // ── DANGER ZONE ───────────────────────────────────────────────
+// C12: delete button now wired to /api/workspace/delete
 function DangerTab({ workspace, permissions }: any) {
-  const [confirm, setConfirm] = useState('')
+  const router   = useRouter()
+  const supabase = createClient()
+  const [confirm,  setConfirm]  = useState('')
+  const [deleting, setDeleting] = useState(false)
+  const [err,      setErr]      = useState('')
 
   if (!permissions.manageWorkspace) return <Restricted />
+
+  async function handleDelete() {
+    if (confirm !== workspace?.name) return
+    setDeleting(true); setErr('')
+    try {
+      const res  = await fetch('/api/workspace/delete', { method: 'DELETE' })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error)
+      await supabase.auth.signOut()
+      router.push('/login?message=Workspace+deleted.')
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : 'Could not delete workspace')
+    } finally { setDeleting(false) }
+  }
 
   return (
     <div>
       <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, color: 'var(--red)', marginBottom: 20 }}>Danger zone</h2>
+      {err && <div className="auth-error" style={{ marginBottom: 14 }}>{err}</div>}
       <div className="settings-section" style={{ border: '1px solid #FECACA' }}>
         <div className="settings-section-title" style={{ color: 'var(--red)' }}>Delete workspace</div>
         <p style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.6, marginBottom: 16 }}>
@@ -566,10 +644,14 @@ function DangerTab({ workspace, permissions }: any) {
         </p>
         <div className="fgrp">
           <label className="flbl">Type <strong>{workspace?.name}</strong> to confirm</label>
-          <input className="finp err" value={confirm} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setConfirm(e.target.value)} placeholder={workspace?.name} />
+          <input className="finp err" value={confirm}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setConfirm(e.target.value)}
+            placeholder={workspace?.name} />
         </div>
-        <button className="btn btn-danger btn-sm" disabled={confirm !== workspace?.name}>
-          Delete workspace permanently
+        <button className="btn btn-danger btn-sm"
+          disabled={confirm !== workspace?.name || deleting}
+          onClick={handleDelete}>
+          {deleting ? <span className="spin" /> : 'Delete workspace permanently'}
         </button>
       </div>
     </div>

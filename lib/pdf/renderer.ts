@@ -1,7 +1,7 @@
 // lib/pdf/renderer.ts
-// BUG-013: Puppeteer uses Node.js APIs. This file must ONLY be imported
-// from routes with `export const runtime = 'nodejs'` as literal line 1.
-// Never import from edge runtime files.
+// BUG-013: This file must ONLY be imported from routes with
+// `export const runtime = 'nodejs'` as literal line 1.
+// C9: replaced puppeteer with puppeteer-core + @sparticuz/chromium for Vercel.
 
 export interface SowPdfData {
   agencyName:    string
@@ -38,7 +38,6 @@ export interface CoPdfData {
   partialNote?: string
 }
 
-// Carry-forward §10.3: logos must be base64 data URIs — never remote URLs in PDFs
 export async function resolveLogoDataUri(url: string | null | undefined): Promise<string | null> {
   if (!url) return null
   if (url.startsWith('data:')) return url
@@ -52,8 +51,8 @@ export async function resolveLogoDataUri(url: string | null | undefined): Promis
 }
 
 function buildSowHtml(data: SowPdfData, logoDataUri: string | null): string {
-  const c         = data.brandColour || '#1A5C3A'
-  const sections  = data.sections
+  const c        = data.brandColour || '#1A5C3A'
+  const sections = data.sections
     .filter(s => s.visible)
     .sort((a, b) => a.order - b.order)
 
@@ -66,7 +65,6 @@ function buildSowHtml(data: SowPdfData, logoDataUri: string | null): string {
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: -apple-system, 'Segoe UI', Arial, sans-serif; font-size: 11px; color: #1A1A1A; background: #FFF; line-height: 1.6; }
     .page { padding: 40px 48px; max-width: 760px; margin: 0 auto; }
-    /* Header */
     .header { display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 20px; margin-bottom: 24px; border-bottom: 2px solid ${c}; }
     .header-left h1 { font-family: Georgia, serif; font-size: 22px; font-weight: 400; color: ${c}; margin-bottom: 4px; }
     .header-left .meta { font-size: 10px; color: #909090; }
@@ -75,11 +73,9 @@ function buildSowHtml(data: SowPdfData, logoDataUri: string | null): string {
     .header-right { text-align: right; }
     .header-right .value { font-family: Georgia, serif; font-size: 20px; color: ${c}; }
     .header-right .value-label { font-size: 9px; color: #909090; text-transform: uppercase; letter-spacing: .06em; }
-    /* Parties box */
     .parties-box { background: #F9F8F5; border: 1px solid #E5E1D8; border-radius: 5px; padding: 14px 16px; margin-bottom: 24px; display: flex; gap: 40px; }
     .party h4 { font-size: 9px; text-transform: uppercase; letter-spacing: .07em; color: #909090; margin-bottom: 5px; }
     .party p { font-size: 12px; font-weight: 500; }
-    /* Sections */
     .section { margin-bottom: 22px; page-break-inside: avoid; }
     .section-title { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: #909090; margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid #E5E1D8; }
     .section-body { font-size: 11px; color: #333; line-height: 1.7; }
@@ -87,16 +83,13 @@ function buildSowHtml(data: SowPdfData, logoDataUri: string | null): string {
     .section-body ul, .section-body ol { padding-left: 18px; margin-bottom: 6px; }
     .section-body li { margin-bottom: 3px; }
     .section-body strong { font-weight: 600; }
-    /* Signature block */
     .sig-block { margin-top: 32px; padding-top: 20px; border-top: 1px solid #E5E1D8; display: flex; gap: 48px; }
     .sig-col { flex: 1; }
     .sig-label { font-size: 9px; color: #909090; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 12px; }
     .sig-line { border-bottom: 1px solid #1A1A1A; height: 32px; margin-bottom: 6px; }
     .sig-name { font-size: 11px; font-weight: 500; }
     .sig-date { font-size: 10px; color: #909090; }
-    /* Watermark */
     .watermark { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%) rotate(-30deg); font-family: Georgia, serif; font-size: 72px; color: rgba(0,0,0,0.04); pointer-events: none; white-space: nowrap; z-index: 9999; }
-    /* Footer */
     .footer { margin-top: 32px; padding-top: 12px; border-top: 1px solid #E5E1D8; font-size: 9px; color: #B0B0B0; display: flex; justify-content: space-between; }
     a { color: ${c}; text-decoration: none; }
   </style>
@@ -104,7 +97,6 @@ function buildSowHtml(data: SowPdfData, logoDataUri: string | null): string {
 <body>
   ${data.isWatermarked ? '<div class="watermark">DRAFT</div>' : ''}
   <div class="page">
-    <!-- Header -->
     <div class="header">
       <div class="header-left">
         <h1>Statement of Work</h1>
@@ -119,30 +111,14 @@ function buildSowHtml(data: SowPdfData, logoDataUri: string | null): string {
         <div class="value-label">Contract value</div>
       </div>
     </div>
-
-    <!-- Parties -->
     <div class="parties-box">
-      <div class="party">
-        <h4>Agency (Service Provider)</h4>
-        <p>${data.agencyName}</p>
-      </div>
-      <div class="party">
-        <h4>Client</h4>
-        <p>${data.clientName}</p>
-      </div>
+      <div class="party"><h4>Agency (Service Provider)</h4><p>${data.agencyName}</p></div>
+      <div class="party"><h4>Client</h4><p>${data.clientName}</p></div>
     </div>
-
-    <!-- Sections -->
     ${sections
       .filter(s => !['parties','signature'].includes(s.id))
-      .map(s => `
-      <div class="section">
-        <div class="section-title">${s.title}</div>
-        <div class="section-body">${s.content}</div>
-      </div>
-    `).join('')}
-
-    <!-- Signature block -->
+      .map(s => `<div class="section"><div class="section-title">${s.title}</div><div class="section-body">${s.content}</div></div>`)
+      .join('')}
     <div class="sig-block">
       <div class="sig-col">
         <div class="sig-label">Agency — ${data.agencyName}</div>
@@ -153,13 +129,10 @@ function buildSowHtml(data: SowPdfData, logoDataUri: string | null): string {
         <div class="sig-label">Client — ${data.clientName}</div>
         <div class="sig-line" style="${data.signedBy ? `border-bottom:2px solid ${c}` : ''}"></div>
         ${data.signedBy
-          ? `<div class="sig-name" style="color:${c};">${data.signedBy}</div>
-             <div class="sig-date">${data.signedAt ? new Date(data.signedAt).toLocaleDateString('en-GB',{day:'numeric',month:'long',year:'numeric'}) : ''}</div>`
+          ? `<div class="sig-name" style="color:${c};">${data.signedBy}</div><div class="sig-date">${data.signedAt ? new Date(data.signedAt).toLocaleDateString('en-GB',{day:'numeric',month:'long',year:'numeric'}) : ''}</div>`
           : `<div class="sig-name" style="color:#B0B0B0;">Not yet signed</div>`}
       </div>
     </div>
-
-    <!-- Footer -->
     <div class="footer">
       <span>Scope governance by <a href="https://scopegov.app">ScopeGov</a></span>
       <span>Generated ${new Date().toLocaleDateString('en-GB',{day:'numeric',month:'long',year:'numeric'})}</span>
@@ -171,7 +144,6 @@ function buildSowHtml(data: SowPdfData, logoDataUri: string | null): string {
 
 function buildCoHtml(data: CoPdfData, logoDataUri: string | null): string {
   const c = data.brandColour || '#1A5C3A'
-
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -219,9 +191,7 @@ function buildCoHtml(data: CoPdfData, logoDataUri: string | null): string {
         : `<div class="agency-text">${data.agencyName}</div>`}
     </div>
   </div>
-
   ${data.note ? `<div class="note-box">${data.note.replace(/<[^>]+>/g, ' ')}</div>` : ''}
-
   <table class="table">
     <thead>
       <tr>
@@ -242,24 +212,12 @@ function buildCoHtml(data: CoPdfData, logoDataUri: string | null): string {
       `).join('')}
     </tbody>
   </table>
-
   <div class="totals">
-    <div class="total-row">
-      <span>Subtotal</span>
-      <span class="total-val">${data.currency} ${data.subtotal.toLocaleString()}</span>
-    </div>
-    ${data.taxRate > 0 && !data.taxInclusive ? `
-    <div class="total-row">
-      <span>Tax (${data.taxRate}%)</span>
-      <span class="total-val">${data.currency} ${(data.subtotal * data.taxRate / 100).toLocaleString()}</span>
-    </div>` : ''}
+    <div class="total-row"><span>Subtotal</span><span class="total-val">${data.currency} ${data.subtotal.toLocaleString()}</span></div>
+    ${data.taxRate > 0 && !data.taxInclusive ? `<div class="total-row"><span>Tax (${data.taxRate}%)</span><span class="total-val">${data.currency} ${(data.subtotal * data.taxRate / 100).toLocaleString()}</span></div>` : ''}
     ${data.taxInclusive && data.taxRate > 0 ? `<div class="total-row meta">Tax included (${data.taxRate}%)</div>` : ''}
-    <div class="total-row grand">
-      <span>Total</span>
-      <span class="total-val" style="color:${c};">${data.currency} ${data.total.toLocaleString()}</span>
-    </div>
+    <div class="total-row grand"><span>Total</span><span class="total-val" style="color:${c};">${data.currency} ${data.total.toLocaleString()}</span></div>
   </div>
-
   <div class="sig-block">
     <div class="sig-col">
       <div class="sig-label">Agency — ${data.agencyName}</div>
@@ -270,12 +228,10 @@ function buildCoHtml(data: CoPdfData, logoDataUri: string | null): string {
       <div class="sig-label">Client — ${data.clientName}</div>
       <div class="sig-line" style="${data.acceptedBy ? `border-bottom:2px solid ${c}` : ''}"></div>
       ${data.acceptedBy
-        ? `<div class="sig-name" style="color:${c};">${data.acceptedBy}</div>
-           <div style="font-size:10px;color:#909090;">${data.acceptedAt ? new Date(data.acceptedAt).toLocaleDateString('en-GB',{day:'numeric',month:'long',year:'numeric'}) : ''}</div>`
+        ? `<div class="sig-name" style="color:${c};">${data.acceptedBy}</div><div style="font-size:10px;color:#909090;">${data.acceptedAt ? new Date(data.acceptedAt).toLocaleDateString('en-GB',{day:'numeric',month:'long',year:'numeric'}) : ''}</div>`
         : `<div class="sig-name" style="color:#B0B0B0;">Pending</div>`}
     </div>
   </div>
-
   <div class="footer">
     <span>Scope governance by <a href="https://scopegov.app">ScopeGov</a></span>
     <span>Generated ${new Date().toLocaleDateString('en-GB',{day:'numeric',month:'long',year:'numeric'})}</span>
@@ -297,22 +253,27 @@ export async function renderCoPdf(data: CoPdfData): Promise<Buffer> {
   return renderHtmlToPdf(html)
 }
 
+// C9: Use @sparticuz/chromium so Vercel serverless has a Chromium binary.
+// puppeteer-core does not bundle Chromium; @sparticuz/chromium provides it.
 async function renderHtmlToPdf(html: string): Promise<Buffer> {
-  // Dynamic import — Puppeteer only available in Node runtime
-  const puppeteer = await import('puppeteer')
-  const browser   = await puppeteer.default.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+  const chromium  = await import('@sparticuz/chromium')
+  const puppeteer = await import('puppeteer-core')
+
+  const browser = await puppeteer.default.launch({
+    args:            chromium.default.args,
+    defaultViewport: chromium.default.defaultViewport,
+    executablePath:  await chromium.default.executablePath(),
+    headless:        chromium.default.headless,
   })
+
   try {
     const page = await browser.newPage()
     await page.setContent(html, { waitUntil: 'networkidle0', timeout: 30000 })
     const pdf  = await page.pdf({
-      format:           'A4',
-      printBackground:  true,
-      margin:           { top: '0', right: '0', bottom: '0', left: '0' },
+      format:          'A4',
+      printBackground: true,
+      margin:          { top: '0', right: '0', bottom: '0', left: '0' },
     })
-    // BUG-041: renderPdf returns Buffer not ArrayBuffer
     return Buffer.from(pdf)
   } finally {
     await browser.close()

@@ -1,3 +1,7 @@
+// components/team/TeamClient.tsx
+// C8:  pending invites now show invited_email (invitee may not have a users row yet)
+// C13: role edit modal added; pencil button wired
+
 'use client'
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
@@ -5,28 +9,35 @@ import type { SessionUser } from '@/lib/supabase/types'
 import { initials, avatarColour, formatDate, ALL_PERMISSIONS } from '@/lib/utils/format'
 
 interface Props {
-  members:       any[]
+  members:        any[]
   pendingInvites: any[]
-  roles:         any[]
-  session:       SessionUser
-  canInvite:     boolean
+  roles:          any[]
+  session:        SessionUser
+  canInvite:      boolean
   canManageRoles: boolean
-  workspaceId:   string
+  workspaceId:    string
 }
 
 export default function TeamClient({ members, pendingInvites, roles, session, canInvite, canManageRoles, workspaceId }: Props) {
   const router  = useRouter()
   const [tab,   setTab]   = useState<'members' | 'roles'>('members')
   const [modal, setModal] = useState<'invite' | 'role' | null>(null)
+
+  // Invite
   const [inviteEmail,  setInviteEmail]  = useState('')
   const [inviteRoleId, setInviteRoleId] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [error,   setError]   = useState('')
-  const [roleName, setRoleName]   = useState('')
-  const [roleDesc, setRoleDesc]   = useState('')
+
+  // New role
+  const [roleName,  setRoleName]  = useState('')
+  const [roleDesc,  setRoleDesc]  = useState('')
   const [rolePerms, setRolePerms] = useState<Record<string, boolean>>({})
 
-  const totalSeats = members.length + pendingInvites.length
+  // C13: Edit role
+  const [editRole,  setEditRole]  = useState<any | null>(null)
+  const [editPerms, setEditPerms] = useState<Record<string, boolean>>({})
+
+  const [loading, setLoading] = useState(false)
+  const [error,   setError]   = useState('')
 
   async function handleInvite(e: React.FormEvent) {
     e.preventDefault()
@@ -68,9 +79,26 @@ export default function TeamClient({ members, pendingInvites, roles, session, ca
     } finally { setLoading(false) }
   }
 
+  // C13: Save edited role permissions
+  async function handleEditRole() {
+    if (!editRole) return
+    setLoading(true); setError('')
+    try {
+      const res = await fetch(`/api/team/roles/${editRole.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ permissions: editPerms }),
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error)
+      setEditRole(null)
+      router.refresh()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to save role')
+    } finally { setLoading(false) }
+  }
+
   return (
     <div className="page" style={{ maxWidth: 960 }}>
-      {/* Header */}
       <div className="page-hd">
         <div>
           <h1 className="page-title">Team</h1>
@@ -85,7 +113,6 @@ export default function TeamClient({ members, pendingInvites, roles, session, ca
         </div>
       </div>
 
-      {/* Tabs */}
       <div className="tabbar" style={{ marginBottom: 24 }}>
         <button className={`tabi${tab === 'members' ? ' act' : ''}`} onClick={() => setTab('members')}>
           Members ({members.length + pendingInvites.length})
@@ -95,18 +122,15 @@ export default function TeamClient({ members, pendingInvites, roles, session, ca
         </button>
       </div>
 
-      {/* Members tab */}
       {tab === 'members' && (
         <>
-          {/* Active members */}
           <div className="member-grid" style={{ marginBottom: 24 }}>
             {members.map((m: any) => {
-              const u         = m.users
-              const isMe      = u?.id === session.id
-              const name      = u?.name || u?.email || 'Unknown'
-              const colour    = avatarColour(name)
-              const isOwner   = m.effective_permissions?.MANAGE_WORKSPACE_SETTINGS === true
-
+              const u      = m.users
+              const isMe   = u?.id === session.id
+              const name   = u?.name || u?.email || 'Unknown'
+              const colour = avatarColour(name)
+              const isOwner = m.effective_permissions?.MANAGE_WORKSPACE_SETTINGS === true
               return (
                 <div key={m.id} className="member-card">
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
@@ -132,8 +156,6 @@ export default function TeamClient({ members, pendingInvites, roles, session, ca
                 </div>
               )
             })}
-
-            {/* Invite slot */}
             {canInvite && (
               <div className="invite-slot" onClick={() => setModal('invite')}>
                 <i className="ti ti-user-plus" style={{ fontSize: 28, color: 'var(--green)', marginBottom: 10 }} />
@@ -143,7 +165,6 @@ export default function TeamClient({ members, pendingInvites, roles, session, ca
             )}
           </div>
 
-          {/* Pending invites */}
           {pendingInvites.length > 0 && (
             <div>
               <div className="sec-hd"><div className="sec-title">Pending invitations ({pendingInvites.length})</div></div>
@@ -153,13 +174,13 @@ export default function TeamClient({ members, pendingInvites, roles, session, ca
                   <tbody>
                     {pendingInvites.map((m: any) => (
                       <tr key={m.id}>
-                        <td className="td-primary">{m.users?.email || '—'}</td>
+                        {/* C8: fall back to invited_email — invitee won't have a users row yet */}
+                        <td className="td-primary">{m.users?.email || m.invited_email || '—'}</td>
                         <td style={{ color: 'var(--text-2)', fontSize: 12 }}>{m.roles?.name || 'Default'}</td>
                         <td style={{ color: 'var(--text-3)', fontSize: 12 }}>{formatDate(m.invited_at)}</td>
-                        <td style={{ color: 'var(--text-3)', fontSize: 12 }}>{formatDate(m.invite_token_expires_at)}</td>
-                        <td>
-                          <span className="pill pill-amber pill-sm">Pending</span>
-                        </td>
+                        {/* C8: invite_token_expires_at now selected in server component */}
+                        <td style={{ color: 'var(--text-3)', fontSize: 12 }}>{m.invite_token_expires_at ? formatDate(m.invite_token_expires_at) : '—'}</td>
+                        <td><span className="pill pill-amber pill-sm">Pending</span></td>
                       </tr>
                     ))}
                   </tbody>
@@ -170,7 +191,6 @@ export default function TeamClient({ members, pendingInvites, roles, session, ca
         </>
       )}
 
-      {/* Roles tab */}
       {tab === 'roles' && (
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
@@ -189,8 +209,7 @@ export default function TeamClient({ members, pendingInvites, roles, session, ca
             <table className="gov-table" style={{ width: '100%' }}>
               <thead>
                 <tr>
-                  <th>Role name</th>
-                  <th>Description</th>
+                  <th>Role name</th><th>Description</th>
                   <th style={{ textAlign: 'center' }}>Members</th>
                   <th style={{ textAlign: 'center' }}>Permissions</th>
                   <th />
@@ -198,8 +217,8 @@ export default function TeamClient({ members, pendingInvites, roles, session, ca
               </thead>
               <tbody>
                 {roles.map((r: any) => {
-                  const memberCount  = members.filter((m: any) => m.role_id === r.id).length
-                  const permCount    = Object.values(r.permissions || {}).filter(Boolean).length
+                  const memberCount = members.filter((m: any) => m.role_id === r.id).length
+                  const permCount   = Object.values(r.permissions || {}).filter(Boolean).length
                   return (
                     <tr key={r.id}>
                       <td>
@@ -212,8 +231,12 @@ export default function TeamClient({ members, pendingInvites, roles, session, ca
                         <span className="pill pill-green pill-sm">{permCount} / 24</span>
                       </td>
                       <td>
+                        {/* C13: pencil now opens edit modal */}
                         {!r.is_default && canManageRoles && (
-                          <button className="btn-icon">
+                          <button className="btn-icon" onClick={() => {
+                            setEditRole(r)
+                            setEditPerms(r.permissions || {})
+                          }}>
                             <i className="ti ti-pencil" style={{ fontSize: 13 }} />
                           </button>
                         )}
@@ -243,7 +266,7 @@ export default function TeamClient({ members, pendingInvites, roles, session, ca
                   placeholder="colleague@youragency.com" />
               </div>
               <div className="fgrp">
-                <label className="flbl">Role <span className="fhint">— optional, assigns on acceptance</span></label>
+                <label className="flbl">Role <span className="fhint">— optional</span></label>
                 <select className="finp" value={inviteRoleId}
                   onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setInviteRoleId(e.target.value)}>
                   <option value="">Default role</option>
@@ -305,6 +328,34 @@ export default function TeamClient({ members, pendingInvites, roles, session, ca
                 </button>
               </div>
             </form>
+          </div>
+        </>
+      )}
+
+      {/* C13: Edit role modal */}
+      {editRole && (
+        <>
+          <div className="modal-bg" onClick={() => setEditRole(null)} />
+          <div className="modal modal-lg">
+            <h2 className="modal-title">Edit role — {editRole.name}</h2>
+            {error && <div className="auth-error">{error}</div>}
+            <div style={{ maxHeight: 320, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: 14, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 16 }}>
+              {ALL_PERMISSIONS.map(perm => (
+                <label key={perm} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 12 }}>
+                  <input type="checkbox" checked={!!editPerms[perm]}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                      setEditPerms(p => ({ ...p, [perm]: e.target.checked }))}
+                    style={{ accentColor: 'var(--green)' }} />
+                  {perm.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase())}
+                </label>
+              ))}
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-ghost" onClick={() => setEditRole(null)}>Cancel</button>
+              <button className="btn btn-primary" onClick={handleEditRole} disabled={loading}>
+                {loading ? <span className="spin" /> : 'Save changes'}
+              </button>
+            </div>
           </div>
         </>
       )}
