@@ -1,6 +1,7 @@
 // app/invite/[token]/page.tsx
-// FIX 3A: 800ms delay before signInWithPassword (Supabase needs time to propagate admin-created user)
-// FIX 3B: 'already_used' mode when token is cleared (second attempt after partial success)
+// Fix: useEffect now checks json.alreadyAccepted (not just r.status === 404)
+// to route into the 'already_used' screen. Previously only a 404 triggered
+// that screen — an active-status 200 response fell through to generic 'expired'.
 
 'use client'
 import { useState, useEffect } from 'react'
@@ -25,10 +26,16 @@ export default function InvitePage() {
     fetch(`/api/team/invite/${token}`)
       .then(async r => {
         const json = await r.json()
-        // FIX 3B: 404 means token was cleared — first signup succeeded but signIn failed.
-        // Show a helpful "already used" screen instead of the generic expired screen.
-        if (r.status === 404) { setMode('already_used'); return }
+
+        // Fix: check alreadyAccepted flag OR 404 — not just 404.
+        // A cleared invite_token (status === 'active') returns 200 with
+        // alreadyAccepted: true, which previously fell through to 'expired'.
+        if (r.status === 404 || json.alreadyAccepted) {
+          setMode('already_used')
+          return
+        }
         if (!r.ok || json.expired) { setMode('expired'); return }
+
         setInvite(json.invite)
         setMode(json.hasAccount ? 'existing-user' : 'new-user')
       })
@@ -48,8 +55,7 @@ export default function InvitePage() {
       const json = await res.json()
       if (!res.ok) throw new Error(json.error)
 
-      // FIX 3A: Supabase needs ~800ms to propagate a newly admin-created user
-      // before signInWithPassword will succeed.
+      // Wait for Supabase to propagate the newly admin-created user
       await new Promise(resolve => setTimeout(resolve, 800))
 
       const { error: signInErr } = await supabase.auth.signInWithPassword({
@@ -122,7 +128,7 @@ export default function InvitePage() {
             </div>
             <h2 className="auth-form-title">Invite link expired</h2>
             <p style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.7, margin: '8px 0 24px' }}>
-              This invite link has expired or has already been used. Ask the workspace owner to send a fresh invitation.
+              This invite link has expired or is no longer valid. Ask the workspace owner to send a fresh invitation.
             </p>
             <Link href="/login"><button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'center' }}>Sign in instead</button></Link>
           </div>
@@ -131,7 +137,6 @@ export default function InvitePage() {
     )
   }
 
-  // FIX 3B: shown when token was cleared (first attempt created the user but signIn failed)
   if (mode === 'already_used') {
     return (
       <div className="auth-root"><PanelLeft />
@@ -142,7 +147,7 @@ export default function InvitePage() {
             </div>
             <h2 className="auth-form-title">Invite link already used</h2>
             <p style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.7, marginBottom: 24 }}>
-              This invite link has already been accepted. If you just signed up, sign in below to access your workspace.
+              This invite link has already been accepted. If you signed up already, sign in below to access your workspace.
             </p>
             <Link href="/login">
               <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center' }}>

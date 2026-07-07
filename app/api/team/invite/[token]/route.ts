@@ -1,7 +1,10 @@
+// app/api/team/invite/[token]/route.ts
+// Fix: added distinct `alreadyAccepted: true` flag for status === 'active'
+// so the frontend can show "already used, sign in" instead of generic "expired".
+
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 
-// GET /api/team/invite/[token] — validate token, return invite details
 export async function GET(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
     const { token } = await params
@@ -20,23 +23,23 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
     if (!member) return NextResponse.json({ error: 'Invalid invite token' }, { status: 404 })
 
-    if (member.status === 'active')
-      return NextResponse.json({ error: 'Invite already accepted', expired: true })
-
-    if (member.status === 'deactivated')
+    // Fix: status === 'active' means signup already succeeded (invite_token
+    // was cleared) — distinguish this from a genuinely expired/deactivated
+    // token so the frontend can send the user to sign in instead of showing
+    // a dead-end "expired" message.
+    if (member.status === 'active') {
+      return NextResponse.json({ error: 'Invite already accepted', expired: true, alreadyAccepted: true })
+    }
+    if (member.status === 'deactivated') {
       return NextResponse.json({ error: 'Invite no longer valid', expired: true })
+    }
 
     const expires = new Date(member.invite_token_expires_at)
-    if (expires < new Date())
+    if (expires < new Date()) {
       return NextResponse.json({ error: 'Invite expired', expired: true })
+    }
 
-    // BUG-FIX: previously read a non-existent `member.user_email` field,
-    // which was always undefined. The invited email is stored on
-    // `invited_email` for pending invites (set at invite-creation time).
     let inviteEmail = member.invited_email || ''
-
-    // If somehow user_id is set but invited_email wasn't (e.g. legacy rows),
-    // fall back to looking up the user's email directly.
     if (!inviteEmail && member.user_id) {
       const { data: u } = await (service as any)
         .from('users').select('email').eq('id', member.user_id).single()
