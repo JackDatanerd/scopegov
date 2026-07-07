@@ -1,8 +1,8 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   experimental: {
-    // C9: puppeteer replaced with puppeteer-core + @sparticuz/chromium for Vercel
-    serverComponentsExternalPackages: ['puppeteer-core', '@sparticuz/chromium'],
+    // FIX 4B: @react-pdf/renderer replaces puppeteer-core + @sparticuz/chromium
+    serverComponentsExternalPackages: ['@react-pdf/renderer'],
   },
   images: {
     remotePatterns: [

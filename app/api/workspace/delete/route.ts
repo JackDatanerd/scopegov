@@ -1,4 +1,6 @@
-// app/api/workspace/delete/route.ts  (NEW FILE — C12)
+// app/api/workspace/delete/route.ts
+// FIX 6: After soft-deleting workspace, also deactivate all member rows so
+// no one can access the deleted workspace on next login.
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
@@ -13,7 +15,7 @@ export async function DELETE() {
 
     const service = createServiceClient()
 
-    // Block deletion if any signed SOW exists (legal hold)
+    // Block deletion if any signed SOW exists
     const { count } = await (service as any)
       .from('sow_documents')
       .select('id', { count: 'exact', head: true })
@@ -26,13 +28,22 @@ export async function DELETE() {
       }, { status: 409 })
     }
 
-    // Soft delete — 7-year retention for legal compliance (workspace-purge cron handles hard delete)
-    const { error } = await (service as any)
+    const now = new Date().toISOString()
+
+    // Soft delete workspace
+    await (service as any)
       .from('workspaces')
-      .update({ deleted_at: new Date().toISOString() })
+      .update({ deleted_at: now })
       .eq('id', session.workspaceId)
 
-    if (error) throw new Error(error.message)
+    // FIX 6: Deactivate all memberships so getSession() finds no active row
+    // on next login — prevents the deleted workspace from being accessible.
+    await (service as any)
+      .from('workspace_members')
+      .update({ status: 'deactivated' })
+      .eq('workspace_id', session.workspaceId)
+      .neq('status', 'deactivated')
+
     return NextResponse.json({ ok: true })
   } catch (err) {
     return NextResponse.json(

@@ -1,3 +1,9 @@
+// app/(app)/settings/page.tsx
+// FIX 2: .single() → .maybeSingle() on defaults query.
+// When duplicate rows existed, .single() returned a 406 error and data was null,
+// making the UI show hardcoded defaults even after a successful save.
+// .maybeSingle() returns null gracefully when no row exists, never 406.
+
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
@@ -14,26 +20,27 @@ export default async function SettingsPage() {
   const [wsRes, billingRes, defaultsRes] = await Promise.all([
     (service as any)
       .from('workspaces')
-      .select('id,name,slug,agency_name,brand_colour,logo_storage_path,industry,currency,timezone,sow_language,governing_law,proactive_risk_threshold,proactive_risk_alerts_enabled,plan_tier,trial_ends_at,created_at')
+      .select('id,name,slug,agency_name,brand_colour,logo_storage_path,industry,currency,timezone,sow_language,governing_law,proactive_risk_threshold,proactive_risk_alerts_enabled,guardian_sensitivity_tier,plan_tier,trial_ends_at,created_at')
       .eq('id', session.workspaceId)
       .single(),
     (service as any)
       .from('billing')
       .select('paystack_customer_code,paystack_subscription_code,cancels_at_period_end,current_period_end,payment_method_last4,payment_method_type')
       .eq('workspace_id', session.workspaceId)
-      .single(),
+      .maybeSingle(), // billing row may not exist on trial
     (service as any)
       .from('workspace_defaults')
       .select('*')
       .eq('workspace_id', session.workspaceId)
       .is('project_type', null)
-      .single(),
+      .maybeSingle(), // FIX 2: was .single() — returns null gracefully, never 406
   ])
 
-  // Logo public URL
   let logoUrl: string | null = null
   if (wsRes.data?.logo_storage_path) {
-    const { data: u } = await (service as any).storage.from('logos').getPublicUrl(wsRes.data.logo_storage_path)
+    const { data: u } = await (service as any).storage
+      .from('logos')
+      .getPublicUrl(wsRes.data.logo_storage_path)
     logoUrl = u?.publicUrl || null
   }
 

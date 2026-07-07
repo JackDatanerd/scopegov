@@ -1,7 +1,13 @@
 // lib/pdf/renderer.ts
-// BUG-013: This file must ONLY be imported from routes with
-// `export const runtime = 'nodejs'` as literal line 1.
-// C9: replaced puppeteer with puppeteer-core + @sparticuz/chromium for Vercel.
+// FIX 4B: Replaced Puppeteer/Chromium with @react-pdf/renderer.
+// Pure Node.js — no browser, no timeout risk on Vercel Hobby.
+// npm install @react-pdf/renderer
+
+import React from 'react'
+import {
+  Document, Page, View, Text, Image,
+  StyleSheet, renderToBuffer,
+} from '@react-pdf/renderer'
 
 export interface SowPdfData {
   agencyName:    string
@@ -38,6 +44,7 @@ export interface CoPdfData {
   partialNote?: string
 }
 
+// Resolve logo URL to base64 data URI for embedding in the PDF
 export async function resolveLogoDataUri(url: string | null | undefined): Promise<string | null> {
   if (!url) return null
   if (url.startsWith('data:')) return url
@@ -50,232 +57,275 @@ export async function resolveLogoDataUri(url: string | null | undefined): Promis
   } catch { return null }
 }
 
-function buildSowHtml(data: SowPdfData, logoDataUri: string | null): string {
-  const c        = data.brandColour || '#1A5C3A'
+// Strip HTML tags from editor content for PDF text rendering
+function stripHtml(html: string): string {
+  return html
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n')
+    .replace(/<\/li>/gi, '\n')
+    .replace(/<li[^>]*>/gi, '• ')
+    .replace(/<strong[^>]*>([\s\S]*?)<\/strong>/gi, '$1')
+    .replace(/<em[^>]*>([\s\S]*?)<\/em>/gi, '$1')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+function fmtDate(iso: string) {
+  return new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
+}
+
+function fmtMoney(n: number) {
+  return n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
+}
+
+// ── SOW PDF ──────────────────────────────────────────────────
+
+function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) {
+  const c = data.brandColour || '#1A5C3A'
+
+  const s = StyleSheet.create({
+    page:       { fontFamily: 'Helvetica', fontSize: 10, color: '#1A1A1A', padding: '40 48' },
+    // Header
+    header:     { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: `2 solid ${c}`, paddingBottom: 14, marginBottom: 20 },
+    h1:         { fontFamily: 'Helvetica-Bold', fontSize: 18, color: c, marginBottom: 3 },
+    meta:       { fontSize: 8.5, color: '#909090' },
+    logo:       { maxHeight: 42, maxWidth: 100, objectFit: 'contain' },
+    agencyText: { fontFamily: 'Helvetica-Bold', fontSize: 11, color: c },
+    valueLabel: { fontSize: 8, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.5, textAlign: 'right' },
+    value:      { fontSize: 16, color: c, textAlign: 'right', fontFamily: 'Helvetica-Bold' },
+    // Parties
+    partiesBox: { flexDirection: 'row', gap: 32, backgroundColor: '#F9F8F5', border: `1 solid #E5E1D8`, borderRadius: 4, padding: '10 14', marginBottom: 20 },
+    partyLabel: { fontSize: 8, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 },
+    partyName:  { fontFamily: 'Helvetica-Bold', fontSize: 11 },
+    // Sections
+    section:    { marginBottom: 16 },
+    secTitle:   { fontSize: 8, fontFamily: 'Helvetica-Bold', color: '#909090', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 6, borderBottom: `1 solid #E5E1D8`, paddingBottom: 3 },
+    body:       { fontSize: 10, color: '#333', lineHeight: 1.65 },
+    // Signature
+    sigBlock:   { flexDirection: 'row', gap: 40, marginTop: 28, paddingTop: 16, borderTop: `1 solid #E5E1D8` },
+    sigCol:     { flex: 1 },
+    sigLabel:   { fontSize: 8, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 },
+    sigLine:    { borderBottom: `1 solid #1A1A1A`, height: 28, marginBottom: 4 },
+    sigName:    { fontFamily: 'Helvetica-Bold', fontSize: 10 },
+    sigDate:    { fontSize: 9, color: '#909090' },
+    // Watermark
+    watermark:  { position: 'absolute', top: '45%', left: '20%', fontSize: 64, color: 'rgba(0,0,0,0.04)', transform: 'rotate(-30deg)' },
+    // Footer
+    footer:     { flexDirection: 'row', justifyContent: 'space-between', marginTop: 28, paddingTop: 10, borderTop: `1 solid #E5E1D8`, fontSize: 8, color: '#B0B0B0' },
+  })
+
   const sections = data.sections
-    .filter(s => s.visible)
+    .filter(sec => sec.visible && !['parties','signature'].includes(sec.id))
     .sort((a, b) => a.order - b.order)
 
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, 'Segoe UI', Arial, sans-serif; font-size: 11px; color: #1A1A1A; background: #FFF; line-height: 1.6; }
-    .page { padding: 40px 48px; max-width: 760px; margin: 0 auto; }
-    .header { display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 20px; margin-bottom: 24px; border-bottom: 2px solid ${c}; }
-    .header-left h1 { font-family: Georgia, serif; font-size: 22px; font-weight: 400; color: ${c}; margin-bottom: 4px; }
-    .header-left .meta { font-size: 10px; color: #909090; }
-    .logo { max-height: 50px; max-width: 120px; object-fit: contain; }
-    .agency-text { font-size: 14px; font-weight: 600; color: ${c}; }
-    .header-right { text-align: right; }
-    .header-right .value { font-family: Georgia, serif; font-size: 20px; color: ${c}; }
-    .header-right .value-label { font-size: 9px; color: #909090; text-transform: uppercase; letter-spacing: .06em; }
-    .parties-box { background: #F9F8F5; border: 1px solid #E5E1D8; border-radius: 5px; padding: 14px 16px; margin-bottom: 24px; display: flex; gap: 40px; }
-    .party h4 { font-size: 9px; text-transform: uppercase; letter-spacing: .07em; color: #909090; margin-bottom: 5px; }
-    .party p { font-size: 12px; font-weight: 500; }
-    .section { margin-bottom: 22px; page-break-inside: avoid; }
-    .section-title { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: #909090; margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid #E5E1D8; }
-    .section-body { font-size: 11px; color: #333; line-height: 1.7; }
-    .section-body p { margin-bottom: 6px; }
-    .section-body ul, .section-body ol { padding-left: 18px; margin-bottom: 6px; }
-    .section-body li { margin-bottom: 3px; }
-    .section-body strong { font-weight: 600; }
-    .sig-block { margin-top: 32px; padding-top: 20px; border-top: 1px solid #E5E1D8; display: flex; gap: 48px; }
-    .sig-col { flex: 1; }
-    .sig-label { font-size: 9px; color: #909090; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 12px; }
-    .sig-line { border-bottom: 1px solid #1A1A1A; height: 32px; margin-bottom: 6px; }
-    .sig-name { font-size: 11px; font-weight: 500; }
-    .sig-date { font-size: 10px; color: #909090; }
-    .watermark { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%) rotate(-30deg); font-family: Georgia, serif; font-size: 72px; color: rgba(0,0,0,0.04); pointer-events: none; white-space: nowrap; z-index: 9999; }
-    .footer { margin-top: 32px; padding-top: 12px; border-top: 1px solid #E5E1D8; font-size: 9px; color: #B0B0B0; display: flex; justify-content: space-between; }
-    a { color: ${c}; text-decoration: none; }
-  </style>
-</head>
-<body>
-  ${data.isWatermarked ? '<div class="watermark">DRAFT</div>' : ''}
-  <div class="page">
-    <div class="header">
-      <div class="header-left">
-        <h1>Statement of Work</h1>
-        <div class="meta">Version ${data.version} · ${data.projectName}</div>
-        ${data.signedAt ? `<div class="meta" style="color:${c};margin-top:3px;">Signed ${new Date(data.signedAt).toLocaleDateString('en-GB',{day:'numeric',month:'long',year:'numeric'})}</div>` : ''}
-      </div>
-      <div class="header-right">
-        ${logoDataUri
-          ? `<img src="${logoDataUri}" class="logo" alt="${data.agencyName}" style="margin-bottom:8px;display:block;margin-left:auto;">`
-          : `<div class="agency-text">${data.agencyName}</div>`}
-        <div class="value">${data.currency} ${data.contractValue.toLocaleString()}</div>
-        <div class="value-label">Contract value</div>
-      </div>
-    </div>
-    <div class="parties-box">
-      <div class="party"><h4>Agency (Service Provider)</h4><p>${data.agencyName}</p></div>
-      <div class="party"><h4>Client</h4><p>${data.clientName}</p></div>
-    </div>
-    ${sections
-      .filter(s => !['parties','signature'].includes(s.id))
-      .map(s => `<div class="section"><div class="section-title">${s.title}</div><div class="section-body">${s.content}</div></div>`)
-      .join('')}
-    <div class="sig-block">
-      <div class="sig-col">
-        <div class="sig-label">Agency — ${data.agencyName}</div>
-        <div class="sig-line"></div>
-        <div class="sig-name">${data.agencyName}</div>
-      </div>
-      <div class="sig-col">
-        <div class="sig-label">Client — ${data.clientName}</div>
-        <div class="sig-line" style="${data.signedBy ? `border-bottom:2px solid ${c}` : ''}"></div>
-        ${data.signedBy
-          ? `<div class="sig-name" style="color:${c};">${data.signedBy}</div><div class="sig-date">${data.signedAt ? new Date(data.signedAt).toLocaleDateString('en-GB',{day:'numeric',month:'long',year:'numeric'}) : ''}</div>`
-          : `<div class="sig-name" style="color:#B0B0B0;">Not yet signed</div>`}
-      </div>
-    </div>
-    <div class="footer">
-      <span>Scope governance by <a href="https://scopegov.app">ScopeGov</a></span>
-      <span>Generated ${new Date().toLocaleDateString('en-GB',{day:'numeric',month:'long',year:'numeric'})}</span>
-    </div>
-  </div>
-</body>
-</html>`
+  return (
+    <Document>
+      <Page size="A4" style={s.page}>
+        {data.isWatermarked && <Text style={s.watermark}>DRAFT</Text>}
+
+        {/* Header */}
+        <View style={s.header}>
+          <View>
+            <Text style={s.h1}>Statement of Work</Text>
+            <Text style={s.meta}>Version {data.version} · {data.projectName}</Text>
+            {data.signedAt && <Text style={[s.meta, { color: c, marginTop: 2 }]}>Signed {fmtDate(data.signedAt)}</Text>}
+          </View>
+          <View style={{ alignItems: 'flex-end' }}>
+            {logo
+              ? <Image src={logo} style={s.logo} />
+              : <Text style={s.agencyText}>{data.agencyName}</Text>}
+            <Text style={s.value}>{data.currency} {fmtMoney(data.contractValue)}</Text>
+            <Text style={s.valueLabel}>Contract value</Text>
+          </View>
+        </View>
+
+        {/* Parties */}
+        <View style={s.partiesBox}>
+          <View style={{ flex: 1 }}>
+            <Text style={s.partyLabel}>Agency (Service Provider)</Text>
+            <Text style={s.partyName}>{data.agencyName}</Text>
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={s.partyLabel}>Client</Text>
+            <Text style={s.partyName}>{data.clientName}</Text>
+          </View>
+        </View>
+
+        {/* Sections */}
+        {sections.map(sec => (
+          <View key={sec.id} style={s.section} wrap={false}>
+            <Text style={s.secTitle}>{sec.title}</Text>
+            <Text style={s.body}>{stripHtml(sec.content)}</Text>
+          </View>
+        ))}
+
+        {/* Signature block */}
+        <View style={s.sigBlock}>
+          <View style={s.sigCol}>
+            <Text style={s.sigLabel}>Agency — {data.agencyName}</Text>
+            <View style={s.sigLine} />
+            <Text style={s.sigName}>{data.agencyName}</Text>
+          </View>
+          <View style={s.sigCol}>
+            <Text style={s.sigLabel}>Client — {data.clientName}</Text>
+            <View style={[s.sigLine, data.signedBy ? { borderBottom: `2 solid ${c}` } : {}]} />
+            {data.signedBy
+              ? <>
+                  <Text style={[s.sigName, { color: c }]}>{data.signedBy}</Text>
+                  {data.signedAt && <Text style={s.sigDate}>{fmtDate(data.signedAt)}</Text>}
+                </>
+              : <Text style={[s.sigName, { color: '#B0B0B0' }]}>Not yet signed</Text>}
+          </View>
+        </View>
+
+        {/* Footer */}
+        <View style={s.footer}>
+          <Text>Scope governance by ScopeGov · scopegov.app</Text>
+          <Text>Generated {fmtDate(new Date().toISOString())}</Text>
+        </View>
+      </Page>
+    </Document>
+  )
 }
 
-function buildCoHtml(data: CoPdfData, logoDataUri: string | null): string {
+// ── CO PDF ───────────────────────────────────────────────────
+
+function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
   const c = data.brandColour || '#1A5C3A'
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, 'Segoe UI', Arial, sans-serif; font-size: 11px; color: #1A1A1A; background: #FFF; }
-    .page { padding: 40px 48px; max-width: 760px; margin: 0 auto; }
-    .header { display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 20px; margin-bottom: 24px; border-bottom: 2px solid ${c}; }
-    .header-left h1 { font-family: Georgia, serif; font-size: 20px; font-weight: 400; color: ${c}; margin-bottom: 4px; }
-    .meta { font-size: 10px; color: #909090; }
-    .logo { max-height: 44px; max-width: 110px; object-fit: contain; }
-    .agency-text { font-size: 13px; font-weight: 600; color: ${c}; }
-    .table { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
-    .table th { font-size: 9px; text-transform: uppercase; letter-spacing: .07em; color: #909090; text-align: left; padding: 8px 0; border-bottom: 1px solid #E5E1D8; }
-    .table th.right { text-align: right; }
-    .table td { padding: 10px 0; border-bottom: 1px solid #F2F0EA; font-size: 11px; vertical-align: top; line-height: 1.5; }
-    .table td.right { text-align: right; font-family: 'Courier New', monospace; }
-    .totals { margin-top: 12px; padding-top: 12px; border-top: 1px solid #E5E1D8; }
-    .total-row { display: flex; justify-content: space-between; font-size: 11px; padding: 3px 0; }
-    .total-row.grand { font-size: 14px; font-weight: 600; padding-top: 8px; border-top: 1px solid #1A1A1A; margin-top: 4px; }
-    .total-val { font-family: 'Courier New', monospace; }
-    .note-box { background: #F9F8F5; border: 1px solid #E5E1D8; border-radius: 5px; padding: 12px 14px; margin-bottom: 20px; font-size: 11px; line-height: 1.65; }
-    .sig-block { margin-top: 32px; padding-top: 20px; border-top: 1px solid #E5E1D8; display: flex; gap: 40px; }
-    .sig-col { flex: 1; }
-    .sig-label { font-size: 9px; color: #909090; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 12px; }
-    .sig-line { border-bottom: 1px solid #1A1A1A; height: 30px; margin-bottom: 5px; }
-    .sig-name { font-size: 11px; font-weight: 500; }
-    .footer { margin-top: 28px; padding-top: 10px; border-top: 1px solid #E5E1D8; font-size: 9px; color: #B0B0B0; display: flex; justify-content: space-between; }
-    a { color: ${c}; }
-  </style>
-</head>
-<body>
-<div class="page">
-  <div class="header">
-    <div class="header-left">
-      <h1>Change Order</h1>
-      <div class="meta">${data.coTitle}</div>
-      <div class="meta" style="margin-top:2px;">${data.projectName} · ${data.agencyName} → ${data.clientName}</div>
-      ${data.acceptedAt ? `<div class="meta" style="color:${c};margin-top:3px;">Accepted ${new Date(data.acceptedAt).toLocaleDateString('en-GB',{day:'numeric',month:'long',year:'numeric'})}</div>` : ''}
-    </div>
-    <div style="text-align:right;">
-      ${logoDataUri
-        ? `<img src="${logoDataUri}" class="logo" style="margin-bottom:6px;display:block;margin-left:auto;">`
-        : `<div class="agency-text">${data.agencyName}</div>`}
-    </div>
-  </div>
-  ${data.note ? `<div class="note-box">${data.note.replace(/<[^>]+>/g, ' ')}</div>` : ''}
-  <table class="table">
-    <thead>
-      <tr>
-        <th>Description</th>
-        <th style="width:50px;text-align:center;">Qty</th>
-        <th style="width:90px;text-align:right;">Rate</th>
-        <th style="width:90px;" class="right">Total</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${data.lineItems.map(item => `
-        <tr>
-          <td>${item.description}</td>
-          <td style="text-align:center;">${item.quantity}</td>
-          <td class="right">${data.currency} ${item.rate.toLocaleString()}</td>
-          <td class="right">${data.currency} ${item.total.toLocaleString()}</td>
-        </tr>
-      `).join('')}
-    </tbody>
-  </table>
-  <div class="totals">
-    <div class="total-row"><span>Subtotal</span><span class="total-val">${data.currency} ${data.subtotal.toLocaleString()}</span></div>
-    ${data.taxRate > 0 && !data.taxInclusive ? `<div class="total-row"><span>Tax (${data.taxRate}%)</span><span class="total-val">${data.currency} ${(data.subtotal * data.taxRate / 100).toLocaleString()}</span></div>` : ''}
-    ${data.taxInclusive && data.taxRate > 0 ? `<div class="total-row meta">Tax included (${data.taxRate}%)</div>` : ''}
-    <div class="total-row grand"><span>Total</span><span class="total-val" style="color:${c};">${data.currency} ${data.total.toLocaleString()}</span></div>
-  </div>
-  <div class="sig-block">
-    <div class="sig-col">
-      <div class="sig-label">Agency — ${data.agencyName}</div>
-      <div class="sig-line"></div>
-      <div class="sig-name">${data.agencyName}</div>
-    </div>
-    <div class="sig-col">
-      <div class="sig-label">Client — ${data.clientName}</div>
-      <div class="sig-line" style="${data.acceptedBy ? `border-bottom:2px solid ${c}` : ''}"></div>
-      ${data.acceptedBy
-        ? `<div class="sig-name" style="color:${c};">${data.acceptedBy}</div><div style="font-size:10px;color:#909090;">${data.acceptedAt ? new Date(data.acceptedAt).toLocaleDateString('en-GB',{day:'numeric',month:'long',year:'numeric'}) : ''}</div>`
-        : `<div class="sig-name" style="color:#B0B0B0;">Pending</div>`}
-    </div>
-  </div>
-  <div class="footer">
-    <span>Scope governance by <a href="https://scopegov.app">ScopeGov</a></span>
-    <span>Generated ${new Date().toLocaleDateString('en-GB',{day:'numeric',month:'long',year:'numeric'})}</span>
-  </div>
-</div>
-</body>
-</html>`
+
+  const s = StyleSheet.create({
+    page:      { fontFamily: 'Helvetica', fontSize: 10, color: '#1A1A1A', padding: '40 48' },
+    header:    { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: `2 solid ${c}`, paddingBottom: 14, marginBottom: 20 },
+    h1:        { fontFamily: 'Helvetica-Bold', fontSize: 16, color: c, marginBottom: 3 },
+    meta:      { fontSize: 8.5, color: '#909090' },
+    logo:      { maxHeight: 38, maxWidth: 90, objectFit: 'contain' },
+    agencyText:{ fontFamily: 'Helvetica-Bold', fontSize: 11, color: c },
+    noteBox:   { backgroundColor: '#F9F8F5', border: `1 solid #E5E1D8`, borderRadius: 4, padding: '10 14', marginBottom: 18, fontSize: 10, color: '#333', lineHeight: 1.6 },
+    // Table
+    tableHdr:  { flexDirection: 'row', borderBottom: `1 solid #E5E1D8`, paddingBottom: 5, marginBottom: 2 },
+    th:        { fontSize: 8, fontFamily: 'Helvetica-Bold', color: '#909090', textTransform: 'uppercase', letterSpacing: 0.5 },
+    row:       { flexDirection: 'row', borderBottom: `1 solid #F2F0EA`, paddingVertical: 8 },
+    td:        { fontSize: 10, color: '#1A1A1A' },
+    mono:      { fontFamily: 'Courier', fontSize: 9.5 },
+    // Totals
+    totals:    { marginTop: 10, paddingTop: 10, borderTop: `1 solid #E5E1D8` },
+    totalRow:  { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 2, fontSize: 10 },
+    grandRow:  { flexDirection: 'row', justifyContent: 'space-between', paddingTop: 6, marginTop: 4, borderTop: `1 solid #1A1A1A`, fontSize: 13, fontFamily: 'Helvetica-Bold' },
+    // Sig
+    sigBlock:  { flexDirection: 'row', gap: 40, marginTop: 28, paddingTop: 16, borderTop: `1 solid #E5E1D8` },
+    sigCol:    { flex: 1 },
+    sigLabel:  { fontSize: 8, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 },
+    sigLine:   { borderBottom: `1 solid #1A1A1A`, height: 26, marginBottom: 4 },
+    sigName:   { fontFamily: 'Helvetica-Bold', fontSize: 10 },
+    footer:    { flexDirection: 'row', justifyContent: 'space-between', marginTop: 24, paddingTop: 10, borderTop: `1 solid #E5E1D8`, fontSize: 8, color: '#B0B0B0' },
+  })
+
+  const tax = data.taxRate > 0 && !data.taxInclusive
+    ? data.subtotal * data.taxRate / 100
+    : 0
+
+  return (
+    <Document>
+      <Page size="A4" style={s.page}>
+        {/* Header */}
+        <View style={s.header}>
+          <View>
+            <Text style={s.h1}>Change Order</Text>
+            <Text style={s.meta}>{data.coTitle}</Text>
+            <Text style={s.meta}>{data.projectName} · {data.agencyName} → {data.clientName}</Text>
+            {data.acceptedAt && <Text style={[s.meta, { color: c, marginTop: 2 }]}>Accepted {fmtDate(data.acceptedAt)}</Text>}
+          </View>
+          <View style={{ alignItems: 'flex-end' }}>
+            {logo
+              ? <Image src={logo} style={s.logo} />
+              : <Text style={s.agencyText}>{data.agencyName}</Text>}
+          </View>
+        </View>
+
+        {/* Note */}
+        {data.note && <View style={s.noteBox}><Text>{stripHtml(data.note)}</Text></View>}
+
+        {/* Line items table */}
+        <View style={s.tableHdr}>
+          <Text style={[s.th, { flex: 1 }]}>Description</Text>
+          <Text style={[s.th, { width: 40, textAlign: 'center' }]}>Qty</Text>
+          <Text style={[s.th, { width: 80, textAlign: 'right' }]}>Rate</Text>
+          <Text style={[s.th, { width: 80, textAlign: 'right' }]}>Total</Text>
+        </View>
+        {data.lineItems.map((item, i) => (
+          <View key={i} style={s.row}>
+            <Text style={[s.td, { flex: 1 }]}>{item.description}</Text>
+            <Text style={[s.td, s.mono, { width: 40, textAlign: 'center' }]}>{item.quantity}</Text>
+            <Text style={[s.td, s.mono, { width: 80, textAlign: 'right' }]}>{data.currency} {fmtMoney(item.rate)}</Text>
+            <Text style={[s.td, s.mono, { width: 80, textAlign: 'right' }]}>{data.currency} {fmtMoney(item.total)}</Text>
+          </View>
+        ))}
+
+        {/* Totals */}
+        <View style={s.totals}>
+          <View style={s.totalRow}>
+            <Text>Subtotal</Text>
+            <Text style={s.mono}>{data.currency} {fmtMoney(data.subtotal)}</Text>
+          </View>
+          {tax > 0 && (
+            <View style={s.totalRow}>
+              <Text>Tax ({data.taxRate}%)</Text>
+              <Text style={s.mono}>{data.currency} {fmtMoney(tax)}</Text>
+            </View>
+          )}
+          {data.taxInclusive && data.taxRate > 0 && (
+            <View style={s.totalRow}>
+              <Text style={{ color: '#909090' }}>Tax included ({data.taxRate}%)</Text>
+            </View>
+          )}
+          <View style={s.grandRow}>
+            <Text>Total</Text>
+            <Text style={[s.mono, { color: c }]}>{data.currency} {fmtMoney(data.total)}</Text>
+          </View>
+        </View>
+
+        {/* Signature block */}
+        <View style={s.sigBlock}>
+          <View style={s.sigCol}>
+            <Text style={s.sigLabel}>Agency — {data.agencyName}</Text>
+            <View style={s.sigLine} />
+            <Text style={s.sigName}>{data.agencyName}</Text>
+          </View>
+          <View style={s.sigCol}>
+            <Text style={s.sigLabel}>Client — {data.clientName}</Text>
+            <View style={[s.sigLine, data.acceptedBy ? { borderBottom: `2 solid ${c}` } : {}]} />
+            {data.acceptedBy
+              ? <>
+                  <Text style={[s.sigName, { color: c }]}>{data.acceptedBy}</Text>
+                  {data.acceptedAt && <Text style={{ fontSize: 9, color: '#909090' }}>{fmtDate(data.acceptedAt)}</Text>}
+                </>
+              : <Text style={[s.sigName, { color: '#B0B0B0' }]}>Pending</Text>}
+          </View>
+        </View>
+
+        <View style={s.footer}>
+          <Text>Scope governance by ScopeGov · scopegov.app</Text>
+          <Text>Generated {fmtDate(new Date().toISOString())}</Text>
+        </View>
+      </Page>
+    </Document>
+  )
 }
+
+// ── Public exports (same interface as before) ─────────────────
 
 export async function renderSowPdf(data: SowPdfData): Promise<Buffer> {
-  const logoDataUri = await resolveLogoDataUri(data.agencyLogoUrl)
-  const html        = buildSowHtml(data, logoDataUri)
-  return renderHtmlToPdf(html)
+  const logo = await resolveLogoDataUri(data.agencyLogoUrl)
+  return renderToBuffer(<SowDocument data={data} logo={logo} />)
 }
 
 export async function renderCoPdf(data: CoPdfData): Promise<Buffer> {
-  const logoDataUri = await resolveLogoDataUri(data.logoUrl)
-  const html        = buildCoHtml(data, logoDataUri)
-  return renderHtmlToPdf(html)
-}
-
-// C9: Use @sparticuz/chromium so Vercel serverless has a Chromium binary.
-// puppeteer-core does not bundle Chromium; @sparticuz/chromium provides it.
-async function renderHtmlToPdf(html: string): Promise<Buffer> {
-  const chromium  = await import('@sparticuz/chromium')
-  const puppeteer = await import('puppeteer-core')
-
-  const browser = await puppeteer.default.launch({
-    args:            chromium.default.args,
-    defaultViewport: chromium.default.defaultViewport,
-    executablePath:  await chromium.default.executablePath(),
-    headless:        chromium.default.headless,
-  })
-
-  try {
-    const page = await browser.newPage()
-    await page.setContent(html, { waitUntil: 'networkidle0', timeout: 30000 })
-    const pdf  = await page.pdf({
-      format:          'A4',
-      printBackground: true,
-      margin:          { top: '0', right: '0', bottom: '0', left: '0' },
-    })
-    return Buffer.from(pdf)
-  } finally {
-    await browser.close()
-  }
+  const logo = await resolveLogoDataUri(data.logoUrl)
+  return renderToBuffer(<CoDocument data={data} logo={logo} />)
 }

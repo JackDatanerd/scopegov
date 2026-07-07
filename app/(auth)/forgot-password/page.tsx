@@ -1,13 +1,19 @@
+// app/(auth)/forgot-password/page.tsx
+// FIX 1: redirectTo now points to callback?next=/reset-password so the PKCE
+// code exchange happens there and a valid session is established before
+// landing on /reset-password. Previously it pointed directly at /reset-password
+// which never called exchangeCodeForSession → no session → bounce to /login.
+
 'use client'
 import { useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import Link from 'next/link'
 
 export default function ForgotPasswordPage() {
-  const [email, setEmail] = useState('')
+  const [email,   setEmail]   = useState('')
   const [loading, setLoading] = useState(false)
-  const [sent, setSent] = useState(false)
-  const [error, setError] = useState('')
+  const [sent,    setSent]    = useState(false)
+  const [error,   setError]   = useState('')
   const supabase = createClient()
 
   async function handleSubmit(e: React.FormEvent) {
@@ -16,10 +22,14 @@ export default function ForgotPasswordPage() {
     try {
       // Spec §16.2: same response regardless of whether email exists
       await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: `${window.location.origin}/reset-password`,
+        // FIX 1: route through the callback so exchangeCodeForSession runs
+        // and sets the auth cookie before the user reaches /reset-password.
+        redirectTo: `${window.location.origin}/api/auth/callback?next=/reset-password`,
       })
       setSent(true)
-    } catch { setError('Something went wrong. Please try again.') } finally { setLoading(false) }
+    } catch {
+      setError('Something went wrong. Please try again.')
+    } finally { setLoading(false) }
   }
 
   return (

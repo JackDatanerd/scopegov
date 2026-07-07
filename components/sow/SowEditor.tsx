@@ -1,3 +1,7 @@
+// components/sow/SowEditor.tsx
+// FIX 4A: Preview PDF href changed from hardcoded /api/pdf/sow/draft to
+// /api/pdf/sow/${sowId} — was always returning 404 for the actual SOW.
+
 'use client'
 import { useState, useCallback, useRef } from 'react'
 import { useEditor, EditorContent } from '@tiptap/react'
@@ -10,26 +14,26 @@ interface Section {
 }
 
 interface Props {
-  sowId:      string
-  sections:   Section[]
-  isLocked:   boolean
-  onSend?:    () => void
-  canSend:    boolean
-  canEdit:    boolean
+  sowId:   string
+  sections: Section[]
+  isLocked: boolean
+  onSend?:  () => void
+  canSend:  boolean
+  canEdit:  boolean
 }
 
-const REQUIRED_SECTIONS  = ['parties', 'deliverables', 'payment', 'signature']
+const REQUIRED_SECTIONS = ['parties', 'deliverables', 'payment', 'signature']
 const SECTION_ORDER = ['parties','overview','deliverables','oos','assumptions','timeline','payment','revisions','ip','confidentiality','termination','governing_law','dispute','signature']
 
 export default function SowEditor({ sowId, sections: initialSections, isLocked, onSend, canSend, canEdit }: Props) {
-  const [sections,     setSections]     = useState<Section[]>(
+  const [sections,      setSections]      = useState<Section[]>(
     [...initialSections].sort((a, b) => a.order - b.order)
   )
-  const [activeSection, setActiveSection] = useState<string>(sections[0]?.id || 'overview')
-  const [saveStatus,    setSaveStatus]    = useState<'idle'|'saving'|'saved'|'error'>('idle')
-  const [regenLoading,  setRegenLoading]  = useState<string | null>(null)
+  const [activeSection,    setActiveSection]    = useState<string>(sections[0]?.id || 'overview')
+  const [saveStatus,       setSaveStatus]       = useState<'idle'|'saving'|'saved'|'error'>('idle')
+  const [regenLoading,     setRegenLoading]     = useState<string | null>(null)
   const [regenInstruction, setRegenInstruction] = useState('')
-  const [showRegen,     setShowRegen]     = useState<string | null>(null)
+  const [showRegen,        setShowRegen]        = useState<string | null>(null)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const current = sections.find(s => s.id === activeSection) || sections[0]
@@ -49,7 +53,6 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
     },
   }, [activeSection])
 
-  // Switch section
   const switchSection = useCallback((sectionId: string) => {
     const target = sections.find(s => s.id === sectionId)
     if (!target) return
@@ -82,9 +85,9 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({
           sowId, sectionId,
-          sectionTitle: sec?.title,
+          sectionTitle:   sec?.title,
           currentContent: sec?.content || '',
-          instruction: regenInstruction.trim() || null,
+          instruction:    regenInstruction.trim() || null,
         }),
       })
       const json = await res.json()
@@ -95,9 +98,7 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
       setShowRegen(null); setRegenInstruction('')
     } catch (err) {
       console.error('Regen failed:', err)
-    } finally {
-      setRegenLoading(null)
-    }
+    } finally { setRegenLoading(null) }
   }
 
   async function toggleVisibility(sectionId: string) {
@@ -114,16 +115,18 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
   const toolbar = editor ? (
     <div className="editor-toolbar">
       {[
-        { label: 'B', cmd: () => editor.chain().focus().toggleBold().run(),           active: editor.isActive('bold') },
-        { label: 'I', cmd: () => editor.chain().focus().toggleItalic().run(),         active: editor.isActive('italic') },
-        { label: '≡', cmd: () => editor.chain().focus().toggleBulletList().run(),     active: editor.isActive('bulletList') },
-        { label: '1.', cmd: () => editor.chain().focus().toggleOrderedList().run(),   active: editor.isActive('orderedList') },
+        { label: 'B',  cmd: () => editor.chain().focus().toggleBold().run(),         active: editor.isActive('bold') },
+        { label: 'I',  cmd: () => editor.chain().focus().toggleItalic().run(),       active: editor.isActive('italic') },
+        { label: '≡',  cmd: () => editor.chain().focus().toggleBulletList().run(),   active: editor.isActive('bulletList') },
+        { label: '1.', cmd: () => editor.chain().focus().toggleOrderedList().run(),  active: editor.isActive('orderedList') },
       ].map((btn, i) => (
         <button key={i} type="button"
           className={btn.active ? 'is-active' : ''}
           onClick={btn.cmd}
-          style={{ fontWeight: btn.label === 'B' ? 700 : btn.label === 'I' ? 'normal' : 400,
-            fontStyle: btn.label === 'I' ? 'italic' : 'normal' }}>
+          style={{
+            fontWeight:  btn.label === 'B' ? 700 : 400,
+            fontStyle:   btn.label === 'I' ? 'italic' : 'normal',
+          }}>
           {btn.label}
         </button>
       ))}
@@ -162,17 +165,15 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
           .map((section) => {
             const s = section!
             return (
-              <button
-                key={s.id}
-                onClick={() => switchSection(s.id)}
+              <button key={s.id} onClick={() => switchSection(s.id)}
                 style={{
                   display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                   width: '100%', padding: '7px 14px', border: 'none',
                   borderLeft: `2px solid ${activeSection === s.id ? 'var(--green)' : 'transparent'}`,
-                  color: !s.visible ? 'var(--text-4)' :
-                         activeSection === s.id ? 'var(--green)' : 'var(--text-2)',
+                  color: !s.visible ? 'var(--text-4)' : activeSection === s.id ? 'var(--green)' : 'var(--text-2)',
                   fontSize: 12, fontWeight: activeSection === s.id ? 500 : 400,
-                  cursor: 'pointer', textAlign: 'left', background: activeSection === s.id ? 'var(--green-lt)' : 'transparent',
+                  cursor: 'pointer', textAlign: 'left',
+                  background: activeSection === s.id ? 'var(--green-lt)' : 'transparent',
                 }}>
                 <span>{s.title}</span>
                 {REQUIRED_SECTIONS.includes(s.id)
@@ -187,7 +188,6 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
 
       {/* Editor */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        {/* Section header */}
         <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div>
             <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{current?.title}</div>
@@ -200,11 +200,9 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
           )}
         </div>
 
-        {/* Regen panel */}
         {showRegen === current?.id && !isLocked && (
           <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--border)', background: 'var(--surface-2)', display: 'flex', gap: 8 }}>
-            <input
-              className="finp"
+            <input className="finp"
               style={{ flex: 1, fontSize: 12, padding: '6px 10px' }}
               placeholder="Optional: instruction (e.g. 'make it more concise', 'add 2 more deliverables')"
               value={regenInstruction}
@@ -214,13 +212,17 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
             <button className="btn btn-primary btn-sm"
               onClick={() => current && handleRegen(current.id)}
               disabled={!!regenLoading}>
-              {regenLoading === current?.id ? <><span className="spin" /> Improving…</> : <><i className="ti ti-wand" style={{ fontSize: 12 }} /> Improve</>}
+              {regenLoading === current?.id
+                ? <><span className="spin" /> Improving…</>
+                : <><i className="ti ti-wand" style={{ fontSize: 12 }} /> Improve</>}
             </button>
-            <button className="btn btn-ghost btn-sm" onClick={() => { setShowRegen(null); setRegenInstruction('') }}>Cancel</button>
+            <button className="btn btn-ghost btn-sm"
+              onClick={() => { setShowRegen(null); setRegenInstruction('') }}>
+              Cancel
+            </button>
           </div>
         )}
 
-        {/* TipTap editor */}
         <div className="editor-wrap" style={{ flex: 1, border: 'none', borderRadius: 0, display: 'flex', flexDirection: 'column' }}>
           {!isLocked && canEdit && toolbar}
           {editor && (
@@ -238,10 +240,10 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
           )}
         </div>
 
-        {/* Send CTA */}
         {!isLocked && canSend && (
           <div style={{ padding: '14px 16px', borderTop: '1px solid var(--border)', background: 'var(--surface-2)', display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
-            <a href={`/api/pdf/sow/draft`} target="_blank" className="btn btn-ghost btn-sm">
+            {/* FIX 4A: was hardcoded /api/pdf/sow/draft — always 404 */}
+            <a href={`/api/pdf/sow/${sowId}`} target="_blank" className="btn btn-ghost btn-sm">
               <i className="ti ti-download" style={{ fontSize: 12 }} /> Preview PDF
             </a>
             {onSend && (

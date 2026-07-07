@@ -1,6 +1,7 @@
 // components/team/TeamClient.tsx
-// C8:  pending invites now show invited_email (invitee may not have a users row yet)
-// C13: role edit modal added; pencil button wired
+// FIX 3C: pending invite table shows invited_email, expiry, + Resend / Revoke buttons
+// FIX 3D: invited_email shown first (invitee won't have a users row yet)
+// C13: role edit modal (carried forward from previous batch)
 
 'use client'
 import { useState } from 'react'
@@ -22,20 +23,13 @@ export default function TeamClient({ members, pendingInvites, roles, session, ca
   const router  = useRouter()
   const [tab,   setTab]   = useState<'members' | 'roles'>('members')
   const [modal, setModal] = useState<'invite' | 'role' | null>(null)
-
-  // Invite
   const [inviteEmail,  setInviteEmail]  = useState('')
   const [inviteRoleId, setInviteRoleId] = useState('')
-
-  // New role
   const [roleName,  setRoleName]  = useState('')
   const [roleDesc,  setRoleDesc]  = useState('')
   const [rolePerms, setRolePerms] = useState<Record<string, boolean>>({})
-
-  // C13: Edit role
   const [editRole,  setEditRole]  = useState<any | null>(null)
   const [editPerms, setEditPerms] = useState<Record<string, boolean>>({})
-
   const [loading, setLoading] = useState(false)
   const [error,   setError]   = useState('')
 
@@ -62,6 +56,28 @@ export default function TeamClient({ members, pendingInvites, roles, session, ca
     if (res.ok) router.refresh()
   }
 
+  async function handleResendInvite(m: any) {
+    const email = m.invited_email || m.users?.email
+    if (!email) return
+    // Deactivate old invite row then fire a fresh invite
+    await fetch(`/api/team/${m.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'deactivated' }),
+    })
+    await fetch('/api/team/invite', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, roleId: m.role_id || null, workspaceId }),
+    })
+    router.refresh()
+  }
+
+  async function handleRevokeInvite(memberId: string) {
+    await fetch(`/api/team/${memberId}`, { method: 'DELETE' })
+    router.refresh()
+  }
+
   async function handleCreateRole(e: React.FormEvent) {
     e.preventDefault()
     setLoading(true); setError('')
@@ -79,7 +95,6 @@ export default function TeamClient({ members, pendingInvites, roles, session, ca
     } finally { setLoading(false) }
   }
 
-  // C13: Save edited role permissions
   async function handleEditRole() {
     if (!editRole) return
     setLoading(true); setError('')
@@ -90,8 +105,7 @@ export default function TeamClient({ members, pendingInvites, roles, session, ca
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error)
-      setEditRole(null)
-      router.refresh()
+      setEditRole(null); router.refresh()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to save role')
     } finally { setLoading(false) }
@@ -142,12 +156,9 @@ export default function TeamClient({ members, pendingInvites, roles, session, ca
                   </div>
                   <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 12 }}>{u?.email}</div>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
-                      Joined {m.joined_at ? formatDate(m.joined_at) : '—'}
-                    </span>
+                    <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Joined {m.joined_at ? formatDate(m.joined_at) : '—'}</span>
                     {!isMe && !isOwner && canInvite && (
-                      <button className="btn btn-ghost btn-xs"
-                        style={{ color: 'var(--red)', borderColor: '#FECACA' }}
+                      <button className="btn btn-ghost btn-xs" style={{ color: 'var(--red)', borderColor: '#FECACA' }}
                         onClick={() => handleDeactivate(m.id, name)}>
                         Deactivate
                       </button>
@@ -170,17 +181,34 @@ export default function TeamClient({ members, pendingInvites, roles, session, ca
               <div className="sec-hd"><div className="sec-title">Pending invitations ({pendingInvites.length})</div></div>
               <div className="surface" style={{ overflow: 'hidden' }}>
                 <table className="gov-table" style={{ width: '100%' }}>
-                  <thead><tr><th>Email</th><th>Role</th><th>Invited</th><th>Expires</th><th /></tr></thead>
+                  <thead>
+                    <tr>
+                      <th>Email</th><th>Role</th><th>Invited</th><th>Expires</th><th />
+                    </tr>
+                  </thead>
                   <tbody>
                     {pendingInvites.map((m: any) => (
                       <tr key={m.id}>
-                        {/* C8: fall back to invited_email — invitee won't have a users row yet */}
-                        <td className="td-primary">{m.users?.email || m.invited_email || '—'}</td>
+                        {/* FIX 3C: invited_email first — users row doesn't exist yet for new invitees */}
+                        <td className="td-primary">{m.invited_email || m.users?.email || '—'}</td>
                         <td style={{ color: 'var(--text-2)', fontSize: 12 }}>{m.roles?.name || 'Default'}</td>
                         <td style={{ color: 'var(--text-3)', fontSize: 12 }}>{formatDate(m.invited_at)}</td>
-                        {/* C8: invite_token_expires_at now selected in server component */}
-                        <td style={{ color: 'var(--text-3)', fontSize: 12 }}>{m.invite_token_expires_at ? formatDate(m.invite_token_expires_at) : '—'}</td>
-                        <td><span className="pill pill-amber pill-sm">Pending</span></td>
+                        <td style={{ color: 'var(--text-3)', fontSize: 12 }}>
+                          {m.invite_token_expires_at ? formatDate(m.invite_token_expires_at) : '—'}
+                        </td>
+                        <td>
+                          <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                            <span className="pill pill-amber pill-sm">Pending</span>
+                            {/* FIX 3D: Resend and Revoke actions */}
+                            <button className="btn btn-ghost btn-xs" onClick={() => handleResendInvite(m)}>
+                              Resend
+                            </button>
+                            <button className="btn btn-ghost btn-xs" style={{ color: 'var(--red)' }}
+                              onClick={() => handleRevokeInvite(m.id)}>
+                              Revoke
+                            </button>
+                          </div>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -211,8 +239,7 @@ export default function TeamClient({ members, pendingInvites, roles, session, ca
                 <tr>
                   <th>Role name</th><th>Description</th>
                   <th style={{ textAlign: 'center' }}>Members</th>
-                  <th style={{ textAlign: 'center' }}>Permissions</th>
-                  <th />
+                  <th style={{ textAlign: 'center' }}>Permissions</th><th />
                 </tr>
               </thead>
               <tbody>
@@ -231,12 +258,8 @@ export default function TeamClient({ members, pendingInvites, roles, session, ca
                         <span className="pill pill-green pill-sm">{permCount} / 24</span>
                       </td>
                       <td>
-                        {/* C13: pencil now opens edit modal */}
                         {!r.is_default && canManageRoles && (
-                          <button className="btn-icon" onClick={() => {
-                            setEditRole(r)
-                            setEditPerms(r.permissions || {})
-                          }}>
+                          <button className="btn-icon" onClick={() => { setEditRole(r); setEditPerms(r.permissions || {}) }}>
                             <i className="ti ti-pencil" style={{ fontSize: 13 }} />
                           </button>
                         )}
@@ -290,7 +313,6 @@ export default function TeamClient({ members, pendingInvites, roles, session, ca
           <div className="modal-bg" onClick={() => setModal(null)} />
           <div className="modal modal-lg">
             <h2 className="modal-title">New role</h2>
-            <p className="modal-sub">Define a custom permission set for this workspace.</p>
             {error && <div className="auth-error">{error}</div>}
             <form onSubmit={handleCreateRole}>
               <div className="f2">
@@ -313,8 +335,7 @@ export default function TeamClient({ members, pendingInvites, roles, session, ca
                   {ALL_PERMISSIONS.map(perm => (
                     <label key={perm} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 12 }}>
                       <input type="checkbox" checked={!!rolePerms[perm]}
-                        onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                          setRolePerms(prev => ({ ...prev, [perm]: e.target.checked }))}
+                        onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRolePerms(prev => ({ ...prev, [perm]: e.target.checked }))}
                         style={{ accentColor: 'var(--green)' }} />
                       {perm.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase())}
                     </label>
@@ -332,7 +353,7 @@ export default function TeamClient({ members, pendingInvites, roles, session, ca
         </>
       )}
 
-      {/* C13: Edit role modal */}
+      {/* Edit role modal */}
       {editRole && (
         <>
           <div className="modal-bg" onClick={() => setEditRole(null)} />
@@ -343,8 +364,7 @@ export default function TeamClient({ members, pendingInvites, roles, session, ca
               {ALL_PERMISSIONS.map(perm => (
                 <label key={perm} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 12 }}>
                   <input type="checkbox" checked={!!editPerms[perm]}
-                    onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                      setEditPerms(p => ({ ...p, [perm]: e.target.checked }))}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditPerms(p => ({ ...p, [perm]: e.target.checked }))}
                     style={{ accentColor: 'var(--green)' }} />
                   {perm.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase())}
                 </label>
