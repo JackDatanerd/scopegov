@@ -1,7 +1,7 @@
 // app/api/workspace/defaults/route.ts
-// FIX 2: onConflict now uses 'workspace_id' (the partial unique index column),
-// not 'workspace_id,project_type' which failed on NULL values.
-// Run the SQL from the fix doc FIRST to clean up duplicate rows and create the index.
+// Fix 2 final: abandoned onConflict entirely. PostgREST partial unique index
+// support is unreliable across Supabase versions. Explicit check-then-update
+// works regardless of what constraints exist in the database.
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
@@ -11,24 +11,35 @@ async function saveDefaults(workspaceId: string, body: any) {
   const { revisionRounds, paymentStructure, governingLaw } = body
   const service = createServiceClient()
 
-  // onConflict: 'workspace_id' works because the partial unique index
-  // (workspace_id) WHERE project_type IS NULL enforces uniqueness for the
-  // global default row. PostgREST maps this correctly after the index is created.
-  const { error } = await (service as any)
+  // Check if a global default row already exists for this workspace
+  const { data: existing } = await (service as any)
     .from('workspace_defaults')
-    .upsert({
-      workspace_id:      workspaceId,
-      project_type:      null,
-      revision_rounds:   Number(revisionRounds) || 2,
-      payment_structure: paymentStructure || '50_50',
-      governing_law:     governingLaw || 'United States',
-      updated_at:        new Date().toISOString(),
-    }, {
-      onConflict:       'workspace_id',
-      ignoreDuplicates: false,
-    })
+    .select('id')
+    .eq('workspace_id', workspaceId)
+    .is('project_type', null)
+    .maybeSingle()
 
-  if (error) throw new Error(error.message)
+  const payload = {
+    workspace_id:      workspaceId,
+    project_type:      null,
+    revision_rounds:   Number(revisionRounds) || 2,
+    payment_structure: paymentStructure || '50_50',
+    governing_law:     governingLaw || 'United States',
+    updated_at:        new Date().toISOString(),
+  }
+
+  if (existing?.id) {
+    const { error } = await (service as any)
+      .from('workspace_defaults')
+      .update(payload)
+      .eq('id', existing.id)
+    if (error) throw new Error(error.message)
+  } else {
+    const { error } = await (service as any)
+      .from('workspace_defaults')
+      .insert(payload)
+    if (error) throw new Error(error.message)
+  }
 }
 
 export async function POST(request: NextRequest) {
@@ -47,7 +58,7 @@ export async function PATCH(request: NextRequest) {
   try {
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    const body = await request.json() // read body here — never re-reads
+    const body = await request.json()
     await saveDefaults(session.workspaceId, body)
     return NextResponse.json({ ok: true })
   } catch (err) {

@@ -1,13 +1,7 @@
 // components/settings/SettingsClient.tsx
-// C10: notification toggles wired with local state
-// C11: billing upgrade buttons connected to Paystack inline checkout
-// C12: danger zone delete button wired; app/api/workspace/delete/route.ts handles server side
-// C15: DefaultsTab governing law default changed from 'Republic of Kenya' to 'United States'
-//
-// MANUAL STEP REQUIRED FOR C11:
-// Add to app/layout.tsx <head>:
-//   import Script from 'next/script'
-//   <Script src="https://js.paystack.co/v1/inline.js" strategy="beforeInteractive" />
+// Fix 5: notifPrefs state lifted to parent SettingsClient so it survives
+// tab switches (NotificationsTab was unmounting and resetting local state).
+// All other fixes from previous rounds carried forward unchanged.
 
 'use client'
 import { useState } from 'react'
@@ -30,6 +24,16 @@ const TABS: { key: SettingsTab; label: string }[] = [
   { key: 'danger',        label: 'Danger zone' },
 ]
 
+const NOTIF_ITEMS = [
+  { key: 'sow_signed',    label: 'SOW signed by client',    desc: 'When your client signs a Statement of Work' },
+  { key: 'sow_declined',  label: 'SOW declined',            desc: 'When a client declines to sign' },
+  { key: 'co_accepted',   label: 'Change order accepted',   desc: 'When a client accepts a change order' },
+  { key: 'co_declined',   label: 'Change order declined',   desc: 'When a client declines a change order' },
+  { key: 'guardian_flag', label: 'Scope flag raised',       desc: 'When Guardian detects an out-of-scope request' },
+  { key: 'escalation',    label: 'Escalation',              desc: 'When a matter is escalated to you' },
+  { key: 'trial_ending',  label: 'Trial ending',            desc: '3 days before trial expires' },
+]
+
 interface Props {
   workspace:   any
   billing:     any
@@ -47,6 +51,11 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
   const [saving, setSaving] = useState(false)
   const [saved,  setSaved]  = useState(false)
   const [error,  setError]  = useState('')
+
+  // Fix 5: lifted here so state survives tab switches (NotificationsTab unmounts on switch)
+  const [notifPrefs, setNotifPrefs] = useState<Record<string, boolean>>(
+    Object.fromEntries(NOTIF_ITEMS.map(i => [i.key, true]))
+  )
 
   async function patch(path: string, body: any) {
     setSaving(true); setError('')
@@ -84,7 +93,8 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
         {tab === 'defaults'      && <DefaultsTab defaults={defaults} permissions={permissions} onSave={patch} saving={saving} />}
         {tab === 'guardian'      && <GuardianTab workspace={workspace} permissions={permissions} onSave={patch} saving={saving} />}
         {tab === 'billing'       && <BillingTab workspace={workspace} billing={billing} session={session} permissions={permissions} />}
-        {tab === 'notifications' && <NotificationsTab />}
+        {/* Fix 5: pass lifted state as props so NotificationsTab doesn't lose it on remount */}
+        {tab === 'notifications' && <NotificationsTab prefs={notifPrefs} setPrefs={setNotifPrefs} />}
         {tab === 'integrations'  && <IntegrationsTab session={session} />}
         {tab === 'danger'        && <DangerTab workspace={workspace} permissions={permissions} />}
       </div>
@@ -309,8 +319,7 @@ function BrandingTab({ workspace, logoUrl, permissions, onSave, saving }: any) {
 function DefaultsTab({ defaults, permissions, onSave, saving }: any) {
   const [revRounds,    setRevRounds]    = useState(String(defaults?.revision_rounds || 2))
   const [payStructure, setPayStructure] = useState(defaults?.payment_structure || '50_50')
-  // C15: was 'Republic of Kenya'
-  const [govLaw, setGovLaw] = useState(defaults?.governing_law || 'United States')
+  const [govLaw,       setGovLaw]       = useState(defaults?.governing_law || 'United States')
 
   if (!permissions.manageWorkspace) return <Restricted />
 
@@ -355,9 +364,9 @@ function DefaultsTab({ defaults, permissions, onSave, saving }: any) {
 
 // ── GUARDIAN ──────────────────────────────────────────────────
 function GuardianTab({ workspace, permissions, onSave, saving }: any) {
-  const [sensitivity,    setSensitivity]    = useState(workspace?.guardian_sensitivity_tier || 'medium')
-  const [riskEnabled,    setRiskEnabled]    = useState(workspace?.proactive_risk_alerts_enabled ?? true)
-  const [riskThreshold,  setRiskThreshold]  = useState(String(workspace?.proactive_risk_threshold || 10000))
+  const [sensitivity,   setSensitivity]   = useState(workspace?.guardian_sensitivity_tier || 'medium')
+  const [riskEnabled,   setRiskEnabled]   = useState(workspace?.proactive_risk_alerts_enabled ?? true)
+  const [riskThreshold, setRiskThreshold] = useState(String(workspace?.proactive_risk_threshold || 10000))
 
   if (!permissions.manageWorkspace) return <Restricted />
 
@@ -409,9 +418,6 @@ function GuardianTab({ workspace, permissions, onSave, saving }: any) {
 }
 
 // ── BILLING ───────────────────────────────────────────────────
-// C11: upgrade buttons now call /api/billing/upgrade and open Paystack inline.
-// Requires <Script src="https://js.paystack.co/v1/inline.js" strategy="beforeInteractive" />
-// in app/layout.tsx — add manually.
 function BillingTab({ workspace, billing, session, permissions }: any) {
   const planTier  = workspace?.plan_tier || 'trial'
   const planLabel = PLAN_LABELS[planTier] || planTier
@@ -433,7 +439,6 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error)
-
       const handler = (window as any).PaystackPop?.setup({
         key:      json.publicKey,
         email:    json.email,
@@ -441,7 +446,6 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
         currency: 'USD',
         metadata: json.metadata,
         callback: () => {
-          // DO NOT update plan here — wait for webhook (BUG-054)
           alert('Payment processing. Your plan will update within a minute.')
           window.location.reload()
         },
@@ -454,16 +458,15 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
   }
 
   const plans = [
-    { key: 'solo',    name: 'Solo',    price: { monthly: '$39/mo',  annual: '$390/yr' },  seats: 1,  projects: 2 },
-    { key: 'starter', name: 'Starter', price: { monthly: '$99/mo',  annual: '$990/yr' },  seats: 2,  projects: 5 },
-    { key: 'pro',     name: 'Pro',     price: { monthly: '$249/mo', annual: '$2,490/yr' }, seats: 4,  projects: null },
-    { key: 'agency',  name: 'Agency',  price: { monthly: '$399/mo', annual: '$3,990/yr' }, seats: 10, projects: null },
+    { key: 'solo',    name: 'Solo',    price: { monthly: '$39/mo',  annual: '$390/yr'  }, seats: 1,  projects: 2    },
+    { key: 'starter', name: 'Starter', price: { monthly: '$99/mo',  annual: '$990/yr'  }, seats: 2,  projects: 5    },
+    { key: 'pro',     name: 'Pro',     price: { monthly: '$249/mo', annual: '$2,490/yr'}, seats: 4,  projects: null },
+    { key: 'agency',  name: 'Agency',  price: { monthly: '$399/mo', annual: '$3,990/yr'}, seats: 10, projects: null },
   ]
 
   return (
     <div>
       <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, marginBottom: 20 }}>Billing & plan</h2>
-
       <div className="settings-section" style={{ marginBottom: 14 }}>
         <div className="settings-section-title">Current plan</div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
@@ -483,11 +486,8 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
           </div>
         )}
       </div>
-
       <div className="settings-section">
         <div className="settings-section-title">Available plans</div>
-
-        {/* C11: annual/monthly toggle */}
         <div style={{ display: 'inline-flex', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', overflow: 'hidden', marginBottom: 20 }}>
           {(['monthly', 'annual'] as const).map(iv => (
             <button key={iv} onClick={() => setPlanInterval(iv)}
@@ -500,11 +500,10 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
             </button>
           ))}
         </div>
-
         <div className="tier-cards">
           {plans.map(plan => {
-            const isCurrent  = planTier === plan.key
-            const isLoading  = upgrading === plan.key
+            const isCurrent = planTier === plan.key
+            const isLoading = upgrading === plan.key
             return (
               <div key={plan.key} className={`tier-card${isCurrent ? ' current' : ''}`}>
                 <div className="tier-card-name">{plan.name}</div>
@@ -534,29 +533,20 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
 }
 
 // ── NOTIFICATIONS ─────────────────────────────────────────────
-// C10: toggles now have local state and respond to clicks.
-// Full persistence (notification_preferences table) is Phase 2.
-function NotificationsTab() {
-  const items = [
-    { key: 'sow_signed',    label: 'SOW signed by client',    desc: 'When your client signs a Statement of Work' },
-    { key: 'sow_declined',  label: 'SOW declined',            desc: 'When a client declines to sign' },
-    { key: 'co_accepted',   label: 'Change order accepted',   desc: 'When a client accepts a change order' },
-    { key: 'co_declined',   label: 'Change order declined',   desc: 'When a client declines a change order' },
-    { key: 'guardian_flag', label: 'Scope flag raised',       desc: 'When Guardian detects an out-of-scope request' },
-    { key: 'escalation',    label: 'Escalation',              desc: 'When a matter is escalated to you' },
-    { key: 'trial_ending',  label: 'Trial ending',            desc: '3 days before trial expires' },
-  ]
-
-  const [prefs, setPrefs] = useState<Record<string, boolean>>(
-    Object.fromEntries(items.map(i => [i.key, true]))
-  )
-
+// Fix 5: prefs and setPrefs now come from parent — state survives tab switches.
+function NotificationsTab({
+  prefs,
+  setPrefs,
+}: {
+  prefs: Record<string, boolean>
+  setPrefs: React.Dispatch<React.SetStateAction<Record<string, boolean>>>
+}) {
   return (
     <div>
       <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, marginBottom: 20 }}>Notifications</h2>
       <div className="settings-section">
         <div className="settings-section-title">Email notifications</div>
-        {items.map(item => (
+        {NOTIF_ITEMS.map(item => (
           <div key={item.key} className="settings-row">
             <div>
               <div className="settings-row-key">{item.label}</div>
@@ -607,7 +597,6 @@ function IntegrationsTab({ session }: { session: SessionUser }) {
 }
 
 // ── DANGER ZONE ───────────────────────────────────────────────
-// C12: delete button now wired to /api/workspace/delete
 function DangerTab({ workspace, permissions }: any) {
   const router   = useRouter()
   const supabase = createClient()
