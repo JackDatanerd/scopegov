@@ -36,7 +36,7 @@ export default function OnboardingPage() {
   const [agencyName, setAgencyName] = useState('')
   const [industry,   setIndustry]   = useState('')
   const [currency,   setCurrency]   = useState('USD')
-  const [timezone,   setTimezone]   = useState('Africa/Nairobi')
+  const [timezone,   setTimezone]   = useState('America/New_York')
 
   // Step 1
   const [brandColour,  setBrandColour]  = useState('#1A5C3A')
@@ -296,7 +296,7 @@ export default function OnboardingPage() {
               <label className="flbl">Governing law</label>
               <input className="finp" value={governingLaw}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setGoverningLaw(e.target.value)}
-                placeholder="Republic of Kenya" />
+                placeholder="United States" />
             </div>
 
             <div className="ob-nav">
