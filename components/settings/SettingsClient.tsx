@@ -1,7 +1,12 @@
 // components/settings/SettingsClient.tsx
-// Fix 5: notifPrefs state lifted to parent SettingsClient so it survives
-// tab switches (NotificationsTab was unmounting and resetting local state).
-// All other fixes from previous rounds carried forward unchanged.
+// Fix: ALL tab form state lifted to this parent component (which never
+// unmounts during tab switching). Previously each tab (Workspace, Branding,
+// Defaults, Guardian, Notifications) held its own useState seeded from the
+// `workspace`/`defaults` prop. Switching tabs unmounts the tab component;
+// switching back remounts it and re-reads whatever prop value existed at
+// that instant. If router.refresh() hadn't finished fetching yet, the user
+// saw a stale value — even though the save itself succeeded. Lifting the
+// state here means it survives tab switches regardless of refresh timing.
 
 'use client'
 import { useState } from 'react'
@@ -52,7 +57,31 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
   const [saved,  setSaved]  = useState(false)
   const [error,  setError]  = useState('')
 
-  // Fix 5: lifted here so state survives tab switches (NotificationsTab unmounts on switch)
+  // ── Lifted form state (all seeded once via lazy init; never reset by remounts) ──
+  const [wsForm, setWsForm] = useState(() => ({
+    name:         workspace?.name || '',
+    agencyName:   workspace?.agency_name || '',
+    industry:     workspace?.industry || '',
+    timezone:     workspace?.timezone || '',
+    currency:     workspace?.currency || 'USD',
+    governingLaw: workspace?.governing_law || '',
+  }))
+
+  const [brandColour, setBrandColour] = useState(() => workspace?.brand_colour || '#1A5C3A')
+  const [logoPreview, setLogoPreview] = useState<string | null>(logoUrl)
+
+  const [defaultsForm, setDefaultsForm] = useState(() => ({
+    revRounds:    String(defaults?.revision_rounds || 2),
+    payStructure: defaults?.payment_structure || '50_50',
+    govLaw:       defaults?.governing_law || 'United States',
+  }))
+
+  const [guardianForm, setGuardianForm] = useState(() => ({
+    sensitivity:   workspace?.guardian_sensitivity_tier || 'medium',
+    riskEnabled:   workspace?.proactive_risk_alerts_enabled ?? true,
+    riskThreshold: String(workspace?.proactive_risk_threshold || 10000),
+  }))
+
   const [notifPrefs, setNotifPrefs] = useState<Record<string, boolean>>(
     Object.fromEntries(NOTIF_ITEMS.map(i => [i.key, true]))
   )
@@ -65,8 +94,10 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
       if (!res.ok) throw new Error(json.error)
       setSaved(true); setTimeout(() => setSaved(false), 2000)
       router.refresh()
+      return true
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Save failed')
+      return false
     } finally { setSaving(false) }
   }
 
@@ -87,16 +118,36 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
         {error && <div className="auth-error" style={{ marginBottom: 14 }}>{error}</div>}
         {saved && <div className="auth-success" style={{ marginBottom: 14 }}>Changes saved.</div>}
 
-        {tab === 'account'       && <AccountTab session={session} supabase={supabase} router={router} />}
-        {tab === 'workspace'     && <WorkspaceTab workspace={workspace} permissions={permissions} onSave={patch} saving={saving} />}
-        {tab === 'branding'      && <BrandingTab workspace={workspace} logoUrl={logoUrl} permissions={permissions} onSave={patch} saving={saving} />}
-        {tab === 'defaults'      && <DefaultsTab defaults={defaults} permissions={permissions} onSave={patch} saving={saving} />}
-        {tab === 'guardian'      && <GuardianTab workspace={workspace} permissions={permissions} onSave={patch} saving={saving} />}
-        {tab === 'billing'       && <BillingTab workspace={workspace} billing={billing} session={session} permissions={permissions} />}
-        {/* Fix 5: pass lifted state as props so NotificationsTab doesn't lose it on remount */}
+        {tab === 'account' && <AccountTab session={session} supabase={supabase} router={router} />}
+
+        {tab === 'workspace' && (
+          <WorkspaceTab form={wsForm} setForm={setWsForm} permissions={permissions} onSave={patch} saving={saving} />
+        )}
+
+        {tab === 'branding' && (
+          <BrandingTab
+            workspaceId={workspace?.id}
+            colour={brandColour} setColour={setBrandColour}
+            preview={logoPreview} setPreview={setLogoPreview}
+            permissions={permissions} onSave={patch} saving={saving}
+          />
+        )}
+
+        {tab === 'defaults' && (
+          <DefaultsTab form={defaultsForm} setForm={setDefaultsForm} permissions={permissions} onSave={patch} saving={saving} />
+        )}
+
+        {tab === 'guardian' && (
+          <GuardianTab form={guardianForm} setForm={setGuardianForm} permissions={permissions} onSave={patch} saving={saving} />
+        )}
+
+        {tab === 'billing' && <BillingTab workspace={workspace} billing={billing} session={session} permissions={permissions} />}
+
         {tab === 'notifications' && <NotificationsTab prefs={notifPrefs} setPrefs={setNotifPrefs} />}
-        {tab === 'integrations'  && <IntegrationsTab session={session} />}
-        {tab === 'danger'        && <DangerTab workspace={workspace} permissions={permissions} />}
+
+        {tab === 'integrations' && <IntegrationsTab session={session} />}
+
+        {tab === 'danger' && <DangerTab workspace={workspace} permissions={permissions} />}
       </div>
     </div>
   )
@@ -188,15 +239,12 @@ function AccountTab({ session, supabase, router }: any) {
 }
 
 // ── WORKSPACE ─────────────────────────────────────────────────
-function WorkspaceTab({ workspace, permissions, onSave, saving }: any) {
-  const [name,         setName]         = useState(workspace?.name || '')
-  const [agencyName,   setAgencyName]   = useState(workspace?.agency_name || '')
-  const [industry,     setIndustry]     = useState(workspace?.industry || '')
-  const [timezone,     setTimezone]     = useState(workspace?.timezone || '')
-  const [currency,     setCurrency]     = useState(workspace?.currency || 'USD')
-  const [governingLaw, setGoverningLaw] = useState(workspace?.governing_law || '')
-
+function WorkspaceTab({ form, setForm, permissions, onSave, saving }: any) {
   if (!permissions.manageWorkspace) return <Restricted />
+
+  function set<K extends string>(key: K, value: string) {
+    setForm((f: any) => ({ ...f, [key]: value }))
+  }
 
   return (
     <div>
@@ -206,21 +254,21 @@ function WorkspaceTab({ workspace, permissions, onSave, saving }: any) {
         <div className="f2">
           <div className="fgrp">
             <label className="flbl">Workspace name</label>
-            <input className="finp" value={name} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)} />
+            <input className="finp" value={form.name} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('name', e.target.value)} />
           </div>
           <div className="fgrp">
             <label className="flbl">Agency name <span className="fhint">(on documents)</span></label>
-            <input className="finp" value={agencyName} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAgencyName(e.target.value)} />
+            <input className="finp" value={form.agencyName} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('agencyName', e.target.value)} />
           </div>
         </div>
         <div className="f2">
           <div className="fgrp">
             <label className="flbl">Industry</label>
-            <input className="finp" value={industry} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setIndustry(e.target.value)} />
+            <input className="finp" value={form.industry} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('industry', e.target.value)} />
           </div>
           <div className="fgrp">
             <label className="flbl">Default currency</label>
-            <select className="finp" value={currency} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setCurrency(e.target.value)}>
+            <select className="finp" value={form.currency} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => set('currency', e.target.value)}>
               {['USD','KES','GBP','EUR','ZAR','NGN','GHS','AED'].map(c => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
@@ -228,15 +276,15 @@ function WorkspaceTab({ workspace, permissions, onSave, saving }: any) {
         <div className="f2">
           <div className="fgrp">
             <label className="flbl">Timezone</label>
-            <input className="finp" value={timezone} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTimezone(e.target.value)} />
+            <input className="finp" value={form.timezone} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('timezone', e.target.value)} />
           </div>
           <div className="fgrp">
             <label className="flbl">Governing law (default)</label>
-            <input className="finp" value={governingLaw} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setGoverningLaw(e.target.value)} />
+            <input className="finp" value={form.governingLaw} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('governingLaw', e.target.value)} />
           </div>
         </div>
         <button className="btn btn-primary btn-sm" disabled={saving}
-          onClick={() => onSave('/api/workspace/settings', { name, agencyName, industry, timezone, currency, governingLaw })}>
+          onClick={() => onSave('/api/workspace/settings', form)}>
           {saving ? <span className="spin" /> : 'Save changes'}
         </button>
       </div>
@@ -245,10 +293,8 @@ function WorkspaceTab({ workspace, permissions, onSave, saving }: any) {
 }
 
 // ── BRANDING ──────────────────────────────────────────────────
-function BrandingTab({ workspace, logoUrl, permissions, onSave, saving }: any) {
-  const [colour,    setColour]    = useState(workspace?.brand_colour || '#1A5C3A')
+function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, permissions, onSave, saving }: any) {
   const [logoFile,  setLogoFile]  = useState<File | null>(null)
-  const [preview,   setPreview]   = useState<string | null>(logoUrl)
   const [uploading, setUploading] = useState(false)
   const supabase = createClient()
 
@@ -270,7 +316,7 @@ function BrandingTab({ workspace, logoUrl, permissions, onSave, saving }: any) {
       let logoStoragePath: string | undefined
       if (logoFile) {
         const ext  = logoFile.name.split('.').pop()
-        const path = `${workspace.id}/logo.${ext}`
+        const path = `${workspaceId}/logo.${ext}`
         const { error } = await (supabase as any).storage.from('logos').upload(path, logoFile, { upsert: true })
         if (!error) logoStoragePath = path
       }
@@ -316,12 +362,12 @@ function BrandingTab({ workspace, logoUrl, permissions, onSave, saving }: any) {
 }
 
 // ── DEFAULTS ──────────────────────────────────────────────────
-function DefaultsTab({ defaults, permissions, onSave, saving }: any) {
-  const [revRounds,    setRevRounds]    = useState(String(defaults?.revision_rounds || 2))
-  const [payStructure, setPayStructure] = useState(defaults?.payment_structure || '50_50')
-  const [govLaw,       setGovLaw]       = useState(defaults?.governing_law || 'United States')
-
+function DefaultsTab({ form, setForm, permissions, onSave, saving }: any) {
   if (!permissions.manageWorkspace) return <Restricted />
+
+  function set(key: string, value: string) {
+    setForm((f: any) => ({ ...f, [key]: value }))
+  }
 
   return (
     <div>
@@ -334,13 +380,13 @@ function DefaultsTab({ defaults, permissions, onSave, saving }: any) {
         <div className="f2">
           <div className="fgrp">
             <label className="flbl">Default revision rounds</label>
-            <select className="finp" value={revRounds} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setRevRounds(e.target.value)}>
+            <select className="finp" value={form.revRounds} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => set('revRounds', e.target.value)}>
               {['1','2','3','4','5'].map(n => <option key={n} value={n}>{n} round{n !== '1' ? 's' : ''}</option>)}
             </select>
           </div>
           <div className="fgrp">
             <label className="flbl">Default payment structure</label>
-            <select className="finp" value={payStructure} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setPayStructure(e.target.value)}>
+            <select className="finp" value={form.payStructure} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => set('payStructure', e.target.value)}>
               <option value="50_50">50% upfront / 50% on delivery</option>
               <option value="100_upfront">100% upfront</option>
               <option value="milestones">Milestone-based</option>
@@ -351,10 +397,12 @@ function DefaultsTab({ defaults, permissions, onSave, saving }: any) {
         </div>
         <div className="fgrp">
           <label className="flbl">Default governing law</label>
-          <input className="finp" value={govLaw} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setGovLaw(e.target.value)} />
+          <input className="finp" value={form.govLaw} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('govLaw', e.target.value)} />
         </div>
         <button className="btn btn-primary btn-sm" disabled={saving}
-          onClick={() => onSave('/api/workspace/defaults', { revisionRounds: parseInt(revRounds), paymentStructure: payStructure, governingLaw: govLaw })}>
+          onClick={() => onSave('/api/workspace/defaults', {
+            revisionRounds: parseInt(form.revRounds), paymentStructure: form.payStructure, governingLaw: form.govLaw,
+          })}>
           {saving ? <span className="spin" /> : 'Save defaults'}
         </button>
       </div>
@@ -363,12 +411,12 @@ function DefaultsTab({ defaults, permissions, onSave, saving }: any) {
 }
 
 // ── GUARDIAN ──────────────────────────────────────────────────
-function GuardianTab({ workspace, permissions, onSave, saving }: any) {
-  const [sensitivity,   setSensitivity]   = useState(workspace?.guardian_sensitivity_tier || 'medium')
-  const [riskEnabled,   setRiskEnabled]   = useState(workspace?.proactive_risk_alerts_enabled ?? true)
-  const [riskThreshold, setRiskThreshold] = useState(String(workspace?.proactive_risk_threshold || 10000))
-
+function GuardianTab({ form, setForm, permissions, onSave, saving }: any) {
   if (!permissions.manageWorkspace) return <Restricted />
+
+  function set(key: string, value: any) {
+    setForm((f: any) => ({ ...f, [key]: value }))
+  }
 
   return (
     <div>
@@ -380,7 +428,7 @@ function GuardianTab({ workspace, permissions, onSave, saving }: any) {
         </p>
         <div className="fgrp">
           <label className="flbl">Sensitivity tier</label>
-          <select className="finp" value={sensitivity} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setSensitivity(e.target.value)}>
+          <select className="finp" value={form.sensitivity} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => set('sensitivity', e.target.value)}>
             <option value="conservative">Conservative — only flag high-confidence violations (threshold: 0.92)</option>
             <option value="medium">Medium (default) — balanced detection (threshold: 0.85)</option>
             <option value="aggressive">Aggressive — flag borderline cases early (threshold: 0.78)</option>
@@ -394,21 +442,21 @@ function GuardianTab({ workspace, permissions, onSave, saving }: any) {
             <div className="settings-row-key">Proactive risk alerts</div>
             <div className="settings-row-desc">Flag high-value projects that don&apos;t have a signed SOW yet.</div>
           </div>
-          <button className={`toggle ${riskEnabled ? 'on' : 'off'}`} onClick={() => setRiskEnabled(!riskEnabled)} />
+          <button className={`toggle ${form.riskEnabled ? 'on' : 'off'}`} onClick={() => set('riskEnabled', !form.riskEnabled)} />
         </div>
-        {riskEnabled && (
+        {form.riskEnabled && (
           <div className="fgrp" style={{ marginTop: 12 }}>
             <label className="flbl">Contract value threshold</label>
-            <input type="number" className="finp" style={{ maxWidth: 200 }} value={riskThreshold}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRiskThreshold(e.target.value)} min={0} />
+            <input type="number" className="finp" style={{ maxWidth: 200 }} value={form.riskThreshold}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('riskThreshold', e.target.value)} min={0} />
             <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 5 }}>Alert when a project over this value has no signed SOW.</p>
           </div>
         )}
         <button className="btn btn-primary btn-sm" disabled={saving}
           onClick={() => onSave('/api/workspace/settings', {
-            guardianSensitivityTier: sensitivity,
-            proactiveRiskAlertsEnabled: riskEnabled,
-            proactiveRiskThreshold: parseFloat(riskThreshold) || 10000,
+            guardianSensitivityTier: form.sensitivity,
+            proactiveRiskAlertsEnabled: form.riskEnabled,
+            proactiveRiskThreshold: parseFloat(form.riskThreshold) || 10000,
           })}>
           {saving ? <span className="spin" /> : 'Save settings'}
         </button>
@@ -533,7 +581,6 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
 }
 
 // ── NOTIFICATIONS ─────────────────────────────────────────────
-// Fix 5: prefs and setPrefs now come from parent — state survives tab switches.
 function NotificationsTab({
   prefs,
   setPrefs,
