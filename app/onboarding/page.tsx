@@ -47,7 +47,7 @@ export default function OnboardingPage() {
   // Step 2
   const [revisionRounds,   setRevisionRounds]   = useState('2')
   const [paymentStructure, setPaymentStructure] = useState('50_50')
-  const [governingLaw,     setGoverningLaw]     = useState('Republic of Kenya')
+  const [governingLaw,     setGoverningLaw]     = useState('United States')
 
   // Step 3
   const [inviteEmail, setInviteEmail] = useState('')
