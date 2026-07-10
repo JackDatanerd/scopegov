@@ -1,6 +1,7 @@
 import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 import { createClient as createSupabaseClient } from '@supabase/supabase-js'
+import { sharedCookieOptions } from './cookie-options'
 
 // ── Server component / Route Handler client (respects RLS via session) ────
 export async function createServerSupabaseClient() {
@@ -9,6 +10,7 @@ export async function createServerSupabaseClient() {
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
+      cookieOptions: sharedCookieOptions(),
       cookies: {
         getAll() {
           return cookieStore.getAll()
