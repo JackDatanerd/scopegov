@@ -21,10 +21,18 @@ export default function ForgotPasswordPage() {
     setLoading(true); setError('')
     try {
       // Spec §16.2: same response regardless of whether email exists
+      // FIX 1 (v2): send the user straight to /reset-password instead of
+      // through /api/auth/callback. The previous callback round-trip relied
+      // on a server-side exchangeCodeForSession() succeeding and then a
+      // *second* redirect landing back on /reset-password — any hiccup in
+      // that chain (missing PKCE verifier cookie, the middleware bouncing an
+      // authenticated hit on the intermediate redirect, etc.) sent the user
+      // to the generic "link expired" screen on /login. Landing directly on
+      // /reset-password lets the browser Supabase client complete the
+      // exchange itself (handled in that page), which is simpler and matches
+      // Supabase's own recommended pattern for password recovery.
       await supabase.auth.resetPasswordForEmail(email, {
-        // FIX 1: route through the callback so exchangeCodeForSession runs
-        // and sets the auth cookie before the user reaches /reset-password.
-        redirectTo: `${window.location.origin}/api/auth/callback?next=/reset-password`,
+        redirectTo: `${window.location.origin}/reset-password`,
       })
       setSent(true)
     } catch {

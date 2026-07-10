@@ -44,11 +44,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .single()
 
     // Activate membership
+    // BUG FIX (Fix 3): don't null invite_token — see signup/route.ts for why.
     await (service as any).from('workspace_members').update({
       user_id:              user.id,
       status:               'active',
       joined_at:            now,
-      invite_token:         null,
       role_id:              member.role_id || defaultRole?.id || null,
       effective_permissions: defaultRole?.permissions || '{}',
     }).eq('id', member.id)

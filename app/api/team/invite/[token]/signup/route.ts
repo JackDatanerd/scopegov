@@ -78,11 +78,17 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .from('roles').select('id, permissions')
       .eq('workspace_id', member.workspace_id).eq('is_default', true).single()
 
+    // BUG FIX (Fix 3): previously set invite_token: null here. That made the
+    // row unreachable by `.eq('invite_token', token)` the moment signup
+    // succeeded, so re-visiting the same link produced a 404/500 from the
+    // GET validate route instead of the intended "already accepted" message
+    // (which relies on finding the row and checking status === 'active').
+    // Reuse is already prevented by the status check above — the token can
+    // stay on the row indefinitely.
     const { error: activateErr } = await (service as any)
       .from('workspace_members')
       .update({
         user_id: userId, status: 'active', joined_at: now,
-        invite_token: null,
         effective_permissions: defaultRole?.permissions || '{}',
         role_id: member.role_id || defaultRole?.id || null,
       })

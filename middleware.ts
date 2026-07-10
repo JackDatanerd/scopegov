@@ -69,7 +69,12 @@ export async function middleware(request: NextRequest) {
   }
 
   // ── Authenticated → redirect away from auth pages ─────────────────────────
-  if (user && isAuthRoute) {
+  // BUG (password reset): /reset-password is intentionally reachable with an
+  // authenticated session — clicking a recovery link signs the user in via a
+  // temporary session so they can set a new password. This block used to
+  // treat that as "already logged in" and bounce them to /dashboard or
+  // /onboarding before they ever saw the reset form. Exclude it here.
+  if (user && isAuthRoute && pathname !== '/reset-password') {
     // Check if they have a workspace before sending to dashboard
     const { data: member } = await (supabase as any)
       .from('workspace_members')

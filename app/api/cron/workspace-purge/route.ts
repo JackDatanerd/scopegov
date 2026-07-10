@@ -24,3 +24,11 @@ export async function POST(request: NextRequest) {
   console.log(`[WORKSPACE PURGE] Hard-deleted ${purged?.length || 0} workspaces older than 7 years`)
   return NextResponse.json({ ok: true, purged: purged?.length || 0 })
 }
+
+// FIX (cron): Vercel Cron Jobs invoke the configured path with a GET
+// request, not POST — every route here only exported POST, so all 6 jobs
+// wired up in vercel.json would 405 the moment Vercel actually triggered
+// them. The 3 sub-hourly jobs (sow-stall, co-stall, guardian-health) are
+// triggered by the GitHub Actions workflow via POST, which still works.
+// Exporting GET as an alias makes both invocation paths work.
+export const GET = POST

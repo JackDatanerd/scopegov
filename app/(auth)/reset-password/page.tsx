@@ -10,15 +10,38 @@ export default function ResetPasswordPage() {
   const [confirm, setConfirm] = useState('')
   const [loading, setLoading] = useState(false)
   const [ready, setReady] = useState(false)
+  const [linkInvalid, setLinkInvalid] = useState(false)
   const [done, setDone] = useState(false)
   const [error, setError] = useState('')
   const supabase = createClient()
 
+  // FIX 1 (v2): two possible recovery link shapes land here now that
+  // forgot-password redirects straight to /reset-password:
+  //   1. PKCE:     ?code=xxxxx           → must call exchangeCodeForSession
+  //   2. Implicit: #access_token=...&type=recovery → auto-detected by the
+  //      browser client on load, which fires the PASSWORD_RECOVERY event.
+  // Handle both, and stop spinning forever if neither shows up (dead/reused link).
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
       if (event === 'PASSWORD_RECOVERY') setReady(true)
     })
+
+    const code = new URLSearchParams(window.location.search).get('code')
+    if (code) {
+      supabase.auth.exchangeCodeForSession(code).then(({ error: exErr }) => {
+        if (exErr) { setLinkInvalid(true); return }
+        setReady(true)
+        // Strip the code from the URL so a refresh doesn't try to reuse it
+        window.history.replaceState({}, '', '/reset-password')
+      })
+    } else if (!window.location.hash.includes('access_token')) {
+      // No code param and no recovery hash — not a valid landing on this page
+      const t = setTimeout(() => { if (!ready) setLinkInvalid(true) }, 4000)
+      return () => { clearTimeout(t); subscription.unsubscribe() }
+    }
+
     return () => subscription.unsubscribe()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supabase.auth])
 
   async function handleReset(e: React.FormEvent) {
@@ -65,6 +88,30 @@ export default function ResetPasswordPage() {
             <Link href="/login">
               <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', padding: '10px' }}>
                 Sign in
+              </button>
+            </Link>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (linkInvalid) {
+    return (
+      <div className="auth-root">
+        <PanelLeft />
+        <div className="auth-form-side">
+          <div className="auth-form-wrap" style={{ textAlign: 'center' }}>
+            <div style={{ width: 52, height: 52, background: 'var(--red-lt)', border: '1px solid #FECACA', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px' }}>
+              <i className="ti ti-link-off" style={{ fontSize: 22, color: 'var(--red)' }} />
+            </div>
+            <h2 className="auth-form-title" style={{ textAlign: 'center' }}>Reset link expired</h2>
+            <p style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.7, margin: '8px 0 24px' }}>
+              This link is invalid or has already been used. Reset links are single-use — request a new one below.
+            </p>
+            <Link href="/forgot-password">
+              <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center' }}>
+                Request a new link
               </button>
             </Link>
           </div>
