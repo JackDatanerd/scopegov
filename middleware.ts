@@ -54,6 +54,20 @@ export async function middleware(request: NextRequest) {
   const isPublicRoute =
     pathname.startsWith('/portal/') ||
     pathname.startsWith('/invite/') ||
+    // BUG: the pages above were public but the APIs behind them were not.
+    // An unauthenticated visitor's fetch('/api/portal/...') or
+    // fetch('/api/team/invite/{token}') was silently redirected to /login
+    // (HTML, not JSON) by the block below — breaking SOW signing, CO
+    // responses, and invite acceptance for every real, logged-out recipient.
+    // Trailing slash on '/api/team/invite/' deliberately excludes the bare
+    // POST /api/team/invite (create) endpoint, which still requires auth.
+    pathname.startsWith('/api/portal/') ||
+    pathname.startsWith('/api/team/invite/') ||
+    // BUG: /api/auth/callback exchanges a signup-confirmation/OAuth/recovery
+    // code for a session — the request is *by definition* unauthenticated
+    // when it arrives. It was being redirected to /login before the route
+    // handler ever ran, breaking every fresh email signup and OAuth login.
+    pathname.startsWith('/api/auth/callback') ||
     pathname.startsWith('/api/guardian/inbound') ||
     pathname.startsWith('/api/billing/webhook') ||
     pathname.startsWith('/api/cron/') ||
