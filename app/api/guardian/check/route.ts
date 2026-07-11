@@ -39,7 +39,11 @@ export async function POST(request: NextRequest) {
     if (!['Active','Stalled'].includes(project.status) && !isRetroactive)
       return NextResponse.json({ error: 'Guardian only active on Active projects' }, { status: 400 })
 
-    const snapshot    = project.project_scope_snapshot?.[0]
+    // FIX: project_scope_snapshot.project_id is UNIQUE, so this is a
+    // one-to-one relation — PostgREST returns a single object, not an
+    // array. Indexing [0] on it always returned undefined, which is why
+    // Guardian checks always reported "no signed SOW" even when signed.
+    const snapshot    = project.project_scope_snapshot
     const sensitivity = (project.workspaces?.guardian_sensitivity_tier || 'medium') as Sensitivity
 
     // ── STEP 1: Compute embedding (always — BUG-060) ──────────

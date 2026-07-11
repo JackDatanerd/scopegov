@@ -211,7 +211,8 @@ function MetricBlock({ label, value, color, bold }: { label: string; value: stri
 
 // ── OVERVIEW TAB ──────────────────────────────────────────────
 function OverviewTab({ project, milestones, amendments, permissions, currency }: any) {
-  const snapshot     = project.project_scope_snapshot?.[0]
+  // FIX: one-to-one relation (see /api/guardian/check for details) — no [0]
+  const snapshot     = project.project_scope_snapshot
   const deliverables = snapshot?.deliverables || []
   const outOfScope   = snapshot?.out_of_scope || []
   const sowDocs      = project.sow_documents || []

@@ -82,7 +82,8 @@ export async function POST(request: NextRequest) {
     }
 
     const sensitivity = (project.workspaces?.guardian_sensitivity_tier || 'medium') as Sensitivity
-    const snapshot    = project.project_scope_snapshot?.[0]
+    // FIX: one-to-one relation (see /api/guardian/check for details) — no [0]
+    const snapshot    = project.project_scope_snapshot
 
     // ── Embedding + dedup ─────────────────────────────────────
     let embedding: number[] | null = null
