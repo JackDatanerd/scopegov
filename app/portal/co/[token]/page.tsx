@@ -2,7 +2,7 @@
 import { useState, useEffect } from 'react'
 import { useParams } from 'next/navigation'
 
-type CoState = 'loading' | 'invalid' | 'revoked' | 'expired' | 'accepted' | 'declined' | 'withdrawn' | 'ready' | 'done'
+type CoState = 'loading' | 'invalid' | 'revoked' | 'expired' | 'accepted' | 'declined' | 'withdrawn' | 'closed' | 'stalled' | 'countered' | 'ready' | 'done'
 type CoMode  = 'view' | 'accept' | 'decline' | 'counter'
 
 interface CoData {
@@ -105,6 +105,9 @@ export default function CoPortalPage() {
     withdrawn: { icon: 'ti-file-off', iconBg: '#FEF2F2', iconColor: '#B91C1C', title: 'CO withdrawn', body: 'The agency has withdrawn this change order.' },
     accepted:  { icon: 'ti-check', iconBg: '#EDFAF2', iconColor: '#1A5C3A', title: 'Already accepted', body: 'This change order has already been accepted. Thank you.' },
     declined:  { icon: 'ti-x', iconBg: '#FEF2F2', iconColor: '#B91C1C', title: 'Already declined', body: 'This change order has been declined.' },
+    closed:    { icon: 'ti-lock', iconBg: '#F5F5F0', iconColor: '#666', title: 'No longer available', body: 'This change order has been closed by the agency and is no longer open for a response.' },
+    stalled:   { icon: 'ti-clock-off', iconBg: '#FFF7ED', iconColor: '#B45309', title: 'Link inactive', body: 'This change order received no response in time and is now inactive. Please contact the agency for an updated request.' },
+    countered: { icon: 'ti-check', iconBg: '#EDFAF2', iconColor: '#1A5C3A', title: 'Counter already sent', body: 'You have already sent a counter-offer for this change order. The agency has been notified and will respond soon.' },
   }
 
   if (staticMsg[state]) {

@@ -214,13 +214,59 @@ function OverviewTab({ project, milestones, amendments, permissions, currency }:
   const snapshot     = project.project_scope_snapshot?.[0]
   const deliverables = snapshot?.deliverables || []
   const outOfScope   = snapshot?.out_of_scope || []
-  const hasSigned    = (project.sow_documents || []).some((s: any) => s.status === 'signed')
+  const sowDocs      = project.sow_documents || []
+  const hasSigned    = sowDocs.some((s: any) => s.status === 'signed')
+  const latestSow    = sowDocs.length ? [...sowDocs].sort((a: any, b: any) => (b.version ?? 0) - (a.version ?? 0))[0] : null
   const paidAmount   = milestones.filter((m: any) => m.status === 'paid').reduce((s: number, m: any) => s + (m.amount || 0), 0)
   const overdueAmount= milestones.filter((m: any) => m.status === 'overdue').reduce((s: number, m: any) => s + (m.amount || 0), 0)
+
+  const SOW_STATUS_LABEL: Record<string, string> = {
+    draft: 'Draft — not yet sent', sent: 'Sent to client', awaiting_signature: 'Awaiting signature',
+    signed: 'Signed', changes_requested: 'Client requested changes', declined: 'Declined by client', withdrawn: 'Withdrawn',
+  }
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 20, alignItems: 'start' }}>
       <div>
+        {/* Always-available project info — previously this tab showed almost
+            nothing until a SOW was signed, leaving it near-blank for every
+            project in Draft/Intake/awaiting-signature. */}
+        <div className="surface surface-p" style={{ marginBottom: 16 }}>
+          <div className="sec-title" style={{ marginBottom: 12 }}>Project details</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 20px', fontSize: 13 }}>
+            <div>
+              <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 2 }}>Client</div>
+              <div>{project.clients?.name || project.clients?.company_name || '—'}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 2 }}>Type</div>
+              <div>{project.type || '—'}</div>
+            </div>
+            {permissions.viewFinancials && (
+              <div>
+                <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 2 }}>Contract value</div>
+                <div style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{formatCurrency(project.contract_value || 0, currency)}</div>
+              </div>
+            )}
+            <div>
+              <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 2 }}>Start date</div>
+              <div>{project.start_date ? formatDate(project.start_date) : '—'}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 2 }}>SOW status</div>
+              <div>{latestSow ? (SOW_STATUS_LABEL[latestSow.status] || latestSow.status) : 'No SOW created yet'}{latestSow ? ` · v${latestSow.version}` : ''}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 2 }}>Guardian</div>
+              <div>{project.status === 'Active' ? (project.guardian_email || 'Active') : 'Not yet active'}</div>
+            </div>
+          </div>
+          {project.disc && (
+            <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--surface-2)', fontSize: 13, color: 'var(--text-2)', lineHeight: 1.6 }}>
+              {project.disc}
+            </div>
+          )}
+        </div>
         {hasSigned && (deliverables.length > 0 || outOfScope.length > 0) && (
           <div className="surface surface-p" style={{ marginBottom: 16 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
@@ -451,6 +497,12 @@ function GuardianTab({ project, flags, permissions, router }: any) {
   const [submitting,   setSubmitting]   = useState(false)
   const [submitError,  setSubmitError]  = useState('')
   const [filterStatus, setFilterStatus] = useState('all')
+  // BUG: the check's actual verdict (in_scope / out_of_scope / duplicate /
+  // pending / classification_failed) was fetched from the API and then
+  // discarded — the UI just closed the paste box and silently refreshed,
+  // so an in_scope/borderline result (no flag created) gave the user zero
+  // feedback that anything happened at all.
+  const [lastResult,   setLastResult]   = useState<any>(null)
 
   const isActive   = project.status === 'Active'
   const openFlags  = flags.filter((f: any) => f.status === 'open')
@@ -458,7 +510,7 @@ function GuardianTab({ project, flags, permissions, router }: any) {
 
   async function handlePasteSubmit() {
     if (!pasteText.trim()) return
-    setSubmitting(true); setSubmitError('')
+    setSubmitting(true); setSubmitError(''); setLastResult(null)
     try {
       const res  = await fetch('/api/guardian/check', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -467,10 +519,23 @@ function GuardianTab({ project, flags, permissions, router }: any) {
       const json = await res.json()
       if (!res.ok) throw new Error(json.error)
       setPasteText(''); setPasteMode(false)
-      setTimeout(() => router.refresh(), 1500)
+      setLastResult(json)
+      // Only worth a refresh if a flag was actually created — otherwise
+      // there's nothing new to pull from the server.
+      if (json.flagId) setTimeout(() => router.refresh(), 1500)
     } catch (err: unknown) {
       setSubmitError(err instanceof Error ? err.message : 'Submission failed')
     } finally { setSubmitting(false) }
+  }
+
+  const VERDICT_COPY: Record<string, { icon: string; color: string; bg: string; title: string }> = {
+    in_scope:              { icon: 'ti-shield-check', color: 'var(--green)', bg: 'var(--green-lt)', title: 'In scope — no action needed' },
+    covered_by_co:         { icon: 'ti-shield-check', color: 'var(--green)', bg: 'var(--green-lt)', title: 'Covered by an accepted change order' },
+    borderline:            { icon: 'ti-shield-half-filled', color: 'var(--amber)', bg: '#FFF7ED', title: 'Borderline — worth a human look, but no flag raised' },
+    out_of_scope:          { icon: 'ti-shield-x', color: 'var(--red)', bg: 'var(--red-lt)', title: 'Out of scope — flag created below' },
+    duplicate:             { icon: 'ti-copy', color: 'var(--text-3)', bg: 'var(--surface-2)', title: 'Duplicate of a recent check — skipped' },
+    pending:               { icon: 'ti-clock', color: 'var(--text-3)', bg: 'var(--surface-2)', title: 'No signed SOW yet — nothing to check against' },
+    classification_failed: { icon: 'ti-alert-triangle', color: 'var(--red)', bg: 'var(--red-lt)', title: 'Classification failed — try again in a moment' },
   }
 
   return (
@@ -500,7 +565,7 @@ function GuardianTab({ project, flags, permissions, router }: any) {
       {isActive && permissions.submitGuardian && (
         <div style={{ marginBottom: 16 }}>
           {!pasteMode ? (
-            <button className="btn btn-ghost btn-sm" onClick={() => setPasteMode(true)}>
+            <button className="btn btn-ghost btn-sm" onClick={() => { setPasteMode(true); setLastResult(null) }}>
               <i className="ti ti-clipboard" style={{ fontSize: 12 }} /> Paste email or message
             </button>
           ) : (
@@ -518,6 +583,26 @@ function GuardianTab({ project, flags, permissions, router }: any) {
               </div>
             </div>
           )}
+          {lastResult && !pasteMode && (() => {
+            const v = VERDICT_COPY[lastResult.outcome] || VERDICT_COPY.pending
+            return (
+              <div className="surface surface-p" style={{ marginTop: 10, display: 'flex', alignItems: 'flex-start', gap: 10, background: v.bg, border: `1px solid ${v.color}40` }}>
+                <i className={`ti ${v.icon}`} style={{ fontSize: 16, color: v.color, marginTop: 1 }} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 500, color: v.color }}>{v.title}</div>
+                  {lastResult.matchedReference && (
+                    <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>Matched against: {lastResult.matchedReference}</div>
+                  )}
+                  {typeof lastResult.creepConfidence === 'number' && (
+                    <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>Creep confidence: {Math.round(lastResult.creepConfidence * 100)}%</div>
+                  )}
+                </div>
+                <button className="btn btn-ghost btn-sm" onClick={() => setLastResult(null)} aria-label="Dismiss">
+                  <i className="ti ti-x" style={{ fontSize: 12 }} />
+                </button>
+              </div>
+            )
+          })()}
         </div>
       )}
 

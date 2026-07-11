@@ -5,6 +5,7 @@ import { useParams } from 'next/navigation'
 type PortalState =
   | 'loading' | 'invalid' | 'revoked' | 'expired' | 'declined'
   | 'withdrawn' | 'signed' | 'ready' | 'signing' | 'requesting' | 'declining'
+  | 'changes_requested'
 
 interface SowData {
   id:          string
@@ -134,7 +135,7 @@ export default function SowPortalPage() {
     )
   }
 
-  if (state === 'signed' || (state as string) === 'requesting') {
+  if (state === 'signed' || (state as string) === 'requesting' || (state as string) === 'changes_requested') {
     return (
       <PortalShell accent={accent} agencyName={sow?.agencyName}>
         <div style={{ textAlign: 'center', padding: '80px 32px' }}>

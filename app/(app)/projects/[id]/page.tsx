@@ -30,7 +30,7 @@ export default async function ProjectPage({ params, searchParams }: Props) {
     .select(`
       id, name, disc, type, status, stall_reason, contract_value, currency,
       start_date, internal_ref, retainer_duration_months, created_at, updated_at,
-      client_id, created_by, workspace_id,
+      client_id, created_by, workspace_id, guardian_email,
       clients(id, name, company_name, email, cc_emails, phone, notes),
       guardian_flags(id, status, severity, description, sow_reference, type, created_at, change_order_id, escalated_to),
       change_orders(id, title, status, total, sent_at, accepted_at, version),

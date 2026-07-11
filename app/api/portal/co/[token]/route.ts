@@ -30,7 +30,10 @@ async function getCoByToken(token: string, service: any) {
     return { state: 'invalid' }
   }
 
-  if (['accepted','declined','withdrawn'].includes(co.status)) return { state: co.status }
+  // BUG: 'closed', 'stalled', and 'countered' were never included here, so
+  // revisiting the link for a CO in any of those states fell through to the
+  // default case below and re-served the full accept/decline/counter form.
+  if (['accepted','declined','withdrawn','closed','stalled','countered'].includes(co.status)) return { state: co.status }
 
   return { co }
 }

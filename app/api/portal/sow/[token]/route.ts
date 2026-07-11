@@ -53,6 +53,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     if (sow.status === 'withdrawn')  return NextResponse.json({ state: 'withdrawn' })
     if (sow.status === 'declined')   return NextResponse.json({ state: 'declined' })
     if (sow.status === 'expired')    return NextResponse.json({ state: 'expired' })
+    // BUG: changes_requested was never checked here, so revisiting a link
+    // after requesting changes fell through to the default case below and
+    // re-served the full signing form as if nothing had happened.
+    if (sow.status === 'changes_requested') return NextResponse.json({ state: 'changes_requested' })
 
     // Build logo URL if exists
     let logoUrl: string | null = null

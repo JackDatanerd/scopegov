@@ -30,8 +30,17 @@ export function isAttentionWorthy({ project, workspace }: AttentionContext): boo
   if (project.changeOrders?.some(co => actionableCoStatuses.includes(co.status))) return true
 
   // 4. Any SOW requiring attention
+  // BUG: previously checked .some() across every SOW version the project
+  // has ever had. Once a client requests changes, a NEW draft version is
+  // created and the OLD version's row keeps status='changes_requested'
+  // forever as a historical record — so .some() kept matching that old row
+  // even after a revised SOW was sent and the client signed the new one.
+  // Only the latest version's status is actionable.
   const actionableSowStatuses = ['declined', 'changes_requested']
-  if (project.sowDocuments?.some(s => actionableSowStatuses.includes(s.status))) return true
+  const latestSow = project.sowDocuments?.length
+    ? [...project.sowDocuments].sort((a: any, b: any) => (b.version ?? 0) - (a.version ?? 0))[0]
+    : null
+  if (latestSow && actionableSowStatuses.includes(latestSow.status)) return true
 
   // 5. Proactive risk alert — high-value project without signed SOW
   if (
@@ -59,7 +68,10 @@ export function attentionReason({ project }: AttentionContext): string | null {
   if (project.changeOrders?.some(co => co.status === 'declined')) return 'Change order declined'
   if (project.changeOrders?.some(co => co.status === 'countered')) return 'Counter offer received'
   if (project.changeOrders?.some(co => co.status === 'stalled')) return 'Change order stalled'
-  if (project.sowDocuments?.some(s => s.status === 'changes_requested')) return 'Client requested SOW changes'
-  if (project.sowDocuments?.some(s => s.status === 'declined')) return 'Client declined SOW'
+  const latestSow = project.sowDocuments?.length
+    ? [...project.sowDocuments].sort((a: any, b: any) => (b.version ?? 0) - (a.version ?? 0))[0]
+    : null
+  if (latestSow?.status === 'changes_requested') return 'Client requested SOW changes'
+  if (latestSow?.status === 'declined') return 'Client declined SOW'
   return 'High-value project — no signed SOW'
 }
