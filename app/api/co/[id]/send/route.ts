@@ -22,7 +22,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const { data: co, error: coFetchErr } = await (service as any)
       .from('change_orders')
-      .select(`id,title,status,note,total,currency,version,
+      // FIX: 'currency' was listed here but change_orders has no such
+      // column — it lives on projects (already fetched below via the
+      // nested join). Selecting a non-existent column makes PostgREST
+      // reject the entire query (42703), which this route was silently
+      // mapping to a generic "CO not found" instead of surfacing the
+      // real error.
+      .select(`id,title,status,note,total,version,
         projects(id,name,currency,client_id,
           clients(name,email,cc_emails),
           workspaces(id,agency_name,brand_colour,jwt_secret))`)
