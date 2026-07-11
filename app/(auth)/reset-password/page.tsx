@@ -13,36 +13,42 @@ export default function ResetPasswordPage() {
   const [linkInvalid, setLinkInvalid] = useState(false)
   const [done, setDone] = useState(false)
   const [error, setError] = useState('')
-  const supabase = createClient()
+  // FIX: memoize — creating a fresh client every render (previous version
+  // called createClient() directly in the component body) spins up a new
+  // GoTrueClient instance on each re-render.
+  const [supabase] = useState(() => createClient())
 
-  // FIX 1 (v2): two possible recovery link shapes land here now that
-  // forgot-password redirects straight to /reset-password:
-  //   1. PKCE:     ?code=xxxxx           → must call exchangeCodeForSession
-  //   2. Implicit: #access_token=...&type=recovery → auto-detected by the
-  //      browser client on load, which fires the PASSWORD_RECOVERY event.
-  // Handle both, and stop spinning forever if neither shows up (dead/reused link).
+  // FIX 1 (v3): the browser client's detectSessionInUrl (on by default)
+  // ALREADY auto-exchanges both the `?code=` query param (PKCE) and the
+  // `#access_token=...&type=recovery` hash the moment the client is
+  // created — before this effect even runs. The previous version also
+  // manually called exchangeCodeForSession(code) here, racing the SDK's own
+  // exchange for the exact same single-use code. Whichever lost showed
+  // "link expired" even when the SDK's own attempt had already succeeded
+  // and a valid session existed. Don't exchange manually — just listen for
+  // the result (and fall back to checking for an already-established
+  // session, since INITIAL_SESSION fires immediately on subscribe if one
+  // exists already).
   useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
-      if (event === 'PASSWORD_RECOVERY') setReady(true)
+    let settled = false
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'PASSWORD_RECOVERY' || event === 'SIGNED_IN') {
+        settled = true
+        setReady(true)
+      } else if (event === 'INITIAL_SESSION' && session) {
+        settled = true
+        setReady(true)
+      }
     })
 
-    const code = new URLSearchParams(window.location.search).get('code')
-    if (code) {
-      supabase.auth.exchangeCodeForSession(code).then(({ error: exErr }) => {
-        if (exErr) { setLinkInvalid(true); return }
-        setReady(true)
-        // Strip the code from the URL so a refresh doesn't try to reuse it
-        window.history.replaceState({}, '', '/reset-password')
-      })
-    } else if (!window.location.hash.includes('access_token')) {
-      // No code param and no recovery hash — not a valid landing on this page
-      const t = setTimeout(() => { if (!ready) setLinkInvalid(true) }, 4000)
-      return () => { clearTimeout(t); subscription.unsubscribe() }
-    }
+    // Give the SDK's own exchange a moment to finish before giving up.
+    const t = setTimeout(() => {
+      if (!settled) setLinkInvalid(true)
+    }, 5000)
 
-    return () => subscription.unsubscribe()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [supabase.auth])
+    return () => { clearTimeout(t); subscription.unsubscribe() }
+  }, [supabase])
 
   async function handleReset(e: React.FormEvent) {
     e.preventDefault()
