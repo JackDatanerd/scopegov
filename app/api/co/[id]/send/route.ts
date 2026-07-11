@@ -20,7 +20,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const service = createServiceClient()
 
-    const { data: co } = await (service as any)
+    const { data: co, error: coFetchErr } = await (service as any)
       .from('change_orders')
       .select(`id,title,status,note,total,currency,version,
         projects(id,name,currency,client_id,
@@ -28,7 +28,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           workspaces(id,agency_name,brand_colour,jwt_secret))`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
-    if (!co) return NextResponse.json({ error: 'CO not found' }, { status: 404 })
+    if (!co) {
+      console.error('CO send: lookup failed', { id, workspaceId: session.workspaceId, error: coFetchErr })
+      return NextResponse.json({ error: 'CO not found' }, { status: 404 })
+    }
     if (co.status !== 'draft')
       return NextResponse.json({ error: 'Only draft COs can be sent' }, { status: 400 })
 

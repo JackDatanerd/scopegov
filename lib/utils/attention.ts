@@ -30,17 +30,22 @@ export function isAttentionWorthy({ project, workspace }: AttentionContext): boo
   if (project.changeOrders?.some(co => actionableCoStatuses.includes(co.status))) return true
 
   // 4. Any SOW requiring attention
-  // BUG: previously checked .some() across every SOW version the project
-  // has ever had. Once a client requests changes, a NEW draft version is
-  // created and the OLD version's row keeps status='changes_requested'
-  // forever as a historical record — so .some() kept matching that old row
-  // even after a revised SOW was sent and the client signed the new one.
-  // Only the latest version's status is actionable.
+  // FIX (v2): 'highest version number' is wrong — the moment a client
+  // requests changes, the old version is marked 'changes_requested' AND a
+  // new, unsent 'draft' version is created in the same transaction. Picking
+  // the highest version always landed on that fresh draft (never
+  // actionable), so attention cleared instantly instead of showing at all.
+  // Correct approach: ignore unsent drafts, and look at the highest version
+  // that has actually been sent to the client — that's the one whose status
+  // reflects whether the ball is in the client's court (changes_requested /
+  // declined, needs attention) or the agency's (awaiting_signature / signed,
+  // already handled).
   const actionableSowStatuses = ['declined', 'changes_requested']
-  const latestSow = project.sowDocuments?.length
-    ? [...project.sowDocuments].sort((a: any, b: any) => (b.version ?? 0) - (a.version ?? 0))[0]
+  const sentSowVersions = (project.sowDocuments || []).filter((s: any) => s.status !== 'draft')
+  const currentSow = sentSowVersions.length
+    ? [...sentSowVersions].sort((a: any, b: any) => (b.version ?? 0) - (a.version ?? 0))[0]
     : null
-  if (latestSow && actionableSowStatuses.includes(latestSow.status)) return true
+  if (currentSow && actionableSowStatuses.includes(currentSow.status)) return true
 
   // 5. Proactive risk alert — high-value project without signed SOW
   if (
@@ -68,10 +73,11 @@ export function attentionReason({ project }: AttentionContext): string | null {
   if (project.changeOrders?.some(co => co.status === 'declined')) return 'Change order declined'
   if (project.changeOrders?.some(co => co.status === 'countered')) return 'Counter offer received'
   if (project.changeOrders?.some(co => co.status === 'stalled')) return 'Change order stalled'
-  const latestSow = project.sowDocuments?.length
-    ? [...project.sowDocuments].sort((a: any, b: any) => (b.version ?? 0) - (a.version ?? 0))[0]
+  const sentSowVersions = (project.sowDocuments || []).filter((s: any) => s.status !== 'draft')
+  const currentSow = sentSowVersions.length
+    ? [...sentSowVersions].sort((a: any, b: any) => (b.version ?? 0) - (a.version ?? 0))[0]
     : null
-  if (latestSow?.status === 'changes_requested') return 'Client requested SOW changes'
-  if (latestSow?.status === 'declined') return 'Client declined SOW'
+  if (currentSow?.status === 'changes_requested') return 'Client requested SOW changes'
+  if (currentSow?.status === 'declined') return 'Client declined SOW'
   return 'High-value project — no signed SOW'
 }

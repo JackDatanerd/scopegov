@@ -98,7 +98,16 @@ export default function CoEditor({ projId, coId }: Props) {
     }, 1500)
   }, [title, note, lineItems, taxRate, taxInclusive, isRetainerRenewal])
 
-  async function doSave(explicit = true): Promise<string | null> {
+  // FIX (CO send "not found" on a brand-new CO): doSave() used to always
+  // call router.replace() to the new CO's own URL immediately after
+  // creating it — including when it was being called from inside
+  // handleSend(), which then went on to fire the /send request against a
+  // component that was already mid-unmount from that navigation. Adding a
+  // `navigate` flag lets handleSend create the CO without triggering that
+  // navigation, so /send fires against a still-mounted, stable component,
+  // and the only navigation happens once, at the very end, after send
+  // actually succeeds.
+  async function doSave(explicit = true, navigate = true): Promise<string | null> {
     if (explicit) { setSaving(true); setError('') }
     try {
       const body = {
@@ -123,7 +132,7 @@ export default function CoEditor({ projId, coId }: Props) {
         const json = await res.json()
         if (!res.ok) throw new Error(json.error)
         savedCoId.current = json.coId
-        router.replace(`/projects/${projId}/co/${json.coId}`)
+        if (navigate) router.replace(`/projects/${projId}/co/${json.coId}`)
         return json.coId
       }
     } catch (err: unknown) {
@@ -139,7 +148,7 @@ export default function CoEditor({ projId, coId }: Props) {
     if (lineItems.every(l => l.total === 0)) { setError('Add at least one line item with a value'); return }
     setSending(true); setError('')
     try {
-      const id = await doSave(false)
+      const id = await doSave(false, false)
       if (!id) throw new Error('Failed to save CO before sending')
       const res  = await fetch(`/api/co/${id}/send`, { method: 'POST' })
       const json = await res.json()
