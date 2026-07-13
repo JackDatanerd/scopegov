@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- Balance scale mark for Safari pinned tab (must be pure black) -->
+  <!-- Horizontal arm -->
+  <rect x="14" y="36" width="72" height="5" rx="2.5"/>
+  <!-- Pivot -->
+  <circle cx="50" cy="38.5" r="5"/>
+  <!-- Vertical stem -->
+  <rect x="47.5" y="38" width="5" height="34"/>
+  <!-- Base -->
+  <rect x="36" y="70" width="28" height="5" rx="2.5"/>
+  <!-- Left pan rim -->
+  <path d="M17,50 a14,7 0 0,0 28,0 z" fill="none" stroke="black" stroke-width="4"/>
+  <rect x="17" y="53" width="28" height="4" rx="2"/>
+  <!-- Right pan rim -->
+  <path d="M55,50 a14,7 0 0,0 28,0 z" fill="none" stroke="black" stroke-width="4"/>
+  <rect x="55" y="53" width="28" height="4" rx="2"/>
+</svg>
