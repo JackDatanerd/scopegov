@@ -447,4 +447,6 @@ export interface SessionUser {
   onboardingCompletedAt: string | null
   permissions: Permission[]
   emailVerifiedAt: string | null
+  logoStoragePath: string | null
+  brandColour: string | null
 }

@@ -90,6 +90,8 @@ export async function getSession(): Promise<SessionUser | null> {
       // C2: fall back to Supabase auth email_confirmed_at so existing sessions
       // aren't blocked by a stale null in public.users
       emailVerifiedAt:      u?.email_verified_at || user.email_confirmed_at || null,
+      logoStoragePath:      ws?.logo_storage_path || null,
+      brandColour:          ws?.brand_colour || null,
     }
   } catch {
     return null
