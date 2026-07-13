@@ -37,14 +37,26 @@ export default function Sidebar({ session }: { session: SessionUser }) {
     router.refresh()
   }
 
+  // FIX: session.logoStoragePath was already being fetched (see
+  // lib/auth/session.ts) but never used here — the sidebar always showed
+  // the static ScopeGov mark regardless of whether the agency had uploaded
+  // a logo. Public bucket URLs are deterministic, so no extra fetch needed.
+  const logoUrl = session.logoStoragePath
+    ? `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/logos/${session.logoStoragePath}`
+    : null
+
   return (
     <aside className="sb">
       {/* Brand */}
       <div className="sb-brand">
         <div className="sb-logo-row">
-          <div className="sb-mark">
-            <i className="ti ti-scale" style={{ fontSize: 15, color: '#FFF' }} />
-          </div>
+          {logoUrl ? (
+            <img src={logoUrl} alt={session.agencyName} className="sb-mark" style={{ objectFit: 'cover' }} />
+          ) : (
+            <div className="sb-mark">
+              <i className="ti ti-scale" style={{ fontSize: 15, color: '#FFF' }} />
+            </div>
+          )}
           <span className="sb-name">ScopeGov</span>
         </div>
         <div className="sb-agency">{session.agencyName}</div>

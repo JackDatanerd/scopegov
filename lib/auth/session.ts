@@ -11,25 +11,63 @@ export async function getSession(): Promise<SessionUser | null> {
 
     const service = createServiceClient()
 
-    const { data: memberRow } = await (service as any)
-      .from('workspace_members')
-      .select(`
-        id,
-        effective_permissions,
-        workspace_id,
-        workspaces (
-          id, name, agency_name, plan_tier, trial_ends_at, onboarding_completed_at,
-          brand_colour, logo_storage_path
-        ),
-        users!workspace_members_user_id_fkey (
-          id, name, email, avatar_url, email_verified_at, active_workspace_id
-        )
-      `)
-      .eq('user_id', user.id)
-      .eq('status', 'active')
-      .order('created_at', { ascending: true })
-      .limit(1)
-      .single()
+    // FIX: active_workspace_id was fetched but never actually used — this
+    // always picked the OLDEST workspace_members row regardless of which
+    // workspace was set active. That's why an existing user who accepted an
+    // invite to a second workspace (which correctly sets
+    // users.active_workspace_id to the new workspace) never actually saw
+    // it: this query kept surfacing their original, first-created
+    // workspace every time. Look up active_workspace_id first, then prefer
+    // that membership; fall back to the oldest active membership if it's
+    // unset or stale (e.g. points to a workspace they're no longer in).
+    const { data: userRow } = await (service as any)
+      .from('users').select('active_workspace_id').eq('id', user.id).maybeSingle()
+
+    let memberRow: any = null
+    if (userRow?.active_workspace_id) {
+      const { data } = await (service as any)
+        .from('workspace_members')
+        .select(`
+          id,
+          effective_permissions,
+          workspace_id,
+          workspaces (
+            id, name, agency_name, plan_tier, trial_ends_at, onboarding_completed_at,
+            brand_colour, logo_storage_path
+          ),
+          users!workspace_members_user_id_fkey (
+            id, name, email, avatar_url, email_verified_at, active_workspace_id
+          )
+        `)
+        .eq('user_id', user.id)
+        .eq('workspace_id', userRow.active_workspace_id)
+        .eq('status', 'active')
+        .maybeSingle()
+      memberRow = data
+    }
+
+    if (!memberRow) {
+      const { data } = await (service as any)
+        .from('workspace_members')
+        .select(`
+          id,
+          effective_permissions,
+          workspace_id,
+          workspaces (
+            id, name, agency_name, plan_tier, trial_ends_at, onboarding_completed_at,
+            brand_colour, logo_storage_path
+          ),
+          users!workspace_members_user_id_fkey (
+            id, name, email, avatar_url, email_verified_at, active_workspace_id
+          )
+        `)
+        .eq('user_id', user.id)
+        .eq('status', 'active')
+        .order('created_at', { ascending: true })
+        .limit(1)
+        .single()
+      memberRow = data
+    }
 
     if (!memberRow) return null
 

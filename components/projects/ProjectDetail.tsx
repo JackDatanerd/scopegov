@@ -649,10 +649,18 @@ function FlagCard({ flag, permissions, router, projectId }: any) {
   async function handleAction(action: string) {
     setActing(true)
     try {
-      await fetch(`/api/guardian/flags/${flag.id}`, {
+      const res  = await fetch(`/api/guardian/flags/${flag.id}`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action, projectId }),
       })
+      const json = await res.json().catch(() => ({}))
+      // FIX: draft_co creates a real, editable CO — but this just did
+      // router.refresh() and left the user on the Guardian tab with no way
+      // to find it. Take them straight to the new draft.
+      if (action === 'draft_co' && json.coId) {
+        router.push(`/projects/${projectId}/co/${json.coId}`)
+        return
+      }
       router.refresh()
     } finally { setActing(false) }
   }

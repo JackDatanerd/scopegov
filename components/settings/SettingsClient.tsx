@@ -10,6 +10,7 @@
 
 'use client'
 import { useState } from 'react'
+import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { SessionUser } from '@/lib/supabase/types'
@@ -112,6 +113,12 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
               {t.label}
             </button>
           ))}
+          {/* FIX: /settings/audit was fully built (permission-gated, reads
+              from audit_log) but had no link anywhere in this nav — it was
+              only reachable by typing the URL directly. */}
+          {permissions.viewAuditLog && (
+            <Link href="/settings/audit" className="settings-nav-item">Audit log</Link>
+          )}
         </div>
       </div>
       <div>
@@ -253,7 +260,7 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving }: any) {
         <div className="settings-section-title">Identity</div>
         <div className="f2">
           <div className="fgrp">
-            <label className="flbl">Workspace name</label>
+            <label className="flbl">Workspace name <span className="fhint">(internal only — not shown to clients or in the sidebar)</span></label>
             <input className="finp" value={form.name} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('name', e.target.value)} />
           </div>
           <div className="fgrp">
@@ -296,14 +303,28 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving }: any) {
 function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, permissions, onSave, saving }: any) {
   const [logoFile,  setLogoFile]  = useState<File | null>(null)
   const [uploading, setUploading] = useState(false)
+  const [fileError, setFileError] = useState('')
   const supabase = createClient()
 
   if (!permissions.manageWorkspace) return <Restricted />
 
+  const MAX_LOGO_BYTES = 2 * 1024 * 1024 // 2MB — matches the "Max 2 MB" label already shown in the UI
+
   function handleLogoChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file) return
-    if (!['image/png','image/jpeg','image/svg+xml'].includes(file.type)) return
+    setFileError('')
+    if (!['image/png','image/jpeg','image/svg+xml'].includes(file.type)) {
+      setFileError('Please upload a PNG, JPG, or SVG file.')
+      e.target.value = ''
+      return
+    }
+    // FIX: no size check existed at all — any file size silently uploaded.
+    if (file.size > MAX_LOGO_BYTES) {
+      setFileError(`File is too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Max size is 2MB.`)
+      e.target.value = ''
+      return
+    }
     setLogoFile(file)
     const reader = new FileReader()
     reader.onload = ev => setPreview(ev.target?.result as string)
@@ -341,6 +362,7 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, perm
               <input type="file" accept="image/png,image/jpeg,image/svg+xml" style={{ display: 'none' }} onChange={handleLogoChange} />
             </label>
             <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 5 }}>PNG, JPEG, or SVG · Max 2 MB</p>
+            {fileError && <p className="ferr" style={{ marginTop: 4 }}>{fileError}</p>}
           </div>
         </div>
         <div className="fgrp">
@@ -612,18 +634,15 @@ function NotificationsTab({
 
 // ── INTEGRATIONS ──────────────────────────────────────────────
 function IntegrationsTab({ session }: { session: SessionUser }) {
-  const canSlack  = ['pro','agency','trial'].includes(session.planTier)
-  const canZapier = canSlack
-
   return (
     <div>
       <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, marginBottom: 20 }}>Integrations</h2>
       <div className="settings-section">
         {[
-          { name: 'Slack',        icon: 'ti-brand-slack',        desc: 'Auto-create a channel per project for Guardian monitoring', avail: canSlack,  plan: 'Pro' },
-          { name: 'Zapier',       icon: 'ti-bolt',               desc: 'Connect ScopeGov to 5,000+ apps via Zapier',               avail: canZapier, plan: 'Pro' },
-          { name: 'HubSpot',      icon: 'ti-circle-dashed',      desc: 'Sync clients and project status with HubSpot CRM',         avail: session.planTier === 'agency', plan: 'Agency' },
-          { name: 'Google Drive', icon: 'ti-brand-google-drive', desc: 'Attach Drive files to SOWs and change orders',             avail: session.planTier === 'agency', plan: 'Agency' },
+          { name: 'Slack',        icon: 'ti-brand-slack',        desc: 'Auto-create a channel per project for Guardian monitoring' },
+          { name: 'Zapier',       icon: 'ti-bolt',               desc: 'Connect ScopeGov to 5,000+ apps via Zapier' },
+          { name: 'HubSpot',      icon: 'ti-circle-dashed',      desc: 'Sync clients and project status with HubSpot CRM' },
+          { name: 'Google Drive', icon: 'ti-brand-google-drive', desc: 'Attach Drive files to SOWs and change orders' },
         ].map(int => (
           <div key={int.name} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 0', borderBottom: '1px solid var(--surface-2)' }}>
             <div style={{ width: 36, height: 36, background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
@@ -633,9 +652,11 @@ function IntegrationsTab({ session }: { session: SessionUser }) {
               <div style={{ fontSize: 13, fontWeight: 600 }}>{int.name}</div>
               <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{int.desc}</div>
             </div>
-            {int.avail
-              ? <button className="btn btn-ghost btn-sm">Connect</button>
-              : <span style={{ fontSize: 11, color: 'var(--text-3)', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 4, padding: '3px 8px' }}>{int.plan}+ only</span>}
+            {/* FIX: these were plan-gated 'Connect' buttons with no onClick
+                at all — clicking did nothing, no matter the plan. None of
+                these integrations are built yet, so show that honestly
+                instead of a dead button that looks live. */}
+            <span style={{ fontSize: 11, color: 'var(--text-3)', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 4, padding: '3px 8px' }}>Coming soon</span>
           </div>
         ))}
       </div>

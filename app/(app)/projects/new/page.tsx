@@ -61,6 +61,16 @@ export default function NewProjectPage() {
 
   useEffect(() => {
     fetch('/api/clients').then(r => r.json()).then(json => setClients(json.clients || [])).catch(() => {})
+    // FIX: prefill from saved workspace defaults instead of the hardcoded
+    // '50_50' / 2 / 'USD' fallbacks that were previously never overridden.
+    fetch('/api/workspace/defaults')
+      .then(r => r.json())
+      .then(json => {
+        if (json.paymentStructure) setPaymentStructure(json.paymentStructure)
+        if (json.revisionRounds)   setRevisionRounds(String(json.revisionRounds))
+        if (json.currency)         setCurrency(json.currency)
+      })
+      .catch(() => {})
   }, [])
 
   const filteredClients = clients.filter(c =>

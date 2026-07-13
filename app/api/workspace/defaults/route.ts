@@ -65,3 +65,41 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
   }
 }
+
+// FIX: no GET handler existed at all — the new-project wizard's payment
+// structure, revision rounds, and currency fields were hardcoded useState
+// initial values ('50_50', 2, 'USD') with nothing fetching the saved
+// workspace defaults, so every new project silently ignored whatever was
+// configured in Settings → Defaults. Currency itself isn't a
+// workspace_defaults column — it lives on workspaces — so it's included
+// here too rather than requiring a second round trip.
+export async function GET() {
+  try {
+    const session = await getSession()
+    if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    const service = createServiceClient()
+
+    const [{ data: defaults }, { data: workspace }] = await Promise.all([
+      (service as any)
+        .from('workspace_defaults')
+        .select('revision_rounds, payment_structure, governing_law')
+        .eq('workspace_id', session.workspaceId)
+        .is('project_type', null)
+        .maybeSingle(),
+      (service as any)
+        .from('workspaces')
+        .select('currency')
+        .eq('id', session.workspaceId)
+        .single(),
+    ])
+
+    return NextResponse.json({
+      revisionRounds:   defaults?.revision_rounds ?? 2,
+      paymentStructure: defaults?.payment_structure ?? '50_50',
+      governingLaw:     defaults?.governing_law ?? 'United States',
+      currency:         workspace?.currency ?? 'USD',
+    })
+  } catch (err) {
+    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+  }
+}
