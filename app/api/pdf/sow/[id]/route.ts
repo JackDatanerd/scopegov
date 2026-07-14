@@ -15,10 +15,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
     const { data: sow } = await (service as any)
       .from('sow_documents')
-      .select(`id, version, sections, metadata, status, signed_at, signed_by,
+      .select(`id, version, sections, metadata, status, signed_at, signed_by, client_signature_data,
         projects(id, name, disc, contract_value, currency,
           clients(name),
-          workspaces(agency_name, brand_colour, logo_storage_path))`)
+          workspaces(agency_name, brand_colour, logo_storage_path, agency_signature_data))`)
       .eq('id', id)
       .eq('workspace_id', session.workspaceId)
       .single()
@@ -45,6 +45,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       sections:      sow.sections || [],
       signedBy:      sow.signed_by || undefined,
       signedAt:      sow.signed_at || undefined,
+      agencySignatureData: ws?.agency_signature_data || null,
+      clientSignatureData: sow.client_signature_data || null,
       version:       sow.version,
       isWatermarked: sow.status === 'draft',
     })

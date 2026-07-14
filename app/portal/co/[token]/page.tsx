@@ -1,6 +1,7 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useParams } from 'next/navigation'
+import SignaturePad, { type SignaturePadHandle } from '@/components/ui/SignaturePad'
 
 type CoState = 'loading' | 'invalid' | 'revoked' | 'expired' | 'accepted' | 'declined' | 'withdrawn' | 'closed' | 'stalled' | 'countered' | 'ready' | 'done'
 type CoMode  = 'view' | 'accept' | 'decline' | 'counter'
@@ -13,6 +14,7 @@ interface CoData {
   agencyName:  string
   brandColour: string
   logoUrl:     string | null
+  agencySignatureData: string | null
   lineItems:   Array<{ id: string; description: string; quantity: number; rate: number; total: number }>
   subtotal:    number
   taxRate:     number
@@ -37,12 +39,18 @@ export default function CoPortalPage() {
   const [doneMsg, setDoneMsg] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error,  setError]  = useState('')
+  const [acceptedInfo, setAcceptedInfo] = useState<{ acceptedBy: string | null; clientSignatureData: string | null } | null>(null)
+  const sigPadRef = useRef<SignaturePadHandle>(null)
 
   useEffect(() => {
     fetch(`/api/portal/co/${token}`)
       .then(r => r.json())
       .then(json => {
-        if (json.state) { setState(json.state as CoState); return }
+        if (json.state) {
+          setState(json.state as CoState)
+          if (json.state === 'accepted') setAcceptedInfo({ acceptedBy: json.acceptedBy, clientSignatureData: json.clientSignatureData })
+          return
+        }
         setCo(json.co); setState('ready')
       })
       .catch(() => setState('invalid'))
@@ -57,6 +65,7 @@ export default function CoPortalPage() {
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error)
+      if (action === 'accept') setAcceptedInfo({ acceptedBy: signerName.trim(), clientSignatureData: (extra?.signatureData as string) || null })
       setDoneMsg(json.message || 'Done')
       setState('done')
     } catch (err: unknown) {
@@ -103,11 +112,31 @@ export default function CoPortalPage() {
     revoked:   { icon: 'ti-link-off', iconBg: '#FEF2F2', iconColor: '#B91C1C', title: 'Link deactivated', body: 'This change order link is no longer active.' },
     expired:   { icon: 'ti-clock-off', iconBg: '#FEF2F2', iconColor: '#B91C1C', title: 'Link expired', body: 'This link has expired. Please contact the agency for a new one.' },
     withdrawn: { icon: 'ti-file-off', iconBg: '#FEF2F2', iconColor: '#B91C1C', title: 'CO withdrawn', body: 'The agency has withdrawn this change order.' },
-    accepted:  { icon: 'ti-check', iconBg: '#EDFAF2', iconColor: '#1A5C3A', title: 'Already accepted', body: 'This change order has already been accepted. Thank you.' },
     declined:  { icon: 'ti-x', iconBg: '#FEF2F2', iconColor: '#B91C1C', title: 'Already declined', body: 'This change order has been declined.' },
     closed:    { icon: 'ti-lock', iconBg: '#F5F5F0', iconColor: '#666', title: 'No longer available', body: 'This change order has been closed by the agency and is no longer open for a response.' },
     stalled:   { icon: 'ti-clock-off', iconBg: '#FFF7ED', iconColor: '#B45309', title: 'Link inactive', body: 'This change order received no response in time and is now inactive. Please contact the agency for an updated request.' },
     countered: { icon: 'ti-check', iconBg: '#EDFAF2', iconColor: '#1A5C3A', title: 'Counter already sent', body: 'You have already sent a counter-offer for this change order. The agency has been notified and will respond soon.' },
+  }
+
+  if (state === 'accepted') {
+    return (
+      <PortalShell>
+        <div style={{ textAlign: 'center', padding: '80px 32px' }}>
+          <div style={{ width: 64, height: 64, background: '#EDFAF2', border: '1px solid #B7DCC8', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px' }}>
+            <i className="ti ti-check" style={{ fontSize: 28, color: '#1A5C3A' }} />
+          </div>
+          <h2 style={{ fontFamily: 'Georgia,serif', fontSize: 22, margin: '0 0 10px' }}>Already accepted</h2>
+          <p style={{ fontSize: 14, color: '#555', lineHeight: 1.7, maxWidth: 360, margin: '0 auto' }}>
+            This change order has already been accepted{acceptedInfo?.acceptedBy ? ` by ${acceptedInfo.acceptedBy}` : ''}. Thank you.
+          </p>
+          {acceptedInfo?.clientSignatureData && (
+            <div style={{ display: 'inline-block', background: '#fff', border: '1px solid #E5E5E0', borderRadius: 6, padding: '14px 22px', marginTop: 24 }}>
+              <img src={acceptedInfo.clientSignatureData} alt="Signature" style={{ height: 56, display: 'block', margin: '0 auto' }} />
+            </div>
+          )}
+        </div>
+      </PortalShell>
+    )
   }
 
   if (staticMsg[state]) {
@@ -238,7 +267,7 @@ export default function CoPortalPage() {
           <div className="portal-action-card" style={{ borderTopColor: accent }}>
             <h3 style={{ fontFamily: 'Georgia,serif', fontSize: 18, fontWeight: 400, margin: '0 0 6px' }}>Accept change order</h3>
             <p style={{ fontSize: 13, color: '#555', margin: '0 0 16px' }}>
-              Type your name to accept the additional scope and cost of <strong>{co.currency} {co.total.toLocaleString()}</strong>.
+              Type your name, draw your signature, and accept the additional scope and cost of <strong>{co.currency} {co.total.toLocaleString()}</strong>.
             </p>
             {error && <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 5, padding: '9px 12px', fontSize: 12, color: '#B91C1C', marginBottom: 12 }}>{error}</div>}
             <div style={{ marginBottom: 14 }}>
@@ -246,9 +275,28 @@ export default function CoPortalPage() {
               <input className="finp" value={signerName} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSignerName(e.target.value)}
                 placeholder="Type your full name to accept" autoFocus style={{ fontFamily: 'Georgia,serif', fontSize: 15 }} />
             </div>
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
+                <label style={{ fontSize: 11, fontWeight: 600, letterSpacing: '.02em', color: '#555' }}>Draw your signature</label>
+                <button type="button" onClick={() => sigPadRef.current?.clear()}
+                  style={{ background: 'none', border: 'none', fontSize: 11, color: '#909090', cursor: 'pointer', textDecoration: 'underline' }}>Clear</button>
+              </div>
+              <SignaturePad ref={sigPadRef} strokeColour={accent} height={140} />
+            </div>
+            {co.agencySignatureData && (
+              <div style={{ marginBottom: 16, padding: '10px 14px', background: '#FAFAF6', border: '1px solid #F0F0EA', borderRadius: 5 }}>
+                <div style={{ fontSize: 10.5, color: '#909090', marginBottom: 4 }}>Already signed by {co.agencyName}</div>
+                <img src={co.agencySignatureData} alt={`${co.agencyName} signature`} style={{ height: 30 }} />
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 10 }}>
               <button className="btn" style={{ background: accent, color: '#FFF', padding: '10px 22px' }}
-                onClick={() => submit('accept')} disabled={submitting || signerName.trim().length < 3}>
+                onClick={() => {
+                  const signatureData = sigPadRef.current?.toDataURL()
+                  if (!signatureData) { setError('Please draw your signature to accept.'); return }
+                  submit('accept', { signatureData })
+                }}
+                disabled={submitting || signerName.trim().length < 3}>
                 {submitting ? <span className="spin" style={{ width: 14, height: 14 }} /> : `Accept as ${signerName || '…'}`}
               </button>
               <button className="btn btn-ghost" onClick={() => { setMode('view'); setError('') }}>Cancel</button>

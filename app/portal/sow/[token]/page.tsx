@@ -1,6 +1,7 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useParams } from 'next/navigation'
+import SignaturePad, { type SignaturePadHandle } from '@/components/ui/SignaturePad'
 
 type PortalState =
   | 'loading' | 'invalid' | 'revoked' | 'expired' | 'declined'
@@ -13,6 +14,7 @@ interface SowData {
   agencyName:  string
   brandColour: string
   logoUrl:     string | null
+  agencySignatureData: string | null
   contractValue: number
   currency:    string
   clientName:  string
@@ -35,12 +37,19 @@ export default function SowPortalPage() {
   const [submitting, setSubmitting] = useState(false)
   const [error,     setError]     = useState('')
   const [activeSection, setActiveSection] = useState<string | null>(null)
+  const [signedInfo, setSignedInfo] = useState<{ signedBy: string | null; clientSignatureData: string | null } | null>(null)
+  const [sigEmpty,  setSigEmpty]  = useState(true)
+  const sigPadRef = useRef<SignaturePadHandle>(null)
 
   useEffect(() => {
     fetch(`/api/portal/sow/${token}`)
       .then(r => r.json())
       .then(json => {
-        if (json.state) { setState(json.state as PortalState); return }
+        if (json.state) {
+          setState(json.state as PortalState)
+          if (json.state === 'signed') setSignedInfo({ signedBy: json.signedBy, clientSignatureData: json.clientSignatureData })
+          return
+        }
         setSow(json.sow)
         setState('ready')
         if (json.sow.sections?.[0]) setActiveSection(json.sow.sections[0].id)
@@ -54,15 +63,18 @@ export default function SowPortalPage() {
       return
     }
     if (!agreed) { setError('Please confirm you have read and agree to the terms.'); return }
+    const signatureData = sigPadRef.current?.toDataURL()
+    if (!signatureData) { setError('Please draw your signature to sign.'); return }
     setSubmitting(true); setError('')
     try {
       const res  = await fetch(`/api/portal/sow/${token}/sign`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ signerName: signerName.trim() }),
+        body:    JSON.stringify({ signerName: signerName.trim(), signatureData }),
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error)
+      setSignedInfo({ signedBy: signerName.trim(), clientSignatureData: signatureData })
       setState('signed')
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.')
@@ -147,9 +159,15 @@ export default function SowPortalPage() {
           </h2>
           <p style={{ fontSize: 14, color: '#555', lineHeight: 1.7, maxWidth: 360, margin: '0 auto' }}>
             {state === 'signed'
-              ? `Thank you, ${sow?.clientName}. Your signed copy will be emailed to you. The team at ${sow?.agencyName} has been notified.`
+              ? `Thank you${signedInfo?.signedBy ? `, ${signedInfo.signedBy}` : ''}. Your signed copy will be emailed to you. The team at ${sow?.agencyName} has been notified.`
               : 'Your feedback has been sent. The team will review your notes and send an updated agreement.'}
           </p>
+          {state === 'signed' && signedInfo?.clientSignatureData && (
+            <div style={{ display: 'inline-block', background: '#fff', border: '1px solid #E5E5E0', borderRadius: 6, padding: '14px 22px', marginTop: 24 }}>
+              <img src={signedInfo.clientSignatureData} alt="Your signature" style={{ height: 56, display: 'block', margin: '0 auto' }} />
+              <div style={{ fontSize: 11, color: '#909090', marginTop: 8, borderTop: '1px solid #F0F0EA', paddingTop: 6 }}>{signedInfo.signedBy}</div>
+            </div>
+          )}
         </div>
       </PortalShell>
     )
@@ -258,7 +276,7 @@ export default function SowPortalPage() {
           <div className="portal-action-card" style={{ borderTopColor: accent }}>
             <h3 style={{ fontFamily: 'Georgia,serif', fontSize: 18, fontWeight: 400, margin: '0 0 6px' }}>Sign this agreement</h3>
             <p style={{ fontSize: 13, color: '#555', margin: '0 0 18px' }}>
-              By typing your name and clicking Sign, you confirm you have authority to enter this agreement.
+              Type your name, draw your signature, and click Sign to confirm you have authority to enter this agreement.
             </p>
             {error && <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 5, padding: '9px 12px', fontSize: 12, color: '#B91C1C', marginBottom: 14 }}>{error}</div>}
             <div style={{ marginBottom: 14 }}>
@@ -274,6 +292,24 @@ export default function SowPortalPage() {
                 style={{ fontFamily: 'Georgia,serif', fontSize: 16 }}
               />
             </div>
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
+                <label style={{ fontSize: 11, fontWeight: 600, letterSpacing: '.02em', color: '#555' }}>
+                  Draw your signature
+                </label>
+                <button type="button" onClick={() => { sigPadRef.current?.clear(); setSigEmpty(true) }}
+                  style={{ background: 'none', border: 'none', fontSize: 11, color: '#909090', cursor: 'pointer', textDecoration: 'underline' }}>
+                  Clear
+                </button>
+              </div>
+              <SignaturePad ref={sigPadRef} strokeColour={accent} />
+            </div>
+            {sow.agencySignatureData && (
+              <div style={{ marginBottom: 18, padding: '10px 14px', background: '#FAFAF6', border: '1px solid #F0F0EA', borderRadius: 5 }}>
+                <div style={{ fontSize: 10.5, color: '#909090', marginBottom: 4 }}>Already signed by {sow.agencyName}</div>
+                <img src={sow.agencySignatureData} alt={`${sow.agencyName} signature`} style={{ height: 34 }} />
+              </div>
+            )}
             <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', cursor: 'pointer', marginBottom: 18 }}>
               <input
                 type="checkbox"

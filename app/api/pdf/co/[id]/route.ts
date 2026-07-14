@@ -15,10 +15,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const { data: co } = await (service as any)
       .from('change_orders')
       .select(`id, title, note, version, line_items, subtotal, tax_rate, tax_inclusive, total,
-        accepted_at, accepted_by, status,
+        accepted_at, accepted_by, status, client_signature_data,
         projects(id, name, currency,
           clients(name),
-          workspaces(agency_name, brand_colour, logo_storage_path))`)
+          workspaces(agency_name, brand_colour, logo_storage_path, agency_signature_data))`)
       .eq('id', id)
       .eq('workspace_id', session.workspaceId)
       .single()
@@ -50,6 +50,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       currency:    co.projects?.currency || 'USD',
       acceptedBy:  co.accepted_by || undefined,
       acceptedAt:  co.accepted_at || undefined,
+      agencySignatureData: ws?.agency_signature_data || null,
+      clientSignatureData: co.client_signature_data || null,
     })
 
     const filename = `CO-${co.title.replace(/[^a-z0-9]/gi, '-')}.pdf`

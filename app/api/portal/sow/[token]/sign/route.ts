@@ -11,11 +11,13 @@ import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 export async function POST(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
     const { token }      = await params
-    const { signerName } = await request.json()
+    const { signerName, signatureData } = await request.json()
     const ip             = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown'
 
     if (!signerName || signerName.trim().length < 3)
       return NextResponse.json({ error: 'Full name required to sign' }, { status: 400 })
+    if (!signatureData || typeof signatureData !== 'string' || !signatureData.startsWith('data:image/'))
+      return NextResponse.json({ error: 'Please draw your signature to sign' }, { status: 400 })
 
     const service = createServiceClient()
 
@@ -59,6 +61,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       signed_by:   signerName.trim(),
       signer_email: client.email,
       signer_ip:   ip,
+      client_signature_data: signatureData,
       updated_at:  now,
     }).eq('id', sow.id)
 

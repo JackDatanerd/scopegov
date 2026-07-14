@@ -27,10 +27,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     // Find SOW by token
     const { data: sow } = await (service as any)
       .from('sow_documents')
-      .select(`id, version, status, sections, metadata, expires_at, signed_at,
+      .select(`id, version, status, sections, metadata, expires_at, signed_at, signed_by, client_signature_data,
         projects(id, name, disc, contract_value, currency, client_id,
           clients(name, email),
-          workspaces(id, agency_name, brand_colour, logo_storage_path, jwt_secret))`)
+          workspaces(id, agency_name, brand_colour, logo_storage_path, agency_signature_data, jwt_secret))`)
       .eq('token', token)
       .single()
 
@@ -49,7 +49,13 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       return NextResponse.json({ state: 'invalid' })
     }
 
-    if (sow.status === 'signed')     return NextResponse.json({ state: 'signed' })
+    if (sow.status === 'signed') {
+      return NextResponse.json({
+        state: 'signed',
+        signedBy: sow.signed_by, signedAt: sow.signed_at,
+        clientSignatureData: sow.client_signature_data || null,
+      })
+    }
     if (sow.status === 'withdrawn')  return NextResponse.json({ state: 'withdrawn' })
     if (sow.status === 'declined')   return NextResponse.json({ state: 'declined' })
     if (sow.status === 'expired')    return NextResponse.json({ state: 'expired' })
@@ -77,6 +83,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         agencyName:    workspace.agency_name,
         brandColour:   workspace.brand_colour || '#1A5C3A',
         logoUrl,
+        agencySignatureData: workspace.agency_signature_data || null,
         contractValue: project.contract_value || 0,
         currency:      project.currency || 'USD',
         clientName:    client?.name || '',

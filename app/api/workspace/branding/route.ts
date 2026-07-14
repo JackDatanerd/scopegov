@@ -7,13 +7,17 @@ export async function PATCH(request: NextRequest) {
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-    const { brandColour, logoStoragePath } = await request.json()
+    const { brandColour, logoStoragePath, agencySignatureData } = await request.json()
     const service = createServiceClient()
 
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
     if (brandColour) updates.brand_colour = brandColour
     if (logoStoragePath && typeof logoStoragePath === 'string') {
       updates.logo_storage_path = logoStoragePath
+    }
+    // agencySignatureData: a base64 PNG data URL, or explicitly null to clear it
+    if (agencySignatureData !== undefined) {
+      updates.agency_signature_data = agencySignatureData
     }
 
     const { error } = await (service as any)

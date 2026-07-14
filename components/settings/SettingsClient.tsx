@@ -9,12 +9,13 @@
 // state here means it survives tab switches regardless of refresh timing.
 
 'use client'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { SessionUser } from '@/lib/supabase/types'
 import { PLAN_LABELS, PLAN_LIMITS, formatDate } from '@/lib/utils/format'
+import SignaturePad, { type SignaturePadHandle } from '@/components/ui/SignaturePad'
 
 type SettingsTab = 'account' | 'workspace' | 'branding' | 'defaults' | 'guardian' | 'billing' | 'notifications' | 'integrations' | 'danger'
 
@@ -137,6 +138,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
             workspaceId={workspace?.id}
             colour={brandColour} setColour={setBrandColour}
             preview={logoPreview} setPreview={setLogoPreview}
+            savedSignature={workspace?.agency_signature_data || null}
             permissions={permissions} onSave={patch} saving={saving}
           />
         )}
@@ -311,10 +313,14 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugLocked }
 }
 
 // ── BRANDING ──────────────────────────────────────────────────
-function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, permissions, onSave, saving }: any) {
+function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, savedSignature, permissions, onSave, saving }: any) {
   const [logoFile,  setLogoFile]  = useState<File | null>(null)
   const [uploading, setUploading] = useState(false)
   const [fileError, setFileError] = useState('')
+  const [sigSaved,   setSigSaved]   = useState<string | null>(savedSignature)
+  const [savingSig,  setSavingSig]  = useState(false)
+  const [sigError,   setSigError]   = useState('')
+  const sigPadRef = useRef<SignaturePadHandle>(null)
   const supabase = createClient()
 
   if (!permissions.manageWorkspace) return <Restricted />
@@ -356,6 +362,33 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, perm
     } finally { setUploading(false) }
   }
 
+  async function saveSignature() {
+    const dataUrl = sigPadRef.current?.toDataURL()
+    if (!dataUrl) { setSigError('Draw a signature first.'); return }
+    setSigError(''); setSavingSig(true)
+    try {
+      const res = await fetch('/api/workspace/branding', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agencySignatureData: dataUrl }),
+      })
+      if (!res.ok) throw new Error()
+      setSigSaved(dataUrl)
+      sigPadRef.current?.clear()
+    } catch { setSigError('Could not save signature — try again.') }
+    finally { setSavingSig(false) }
+  }
+
+  async function clearSavedSignature() {
+    setSavingSig(true)
+    try {
+      const res = await fetch('/api/workspace/branding', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agencySignatureData: null }),
+      })
+      if (res.ok) setSigSaved(null)
+    } finally { setSavingSig(false) }
+  }
+
   return (
     <div>
       <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, marginBottom: 20 }}>Branding</h2>
@@ -389,6 +422,38 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, perm
         <button className="btn btn-primary btn-sm" onClick={saveBranding} disabled={saving || uploading}>
           {saving || uploading ? <span className="spin" /> : 'Save branding'}
         </button>
+      </div>
+
+      <div className="settings-section" style={{ marginTop: 16 }}>
+        <div className="settings-section-title">Your signature</div>
+        <p style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 14, lineHeight: 1.6 }}>
+          Draw and save your signature once — it's applied automatically to every SOW and change order you send from here on. This doesn't change documents already sent or signed.
+        </p>
+        {sigSaved ? (
+          <div>
+            <div style={{ display: 'inline-block', background: '#fff', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '10px 16px', marginBottom: 12 }}>
+              <img src={sigSaved} alt="Saved signature" style={{ height: 60, display: 'block' }} />
+            </div>
+            <div>
+              <button className="btn btn-ghost btn-sm" onClick={clearSavedSignature} disabled={savingSig}>
+                {savingSig ? <span className="spin spin-dark" /> : <><i className="ti ti-trash" style={{ fontSize: 12 }} /> Remove & redraw</>}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div>
+            <div style={{ maxWidth: 400 }}>
+              <SignaturePad ref={sigPadRef} strokeColour={colour} />
+            </div>
+            {sigError && <p className="ferr" style={{ marginTop: 6 }}>{sigError}</p>}
+            <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+              <button className="btn btn-primary btn-sm" onClick={saveSignature} disabled={savingSig}>
+                {savingSig ? <span className="spin" /> : 'Save signature'}
+              </button>
+              <button className="btn btn-ghost btn-sm" onClick={() => sigPadRef.current?.clear()} disabled={savingSig}>Clear</button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

@@ -20,7 +20,7 @@ export default async function SettingsPage() {
   const [wsRes, billingRes, defaultsRes] = await Promise.all([
     (service as any)
       .from('workspaces')
-      .select('id,name,slug,slug_changed_at,agency_name,brand_colour,logo_storage_path,industry,currency,timezone,sow_language,governing_law,proactive_risk_threshold,proactive_risk_alerts_enabled,guardian_sensitivity_tier,plan_tier,trial_ends_at,created_at')
+      .select('id,name,slug,slug_changed_at,agency_name,brand_colour,logo_storage_path,agency_signature_data,industry,currency,timezone,sow_language,governing_law,proactive_risk_threshold,proactive_risk_alerts_enabled,guardian_sensitivity_tier,plan_tier,trial_ends_at,created_at')
       .eq('id', session.workspaceId)
       .single(),
     (service as any)

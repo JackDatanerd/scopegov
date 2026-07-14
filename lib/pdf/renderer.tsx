@@ -20,6 +20,8 @@ export interface SowPdfData {
   sections:      Array<{ id: string; title: string; content: string; visible: boolean; order: number }>
   signedBy?:     string
   signedAt?:     string
+  agencySignatureData?: string | null
+  clientSignatureData?: string | null
   version:       number
   isWatermarked?: boolean
 }
@@ -40,6 +42,8 @@ export interface CoPdfData {
   currency:     string
   acceptedBy?:  string
   acceptedAt?:  string
+  agencySignatureData?: string | null
+  clientSignatureData?: string | null
   isPartial?:   boolean
   partialNote?: string
 }
@@ -112,6 +116,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
     sigCol:     { flex: 1 },
     sigLabel:   { fontSize: 8, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 },
     sigLine:    { borderBottom: `1 solid #1A1A1A`, height: 28, marginBottom: 4 },
+    sigImg:     { height: 32, maxWidth: 160, marginBottom: 4, objectFit: 'contain' },
     sigName:    { fontFamily: 'Helvetica-Bold', fontSize: 10 },
     sigDate:    { fontSize: 9, color: '#909090' },
     // Watermark
@@ -169,12 +174,20 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
         <View style={s.sigBlock}>
           <View style={s.sigCol}>
             <Text style={s.sigLabel}>Agency — {data.agencyName}</Text>
-            <View style={s.sigLine} />
+            {data.agencySignatureData ? (
+              <Image src={data.agencySignatureData} style={s.sigImg} />
+            ) : (
+              <View style={s.sigLine} />
+            )}
             <Text style={s.sigName}>{data.agencyName}</Text>
           </View>
           <View style={s.sigCol}>
             <Text style={s.sigLabel}>Client — {data.clientName}</Text>
-            <View style={[s.sigLine, data.signedBy ? { borderBottom: `2 solid ${c}` } : {}]} />
+            {data.clientSignatureData ? (
+              <Image src={data.clientSignatureData} style={s.sigImg} />
+            ) : (
+              <View style={[s.sigLine, data.signedBy ? { borderBottom: `2 solid ${c}` } : {}]} />
+            )}
             {data.signedBy
               ? <>
                   <Text style={[s.sigName, { color: c }]}>{data.signedBy}</Text>
@@ -222,6 +235,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
     sigCol:    { flex: 1 },
     sigLabel:  { fontSize: 8, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 },
     sigLine:   { borderBottom: `1 solid #1A1A1A`, height: 26, marginBottom: 4 },
+    sigImg:    { height: 30, maxWidth: 150, marginBottom: 4, objectFit: 'contain' },
     sigName:   { fontFamily: 'Helvetica-Bold', fontSize: 10 },
     footer:    { flexDirection: 'row', justifyContent: 'space-between', marginTop: 24, paddingTop: 10, borderTop: `1 solid #E5E1D8`, fontSize: 8, color: '#B0B0B0' },
   })
@@ -294,12 +308,20 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
         <View style={s.sigBlock}>
           <View style={s.sigCol}>
             <Text style={s.sigLabel}>Agency — {data.agencyName}</Text>
-            <View style={s.sigLine} />
+            {data.agencySignatureData ? (
+              <Image src={data.agencySignatureData} style={s.sigImg} />
+            ) : (
+              <View style={s.sigLine} />
+            )}
             <Text style={s.sigName}>{data.agencyName}</Text>
           </View>
           <View style={s.sigCol}>
             <Text style={s.sigLabel}>Client — {data.clientName}</Text>
-            <View style={[s.sigLine, data.acceptedBy ? { borderBottom: `2 solid ${c}` } : {}]} />
+            {data.clientSignatureData ? (
+              <Image src={data.clientSignatureData} style={s.sigImg} />
+            ) : (
+              <View style={[s.sigLine, data.acceptedBy ? { borderBottom: `2 solid ${c}` } : {}]} />
+            )}
             {data.acceptedBy
               ? <>
                   <Text style={[s.sigName, { color: c }]}>{data.acceptedBy}</Text>

@@ -14,9 +14,9 @@ async function getCoByToken(token: string, service: any) {
   const { data: co } = await (service as any)
     .from('change_orders')
     .select(`id,title,note,status,version,line_items,subtotal,tax_rate,tax_inclusive,
-      total,expires_at,flag_id,workspace_id,
+      total,expires_at,flag_id,workspace_id,accepted_by,accepted_at,client_signature_data,
       projects(id,name,currency,clients(name,email,cc_emails),
-        workspaces(id,agency_name,brand_colour,logo_storage_path,jwt_secret))`)
+        workspaces(id,agency_name,brand_colour,logo_storage_path,agency_signature_data,jwt_secret))`)
     .eq('token', token).single()
 
   if (!co) return { state: 'invalid' }
@@ -33,7 +33,10 @@ async function getCoByToken(token: string, service: any) {
   // BUG: 'closed', 'stalled', and 'countered' were never included here, so
   // revisiting the link for a CO in any of those states fell through to the
   // default case below and re-served the full accept/decline/counter form.
-  if (['accepted','declined','withdrawn','closed','stalled','countered'].includes(co.status)) return { state: co.status }
+  if (co.status === 'accepted') {
+    return { state: 'accepted', acceptedBy: co.accepted_by, clientSignatureData: co.client_signature_data || null }
+  }
+  if (['declined','withdrawn','closed','stalled','countered'].includes(co.status)) return { state: co.status }
 
   return { co }
 }
@@ -45,7 +48,11 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const service   = createServiceClient()
     const result    = await getCoByToken(token, service)
 
-    if (result.state) return NextResponse.json({ state: result.state })
+    if (result.state) return NextResponse.json({
+      state: result.state,
+      acceptedBy: (result as any).acceptedBy,
+      clientSignatureData: (result as any).clientSignatureData,
+    })
 
     const co  = result.co!
     const ws  = co.projects?.workspaces
@@ -66,6 +73,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         agencyName:  ws?.agency_name,
         brandColour: ws?.brand_colour || '#1A5C3A',
         logoUrl,
+        agencySignatureData: ws?.agency_signature_data || null,
         lineItems,
         subtotal:    co.subtotal,
         taxRate:     co.tax_rate,
