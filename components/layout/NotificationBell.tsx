@@ -95,7 +95,7 @@ export default function NotificationBell() {
         style={{
           position: 'relative', width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center',
           background: 'none', border: 'none', borderRadius: 6, cursor: 'pointer',
-          color: 'var(--sb-text-2, rgba(255,255,255,0.75))',
+          color: 'var(--text-2, #555555)',
         }}
       >
         <i className="ti ti-bell" style={{ fontSize: 16 }} />
