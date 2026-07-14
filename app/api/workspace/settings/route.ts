@@ -32,15 +32,22 @@ export async function PATCH(request: NextRequest) {
       if (body[key] !== undefined) updates[col] = body[key]
     }
 
-    // Slug is editable exactly once (spec §1.0)
+    // Slug is editable exactly once (spec §1.0). The UI now always submits
+    // the current slug as part of the whole form, so only treat this as a
+    // change attempt (and enforce the lock) if it actually differs from
+    // what's stored — otherwise every future save of any other field would
+    // 409 once the slug had been set once.
     if (body.slug !== undefined) {
       const { data: ws } = await (service as any)
-        .from('workspaces').select('slug_changed_at').eq('id', session.workspaceId).single()
-      if (ws?.slug_changed_at) {
-        return NextResponse.json({ error: 'Workspace slug can only be changed once' }, { status: 409 })
+        .from('workspaces').select('slug, slug_changed_at').eq('id', session.workspaceId).single()
+      const newSlug = body.slug.toLowerCase().replace(/[^a-z0-9-]/g, '-')
+      if (newSlug !== ws?.slug) {
+        if (ws?.slug_changed_at) {
+          return NextResponse.json({ error: 'Workspace slug can only be changed once' }, { status: 409 })
+        }
+        updates.slug            = newSlug
+        updates.slug_changed_at = new Date().toISOString()
       }
-      updates.slug            = body.slug.toLowerCase().replace(/[^a-z0-9-]/g, '-')
-      updates.slug_changed_at = new Date().toISOString()
     }
 
     const { error } = await (service as any)

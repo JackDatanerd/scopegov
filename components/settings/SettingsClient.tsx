@@ -66,7 +66,11 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
     timezone:     workspace?.timezone || '',
     currency:     workspace?.currency || 'USD',
     governingLaw: workspace?.governing_law || '',
+    slug:         workspace?.slug || '',
   }))
+  // FIX: no UI existed anywhere for the workspace slug despite full,
+  // working backend support (including the once-only change lock).
+  const slugLocked = !!workspace?.slug_changed_at
 
   const [brandColour, setBrandColour] = useState(() => workspace?.brand_colour || '#1A5C3A')
   const [logoPreview, setLogoPreview] = useState<string | null>(logoUrl)
@@ -125,7 +129,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
         {tab === 'account' && <AccountTab session={session} supabase={supabase} router={router} />}
 
         {tab === 'workspace' && (
-          <WorkspaceTab form={wsForm} setForm={setWsForm} permissions={permissions} onSave={patch} saving={saving} />
+          <WorkspaceTab form={wsForm} setForm={setWsForm} permissions={permissions} onSave={patch} saving={saving} slugLocked={slugLocked} />
         )}
 
         {tab === 'branding' && (
@@ -243,7 +247,7 @@ function AccountTab({ session, supabase, router }: any) {
 }
 
 // ── WORKSPACE ─────────────────────────────────────────────────
-function WorkspaceTab({ form, setForm, permissions, onSave, saving }: any) {
+function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugLocked }: any) {
   if (!permissions.manageWorkspace) return <Restricted />
 
   function set<K extends string>(key: K, value: string) {
@@ -264,6 +268,16 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving }: any) {
             <label className="flbl">Agency name <span className="fhint">(on documents)</span></label>
             <input className="finp" value={form.agencyName} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('agencyName', e.target.value)} />
           </div>
+        </div>
+        <div className="fgrp">
+          <label className="flbl">
+            Workspace slug{' '}
+            <span className="fhint">
+              {slugLocked ? '(already changed once — locked)' : '(can only be changed once, ever — choose carefully)'}
+            </span>
+          </label>
+          <input className="finp" value={form.slug} disabled={slugLocked}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('slug', e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '-'))} />
         </div>
         <div className="f2">
           <div className="fgrp">
