@@ -5,6 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { jwtVerify } from 'jose'
 import { logAudit } from '@/lib/utils/audit'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
+import { notifyMembersWithPermission } from '@/lib/utils/notify'
 
 async function resolveCoAndToken(token: string, service: any) {
   const { data: revoked } = await (service as any)
@@ -101,6 +102,12 @@ export async function POST_DECLINE(request: NextRequest, token: string) {
       })
     }
   } catch (e) { console.error('CO declined email failed:', e) }
+  await notifyMembersWithPermission(service, {
+    workspaceId: co.workspace_id, permission: 'SEND_CHANGE_ORDERS', eventType: 'co_declined',
+    type: 'co_declined', title: `CO declined — ${co.title}`,
+    body: reason ? `${co.projects?.clients?.name}: ${reason}` : `${co.projects?.clients?.name} declined this change order.`,
+    entityType: 'project', entityId: co.project_id,
+  })
 
   return NextResponse.json({
     ok: true,
@@ -158,6 +165,12 @@ export async function POST_COUNTER(request: NextRequest, token: string) {
       })
     }
   } catch (e) { console.error('CO counter email failed:', e) }
+  await notifyMembersWithPermission(service, {
+    workspaceId: co.workspace_id, permission: 'SEND_CHANGE_ORDERS', eventType: 'co_countered',
+    type: 'co_countered', title: `Counter offer — ${co.title}`,
+    body: `${co.projects?.clients?.name} proposed ${co.projects?.currency || 'USD'} ${parseFloat(counterAmount).toLocaleString()}.`,
+    entityType: 'project', entityId: co.project_id,
+  })
 
   return NextResponse.json({
     ok: true,

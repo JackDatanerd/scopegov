@@ -7,6 +7,7 @@ import { stripHtml } from '@/lib/utils/format'
 import { sendGuardianFlagEmail } from '@/lib/email/templates'
 import { logAudit } from '@/lib/utils/audit'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
+import { notifyMembersWithPermission } from '@/lib/utils/notify'
 
 // BUG-016: verify Postmark webhook signature before processing
 function verifyPostmarkSignature(body: string, signature: string | null): boolean {
@@ -192,6 +193,12 @@ export async function POST(request: NextRequest) {
             })
           } catch (e) { console.error('Flag email failed:', e) }
         }
+        await notifyMembersWithPermission(service, {
+          workspaceId: project.workspace_id, permission: 'APPROVE_FLAGS', eventType: 'guardian_flag',
+          type: 'guardian_flag', title: `Scope flag — ${project.name}`,
+          body: classification.reasoning?.slice(0, 140) || 'A new out-of-scope request was flagged.',
+          entityType: 'project', entityId: project.id,
+        })
 
         await logAudit(service, {
           workspaceId: project.workspace_id, actorId: 'system',

@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import type { SessionUser } from '@/lib/supabase/types'
 import { PLAN_LABELS, initials, avatarColour } from '@/lib/utils/format'
+import NotificationBell from './NotificationBell'
 
 const NAV_ITEMS = [
   { href: '/dashboard', icon: 'ti-layout-dashboard', label: 'Dashboard' },
@@ -89,15 +90,18 @@ export default function Sidebar({ session }: { session: SessionUser }) {
     <aside className="sb">
       {/* Brand + workspace switcher */}
       <div className="sb-brand" ref={switcherRef} style={{ position: 'relative' }}>
-        <div className="sb-logo-row">
-          {logoUrl ? (
-            <img src={logoUrl} alt={session.agencyName} className="sb-mark" style={{ objectFit: 'cover' }} />
-          ) : (
-            <div className="sb-mark">
-              <i className="ti ti-scale" style={{ fontSize: 15, color: '#FFF' }} />
-            </div>
-          )}
-          <span className="sb-name">ScopeGov</span>
+        <div className="sb-logo-row" style={{ justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {logoUrl ? (
+              <img src={logoUrl} alt={session.agencyName} className="sb-mark" style={{ objectFit: 'cover' }} />
+            ) : (
+              <div className="sb-mark">
+                <i className="ti ti-scale" style={{ fontSize: 15, color: '#FFF' }} />
+              </div>
+            )}
+            <span className="sb-name">ScopeGov</span>
+          </div>
+          <NotificationBell />
         </div>
         <button
           onClick={openSwitcher}

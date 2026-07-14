@@ -5,6 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { jwtVerify } from 'jose'
 import { logAudit } from '@/lib/utils/audit'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
+import { notifyMembersWithPermission } from '@/lib/utils/notify'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
@@ -86,6 +87,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         })
       }
     } catch (e) { console.error('Changes requested email failed:', e) }
+    await notifyMembersWithPermission(service, {
+      workspaceId: sow.workspace_id, permission: 'SEND_SOW', eventType: 'sow_changes_requested',
+      type: 'sow_changes_requested', title: `Changes requested — ${project.name}`,
+      body: `${client.name}: ${note}`.slice(0, 160),
+      entityType: 'project', entityId: project.id,
+    })
 
     return NextResponse.json({ ok: true })
   } catch (err) {

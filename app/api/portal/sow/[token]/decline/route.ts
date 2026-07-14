@@ -6,6 +6,7 @@ import { jwtVerify } from 'jose'
 import { logAudit } from '@/lib/utils/audit'
 import { sendSowDeclinedEmail } from '@/lib/email/templates'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
+import { notifyMembersWithPermission } from '@/lib/utils/notify'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
@@ -67,6 +68,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         })
       }
     } catch (e) { console.error('SOW declined email failed:', e) }
+    await notifyMembersWithPermission(service, {
+      workspaceId: sow.workspace_id, permission: 'SEND_SOW', eventType: 'sow_declined',
+      type: 'sow_declined', title: `SOW declined — ${project.name}`,
+      body: reason ? `${client.name} declined: ${reason}` : `${client.name} declined the Statement of Work.`,
+      entityType: 'project', entityId: project.id,
+    })
 
     return NextResponse.json({ ok: true })
   } catch (err) {

@@ -11,6 +11,7 @@ import {
 } from '@/lib/ai/guardian'
 import { sendGuardianFlagEmail } from '@/lib/email/templates'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
+import { notifyMembersWithPermission } from '@/lib/utils/notify'
 
 export async function POST(request: NextRequest) {
   try {
@@ -224,6 +225,12 @@ export async function POST(request: NextRequest) {
             console.error('Guardian flag email failed:', emailErr)
           }
         }
+        await notifyMembersWithPermission(service, {
+          workspaceId: session.workspaceId, permission: 'APPROVE_FLAGS', eventType: 'guardian_flag',
+          type: 'guardian_flag', title: `Scope flag — ${project.name}`,
+          body: classification.reasoning?.slice(0, 140) || 'A new out-of-scope request was flagged.',
+          entityType: 'project', entityId: projectId, excludeUserId: session.id,
+        })
       }
     }
 

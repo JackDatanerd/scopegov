@@ -6,6 +6,7 @@ import { jwtVerify } from 'jose'
 import { logAudit } from '@/lib/utils/audit'
 import { sendCoAcceptedEmail } from '@/lib/email/templates'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
+import { notifyMembersWithPermission } from '@/lib/utils/notify'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
@@ -134,6 +135,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         })
       }
     } catch (e) { console.error('CO accepted email failed:', e) }
+    await notifyMembersWithPermission(service, {
+      workspaceId: co.workspace_id, permission: 'SEND_CHANGE_ORDERS', eventType: 'co_accepted',
+      type: 'co_accepted', title: `CO accepted — ${co.title}`,
+      body: `${signerName.trim()} accepted ${project.currency || 'USD'} ${co.total} for ${project.name}.`,
+      entityType: 'project', entityId: co.project_id,
+    })
 
     return NextResponse.json({
       ok: true,

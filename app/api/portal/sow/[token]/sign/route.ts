@@ -7,6 +7,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { sendSowSignedAgencyEmail, sendSowSignedClientEmail } from '@/lib/email/templates'
 import { nanoid } from 'nanoid'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
+import { notifyMembersWithPermission } from '@/lib/utils/notify'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
@@ -133,6 +134,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         })
       }
     } catch (e) { console.error('Agency signed email failed:', e) }
+    await notifyMembersWithPermission(service, {
+      workspaceId: sow.workspace_id, permission: 'SEND_SOW', eventType: 'sow_signed',
+      type: 'sow_signed', title: `SOW signed — ${project.name}`,
+      body: `${signerName.trim()} signed the Statement of Work.`,
+      entityType: 'project', entityId: project.id,
+    })
 
     // ── 9. Confirm to client (Event 4) ───────────────────────
     try {
