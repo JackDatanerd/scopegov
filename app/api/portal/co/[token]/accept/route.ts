@@ -120,7 +120,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     // Notify agency (Event 11) — awaited
     try {
-      const emails = await getMemberEmailsWithPermission(service, co.workspace_id, 'SEND_CHANGE_ORDERS')
+      const emails = await getMemberEmailsWithPermission(service, co.workspace_id, 'SEND_CHANGE_ORDERS', 25, 'co_accepted')
       if (emails.length) {
         await sendCoAcceptedEmail({
           to: emails, agencyName: project.workspaces.agency_name,

@@ -1,4 +1,5 @@
 'use client'
+import { useState, useEffect, useRef } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
@@ -17,10 +18,19 @@ const BOTTOM_NAV = [
   { href: '/settings', icon: 'ti-settings',    label: 'Settings' },
 ]
 
+type WorkspaceOption = {
+  id: string; name: string; agencyName: string; logoUrl: string | null; planTier: string; active: boolean
+}
+
 export default function Sidebar({ session }: { session: SessionUser }) {
   const pathname = usePathname()
   const router   = useRouter()
   const supabase = createClient()
+
+  const [switcherOpen, setSwitcherOpen] = useState(false)
+  const [workspaces,   setWorkspaces]   = useState<WorkspaceOption[]>([])
+  const [switching,    setSwitching]    = useState(false)
+  const switcherRef = useRef<HTMLDivElement>(null)
 
   const daysLeft = session.trialEndsAt
     ? Math.max(0, Math.ceil((new Date(session.trialEndsAt).getTime() - Date.now()) / 86400000))
@@ -37,18 +47,48 @@ export default function Sidebar({ session }: { session: SessionUser }) {
     router.refresh()
   }
 
-  // FIX: session.logoStoragePath was already being fetched (see
-  // lib/auth/session.ts) but never used here — the sidebar always showed
-  // the static ScopeGov mark regardless of whether the agency had uploaded
-  // a logo. Public bucket URLs are deterministic, so no extra fetch needed.
+  function openSwitcher() {
+    setSwitcherOpen(o => !o)
+    if (!switcherOpen && workspaces.length === 0) {
+      fetch('/api/workspace/list').then(r => r.json()).then(json => setWorkspaces(json.workspaces || [])).catch(() => {})
+    }
+  }
+
+  // Close on outside click
+  useEffect(() => {
+    function handler(e: MouseEvent) {
+      if (switcherRef.current && !switcherRef.current.contains(e.target as Node)) setSwitcherOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  async function switchWorkspace(workspaceId: string) {
+    if (switching) return
+    setSwitching(true)
+    try {
+      const res = await fetch('/api/workspace/switch', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId }),
+      })
+      if (res.ok) {
+        // Full reload rather than router.refresh() — every server component
+        // in the tree reads session data derived from active_workspace_id,
+        // and a hard navigation is the simplest way to guarantee all of it
+        // (not just the current route) reflects the new workspace.
+        window.location.href = '/dashboard'
+      }
+    } finally { setSwitching(false) }
+  }
+
   const logoUrl = session.logoStoragePath
     ? `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/logos/${session.logoStoragePath}`
     : null
 
   return (
     <aside className="sb">
-      {/* Brand */}
-      <div className="sb-brand">
+      {/* Brand + workspace switcher */}
+      <div className="sb-brand" ref={switcherRef} style={{ position: 'relative' }}>
         <div className="sb-logo-row">
           {logoUrl ? (
             <img src={logoUrl} alt={session.agencyName} className="sb-mark" style={{ objectFit: 'cover' }} />
@@ -59,7 +99,50 @@ export default function Sidebar({ session }: { session: SessionUser }) {
           )}
           <span className="sb-name">ScopeGov</span>
         </div>
-        <div className="sb-agency">{session.agencyName}</div>
+        <button
+          onClick={openSwitcher}
+          style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'none', border: 'none', padding: 0, cursor: 'pointer', width: '100%', textAlign: 'left' }}
+          aria-haspopup="listbox" aria-expanded={switcherOpen}
+        >
+          <span className="sb-agency" style={{ flex: 1 }}>{session.agencyName}</span>
+          <i className="ti ti-chevron-down" style={{ fontSize: 11, color: 'var(--sb-text-3, rgba(255,255,255,0.5))', transform: switcherOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }} />
+        </button>
+
+        {switcherOpen && (
+          <div style={{
+            position: 'absolute', top: '100%', left: 0, right: 0, marginTop: 6, zIndex: 50,
+            background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.15)', overflow: 'hidden',
+          }}>
+            <div style={{ maxHeight: 240, overflowY: 'auto' }}>
+              {workspaces.length === 0 && (
+                <div style={{ padding: '14px 12px', fontSize: 12, color: 'var(--text-3)' }}>Loading workspaces…</div>
+              )}
+              {workspaces.map(ws => (
+                <button key={ws.id} onClick={() => !ws.active && switchWorkspace(ws.id)} disabled={switching}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '10px 12px',
+                    background: ws.active ? 'var(--surface-2)' : 'transparent', border: 'none', cursor: ws.active ? 'default' : 'pointer',
+                    textAlign: 'left', borderBottom: '1px solid var(--surface-2)',
+                  }}>
+                  <div style={{ width: 26, height: 26, borderRadius: 6, background: 'var(--surface-2)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', flexShrink: 0 }}>
+                    {ws.logoUrl
+                      ? <img src={ws.logoUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                      : <i className="ti ti-building" style={{ fontSize: 13, color: 'var(--text-3)' }} />}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--text-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ws.agencyName}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{PLAN_LABELS[ws.planTier as keyof typeof PLAN_LABELS] ?? ws.planTier}</div>
+                  </div>
+                  {ws.active && <i className="ti ti-check" style={{ fontSize: 14, color: 'var(--green)', flexShrink: 0 }} />}
+                </button>
+              ))}
+            </div>
+            <Link href="/onboarding" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', fontSize: 12.5, color: 'var(--text-2)', borderTop: '1px solid var(--border)' }}>
+              <i className="ti ti-plus" style={{ fontSize: 12 }} /> Create new workspace
+            </Link>
+          </div>
+        )}
       </div>
 
       {/* Primary nav */}

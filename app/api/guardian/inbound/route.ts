@@ -177,7 +177,7 @@ export async function POST(request: NextRequest) {
         await (service as any).from('guardian_checks').update({ flag_id: flag.id }).eq('id', checkRow.id)
 
         // Notify APPROVE_FLAGS holders
-        const emails = await getMemberEmailsWithPermission(service, project.workspace_id, 'APPROVE_FLAGS')
+        const emails = await getMemberEmailsWithPermission(service, project.workspace_id, 'APPROVE_FLAGS', 25, 'guardian_flag')
         if (emails.length) {
           try {
             await sendGuardianFlagEmail({

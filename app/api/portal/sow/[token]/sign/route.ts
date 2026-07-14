@@ -118,7 +118,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     // ── 8. Notify SEND_SOW holders (Event 3) — awaited ───────
     try {
-      const agencyEmails = await getMemberEmailsWithPermission(service, sow.workspace_id, 'SEND_SOW')
+      const agencyEmails = await getMemberEmailsWithPermission(service, sow.workspace_id, 'SEND_SOW', 25, 'sow_signed')
       if (agencyEmails.length) {
         await sendSowSignedAgencyEmail({
           to:          agencyEmails,

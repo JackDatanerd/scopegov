@@ -32,12 +32,35 @@ export async function getMembersWithPermission(
     .map((m: any) => ({ id: m.users.id, name: m.users.name, email: m.users.email }))
 }
 
+// Notification preferences — defaults to enabled (true) when no row exists,
+// since notification_preferences only stores explicit opt-outs/overrides,
+// not a row per user per event type by default.
+export async function filterByNotificationPreference<T extends { id: string }>(
+  service: any,
+  workspaceId: string,
+  eventType: string,
+  recipients: T[]
+): Promise<T[]> {
+  if (recipients.length === 0) return recipients
+  const { data: prefs } = await service
+    .from('notification_preferences')
+    .select('user_id, email_enabled')
+    .eq('workspace_id', workspaceId)
+    .eq('event_type', eventType)
+    .in('user_id', recipients.map(r => r.id))
+
+  const disabled = new Set((prefs || []).filter((p: any) => p.email_enabled === false).map((p: any) => p.user_id))
+  return recipients.filter(r => !disabled.has(r.id))
+}
+
 export async function getMemberEmailsWithPermission(
   service: any,
   workspaceId: string,
   permission: Permission,
-  limit = 25
+  limit = 25,
+  eventType?: string
 ): Promise<string[]> {
-  const members = await getMembersWithPermission(service, workspaceId, permission, limit)
+  let members = await getMembersWithPermission(service, workspaceId, permission, limit)
+  if (eventType) members = await filterByNotificationPreference(service, workspaceId, eventType, members)
   return members.map(m => m.email)
 }

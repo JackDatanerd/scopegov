@@ -206,7 +206,7 @@ export async function POST(request: NextRequest) {
         })
 
         // Email APPROVE_FLAGS holders (Event 18)
-        const emails = await getMemberEmailsWithPermission(service, session.workspaceId, 'APPROVE_FLAGS')
+        const emails = await getMemberEmailsWithPermission(service, session.workspaceId, 'APPROVE_FLAGS', 25, 'guardian_flag')
 
         if (emails.length) {
           try {

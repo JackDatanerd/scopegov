@@ -3,6 +3,7 @@ export const runtime = 'nodejs'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { sendTrialWarningEmail } from '@/lib/email/templates'
+import { filterByNotificationPreference } from '@/lib/utils/permissions-query'
 
 // BUG-036: all cron routes require CRON_SECRET
 function verifyCronSecret(request: NextRequest): boolean {
@@ -45,12 +46,13 @@ export async function POST(request: NextRequest) {
       ))
 
       // Find workspace owner
-      const owners = (ws.workspace_members || [])
-        .filter((m: any) => m.status === 'active')
-        .map((m: any) => m.users)
-        .filter(Boolean)
+      const owners: { id: string; name: string; email: string }[] = (ws.workspace_members || [])
+        .filter((m: any) => m.status === 'active' && m.users)
+        .map((m: any) => ({ id: m.user_id, name: m.users.name, email: m.users.email }))
 
-      for (const owner of owners) {
+      const enabledOwners = await filterByNotificationPreference(service, ws.id, 'trial_ending', owners)
+
+      for (const owner of enabledOwners) {
         try {
           // Check if warning already sent (simple audit log check)
           const { data: alreadySent } = await (service as any)

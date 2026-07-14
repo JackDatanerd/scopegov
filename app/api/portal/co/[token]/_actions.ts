@@ -86,7 +86,7 @@ export async function POST_DECLINE(request: NextRequest, token: string) {
 
   // Notify agency
   try {
-    const emails = await getMemberEmailsWithPermission(service, co.workspace_id, 'SEND_CHANGE_ORDERS')
+    const emails = await getMemberEmailsWithPermission(service, co.workspace_id, 'SEND_CHANGE_ORDERS', 25, 'co_declined')
     if (emails.length) {
       const { Resend } = await import('resend')
       const resend = new Resend(process.env.RESEND_API_KEY)

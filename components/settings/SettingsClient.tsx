@@ -9,7 +9,7 @@
 // state here means it survives tab switches regardless of refresh timing.
 
 'use client'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
@@ -83,9 +83,6 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
     riskThreshold: String(workspace?.proactive_risk_threshold || 10000),
   }))
 
-  const [notifPrefs, setNotifPrefs] = useState<Record<string, boolean>>(
-    Object.fromEntries(NOTIF_ITEMS.map(i => [i.key, true]))
-  )
 
   async function patch(path: string, body: any) {
     setSaving(true); setError('')
@@ -150,7 +147,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
 
         {tab === 'billing' && <BillingTab workspace={workspace} billing={billing} session={session} permissions={permissions} />}
 
-        {tab === 'notifications' && <NotificationsTab prefs={notifPrefs} setPrefs={setNotifPrefs} />}
+        {tab === 'notifications' && <NotificationsTab />}
 
         {tab === 'integrations' && <IntegrationsTab session={session} />}
 
@@ -603,19 +600,45 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
 }
 
 // ── NOTIFICATIONS ─────────────────────────────────────────────
-function NotificationsTab({
-  prefs,
-  setPrefs,
-}: {
-  prefs: Record<string, boolean>
-  setPrefs: React.Dispatch<React.SetStateAction<Record<string, boolean>>>
-}) {
+function NotificationsTab() {
+  const [prefs,   setPrefs]   = useState<Record<string, boolean> | null>(null)
+  const [saving,  setSaving]  = useState<string | null>(null)
+  const [loadErr, setLoadErr] = useState('')
+
+  useEffect(() => {
+    fetch('/api/notifications/preferences')
+      .then(r => r.json())
+      .then(json => {
+        if (json.error) throw new Error(json.error)
+        setPrefs(json.prefs)
+      })
+      .catch(() => setLoadErr('Could not load notification preferences.'))
+  }, [])
+
+  async function toggle(key: string) {
+    if (!prefs) return
+    const next = !prefs[key]
+    setPrefs(p => ({ ...(p || {}), [key]: next })) // optimistic
+    setSaving(key)
+    try {
+      const res = await fetch('/api/notifications/preferences', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ eventType: key, enabled: next }),
+      })
+      if (!res.ok) throw new Error()
+    } catch {
+      setPrefs(p => ({ ...(p || {}), [key]: !next })) // revert on failure
+    } finally { setSaving(null) }
+  }
+
   return (
     <div>
       <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, marginBottom: 20 }}>Notifications</h2>
       <div className="settings-section">
         <div className="settings-section-title">Email notifications</div>
-        {NOTIF_ITEMS.map(item => (
+        {loadErr && <p className="ferr">{loadErr}</p>}
+        {!prefs && !loadErr && <p style={{ fontSize: 12, color: 'var(--text-3)' }}>Loading…</p>}
+        {prefs && NOTIF_ITEMS.map(item => (
           <div key={item.key} className="settings-row">
             <div>
               <div className="settings-row-key">{item.label}</div>
@@ -623,7 +646,8 @@ function NotificationsTab({
             </div>
             <button
               className={`toggle ${prefs[item.key] ? 'on' : 'off'}`}
-              onClick={() => setPrefs(p => ({ ...p, [item.key]: !p[item.key] }))}
+              disabled={saving === item.key}
+              onClick={() => toggle(item.key)}
             />
           </div>
         ))}

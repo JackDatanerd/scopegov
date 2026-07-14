@@ -52,13 +52,64 @@ export default function OnboardingPage() {
   // Step 3
   const [inviteEmail, setInviteEmail] = useState('')
 
+  const STORAGE_KEY_PREFIX = 'scopegov_onboarding_'
+  const [restored, setRestored] = useState(false)
+
   useEffect(() => {
     supabase.auth.getUser().then(({ data: { user } }) => {
       if (!user) { router.push('/login'); return }
+
+      // FIX: restore in-progress onboarding after a refresh instead of
+      // silently restarting. Scoped per-user so it can't leak across
+      // accounts on a shared browser. Deliberately skips restoring if step
+      // 0 was never completed (no workspaceId saved) — nothing meaningful
+      // to restore in that case, and it avoids ever re-submitting step 0.
+      try {
+        const saved = localStorage.getItem(STORAGE_KEY_PREFIX + user.id)
+        if (saved) {
+          const s = JSON.parse(saved)
+          if (s.workspaceId) {
+            setWorkspaceId(s.workspaceId)
+            setStep(s.step || 1)
+            if (s.agencyName)       setAgencyName(s.agencyName)
+            if (s.industry)         setIndustry(s.industry)
+            if (s.currency)         setCurrency(s.currency)
+            if (s.timezone)         setTimezone(s.timezone)
+            if (s.brandColour)      setBrandColour(s.brandColour)
+            if (s.revisionRounds)   setRevisionRounds(s.revisionRounds)
+            if (s.paymentStructure) setPaymentStructure(s.paymentStructure)
+            if (s.governingLaw)     setGoverningLaw(s.governingLaw)
+            setRestored(true)
+            return
+          }
+        }
+      } catch { /* corrupt/unavailable storage — just start fresh */ }
+
       const userName = user.user_metadata?.name || ''
       if (userName) setAgencyName(`${userName.split(' ')[0]}'s Agency`)
+      setRestored(true)
     })
   }, [])
+
+  // Persist on every relevant change, once initial restore has happened
+  // (avoids overwriting saved progress with blank initial state before
+  // restore runs).
+  useEffect(() => {
+    if (!restored || !workspaceId) return
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (!user) return
+      localStorage.setItem(STORAGE_KEY_PREFIX + user.id, JSON.stringify({
+        step, workspaceId, agencyName, industry, currency, timezone,
+        brandColour, revisionRounds, paymentStructure, governingLaw,
+      }))
+    })
+  }, [restored, step, workspaceId, agencyName, industry, currency, timezone, brandColour, revisionRounds, paymentStructure, governingLaw])
+
+  function clearSavedProgress() {
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (user) localStorage.removeItem(STORAGE_KEY_PREFIX + user.id)
+    })
+  }
 
   /* ── Step 0: Identity ─────────────────────────────────────── */
   async function submitIdentity(e: React.FormEvent) {
@@ -132,12 +183,25 @@ export default function OnboardingPage() {
 
   /* ── Step 3: Invite ───────────────────────────────────────── */
   async function submitInvite() {
+    setError('')
     if (inviteEmail.trim() && workspaceId) {
-      await fetch('/api/team/invite', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: inviteEmail, workspaceId }),
-      }).catch(() => {})
+      setLoading(true)
+      try {
+        const res  = await fetch('/api/team/invite', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: inviteEmail, workspaceId }),
+        })
+        const json = await res.json().catch(() => ({}))
+        if (!res.ok) {
+          // FIX: this used to be a fire-and-forget .catch(() => {}) that
+          // swallowed any error (invalid email, etc.) and silently advanced
+          // to the next step regardless — the person had no idea nothing
+          // was sent. Now a failed invite blocks advancing and shows why.
+          setError(json.error || 'Could not send that invite — check the email address, or skip this step.')
+          return
+        }
+      } finally { setLoading(false) }
     }
     setStep(4)
   }
@@ -152,6 +216,7 @@ export default function OnboardingPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ workspaceId }),
       })
+      clearSavedProgress()
       router.push('/dashboard')
     } finally { setLoading(false) }
   }
@@ -320,9 +385,10 @@ export default function OnboardingPage() {
                 placeholder="colleague@youragency.com"
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setInviteEmail(e.target.value)} />
             </div>
+            {error && <div className="auth-error">{error}</div>}
 
             <div className="ob-nav">
-              <button className="ob-skip" onClick={() => setStep(4)}>Skip for now</button>
+              <button className="ob-skip" onClick={() => { setError(''); setStep(4) }}>Skip for now</button>
               <button className="btn btn-primary" onClick={submitInvite} disabled={loading}>
                 {loading ? <span className="spin" /> : <>Continue <i className="ti ti-arrow-right" style={{ fontSize: 12 }} /></>}
               </button>
