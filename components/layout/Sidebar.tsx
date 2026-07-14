@@ -109,7 +109,7 @@ export default function Sidebar({ session }: { session: SessionUser }) {
           aria-haspopup="listbox" aria-expanded={switcherOpen}
         >
           <span className="sb-agency" style={{ flex: 1 }}>{session.agencyName}</span>
-          <i className="ti ti-chevron-down" style={{ fontSize: 11, color: 'var(--sb-text-3, rgba(255,255,255,0.5))', transform: switcherOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }} />
+          <i className="ti ti-chevron-down" style={{ fontSize: 11, color: 'var(--text-3, #909090)', transform: switcherOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }} />
         </button>
 
         {switcherOpen && (
