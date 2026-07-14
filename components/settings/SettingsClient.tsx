@@ -427,7 +427,7 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, save
       <div className="settings-section" style={{ marginTop: 16 }}>
         <div className="settings-section-title">Your signature</div>
         <p style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 14, lineHeight: 1.6 }}>
-          Draw and save your signature once — it's applied automatically to every SOW and change order you send from here on. This doesn't change documents already sent or signed.
+          Draw and save your signature once — it&apos;s applied automatically to every SOW and change order you send from here on. This doesn&apos;t change documents already sent or signed.
         </p>
         {sigSaved ? (
           <div>
