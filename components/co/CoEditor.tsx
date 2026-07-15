@@ -29,6 +29,10 @@ export default function CoEditor({ projId, coId }: Props) {
   const [isRetainerRenewal, setIsRetainerRenewal] = useState(false)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const savedCoId = useRef<string | null>(coId || null)
+  const [aiOpen,     setAiOpen]     = useState(false)
+  const [aiText,     setAiText]     = useState('')
+  const [aiDrafting, setAiDrafting] = useState(false)
+  const [aiError,    setAiError]    = useState('')
 
   // Derived totals
   const subtotal = lineItems.reduce((s, l) => s + (l.quantity * l.rate), 0)
@@ -161,6 +165,29 @@ export default function CoEditor({ projId, coId }: Props) {
 
   const isLocked = status !== 'draft'
 
+  async function draftWithAi() {
+    if (!aiText.trim()) { setAiError('Describe what the client is asking for first.'); return }
+    setAiDrafting(true); setAiError('')
+    try {
+      const res  = await fetch('/api/co/draft', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId: projId, request: aiText }),
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error)
+      if (json.title) setTitle(json.title)
+      if (json.note)  setNote(json.note)
+      if (json.lineItems?.length) {
+        setLineItems(json.lineItems.map((li: any) => ({
+          id: nanoid(), description: li.description, quantity: li.quantity || 1, rate: 0, total: 0,
+        })))
+      }
+      setAiOpen(false); setAiText('')
+    } catch (err: unknown) {
+      setAiError(err instanceof Error ? err.message : 'Could not draft this — try again or write it manually.')
+    } finally { setAiDrafting(false) }
+  }
+
   if (loading) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 400 }}>
@@ -193,6 +220,30 @@ export default function CoEditor({ projId, coId }: Props) {
         {isLocked && (
           <div className="banner banner-info" style={{ marginBottom: 14 }}>
             This change order has been sent and is locked. Withdraw it to edit.
+          </div>
+        )}
+
+        {!isLocked && !aiOpen && (
+          <button className="btn btn-ghost btn-sm" onClick={() => setAiOpen(true)} style={{ marginBottom: 16 }}>
+            <i className="ti ti-sparkles" style={{ fontSize: 12 }} /> Draft with AI
+          </button>
+        )}
+        {!isLocked && aiOpen && (
+          <div className="surface surface-p" style={{ marginBottom: 20 }}>
+            <label className="flbl">Describe what the client is asking for</label>
+            <textarea className="finp" style={{ minHeight: 80, resize: 'vertical', marginTop: 6 }} autoFocus
+              value={aiText} placeholder="e.g. Client wants 3 extra product pages added to the site, plus a redesigned checkout flow…"
+              onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setAiText(e.target.value)} />
+            {aiError && <p className="ferr" style={{ marginTop: 6 }}>{aiError}</p>}
+            <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 6 }}>
+              Drafts a title, client-facing note, and line items from your description — pricing is always left at 0 for you to set.
+            </p>
+            <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+              <button className="btn btn-primary btn-sm" onClick={draftWithAi} disabled={aiDrafting}>
+                {aiDrafting ? <span className="spin" /> : 'Draft'}
+              </button>
+              <button className="btn btn-ghost btn-sm" onClick={() => { setAiOpen(false); setAiText(''); setAiError('') }}>Cancel</button>
+            </div>
           </div>
         )}
 
