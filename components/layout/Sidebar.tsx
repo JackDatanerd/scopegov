@@ -31,6 +31,7 @@ export default function Sidebar({ session }: { session: SessionUser }) {
   const [switcherOpen, setSwitcherOpen] = useState(false)
   const [workspaces,   setWorkspaces]   = useState<WorkspaceOption[]>([])
   const [switching,    setSwitching]    = useState(false)
+  const [leavingId,    setLeavingId]    = useState<string | null>(null)
   const switcherRef = useRef<HTMLDivElement>(null)
 
   const daysLeft = session.trialEndsAt
@@ -82,6 +83,20 @@ export default function Sidebar({ session }: { session: SessionUser }) {
     } finally { setSwitching(false) }
   }
 
+  async function leaveWorkspace(workspaceId: string, name: string) {
+    if (!confirm(`Leave "${name}"? You'll need a new invite to rejoin.`)) return
+    setLeavingId(workspaceId)
+    try {
+      const res  = await fetch('/api/workspace/leave', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId }),
+      })
+      const json = await res.json()
+      if (!res.ok) { alert(json.error || 'Could not leave that workspace.'); return }
+      setWorkspaces(prev => prev.filter(w => w.id !== workspaceId))
+    } finally { setLeavingId(null) }
+  }
+
   const logoUrl = session.logoStoragePath
     ? `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/logos/${session.logoStoragePath}`
     : null
@@ -123,23 +138,36 @@ export default function Sidebar({ session }: { session: SessionUser }) {
                 <div style={{ padding: '14px 12px', fontSize: 12, color: 'var(--text-3)' }}>Loading workspaces…</div>
               )}
               {workspaces.map(ws => (
-                <button key={ws.id} onClick={() => !ws.active && switchWorkspace(ws.id)} disabled={switching}
+                <div key={ws.id}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '10px 12px',
-                    background: ws.active ? 'var(--surface-2)' : 'transparent', border: 'none', cursor: ws.active ? 'default' : 'pointer',
-                    textAlign: 'left', borderBottom: '1px solid var(--surface-2)',
+                    background: ws.active ? 'var(--surface-2)' : 'transparent',
+                    borderBottom: '1px solid var(--surface-2)',
                   }}>
-                  <div style={{ width: 26, height: 26, borderRadius: 6, background: 'var(--surface-2)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', flexShrink: 0 }}>
-                    {ws.logoUrl
-                      ? <img src={ws.logoUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                      : <i className="ti ti-building" style={{ fontSize: 13, color: 'var(--text-3)' }} />}
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--text-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ws.agencyName}</div>
-                    <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{PLAN_LABELS[ws.planTier as keyof typeof PLAN_LABELS] ?? ws.planTier}</div>
-                  </div>
+                  <button onClick={() => !ws.active && switchWorkspace(ws.id)} disabled={switching}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0,
+                      background: 'none', border: 'none', padding: 0, cursor: ws.active ? 'default' : 'pointer', textAlign: 'left',
+                    }}>
+                    <div style={{ width: 26, height: 26, borderRadius: 6, background: 'var(--surface-2)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', flexShrink: 0 }}>
+                      {ws.logoUrl
+                        ? <img src={ws.logoUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                        : <i className="ti ti-building" style={{ fontSize: 13, color: 'var(--text-3)' }} />}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--text-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ws.agencyName}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{PLAN_LABELS[ws.planTier as keyof typeof PLAN_LABELS] ?? ws.planTier}</div>
+                    </div>
+                  </button>
                   {ws.active && <i className="ti ti-check" style={{ fontSize: 14, color: 'var(--green)', flexShrink: 0 }} />}
-                </button>
+                  {!ws.active && (
+                    <button onClick={() => leaveWorkspace(ws.id, ws.agencyName)} disabled={switching || leavingId === ws.id}
+                      title={`Leave ${ws.agencyName}`} aria-label={`Leave ${ws.agencyName}`}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, color: 'var(--text-4)', flexShrink: 0 }}>
+                      {leavingId === ws.id ? <span className="spin spin-dark" style={{ width: 11, height: 11 }} /> : <i className="ti ti-logout-2" style={{ fontSize: 13 }} />}
+                    </button>
+                  )}
+                </div>
               ))}
             </div>
             <Link href="/onboarding" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', fontSize: 12.5, color: 'var(--text-2)', borderTop: '1px solid var(--border)' }}>
