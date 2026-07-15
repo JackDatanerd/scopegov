@@ -5,6 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { jwtVerify } from 'jose'
 import { logAudit } from '@/lib/utils/audit'
 import { sendSowSignedAgencyEmail, sendSowSignedClientEmail } from '@/lib/email/templates'
+import { renderSowPdf } from '@/lib/pdf/renderer'
 import { nanoid } from 'nanoid'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
@@ -33,7 +34,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .select(`id, version, status, sections, metadata, expires_at, project_id, workspace_id,
         projects(id, name, disc, currency, contract_value, client_id, created_by,
           clients(name, email, cc_emails),
-          workspaces(id, agency_name, brand_colour, jwt_secret, first_sow_signed_at))`)
+          workspaces(id, agency_name, brand_colour, jwt_secret, logo_storage_path, agency_signature_data, first_sow_signed_at))`)
       .eq('token', token).single()
 
     if (!sow) return NextResponse.json({ error: 'SOW not found' }, { status: 404 })
@@ -120,7 +121,35 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       metadata: { version: sow.version, signer_ip: ip, guardian_email: guardianEmail },
     })
 
-    // ── 8. Notify SEND_SOW holders (Event 3) — awaited ───────
+    // ── 8. Build the signed PDF once, attach to both confirmation emails ──
+    // FIX: both email templates already claimed "A PDF copy is attached"
+    // in their copy — nothing ever actually generated or attached one.
+    let pdfAttachment: { filename: string; content: string } | undefined
+    try {
+      let logoUrl: string | null = null
+      if (ws.logo_storage_path) {
+        const { data: u } = await (service as any).storage.from('logos').getPublicUrl(ws.logo_storage_path)
+        logoUrl = u?.publicUrl || null
+      }
+      const pdfBuffer = await renderSowPdf({
+        agencyName:    ws.agency_name,
+        agencyLogoUrl: logoUrl,
+        brandColour:   ws.brand_colour || '#1A5C3A',
+        clientName:    client.name,
+        projectName:   project.name + (project.disc ? ` — ${project.disc}` : ''),
+        contractValue: project.contract_value || 0,
+        currency:      project.currency || 'USD',
+        sections:      sow.sections || [],
+        signedBy:      signerName.trim(),
+        signedAt:      now,
+        agencySignatureData: ws.agency_signature_data || null,
+        clientSignatureData: signatureData,
+        version:       sow.version,
+      })
+      pdfAttachment = { filename: `SOW-${project.name.replace(/[^a-z0-9]/gi, '-')}.pdf`, content: pdfBuffer.toString('base64') }
+    } catch (e) { console.error('SOW PDF generation for email failed (emails will send without attachment):', e) }
+
+    // ── 9. Notify SEND_SOW holders (Event 3) — awaited ───────
     try {
       const agencyEmails = await getMemberEmailsWithPermission(service, sow.workspace_id, 'SEND_SOW', 25, 'sow_signed')
       if (agencyEmails.length) {
@@ -131,6 +160,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           projectName: project.name + (project.disc ? ` — ${project.disc}` : ''),
           signedBy:    signerName.trim(),
           portalUrl:   `${process.env.NEXT_PUBLIC_APP_URL}/projects/${project.id}?tab=sow`,
+          attachments: pdfAttachment ? [pdfAttachment] : undefined,
         })
       }
     } catch (e) { console.error('Agency signed email failed:', e) }
@@ -141,7 +171,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       entityType: 'project', entityId: project.id,
     })
 
-    // ── 9. Confirm to client (Event 4) ───────────────────────
+    // ── 10. Confirm to client (Event 4) ───────────────────────
     try {
       await sendSowSignedClientEmail({
         to:          client.email,
@@ -149,6 +179,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         agencyName:  ws.agency_name,
         projectName: project.name,
         portalUrl:   `${process.env.NEXT_PUBLIC_APP_URL}/portal/sow/${token}`,
+        attachments: pdfAttachment ? [pdfAttachment] : undefined,
       })
     } catch (e) { console.error('Client confirm email failed:', e) }
 

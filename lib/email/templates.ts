@@ -149,8 +149,9 @@ export async function sendSowEmail(params: {
 export async function sendSowSignedAgencyEmail(params: {
   to: string[]; agencyName: string; clientName: string
   projectName: string; signedBy: string; portalUrl: string
+  attachments?: Array<{ filename: string; content: string }>
 }) {
-  const { to, agencyName, clientName, projectName, signedBy } = params
+  const { to, agencyName, clientName, projectName, signedBy, attachments } = params
 
   const html = baseTemplate({
     agencyName,
@@ -178,6 +179,7 @@ export async function sendSowSignedAgencyEmail(params: {
     to,
     subject: `✓ ${clientName} signed the ${projectName} SOW`,
     html,
+    ...(attachments?.length ? { attachments } : {}),
   })
 }
 
@@ -185,8 +187,9 @@ export async function sendSowSignedAgencyEmail(params: {
 export async function sendSowSignedClientEmail(params: {
   to: string; clientName: string; agencyName: string
   projectName: string; portalUrl: string
+  attachments?: Array<{ filename: string; content: string }>
 }) {
-  const { to, clientName, agencyName, projectName, portalUrl } = params
+  const { to, clientName, agencyName, projectName, portalUrl, attachments } = params
 
   const html = baseTemplate({
     agencyName,
@@ -212,6 +215,7 @@ export async function sendSowSignedClientEmail(params: {
     to,
     subject: `Your ${projectName} agreement is confirmed`,
     html,
+    ...(attachments?.length ? { attachments } : {}),
   })
 }
 
