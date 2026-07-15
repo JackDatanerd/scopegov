@@ -8,16 +8,24 @@ type Period = '30d' | '90d' | '6m' | '12m' | 'all'
 export default function ReportsPage() {
   const [mode,    setMode]    = useState<Mode>('scope')
   const [period,  setPeriod]  = useState<Period>('90d')
+  const [currency, setCurrency] = useState<string>('')
   const [data,    setData]    = useState<any>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     setLoading(true)
-    fetch(`/api/reports?mode=${mode}&period=${period}`)
+    const currencyParam = currency ? `&currency=${currency}` : ''
+    fetch(`/api/reports?mode=${mode}&period=${period}${currencyParam}`)
       .then(r => r.json())
-      .then(json => { setData(json); setLoading(false) })
+      .then(json => {
+        setData(json)
+        // Lock in whichever currency the backend resolved to, so the
+        // selector reflects reality and subsequent fetches stay pinned.
+        if (json.currency && !currency) setCurrency(json.currency)
+        setLoading(false)
+      })
       .catch(() => setLoading(false))
-  }, [mode, period])
+  }, [mode, period, currency])
 
   const PERIODS: { key: Period; label: string }[] = [
     { key: '30d',  label: 'Last 30 days' },
@@ -35,12 +43,25 @@ export default function ReportsPage() {
           <p className="page-sub">Scope governance and financial performance</p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
+          {data?.mixedCurrencies && (
+            <select className="finp" style={{ width: 'auto' }} value={currency}
+              onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setCurrency(e.target.value)}>
+              {(data.availableCurrencies || []).map((c: string) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          )}
           <select className="finp" style={{ width: 'auto' }} value={period}
             onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setPeriod(e.target.value as Period)}>
             {PERIODS.map(p => <option key={p.key} value={p.key}>{p.label}</option>)}
           </select>
         </div>
       </div>
+
+      {data?.mixedCurrencies && (
+        <div style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '10px 14px', marginBottom: 16, fontSize: 12.5, color: 'var(--text-2)', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <i className="ti ti-info-circle" style={{ fontSize: 14, color: 'var(--text-3)' }} />
+          You have projects in multiple currencies ({(data.availableCurrencies || []).join(', ')}). Figures below are shown in <strong>{currency}</strong> only — switch currencies above to see the rest. Totals are never combined across currencies.
+        </div>
+      )}
 
       {/* Mode toggle */}
       <div className="reports-mode-tabs">

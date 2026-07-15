@@ -27,21 +27,24 @@ export async function GET(request: NextRequest) {
     const canSeeFinancials = hasPermission(session, 'VIEW_FINANCIALS')
 
     if (mode === 'scope') {
-      const [flagsRes, exceptionsRes, adjustmentsRes, cosRes] = await Promise.all([
+      const [flagsRes, exceptionsRes, adjustmentsRes, cosRes, projCurrencyRes] = await Promise.all([
         (service as any).from('guardian_flags').select('id,status,projects(id,name)')
           .eq('workspace_id', wsId).gte('created_at', since),
-        (service as any).from('exceptions_log').select('id,deliverable,estimated_value,projects(id,name)')
+        (service as any).from('exceptions_log').select('id,deliverable,estimated_value,project_id,projects(id,name,currency)')
           .eq('workspace_id', wsId).gte('created_at', since),
         (service as any).from('scope_adjustments').select('id,deliverable,old_value,new_value,reason,adjusted_at,projects(id,name)')
           .eq('workspace_id', wsId).gte('adjusted_at', since).order('adjusted_at', { ascending: false }),
-        (service as any).from('amendments').select('id,financial_impact')
+        (service as any).from('amendments').select('id,financial_impact,project_id')
           .eq('workspace_id', wsId).gte('created_at', since),
+        (service as any).from('projects').select('id,currency').eq('workspace_id', wsId).is('deleted_at', null),
       ])
 
       const flags      = flagsRes.data || []
       const exceptions = exceptionsRes.data || []
       const adjustments = adjustmentsRes.data || []
-      const amendments = cosRes.data || []
+      const allAmendments = cosRes.data || []
+      const projCurrencyById: Record<string, string> = {}
+      for (const p of (projCurrencyRes.data || [])) projCurrencyById[p.id] = p.currency || 'USD'
 
       // Aggregate flags by project
       const flagMap: Record<string, { project_id: string; project_name: string; flag_count: number }> = {}
@@ -52,6 +55,20 @@ export async function GET(request: NextRequest) {
         flagMap[pid].flag_count++
       }
 
+      // FIX: recovered_value and exception totals were summed across every
+      // project's currency with a hardcoded 'USD' label — same bug as
+      // financial mode. Filter to one currency at a time here too.
+      const currencyCounts: Record<string, number> = {}
+      for (const c of Object.values(projCurrencyById)) currencyCounts[c] = (currencyCounts[c] || 0) + 1
+      const availableCurrencies = Object.keys(currencyCounts).sort()
+      const mixedCurrencies = availableCurrencies.length > 1
+      const requestedCurrency = searchParams.get('currency')
+      const currency = (requestedCurrency && availableCurrencies.includes(requestedCurrency))
+        ? requestedCurrency
+        : (availableCurrencies.sort((a, b) => currencyCounts[b] - currencyCounts[a])[0] || 'USD')
+
+      const amendments = allAmendments.filter((a: any) => (projCurrencyById[a.project_id] || 'USD') === currency)
+      const exceptionsInCurrency = exceptions.filter((e: any) => (e.projects?.currency || 'USD') === currency)
       const recoveredValue = amendments.reduce((s: number, a: any) => s + (a.financial_impact || 0), 0)
 
       return NextResponse.json({
@@ -61,9 +78,11 @@ export async function GET(request: NextRequest) {
           recovered_value: canSeeFinancials ? recoveredValue : null,
         },
         flagsByProject:      Object.values(flagMap).sort((a, b) => b.flag_count - a.flag_count),
-        exceptionsByProject: exceptions,
+        exceptionsByProject: exceptionsInCurrency,
         adjustments,
-        currency:            'USD',
+        currency,
+        mixedCurrencies,
+        availableCurrencies,
       })
     }
 
@@ -76,13 +95,37 @@ export async function GET(request: NextRequest) {
         .eq('workspace_id', wsId).is('deleted_at', null).not('status', 'in', '("Draft","Archived")'),
       (service as any).from('amendments').select('id,financial_impact,project_id')
         .eq('workspace_id', wsId).gte('created_at', since),
-      (service as any).from('change_orders').select('id,status,total')
+      (service as any).from('change_orders').select('id,status,total,project_id')
         .eq('workspace_id', wsId).gte('created_at', since),
     ])
 
-    const projects   = projectsRes.data || []
-    const amendments = amendmentsRes.data || []
-    const cos        = cosRes2.data || []
+    const allProjects = projectsRes.data || []
+    const allAmendments = amendmentsRes.data || []
+    const allCos      = cosRes2.data || []
+
+    // FIX: this used to sum contract_value across every project regardless
+    // of currency, then slapped an arbitrary single currency label
+    // (projects[0]'s) on the blended total — e.g. USD + KES + GBP added
+    // together and reported as "USD X". No conversion was ever applied.
+    // Doing real FX conversion correctly (live rates, caching, historical
+    // accuracy for past periods) is a real feature to build deliberately,
+    // not a one-line fix — so instead: never blend. Filter to one currency
+    // at a time, and tell the frontend when there's more than one so it
+    // can offer a selector, rather than silently producing a wrong number.
+    const currencyCounts: Record<string, number> = {}
+    for (const p of allProjects) currencyCounts[p.currency || 'USD'] = (currencyCounts[p.currency || 'USD'] || 0) + 1
+    const availableCurrencies = Object.keys(currencyCounts).sort()
+    const mixedCurrencies = availableCurrencies.length > 1
+
+    const requestedCurrency = searchParams.get('currency')
+    const currency = (requestedCurrency && availableCurrencies.includes(requestedCurrency))
+      ? requestedCurrency
+      : (availableCurrencies.sort((a, b) => currencyCounts[b] - currencyCounts[a])[0] || 'USD')
+
+    const projects   = allProjects.filter((p: any) => (p.currency || 'USD') === currency)
+    const projectIds = new Set(projects.map((p: any) => p.id))
+    const amendments = allAmendments.filter((a: any) => projectIds.has(a.project_id))
+    const cos        = allCos.filter((c: any) => projectIds.has(c.project_id))
 
     const baseValue = projects.reduce((s: number, p: any) => s + (p.contract_value || 0), 0)
     const coImpact  = amendments.reduce((s: number, a: any) => s + (a.financial_impact || 0), 0)
@@ -102,8 +145,6 @@ export async function GET(request: NextRequest) {
       typeMap[p.type] = (typeMap[p.type] || 0) + (p.contract_value || 0)
     }
 
-    const currency = projects[0]?.currency || 'USD'
-
     return NextResponse.json({
       metrics: {
         effective_value: baseValue + coImpact,
@@ -122,6 +163,8 @@ export async function GET(request: NextRequest) {
         pending:  cos.filter((c: any) => ['awaiting_response','countered','stalled'].includes(c.status)).length,
       },
       currency,
+      mixedCurrencies,
+      availableCurrencies,
     })
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
