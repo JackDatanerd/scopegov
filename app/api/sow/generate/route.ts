@@ -1,4 +1,12 @@
 export const runtime = 'nodejs'
+// FIX: no explicit maxDuration was set, so this route ran under Vercel's
+// platform default (as low as 10s on some plans) — generating a full SOW
+// can legitimately take longer than that, especially now that max_tokens
+// is higher. This is a defensive complement to the max_tokens fix above,
+// not a replacement for it: truncated JSON was the confirmed symptom
+// (stripAndParse failing on a *received* response), but a real infra
+// timeout was also possible and worth ruling out explicitly.
+export const maxDuration = 60
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
@@ -189,13 +197,22 @@ Rules:
 - Never add a "late fee rate" or "revision fee" unless explicitly provided.`
 
     let raw = ''
+    let stopReason: string | null = null
     try {
       const msg = await client.messages.create({
         model:      MODEL,
-        max_tokens: 4000,
+        // FIX: 4000 was genuinely tight for a full 14-section legal
+        // document with "professional, authoritative language" — easily
+        // enough to truncate mid-generation, producing incomplete (and
+        // therefore unparseable) JSON. This is very likely the actual
+        // cause of "AI returned invalid JSON" rather than a Vercel
+        // infra-level timeout, since that error only fires *after* a
+        // response was successfully received and parsed.
+        max_tokens: 8000,
         messages:   [{ role: 'user', content: prompt }],
       })
       raw = msg.content.filter(b => b.type === 'text').map((b: any) => b.text).join('')
+      stopReason = msg.stop_reason
     } catch (aiErr) {
       console.error('AI SOW generation failed:', aiErr)
       return NextResponse.json({ error: 'AI generation failed. Please try again.' }, { status: 503 })
@@ -206,8 +223,13 @@ Rules:
     try {
       parsed = stripAndParse(raw)
     } catch {
-      console.error('JSON parse failed, raw output:', raw.slice(0, 500))
-      return NextResponse.json({ error: 'AI returned invalid JSON. Please try again.' }, { status: 500 })
+      console.error('JSON parse failed, stop_reason:', stopReason, 'raw output:', raw.slice(0, 500))
+      const truncated = stopReason === 'max_tokens'
+      return NextResponse.json({
+        error: truncated
+          ? 'The generated SOW was too long and got cut off. Try shortening the brief or simplifying the deliverables list, then retry.'
+          : 'AI returned invalid JSON. Please try again.',
+      }, { status: 500 })
     }
 
     // Check for existing draft SOW on this project
