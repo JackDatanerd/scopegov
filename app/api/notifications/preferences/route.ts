@@ -4,7 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 
 const EVENT_TYPES = [
-  'sow_signed', 'sow_declined', 'co_accepted', 'co_declined',
+  'sow_signed', 'sow_declined', 'sow_changes_requested', 'co_accepted', 'co_declined', 'co_countered',
   'guardian_flag', 'escalation', 'trial_ending',
 ]
 

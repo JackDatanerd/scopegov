@@ -32,13 +32,15 @@ const TABS: { key: SettingsTab; label: string }[] = [
 ]
 
 const NOTIF_ITEMS = [
-  { key: 'sow_signed',    label: 'SOW signed by client',    desc: 'When your client signs a Statement of Work' },
-  { key: 'sow_declined',  label: 'SOW declined',            desc: 'When a client declines to sign' },
-  { key: 'co_accepted',   label: 'Change order accepted',   desc: 'When a client accepts a change order' },
-  { key: 'co_declined',   label: 'Change order declined',   desc: 'When a client declines a change order' },
-  { key: 'guardian_flag', label: 'Scope flag raised',       desc: 'When Guardian detects an out-of-scope request' },
-  { key: 'escalation',    label: 'Escalation',              desc: 'When a matter is escalated to you' },
-  { key: 'trial_ending',  label: 'Trial ending',            desc: '3 days before trial expires' },
+  { key: 'sow_signed',            label: 'SOW signed by client',    desc: 'When your client signs a Statement of Work' },
+  { key: 'sow_declined',          label: 'SOW declined',            desc: 'When a client declines to sign' },
+  { key: 'sow_changes_requested', label: 'SOW changes requested',   desc: 'When a client requests changes to a Statement of Work' },
+  { key: 'co_accepted',           label: 'Change order accepted',   desc: 'When a client accepts a change order' },
+  { key: 'co_declined',           label: 'Change order declined',   desc: 'When a client declines a change order' },
+  { key: 'co_countered',          label: 'Change order countered',  desc: 'When a client proposes a different amount' },
+  { key: 'guardian_flag',         label: 'Scope flag raised',       desc: 'When Guardian detects an out-of-scope request' },
+  { key: 'escalation',            label: 'Escalation',              desc: 'When a matter is escalated to you' },
+  { key: 'trial_ending',          label: 'Trial ending',            desc: '3 days before trial expires' },
 ]
 
 interface Props {
