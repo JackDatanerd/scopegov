@@ -77,6 +77,7 @@ export default function ProjectDetail({
   const router = useRouter()
   const [tab,        setTab]        = useState(initialTab)
   const [completing, setCompleting] = useState(false)
+  const [archiving,  setArchiving]  = useState(false)
   const [error,      setError]      = useState('')
 
   const currency      = project.currency || 'USD'
@@ -128,6 +129,18 @@ export default function ProjectDetail({
     } finally { setCompleting(false) }
   }
 
+  async function handleArchive() {
+    if (!confirm(`Archive "${project.name}"? It'll be hidden from active project views but stays fully accessible from a direct link.`)) return
+    setArchiving(true); setError('')
+    try {
+      const res = await fetch(`/api/projects/${project.id}/archive`, { method: 'POST' })
+      if (!res.ok) { const j = await res.json(); throw new Error(j.error) }
+      router.refresh()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Something went wrong')
+    } finally { setArchiving(false) }
+  }
+
   return (
     <div>
       {/* Header */}
@@ -166,6 +179,11 @@ export default function ProjectDetail({
             {permissions.markComplete && project.status === 'Active' && (
               <button className="btn btn-ghost btn-sm" onClick={handleMarkComplete} disabled={completing}>
                 {completing ? <span className="spin spin-dark" /> : <><i className="ti ti-check" style={{ fontSize: 12 }} /> Mark complete</>}
+              </button>
+            )}
+            {permissions.markComplete && project.status === 'Complete' && (
+              <button className="btn btn-ghost btn-sm" onClick={handleArchive} disabled={archiving}>
+                {archiving ? <span className="spin spin-dark" /> : <><i className="ti ti-archive" style={{ fontSize: 12 }} /> Archive</>}
               </button>
             )}
             {canDelete && (
