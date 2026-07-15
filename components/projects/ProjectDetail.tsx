@@ -378,6 +378,13 @@ function SowTab({ project, sows, amendments, permissions, router }: any) {
   const [error,   setError]   = useState('')
   const currentSow = sows[0]
 
+  // FIX: previously this tab's empty state just described what to do
+  // ("Generate a Statement of Work from your project brief") with no way
+  // to actually do it — any project where the creation wizard was closed
+  // before generating a SOW was a permanent dead end. This rebuilds that
+  // step as a standalone modal for an already-existing project.
+  const [briefOpen, setBriefOpen] = useState(false)
+
   async function handleSendSow() {
     setSending(true); setError('')
     try {
@@ -409,6 +416,11 @@ function SowTab({ project, sows, amendments, permissions, router }: any) {
             <i className="ti ti-file-description empty-state-icon" />
             <p className="empty-state-title">No SOW yet</p>
             <p className="empty-state-sub">Generate a Statement of Work from your project brief.</p>
+            {permissions.editSow && (
+              <button className="btn btn-primary btn-sm" style={{ marginTop: 14 }} onClick={() => setBriefOpen(true)}>
+                <i className="ti ti-sparkles" style={{ fontSize: 12 }} /> Generate SOW
+              </button>
+            )}
           </div>
         </div>
       ) : (
@@ -487,7 +499,143 @@ function SowTab({ project, sows, amendments, permissions, router }: any) {
           )}
         </div>
       )}
+      {briefOpen && (
+        <GenerateSowModal project={project} onClose={() => setBriefOpen(false)}
+          onDone={() => { setBriefOpen(false); router.refresh() }} />
+      )}
     </div>
+  )
+}
+
+function GenerateSowModal({ project, onClose, onDone }: any) {
+  const [briefText,        setBriefText]        = useState('')
+  const [parsing,          setParsing]           = useState(false)
+  const [reviewing,        setReviewing]         = useState(false)
+  const [objective,        setObjective]         = useState('')
+  const [deliverables,     setDeliverables]      = useState('')
+  const [outOfScope,       setOutOfScope]        = useState('')
+  const [timeline,         setTimeline]          = useState('')
+  const [paymentStructure, setPaymentStructure]  = useState('50_50')
+  const [revisionRounds,   setRevisionRounds]    = useState('2')
+  const [generating,       setGenerating]        = useState(false)
+  const [error,            setError]             = useState('')
+
+  async function extractFromBrief() {
+    if (!briefText.trim()) { setReviewing(true); return }
+    setParsing(true); setError('')
+    try {
+      const res  = await fetch('/api/sow/parse-brief', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ briefText, projectType: project.type }),
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error)
+      setObjective(json.objective || '')
+      setDeliverables(json.deliverables || '')
+      setOutOfScope(json.outOfScope || '')
+      setTimeline(json.timeline || '')
+      if (json.paymentStructure) setPaymentStructure(json.paymentStructure)
+      if (json.revisionRounds)   setRevisionRounds(String(json.revisionRounds))
+      setReviewing(true)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not read that brief — you can still fill the fields in manually below.')
+      setReviewing(true)
+    } finally { setParsing(false) }
+  }
+
+  async function generate() {
+    if (!objective.trim() || !deliverables.trim()) {
+      setError('Objective and deliverables are required.')
+      return
+    }
+    setGenerating(true); setError('')
+    try {
+      const res  = await fetch('/api/sow/generate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          projectId: project.id, projectType: project.type,
+          objective, deliverables, outOfScope, timeline,
+          paymentStructure, revisionRounds: parseInt(revisionRounds) || 2,
+          contractValue: project.contract_value || 0, currency: project.currency || 'USD',
+        }),
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error || 'SOW generation failed — please try again.')
+      onDone()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'SOW generation failed — please try again.')
+    } finally { setGenerating(false) }
+  }
+
+  return (
+    <>
+      <div className="modal-bg" onClick={onClose} />
+      <div className="modal" style={{ maxWidth: 560 }}>
+        <h2 className="modal-title">Generate SOW</h2>
+        {!reviewing ? (
+          <>
+            <p className="modal-sub">Paste your project brief and we&apos;ll extract the key fields — or skip straight to filling them in yourself.</p>
+            {error && <p className="ferr">{error}</p>}
+            <textarea className="finp" style={{ minHeight: 140, resize: 'vertical' }} autoFocus
+              placeholder="Paste the client's brief, scope notes, or project description here…"
+              value={briefText} onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setBriefText(e.target.value)} />
+            <div className="modal-footer">
+              <button className="btn btn-ghost" onClick={() => setReviewing(true)}>Fill in manually</button>
+              <button className="btn btn-primary" onClick={extractFromBrief} disabled={parsing}>
+                {parsing ? <span className="spin" /> : 'Extract with AI'}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            {error && <p className="ferr">{error}</p>}
+            <div className="fgrp">
+              <label className="flbl">Objective</label>
+              <textarea className="finp" style={{ minHeight: 50 }} value={objective}
+                onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setObjective(e.target.value)} />
+            </div>
+            <div className="fgrp">
+              <label className="flbl">Deliverables <span className="fhint">(one per line)</span></label>
+              <textarea className="finp" style={{ minHeight: 80 }} value={deliverables}
+                onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setDeliverables(e.target.value)} />
+            </div>
+            <div className="fgrp">
+              <label className="flbl">Out of scope <span className="fhint">(one per line, optional)</span></label>
+              <textarea className="finp" style={{ minHeight: 50 }} value={outOfScope}
+                onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setOutOfScope(e.target.value)} />
+            </div>
+            <div className="f2">
+              <div className="fgrp">
+                <label className="flbl">Timeline <span className="fhint">(optional)</span></label>
+                <input className="finp" value={timeline} placeholder="e.g. 6 weeks"
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTimeline(e.target.value)} />
+              </div>
+              <div className="fgrp">
+                <label className="flbl">Revision rounds</label>
+                <input type="number" className="finp" min={1} max={5} value={revisionRounds}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRevisionRounds(e.target.value)} />
+              </div>
+            </div>
+            <div className="fgrp">
+              <label className="flbl">Payment structure</label>
+              <select className="finp" value={paymentStructure} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setPaymentStructure(e.target.value)}>
+                <option value="50_50">50% upfront, 50% on delivery</option>
+                <option value="100_upfront">100% upfront</option>
+                <option value="milestones">Milestones</option>
+                <option value="monthly">Monthly</option>
+                <option value="on_delivery">100% on delivery</option>
+              </select>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+              <button className="btn btn-primary" onClick={generate} disabled={generating}>
+                {generating ? <span className="spin" /> : 'Generate SOW'}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </>
   )
 }
 
@@ -836,14 +984,18 @@ function TeamTab({ project, team, permissions }: any) {
     } finally { setLoadingModal(false) }
   }
 
+  const [addError, setAddError] = useState('')
+
   async function addMember(memberId: string) {
-    setAddingId(memberId)
+    setAddingId(memberId); setAddError('')
     try {
-      const res = await fetch(`/api/projects/${project.id}/members`, {
+      const res  = await fetch(`/api/projects/${project.id}/members`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ memberId }),
       })
+      const json = await res.json().catch(() => ({}))
       if (res.ok) { setAdding(false); router.refresh() }
+      else setAddError(json.error || 'Could not add that member — try again.')
     } finally { setAddingId(null) }
   }
 
@@ -887,6 +1039,7 @@ function TeamTab({ project, team, permissions }: any) {
           <div className="modal">
             <h2 className="modal-title">Add team member</h2>
             <p className="modal-sub">Select a workspace member to assign to this project.</p>
+            {addError && <p className="ferr" style={{ marginBottom: 10 }}>{addError}</p>}
             {available.length === 0 ? (
               <p style={{ fontSize: 13, color: 'var(--text-3)', padding: '16px 0' }}>
                 All workspace members are already on this project.

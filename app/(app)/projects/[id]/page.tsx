@@ -47,12 +47,18 @@ export default async function ProjectPage({ params, searchParams }: Props) {
   // Check project access (own projects check)
   const canViewAll = hasPermission(session, 'VIEW_ALL_PROJECTS')
   if (!canViewAll) {
+    // FIX: project_members has no user_id column — it links to
+    // workspace_members via member_id, which links to users via user_id.
+    // The old query filtered directly on a nonexistent project_members.user_id,
+    // which errored on every call, so this check always failed and anyone
+    // without VIEW_ALL_PROJECTS got notFound() on every project, including
+    // ones they were legitimately assigned to.
     const { data: membership } = await (service as any)
       .from('project_members')
-      .select('id')
+      .select('id, workspace_members!inner(user_id)')
       .eq('project_id', id)
-      .eq('user_id', session.id)
-      .single()
+      .eq('workspace_members.user_id', session.id)
+      .maybeSingle()
     if (!membership) notFound()
   }
 

@@ -232,7 +232,7 @@ export default function CoEditor({ projId, coId }: Props) {
                 value={item.quantity} min={1} disabled={isLocked}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateLineItem(item.id, 'quantity', parseFloat(e.target.value) || 1)} />
               <input type="number" className="finp" style={{ width: 100, fontSize: 12, textAlign: 'right' }}
-                value={item.rate} min={0} disabled={isLocked}
+                value={item.rate} min={0} step="0.01" disabled={isLocked}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateLineItem(item.id, 'rate', parseFloat(e.target.value) || 0)} />
               <div style={{ width: 100, textAlign: 'right', fontSize: 13, fontFamily: 'IBM Plex Mono, monospace', color: 'var(--text-2)' }}>
                 {formatCurrency(item.total, currency)}
@@ -262,7 +262,7 @@ export default function CoEditor({ projId, coId }: Props) {
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0' }}>
               <span style={{ fontSize: 12, color: 'var(--text-3)', flex: 1 }}>Tax rate (%)</span>
               <input type="number" className="finp" style={{ width: 80, fontSize: 12, padding: '4px 8px' }}
-                value={taxRate} min={0} max={100} disabled={isLocked}
+                value={taxRate} min={0} max={100} step="0.01" disabled={isLocked}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTaxRate(e.target.value)} />
               <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, cursor: 'pointer' }}>
                 <input type="checkbox" checked={taxInclusive} disabled={isLocked}

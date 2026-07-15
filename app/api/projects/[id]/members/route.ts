@@ -14,7 +14,7 @@ export async function POST(
     const { id: projectId } = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    if (!hasPermission(session, 'MANAGE_WORKSPACE_SETTINGS') && !hasPermission(session, 'VIEW_ALL_PROJECTS'))
+    if (!hasPermission(session, 'ASSIGN_TEAM_MEMBERS'))
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
 
     const { memberId } = await request.json()
@@ -36,11 +36,11 @@ export async function POST(
     const { error } = await (service as any)
       .from('project_members')
       .upsert({
-        project_id:          projectId,
-        workspace_member_id: memberId,
-        added_at:            new Date().toISOString(),
-        added_by:            session.id,
-      }, { onConflict: 'project_id,workspace_member_id' })
+        project_id: projectId,
+        member_id:  memberId,
+        added_at:   new Date().toISOString(),
+        added_by:   session.id,
+      }, { onConflict: 'project_id,member_id' })
 
     if (error) throw new Error(error.message)
     return NextResponse.json({ ok: true })

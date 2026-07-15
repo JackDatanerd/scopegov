@@ -30,11 +30,13 @@ export default async function ProjectsPage() {
     .order('updated_at', { ascending: false })
 
   if (!canViewAll) {
+    // FIX: project_members has neither workspace_id nor user_id columns —
+    // see app/api/projects/route.ts for the full explanation. This
+    // silently returned nothing for anyone without VIEW_ALL_PROJECTS.
     const { data: ids } = await (service as any)
       .from('project_members')
-      .select('project_id')
-      .eq('workspace_id', session.workspaceId)
-      .eq('user_id', session.id)
+      .select('project_id, workspace_members!inner(user_id)')
+      .eq('workspace_members.user_id', session.id)
     const projectIds = (ids || []).map((r: { project_id: string }) => r.project_id)
     if (projectIds.length > 0) {
       query = query.in('id', projectIds)

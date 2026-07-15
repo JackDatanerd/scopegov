@@ -316,7 +316,7 @@ export default function CoPortalPage() {
                 <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#555', marginBottom: 5 }}>Counter amount ({co.currency})</label>
                 <input type="number" className="finp" value={counterAmount}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCounterAmount(e.target.value)}
-                  placeholder={String(co.total)} min={0} autoFocus />
+                  placeholder={String(co.total)} min={0} step="0.01" autoFocus />
               </div>
             </div>
             <div style={{ marginBottom: 14 }}>

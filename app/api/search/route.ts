@@ -29,9 +29,12 @@ export async function GET(request: NextRequest) {
       .limit(5)
 
     if (!canViewAll) {
+      // FIX: project_members has neither workspace_id nor user_id columns —
+      // see app/api/projects/route.ts for the full explanation. This
+      // silently returned nothing for anyone without VIEW_ALL_PROJECTS.
       const { data: myIds } = await (service as any)
-        .from('project_members').select('project_id')
-        .eq('workspace_id', wsId).eq('user_id', session.id)
+        .from('project_members').select('project_id, workspace_members!inner(user_id)')
+        .eq('workspace_members.user_id', session.id)
       const ids = (myIds || []).map((r: any) => r.project_id)
       if (ids.length) projQuery = projQuery.in('id', ids)
       else projQuery = projQuery.in('id', ['00000000-0000-0000-0000-000000000000']) // empty set

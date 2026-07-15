@@ -124,11 +124,16 @@ export async function GET() {
       .order('name')
 
     if (!canViewAll) {
+      // FIX: project_members has neither workspace_id nor user_id columns
+      // (it links to workspace_members via member_id, which links to users
+      // via user_id) — this query referenced two nonexistent columns, so it
+      // always errored and silently resolved to an empty list, meaning
+      // anyone with only VIEW_OWN_PROJECTS saw zero projects, always,
+      // regardless of actual assignments.
       const { data: ids } = await (service as any)
         .from('project_members')
-        .select('project_id')
-        .eq('workspace_id', session.workspaceId)
-        .eq('user_id', session.id)
+        .select('project_id, workspace_members!inner(user_id)')
+        .eq('workspace_members.user_id', session.id)
       query = query.in('id', (ids || []).map((r: any) => r.project_id))
     }
 

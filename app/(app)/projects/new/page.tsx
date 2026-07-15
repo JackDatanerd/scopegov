@@ -262,7 +262,7 @@ export default function NewProjectPage() {
             <div className="f2">
               <div className="fgrp">
                 <label className="flbl">Contract value</label>
-                <input type="number" className="finp" value={contractValue} min={0} placeholder="5000"
+                <input type="number" className="finp" value={contractValue} min={0} step="0.01" placeholder="5000"
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) => setContractValue(e.target.value)} />
               </div>
               <div className="fgrp">

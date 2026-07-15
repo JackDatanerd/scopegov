@@ -21,10 +21,10 @@ export async function GET(
     // Get member IDs already on the project
     const { data: existing } = await (service as any)
       .from('project_members')
-      .select('workspace_member_id')
+      .select('member_id')
       .eq('project_id', projectId)
 
-    const existingIds = (existing || []).map((e: any) => e.workspace_member_id)
+    const existingIds = (existing || []).map((e: any) => e.member_id)
 
     // Get all active workspace members not already assigned
     let query = (service as any)

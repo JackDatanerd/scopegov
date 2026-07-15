@@ -47,6 +47,22 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const project = co.projects
     const client  = project.clients
 
+    // FIX: this signed-SOW lookup used to happen AFTER marking the CO
+    // 'accepted' — if it failed, the client got a confusing 422 error after
+    // already being told they'd accepted, while the CO's status had already
+    // changed in the DB regardless (amendment never created, financial
+    // impact never applied). Check first, fail fast, before any write.
+    const { data: signedSow } = await (service as any)
+      .from('sow_documents')
+      .select('id')
+      .eq('project_id', co.project_id)
+      .eq('status', 'signed')
+      .order('version', { ascending: false })
+      .limit(1).single()
+
+    if (!signedSow)
+      return NextResponse.json({ error: 'No signed SOW found for this project — cannot record this amendment' }, { status: 422 })
+
     // BUG-047: acceptedAt unconditionally populated on ALL acceptance paths
     await (service as any).from('change_orders').update({
       status:       'accepted',
@@ -62,23 +78,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       token, token_type: 'co', reason: 'superseded',
     }).catch(() => {})
 
-    // BUG-052: amendment signedSowId = highest-versioned signed SOW
-    const { data: signedSow } = await (service as any)
-      .from('sow_documents')
-      .select('id')
-      .eq('project_id', co.project_id)
-      .eq('status', 'signed')
-      .order('version', { ascending: false })
-      .limit(1).single()
-
-    if (!signedSow)
-      return NextResponse.json({ error: 'No signed SOW found for this project' }, { status: 422 })
-
     // Create ONE amendment (spec §0.11)
     const lineItems  = typeof co.line_items === 'string' ? JSON.parse(co.line_items) : (co.line_items || [])
     const deliverables = lineItems.map((l: any) => l.description).filter(Boolean)
 
-    await (service as any).from('amendments').insert({
+    // FIX: this insert's error was never checked — a silent failure here
+    // (constraint violation, bad data, etc.) meant the CO showed as
+    // accepted with no amendment ever created and no financial impact
+    // applied, with zero visibility into why. Now logged if it happens.
+    const { error: amendErr } = await (service as any).from('amendments').insert({
       project_id:          co.project_id,
       workspace_id:        co.workspace_id,
       change_order_id:     co.id,
@@ -90,6 +98,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       effective_at:        now,
       pdf_path:            '',            // PDF generated async
     })
+    if (amendErr) console.error('Amendment insert failed after CO accept:', amendErr, { coId: co.id })
 
     // Update scope snapshot
     try {
