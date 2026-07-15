@@ -82,6 +82,27 @@ export default function ProjectDetail({
   const currency      = project.currency || 'USD'
   const isActive      = ['Active', 'Stalled'].includes(project.status)
   const guardianActive = project.status === 'Active'
+  const [deleting,   setDeleting]   = useState(false)
+
+  // FIX: DELETE_PROJECTS was fully built and enforced server-side (only
+  // Draft/Intake, never if a signed SOW exists — archive instead) but had
+  // no UI anywhere to trigger it. Mirror the same constraint client-side
+  // so the button only appears when the action would actually succeed.
+  const canDelete = permissions.deleteProject && ['Draft', 'Intake'].includes(project.status)
+    && !(project.sow_documents || []).some((s: any) => s.status === 'signed')
+
+  async function handleDelete() {
+    if (!confirm(`Delete "${project.name}"? This can't be undone.`)) return
+    setDeleting(true); setError('')
+    try {
+      const res = await fetch(`/api/projects/${project.id}`, { method: 'DELETE' })
+      if (!res.ok) { const j = await res.json(); throw new Error(j.error) }
+      router.push('/projects')
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not delete project')
+      setDeleting(false)
+    }
+  }
 
   const recoveredAmt  = amendments.reduce((s: number, a: any) => s + (a.financial_impact || 0), 0)
   const openCos       = (project.change_orders || []).filter((co: any) => ['awaiting_response','countered'].includes(co.status))
@@ -145,6 +166,11 @@ export default function ProjectDetail({
             {permissions.markComplete && project.status === 'Active' && (
               <button className="btn btn-ghost btn-sm" onClick={handleMarkComplete} disabled={completing}>
                 {completing ? <span className="spin spin-dark" /> : <><i className="ti ti-check" style={{ fontSize: 12 }} /> Mark complete</>}
+              </button>
+            )}
+            {canDelete && (
+              <button className="btn btn-ghost btn-sm" style={{ color: 'var(--red)' }} onClick={handleDelete} disabled={deleting}>
+                {deleting ? <span className="spin spin-dark" /> : <><i className="ti ti-trash" style={{ fontSize: 12 }} /> Delete</>}
               </button>
             )}
           </div>
