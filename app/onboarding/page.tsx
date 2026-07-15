@@ -115,6 +115,20 @@ export default function OnboardingPage() {
   async function submitIdentity(e: React.FormEvent) {
     e.preventDefault()
     if (!agencyName.trim() || !industry) return
+    // FIX: if the user went Back to step 0 after already creating the
+    // workspace (or somehow double-submitted), don't create a second one.
+    // Persist any edits via the settings route instead, then advance.
+    if (workspaceId) {
+      setLoading(true); setError('')
+      try {
+        await fetch('/api/workspace/settings', {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agencyName, industry, currency, timezone }),
+        }).catch(() => {}) // non-fatal — don't block navigation on this
+        setStep(1)
+      } finally { setLoading(false) }
+      return
+    }
     setLoading(true); setError('')
     try {
       const res  = await fetch('/api/workspace/create', {
@@ -323,6 +337,10 @@ export default function OnboardingPage() {
             </div>
 
             <div className="ob-nav">
+              <button className="ob-skip" onClick={() => setStep(0)} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <i className="ti ti-arrow-left" style={{ fontSize: 11 }} /> Back
+              </button>
+              <div style={{ flex: 1 }} />
               <button className="ob-skip" onClick={() => setStep(2)}>Skip for now</button>
               <button className="btn btn-primary" onClick={submitBranding} disabled={loading}>
                 {loading ? <span className="spin" /> : <>Continue <i className="ti ti-arrow-right" style={{ fontSize: 12 }} /></>}
@@ -365,6 +383,10 @@ export default function OnboardingPage() {
             </div>
 
             <div className="ob-nav">
+              <button className="ob-skip" onClick={() => setStep(1)} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <i className="ti ti-arrow-left" style={{ fontSize: 11 }} /> Back
+              </button>
+              <div style={{ flex: 1 }} />
               <button className="ob-skip" onClick={() => setStep(3)}>Skip</button>
               <button className="btn btn-primary" onClick={submitDefaults}>
                 Continue <i className="ti ti-arrow-right" style={{ fontSize: 12 }} />
@@ -388,6 +410,10 @@ export default function OnboardingPage() {
             {error && <div className="auth-error">{error}</div>}
 
             <div className="ob-nav">
+              <button className="ob-skip" onClick={() => setStep(2)} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <i className="ti ti-arrow-left" style={{ fontSize: 11 }} /> Back
+              </button>
+              <div style={{ flex: 1 }} />
               <button className="ob-skip" onClick={() => { setError(''); setStep(4) }}>Skip for now</button>
               <button className="btn btn-primary" onClick={submitInvite} disabled={loading}>
                 {loading ? <span className="spin" /> : <>Continue <i className="ti ti-arrow-right" style={{ fontSize: 12 }} /></>}
