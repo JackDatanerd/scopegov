@@ -9,19 +9,27 @@ type ProjectRow = any // all .from() calls use (supabase as any) per BUG-039
 
 const TABS = [
   { key: 'active',    label: 'Active' },
+  { key: 'awaiting',  label: 'Awaiting Signature' },
   { key: 'drafts',    label: 'Drafts' },
   { key: 'completed', label: 'Completed' },
   { key: 'archived',  label: 'Archived' },
   { key: 'all',       label: 'All' },
 ]
 
+// FIX: Intake, Awaiting Signature, Changes Requested, and Stalled were all
+// bucketed under 'active' — meaning a project that hadn't even had its SOW
+// sent yet showed under a tab literally called "Active". Stalled
+// specifically means "SOW never got signed within 7 days" (see
+// /api/cron/sow-stall), not "was active and went stale" — it belongs with
+// the other pre-signature states, not with genuinely active/signed
+// projects.
 const STATUS_TO_TAB: Record<string, string> = {
   'Draft': 'drafts',
-  'Intake': 'active',
-  'Awaiting Signature': 'active',
-  'Changes Requested': 'active',
+  'Intake': 'awaiting',
+  'Awaiting Signature': 'awaiting',
+  'Changes Requested': 'awaiting',
+  'Stalled': 'awaiting',
   'Active': 'active',
-  'Stalled': 'active',
   'Complete': 'completed',
   'Archived': 'archived',
 }
@@ -70,8 +78,18 @@ export default function ProjectsClient({ projects, canCreate, canViewFinancials 
   }
 
   const attentionCount = useMemo(() =>
-    projects.filter((p: ProjectRow) => STATUS_TO_TAB[p.status] === 'active' && projectAttention(p)).length
+    projects.filter((p: ProjectRow) => ['active','awaiting'].includes(STATUS_TO_TAB[p.status]) && projectAttention(p)).length
   , [projects])
+
+  const attentionByTab = useMemo(() => {
+    const counts: Record<string, number> = {}
+    for (const p of projects) {
+      if (!projectAttention(p)) continue
+      const t = STATUS_TO_TAB[p.status]
+      counts[t] = (counts[t] || 0) + 1
+    }
+    return counts
+  }, [projects])
 
   const grouped = useMemo(() => {
     const map = new Map<string, { clientName: string; clientId: string; projects: ProjectRow[] }>()
@@ -131,10 +149,10 @@ export default function ProjectsClient({ projects, canCreate, canViewFinancials 
         {TABS.map(t => (
           <button key={t.key} className={`tabi${tab === t.key ? ' act' : ''}`} onClick={() => setTab(t.key)}>
             {t.label}
-            {t.key === 'active' && attentionCount > 0 && (
-              <span className="tabi-badge">{attentionCount}</span>
+            {t.key !== 'all' && attentionByTab[t.key] > 0 && (
+              <span className="tabi-badge">{attentionByTab[t.key]}</span>
             )}
-            {t.key !== 'active' && (
+            {!attentionByTab[t.key] && (
               <span style={{ marginLeft: 5, fontSize: 11, color: 'var(--text-4)' }}>
                 {t.key === 'all' ? projects.length : projects.filter((p: ProjectRow) => STATUS_TO_TAB[p.status] === t.key).length}
               </span>

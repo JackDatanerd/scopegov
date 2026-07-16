@@ -139,7 +139,7 @@ export default async function DashboardPage() {
       {/* Metrics */}
       <div className="mstrip">
         <div className="mc">
-          <div className="mc-lbl">Active projects</div>
+          <div className="mc-lbl">In progress</div>
           <div className="mc-val">{active.length}</div>
           <div className="mc-sub">{(projects || []).length} total on record</div>
         </div>
@@ -222,11 +222,11 @@ export default async function DashboardPage() {
             </div>
           )}
 
-          {/* Active projects */}
+          {/* In-progress projects */}
           {active.length > 0 && (
             <div>
               <div className="sec-hd">
-                <div className="sec-title">Active projects</div>
+                <div className="sec-title">In progress</div>
                 <Link href="/projects" style={{ fontSize: 11, color: 'var(--green)' }}>All projects →</Link>
               </div>
               <div className="surface" style={{ overflow: 'hidden' }}>
