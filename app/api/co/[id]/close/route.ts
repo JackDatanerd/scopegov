@@ -61,10 +61,12 @@ async function handleTerminalCoState(
 
   // Revoke token if present (withdrawn)
   if (newStatus === 'withdrawn' && co.token) {
-    await (service as any).from('revoked_tokens').insert({
-      token: co.token, token_type: 'co', reason: 'withdrawn',
-      revoked_by: session.id,
-    }).catch(() => {})
+    try {
+      await (service as any).from('revoked_tokens').insert({
+        token: co.token, token_type: 'co', reason: 'withdrawn',
+        revoked_by: session.id,
+      })
+    } catch (e) { console.error('Token revoke insert failed (non-fatal):', e) }
   }
 
   await logAudit(service, {

@@ -74,9 +74,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }).eq('id', co.id)
 
     // Revoke token — superseded
-    await (service as any).from('revoked_tokens').insert({
-      token, token_type: 'co', reason: 'superseded',
-    }).catch(() => {})
+    try {
+      await (service as any).from('revoked_tokens').insert({
+        token, token_type: 'co', reason: 'superseded',
+      })
+    } catch (e) { console.error('Token revoke insert failed (non-fatal):', e) }
 
     // Create ONE amendment (spec §0.11)
     const lineItems  = typeof co.line_items === 'string' ? JSON.parse(co.line_items) : (co.line_items || [])

@@ -68,9 +68,11 @@ export async function POST_DECLINE(request: NextRequest, token: string) {
   }).eq('id', co.id)
 
   // Revoke token
-  await (service as any).from('revoked_tokens').insert({
-    token, token_type: 'co', reason: 'declined',
-  }).catch(() => {})
+  try {
+    await (service as any).from('revoked_tokens').insert({
+      token, token_type: 'co', reason: 'declined',
+    })
+  } catch (e) { console.error('Token revoke insert failed (non-fatal):', e) }
 
   // BUG-048: revert linked flag on decline
   await revertFlagIfLinked(service, co, 'CO declined by client', null)
