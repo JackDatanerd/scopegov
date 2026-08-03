@@ -50,6 +50,8 @@ export type GuardianOutcome = 'pending' | 'in_scope' | 'borderline' | 'out_of_sc
 export type GuardianSensitivity = 'conservative' | 'medium' | 'aggressive'
 export type MemberStatus = 'active' | 'invited' | 'deactivated'
 export type MilestoneStatus = 'pending' | 'invoiced' | 'paid' | 'overdue'
+export type InvoiceStatus = 'draft' | 'sent' | 'partially_paid' | 'paid' | 'overdue' | 'void'
+export type InvoicePaymentMethod = 'bank_transfer' | 'stripe' | 'check' | 'cash' | 'other'
 
 // ── WORKSPACES ────────────────────────────────────────────────
 
@@ -146,6 +148,7 @@ export type Permission =
   | 'DELETE_PROJECTS'
   | 'VIEW_AUDIT_LOG'
   | 'MANAGE_WORKSPACE_SETTINGS'
+  | 'SEND_INVOICES'
 
 export const ALL_PERMISSIONS: Permission[] = [
   'VIEW_OWN_PROJECTS', 'VIEW_ALL_PROJECTS', 'VIEW_FINANCIALS', 'VIEW_CLIENT_DATA',
@@ -154,6 +157,7 @@ export const ALL_PERMISSIONS: Permission[] = [
   'MARK_PROJECT_COMPLETE', 'ASSIGN_TEAM_MEMBERS', 'SUBMIT_GUARDIAN_CHECKS',
   'ACCESS_GUARDIAN_HISTORY', 'INVITE_MEMBERS', 'MANAGE_ROLES', 'MANAGE_BILLING',
   'EXPORT_DATA', 'DELETE_PROJECTS', 'VIEW_AUDIT_LOG', 'MANAGE_WORKSPACE_SETTINGS',
+  'SEND_INVOICES',
 ]
 
 export interface Role {
@@ -276,6 +280,51 @@ export interface PaymentMilestone {
   invoicedAt: string | null
   paidAt: string | null
   notes: string | null
+  createdAt: string
+}
+
+// ── INVOICES (Phase 4a) ──────────────────────────────────────
+// Client invoicing: distinct from `billing` (agency's own ScopeGov
+// subscription). ScopeGov generates + sends the document and tracks
+// status; it never processes the payment — every InvoicePayment row
+// is a manual entry an agency user logs after receiving money outside
+// the app (wire, Stripe invoice they sent separately, check, cash).
+
+export interface Invoice {
+  id: string
+  workspaceId: string
+  projectId: string
+  milestoneId: string | null
+  sowId: string | null
+  coId: string | null
+  invoiceNumber: string | null
+  title: string
+  amount: number
+  amountPaid: number
+  currency: string
+  status: InvoiceStatus
+  dueDate: string | null
+  paymentInstructions: string | null
+  notes: string | null
+  token: string | null
+  expiresAt: string | null
+  sentAt: string | null
+  paidAt: string | null
+  voidedAt: string | null
+  voidReason: string | null
+  createdBy: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface InvoicePayment {
+  id: string
+  invoiceId: string
+  amount: number
+  paidAt: string
+  method: InvoicePaymentMethod
+  referenceNote: string | null
+  recordedBy: string
   createdAt: string
 }
 

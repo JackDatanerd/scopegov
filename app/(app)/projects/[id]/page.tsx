@@ -33,8 +33,8 @@ export default async function ProjectPage({ params, searchParams }: Props) {
       client_id, created_by, workspace_id, guardian_email,
       clients(id, name, company_name, email, cc_emails, phone, notes),
       guardian_flags(id, status, severity, description, sow_reference, type, created_at, change_order_id, escalated_to),
-      change_orders(id, title, status, total, sent_at, accepted_at, version),
-      sow_documents(id, version, status, sent_at, signed_at, created_at),
+      change_orders(id, title, status, total, sent_at, accepted_at, version, document_number),
+      sow_documents(id, version, status, sent_at, signed_at, created_at, document_number),
       project_scope_snapshot(id, deliverables, out_of_scope, last_updated_at)
     `)
     .eq('id', id)
@@ -91,6 +91,21 @@ export default async function ProjectPage({ params, searchParams }: Props) {
     .order('created_at', { ascending: false })
     .limit(50)
 
+  // ── Fetch invoices (Phase 4a) ────────────────────────────────────────
+  const { data: invoices = [] } = await (service as any)
+    .from('invoices')
+    .select('id, milestone_id, sow_id, co_id, invoice_number, title, amount, amount_paid, currency, status, due_date, sent_at, paid_at, voided_at, token, created_at')
+    .eq('project_id', id)
+    .order('created_at', { ascending: false })
+
+  // ── Fetch reconciliation snapshot history (Phase 4) ──────────────────
+  const { data: reconciliation = [] } = await (service as any)
+    .from('contract_reconciliation_snapshots')
+    .select('contracted_value, invoiced_to_date, paid_to_date, at_risk_value, snapshot_date')
+    .eq('project_id', id)
+    .order('snapshot_date', { ascending: true })
+    .limit(90)
+
   // Effective contract value
   const amendmentTotal = (amendments || []).reduce(
     (s: number, a: any) => s + (a.financial_impact || 0), 0
@@ -104,6 +119,8 @@ export default async function ProjectPage({ params, searchParams }: Props) {
       amendments={amendments || []}
       team={team || []}
       activity={activity || []}
+      invoices={invoices || []}
+      reconciliation={reconciliation || []}
       effectiveContractValue={effectiveContractValue}
       initialTab={tab}
       isNewProject={isNew === '1'}
@@ -123,6 +140,7 @@ export default async function ProjectPage({ params, searchParams }: Props) {
         assignTeam: hasPermission(session, 'ASSIGN_TEAM_MEMBERS'),
         viewFinancials: hasPermission(session, 'VIEW_FINANCIALS'),
         deleteProject: hasPermission(session, 'DELETE_PROJECTS'),
+        sendInvoices: hasPermission(session, 'SEND_INVOICES'),
       }}
     />
   )

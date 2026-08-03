@@ -12,6 +12,7 @@ const NAV_ITEMS = [
   { href: '/projects',  icon: 'ti-folder-open',      label: 'Projects' },
   { href: '/clients',   icon: 'ti-users',             label: 'Clients' },
   { href: '/sow',       icon: 'ti-file-description',  label: 'SOW Registry' },
+  { href: '/invoices',  icon: 'ti-receipt-2',         label: 'Invoices' },
   { href: '/reports',   icon: 'ti-chart-bar',         label: 'Reports' },
 ]
 const BOTTOM_NAV = [

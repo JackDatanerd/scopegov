@@ -135,6 +135,20 @@ export function flagStatusColour(status: string) {
   return FLAG_STATUS_COLOURS[status] ?? 'badge-slate'
 }
 
+const INVOICE_STATUS_LABELS: Record<string, string> = {
+  draft: 'Draft', sent: 'Awaiting payment', partially_paid: 'Partially paid',
+  paid: 'Paid', overdue: 'Overdue', void: 'Void',
+}
+const INVOICE_STATUS_PILL: Record<string, string> = {
+  draft: 'slate', sent: 'amber', partially_paid: 'amber', paid: 'green', overdue: 'red', void: 'slate',
+}
+export function invoiceStatusLabel(status: string) {
+  return INVOICE_STATUS_LABELS[status] ?? status.replace(/_/g, ' ')
+}
+export function invoicePill(status: string) {
+  return INVOICE_STATUS_PILL[status] ?? 'slate'
+}
+
 // SOW section keys → human-readable labels
 // Carry-forward §2.5: always apply this map before displaying section keys in UI
 const SOW_SECTION_LABELS: Record<string, string> = {

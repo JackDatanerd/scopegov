@@ -531,3 +531,155 @@ export async function sendPaymentFailedEmail(params: {
     html,
   })
 }
+
+// ── Phase 4a: Invoice sent (client-facing) ──────────────────────
+export async function sendInvoiceEmail(params: {
+  to: string; cc?: string[]; clientName: string; agencyName: string
+  projectName: string; invoiceNumber?: string | null; title: string
+  amount: number; currency: string; dueDate?: string | null
+  portalUrl: string; brandColour?: string; paymentInstructions?: string | null
+}) {
+  const { to, cc, clientName, agencyName, projectName, invoiceNumber, title,
+    amount, currency, dueDate, portalUrl, brandColour, paymentInstructions } = params
+
+  const html = baseTemplate({
+    agencyName,
+    headerColour: brandColour || C.green,
+    label: invoiceNumber ? `Invoice ${invoiceNumber}` : 'Invoice',
+    headline: `Invoice for ${projectName}`,
+    body: `
+      <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${clientName},</p>
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        <strong>${agencyName}</strong> has sent an invoice for <strong>${projectName}</strong>.
+      </p>
+      <div style="background:${C.bg};border:1px solid ${C.border};border-radius:6px;padding:14px 16px;margin:16px 0;">
+        <div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0;">
+          <span style="color:${C.text2};">${title}</span>
+          <span style="font-weight:600;color:${C.green};">${currency} ${amount.toLocaleString()}</span>
+        </div>
+        ${dueDate ? `<div style="font-size:12px;color:${C.text3};margin-top:6px;">Due ${new Date(dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}</div>` : ''}
+      </div>
+      ${paymentInstructions ? `
+      <div style="background:${C.bg};border:1px solid ${C.border};border-radius:6px;padding:14px 16px;margin:16px 0;">
+        <p style="font-size:11px;color:${C.text3};text-transform:uppercase;letter-spacing:.05em;margin:0 0 6px;">Payment instructions</p>
+        <p style="font-size:13px;color:${C.text2};margin:0;line-height:1.6;white-space:pre-line;">${paymentInstructions}</p>
+      </div>
+      ` : ''}
+    `,
+    cta: 'View invoice →',
+    ctaUrl: portalUrl,
+    footerNote: 'This invoice is issued and tracked via ScopeGov on behalf of the agency above. ScopeGov does not process this payment — pay per the instructions provided by the agency.',
+  })
+
+  return resend.emails.send({
+    from:    `${BRAND_FROM(agencyName)} <${FROM}>`,
+    to,
+    cc:      cc?.filter(Boolean) || [],
+    subject: `Invoice${invoiceNumber ? ` ${invoiceNumber}` : ''}: ${title} — ${projectName}`,
+    html,
+  })
+}
+
+// ── Phase 4a: Invoice reminder (client-facing) ───────────────────
+export async function sendInvoiceReminderEmail(params: {
+  to: string; cc?: string[]; clientName: string; agencyName: string
+  projectName: string; invoiceNumber?: string | null; title: string
+  balanceDue: number; currency: string; dueDate?: string | null
+  portalUrl: string; brandColour?: string; isOverdue?: boolean
+}) {
+  const { to, cc, clientName, agencyName, projectName, invoiceNumber, title,
+    balanceDue, currency, dueDate, portalUrl, brandColour, isOverdue } = params
+
+  const html = baseTemplate({
+    agencyName,
+    headerColour: isOverdue ? C.amber : (brandColour || C.green),
+    label: 'Payment reminder',
+    headline: isOverdue ? `Overdue: ${title}` : `Reminder: ${title}`,
+    body: `
+      <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${clientName},</p>
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        A friendly reminder that <strong>${currency} ${balanceDue.toLocaleString()}</strong> is
+        ${isOverdue ? 'now overdue' : 'outstanding'} on invoice${invoiceNumber ? ` ${invoiceNumber}` : ''} for
+        <strong>${projectName}</strong>.
+        ${dueDate ? ` Due date was ${new Date(dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}.` : ''}
+      </p>
+    `,
+    cta: 'View invoice →',
+    ctaUrl: portalUrl,
+  })
+
+  return resend.emails.send({
+    from:    `${BRAND_FROM(agencyName)} <${FROM}>`,
+    to,
+    cc:      cc?.filter(Boolean) || [],
+    subject: `${isOverdue ? 'Overdue' : 'Reminder'}: Invoice${invoiceNumber ? ` ${invoiceNumber}` : ''} — ${projectName}`,
+    html,
+  })
+}
+
+// ── Phase 4a: Payment recorded (internal, agency-facing) ─────────
+export async function sendInvoicePaymentRecordedEmail(params: {
+  to: string[]; agencyName: string; clientName: string; projectName: string
+  invoiceNumber?: string | null; amount: number; currency: string
+  isFullyPaid: boolean; balanceRemaining: number; projectUrl: string
+}) {
+  const { to, clientName, projectName, invoiceNumber, amount, currency,
+    isFullyPaid, balanceRemaining, projectUrl } = params
+  if (to.length === 0) return
+
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.green,
+    label: 'Payment recorded',
+    headline: isFullyPaid ? `Invoice${invoiceNumber ? ` ${invoiceNumber}` : ''} paid in full` : `Payment received`,
+    body: `
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        A payment of <strong>${currency} ${amount.toLocaleString()}</strong> from <strong>${clientName}</strong>
+        was recorded on <strong>${projectName}</strong>.
+      </p>
+      ${!isFullyPaid ? `<p style="font-size:13px;color:${C.text2};">Remaining balance: <strong>${currency} ${balanceRemaining.toLocaleString()}</strong></p>` : ''}
+    `,
+    cta: 'View project →',
+    ctaUrl: projectUrl,
+  })
+
+  return resend.emails.send({
+    from:    `ScopeGov <${FROM}>`,
+    to,
+    subject: isFullyPaid
+      ? `✓ Invoice paid in full — ${projectName} (${currency} ${amount.toLocaleString()})`
+      : `Payment received — ${projectName} (${currency} ${amount.toLocaleString()})`,
+    html,
+  })
+}
+
+// ── Phase 4a: Invoice overdue (internal, agency-facing) ──────────
+export async function sendInvoiceOverdueInternalEmail(params: {
+  to: string[]; clientName: string; projectName: string
+  invoiceNumber?: string | null; balanceDue: number; currency: string; projectUrl: string
+}) {
+  const { to, clientName, projectName, invoiceNumber, balanceDue, currency, projectUrl } = params
+  if (to.length === 0) return
+
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.amber,
+    label: 'Invoice overdue',
+    headline: `${clientName} has an overdue invoice`,
+    body: `
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        Invoice${invoiceNumber ? ` ${invoiceNumber}` : ''} on <strong>${projectName}</strong> passed its due date
+        with <strong>${currency} ${balanceDue.toLocaleString()}</strong> still outstanding.
+      </p>
+    `,
+    cta: 'View project →',
+    ctaUrl: projectUrl,
+  })
+
+  return resend.emails.send({
+    from:    `ScopeGov <${FROM}>`,
+    to,
+    subject: `Overdue: ${clientName} — ${currency} ${balanceDue.toLocaleString()} (${projectName})`,
+    html,
+  })
+}

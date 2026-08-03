@@ -1,0 +1,86 @@
+export const runtime = 'nodejs'
+
+import { createServiceClient } from '@/lib/supabase/server'
+import { NextResponse, type NextRequest } from 'next/server'
+import { jwtVerify } from 'jose'
+import { renderInvoicePdf } from '@/lib/pdf/renderer'
+
+// GET /api/portal/invoice/[token]/pdf — same document as /api/pdf/invoice/[id],
+// but gated by the client's portal token instead of an internal session, since
+// the client viewing this page is never logged in to ScopeGov.
+export async function GET(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
+  try {
+    const { token } = await params
+    const service = createServiceClient()
+
+    const { data: revoked } = await (service as any)
+      .from('revoked_tokens').select('id').eq('token', token).single()
+    if (revoked) return NextResponse.json({ error: 'Link no longer active' }, { status: 410 })
+
+    const { data: invoice } = await (service as any)
+      .from('invoices')
+      .select(`id, title, amount, amount_paid, currency, status, due_date, sent_at,
+        payment_instructions, invoice_number,
+        projects(id, name, clients(name, company_name),
+          workspaces(agency_name, brand_colour, jwt_secret, logo_storage_path))`)
+      .eq('token', token).single()
+
+    if (!invoice) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    if (invoice.status === 'draft' || invoice.status === 'void')
+      return NextResponse.json({ error: 'This invoice is no longer available' }, { status: 409 })
+
+    const workspace = invoice.projects?.workspaces
+    try {
+      const secret = new TextEncoder().encode(workspace.jwt_secret)
+      await jwtVerify(token, secret)
+    } catch {
+      return NextResponse.json({ error: 'Invalid or expired link' }, { status: 401 })
+    }
+
+    let logoUrl: string | null = null
+    if (workspace?.logo_storage_path) {
+      const { data: u } = await (service as any).storage.from('logos').getPublicUrl(workspace.logo_storage_path)
+      logoUrl = u?.publicUrl || null
+    }
+
+    const { data: payments } = await (service as any)
+      .from('invoice_payments')
+      .select('amount, paid_at, method, reference_note')
+      .eq('invoice_id', invoice.id)
+      .order('paid_at', { ascending: true })
+
+    const pdfBuffer = await renderInvoicePdf({
+      agencyName:   workspace?.agency_name || 'Agency',
+      logoUrl,
+      brandColour:  workspace?.brand_colour || '#1A5C3A',
+      clientName:   invoice.projects?.clients?.name || 'Client',
+      clientCompany: invoice.projects?.clients?.company_name || null,
+      projectName:  invoice.projects?.name || '',
+      invoiceNumber: invoice.invoice_number,
+      title:        invoice.title,
+      amount:       invoice.amount,
+      amountPaid:   invoice.amount_paid,
+      currency:     invoice.currency || 'USD',
+      status:       invoice.status,
+      dueDate:      invoice.due_date,
+      sentAt:       invoice.sent_at,
+      paymentInstructions: invoice.payment_instructions,
+      payments:     (payments || []).map((p: any) => ({
+        amount: p.amount, paidAt: p.paid_at, method: p.method, referenceNote: p.reference_note,
+      })),
+    })
+
+    const filename = `${invoice.invoice_number || 'Invoice'}.pdf`
+    return new NextResponse(new Uint8Array(pdfBuffer), {
+      headers: {
+        'Content-Type':        'application/pdf',
+        'Content-Disposition': `attachment; filename="${filename}"`,
+        'Content-Length':      String(pdfBuffer.length),
+        'Cache-Control':       'private, no-cache',
+      },
+    })
+  } catch (err) {
+    console.error('Portal invoice PDF error:', err)
+    return NextResponse.json({ error: 'PDF generation failed' }, { status: 500 })
+  }
+}

@@ -2,7 +2,9 @@ export const runtime = 'nodejs'
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
-import { sendTrialWarningEmail, sendPaymentFailedEmail } from '@/lib/email/templates'
+import { sendTrialWarningEmail, sendPaymentFailedEmail, sendInvoiceOverdueInternalEmail } from '@/lib/email/templates'
+import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
+import { notifyMembersWithPermission } from '@/lib/utils/notify'
 
 function verifyCronSecret(request: NextRequest): boolean {
   return request.headers.get('authorization') === `Bearer ${process.env.CRON_SECRET}`
@@ -28,6 +30,57 @@ export async function POST(request: NextRequest) {
       await (service as any).from('payment_milestones')
         .update({ status: 'overdue' })
         .in('id', overdueMilestones.map((m: any) => m.id))
+    }
+
+    // ── 1b. Mark overdue invoices (Phase 4a) ────────────────
+    // Purely date-driven — no gateway dependency either way, since
+    // ScopeGov never processes the payment, only tracks its status.
+    // Selecting only 'sent'/'partially_paid' means once flagged
+    // 'overdue' an invoice won't be re-selected on the next run, so
+    // this also naturally prevents duplicate reminder emails.
+    const { data: overdueInvoices } = await (service as any)
+      .from('invoices')
+      .select(`id, title, amount, amount_paid, currency, invoice_number, workspace_id,
+        projects(id, name, clients(name))`)
+      .in('status', ['sent', 'partially_paid'])
+      .not('due_date', 'is', null)
+      .lt('due_date', now.toISOString().split('T')[0])
+
+    for (const inv of (overdueInvoices || [])) {
+      try {
+        await (service as any).from('invoices')
+          .update({ status: 'overdue', updated_at: now.toISOString() })
+          .eq('id', inv.id).in('status', ['sent', 'partially_paid']) // guard against a payment landing between select and update
+
+        const balanceDue = Number(inv.amount) - Number(inv.amount_paid)
+
+        await (service as any).from('audit_log').insert({
+          workspace_id: inv.workspace_id, actor_id: null,
+          actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
+          event_type: 'invoice.overdue', entity_type: 'invoice',
+          entity_id: inv.id, entity_name: inv.title, metadata: { balance_due: balanceDue },
+        })
+
+        await notifyMembersWithPermission(service, {
+          workspaceId: inv.workspace_id, permission: 'VIEW_FINANCIALS',
+          eventType: 'invoice_overdue', type: 'invoice_overdue',
+          title: `Invoice overdue — ${inv.projects?.name}`,
+          body: `${inv.projects?.clients?.name || 'Client'} has ${inv.currency} ${balanceDue.toLocaleString()} overdue on "${inv.title}"`,
+          entityType: 'invoice', entityId: inv.id,
+        })
+
+        const emails = await getMemberEmailsWithPermission(service, inv.workspace_id, 'VIEW_FINANCIALS', 10, 'invoice_overdue')
+        if (emails.length) {
+          await sendInvoiceOverdueInternalEmail({
+            to: emails,
+            clientName: inv.projects?.clients?.name || 'Client',
+            projectName: inv.projects?.name,
+            invoiceNumber: inv.invoice_number,
+            balanceDue, currency: inv.currency,
+            projectUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects/${inv.projects?.id}?tab=billing`,
+          })
+        }
+      } catch (e) { console.error('Invoice overdue processing error:', e) }
     }
 
     // ── 2. Trial expiry enforcement ────────────────────────
@@ -132,6 +185,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       ok: true,
       overdueMarked: overdueMilestones?.length || 0,
+      invoicesOverdue: overdueInvoices?.length || 0,
       trialsExpired: expiredTrials?.length || 0,
     })
   } catch (err) {

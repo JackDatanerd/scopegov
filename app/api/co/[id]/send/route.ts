@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { assignDocumentNumber } from '@/lib/utils/document-number'
 import { sendCoEmail } from '@/lib/email/templates'
 import { SignJWT } from 'jose'
 import { nanoid } from 'nanoid'
@@ -28,7 +29,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       // reject the entire query (42703), which this route was silently
       // mapping to a generic "CO not found" instead of surfacing the
       // real error.
-      .select(`id,title,status,note,total,version,
+      .select(`id,title,status,note,total,version,document_number,
         projects(id,name,currency,client_id,
           clients(name,email,cc_emails),
           workspaces(id,agency_name,brand_colour,jwt_secret))`)
@@ -63,12 +64,18 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .sign(secret)
 
     const now = new Date().toISOString()
+
+    // Phase 0: assign sequential document number at send (not on draft
+    // creation). Never re-assign if already numbered.
+    const documentNumber = co.document_number || await assignDocumentNumber(service, session.workspaceId, 'co')
+
     await (service as any).from('change_orders').update({
-      status:     'awaiting_response',
-      sent_at:    now,
+      status:          'awaiting_response',
+      sent_at:         now,
       token,
-      expires_at: expiresAt.toISOString(),
-      updated_at: now,
+      expires_at:      expiresAt.toISOString(),
+      document_number: documentNumber,
+      updated_at:      now,
     }).eq('id', id)
 
     const portalUrl = `${process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL}/portal/co/${token}`
@@ -92,10 +99,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       workspaceId: session.workspaceId, actorId: session.id,
       actorEmail: session.email, actorName: session.name,
       eventType: 'co.sent', entityType: 'change_order',
-      entityId: id, entityName: co.title, metadata: { total: co.total },
+      entityId: id, entityName: co.title,
+      metadata: { total: co.total, document_number: documentNumber },
     })
 
-    return NextResponse.json({ ok: true, token, portalUrl })
+    return NextResponse.json({ ok: true, token, portalUrl, documentNumber })
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
   }

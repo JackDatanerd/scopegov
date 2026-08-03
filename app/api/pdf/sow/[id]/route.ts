@@ -15,7 +15,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
     const { data: sow } = await (service as any)
       .from('sow_documents')
-      .select(`id, version, sections, metadata, status, signed_at, signed_by, client_signature_data,
+      .select(`id, version, document_number, sections, metadata, status, signed_at, signed_by, client_signature_data,
         projects(id, name, disc, contract_value, currency,
           clients(name),
           workspaces(agency_name, brand_colour, logo_storage_path, agency_signature_data))`)
@@ -49,6 +49,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       clientSignatureData: sow.client_signature_data || null,
       version:       sow.version,
       isWatermarked: sow.status === 'draft',
+      documentNumber: sow.document_number || null,
     })
 
     const filename = `SOW-${sow.projects?.name?.replace(/[^a-z0-9]/gi, '-')}-v${sow.version}.pdf`

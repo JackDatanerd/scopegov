@@ -7,6 +7,7 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import type { SessionUser } from '@/lib/supabase/types'
+import BillingTab from '@/components/invoices/BillingTab'
 import {
   formatCurrency, formatDate, formatRelative,
   projectStatusLabel, sowStatusLabel, coStatusLabel, flagStatusLabel,
@@ -18,6 +19,7 @@ const TABS = [
   { key: 'sow',      label: 'SOW',           icon: 'ti-file-description' },
   { key: 'guardian', label: 'Guardian',      icon: 'ti-shield-bolt' },
   { key: 'co',       label: 'Change Orders', icon: 'ti-git-merge' },
+  { key: 'billing',  label: 'Billing',       icon: 'ti-receipt' },
   { key: 'activity', label: 'Activity',      icon: 'ti-clock' },
   { key: 'team',     label: 'Team',          icon: 'ti-users' },
 ]
@@ -54,7 +56,7 @@ interface Permissions {
   approveFlags: boolean; grantExceptions: boolean; markComplete: boolean
   markDeliverable: boolean; markMilestone: boolean; submitGuardian: boolean
   viewGuardianHistory: boolean; assignTeam: boolean; viewFinancials: boolean
-  deleteProject: boolean
+  deleteProject: boolean; sendInvoices: boolean
 }
 
 interface Props {
@@ -63,6 +65,8 @@ interface Props {
   amendments: any[]
   team: any[]
   activity: any[]
+  invoices: any[]
+  reconciliation: any[]
   effectiveContractValue: number
   initialTab: string
   isNewProject: boolean
@@ -71,7 +75,7 @@ interface Props {
 }
 
 export default function ProjectDetail({
-  project, milestones, amendments, team, activity,
+  project, milestones, amendments, team, activity, invoices, reconciliation,
   effectiveContractValue, initialTab, permissions,
 }: Props) {
   const router = useRouter()
@@ -237,6 +241,7 @@ export default function ProjectDetail({
         {tab === 'sow'      && <SowTab project={project} sows={project.sow_documents || []} amendments={amendments} permissions={permissions} router={router} />}
         {tab === 'guardian' && <GuardianTab project={project} flags={project.guardian_flags || []} permissions={permissions} router={router} />}
         {tab === 'co'       && <CoTab project={project} cos={project.change_orders || []} permissions={permissions} currency={currency} />}
+        {tab === 'billing'  && <BillingTab project={project} milestones={milestones} invoices={invoices} reconciliation={reconciliation} permissions={permissions} currency={currency} router={router} />}
         {tab === 'activity' && <ActivityTab activity={activity} />}
         {tab === 'team'     && <TeamTab project={project} team={team} permissions={permissions} />}
       </div>
@@ -939,7 +944,7 @@ function CoCard({ co, currency, permissions, projectId }: any) {
             <span className={`pill pill-${coPill(co.status)}`}>{coStatusLabel(co.status)}</span>
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-3)' }}>
-            v{co.version}
+            {co.document_number ? `${co.document_number} · ` : ''}v{co.version}
             {co.sent_at && <> · Sent {formatDate(co.sent_at)}</>}
             {co.accepted_at && <> · Accepted {formatDate(co.accepted_at)}</>}
           </div>

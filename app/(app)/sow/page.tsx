@@ -19,7 +19,7 @@ export default async function SowPage() {
 
   const { data: sows = [], error: sowErr } = await (service as any)
     .from('sow_documents')
-    .select(`id, version, status, sent_at, signed_at, created_at,
+    .select(`id, version, document_number, status, sent_at, signed_at, created_at,
       projects(id, name, contract_value, currency, clients(name))`)
     .eq('workspace_id', session.workspaceId)
     .order('created_at', { ascending: false })
@@ -90,6 +90,7 @@ export default async function SowPage() {
           <table className="gov-table" style={{ width: '100%' }}>
             <thead>
               <tr>
+                <th>No.</th>
                 <th>Project</th>
                 <th>Client</th>
                 <th>Version</th>
@@ -102,6 +103,7 @@ export default async function SowPage() {
             <tbody>
               {safeSows.map((s: any) => (
                 <tr key={s.id}>
+                  <td className="td-mono" style={{ fontSize: 11.5, color: 'var(--text-3)' }}>{s.document_number || '—'}</td>
                   <td>
                     <Link href={`/projects/${s.projects?.id}?tab=sow`}>
                       <div className="td-primary">{s.projects?.name || '—'}</div>

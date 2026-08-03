@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { assignDocumentNumber } from '@/lib/utils/document-number'
 import { SignJWT } from 'jose'
 import { nanoid } from 'nanoid'
 import { sendSowEmail } from '@/lib/email/templates'
@@ -25,7 +26,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // Fetch SOW + project + client + workspace
     const { data: sow } = await (service as any)
       .from('sow_documents')
-      .select(`id, version, status, project_id,
+      .select(`id, version, status, project_id, document_number,
         projects(id, name, disc, contract_value, currency, client_id,
           clients(name, email, cc_emails),
           workspaces(id, agency_name, brand_colour, logo_storage_path, jwt_secret))`)
@@ -59,13 +60,20 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const now = new Date().toISOString()
 
+    // Phase 0: assign the SOW its sequential document number now — send is
+    // the point of no return for numbering (a draft that never gets sent
+    // shouldn't burn a number). Never re-assign if one already exists
+    // (defensive — send should only ever fire once per draft).
+    const documentNumber = sow.document_number || await assignDocumentNumber(service, session.workspaceId, 'sow')
+
     // Update SOW: draft → awaiting_signature. Note: 'sent' is NOT a status (spec §1.3)
     await (service as any).from('sow_documents').update({
-      status:     'awaiting_signature',
-      sent_at:    now,
+      status:          'awaiting_signature',
+      sent_at:         now,
       token,
-      expires_at: expiresAt.toISOString(),
-      updated_at: now,
+      expires_at:      expiresAt.toISOString(),
+      document_number: documentNumber,
+      updated_at:      now,
     }).eq('id', id)
 
     // Update project status
@@ -99,10 +107,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       actorId: session.id, actorEmail: session.email, actorName: session.name,
       eventType: 'sow.sent', entityType: 'sow',
       entityId: id, entityName: project.name,
-      metadata: { version: sow.version, client_email: client.email },
+      metadata: { version: sow.version, client_email: client.email, document_number: documentNumber },
     })
 
-    return NextResponse.json({ ok: true, token, portalUrl })
+    return NextResponse.json({ ok: true, token, portalUrl, documentNumber })
   } catch (err) {
     console.error('SOW send error:', err)
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })

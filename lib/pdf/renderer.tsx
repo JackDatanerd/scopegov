@@ -24,6 +24,7 @@ export interface SowPdfData {
   clientSignatureData?: string | null
   version:       number
   isWatermarked?: boolean
+  documentNumber?: string | null
 }
 
 export interface CoPdfData {
@@ -46,6 +47,26 @@ export interface CoPdfData {
   clientSignatureData?: string | null
   isPartial?:   boolean
   partialNote?: string
+  documentNumber?: string | null
+}
+
+export interface InvoicePdfData {
+  agencyName:   string
+  logoUrl:      string | null
+  brandColour:  string
+  clientName:   string
+  clientCompany?: string | null
+  projectName:  string
+  invoiceNumber?: string | null
+  title:        string
+  amount:       number
+  amountPaid:   number
+  currency:     string
+  status:       string
+  dueDate?:     string | null
+  sentAt?:      string | null
+  paymentInstructions?: string | null
+  payments:     Array<{ amount: number; paidAt: string; method: string; referenceNote?: string | null }>
 }
 
 // Resolve logo URL to base64 data URI for embedding in the PDF
@@ -138,7 +159,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
         <View style={s.header}>
           <View>
             <Text style={s.h1}>Statement of Work</Text>
-            <Text style={s.meta}>Version {data.version} · {data.projectName}</Text>
+            <Text style={s.meta}>{data.documentNumber ? `${data.documentNumber} · ` : ''}Version {data.version} · {data.projectName}</Text>
             {data.signedAt && <Text style={[s.meta, { color: c, marginTop: 2 }]}>Signed {fmtDate(data.signedAt)}</Text>}
           </View>
           <View style={{ alignItems: 'flex-end' }}>
@@ -251,7 +272,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
         <View style={s.header}>
           <View>
             <Text style={s.h1}>Change Order</Text>
-            <Text style={s.meta}>{data.coTitle}</Text>
+            <Text style={s.meta}>{data.documentNumber ? `${data.documentNumber} · ` : ''}{data.coTitle}</Text>
             <Text style={s.meta}>{data.projectName} · {data.agencyName} → {data.clientName}</Text>
             {data.acceptedAt && <Text style={[s.meta, { color: c, marginTop: 2 }]}>Accepted {fmtDate(data.acceptedAt)}</Text>}
           </View>
@@ -340,6 +361,124 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
   )
 }
 
+// ── INVOICE PDF ──────────────────────────────────────────────
+
+const INVOICE_STATUS_LABEL: Record<string, string> = {
+  draft: 'Draft', sent: 'Awaiting payment', partially_paid: 'Partially paid',
+  paid: 'Paid', overdue: 'Overdue', void: 'Void',
+}
+const INVOICE_METHOD_LABEL: Record<string, string> = {
+  bank_transfer: 'Bank transfer', stripe: 'Stripe', check: 'Check', cash: 'Cash', other: 'Other',
+}
+
+function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | null }) {
+  const c = data.brandColour || '#1A5C3A'
+  const balanceDue = Math.max(0, data.amount - data.amountPaid)
+
+  const s = StyleSheet.create({
+    page:      { fontFamily: 'Helvetica', fontSize: 10, color: '#1A1A1A', padding: '40 48' },
+    header:    { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: `2 solid ${c}`, paddingBottom: 14, marginBottom: 20 },
+    h1:        { fontFamily: 'Helvetica-Bold', fontSize: 18, color: c, marginBottom: 3 },
+    meta:      { fontSize: 8.5, color: '#909090' },
+    logo:      { maxHeight: 42, maxWidth: 100, objectFit: 'contain' },
+    agencyText:{ fontFamily: 'Helvetica-Bold', fontSize: 11, color: c },
+    statusPill:{ fontSize: 8, fontFamily: 'Helvetica-Bold', color: c, textTransform: 'uppercase', letterSpacing: 0.5, textAlign: 'right', marginBottom: 4 },
+    partiesBox:{ flexDirection: 'row', gap: 32, backgroundColor: '#F9F8F5', border: '1 solid #E5E1D8', borderRadius: 4, padding: '10 14', marginBottom: 20 },
+    partyLabel:{ fontSize: 8, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 },
+    partyName: { fontFamily: 'Helvetica-Bold', fontSize: 11 },
+    lineBox:   { border: '1 solid #E5E1D8', borderRadius: 4, marginBottom: 16 },
+    lineRow:   { flexDirection: 'row', justifyContent: 'space-between', padding: '12 14', borderBottom: '1 solid #F2F0EA' },
+    lineDesc:  { fontSize: 11, color: '#1A1A1A' },
+    lineAmt:   { fontSize: 11, fontFamily: 'Courier-Bold' },
+    totals:    { marginTop: 4 },
+    totalRow:  { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3, fontSize: 10 },
+    grandRow:  { flexDirection: 'row', justifyContent: 'space-between', paddingTop: 8, marginTop: 6, borderTop: '1 solid #1A1A1A', fontSize: 14, fontFamily: 'Helvetica-Bold' },
+    section:   { marginTop: 20 },
+    secTitle:  { fontSize: 8, fontFamily: 'Helvetica-Bold', color: '#909090', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 6, borderBottom: '1 solid #E5E1D8', paddingBottom: 3 },
+    body:      { fontSize: 10, color: '#333', lineHeight: 1.6 },
+    payRow:    { flexDirection: 'row', justifyContent: 'space-between', fontSize: 9.5, color: '#555', paddingVertical: 3, borderBottom: '1 solid #F2F0EA' },
+    footer:    { flexDirection: 'row', justifyContent: 'space-between', marginTop: 28, paddingTop: 10, borderTop: '1 solid #E5E1D8', fontSize: 8, color: '#B0B0B0' },
+  })
+
+  return (
+    <Document>
+      <Page size="A4" style={s.page}>
+        <View style={s.header}>
+          <View>
+            <Text style={s.h1}>Invoice</Text>
+            <Text style={s.meta}>{data.invoiceNumber ? `${data.invoiceNumber} · ` : ''}{data.projectName}</Text>
+            {data.sentAt && <Text style={[s.meta, { marginTop: 2 }]}>Issued {fmtDate(data.sentAt)}{data.dueDate ? ` · Due ${fmtDate(data.dueDate)}` : ''}</Text>}
+          </View>
+          <View style={{ alignItems: 'flex-end' }}>
+            {logo ? <Image src={logo} style={s.logo} /> : <Text style={s.agencyText}>{data.agencyName}</Text>}
+            <Text style={[s.statusPill, { marginTop: 8 }]}>{INVOICE_STATUS_LABEL[data.status] || data.status}</Text>
+          </View>
+        </View>
+
+        <View style={s.partiesBox}>
+          <View style={{ flex: 1 }}>
+            <Text style={s.partyLabel}>From</Text>
+            <Text style={s.partyName}>{data.agencyName}</Text>
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={s.partyLabel}>Billed to</Text>
+            <Text style={s.partyName}>{data.clientCompany || data.clientName}</Text>
+            {data.clientCompany && <Text style={{ fontSize: 9.5, color: '#666' }}>{data.clientName}</Text>}
+          </View>
+        </View>
+
+        <View style={s.lineBox}>
+          <View style={s.lineRow}>
+            <Text style={s.lineDesc}>{data.title}</Text>
+            <Text style={s.lineAmt}>{data.currency} {fmtMoney(data.amount)}</Text>
+          </View>
+        </View>
+
+        <View style={s.totals}>
+          <View style={s.totalRow}>
+            <Text style={{ color: '#909090' }}>Amount due</Text>
+            <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtMoney(data.amount)}</Text>
+          </View>
+          {data.amountPaid > 0 && (
+            <View style={s.totalRow}>
+              <Text style={{ color: '#1A5C3A' }}>Paid to date</Text>
+              <Text style={{ fontFamily: 'Courier', color: '#1A5C3A' }}>-{data.currency} {fmtMoney(data.amountPaid)}</Text>
+            </View>
+          )}
+          <View style={s.grandRow}>
+            <Text>{balanceDue > 0 ? 'Balance due' : 'Paid in full'}</Text>
+            <Text style={{ color: c }}>{data.currency} {fmtMoney(balanceDue)}</Text>
+          </View>
+        </View>
+
+        {data.paymentInstructions && (
+          <View style={s.section}>
+            <Text style={s.secTitle}>Payment instructions</Text>
+            <Text style={s.body}>{stripHtml(data.paymentInstructions)}</Text>
+          </View>
+        )}
+
+        {data.payments.length > 0 && (
+          <View style={s.section}>
+            <Text style={s.secTitle}>Payments received</Text>
+            {data.payments.map((p, i) => (
+              <View key={i} style={s.payRow}>
+                <Text>{fmtDate(p.paidAt)} · {INVOICE_METHOD_LABEL[p.method] || p.method}{p.referenceNote ? ` · ${p.referenceNote}` : ''}</Text>
+                <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtMoney(p.amount)}</Text>
+              </View>
+            ))}
+          </View>
+        )}
+
+        <View style={s.footer}>
+          <Text>This is a payment record, not a payment portal — pay per the instructions above.</Text>
+          <Text>Generated {fmtDate(new Date().toISOString())}</Text>
+        </View>
+      </Page>
+    </Document>
+  )
+}
+
 // ── Public exports (same interface as before) ─────────────────
 
 export async function renderSowPdf(data: SowPdfData): Promise<Buffer> {
@@ -350,4 +489,9 @@ export async function renderSowPdf(data: SowPdfData): Promise<Buffer> {
 export async function renderCoPdf(data: CoPdfData): Promise<Buffer> {
   const logo = await resolveLogoDataUri(data.logoUrl)
   return renderToBuffer(<CoDocument data={data} logo={logo} />)
+}
+
+export async function renderInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
+  const logo = await resolveLogoDataUri(data.logoUrl)
+  return renderToBuffer(<InvoiceDocument data={data} logo={logo} />)
 }

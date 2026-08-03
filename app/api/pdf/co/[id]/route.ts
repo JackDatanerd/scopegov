@@ -14,7 +14,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const service = createServiceClient()
     const { data: co } = await (service as any)
       .from('change_orders')
-      .select(`id, title, note, version, line_items, subtotal, tax_rate, tax_inclusive, total,
+      .select(`id, title, note, version, document_number, line_items, subtotal, tax_rate, tax_inclusive, total,
         accepted_at, accepted_by, status, client_signature_data,
         projects(id, name, currency,
           clients(name),
@@ -52,6 +52,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       acceptedAt:  co.accepted_at || undefined,
       agencySignatureData: ws?.agency_signature_data || null,
       clientSignatureData: co.client_signature_data || null,
+      documentNumber: co.document_number || null,
     })
 
     const filename = `CO-${co.title.replace(/[^a-z0-9]/gi, '-')}.pdf`
