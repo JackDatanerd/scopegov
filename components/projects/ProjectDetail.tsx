@@ -8,6 +8,7 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import type { SessionUser } from '@/lib/supabase/types'
 import BillingTab from '@/components/invoices/BillingTab'
+import FlagCollaboration from './FlagCollaboration'
 import {
   formatCurrency, formatDate, formatRelative,
   projectStatusLabel, sowStatusLabel, coStatusLabel, flagStatusLabel,
@@ -891,6 +892,11 @@ function FlagCard({ flag, permissions, router, projectId }: any) {
             </div>
           )}
         </div>
+        <FlagCollaboration
+          entityType="flag"
+          entityId={flag.id}
+          canWrite={permissions.approveFlags || permissions.grantExceptions}
+        />
       </div>
     </div>
   )

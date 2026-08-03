@@ -55,6 +55,15 @@ Create in Supabase Dashboard → Storage:
    - Toggle: Public OFF
    - Service role only (no client-side access)
 
+3. **`flag-evidence`** — Private bucket (Phase 2 — Portfolio dashboard addendum)
+   - Toggle: Public OFF
+   - Service role only — `app/api/scope-governance/[entityType]/[entityId]/attachments/route.ts`
+     uploads via the service client and hands back short-lived signed URLs
+     (1 hour) rather than public ones. No client-side storage policies
+     needed, same as `pdfs`.
+   - Stores evidence attached to Guardian flags/exceptions (screenshots,
+     signed addenda). 10 MB per file, PDF/PNG/JPEG/WEBP/EML/TXT/DOCX only.
+
 ### 1.3 Auth Configuration
 - [ ] **Custom SMTP:** Settings → Auth → SMTP → configure with Resend
   - Host: `smtp.resend.com`, Port: 465, User: `resend`, Pass: your Resend API key
@@ -172,6 +181,10 @@ Per Bug Catalogue — verify these before deploying:
 - [ ] Embedding computed for all submissions, persisted only for non-duplicates (BUG-060)
 - [ ] `VIEW_OWN_PROJECTS` vs `VIEW_ALL_PROJECTS` are distinct query paths (BUG-058)
 - [ ] Onboarding page at `app/onboarding/` — OUTSIDE `(app)/` group (BUG-001)
+- [ ] Portfolio dashboard (`/portfolio`) is gated on `VIEW_ALL_PROJECTS` server-side (page) AND in the API route — never trust the sidebar link being hidden as the actual gate
+- [ ] `scope_health_snapshots` upsert uses `onConflict: 'workspace_id,snapshot_date'` — safe to re-run the rollup cron the same day without duplicating rows
+- [ ] `flag_comments`/`flag_attachments` `entity_type` is validated against `isValidEntityType` before every DB read/write — never interpolated from the URL unchecked
+- [ ] `contract_value_at_risk` is single-currency per snapshot (resolved the same way `/api/reports` picks a currency) — never summed across currencies
 
 ---
 
@@ -193,6 +206,11 @@ Per Bug Catalogue — verify these before deploying:
 - [ ] Trial warning email fires (manual trigger)
 - [ ] Invite email → new user → accept → workspace member active
 - [ ] Invite email → existing user → sign in → accept
+- [ ] Trigger `POST /api/cron/scope-health-rollup` manually (with `CRON_SECRET`) → `scope_health_snapshots` row appears for today
+- [ ] Visit `/portfolio` as a VIEW_ALL_PROJECTS holder → metrics, trend chart, and drill-down tables render
+- [ ] Visit `/portfolio` as a member without VIEW_ALL_PROJECTS → sees the permission-required message, not the dashboard, and the sidebar link is hidden
+- [ ] Open a Guardian flag → "Notes & evidence" → post a comment as an APPROVE_FLAGS holder → appears immediately, flag owner gets a notification
+- [ ] Upload a file under "Notes & evidence" → appears in the list with a working signed download link
 
 ---
 
@@ -227,3 +245,26 @@ All require `Authorization: Bearer {CRON_SECRET}` header.
 4. If not duplicate: classify → determine outcome
 5. If `out_of_scope`: create flag, notify APPROVE_FLAGS holders
 6. All thresholds from workspace settings (BUG-061)
+
+### Portfolio dashboard (Phase 2)
+1. `scope-health-rollup` cron runs daily (05:30 UTC, right after the
+   05:00 UTC reconciliation rollup), one snapshot row per workspace in
+   `scope_health_snapshots` (schema: `007_scope_health.sql`) — upserted
+   on `(workspace_id, snapshot_date)`, so re-running it the same day is
+   safe.
+2. `contract_value_at_risk` is a severity-weighted estimate, not a real
+   ledger figure: open flags borrow a slice of their project's contract
+   value (`OPEN_FLAG_RISK_RATE`, currently 5%), exceptions_log entries
+   contribute their real `estimated_value`. Both are weighted by severity
+   (`high=1.0 / medium=0.5 / low=0.2`) — see comments in
+   `app/api/cron/scope-health-rollup/route.ts` for the exact formula. The
+   multiplier values are a tuning knob, not a schema decision.
+3. `/portfolio` (gated on `VIEW_ALL_PROJECTS`) reads snapshots for the
+   trend chart and live tables (`guardian_flags`, stalled `projects`/
+   `change_orders`) for drill-down, via `GET /api/reports/portfolio`.
+4. The governance-scoped collaboration addendum — `flag_comments` and
+   `flag_attachments`, scoped only to `guardian_flags`/`exceptions_log` —
+   lives under `app/api/scope-governance/[entityType]/[entityId]/` and is
+   surfaced in the Guardian tab via `FlagCollaboration.tsx`. Writing
+   requires `APPROVE_FLAGS` or `GRANT_EXCEPTIONS`; reading follows the
+   same project-visibility rule as the flag itself.

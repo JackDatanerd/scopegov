@@ -27,6 +27,10 @@
     {
       "path": "/api/cron/reconciliation-rollup",
       "schedule": "0 5 * * *"
+    },
+    {
+      "path": "/api/cron/scope-health-rollup",
+      "schedule": "30 5 * * *"
     }
   ]
 }

@@ -14,6 +14,9 @@ const NAV_ITEMS = [
   { href: '/sow',       icon: 'ti-file-description',  label: 'SOW Registry' },
   { href: '/invoices',  icon: 'ti-receipt-2',         label: 'Invoices' },
   { href: '/reports',   icon: 'ti-chart-bar',         label: 'Reports' },
+  // Workspace-wide by definition — only meaningful (and only shown) for
+  // anyone who can actually see the whole portfolio.
+  { href: '/portfolio', icon: 'ti-building-skyscraper', label: 'Portfolio', permission: 'VIEW_ALL_PROJECTS' as const },
 ]
 const BOTTOM_NAV = [
   { href: '/team',     icon: 'ti-user-circle', label: 'Team' },
@@ -181,7 +184,7 @@ export default function Sidebar({ session }: { session: SessionUser }) {
       {/* Primary nav */}
       <nav className="sb-nav">
         <div className="sb-section-lbl">Workspace</div>
-        {NAV_ITEMS.map(item => (
+        {NAV_ITEMS.filter(item => !item.permission || session.permissions.includes(item.permission)).map(item => (
           <Link key={item.href} href={item.href}>
             <button className={`sni${isActive(item.href) ? ' act' : ''}`}>
               <span className="sni-ic"><i className={`ti ${item.icon}`} /></span>
