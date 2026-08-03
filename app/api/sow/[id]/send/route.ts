@@ -3,11 +3,8 @@ export const runtime = 'nodejs'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
-import { logAudit } from '@/lib/utils/audit'
-import { assignDocumentNumber } from '@/lib/utils/document-number'
-import { SignJWT } from 'jose'
-import { nanoid } from 'nanoid'
-import { sendSowEmail } from '@/lib/email/templates'
+import { sendSowDocument } from '@/lib/documents/send-sow'
+import { evaluateApprovalGate } from '@/lib/approvals/engine'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -23,94 +20,57 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const service = createServiceClient()
 
-    // Fetch SOW + project + client + workspace
+    // Fetch just enough to run the approval gate before touching send
+    // mechanics — full fetch + document numbering + JWT issuance happens
+    // inside sendSowDocument (lib/documents/send-sow.ts).
     const { data: sow } = await (service as any)
       .from('sow_documents')
-      .select(`id, version, status, project_id, document_number,
-        projects(id, name, disc, contract_value, currency, client_id,
-          clients(name, email, cc_emails),
-          workspaces(id, agency_name, brand_colour, logo_storage_path, jwt_secret))`)
+      .select(`id, version, status, project_id,
+        projects(id, name, disc, contract_value, currency)`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!sow) return NextResponse.json({ error: 'SOW not found' }, { status: 404 })
     if (sow.status !== 'draft')
       return NextResponse.json({ error: 'Only draft SOWs can be sent' }, { status: 400 })
 
-    const project   = sow.projects
-    const client    = project?.clients
-    const workspace = project?.workspaces
+    const project = sow.projects
+    if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
 
-    if (!client?.email)
-      return NextResponse.json({ error: 'Client email is required to send SOW' }, { status: 400 })
-
-    // Issue document JWT — HS256 with workspace-specific secret (spec §0.4)
-    const secret    = new TextEncoder().encode(workspace.jwt_secret)
-    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) // 30 days
-    const token     = await new SignJWT({
-      sowId:       id,
-      workspaceId: session.workspaceId,
-      projectId:   project.id,
-      clientEmail: client.email,
-      action:      'sign',
+    // Phase 3 — Approval Chains: if a workflow matches this SOW's contract
+    // value, halt here and wait on sign-off instead of sending. The
+    // document stays 'draft' (and un-numbered — Phase 0 only assigns a
+    // document number once send actually happens); approvers act via
+    // /api/approvals/[id]/approve and the engine sends it automatically
+    // once the chain clears.
+    const gate = await evaluateApprovalGate(service, {
+      workspaceId:  session.workspaceId,
+      documentType: 'sow',
+      documentId:   id,
+      projectId:    project.id,
+      projectName:  project.name,
+      amount:       project.contract_value || 0,
+      currency:     project.currency || 'USD',
+      documentTitle: `SOW v${sow.version} — ${project.name}`,
+      requestedBy:  { id: session.id, name: session.name, email: session.email },
     })
-      .setProtectedHeader({ alg: 'HS256' })
-      .setExpirationTime(expiresAt)
-      .setJti(nanoid())
-      .sign(secret)
 
-    const now = new Date().toISOString()
-
-    // Phase 0: assign the SOW its sequential document number now — send is
-    // the point of no return for numbering (a draft that never gets sent
-    // shouldn't burn a number). Never re-assign if one already exists
-    // (defensive — send should only ever fire once per draft).
-    const documentNumber = sow.document_number || await assignDocumentNumber(service, session.workspaceId, 'sow')
-
-    // Update SOW: draft → awaiting_signature. Note: 'sent' is NOT a status (spec §1.3)
-    await (service as any).from('sow_documents').update({
-      status:          'awaiting_signature',
-      sent_at:         now,
-      token,
-      expires_at:      expiresAt.toISOString(),
-      document_number: documentNumber,
-      updated_at:      now,
-    }).eq('id', id)
-
-    // Update project status
-    await (service as any).from('projects').update({
-      status:     'Awaiting Signature',
-      updated_at: now,
-    }).eq('id', project.id)
-
-    // Send email (awaited — carry-forward §4.4)
-    const portalUrl = `${process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL}/portal/sow/${token}`
-    try {
-      await sendSowEmail({
-        to:           client.email,
-        cc:           client.cc_emails || [],
-        clientName:   client.name,
-        agencyName:   workspace.agency_name,
-        projectName:  project.name + (project.disc ? ` — ${project.disc}` : ''),
-        contractValue: project.contract_value,
-        currency:     project.currency,
-        portalUrl,
-        brandColour:  workspace.brand_colour,
-        expiresAt:    expiresAt.toISOString(),
+    if (gate.requiresApproval) {
+      return NextResponse.json({
+        ok: true,
+        pendingApproval: true,
+        approvalRequestId: gate.approvalRequestId,
+        message: 'Sent for approval — the client will be notified once it clears.',
       })
-    } catch (emailErr) {
-      console.error('SOW send email failed:', emailErr)
-      // Email failure is non-fatal for the operation — SOW is still sent
     }
 
-    await logAudit(service, {
+    const result = await sendSowDocument(service, {
+      sowId: id,
       workspaceId: session.workspaceId,
       actorId: session.id, actorEmail: session.email, actorName: session.name,
-      eventType: 'sow.sent', entityType: 'sow',
-      entityId: id, entityName: project.name,
-      metadata: { version: sow.version, client_email: client.email, document_number: documentNumber },
     })
 
-    return NextResponse.json({ ok: true, token, portalUrl, documentNumber })
+    if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status })
+    return NextResponse.json({ ok: true, token: result.token, portalUrl: result.portalUrl, documentNumber: result.documentNumber })
   } catch (err) {
     console.error('SOW send error:', err)
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })

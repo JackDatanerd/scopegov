@@ -31,6 +31,10 @@
     {
       "path": "/api/cron/scope-health-rollup",
       "schedule": "30 5 * * *"
+    },
+    {
+      "path": "/api/cron/approval-stall",
+      "schedule": "0 10 * * *"
     }
   ]
 }

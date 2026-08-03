@@ -2,6 +2,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { cancelApprovalRequest } from '@/lib/approvals/engine'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -22,6 +23,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const now = new Date().toISOString()
     await (service as any).from('change_orders')
       .update({ status: 'withdrawn', token: null, updated_at: now }).eq('id', id)
+
+    // Phase 3: a draft CO can have an approval chain in flight (that's the
+    // whole point of gating send, not create) — don't leave it dangling
+    // for an approver once the CO itself is withdrawn.
+    await cancelApprovalRequest(service, {
+      documentType: 'co', documentId: id, workspaceId: session.workspaceId,
+      actorId: session.id, actorEmail: session.email, actorName: session.name,
+      reason: 'CO withdrawn',
+    })
 
     // Revoke token
     if (co.token) {

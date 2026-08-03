@@ -125,6 +125,12 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
           {permissions.viewAuditLog && (
             <Link href="/settings/audit" className="settings-nav-item">Audit log</Link>
           )}
+          {/* Phase 3 — Approval Chains config lives on its own page (same
+              reasoning as audit log above: a dynamic step-builder doesn't
+              fit the flat form-field pattern the other tabs use). */}
+          {permissions.manageWorkspace && (
+            <Link href="/settings/approvals" className="settings-nav-item">Approval workflows</Link>
+          )}
         </div>
       </div>
       <div>

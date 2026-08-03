@@ -3,11 +3,8 @@ export const runtime = 'nodejs'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
-import { logAudit } from '@/lib/utils/audit'
-import { assignDocumentNumber } from '@/lib/utils/document-number'
-import { sendCoEmail } from '@/lib/email/templates'
-import { SignJWT } from 'jose'
-import { nanoid } from 'nanoid'
+import { sendCoDocument } from '@/lib/documents/send-co'
+import { evaluateApprovalGate } from '@/lib/approvals/engine'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -21,18 +18,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const service = createServiceClient()
 
+    // FIX (carried forward): 'currency' isn't a column on change_orders —
+    // it lives on projects. Selecting it here makes PostgREST reject the
+    // whole query (42703), which silently surfaces as "CO not found".
     const { data: co, error: coFetchErr } = await (service as any)
       .from('change_orders')
-      // FIX: 'currency' was listed here but change_orders has no such
-      // column — it lives on projects (already fetched below via the
-      // nested join). Selecting a non-existent column makes PostgREST
-      // reject the entire query (42703), which this route was silently
-      // mapping to a generic "CO not found" instead of surfacing the
-      // real error.
-      .select(`id,title,status,note,total,version,document_number,
-        projects(id,name,currency,client_id,
-          clients(name,email,cc_emails),
-          workspaces(id,agency_name,brand_colour,jwt_secret))`)
+      .select(`id,title,status,total,version,
+        projects(id,name,currency)`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!co) {
@@ -42,68 +34,45 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (co.status !== 'draft')
       return NextResponse.json({ error: 'Only draft COs can be sent' }, { status: 400 })
 
-    const project   = co.projects
-    const client    = project?.clients
-    const workspace = project?.workspaces
+    const project = co.projects
+    if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
 
-    if (!client?.email)
-      return NextResponse.json({ error: 'Client email required' }, { status: 400 })
-
-    const secret     = new TextEncoder().encode(workspace.jwt_secret)
-    const expiresAt  = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
-    const token      = await new SignJWT({
-      coId:        id,
-      workspaceId: session.workspaceId,
-      projectId:   project.id,
-      clientEmail: client.email,
-      action:      'respond',
+    // Phase 3 — Approval Chains: gate on the CO's own total, not the
+    // project's overall contract value — a $500 CO on a $200k retainer
+    // shouldn't trip a $10k threshold meant for large scope additions.
+    // Document numbering (Phase 0) only happens once send actually fires
+    // inside sendCoDocument, so a gated-but-not-yet-approved CO stays
+    // un-numbered — consistent with numbers only ever being burned by a
+    // real send.
+    const gate = await evaluateApprovalGate(service, {
+      workspaceId:  session.workspaceId,
+      documentType: 'co',
+      documentId:   id,
+      projectId:    project.id,
+      projectName:  project.name,
+      amount:       co.total || 0,
+      currency:     project.currency || 'USD',
+      documentTitle: co.title,
+      requestedBy:  { id: session.id, name: session.name, email: session.email },
     })
-      .setProtectedHeader({ alg: 'HS256' })
-      .setExpirationTime(expiresAt)
-      .setJti(nanoid())
-      .sign(secret)
 
-    const now = new Date().toISOString()
-
-    // Phase 0: assign sequential document number at send (not on draft
-    // creation). Never re-assign if already numbered.
-    const documentNumber = co.document_number || await assignDocumentNumber(service, session.workspaceId, 'co')
-
-    await (service as any).from('change_orders').update({
-      status:          'awaiting_response',
-      sent_at:         now,
-      token,
-      expires_at:      expiresAt.toISOString(),
-      document_number: documentNumber,
-      updated_at:      now,
-    }).eq('id', id)
-
-    const portalUrl = `${process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL}/portal/co/${token}`
-    try {
-      await sendCoEmail({
-        to:          client.email,
-        cc:          client.cc_emails || [],
-        clientName:  client.name,
-        agencyName:  workspace.agency_name,
-        projectName: project.name,
-        coTitle:     co.title,
-        total:       co.total,
-        currency:    project.currency || 'USD',
-        portalUrl,
-        brandColour: workspace.brand_colour,
-        note:        co.note,
+    if (gate.requiresApproval) {
+      return NextResponse.json({
+        ok: true,
+        pendingApproval: true,
+        approvalRequestId: gate.approvalRequestId,
+        message: 'Sent for approval — the client will be notified once it clears.',
       })
-    } catch (e) { console.error('CO email failed:', e) }
+    }
 
-    await logAudit(service, {
-      workspaceId: session.workspaceId, actorId: session.id,
-      actorEmail: session.email, actorName: session.name,
-      eventType: 'co.sent', entityType: 'change_order',
-      entityId: id, entityName: co.title,
-      metadata: { total: co.total, document_number: documentNumber },
+    const result = await sendCoDocument(service, {
+      coId: id,
+      workspaceId: session.workspaceId,
+      actorId: session.id, actorEmail: session.email, actorName: session.name,
     })
 
-    return NextResponse.json({ ok: true, token, portalUrl, documentNumber })
+    if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status })
+    return NextResponse.json({ ok: true, token: result.token, portalUrl: result.portalUrl, documentNumber: result.documentNumber })
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
   }

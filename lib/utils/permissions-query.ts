@@ -53,6 +53,29 @@ export async function filterByNotificationPreference<T extends { id: string }>(
   return recipients.filter(r => !disabled.has(r.id))
 }
 
+// Approval steps can name a specific role rather than a permission — every
+// active member holding that role is a valid approver for the step (any one
+// of them can act on it). Same ambiguous-FK and JS-side-filter caveats as
+// getMembersWithPermission above apply here.
+export async function getMembersWithRole(
+  service: any,
+  workspaceId: string,
+  roleId: string,
+  limit = 25
+): Promise<Array<{ id: string; name: string; email: string }>> {
+  const { data: members } = await service
+    .from('workspace_members')
+    .select('role_id, users!workspace_members_user_id_fkey(id, name, email)')
+    .eq('workspace_id', workspaceId)
+    .eq('role_id', roleId)
+    .eq('status', 'active')
+    .limit(limit)
+
+  return (members || [])
+    .filter((m: any) => m.users?.email)
+    .map((m: any) => ({ id: m.users.id, name: m.users.name, email: m.users.email }))
+}
+
 export async function getMemberEmailsWithPermission(
   service: any,
   workspaceId: string,

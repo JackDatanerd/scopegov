@@ -112,6 +112,24 @@ export default async function ProjectPage({ params, searchParams }: Props) {
   )
   const effectiveContractValue = (project.contract_value || 0) + amendmentTotal
 
+  // ── Fetch in-flight approval requests (Phase 3) ─────────────────────────
+  // Keyed by "sow:<id>" / "co:<id>" so ProjectDetail can look one up per
+  // document without a join — a SOW/CO's status stays 'draft' while an
+  // approval chain is pending, so this is the only signal the UI has that
+  // a draft is actually "sent for approval" rather than just untouched.
+  const { data: pendingApprovalRows = [] } = await (service as any)
+    .from('approval_requests')
+    .select('id, document_type, document_id, current_step, total_steps')
+    .eq('project_id', id)
+    .eq('status', 'pending')
+
+  const pendingApprovals: Record<string, { id: string; current_step: number; total_steps: number }> = {}
+  for (const r of pendingApprovalRows || []) {
+    pendingApprovals[`${r.document_type}:${r.document_id}`] = {
+      id: r.id, current_step: r.current_step, total_steps: r.total_steps,
+    }
+  }
+
   return (
     <ProjectDetail
       project={project}
@@ -125,6 +143,7 @@ export default async function ProjectPage({ params, searchParams }: Props) {
       initialTab={tab}
       isNewProject={isNew === '1'}
       session={session}
+      pendingApprovals={pendingApprovals}
       permissions={{
         editSow: hasPermission(session, 'EDIT_SOW'),
         sendSow: hasPermission(session, 'SEND_SOW'),

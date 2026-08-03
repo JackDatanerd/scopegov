@@ -149,6 +149,12 @@ export type Permission =
   | 'VIEW_AUDIT_LOG'
   | 'MANAGE_WORKSPACE_SETTINGS'
   | 'SEND_INVOICES'
+  // Phase 3 — Approval Chains. Deliberately a single permission rather than
+  // split per document type: the workflow config (approval_workflows /
+  // approval_workflow_steps) already scopes *which* documents a given role
+  // or user approves, so splitting the permission itself would just add
+  // bureaucracy without adding real granularity.
+  | 'APPROVE_DOCUMENTS'
 
 export const ALL_PERMISSIONS: Permission[] = [
   'VIEW_OWN_PROJECTS', 'VIEW_ALL_PROJECTS', 'VIEW_FINANCIALS', 'VIEW_CLIENT_DATA',
@@ -157,7 +163,7 @@ export const ALL_PERMISSIONS: Permission[] = [
   'MARK_PROJECT_COMPLETE', 'ASSIGN_TEAM_MEMBERS', 'SUBMIT_GUARDIAN_CHECKS',
   'ACCESS_GUARDIAN_HISTORY', 'INVITE_MEMBERS', 'MANAGE_ROLES', 'MANAGE_BILLING',
   'EXPORT_DATA', 'DELETE_PROJECTS', 'VIEW_AUDIT_LOG', 'MANAGE_WORKSPACE_SETTINGS',
-  'SEND_INVOICES',
+  'SEND_INVOICES', 'APPROVE_DOCUMENTS',
 ]
 
 export interface Role {

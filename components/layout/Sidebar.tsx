@@ -13,6 +13,7 @@ const NAV_ITEMS = [
   { href: '/clients',   icon: 'ti-users',             label: 'Clients' },
   { href: '/sow',       icon: 'ti-file-description',  label: 'SOW Registry' },
   { href: '/invoices',  icon: 'ti-receipt-2',         label: 'Invoices' },
+  { href: '/approvals', icon: 'ti-shield-check',      label: 'Approvals' },
   { href: '/reports',   icon: 'ti-chart-bar',         label: 'Reports' },
   // Workspace-wide by definition — only meaningful (and only shown) for
   // anyone who can actually see the whole portfolio.
@@ -36,7 +37,23 @@ export default function Sidebar({ session }: { session: SessionUser }) {
   const [workspaces,   setWorkspaces]   = useState<WorkspaceOption[]>([])
   const [switching,    setSwitching]    = useState(false)
   const [leavingId,    setLeavingId]    = useState<string | null>(null)
+  const [pendingApprovals, setPendingApprovals] = useState(0)
   const switcherRef = useRef<HTMLDivElement>(null)
+
+  // Only members who can actually act on a step (or oversee all of them)
+  // need the badge — everyone else would just see a permanently-zero
+  // number that means nothing to them.
+  const canSeeApprovalCount = session.permissions.includes('APPROVE_DOCUMENTS')
+    || session.permissions.includes('VIEW_ALL_PROJECTS')
+    || session.permissions.includes('MANAGE_WORKSPACE_SETTINGS')
+
+  useEffect(() => {
+    if (!canSeeApprovalCount) return
+    fetch('/api/approvals?scope=mine')
+      .then(r => r.json())
+      .then(json => setPendingApprovals((json.requests || []).filter((r: any) => r.status === 'pending').length))
+      .catch(() => {})
+  }, [canSeeApprovalCount, pathname])
 
   const daysLeft = session.trialEndsAt
     ? Math.max(0, Math.ceil((new Date(session.trialEndsAt).getTime() - Date.now()) / 86400000))
@@ -189,6 +206,9 @@ export default function Sidebar({ session }: { session: SessionUser }) {
             <button className={`sni${isActive(item.href) ? ' act' : ''}`}>
               <span className="sni-ic"><i className={`ti ${item.icon}`} /></span>
               {item.label}
+              {item.href === '/approvals' && pendingApprovals > 0 && (
+                <span className="sni-badge">{pendingApprovals}</span>
+              )}
             </button>
           </Link>
         ))}

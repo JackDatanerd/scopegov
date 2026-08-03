@@ -411,6 +411,96 @@ export async function sendEscalationEmail(params: {
   })
 }
 
+// ── Event: Approval requested (internal — notifies the current step's
+//    approver(s) that a SOW/CO is waiting on them) ──────────────
+export async function sendApprovalRequestedEmail(params: {
+  to: string; approverName: string
+  documentLabel: string; documentTitle: string; projectName: string
+  amount: number; currency: string
+  stepNumber: number; totalSteps: number
+  requestedByName: string; url: string
+}) {
+  const { to, approverName, documentLabel, documentTitle, projectName,
+    amount, currency, stepNumber, totalSteps, requestedByName, url } = params
+
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.gold,
+    label: 'Approval Requested',
+    headline: `${documentLabel} awaiting your approval`,
+    body: `
+      <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${approverName},</p>
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        <strong>${requestedByName}</strong> wants to send <strong>${documentTitle}</strong>
+        on <strong>${projectName}</strong>, and it needs your sign-off
+        ${totalSteps > 1 ? `(step ${stepNumber} of ${totalSteps})` : ''} before it can go to the client.
+      </p>
+      <div style="background:${C.goldLt};border-left:3px solid ${C.gold};padding:14px 16px;margin:16px 0;border-radius:0 6px 6px 0;">
+        <div style="display:flex;justify-content:space-between;font-size:13px;">
+          <span style="color:${C.text2};">${documentTitle}</span>
+          <span style="font-weight:600;color:${C.gold};">${currency} ${amount.toLocaleString()}</span>
+        </div>
+      </div>
+    `,
+    cta: 'Review & decide →',
+    ctaUrl: url,
+  })
+
+  return resend.emails.send({
+    from:    `ScopeGov <${FROM}>`,
+    to,
+    subject: `Approval needed: ${documentTitle} — ${projectName}`,
+    html,
+  })
+}
+
+// ── Event: Approval decided (internal — notifies the requester once a
+//    chain fully approves, is rejected at any step, or is cancelled) ────
+export async function sendApprovalDecisionEmail(params: {
+  to: string; requesterName: string
+  decision: 'approved' | 'rejected'
+  documentLabel: string; documentTitle: string; projectName: string
+  decidedByName: string; note?: string; url: string
+  autoSent?: boolean
+}) {
+  const { to, requesterName, decision, documentLabel, documentTitle,
+    projectName, decidedByName, note, url, autoSent } = params
+  const approved = decision === 'approved'
+
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: approved ? C.green : C.red,
+    label: approved ? 'Approval Granted' : 'Approval Rejected',
+    headline: approved
+      ? `${documentLabel} approved${autoSent ? ' and sent' : ''}`
+      : `${documentLabel} was rejected`,
+    body: `
+      <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${requesterName},</p>
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        ${decidedByName} ${approved ? 'approved' : 'rejected'} <strong>${documentTitle}</strong>
+        on <strong>${projectName}</strong>.
+        ${approved && autoSent ? ' It has been sent to the client automatically.' : ''}
+        ${!approved ? ' It has not been sent and remains a draft — make any changes needed and resubmit.' : ''}
+      </p>
+      ${note ? `
+      <div style="background:${C.bg};border:1px solid ${C.border};border-radius:6px;padding:14px 16px;margin:16px 0;">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:${C.text3};margin-bottom:6px;">Note from ${decidedByName}</div>
+        <p style="font-size:13px;color:${C.text};margin:0;">${note}</p>
+      </div>
+      ` : ''}
+    `,
+    cta: 'View in ScopeGov →',
+    ctaUrl: url,
+  })
+
+  return resend.emails.send({
+    from:    `ScopeGov <${FROM}>`,
+    to,
+    subject: `${approved ? 'Approved' : 'Rejected'}: ${documentTitle} — ${projectName}`,
+    html,
+  })
+}
+
 // ── Event 9: CO sent ──────────────────────────────────────────
 export async function sendCoEmail(params: {
   to: string; cc?: string[]; clientName: string; agencyName: string

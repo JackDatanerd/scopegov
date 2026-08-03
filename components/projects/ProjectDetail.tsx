@@ -73,11 +73,14 @@ interface Props {
   isNewProject: boolean
   session: SessionUser
   permissions: Permissions
+  // Phase 3 — Approval Chains: keyed by "sow:<id>" / "co:<id>", present
+  // only for documents currently held on a pending approval chain.
+  pendingApprovals?: Record<string, { id: string; current_step: number; total_steps: number }>
 }
 
 export default function ProjectDetail({
   project, milestones, amendments, team, activity, invoices, reconciliation,
-  effectiveContractValue, initialTab, permissions,
+  effectiveContractValue, initialTab, permissions, pendingApprovals = {},
 }: Props) {
   const router = useRouter()
   const [tab,        setTab]        = useState(initialTab)
@@ -239,9 +242,9 @@ export default function ProjectDetail({
       {/* Tab content */}
       <div style={{ padding: '24px 40px', maxWidth: 1080 }}>
         {tab === 'overview' && <OverviewTab project={project} milestones={milestones} amendments={amendments} permissions={permissions} currency={currency} />}
-        {tab === 'sow'      && <SowTab project={project} sows={project.sow_documents || []} amendments={amendments} permissions={permissions} router={router} />}
+        {tab === 'sow'      && <SowTab project={project} sows={project.sow_documents || []} amendments={amendments} permissions={permissions} router={router} pendingApprovals={pendingApprovals} />}
         {tab === 'guardian' && <GuardianTab project={project} flags={project.guardian_flags || []} permissions={permissions} router={router} />}
-        {tab === 'co'       && <CoTab project={project} cos={project.change_orders || []} permissions={permissions} currency={currency} />}
+        {tab === 'co'       && <CoTab project={project} cos={project.change_orders || []} permissions={permissions} currency={currency} pendingApprovals={pendingApprovals} />}
         {tab === 'billing'  && <BillingTab project={project} milestones={milestones} invoices={invoices} reconciliation={reconciliation} permissions={permissions} currency={currency} router={router} />}
         {tab === 'activity' && <ActivityTab activity={activity} />}
         {tab === 'team'     && <TeamTab project={project} team={team} permissions={permissions} />}
@@ -423,10 +426,12 @@ function MilestonePill({ status }: { status: string }) {
 }
 
 // ── SOW TAB ───────────────────────────────────────────────────
-function SowTab({ project, sows, amendments, permissions, router }: any) {
+function SowTab({ project, sows, amendments, permissions, router, pendingApprovals }: any) {
   const [sending, setSending] = useState(false)
   const [error,   setError]   = useState('')
+  const [sentForApproval, setSentForApproval] = useState(false)
   const currentSow = sows[0]
+  const pendingApproval = currentSow ? pendingApprovals?.[`sow:${currentSow.id}`] : null
 
   // FIX: previously this tab's empty state just described what to do
   // ("Generate a Statement of Work from your project brief") with no way
@@ -436,11 +441,12 @@ function SowTab({ project, sows, amendments, permissions, router }: any) {
   const [briefOpen, setBriefOpen] = useState(false)
 
   async function handleSendSow() {
-    setSending(true); setError('')
+    setSending(true); setError(''); setSentForApproval(false)
     try {
       const res  = await fetch(`/api/sow/${currentSow.id}/send`, { method: 'POST' })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error || 'Failed to send')
+      if (json.pendingApproval) setSentForApproval(true)
       router.refresh()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to send SOW')
@@ -460,6 +466,15 @@ function SowTab({ project, sows, amendments, permissions, router }: any) {
   return (
     <div>
       {error && <div className="auth-error" style={{ marginBottom: 14 }}>{error}</div>}
+      {sentForApproval && (
+        <div className="surface surface-p" style={{ marginBottom: 14, borderLeft: '3px solid var(--amber)', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <i className="ti ti-shield-check" style={{ fontSize: 16, color: 'var(--amber)' }} />
+          <div style={{ fontSize: 13, color: 'var(--text-2)' }}>
+            Sent for approval — this SOW will go to the client automatically once it&rsquo;s signed off.{' '}
+            <Link href="/approvals" style={{ color: 'var(--gold)', fontWeight: 500 }}>View in queue →</Link>
+          </div>
+        </div>
+      )}
       {sows.length === 0 ? (
         <div className="surface">
           <div className="empty-state">
@@ -482,6 +497,11 @@ function SowTab({ project, sows, amendments, permissions, router }: any) {
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                     <span style={{ fontSize: 14, fontWeight: 600 }}>SOW v{currentSow.version}</span>
                     <span className={`pill pill-${sowPill(currentSow.status)}`}>{sowStatusLabel(currentSow.status)}</span>
+                    {pendingApproval && (
+                      <span className="pill pill-amber">
+                        <i className="ti ti-shield-check" style={{ fontSize: 10 }} /> Awaiting approval ({pendingApproval.current_step}/{pendingApproval.total_steps})
+                      </span>
+                    )}
                   </div>
                   <div style={{ fontSize: 12, color: 'var(--text-3)' }}>
                     {currentSow.sent_at && <>Sent {formatDate(currentSow.sent_at)} · </>}
@@ -495,10 +515,15 @@ function SowTab({ project, sows, amendments, permissions, router }: any) {
                       <button className="btn btn-ghost btn-sm"><i className="ti ti-pencil" style={{ fontSize: 12 }} /> Edit</button>
                     </Link>
                   )}
-                  {currentSow.status === 'draft' && permissions.sendSow && (
+                  {currentSow.status === 'draft' && permissions.sendSow && !pendingApproval && (
                     <button className="btn btn-primary btn-sm" onClick={handleSendSow} disabled={sending}>
                       {sending ? <span className="spin" /> : <><i className="ti ti-send" style={{ fontSize: 12 }} /> Send to client</>}
                     </button>
+                  )}
+                  {currentSow.status === 'draft' && pendingApproval && (
+                    <Link href="/approvals">
+                      <button className="btn btn-ghost btn-sm"><i className="ti ti-shield-check" style={{ fontSize: 12 }} /> Awaiting approval</button>
+                    </Link>
                   )}
                   {currentSow.status === 'awaiting_signature' && (
                     <>
@@ -903,7 +928,7 @@ function FlagCard({ flag, permissions, router, projectId }: any) {
 }
 
 // ── CO TAB ────────────────────────────────────────────────────
-function CoTab({ project, cos, permissions, currency }: any) {
+function CoTab({ project, cos, permissions, currency, pendingApprovals }: any) {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
@@ -923,20 +948,27 @@ function CoTab({ project, cos, permissions, currency }: any) {
           </div>
         </div>
       ) : (
-        cos.map((co: any) => <CoCard key={co.id} co={co} currency={currency} permissions={permissions} projectId={project.id} />)
+        cos.map((co: any) => (
+          <CoCard key={co.id} co={co} currency={currency} permissions={permissions} projectId={project.id}
+            pendingApproval={pendingApprovals?.[`co:${co.id}`]} />
+        ))
       )}
     </div>
   )
 }
 
-function CoCard({ co, currency, permissions, projectId }: any) {
+function CoCard({ co, currency, permissions, projectId, pendingApproval }: any) {
   const router = useRouter()
   const [acting, setActing] = useState(false)
 
   async function doAction(action: string) {
     setActing(true)
     try {
-      await fetch(`/api/co/${co.id}/${action}`, { method: 'POST' })
+      const res  = await fetch(`/api/co/${co.id}/${action}`, { method: 'POST' })
+      const json = await res.json().catch(() => ({}))
+      if (action === 'send' && json?.pendingApproval) {
+        alert('Sent for approval — this CO will go to the client automatically once it\u2019s signed off.')
+      }
       router.refresh()
     } finally { setActing(false) }
   }
@@ -948,6 +980,11 @@ function CoCard({ co, currency, permissions, projectId }: any) {
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
             <span style={{ fontSize: 14, fontWeight: 500 }}>{co.title}</span>
             <span className={`pill pill-${coPill(co.status)}`}>{coStatusLabel(co.status)}</span>
+            {pendingApproval && (
+              <span className="pill pill-amber">
+                <i className="ti ti-shield-check" style={{ fontSize: 10 }} /> Awaiting approval ({pendingApproval.current_step}/{pendingApproval.total_steps})
+              </span>
+            )}
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-3)' }}>
             {co.document_number ? `${co.document_number} · ` : ''}v{co.version}
@@ -959,8 +996,11 @@ function CoCard({ co, currency, permissions, projectId }: any) {
           {permissions.viewFinancials && (
             <span style={{ fontSize: 14, fontWeight: 500, fontFamily: 'IBM Plex Mono, monospace' }}>{formatCurrency(co.total, currency)}</span>
           )}
-          {co.status === 'draft' && permissions.sendCo && (
+          {co.status === 'draft' && permissions.sendCo && !pendingApproval && (
             <button className="btn btn-primary btn-xs" onClick={() => doAction('send')} disabled={acting}>Send</button>
+          )}
+          {co.status === 'draft' && pendingApproval && (
+            <Link href="/approvals"><button className="btn btn-ghost btn-xs">Awaiting approval</button></Link>
           )}
           {co.status === 'awaiting_response' && (
             <button className="btn btn-ghost btn-xs" onClick={() => doAction('withdraw')} disabled={acting}>Withdraw</button>
