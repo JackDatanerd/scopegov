@@ -55,7 +55,7 @@ export default function MfaSetupClient({ mandatory, next, recovered, userName }:
 
   async function handleVerify(e: React.FormEvent) {
     e.preventDefault()
-    if (!factorId) return
+    if (!factorId || loading) return
     setLoading(true); setError('')
     try {
       const res = await fetch('/api/auth/mfa/verify', {
@@ -64,7 +64,10 @@ export default function MfaSetupClient({ mandatory, next, recovered, userName }:
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error || 'Verification failed')
-      setBackupCodes(json.backupCodes || [])
+      // Never let an empty response (e.g. a login-challenge branch, or a
+      // stray retry after codes were already issued) clobber codes we've
+      // already received and are showing.
+      if (json.backupCodes && json.backupCodes.length > 0) setBackupCodes(json.backupCodes)
       setStep('backup-codes')
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Verification failed')
@@ -169,23 +172,34 @@ export default function MfaSetupClient({ mandatory, next, recovered, userName }:
                 If you lose access to your authenticator app, one of these one-time codes will get you back in.
                 <strong> They&apos;re only shown once</strong> — save them somewhere safe now.
               </p>
-              <div style={{
-                display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8,
-                background: 'var(--bg-2, #F8F8F6)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
-                padding: 16, marginBottom: 16, fontFamily: 'IBM Plex Mono, monospace', fontSize: 13,
-              }}>
-                {backupCodes.map((c, i) => <div key={i} style={{ textAlign: 'center', color: 'var(--text)' }}>{c}</div>)}
-              </div>
-              <button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'center', padding: '9px', marginBottom: 16 }} onClick={copyAllCodes}>
-                <i className="ti ti-copy" style={{ marginRight: 6 }} /> Copy all codes
-              </button>
-              <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 12, color: 'var(--text-2)', marginBottom: 16, cursor: 'pointer' }}>
-                <input type="checkbox" checked={confirmedSaved} style={{ marginTop: 2 }}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setConfirmedSaved(e.target.checked)} />
-                I&apos;ve saved these backup codes somewhere safe.
-              </label>
+              {backupCodes.length > 0 ? (
+                <>
+                  <div style={{
+                    display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8,
+                    background: 'var(--bg-2, #F8F8F6)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                    padding: 16, marginBottom: 16, fontFamily: 'IBM Plex Mono, monospace', fontSize: 13,
+                  }}>
+                    {backupCodes.map((c, i) => <div key={i} style={{ textAlign: 'center', color: 'var(--text)' }}>{c}</div>)}
+                  </div>
+                  <button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'center', padding: '9px', marginBottom: 16 }} onClick={copyAllCodes}>
+                    <i className="ti ti-copy" style={{ marginRight: 6 }} /> Copy all codes
+                  </button>
+                </>
+              ) : (
+                <div className="auth-error" style={{ marginBottom: 16 }}>
+                  Two-factor authentication is on, but backup codes weren&apos;t shown here. Generate a set from
+                  Settings → Account → Two-factor authentication before you rely on this login.
+                </div>
+              )}
+              {backupCodes.length > 0 && (
+                <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 12, color: 'var(--text-2)', marginBottom: 16, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={confirmedSaved} style={{ marginTop: 2 }}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setConfirmedSaved(e.target.checked)} />
+                  I&apos;ve saved these backup codes somewhere safe.
+                </label>
+              )}
               <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', padding: '10px' }}
-                disabled={!confirmedSaved} onClick={handleContinue}>
+                disabled={backupCodes.length > 0 && !confirmedSaved} onClick={handleContinue}>
                 Continue
               </button>
             </>

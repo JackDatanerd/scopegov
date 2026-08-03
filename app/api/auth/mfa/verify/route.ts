@@ -7,12 +7,22 @@ import { generateBackupCodes } from '@/lib/utils/backup-codes'
 import { sendMfaEnabledEmail } from '@/lib/email/templates'
 
 // Single endpoint for both flows:
-//  - Enrollment confirmation: factor is currently "unverified" → on success
-//    we generate backup codes, log it, email the user, and return the codes
-//    once (they are never retrievable again).
-//  - Login challenge: factor is already "verified" → on success the
-//    session is simply upgraded to aal2 (challengeAndVerify refreshes the
-//    session and our cookie-writing server client persists that).
+//  - Enrollment confirmation: no backup codes exist for this user yet →
+//    on success we generate them, log it, email the user, and return the
+//    codes once (they are never retrievable again).
+//  - Login challenge / any repeat call: backup codes already exist → on
+//    success the session is simply upgraded to aal2, nothing more to do.
+//
+// Whether to issue codes is decided from a DB read done AFTER verification
+// succeeds — "does this user already have backup codes on file" — rather
+// than from the TOTP factor's pre-verify status. That status check is
+// racy against exactly the failure mode this endpoint used to hit: a
+// request that verifies successfully server-side but then errors on its
+// way back to the client (see the notifications-insert fix below) leaves
+// the factor already 'verified' by the time a retry arrives, so a
+// status-based check silently skips code generation on the retry — the
+// codes exist in the database, but were never actually shown to the user.
+// Checking DB existence instead makes this endpoint safe to retry.
 export async function POST(request: Request) {
   try {
     const supabase = await createServerSupabaseClient()
@@ -23,41 +33,66 @@ export async function POST(request: Request) {
     const { factorId, code } = body as { factorId?: string; code?: string }
     if (!factorId || !code) return NextResponse.json({ error: 'factorId and code are required' }, { status: 400 })
 
-    const { data: factors } = await supabase.auth.mfa.listFactors()
-    const factor = (factors?.all || []).find(f => f.id === factorId && f.factor_type === 'totp')
-    if (!factor) return NextResponse.json({ error: 'Unknown factor' }, { status: 404 })
-    const isEnrollment = factor.status === 'unverified'
-
     const { error } = await supabase.auth.mfa.challengeAndVerify({ factorId, code: code.trim() })
     if (error) return NextResponse.json({ error: 'Incorrect code. Check your authenticator app and try again.' }, { status: 400 })
 
-    if (!isEnrollment) {
-      // Login challenge — session is now aal2. Nothing more to do.
+    // Verified — session is now aal2 regardless of which branch runs below.
+    const service = createServiceClient()
+
+    const { count: existingCodes } = await (service as any)
+      .from('user_mfa_backup_codes')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', user.id)
+      .is('used_at', null)
+
+    if ((existingCodes || 0) > 0) {
+      // Already has live backup codes — this was a login challenge, or a
+      // retry of a completed enrollment. Nothing more to issue.
       return NextResponse.json({ ok: true })
     }
 
-    // ── Enrollment confirmed — issue backup codes, this is a one-time reveal ──
-    const service = createServiceClient()
+    // ── First-ever verification for this account — issue backup codes ────
     const { plaintext, hashes } = generateBackupCodes()
-    await (service as any).from('user_mfa_backup_codes').insert(
+    const { error: insertErr } = await (service as any).from('user_mfa_backup_codes').insert(
       hashes.map(code_hash => ({ user_id: user.id, code_hash }))
     )
+    // If we can't actually store the codes, don't hand plaintext ones to
+    // the user for a set that doesn't exist server-side — surface a real
+    // error instead of a false success.
+    if (insertErr) throw insertErr
 
-    await logAudit(service, {
-      workspaceId: (await resolveActiveWorkspaceId(service, user.id)) || '',
-      actorId: user.id, actorEmail: user.email!, actorName: user.user_metadata?.name || user.email!,
-      eventType: 'security.mfa_enabled', entityType: 'user', entityId: user.id, entityName: user.email!,
-      metadata: { factor_id: factorId },
-    })
+    const workspaceId = await resolveActiveWorkspaceId(service, user.id)
 
-    await (service as any).from('notifications').insert({
-      workspace_id: await resolveActiveWorkspaceId(service, user.id),
-      recipient_id: user.id,
-      type: 'security', title: 'Two-factor authentication enabled',
-      body: 'Your account now requires an authenticator code to sign in.',
-    }).catch(() => {})
+    // Everything below is best-effort (log/notify/email) — none of it
+    // should cost the user their backup codes if it fails. BUG (fixed):
+    // `.catch(() => {})` chained directly on a Supabase query builder
+    // throws `TypeError: insert(...).catch is not a function` in this
+    // runtime rather than swallowing the rejection — the exact same
+    // failure class already fixed elsewhere for CO accept/close/withdraw
+    // (commit fa95fe0). That crash was silently eating the backup-code
+    // response on this route: codes got generated and stored just above,
+    // then the request 500'd right after, so the client never received
+    // them even though they existed in the database.
+    try {
+      await logAudit(service, {
+        workspaceId: workspaceId || '',
+        actorId: user.id, actorEmail: user.email!, actorName: user.user_metadata?.name || user.email!,
+        eventType: 'security.mfa_enabled', entityType: 'user', entityId: user.id, entityName: user.email!,
+        metadata: { factor_id: factorId },
+      })
+    } catch (e) { console.error('MFA enable audit log failed (non-fatal):', e) }
 
-    sendMfaEnabledEmail({ to: user.email!, name: user.user_metadata?.name || user.email! }).catch(() => {})
+    try {
+      await (service as any).from('notifications').insert({
+        workspace_id: workspaceId,
+        recipient_id: user.id,
+        type: 'security', title: 'Two-factor authentication enabled',
+        body: 'Your account now requires an authenticator code to sign in.',
+      })
+    } catch (e) { console.error('MFA enable notification insert failed (non-fatal):', e) }
+
+    sendMfaEnabledEmail({ to: user.email!, name: user.user_metadata?.name || user.email! })
+      .catch(e => console.error('MFA enable email failed (non-fatal):', e))
 
     return NextResponse.json({ ok: true, backupCodes: plaintext })
   } catch (err) {

@@ -55,18 +55,28 @@ export async function POST(request: Request) {
       .eq('user_id', user.id).is('used_at', null)
 
     const { data: userRow } = await (service as any).from('users').select('active_workspace_id').eq('id', user.id).maybeSingle()
-    await logAudit(service, {
-      workspaceId: userRow?.active_workspace_id || '',
-      actorId: user.id, actorEmail: user.email!, actorName: user.user_metadata?.name || user.email!,
-      eventType: 'security.mfa_backup_code_used', entityType: 'user', entityId: user.id, entityName: user.email!,
-      metadata: { result: 'factor_removed' },
-    })
-    await (service as any).from('notifications').insert({
-      workspace_id: userRow?.active_workspace_id, recipient_id: user.id,
-      type: 'security', title: 'Signed in with a backup code',
-      body: 'Two-factor authentication was reset using a backup code. Set it up again to keep your account protected.',
-    }).catch(() => {})
-    sendMfaDisabledEmail({ to: user.email!, name: user.user_metadata?.name || user.email!, via: 'backup_code_recovery' }).catch(() => {})
+    try {
+      await logAudit(service, {
+        workspaceId: userRow?.active_workspace_id || '',
+        actorId: user.id, actorEmail: user.email!, actorName: user.user_metadata?.name || user.email!,
+        eventType: 'security.mfa_backup_code_used', entityType: 'user', entityId: user.id, entityName: user.email!,
+        metadata: { result: 'factor_removed' },
+      })
+    } catch (e) { console.error('MFA recovery audit log failed (non-fatal):', e) }
+    try {
+      await (service as any).from('notifications').insert({
+        workspace_id: userRow?.active_workspace_id, recipient_id: user.id,
+        type: 'security', title: 'Signed in with a backup code',
+        body: 'Two-factor authentication was reset using a backup code. Set it up again to keep your account protected.',
+      })
+    } catch (e) { console.error('MFA recovery notification insert failed (non-fatal):', e) }
+    // BUG (fixed): `.catch(() => {})` chained directly on the Supabase
+    // insert builder above used to throw `TypeError: insert(...).catch is
+    // not a function` in this runtime instead of being swallowed — see
+    // verify/route.ts for the full writeup and commit fa95fe0 for the
+    // established fix pattern this now follows.
+    sendMfaDisabledEmail({ to: user.email!, name: user.user_metadata?.name || user.email!, via: 'backup_code_recovery' })
+      .catch(e => console.error('MFA recovery email failed (non-fatal):', e))
 
     return NextResponse.json({ ok: true })
   } catch (err) {

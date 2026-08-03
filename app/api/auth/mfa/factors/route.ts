@@ -64,18 +64,28 @@ export async function DELETE(request: Request) {
       .eq('user_id', user.id).is('used_at', null)
 
     const { data: userRow } = await (service as any).from('users').select('active_workspace_id').eq('id', user.id).maybeSingle()
-    await logAudit(service, {
-      workspaceId: userRow?.active_workspace_id || '',
-      actorId: user.id, actorEmail: user.email!, actorName: user.user_metadata?.name || user.email!,
-      eventType: 'security.mfa_disabled', entityType: 'user', entityId: user.id, entityName: user.email!,
-      metadata: { via: 'user' },
-    })
-    await (service as any).from('notifications').insert({
-      workspace_id: userRow?.active_workspace_id, recipient_id: user.id,
-      type: 'security', title: 'Two-factor authentication disabled',
-      body: 'Your account no longer requires an authenticator code to sign in.',
-    }).catch(() => {})
-    sendMfaDisabledEmail({ to: user.email!, name: user.user_metadata?.name || user.email!, via: 'user' }).catch(() => {})
+    try {
+      await logAudit(service, {
+        workspaceId: userRow?.active_workspace_id || '',
+        actorId: user.id, actorEmail: user.email!, actorName: user.user_metadata?.name || user.email!,
+        eventType: 'security.mfa_disabled', entityType: 'user', entityId: user.id, entityName: user.email!,
+        metadata: { via: 'user' },
+      })
+    } catch (e) { console.error('MFA disable audit log failed (non-fatal):', e) }
+    try {
+      await (service as any).from('notifications').insert({
+        workspace_id: userRow?.active_workspace_id, recipient_id: user.id,
+        type: 'security', title: 'Two-factor authentication disabled',
+        body: 'Your account no longer requires an authenticator code to sign in.',
+      })
+    } catch (e) { console.error('MFA disable notification insert failed (non-fatal):', e) }
+    // BUG (fixed): `.catch(() => {})` chained directly on the Supabase
+    // insert builder above used to throw `TypeError: insert(...).catch is
+    // not a function` in this runtime instead of being swallowed — see
+    // verify/route.ts for the full writeup and commit fa95fe0 for the
+    // established fix pattern this now follows.
+    sendMfaDisabledEmail({ to: user.email!, name: user.user_metadata?.name || user.email!, via: 'user' })
+      .catch(e => console.error('MFA disable email failed (non-fatal):', e))
 
     return NextResponse.json({ ok: true })
   } catch (err) {
