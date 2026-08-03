@@ -683,3 +683,73 @@ export async function sendInvoiceOverdueInternalEmail(params: {
     html,
   })
 }
+
+// ── Security: MFA enabled ────────────────────────────────────
+export async function sendMfaEnabledEmail(params: { to: string; name: string }) {
+  const { to, name } = params
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.green,
+    headerIcon: '🔐',
+    label: 'Security',
+    headline: 'Two-factor authentication is now on',
+    body: `
+      <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${name},</p>
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        An authenticator app was just added to your ScopeGov account. From now on,
+        signing in will require your password and a code from that app.
+      </p>
+      <p style="font-size:13px;color:${C.text2};">
+        Didn't do this? Contact your workspace owner immediately and change your password.
+      </p>
+    `,
+  })
+  return resend.emails.send({ from: `ScopeGov <${FROM}>`, to, subject: 'Two-factor authentication enabled on your ScopeGov account', html })
+}
+
+// ── Security: MFA disabled ───────────────────────────────────
+export async function sendMfaDisabledEmail(params: { to: string; name: string; via: 'user' | 'backup_code_recovery' }) {
+  const { to, name, via } = params
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.red,
+    headerIcon: '🔓',
+    label: 'Security',
+    headline: 'Two-factor authentication was turned off',
+    body: `
+      <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${name},</p>
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        ${via === 'backup_code_recovery'
+          ? 'Two-factor authentication on your ScopeGov account was just removed using a backup recovery code. If your workspace requires MFA for your role, you will be asked to set it up again the next time you sign in.'
+          : 'Two-factor authentication on your ScopeGov account was just turned off.'}
+      </p>
+      <p style="font-size:13px;color:${C.text2};">
+        Didn't do this? Contact your workspace owner immediately and change your password.
+      </p>
+    `,
+  })
+  return resend.emails.send({ from: `ScopeGov <${FROM}>`, to, subject: 'Two-factor authentication was disabled on your ScopeGov account', html })
+}
+
+// ── Security: backup codes regenerated ───────────────────────
+export async function sendMfaBackupCodesRegeneratedEmail(params: { to: string; name: string }) {
+  const { to, name } = params
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.amber,
+    headerIcon: '🔐',
+    label: 'Security',
+    headline: 'New backup codes were generated',
+    body: `
+      <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${name},</p>
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        A new set of two-factor backup codes was generated for your ScopeGov account.
+        Your previous codes no longer work.
+      </p>
+      <p style="font-size:13px;color:${C.text2};">
+        Didn't do this? Contact your workspace owner immediately and change your password.
+      </p>
+    `,
+  })
+  return resend.emails.send({ from: `ScopeGov <${FROM}>`, to, subject: 'New two-factor backup codes generated', html })
+}

@@ -1,6 +1,7 @@
 import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 import { sharedCookieOptions } from './lib/supabase/cookie-options'
+import { permissionsRequireMfa } from './lib/auth/mfa-policy'
 
 export async function middleware(request: NextRequest) {
   const { pathname, searchParams } = request.nextUrl
@@ -77,11 +78,45 @@ export async function middleware(request: NextRequest) {
 
   const isOnboarding = pathname === '/onboarding'
 
+  // Routes for the MFA challenge/setup flows themselves, plus the handful
+  // of auth endpoints a partially-authenticated (aal1-only) user must
+  // still be able to reach — sign out, and the mfa API namespace that
+  // powers the /mfa-challenge and /mfa-setup pages.
+  const isMfaFlowRoute =
+    pathname.startsWith('/mfa-challenge') ||
+    pathname.startsWith('/mfa-setup') ||
+    pathname.startsWith('/api/auth/mfa/') ||
+    pathname.startsWith('/api/auth/signout')
+
   // ── Not authenticated → redirect to login ─────────────────────────────────
   if (!user && !isAuthRoute && !isPublicRoute && !isOnboarding) {
     const loginUrl = new URL('/login', request.url)
     loginUrl.searchParams.set('next', pathname)
     return withRef(NextResponse.redirect(loginUrl))
+  }
+
+  // ── Authenticated, but MFA challenge not yet completed this session ──────
+  // AAL is read straight off the session's JWT claims (no network round
+  // trip), so this check is cheap on every request. currentLevel === aal1
+  // with nextLevel === aal2 means: this user has a verified TOTP factor,
+  // but hasn't entered a code yet in this particular session — e.g. they
+  // just signed in with a password, or an old session cookie survived
+  // from before enrollment. Supabase's own guidance is to route these
+  // users to a challenge screen rather than hard-401 them, since it's a
+  // routine, expected state (not necessarily an attack) — but note this
+  // still runs for /api/* routes below, just returning JSON instead of a
+  // redirect, because a stolen session cookie without the authenticator
+  // app must not be enough to read data through the API either.
+  if (user && !isPublicRoute && !isMfaFlowRoute) {
+    const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
+    if (aal?.currentLevel === 'aal1' && aal?.nextLevel === 'aal2') {
+      if (pathname.startsWith('/api/')) {
+        return NextResponse.json({ error: 'Two-factor verification required.' }, { status: 401 })
+      }
+      const url = new URL('/mfa-challenge', request.url)
+      url.searchParams.set('next', pathname)
+      return withRef(NextResponse.redirect(url))
+    }
   }
 
   // ── Authenticated → redirect away from auth pages ─────────────────────────
@@ -129,6 +164,35 @@ export async function middleware(request: NextRequest) {
         if (pathname !== '/onboarding') {
           return withRef(NextResponse.redirect(new URL('/onboarding', request.url)))
         }
+      }
+    }
+  }
+
+  // ── Authenticated, onboarded → forced MFA enrollment for governance roles ──
+  // Only reached once we already know the challenge-pending case above
+  // doesn't apply, so aal here is either "aal2" (already enrolled and
+  // verified — nothing to do) or "aal1/aal1" (zero verified factors at
+  // all). We only pay for the extra permissions query in the latter case.
+  // Deliberately checked at the *page* level, not per-API-route: this is
+  // an enrollment nudge with teeth (you cannot reach any page of the
+  // product without it), not a per-request authorization boundary — the
+  // aal1→aal2 block above already covers the "already enrolled but not
+  // verified this session" security boundary for both pages and APIs.
+  if (
+    user && !isPublicRoute && !isMfaFlowRoute && !isAuthRoute && !isOnboarding &&
+    !pathname.startsWith('/api/')
+  ) {
+    const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
+    if (aal?.currentLevel === 'aal1' && aal?.nextLevel === 'aal1') {
+      const { data: memberships } = await (supabase as any)
+        .from('workspace_members')
+        .select('effective_permissions')
+        .eq('user_id', user.id)
+        .eq('status', 'active')
+
+      const mustEnroll = (memberships || []).some((m: any) => permissionsRequireMfa(m.effective_permissions))
+      if (mustEnroll) {
+        return withRef(NextResponse.redirect(new URL('/mfa-setup', request.url)))
       }
     }
   }

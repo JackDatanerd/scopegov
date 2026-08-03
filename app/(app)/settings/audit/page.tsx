@@ -1,7 +1,7 @@
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
-import { formatRelative } from '@/lib/utils/format'
+import AuditLogClient from '@/components/settings/AuditLogClient'
 
 export const metadata = { title: 'Audit Log' }
 
@@ -21,76 +21,24 @@ export default async function AuditLogPage() {
   }
 
   const service = createServiceClient()
-  const { data: entries = [] } = await (service as any)
-    .from('audit_log')
-    .select('id, event_type, entity_type, entity_name, actor_name, actor_email, created_at, metadata, ip_address')
-    .eq('workspace_id', session.workspaceId)
-    .order('created_at', { ascending: false })
-    .limit(200)
+  const [projectsRes, membersRes] = await Promise.all([
+    (service as any)
+      .from('projects')
+      .select('id, name')
+      .eq('workspace_id', session.workspaceId)
+      .is('deleted_at', null)
+      .order('name'),
+    (service as any)
+      .from('workspace_members')
+      .select('user_id, users!workspace_members_user_id_fkey(id, name, email)')
+      .eq('workspace_id', session.workspaceId)
+      .eq('status', 'active'),
+  ])
 
-  function eventColour(type: string) {
-    if (type.includes('signed') || type.includes('accepted') || type.includes('completed') || type.includes('joined')) return 'var(--green)'
-    if (type.includes('declined') || type.includes('failed') || type.includes('stalled') || type.includes('deleted')) return 'var(--red)'
-    if (type.includes('flag') || type.includes('guardian') || type.includes('escalated')) return 'var(--amber)'
-    if (type.includes('billing') || type.includes('plan')) return 'var(--blue)'
-    return 'var(--text-3)'
-  }
+  const projects = (projectsRes.data || []).map((p: any) => ({ id: p.id, name: p.name }))
+  const members = (membersRes.data || [])
+    .filter((m: any) => m.users)
+    .map((m: any) => ({ id: m.users.id, name: m.users.name || m.users.email, email: m.users.email }))
 
-  return (
-    <div className="page" style={{ maxWidth: 960 }}>
-      <div className="page-hd">
-        <div>
-          <h1 className="page-title">Audit log</h1>
-          <p className="page-sub">{(entries || []).length} events · immutable record</p>
-        </div>
-      </div>
-
-      <div className="surface" style={{ overflow: 'hidden' }}>
-        <table className="gov-table" style={{ width: '100%' }}>
-          <thead>
-            <tr>
-              <th>Event</th>
-              <th>Actor</th>
-              <th>Entity</th>
-              <th>Time</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(entries || []).map((e: any) => (
-              <tr key={e.id}>
-                <td>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <div style={{ width: 6, height: 6, borderRadius: '50%', background: eventColour(e.event_type), flexShrink: 0 }} />
-                    <div>
-                      <div style={{ fontSize: 12, fontFamily: 'IBM Plex Mono, monospace', color: 'var(--text-2)' }}>{e.event_type}</div>
-                      <div style={{ fontSize: 10, color: 'var(--text-3)' }}>{e.entity_type}</div>
-                    </div>
-                  </div>
-                </td>
-                <td>
-                  <div style={{ fontSize: 13 }}>{e.actor_name || 'System'}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{e.actor_email}</div>
-                </td>
-                <td style={{ fontSize: 13, color: 'var(--text-2)' }}>
-                  {e.entity_name || '—'}
-                  {e.ip_address && (
-                    <div style={{ fontSize: 10, color: 'var(--text-4)', fontFamily: 'IBM Plex Mono, monospace' }}>{e.ip_address}</div>
-                  )}
-                </td>
-                <td style={{ fontSize: 12, color: 'var(--text-3)', whiteSpace: 'nowrap' }}>
-                  {formatRelative(e.created_at)}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {!(entries || []).length && (
-          <div className="empty-state" style={{ padding: '40px 0' }}>
-            <i className="ti ti-clock empty-state-icon" />
-            <p className="empty-state-title">No audit events yet</p>
-          </div>
-        )}
-      </div>
-    </div>
-  )
+  return <AuditLogClient projects={projects} members={members} />
 }

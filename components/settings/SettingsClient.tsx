@@ -16,6 +16,8 @@ import { createClient } from '@/lib/supabase/client'
 import type { SessionUser } from '@/lib/supabase/types'
 import { PLAN_LABELS, PLAN_LIMITS, formatDate } from '@/lib/utils/format'
 import SignaturePad, { type SignaturePadHandle } from '@/components/ui/SignaturePad'
+import MfaSection from '@/components/settings/MfaSection'
+import { permissionsRequireMfa } from '@/lib/auth/mfa-policy'
 
 type SettingsTab = 'account' | 'workspace' | 'branding' | 'defaults' | 'guardian' | 'billing' | 'notifications' | 'integrations' | 'danger'
 
@@ -246,6 +248,7 @@ function AccountTab({ session, supabase, router }: any) {
           </button>
         </form>
       </div>
+      <MfaSection mandatory={permissionsRequireMfa(session.permissions)} />
     </div>
   )
 }

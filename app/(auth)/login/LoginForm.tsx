@@ -22,6 +22,16 @@ export default function LoginForm() {
     try {
       const { error: err } = await supabase.auth.signInWithPassword({ email, password })
       if (err) { setError(err.message.includes('Invalid') ? 'Incorrect email or password.' : err.message); return }
+
+      // Middleware enforces the MFA gate regardless, but checking here too
+      // avoids a flash of the dashboard before being bounced to the
+      // challenge screen. getAuthenticatorAssuranceLevel() reads the local
+      // session claims — no extra network round trip.
+      const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
+      if (aal?.currentLevel === 'aal1' && aal?.nextLevel === 'aal2') {
+        router.push(`/mfa-challenge?next=${encodeURIComponent(next)}`)
+        return
+      }
       router.push(next); router.refresh()
     } catch { setError('Something went wrong.') } finally { setLoading(false) }
   }
