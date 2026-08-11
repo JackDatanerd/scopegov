@@ -16,8 +16,16 @@
 
 ### 1.1 Database
 ```bash
-# Run the migration in order:
+# Run the migrations in order:
 # supabase/migrations/001_initial_schema.sql
+# supabase/migrations/002_signatures.sql
+# supabase/migrations/003_document_numbering.sql
+# supabase/migrations/004_invoicing.sql
+# supabase/migrations/005_contract_reconciliation.sql
+# supabase/migrations/006_mfa_backup_codes.sql
+# supabase/migrations/007_scope_health.sql
+# supabase/migrations/008_approval_chains.sql
+# supabase/migrations/009_project_messages.sql
 # Execute via Supabase SQL editor or CLI
 ```
 
@@ -185,6 +193,9 @@ Per Bug Catalogue — verify these before deploying:
 - [ ] `scope_health_snapshots` upsert uses `onConflict: 'workspace_id,snapshot_date'` — safe to re-run the rollup cron the same day without duplicating rows
 - [ ] `flag_comments`/`flag_attachments` `entity_type` is validated against `isValidEntityType` before every DB read/write — never interpolated from the URL unchecked
 - [ ] `contract_value_at_risk` is single-currency per snapshot (resolved the same way `/api/reports` picks a currency) — never summed across currencies
+- [ ] Project Discussion (`project_messages`) has no permission gate of its own — access is `canReadProject` (lib/utils/project-access.ts), same check the project page itself uses. Don't add a permission check here without also asking whether that's the right call for `/api/projects/[id]/page.tsx`.
+- [ ] `@[Name](id)` mention tokens are re-derived from the message body server-side on both create and edit — never trust a client-supplied mention id list (see lib/utils/project-messages.ts)
+- [ ] A deleted `project_messages` row is a soft delete (`deleted_at`) — the API never returns its `body` to clients, but the row stays for `project_message_mentions` and `audit_log` to keep pointing at something real
 
 ---
 
@@ -198,6 +209,7 @@ Per Bug Catalogue — verify these before deploying:
 - [ ] Forward test email to guardian address → verdict stored in Guardian tab
 - [ ] Paste email in Guardian → classification fires
 - [ ] Create CO → send → client portal loads correctly
+- [ ] Open a project's Discussion tab → post a message → @mention a teammate (autocomplete should appear after typing `@`) → mentioned teammate sees a notification and it deep-links to the Discussion tab → edit and delete your own message
 - [ ] Client accepts CO → amendment created, acceptedAt populated
 - [ ] Client declines CO with linked flag → flag reverts to open
 - [ ] Client counters CO → agency can accept counter

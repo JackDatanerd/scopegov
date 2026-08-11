@@ -9,6 +9,12 @@
 
 import type { SessionUser } from '@/lib/supabase/types'
 import { hasPermission } from '@/lib/auth/session'
+import { canReadProject } from '@/lib/utils/project-access'
+
+// Re-exported for existing importers (comments/attachments routes) —
+// the check itself now lives in project-access.ts since it's no longer
+// specific to flag/exception governance (project_messages uses it too).
+export { canReadProject }
 
 export type GovEntityType = 'flag' | 'exception'
 
@@ -42,23 +48,6 @@ export async function resolveEntity(
     .single()
   if (!data) return null
   return { projectId: data.project_id, severity: data.guardian_flags?.severity || null }
-}
-
-// Read access mirrors the same visibility rule the Guardian tab itself
-// uses: VIEW_ALL_PROJECTS sees everything in the workspace, otherwise the
-// user must be an assigned member of that specific project
-// (project_members, joined through workspace_members — see BUG-058 note
-// in app/api/projects/route.ts for why this join can't be a naive
-// project_members.user_id filter).
-export async function canReadProject(service: any, session: SessionUser, projectId: string): Promise<boolean> {
-  if (hasPermission(session, 'VIEW_ALL_PROJECTS')) return true
-  const { data } = await service
-    .from('project_members')
-    .select('project_id, workspace_members!inner(user_id)')
-    .eq('project_id', projectId)
-    .eq('workspace_members.user_id', session.id)
-    .limit(1)
-  return !!(data && data.length)
 }
 
 // Writing (a comment or an attachment) is a governance action, not casual

@@ -3,12 +3,13 @@
 //      shows modal, posts to /api/projects/[id]/members
 
 'use client'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import type { SessionUser } from '@/lib/supabase/types'
 import BillingTab from '@/components/invoices/BillingTab'
 import FlagCollaboration from './FlagCollaboration'
+import ProjectDiscussion from './ProjectDiscussion'
 import {
   formatCurrency, formatDate, formatRelative,
   projectStatusLabel, sowStatusLabel, coStatusLabel, flagStatusLabel,
@@ -16,13 +17,14 @@ import {
 } from '@/lib/utils/format'
 
 const TABS = [
-  { key: 'overview', label: 'Overview',      icon: 'ti-layout-dashboard' },
-  { key: 'sow',      label: 'SOW',           icon: 'ti-file-description' },
-  { key: 'guardian', label: 'Guardian',      icon: 'ti-shield-bolt' },
-  { key: 'co',       label: 'Change Orders', icon: 'ti-git-merge' },
-  { key: 'billing',  label: 'Billing',       icon: 'ti-receipt' },
-  { key: 'activity', label: 'Activity',      icon: 'ti-clock' },
-  { key: 'team',     label: 'Team',          icon: 'ti-users' },
+  { key: 'overview',   label: 'Overview',      icon: 'ti-layout-dashboard' },
+  { key: 'sow',        label: 'SOW',           icon: 'ti-file-description' },
+  { key: 'guardian',   label: 'Guardian',      icon: 'ti-shield-bolt' },
+  { key: 'co',         label: 'Change Orders', icon: 'ti-git-merge' },
+  { key: 'billing',    label: 'Billing',       icon: 'ti-receipt' },
+  { key: 'discussion', label: 'Discussion',    icon: 'ti-messages' },
+  { key: 'activity',   label: 'Activity',      icon: 'ti-clock' },
+  { key: 'team',       label: 'Team',          icon: 'ti-users' },
 ]
 
 function projectPill(status: string): string {
@@ -80,13 +82,21 @@ interface Props {
 
 export default function ProjectDetail({
   project, milestones, amendments, team, activity, invoices, reconciliation,
-  effectiveContractValue, initialTab, permissions, pendingApprovals = {},
+  effectiveContractValue, initialTab, permissions, pendingApprovals = {}, session,
 }: Props) {
   const router = useRouter()
   const [tab,        setTab]        = useState(initialTab)
   const [completing, setCompleting] = useState(false)
   const [archiving,  setArchiving]  = useState(false)
   const [error,      setError]      = useState('')
+  const [unreadMessages, setUnreadMessages] = useState(0)
+
+  useEffect(() => {
+    fetch(`/api/projects/${project.id}/messages/unread-count`)
+      .then(res => res.json())
+      .then(json => setUnreadMessages(json.count || 0))
+      .catch(() => {})
+  }, [project.id])
 
   const currency      = project.currency || 'USD'
   const isActive      = ['Active', 'Stalled'].includes(project.status)
@@ -234,6 +244,7 @@ export default function ProjectDetail({
               <i className={`ti ${t.icon}`} style={{ fontSize: 12, marginRight: 5 }} />
               {t.label}
               {t.key === 'guardian' && openFlagCount > 0 && <span className="tabi-badge">{openFlagCount}</span>}
+              {t.key === 'discussion' && unreadMessages > 0 && <span className="tabi-badge">{unreadMessages}</span>}
             </button>
           ))}
         </div>
@@ -246,6 +257,17 @@ export default function ProjectDetail({
         {tab === 'guardian' && <GuardianTab project={project} flags={project.guardian_flags || []} permissions={permissions} router={router} />}
         {tab === 'co'       && <CoTab project={project} cos={project.change_orders || []} permissions={permissions} currency={currency} pendingApprovals={pendingApprovals} />}
         {tab === 'billing'  && <BillingTab project={project} milestones={milestones} invoices={invoices} reconciliation={reconciliation} permissions={permissions} currency={currency} router={router} />}
+        {tab === 'discussion' && (
+          <ProjectDiscussion
+            projectId={project.id}
+            currentUserId={session.id}
+            onRead={() => setUnreadMessages(0)}
+            team={team
+              .map((t: any) => t.workspace_members?.users)
+              .filter((u: any): u is { id: string; name: string; email: string; avatar_url: string | null } => !!u)
+              .map((u: any) => ({ id: u.id, name: u.name, email: u.email, avatarUrl: u.avatar_url }))}
+          />
+        )}
         {tab === 'activity' && <ActivityTab activity={activity} />}
         {tab === 'team'     && <TeamTab project={project} team={team} permissions={permissions} />}
       </div>

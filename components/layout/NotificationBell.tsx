@@ -16,6 +16,7 @@ interface Notification {
 
 function entityHref(n: Notification): string | null {
   if (n.entity_type === 'project' && n.entity_id) return `/projects/${n.entity_id}`
+  if (n.entity_type === 'project_message' && n.entity_id) return `/projects/${n.entity_id}?tab=discussion`
   if (n.entity_type === 'approval_request' && n.entity_id) return `/approvals?highlight=${n.entity_id}`
   return null
 }
