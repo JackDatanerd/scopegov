@@ -184,9 +184,16 @@ function csvFilename(workspaceName: string, from: Date, to: Date): string {
 }
 
 function csvCell(value: unknown): string {
-  const str = value === null || value === undefined ? '' : String(value)
-  // RFC 4180: quote any field containing a comma, quote, or newline; escape
-  // embedded quotes by doubling them.
+  let str = value === null || value === undefined ? '' : String(value)
+  // FIX (audit round 1): entity_name, actor_name, and metadata can all
+  // contain user-supplied strings (project names, CO titles, client
+  // names) that end up in this export. Without neutralizing a leading
+  // =, +, -, or @, a value like "=HYPERLINK(...)" or "=cmd|'/c calc'"
+  // opens as a live formula the instant an admin opens the CSV in
+  // Excel/Sheets — classic CSV/formula injection. Prefixing a single
+  // quote forces spreadsheet apps to treat it as text; RFC 4180 quoting
+  // below still applies on top of this for commas/quotes/newlines.
+  if (/^[=+\-@]/.test(str)) str = `'${str}`
   if (/[",\n\r]/.test(str)) return `"${str.replace(/"/g, '""')}"`
   return str
 }

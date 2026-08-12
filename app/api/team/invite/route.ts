@@ -21,6 +21,19 @@ export async function POST(request: NextRequest) {
 
     const service = createServiceClient()
 
+    // FIX (audit round 1): roleId came straight from the request body with
+    // no check that it actually belongs to this workspace. Low real-world
+    // exploitability on its own (role ids are random UUIDs, and `roles`
+    // has RLS with no client policies so they can't be enumerated through
+    // the DB), but it's a missing check, not a defended one — confirm the
+    // role is actually one of this workspace's before it ever reaches the
+    // insert below.
+    if (roleId) {
+      const { data: role } = await (service as any)
+        .from('roles').select('id').eq('id', roleId).eq('workspace_id', wsId).maybeSingle()
+      if (!role) return NextResponse.json({ error: 'Invalid role for this workspace' }, { status: 400 })
+    }
+
     // Seat limit check
     const limits = PLAN_LIMITS[session.planTier]
     if (limits?.seats) {

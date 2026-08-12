@@ -1,11 +1,20 @@
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
-import { getSession } from '@/lib/auth/session'
+import { getSession, hasPermission } from '@/lib/auth/session'
 
 export async function PATCH(request: NextRequest) {
   try {
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    // FIX (audit round 1): this endpoint had no permission gate at all —
+    // any workspace member, regardless of role, could overwrite the
+    // agency's brand colour, logo, and — most seriously —
+    // agency_signature_data, which is rendered as the agency's binding
+    // signature on auto-sent SOWs/COs. Gate it behind the same
+    // permission that already governs the rest of workspace settings.
+    if (!hasPermission(session, 'MANAGE_WORKSPACE_SETTINGS')) {
+      return NextResponse.json({ error: 'Missing permission: MANAGE_WORKSPACE_SETTINGS' }, { status: 403 })
+    }
 
     const { brandColour, logoStoragePath, agencySignatureData } = await request.json()
     const service = createServiceClient()

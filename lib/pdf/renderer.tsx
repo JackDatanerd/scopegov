@@ -8,6 +8,7 @@ import {
   Document, Page, View, Text, Image,
   StyleSheet, renderToBuffer,
 } from '@react-pdf/renderer'
+import { safeFetch } from '@/lib/utils/safe-fetch'
 
 export interface SowPdfData {
   agencyName:    string
@@ -70,11 +71,21 @@ export interface InvoicePdfData {
 }
 
 // Resolve logo URL to base64 data URI for embedding in the PDF
+//
+// FIX (audit round 1): this used a raw fetch(url) with no SSRF guard —
+// no scheme allowlist, no private/internal IP blocking, and it followed
+// redirects automatically. Every caller today only ever passes a URL
+// built from Supabase Storage's own getPublicUrl(), so this wasn't
+// reachable with an attacker-chosen host in practice — but it's a
+// shared primitive, not a one-off, so it gets the same SSRF guard
+// (safeFetch) as any other server-side fetch of a URL that ultimately
+// traces back to workspace-controlled data, same bug class as the
+// PDF-logo SSRF already fixed in ScopeShield.
 export async function resolveLogoDataUri(url: string | null | undefined): Promise<string | null> {
   if (!url) return null
   if (url.startsWith('data:')) return url
   try {
-    const res  = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(8000) })
+    const res  = await safeFetch(url, { cache: 'no-store', signal: AbortSignal.timeout(8000) })
     if (!res.ok) return null
     const buf  = await res.arrayBuffer()
     const mime = res.headers.get('content-type') ?? 'image/png'
