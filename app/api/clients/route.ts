@@ -25,7 +25,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
 
     const body    = await request.json()
-    const { name, companyName, email, phone, notes, timezone } = body
+    const { name, companyName, email, phone, notes, timezone, billingAddress, vatNumber } = body
     if (!name?.trim() || !email?.trim())
       return NextResponse.json({ error: 'Name and email required' }, { status: 400 })
 
@@ -47,6 +47,12 @@ export async function POST(request: NextRequest) {
         phone:        phone?.trim() || null,
         notes:        notes?.trim() || null,
         timezone:     timezone || null,
+        // Phase 11: billing_address/vat_number existed in the schema since
+        // 001_initial_schema.sql but were never reachable from this route —
+        // every client created before now has them NULL, which is fine, the
+        // PDF renderer treats them as optional and just omits the block.
+        billing_address: billingAddress || null,
+        vat_number:      vatNumber?.trim() || null,
       }).select('id').single()
 
     if (error) throw new Error(error.message)

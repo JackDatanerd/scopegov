@@ -26,10 +26,24 @@ export async function PATCH(request: NextRequest) {
       guardianSensitivityTier:    'guardian_sensitivity_tier',
       proactiveRiskAlertsEnabled: 'proactive_risk_alerts_enabled',
       proactiveRiskThreshold:     'proactive_risk_threshold',
+      // Document billing identity (Phase 11) — printed on SOW/CO/Invoice PDFs.
+      // All optional: a workspace that hasn't filled these in yet still
+      // generates documents fine, the renderer just omits the block.
+      taxId:                      'tax_id',
+      phone:                      'phone',
+      website:                    'website',
+      defaultPaymentInstructions: 'default_payment_instructions',
     }
 
     for (const [key, col] of Object.entries(fieldMap)) {
       if (body[key] !== undefined) updates[col] = body[key]
+    }
+
+    // legalAddress is a structured object (line1/line2/city/region/postalCode/country),
+    // not a flat scalar, so it doesn't fit the fieldMap loop above. Stored as-is in the
+    // legal_address jsonb column; the PDF renderer formats it for display.
+    if (body.legalAddress !== undefined) {
+      updates.legal_address = body.legalAddress
     }
 
     // Slug is editable exactly once (spec §1.0). The UI now always submits

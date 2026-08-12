@@ -17,8 +17,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       .select(`id, title, note, version, document_number, line_items, subtotal, tax_rate, tax_inclusive, total,
         accepted_at, accepted_by, status, client_signature_data,
         projects(id, name, currency,
-          clients(name),
-          workspaces(agency_name, brand_colour, logo_storage_path, agency_signature_data))`)
+          clients(name, company_name, billing_address, vat_number),
+          workspaces(agency_name, brand_colour, logo_storage_path, agency_signature_data,
+            legal_address, tax_id, phone, website))`)
       .eq('id', id)
       .eq('workspace_id', session.workspaceId)
       .single()
@@ -38,7 +39,14 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       agencyName:  ws?.agency_name || session.agencyName,
       logoUrl,
       brandColour: ws?.brand_colour || '#1A5C3A',
+      agencyAddress: ws?.legal_address || null,
+      agencyTaxId:   ws?.tax_id || null,
+      agencyPhone:   ws?.phone || null,
+      agencyWebsite: ws?.website || null,
       clientName:  co.projects?.clients?.name || 'Client',
+      clientCompany: co.projects?.clients?.company_name || null,
+      clientBillingAddress: co.projects?.clients?.billing_address || null,
+      clientVatNumber:      co.projects?.clients?.vat_number || null,
       projectName: co.projects?.name || '',
       coTitle:     co.title,
       note:        co.note,

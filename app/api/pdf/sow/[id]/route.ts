@@ -17,8 +17,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       .from('sow_documents')
       .select(`id, version, document_number, sections, metadata, status, signed_at, signed_by, client_signature_data,
         projects(id, name, disc, contract_value, currency,
-          clients(name),
-          workspaces(agency_name, brand_colour, logo_storage_path, agency_signature_data))`)
+          clients(name, company_name, billing_address, vat_number),
+          workspaces(agency_name, brand_colour, logo_storage_path, agency_signature_data,
+            legal_address, tax_id, phone, website))`)
       .eq('id', id)
       .eq('workspace_id', session.workspaceId)
       .single()
@@ -34,15 +35,36 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       logoUrl = u?.publicUrl || null
     }
 
+    // Payment schedule (Phase 11) — payment_milestones already exists per
+    // project/SOW and drives the in-app milestone tracker, but was never
+    // read for the SOW PDF itself. Ordered by due_date so it reads as a
+    // schedule, not an arbitrary list.
+    const { data: milestones } = await (service as any)
+      .from('payment_milestones')
+      .select('title, amount, percentage, trigger, due_date, status')
+      .eq('sow_id', id)
+      .order('due_date', { ascending: true, nullsFirst: false })
+
     const pdfBuffer = await renderSowPdf({
       agencyName:    ws?.agency_name || session.agencyName,
       agencyLogoUrl: logoUrl,
       brandColour:   ws?.brand_colour || '#1A5C3A',
+      agencyAddress: ws?.legal_address || null,
+      agencyTaxId:   ws?.tax_id || null,
+      agencyPhone:   ws?.phone || null,
+      agencyWebsite: ws?.website || null,
       clientName:    sow.projects?.clients?.name || 'Client',
+      clientCompany: sow.projects?.clients?.company_name || null,
+      clientBillingAddress: sow.projects?.clients?.billing_address || null,
+      clientVatNumber:      sow.projects?.clients?.vat_number || null,
       projectName:   sow.projects?.name + (sow.projects?.disc ? ` — ${sow.projects.disc}` : ''),
       contractValue: sow.projects?.contract_value || 0,
       currency:      sow.projects?.currency || 'USD',
       sections:      sow.sections || [],
+      paymentSchedule: (milestones || []).map((m: any) => ({
+        title: m.title, amount: m.amount, percentage: m.percentage,
+        trigger: m.trigger, dueDate: m.due_date, status: m.status,
+      })),
       signedBy:      sow.signed_by || undefined,
       signedAt:      sow.signed_at || undefined,
       agencySignatureData: ws?.agency_signature_data || null,

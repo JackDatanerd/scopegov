@@ -5,20 +5,53 @@
 
 import React from 'react'
 import {
-  Document, Page, View, Text, Image,
+  Document, Page, View, Text, Image, Link,
   StyleSheet, renderToBuffer,
 } from '@react-pdf/renderer'
 import { safeFetch } from '@/lib/utils/safe-fetch'
+
+// Phase 11: the ScopeGov credit in the footer of every document is a real
+// hyperlink now, not plain text — same URL everywhere so it's one place to
+// change if the marketing site ever moves.
+const SCOPEGOV_URL = 'https://scopegov.app'
+
+// Printed on SOW/CO/Invoice PDFs as the agency's "From" address and the
+// client's "Bill To" address. Every field optional — a party with no
+// address on file just doesn't get an address block, the document still
+// renders fine (see formatAddress below).
+export interface LegalAddress {
+  line1?:      string | null
+  line2?:      string | null
+  city?:       string | null
+  region?:     string | null
+  postalCode?: string | null
+  country?:    string | null
+}
+
+function formatAddress(a: LegalAddress | null | undefined): string[] {
+  if (!a) return []
+  const cityLine = [a.city, a.region, a.postalCode].filter(Boolean).join(', ')
+  return [a.line1, a.line2, cityLine, a.country]
+    .filter((l): l is string => !!l && l.trim().length > 0)
+}
 
 export interface SowPdfData {
   agencyName:    string
   agencyLogoUrl: string | null
   brandColour:   string
+  agencyAddress?: LegalAddress | null
+  agencyTaxId?:   string | null
+  agencyPhone?:   string | null
+  agencyWebsite?: string | null
   clientName:    string
+  clientCompany?: string | null
+  clientBillingAddress?: LegalAddress | null
+  clientVatNumber?: string | null
   projectName:   string
   contractValue: number
   currency:      string
   sections:      Array<{ id: string; title: string; content: string; visible: boolean; order: number }>
+  paymentSchedule?: Array<{ title: string; amount: number; percentage: number | null; trigger: string; dueDate: string | null; status: string }>
   signedBy?:     string
   signedAt?:     string
   agencySignatureData?: string | null
@@ -32,7 +65,14 @@ export interface CoPdfData {
   agencyName:   string
   logoUrl:      string | null
   brandColour:  string
+  agencyAddress?: LegalAddress | null
+  agencyTaxId?:   string | null
+  agencyPhone?:   string | null
+  agencyWebsite?: string | null
   clientName:   string
+  clientCompany?: string | null
+  clientBillingAddress?: LegalAddress | null
+  clientVatNumber?: string | null
   projectName:  string
   coTitle:      string
   note:         string | null
@@ -55,8 +95,16 @@ export interface InvoicePdfData {
   agencyName:   string
   logoUrl:      string | null
   brandColour:  string
+  agencyAddress?: LegalAddress | null
+  agencyTaxId?:   string | null
+  agencyPhone?:   string | null
+  agencyWebsite?: string | null
   clientName:   string
   clientCompany?: string | null
+  clientBillingAddress?: LegalAddress | null
+  clientVatNumber?: string | null
+  poNumber?:    string | null
+  milestoneTrigger?: string | null
   projectName:  string
   invoiceNumber?: string | null
   title:        string
@@ -68,6 +116,7 @@ export interface InvoicePdfData {
   sentAt?:      string | null
   paymentInstructions?: string | null
   payments:     Array<{ amount: number; paidAt: string; method: string; referenceNote?: string | null }>
+  contractPosition?: { contractedValue: number; invoicedToDate: number; paidToDate: number } | null
 }
 
 // Resolve logo URL to base64 data URI for embedding in the PDF
@@ -139,6 +188,15 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
     partiesBox: { flexDirection: 'row', gap: 32, backgroundColor: '#F9F8F5', border: `1 solid #E5E1D8`, borderRadius: 4, padding: '10 14', marginBottom: 20 },
     partyLabel: { fontSize: 8, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 },
     partyName:  { fontFamily: 'Helvetica-Bold', fontSize: 11 },
+    partyLine:  { fontSize: 9, color: '#666', lineHeight: 1.5, marginTop: 3 },
+    partyTax:   { fontSize: 8.5, color: '#909090', marginTop: 4 },
+    // Payment schedule
+    schedRow:   { flexDirection: 'row', borderBottom: '1 solid #F2F0EA', paddingVertical: 7 },
+    schedHdr:   { flexDirection: 'row', borderBottom: '1 solid #E5E1D8', paddingBottom: 5, marginBottom: 2 },
+    th:         { fontSize: 8, fontFamily: 'Helvetica-Bold', color: '#909090', textTransform: 'uppercase', letterSpacing: 0.5 },
+    td:         { fontSize: 9.5, color: '#1A1A1A' },
+    tdSub:      { fontSize: 8, color: '#909090', marginTop: 1 },
+    mono:       { fontFamily: 'Courier', fontSize: 9.5 },
     // Sections
     section:    { marginBottom: 16 },
     secTitle:   { fontSize: 8, fontFamily: 'Helvetica-Bold', color: '#909090', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 6, borderBottom: `1 solid #E5E1D8`, paddingBottom: 3 },
@@ -155,6 +213,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
     watermark:  { position: 'absolute', top: '45%', left: '20%', fontSize: 64, color: 'rgba(0,0,0,0.04)', transform: 'rotate(-30deg)' },
     // Footer
     footer:     { flexDirection: 'row', justifyContent: 'space-between', marginTop: 28, paddingTop: 10, borderTop: `1 solid #E5E1D8`, fontSize: 8, color: '#B0B0B0' },
+    footerLink: { color: '#B0B0B0', textDecoration: 'none' },
   })
 
   const sections = data.sections
@@ -187,10 +246,19 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
           <View style={{ flex: 1 }}>
             <Text style={s.partyLabel}>Agency (Service Provider)</Text>
             <Text style={s.partyName}>{data.agencyName}</Text>
+            {formatAddress(data.agencyAddress).map((l, i) => <Text key={i} style={s.partyLine}>{l}</Text>)}
+            {(data.agencyTaxId || data.agencyPhone) && (
+              <Text style={s.partyTax}>
+                {[data.agencyTaxId ? `Tax ID ${data.agencyTaxId}` : null, data.agencyPhone].filter(Boolean).join('  ·  ')}
+              </Text>
+            )}
           </View>
           <View style={{ flex: 1 }}>
             <Text style={s.partyLabel}>Client</Text>
-            <Text style={s.partyName}>{data.clientName}</Text>
+            <Text style={s.partyName}>{data.clientCompany || data.clientName}</Text>
+            {data.clientCompany && <Text style={s.partyLine}>{data.clientName}</Text>}
+            {formatAddress(data.clientBillingAddress).map((l, i) => <Text key={i} style={s.partyLine}>{l}</Text>)}
+            {data.clientVatNumber && <Text style={s.partyTax}>VAT {data.clientVatNumber}</Text>}
           </View>
         </View>
 
@@ -201,6 +269,32 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
             <Text style={s.body}>{stripHtml(sec.content)}</Text>
           </View>
         ))}
+
+        {/* Payment schedule — sourced from payment_milestones, already
+            captured at SOW-build time but never shown on the SOW PDF
+            itself before now (it only ever surfaced inside the app). */}
+        {data.paymentSchedule && data.paymentSchedule.length > 0 && (
+          <View style={s.section} wrap={false}>
+            <Text style={s.secTitle}>Payment Schedule</Text>
+            <View style={s.schedHdr}>
+              <Text style={[s.th, { flex: 1 }]}>Milestone</Text>
+              <Text style={[s.th, { width: 90, textAlign: 'right' }]}>Amount</Text>
+              <Text style={[s.th, { width: 90, textAlign: 'right' }]}>Due</Text>
+            </View>
+            {data.paymentSchedule.map((m, i) => (
+              <View key={i} style={s.schedRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.td}>{m.title}</Text>
+                  <Text style={s.tdSub}>{m.trigger}{m.percentage ? ` · ${m.percentage}%` : ''}</Text>
+                </View>
+                <Text style={[s.td, s.mono, { width: 90, textAlign: 'right' }]}>{data.currency} {fmtMoney(m.amount)}</Text>
+                <Text style={[s.td, { width: 90, textAlign: 'right', color: '#909090', fontSize: 9 }]}>
+                  {m.dueDate ? fmtDate(m.dueDate) : '—'}
+                </Text>
+              </View>
+            ))}
+          </View>
+        )}
 
         {/* Signature block */}
         <View style={s.sigBlock}>
@@ -231,7 +325,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
 
         {/* Footer */}
         <View style={s.footer}>
-          <Text>Scope governance by ScopeGov · scopegov.app</Text>
+          <Text>Scope governance by <Link src={SCOPEGOV_URL} style={s.footerLink}>ScopeGov</Link></Text>
           <Text>Generated {fmtDate(new Date().toISOString())}</Text>
         </View>
       </Page>
@@ -252,6 +346,11 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
     logo:      { maxHeight: 38, maxWidth: 90, objectFit: 'contain' },
     agencyText:{ fontFamily: 'Helvetica-Bold', fontSize: 11, color: c },
     noteBox:   { backgroundColor: '#F9F8F5', border: `1 solid #E5E1D8`, borderRadius: 4, padding: '10 14', marginBottom: 18, fontSize: 10, color: '#333', lineHeight: 1.6 },
+    partiesBox:{ flexDirection: 'row', gap: 32, backgroundColor: '#F9F8F5', border: `1 solid #E5E1D8`, borderRadius: 4, padding: '10 14', marginBottom: 18 },
+    partyLabel:{ fontSize: 8, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 },
+    partyName: { fontFamily: 'Helvetica-Bold', fontSize: 11 },
+    partyLine: { fontSize: 9, color: '#666', lineHeight: 1.5, marginTop: 3 },
+    partyTax:  { fontSize: 8.5, color: '#909090', marginTop: 4 },
     // Table
     tableHdr:  { flexDirection: 'row', borderBottom: `1 solid #E5E1D8`, paddingBottom: 5, marginBottom: 2 },
     th:        { fontSize: 8, fontFamily: 'Helvetica-Bold', color: '#909090', textTransform: 'uppercase', letterSpacing: 0.5 },
@@ -270,6 +369,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
     sigImg:    { height: 30, maxWidth: 150, marginBottom: 4, objectFit: 'contain' },
     sigName:   { fontFamily: 'Helvetica-Bold', fontSize: 10 },
     footer:    { flexDirection: 'row', justifyContent: 'space-between', marginTop: 24, paddingTop: 10, borderTop: `1 solid #E5E1D8`, fontSize: 8, color: '#B0B0B0' },
+    footerLink:{ color: '#B0B0B0', textDecoration: 'none' },
   })
 
   const tax = data.taxRate > 0 && !data.taxInclusive
@@ -284,13 +384,34 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
           <View>
             <Text style={s.h1}>Change Order</Text>
             <Text style={s.meta}>{data.documentNumber ? `${data.documentNumber} · ` : ''}{data.coTitle}</Text>
-            <Text style={s.meta}>{data.projectName} · {data.agencyName} → {data.clientName}</Text>
+            <Text style={s.meta}>{data.projectName}</Text>
             {data.acceptedAt && <Text style={[s.meta, { color: c, marginTop: 2 }]}>Accepted {fmtDate(data.acceptedAt)}</Text>}
           </View>
           <View style={{ alignItems: 'flex-end' }}>
             {logo
               ? <Image src={logo} style={s.logo} />
               : <Text style={s.agencyText}>{data.agencyName}</Text>}
+          </View>
+        </View>
+
+        {/* Parties */}
+        <View style={s.partiesBox}>
+          <View style={{ flex: 1 }}>
+            <Text style={s.partyLabel}>Agency (Service Provider)</Text>
+            <Text style={s.partyName}>{data.agencyName}</Text>
+            {formatAddress(data.agencyAddress).map((l, i) => <Text key={i} style={s.partyLine}>{l}</Text>)}
+            {(data.agencyTaxId || data.agencyPhone) && (
+              <Text style={s.partyTax}>
+                {[data.agencyTaxId ? `Tax ID ${data.agencyTaxId}` : null, data.agencyPhone].filter(Boolean).join('  ·  ')}
+              </Text>
+            )}
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={s.partyLabel}>Client</Text>
+            <Text style={s.partyName}>{data.clientCompany || data.clientName}</Text>
+            {data.clientCompany && <Text style={s.partyLine}>{data.clientName}</Text>}
+            {formatAddress(data.clientBillingAddress).map((l, i) => <Text key={i} style={s.partyLine}>{l}</Text>)}
+            {data.clientVatNumber && <Text style={s.partyTax}>VAT {data.clientVatNumber}</Text>}
           </View>
         </View>
 
@@ -364,7 +485,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
         </View>
 
         <View style={s.footer}>
-          <Text>Scope governance by ScopeGov · scopegov.app</Text>
+          <Text>Scope governance by <Link src={SCOPEGOV_URL} style={s.footerLink}>ScopeGov</Link></Text>
           <Text>Generated {fmtDate(new Date().toISOString())}</Text>
         </View>
       </Page>
@@ -397,9 +518,12 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
     partiesBox:{ flexDirection: 'row', gap: 32, backgroundColor: '#F9F8F5', border: '1 solid #E5E1D8', borderRadius: 4, padding: '10 14', marginBottom: 20 },
     partyLabel:{ fontSize: 8, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 },
     partyName: { fontFamily: 'Helvetica-Bold', fontSize: 11 },
+    partyLine: { fontSize: 9, color: '#666', lineHeight: 1.5, marginTop: 3 },
+    partyTax:  { fontSize: 8.5, color: '#909090', marginTop: 4 },
     lineBox:   { border: '1 solid #E5E1D8', borderRadius: 4, marginBottom: 16 },
     lineRow:   { flexDirection: 'row', justifyContent: 'space-between', padding: '12 14', borderBottom: '1 solid #F2F0EA' },
     lineDesc:  { fontSize: 11, color: '#1A1A1A' },
+    lineSub:   { fontSize: 8.5, color: '#909090', marginTop: 2 },
     lineAmt:   { fontSize: 11, fontFamily: 'Courier-Bold' },
     totals:    { marginTop: 4 },
     totalRow:  { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3, fontSize: 10 },
@@ -408,7 +532,10 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
     secTitle:  { fontSize: 8, fontFamily: 'Helvetica-Bold', color: '#909090', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 6, borderBottom: '1 solid #E5E1D8', paddingBottom: 3 },
     body:      { fontSize: 10, color: '#333', lineHeight: 1.6 },
     payRow:    { flexDirection: 'row', justifyContent: 'space-between', fontSize: 9.5, color: '#555', paddingVertical: 3, borderBottom: '1 solid #F2F0EA' },
-    footer:    { flexDirection: 'row', justifyContent: 'space-between', marginTop: 28, paddingTop: 10, borderTop: '1 solid #E5E1D8', fontSize: 8, color: '#B0B0B0' },
+    cpRow:     { flexDirection: 'row', justifyContent: 'space-between', fontSize: 9.5, color: '#555', paddingVertical: 3 },
+    footer:    { marginTop: 28, paddingTop: 10, borderTop: '1 solid #E5E1D8', fontSize: 8, color: '#B0B0B0' },
+    footerRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 4 },
+    footerLink:{ color: '#B0B0B0', textDecoration: 'none' },
   })
 
   return (
@@ -419,6 +546,7 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
             <Text style={s.h1}>Invoice</Text>
             <Text style={s.meta}>{data.invoiceNumber ? `${data.invoiceNumber} · ` : ''}{data.projectName}</Text>
             {data.sentAt && <Text style={[s.meta, { marginTop: 2 }]}>Issued {fmtDate(data.sentAt)}{data.dueDate ? ` · Due ${fmtDate(data.dueDate)}` : ''}</Text>}
+            {data.poNumber && <Text style={[s.meta, { marginTop: 2 }]}>PO {data.poNumber}</Text>}
           </View>
           <View style={{ alignItems: 'flex-end' }}>
             {logo ? <Image src={logo} style={s.logo} /> : <Text style={s.agencyText}>{data.agencyName}</Text>}
@@ -430,17 +558,28 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
           <View style={{ flex: 1 }}>
             <Text style={s.partyLabel}>From</Text>
             <Text style={s.partyName}>{data.agencyName}</Text>
+            {formatAddress(data.agencyAddress).map((l, i) => <Text key={i} style={s.partyLine}>{l}</Text>)}
+            {(data.agencyTaxId || data.agencyPhone) && (
+              <Text style={s.partyTax}>
+                {[data.agencyTaxId ? `Tax ID ${data.agencyTaxId}` : null, data.agencyPhone].filter(Boolean).join('  ·  ')}
+              </Text>
+            )}
           </View>
           <View style={{ flex: 1 }}>
             <Text style={s.partyLabel}>Billed to</Text>
             <Text style={s.partyName}>{data.clientCompany || data.clientName}</Text>
-            {data.clientCompany && <Text style={{ fontSize: 9.5, color: '#666' }}>{data.clientName}</Text>}
+            {data.clientCompany && <Text style={s.partyLine}>{data.clientName}</Text>}
+            {formatAddress(data.clientBillingAddress).map((l, i) => <Text key={i} style={s.partyLine}>{l}</Text>)}
+            {data.clientVatNumber && <Text style={s.partyTax}>VAT {data.clientVatNumber}</Text>}
           </View>
         </View>
 
         <View style={s.lineBox}>
           <View style={s.lineRow}>
-            <Text style={s.lineDesc}>{data.title}</Text>
+            <View>
+              <Text style={s.lineDesc}>{data.title}</Text>
+              {data.milestoneTrigger && <Text style={s.lineSub}>{data.milestoneTrigger}</Text>}
+            </View>
             <Text style={s.lineAmt}>{data.currency} {fmtMoney(data.amount)}</Text>
           </View>
         </View>
@@ -481,9 +620,40 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
           </View>
         )}
 
+        {/* Contract position — sourced from contract_reconciliation_snapshots,
+            already computed nightly for the reporting dashboard but never
+            shown to the client on the document itself before now. Gives an
+            AP reviewer the running picture without a separate report. */}
+        {data.contractPosition && (
+          <View style={s.section}>
+            <Text style={s.secTitle}>Contract position</Text>
+            <View style={s.cpRow}>
+              <Text>Contracted value</Text>
+              <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtMoney(data.contractPosition.contractedValue)}</Text>
+            </View>
+            <View style={s.cpRow}>
+              <Text>Invoiced to date (incl. this invoice)</Text>
+              <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtMoney(data.contractPosition.invoicedToDate)}</Text>
+            </View>
+            <View style={s.cpRow}>
+              <Text>Paid to date</Text>
+              <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtMoney(data.contractPosition.paidToDate)}</Text>
+            </View>
+            <View style={[s.cpRow, { borderTop: '1 solid #F2F0EA', paddingTop: 6, marginTop: 2 }]}>
+              <Text style={{ color: '#1A1A1A' }}>Remaining contract value</Text>
+              <Text style={{ fontFamily: 'Courier-Bold', color: '#1A1A1A' }}>
+                {data.currency} {fmtMoney(Math.max(0, data.contractPosition.contractedValue - data.contractPosition.invoicedToDate))}
+              </Text>
+            </View>
+          </View>
+        )}
+
         <View style={s.footer}>
           <Text>This is a payment record, not a payment portal — pay per the instructions above.</Text>
-          <Text>Generated {fmtDate(new Date().toISOString())}</Text>
+          <View style={s.footerRow}>
+            <Text>Scope governance by <Link src={SCOPEGOV_URL} style={s.footerLink}>ScopeGov</Link></Text>
+            <Text>Generated {fmtDate(new Date().toISOString())}</Text>
+          </View>
         </View>
       </Page>
     </Document>

@@ -33,8 +33,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .from('sow_documents')
       .select(`id, version, status, sections, metadata, expires_at, project_id, workspace_id,
         projects(id, name, disc, currency, contract_value, client_id, created_by,
-          clients(name, email, cc_emails),
-          workspaces(id, agency_name, brand_colour, jwt_secret, logo_storage_path, agency_signature_data, first_sow_signed_at))`)
+          clients(name, email, cc_emails, company_name, billing_address, vat_number),
+          workspaces(id, agency_name, brand_colour, jwt_secret, logo_storage_path, agency_signature_data,
+            first_sow_signed_at, legal_address, tax_id, phone, website))`)
       .eq('token', token).single()
 
     if (!sow) return NextResponse.json({ error: 'SOW not found' }, { status: 404 })
@@ -131,15 +132,31 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         const { data: u } = await (service as any).storage.from('logos').getPublicUrl(ws.logo_storage_path)
         logoUrl = u?.publicUrl || null
       }
+      const { data: milestones } = await (service as any)
+        .from('payment_milestones')
+        .select('title, amount, percentage, trigger, due_date, status')
+        .eq('sow_id', sow.id)
+        .order('due_date', { ascending: true, nullsFirst: false })
       const pdfBuffer = await renderSowPdf({
         agencyName:    ws.agency_name,
         agencyLogoUrl: logoUrl,
         brandColour:   ws.brand_colour || '#1A5C3A',
+        agencyAddress: ws.legal_address || null,
+        agencyTaxId:   ws.tax_id || null,
+        agencyPhone:   ws.phone || null,
+        agencyWebsite: ws.website || null,
         clientName:    client.name,
+        clientCompany: client.company_name || null,
+        clientBillingAddress: client.billing_address || null,
+        clientVatNumber:      client.vat_number || null,
         projectName:   project.name + (project.disc ? ` — ${project.disc}` : ''),
         contractValue: project.contract_value || 0,
         currency:      project.currency || 'USD',
         sections:      sow.sections || [],
+        paymentSchedule: (milestones || []).map((m: any) => ({
+          title: m.title, amount: m.amount, percentage: m.percentage,
+          trigger: m.trigger, dueDate: m.due_date, status: m.status,
+        })),
         signedBy:      signerName.trim(),
         signedAt:      now,
         agencySignatureData: ws.agency_signature_data || null,

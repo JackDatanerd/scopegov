@@ -3,6 +3,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { redirect, notFound } from 'next/navigation'
 import Link from 'next/link'
 import { formatCurrency, formatDate, projectStatusLabel } from '@/lib/utils/format'
+import BillingDetailsCard from '@/components/clients/BillingDetailsCard'
 
 interface Props { params: Promise<{ id: string }> }
 
@@ -21,6 +22,8 @@ export default async function ClientDetailPage({ params }: Props) {
     .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
   if (!client) notFound()
+
+  const canEditClientData = hasPermission(session, 'CREATE_PROJECTS')
 
   const { data: projects = [] } = await (service as any)
     .from('projects')
@@ -145,12 +148,6 @@ export default async function ClientDetailPage({ params }: Props) {
                     <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{client.cc_emails.join(', ')}</div>
                   </div>
                 )}
-                {client.vat_number && (
-                  <div className="settings-row">
-                    <span className="settings-row-key" style={{ fontSize: 12 }}>VAT</span>
-                    <span className="settings-row-val">{client.vat_number}</span>
-                  </div>
-                )}
                 {client.payment_terms_note && (
                   <div className="settings-row" style={{ paddingBottom: 0, borderBottom: 'none' }}>
                     <span className="settings-row-key" style={{ fontSize: 12 }}>Payment terms</span>
@@ -164,6 +161,17 @@ export default async function ClientDetailPage({ params }: Props) {
               </p>
             )}
           </div>
+
+          {/* Phase 11: billing address + VAT — feeds the "Bill To" block on
+              every Invoice/SOW/CO PDF for this client (lib/pdf/renderer.tsx) */}
+          {canViewClientData && (
+            <BillingDetailsCard
+              clientId={client.id}
+              vatNumber={client.vat_number}
+              billingAddress={client.billing_address}
+              editable={canEditClientData}
+            />
+          )}
 
           {/* Notes — ungated (spec §13.2) */}
           {client.notes && (
