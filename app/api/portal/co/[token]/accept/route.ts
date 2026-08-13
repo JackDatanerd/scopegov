@@ -17,6 +17,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Full name required' }, { status: 400 })
     if (!signatureData || typeof signatureData !== 'string' || !signatureData.startsWith('data:image/'))
       return NextResponse.json({ error: 'Please draw your signature to accept' }, { status: 400 })
+    // FIX (audit round 3): no upper bound existed on this field at all — a
+    // signature pad's data URL is normally a few KB, but nothing stopped an
+    // arbitrarily large base64 payload from being submitted and stored
+    // (storage bloat, and this value gets re-embedded into every future
+    // PDF render of this CO). 500 KB is generously above what a real
+    // signature drawing produces.
+    if (signatureData.length > 500_000)
+      return NextResponse.json({ error: 'Signature data is too large' }, { status: 400 })
 
     const service = createServiceClient()
 

@@ -121,7 +121,14 @@ export async function POST_DECLINE(request: NextRequest, token: string) {
 // ── COUNTER ──────────────────────────────────────────────────
 export async function POST_COUNTER(request: NextRequest, token: string) {
   const { counterAmount, counterNote } = await request.json()
-  if (!counterAmount || parseFloat(counterAmount) <= 0)
+  // FIX (audit round 3): `!counterAmount` is false for any non-empty
+  // string, and a NaN comparison (`NaN <= 0`) is always false too — so a
+  // non-numeric counterAmount like "abc" slipped past this check entirely.
+  // JSON.stringify(NaN) serializes to `null`, so the row ended up with a
+  // silently null counter_amount instead of a rejected request. Parse
+  // once and validate the actual number.
+  const parsedAmount = parseFloat(counterAmount)
+  if (!counterAmount || !Number.isFinite(parsedAmount) || parsedAmount <= 0)
     return NextResponse.json({ error: 'Counter amount must be greater than zero' }, { status: 400 })
 
   const service = createServiceClient()
@@ -135,7 +142,7 @@ export async function POST_COUNTER(request: NextRequest, token: string) {
   const now = new Date().toISOString()
   await (service as any).from('change_orders').update({
     status:        'countered',
-    counter_amount: parseFloat(counterAmount),
+    counter_amount: parsedAmount,
     counter_note:  counterNote || null,
     responded_at:  now,
     updated_at:    now,
@@ -148,7 +155,7 @@ export async function POST_COUNTER(request: NextRequest, token: string) {
     actorName: co.projects?.clients?.name || 'Client',
     eventType: 'co.countered', entityType: 'change_order',
     entityId: co.id, entityName: co.title,
-    metadata: { counter_amount: counterAmount, note: counterNote },
+    metadata: { counter_amount: parsedAmount, note: counterNote },
   })
 
   // Notify agency (Event 14)
@@ -162,7 +169,7 @@ export async function POST_COUNTER(request: NextRequest, token: string) {
         from: `ScopeGov <${process.env.RESEND_FROM_EMAIL}>`,
         to: emails,
         subject: `Counter offer received — ${co.title}`,
-        html: `<p><strong>${escapeHtml(client?.name)}</strong> has proposed a counter offer of <strong>${escapeHtml(co.projects?.currency || 'USD')} ${parseFloat(counterAmount).toLocaleString()}</strong> on <strong>${escapeHtml(co.title)}</strong>.</p>
+        html: `<p><strong>${escapeHtml(client?.name)}</strong> has proposed a counter offer of <strong>${escapeHtml(co.projects?.currency || 'USD')} ${parsedAmount.toLocaleString()}</strong> on <strong>${escapeHtml(co.title)}</strong>.</p>
         ${counterNote ? `<p><strong>Note:</strong> ${escapeHtml(counterNote)}</p>` : ''}
         <p><a href="${process.env.NEXT_PUBLIC_APP_URL}/projects/${co.project_id}?tab=co">Review counter in ScopeGov →</a></p>`,
       })
@@ -171,7 +178,7 @@ export async function POST_COUNTER(request: NextRequest, token: string) {
   await notifyMembersWithPermission(service, {
     workspaceId: co.workspace_id, permission: 'SEND_CHANGE_ORDERS', eventType: 'co_countered',
     type: 'co_countered', title: `Counter offer — ${co.title}`,
-    body: `${co.projects?.clients?.name} proposed ${co.projects?.currency || 'USD'} ${parseFloat(counterAmount).toLocaleString()}.`,
+    body: `${co.projects?.clients?.name} proposed ${co.projects?.currency || 'USD'} ${parsedAmount.toLocaleString()}.`,
     entityType: 'project', entityId: co.project_id,
   })
 

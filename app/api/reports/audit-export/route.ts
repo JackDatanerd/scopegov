@@ -98,7 +98,19 @@ export async function GET(request: Request) {
       .order('created_at', { ascending: false })
 
     if (actorId) query = query.eq('actor_id', actorId)
-    if (q) query = query.or(`event_type.ilike.%${q}%,entity_name.ilike.%${q}%`)
+    // FIX (audit round 3): `q` used to be interpolated raw into the .or()
+    // filter string — PostgREST's or() syntax is comma/paren-delimited, so
+    // untrusted commas/parens/dots in `q` could break the intended filter
+    // shape. workspace_id is a separate, independently-ANDed query param
+    // so this was never a cross-tenant read, but it's still the wrong way
+    // to build this query and the kind of pattern that becomes a real bug
+    // the next time it's copied somewhere without that compensating
+    // filter. Escape PostgREST's own special characters before building
+    // the filter string, same idea as escaping a LIKE pattern.
+    if (q) {
+      const escaped = q.replace(/[,()."'\\]/g, '\\$&')
+      query = query.or(`event_type.ilike.%${escaped}%,entity_name.ilike.%${escaped}%`)
+    }
 
     // Project filtering happens in-memory below, so we need to over-fetch
     // when a project filter is active (can't push an IN-across-entity-types

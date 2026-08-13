@@ -9,6 +9,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { id }  = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    // FIX (audit round 3): same gap as close/route.ts — no permission check
+    // at all. Any authenticated workspace member could withdraw any CO
+    // (killing the client's portal link and cancelling an in-flight
+    // approval chain) with none of the permissions every sibling action
+    // requires.
+    if (!hasPermission(session, 'SEND_CHANGE_ORDERS'))
+      return NextResponse.json({ error: 'Missing permission: SEND_CHANGE_ORDERS' }, { status: 403 })
 
     const service = createServiceClient()
     const { data: co } = await (service as any)

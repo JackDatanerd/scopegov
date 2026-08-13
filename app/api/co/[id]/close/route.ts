@@ -1,6 +1,6 @@
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
-import { getSession } from '@/lib/auth/session'
+import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 
 // Shared handler for terminal non-accepted CO states: close, withdraw, decline
@@ -85,6 +85,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { id }  = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    // FIX (audit round 3): this route had no permission check at all — every
+    // other CO-mutating action (send, remind, escalate, accept-counter,
+    // create, PATCH) requires SEND_CHANGE_ORDERS or CREATE_CHANGE_ORDERS, but
+    // close() only checked that a session existed. Any authenticated
+    // workspace member, regardless of role, could close any CO in the
+    // workspace and trigger the linked flag-reversion side effect.
+    if (!hasPermission(session, 'SEND_CHANGE_ORDERS'))
+      return NextResponse.json({ error: 'Missing permission: SEND_CHANGE_ORDERS' }, { status: 403 })
     const body    = await request.json().catch(() => ({}))
     const service = createServiceClient()
     return handleTerminalCoState(id, 'closed', session, service, body)

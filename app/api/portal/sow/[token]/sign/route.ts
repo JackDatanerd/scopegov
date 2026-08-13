@@ -20,6 +20,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Full name required to sign' }, { status: 400 })
     if (!signatureData || typeof signatureData !== 'string' || !signatureData.startsWith('data:image/'))
       return NextResponse.json({ error: 'Please draw your signature to sign' }, { status: 400 })
+    // FIX (audit round 3): same missing size cap as the CO accept route —
+    // see that file for the full note.
+    if (signatureData.length > 500_000)
+      return NextResponse.json({ error: 'Signature data is too large' }, { status: 400 })
 
     const service = createServiceClient()
 
