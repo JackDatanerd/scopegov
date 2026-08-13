@@ -5,6 +5,8 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { stripAndParse, stripHtml, countWords } from '@/lib/utils/format'
 import { sanitizeRichText } from '@/lib/utils/sanitize'
+import { canReadProject } from '@/lib/utils/project-access'
+import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
 import Anthropic from '@anthropic-ai/sdk'
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
@@ -20,11 +22,17 @@ export async function POST(request: NextRequest) {
 
     const service = createServiceClient()
     const { data: sow } = await (service as any)
-      .from('sow_documents').select('id, sent_at').eq('id', sowId)
+      .from('sow_documents').select('id, sent_at, project_id').eq('id', sowId)
       .eq('workspace_id', session.workspaceId).single()
 
     if (!sow) return NextResponse.json({ error: 'SOW not found' }, { status: 404 })
+    if (!(await canReadProject(service, session, sow.project_id)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     if (sow.sent_at) return NextResponse.json({ error: 'SOW is locked' }, { status: 409 })
+
+    // FIX (audit round 3): no rate limiting existed on this route.
+    const limited = await checkAiRateLimit(service, session.id, 'sow.regenerateSection')
+    if (!limited.allowed) return NextResponse.json({ error: limited.message }, { status: 429 })
 
     // BUG-032: hard word ceiling — never grow beyond current length
     const currentWords = countWords(currentContent || '')
@@ -68,6 +76,7 @@ No preamble, no explanation, no markdown fences. Just the HTML content.`
       console.warn(`Section regeneration exceeded word limit: ${newWords} > ${wordLimit}`)
     }
 
+    await recordAiUsage(service, session.workspaceId, session.id, 'sow.regenerateSection')
     return NextResponse.json({ content: sanitizeRichText(raw), wordCount: newWords })
   } catch (err) {
     console.error('Section regeneration error:', err)

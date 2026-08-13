@@ -2,6 +2,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { canReadProject } from '@/lib/utils/project-access'
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -17,6 +18,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       .from('projects').select('id,name,status').eq('id', id)
       .eq('workspace_id', session.workspaceId).single()
     if (!project) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    // FIX (audit round 3): see lib/utils/project-access.ts.
+    if (!(await canReadProject(service, session, id)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
     let eventType = 'project.updated'
@@ -76,6 +80,8 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
       .from('projects').select('id,name,status,sow_documents(status)')
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
     if (!project) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    if (!(await canReadProject(service, session, id)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
     // Only Draft/Intake with no signed SOW can be soft-deleted
     if (!['Draft','Intake'].includes(project.status))
@@ -110,6 +116,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       .select('id,name,type,status,contract_value,currency,start_date,clients(id,name,email)')
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
     if (!project) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    if (!(await canReadProject(service, session, id)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     return NextResponse.json({ project })
   } catch { return NextResponse.json({ error: 'Error' }, { status: 500 }) }
 }

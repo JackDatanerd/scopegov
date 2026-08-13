@@ -14,6 +14,8 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { stripAndParse } from '@/lib/utils/format'
 import { logAudit } from '@/lib/utils/audit'
 import { sanitizeRichText } from '@/lib/utils/sanitize'
+import { canReadProject } from '@/lib/utils/project-access'
+import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
 import Anthropic from '@anthropic-ai/sdk'
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
@@ -50,6 +52,12 @@ export async function POST(request: NextRequest) {
       .select('id,name,disc,currency,clients(name,email,company_name),workspaces(agency_name,governing_law,sow_language)')
       .eq('id', projectId).eq('workspace_id', session.workspaceId).single()
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
+    if (!(await canReadProject(service, session, projectId)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
+    // FIX (audit round 3): no rate limiting existed on this route.
+    const limited = await checkAiRateLimit(service, session.id, 'sow.generate')
+    if (!limited.allowed) return NextResponse.json({ error: limited.message }, { status: 429 })
 
     const agencyName    = project.workspaces?.agency_name || session.agencyName
     const clientName    = project.clients?.company_name || project.clients?.name || 'Client'
@@ -297,6 +305,7 @@ Rules:
       metadata: { project_type: projectType },
     })
 
+    await recordAiUsage(service, session.workspaceId, session.id, 'sow.generate')
     return NextResponse.json({ sowId })
   } catch (err) {
     console.error('SOW generate error:', err)

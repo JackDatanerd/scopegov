@@ -5,10 +5,10 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { sendTrialWarningEmail, sendPaymentFailedEmail, sendInvoiceOverdueInternalEmail } from '@/lib/email/templates'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
+import { verifyCronSecret } from '@/lib/utils/verify-cron'
 
-function verifyCronSecret(request: NextRequest): boolean {
-  return request.headers.get('authorization') === `Bearer ${process.env.CRON_SECRET}`
-}
+// FIX (audit round 3): local copy replaced with the shared,
+// null-safe helper — see lib/utils/verify-cron.ts.
 
 export async function POST(request: NextRequest) {
   if (!verifyCronSecret(request))

@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { sanitizePlainText } from '@/lib/utils/sanitize'
+import { canReadProject } from '@/lib/utils/project-access'
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -23,6 +24,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       .single()
 
     if (!flag) return NextResponse.json({ error: 'Flag not found' }, { status: 404 })
+    // FIX (audit round 3): see lib/utils/project-access.ts.
+    if (!(await canReadProject(service, session, flag.project_id)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
     switch (action) {
       case 'resolve': {

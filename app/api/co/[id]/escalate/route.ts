@@ -4,6 +4,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { sendEscalationEmail } from '@/lib/email/templates'
 import { sanitizePlainText } from '@/lib/utils/sanitize'
+import { canReadProject } from '@/lib/utils/project-access'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -27,6 +28,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!co) return NextResponse.json({ error: 'CO not found' }, { status: 404 })
+    // FIX (audit round 3): see lib/utils/project-access.ts.
+    if (!(await canReadProject(service, session, co.project_id)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
     // FIX (audit round 2, item #5): escalateTo was never checked against
     // workspace membership — any authenticated session could escalate to

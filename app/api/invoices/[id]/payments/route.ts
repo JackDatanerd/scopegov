@@ -7,6 +7,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { sendInvoicePaymentRecordedEmail } from '@/lib/email/templates'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
+import { canReadProject } from '@/lib/utils/project-access'
 
 const VALID_METHODS = ['bank_transfer', 'stripe', 'check', 'cash', 'other']
 
@@ -20,8 +21,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
     const service = createServiceClient()
     const { data: invoice } = await (service as any)
-      .from('invoices').select('id').eq('id', id).eq('workspace_id', session.workspaceId).single()
+      .from('invoices').select('id, project_id').eq('id', id).eq('workspace_id', session.workspaceId).single()
     if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
+    if (!(await canReadProject(service, session, invoice.project_id)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
     const { data: payments } = await (service as any)
       .from('invoice_payments')
@@ -63,6 +66,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
+    if (!(await canReadProject(service, session, invoice.projects?.id)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     if (!['sent', 'partially_paid', 'overdue'].includes(invoice.status))
       return NextResponse.json({ error: 'Payments can only be recorded on a sent, unpaid invoice' }, { status: 400 })
 

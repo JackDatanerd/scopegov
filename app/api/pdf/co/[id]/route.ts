@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession } from '@/lib/auth/session'
 import { renderCoPdf } from '@/lib/pdf/renderer'
+import { canReadProject } from '@/lib/utils/project-access'
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -15,7 +16,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const { data: co } = await (service as any)
       .from('change_orders')
       .select(`id, title, note, version, document_number, line_items, subtotal, tax_rate, tax_inclusive, total,
-        accepted_at, accepted_by, status, client_signature_data,
+        accepted_at, accepted_by, status, client_signature_data, project_id,
         projects(id, name, currency,
           clients(name, company_name, billing_address, vat_number),
           workspaces(agency_name, brand_colour, logo_storage_path, agency_signature_data,
@@ -25,6 +26,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       .single()
 
     if (!co) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    // FIX (audit round 3): see lib/utils/project-access.ts.
+    if (!(await canReadProject(service, session, co.project_id)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
     const ws = co.projects?.workspaces
     let logoUrl: string | null = null

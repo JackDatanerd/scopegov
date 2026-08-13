@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { canReadProject } from '@/lib/utils/project-access'
 import { Resend } from 'resend'
 
 const resend = new Resend(process.env.RESEND_API_KEY)
@@ -19,13 +20,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const service = createServiceClient()
     const { data: sow } = await (service as any)
       .from('sow_documents')
-      .select(`id, version, token, status, expires_at,
+      .select(`id, version, token, status, expires_at, project_id,
         projects(id, name, disc,
           clients(name, email, cc_emails),
           workspaces(agency_name, brand_colour))`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!sow) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    if (!(await canReadProject(service, session, sow.project_id)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     if (sow.status !== 'awaiting_signature')
       return NextResponse.json({ error: 'Can only remind on SOWs awaiting signature' }, { status: 400 })
     if (!sow.token)

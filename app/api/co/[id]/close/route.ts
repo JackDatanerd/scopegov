@@ -2,6 +2,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { canReadProject } from '@/lib/utils/project-access'
 
 // Shared handler for terminal non-accepted CO states: close, withdraw, decline
 // Spec §6.2: ALL THREE revert linked flag to 'open'. NOT just decline.
@@ -11,10 +12,13 @@ async function handleTerminalCoState(
 ) {
   const { data: co } = await (service as any)
     .from('change_orders')
-    .select('id,title,status,flag_id,token,projects(id,name)')
+    .select('id,title,status,flag_id,token,project_id,projects(id,name)')
     .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
   if (!co) return NextResponse.json({ error: 'CO not found' }, { status: 404 })
+  // FIX (audit round 3): see lib/utils/project-access.ts.
+  if (!(await canReadProject(service, session, co.project_id)))
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   const TERMINAL_FROM: Record<string, string[]> = {
     closed:    ['draft','awaiting_response','declined','countered','stalled'],

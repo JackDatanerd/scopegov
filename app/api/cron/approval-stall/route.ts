@@ -3,10 +3,10 @@ export const runtime = 'nodejs'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { sendApprovalReminder } from '@/lib/approvals/engine'
+import { verifyCronSecret } from '@/lib/utils/verify-cron'
 
-function verifyCronSecret(request: NextRequest): boolean {
-  return request.headers.get('authorization') === `Bearer ${process.env.CRON_SECRET}`
-}
+// FIX (audit round 3): local copy replaced with the shared,
+// null-safe helper — see lib/utils/verify-cron.ts.
 
 export async function POST(request: NextRequest) {
   if (!verifyCronSecret(request))

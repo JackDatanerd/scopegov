@@ -5,6 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { sendSowDocument } from '@/lib/documents/send-sow'
 import { evaluateApprovalGate } from '@/lib/approvals/engine'
+import { canReadProject } from '@/lib/utils/project-access'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -30,6 +31,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!sow) return NextResponse.json({ error: 'SOW not found' }, { status: 404 })
+    if (!(await canReadProject(service, session, sow.project_id)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     if (sow.status !== 'draft')
       return NextResponse.json({ error: 'Only draft SOWs can be sent' }, { status: 400 })
 

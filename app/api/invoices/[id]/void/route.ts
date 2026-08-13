@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { canReadProject } from '@/lib/utils/project-access'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -19,10 +20,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const service = createServiceClient()
     const { data: invoice } = await (service as any)
       .from('invoices')
-      .select('id, title, status, amount_paid, token, milestone_id')
+      .select('id, title, status, amount_paid, token, milestone_id, project_id')
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
+    if (!(await canReadProject(service, session, invoice.project_id)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     if (invoice.status === 'void')
       return NextResponse.json({ error: 'Invoice is already void' }, { status: 400 })
     if (invoice.status === 'paid')

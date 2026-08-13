@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession } from '@/lib/auth/session'
 import { renderInvoicePdf } from '@/lib/pdf/renderer'
+import { canReadProject } from '@/lib/utils/project-access'
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -25,6 +26,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       .single()
 
     if (!invoice) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    // FIX (audit round 3): see lib/utils/project-access.ts.
+    if (!(await canReadProject(service, session, invoice.project_id)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
     const ws = invoice.projects?.workspaces
 

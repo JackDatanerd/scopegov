@@ -172,15 +172,19 @@ export async function middleware(request: NextRequest) {
   // Only reached once we already know the challenge-pending case above
   // doesn't apply, so aal here is either "aal2" (already enrolled and
   // verified — nothing to do) or "aal1/aal1" (zero verified factors at
-  // all). We only pay for the extra permissions query in the latter case.
-  // Deliberately checked at the *page* level, not per-API-route: this is
-  // an enrollment nudge with teeth (you cannot reach any page of the
-  // product without it), not a per-request authorization boundary — the
-  // aal1→aal2 block above already covers the "already enrolled but not
-  // verified this session" security boundary for both pages and APIs.
+  // all).
+  //
+  // FIX (audit round 3): this used to skip /api/* entirely, on the theory
+  // that the aal1→aal2 block above was the only security boundary that
+  // mattered and this one was "just" a UI nudge. That was wrong — a user
+  // who simply never enrolls stays at aal1/aal1 forever, and the block
+  // above never fires for them (nextLevel only becomes 'aal2' once a
+  // factor exists). So a governance-permission holder who skips
+  // enrollment could always call the API directly (curl/Postman, no
+  // browser) and act with zero MFA, permanently. Now enforced for both
+  // pages and APIs, mirroring the pattern immediately above.
   if (
-    user && !isPublicRoute && !isMfaFlowRoute && !isAuthRoute && !isOnboarding &&
-    !pathname.startsWith('/api/')
+    user && !isPublicRoute && !isMfaFlowRoute && !isAuthRoute && !isOnboarding
   ) {
     const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
     if (aal?.currentLevel === 'aal1' && aal?.nextLevel === 'aal1') {
@@ -192,6 +196,9 @@ export async function middleware(request: NextRequest) {
 
       const mustEnroll = (memberships || []).some((m: any) => permissionsRequireMfa(m.effective_permissions))
       if (mustEnroll) {
+        if (pathname.startsWith('/api/')) {
+          return NextResponse.json({ error: 'Two-factor enrollment required for this account.' }, { status: 401 })
+        }
         return withRef(NextResponse.redirect(new URL('/mfa-setup', request.url)))
       }
     }

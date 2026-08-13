@@ -5,6 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { sendCoDocument } from '@/lib/documents/send-co'
 import { evaluateApprovalGate } from '@/lib/approvals/engine'
+import { canReadProject } from '@/lib/utils/project-access'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -23,7 +24,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // whole query (42703), which silently surfaces as "CO not found".
     const { data: co, error: coFetchErr } = await (service as any)
       .from('change_orders')
-      .select(`id,title,status,total,version,
+      .select(`id,title,status,total,version,project_id,
         projects(id,name,currency)`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
@@ -31,6 +32,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       console.error('CO send: lookup failed', { id, workspaceId: session.workspaceId, error: coFetchErr })
       return NextResponse.json({ error: 'CO not found' }, { status: 404 })
     }
+    // FIX (audit round 3): see lib/utils/project-access.ts — same
+    // workspace-only-scoping gap as the rest of the CO surface.
+    if (!(await canReadProject(service, session, co.project_id)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     if (co.status !== 'draft')
       return NextResponse.json({ error: 'Only draft COs can be sent' }, { status: 400 })
 

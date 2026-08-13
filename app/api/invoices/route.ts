@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { canReadProject } from '@/lib/utils/project-access'
 
 // GET /api/invoices?projectId=&status= — workspace-wide (or project-scoped) list
 export async function GET(request: NextRequest) {
@@ -18,6 +19,15 @@ export async function GET(request: NextRequest) {
     const status    = searchParams.get('status')
 
     const service = createServiceClient()
+
+    // FIX (audit round 3): this list had no project-membership filter at
+    // all — every invoice in the workspace was returned regardless of the
+    // caller's assigned projects, same gap fixed on /api/projects and
+    // /api/search (see lib/utils/project-access.ts).
+    const canViewAll = hasPermission(session, 'VIEW_ALL_PROJECTS')
+    if (projectId && !(await canReadProject(service, session, projectId)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
     let query = (service as any)
       .from('invoices')
       .select(`id, project_id, milestone_id, sow_id, co_id, invoice_number, title,
@@ -27,8 +37,16 @@ export async function GET(request: NextRequest) {
       .eq('workspace_id', session.workspaceId)
       .order('created_at', { ascending: false })
 
-    if (projectId) query = query.eq('project_id', projectId)
-    if (status)    query = query.eq('status', status)
+    if (projectId) {
+      query = query.eq('project_id', projectId)
+    } else if (!canViewAll) {
+      const { data: ids } = await (service as any)
+        .from('project_members')
+        .select('project_id, workspace_members!inner(user_id)')
+        .eq('workspace_members.user_id', session.id)
+      query = query.in('project_id', (ids || []).map((r: any) => r.project_id))
+    }
+    if (status) query = query.eq('status', status)
 
     const { data: invoices, error } = await query.limit(500)
     if (error) {
@@ -72,6 +90,8 @@ export async function POST(request: NextRequest) {
       .eq('id', projectId).eq('workspace_id', session.workspaceId).single()
 
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
+    if (!(await canReadProject(service, session, projectId)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
     // Validate the linked source actually belongs to this project/workspace
     // and is in a billable state — an invoice against a still-draft SOW or

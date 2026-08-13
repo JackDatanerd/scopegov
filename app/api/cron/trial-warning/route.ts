@@ -4,14 +4,11 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { sendTrialWarningEmail } from '@/lib/email/templates'
 import { filterByNotificationPreference } from '@/lib/utils/permissions-query'
+import { verifyCronSecret } from '@/lib/utils/verify-cron'
 
-// BUG-036: all cron routes require CRON_SECRET
-function verifyCronSecret(request: NextRequest): boolean {
-  const auth   = request.headers.get('authorization')
-  const secret = process.env.CRON_SECRET
-  if (!secret) { console.error('CRON_SECRET not set'); return false }
-  return auth === `Bearer ${secret}`
-}
+// FIX (audit round 3): local copy replaced with the shared helper — see
+// lib/utils/verify-cron.ts (this route's original null-safe version is
+// now the shared implementation every other cron route uses too).
 
 export async function POST(request: NextRequest) {
   if (!verifyCronSecret(request))

@@ -2,6 +2,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { canReadProject } from '@/lib/utils/project-access'
 
 export async function POST(request: NextRequest) {
   try {
@@ -21,6 +22,8 @@ export async function POST(request: NextRequest) {
       .from('projects').select('id,name').eq('id', projectId)
       .eq('workspace_id', session.workspaceId).single()
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
+    if (!(await canReadProject(service, session, projectId)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
     const now = new Date().toISOString()
 

@@ -2,6 +2,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { sanitizeRichText } from '@/lib/utils/sanitize'
+import { canReadProject } from '@/lib/utils/project-access'
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -14,10 +15,16 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const service = createServiceClient()
     const { data: sow } = await (service as any)
       .from('sow_documents')
-      .select('id, status, sent_at, sections')
+      .select('id, status, sent_at, sections, project_id')
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!sow) return NextResponse.json({ error: 'SOW not found' }, { status: 404 })
+    // FIX (audit round 3): see lib/utils/project-access.ts — GET/PATCH
+    // here only checked workspace_id, letting a VIEW_OWN_PROJECTS-only
+    // member with EDIT_SOW read or edit SOW documents for projects they
+    // aren't assigned to.
+    if (!(await canReadProject(service, session, sow.project_id)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
     // Lock check — sentAt makes document permanently read-only (spec §0.6)
     if (sow.sent_at)
@@ -66,10 +73,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const service = createServiceClient()
     const { data: sow } = await (service as any)
       .from('sow_documents')
-      .select('id, version, status, sent_at, signed_at, sections, metadata, expires_at, token')
+      .select('id, version, status, sent_at, signed_at, sections, metadata, expires_at, token, project_id')
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!sow) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    if (!(await canReadProject(service, session, sow.project_id)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     return NextResponse.json({ sow })
   } catch {
     return NextResponse.json({ error: 'Error' }, { status: 500 })

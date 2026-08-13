@@ -17,6 +17,11 @@ export const MFA_REQUIRED_PERMISSIONS: Permission[] = [
   'MANAGE_ROLES',
   'MANAGE_WORKSPACE_SETTINGS',
   'DELETE_PROJECTS',
+  // FIX (audit round 3): Phase 3 (approval chains) shipped APPROVE_DOCUMENTS
+  // without adding it here, exactly the gap this file's own comment warned
+  // about — approving/rejecting SOWs and COs (money authorization) never
+  // triggered the MFA requirement.
+  'APPROVE_DOCUMENTS',
 ]
 
 export function permissionsRequireMfa(permissions: Record<string, boolean> | Permission[] | null | undefined): boolean {

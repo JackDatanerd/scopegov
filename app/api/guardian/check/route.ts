@@ -12,6 +12,8 @@ import {
 import { sendGuardianFlagEmail } from '@/lib/email/templates'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
+import { canReadProject } from '@/lib/utils/project-access'
+import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
 
 export async function POST(request: NextRequest) {
   try {
@@ -37,8 +39,15 @@ export async function POST(request: NextRequest) {
       .single()
 
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
+    if (!(await canReadProject(service, session, projectId)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     if (!['Active','Stalled'].includes(project.status) && !isRetroactive)
       return NextResponse.json({ error: 'Guardian only active on Active projects' }, { status: 400 })
+
+    // FIX (audit round 3): no rate limiting existed on this route (it
+    // calls both an embedding model and a classification model per check).
+    const limited = await checkAiRateLimit(service, session.id, 'guardian.check')
+    if (!limited.allowed) return NextResponse.json({ error: limited.message }, { status: 429 })
 
     // FIX: project_scope_snapshot.project_id is UNIQUE, so this is a
     // one-to-one relation — PostgREST returns a single object, not an
@@ -234,6 +243,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    await recordAiUsage(service, session.workspaceId, session.id, 'guardian.check')
     return NextResponse.json({
       checkId:         checkRow.id,
       outcome:         classification.outcome,

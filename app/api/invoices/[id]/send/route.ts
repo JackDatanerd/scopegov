@@ -8,6 +8,7 @@ import { assignDocumentNumber } from '@/lib/utils/document-number'
 import { sendInvoiceEmail } from '@/lib/email/templates'
 import { SignJWT } from 'jose'
 import { nanoid } from 'nanoid'
+import { canReadProject } from '@/lib/utils/project-access'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -32,6 +33,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       console.error('Invoice send: lookup failed', { id, workspaceId: session.workspaceId, error: fetchErr })
       return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
     }
+    if (!(await canReadProject(service, session, invoice.projects?.id)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     if (invoice.status !== 'draft')
       return NextResponse.json({ error: 'Only draft invoices can be sent' }, { status: 400 })
 

@@ -2,6 +2,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { sanitizePlainText } from '@/lib/utils/sanitize'
+import { canReadProject } from '@/lib/utils/project-access'
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -16,6 +17,11 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!co) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    // FIX (audit round 3): workspace_id was the only scoping check — any
+    // workspace member, regardless of project assignment, could fetch any
+    // CO's full financial detail. See lib/utils/project-access.ts.
+    if (!(await canReadProject(service, session, co.project_id)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     return NextResponse.json({ co: { ...co, currency: co.projects?.currency } })
   } catch {
     return NextResponse.json({ error: 'Error' }, { status: 500 })
@@ -32,9 +38,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     const service = createServiceClient()
     const { data: co } = await (service as any)
-      .from('change_orders').select('id,status').eq('id', id).eq('workspace_id', session.workspaceId).single()
+      .from('change_orders').select('id,status,project_id').eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!co) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    if (!(await canReadProject(service, session, co.project_id)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     if (co.status !== 'draft')
       return NextResponse.json({ error: 'Only draft COs can be edited' }, { status: 409 })
 

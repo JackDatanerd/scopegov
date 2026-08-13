@@ -2,10 +2,10 @@ export const runtime = 'nodejs'
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
+import { verifyCronSecret } from '@/lib/utils/verify-cron'
 
-function verifyCronSecret(request: NextRequest): boolean {
-  return request.headers.get('authorization') === `Bearer ${process.env.CRON_SECRET}`
-}
+// FIX (audit round 3): local copy replaced with the shared,
+// null-safe helper — see lib/utils/verify-cron.ts.
 
 // Severity weighting for contract_value_at_risk — a tuning detail, not a
 // blocking decision (spec, Phase 2 "Weighting" note). Open flags don't

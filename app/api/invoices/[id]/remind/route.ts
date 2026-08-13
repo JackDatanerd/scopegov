@@ -5,6 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { sendInvoiceReminderEmail } from '@/lib/email/templates'
+import { canReadProject } from '@/lib/utils/project-access'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -17,11 +18,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const service = createServiceClient()
     const { data: invoice } = await (service as any)
       .from('invoices')
-      .select(`id, title, amount, amount_paid, currency, status, due_date, token, invoice_number,
+      .select(`id, title, amount, amount_paid, currency, status, due_date, token, invoice_number, project_id,
         projects(id, name, clients(name, email, cc_emails), workspaces(agency_name, brand_colour))`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
+    if (!(await canReadProject(service, session, invoice.project_id)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     if (!['sent', 'partially_paid', 'overdue'].includes(invoice.status))
       return NextResponse.json({ error: 'Can only remind on unpaid, sent invoices' }, { status: 400 })
     if (!invoice.token)

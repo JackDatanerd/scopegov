@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { canReadProject } from '@/lib/utils/project-access'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -16,10 +17,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const service = createServiceClient()
     const { data: sow } = await (service as any)
       .from('sow_documents')
-      .select('id,status,token,version,projects(id,name,status)')
+      .select('id,status,token,version,project_id,projects(id,name,status)')
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!sow) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    if (!(await canReadProject(service, session, sow.project_id)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     if (!['awaiting_signature','changes_requested'].includes(sow.status))
       return NextResponse.json({ error: 'SOW cannot be withdrawn in current status' }, { status: 400 })
 

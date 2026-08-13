@@ -5,6 +5,8 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { stripAndParse } from '@/lib/utils/format'
+import { canReadProject } from '@/lib/utils/project-access'
+import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
 import Anthropic from '@anthropic-ai/sdk'
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
@@ -29,6 +31,12 @@ export async function POST(request: NextRequest) {
       .eq('id', projectId).eq('workspace_id', session.workspaceId).single()
 
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
+    if (!(await canReadProject(service, session, projectId)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
+    // FIX (audit round 3): no rate limiting existed on this route.
+    const limited = await checkAiRateLimit(service, session.id, 'co.draft')
+    if (!limited.allowed) return NextResponse.json({ error: limited.message }, { status: 429 })
 
     const snapshot     = project.project_scope_snapshot
     const inScope       = (snapshot?.deliverables || []).map((d: any) => d.title || d).join(', ') || 'not specified'
@@ -82,6 +90,7 @@ Rules:
     // pricing must always come from the agency, never be silently invented.
     const lineItems = (parsed.lineItems || []).map(l => ({ ...l, rate: 0 }))
 
+    await recordAiUsage(service, session.workspaceId, session.id, 'co.draft')
     return NextResponse.json({ title: parsed.title || '', note: parsed.note || '', lineItems })
   } catch (err) {
     console.error('CO draft error:', err)

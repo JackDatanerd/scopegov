@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { canReadProject } from '@/lib/utils/project-access'
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -22,6 +23,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
+    // FIX (audit round 3): see lib/utils/project-access.ts.
+    if (!(await canReadProject(service, session, invoice.project_id)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
     const { data: payments } = await (service as any)
       .from('invoice_payments')
@@ -47,10 +51,12 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     const service = createServiceClient()
     const { data: invoice } = await (service as any)
-      .from('invoices').select('id, status, title')
+      .from('invoices').select('id, status, title, project_id')
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
+    if (!(await canReadProject(service, session, invoice.project_id)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     if (invoice.status !== 'draft')
       return NextResponse.json({ error: 'Only draft invoices can be edited — void and re-create instead' }, { status: 400 })
 
@@ -87,10 +93,12 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
 
     const service = createServiceClient()
     const { data: invoice } = await (service as any)
-      .from('invoices').select('id, status, title')
+      .from('invoices').select('id, status, title, project_id')
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
+    if (!(await canReadProject(service, session, invoice.project_id)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     if (invoice.status !== 'draft')
       return NextResponse.json({ error: 'Only draft invoices can be deleted — void a sent invoice instead' }, { status: 400 })
 

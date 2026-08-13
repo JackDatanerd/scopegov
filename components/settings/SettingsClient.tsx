@@ -411,7 +411,6 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, save
   const [savingSig,  setSavingSig]  = useState(false)
   const [sigError,   setSigError]   = useState('')
   const sigPadRef = useRef<SignaturePadHandle>(null)
-  const supabase = createClient()
 
   if (!permissions.manageWorkspace) return <Restricted />
 
@@ -443,10 +442,19 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, save
     try {
       let logoStoragePath: string | undefined
       if (logoFile) {
-        const ext  = logoFile.name.split('.').pop()
-        const path = `${workspaceId}/logo.${ext}`
-        const { error } = await (supabase as any).storage.from('logos').upload(path, logoFile, { upsert: true })
-        if (!error) logoStoragePath = path
+        // FIX (audit round 3): route the upload through the server so
+        // MANAGE_WORKSPACE_SETTINGS and file validation are enforced
+        // server-side, not just in this component's render guard. See
+        // app/api/workspace/branding/logo/route.ts.
+        const body = new FormData()
+        body.append('file', logoFile)
+        const res  = await fetch('/api/workspace/branding/logo', { method: 'POST', body })
+        if (res.ok) {
+          const json = await res.json()
+          logoStoragePath = json.logoStoragePath
+        } else {
+          setFileError('Could not upload logo — try again.')
+        }
       }
       await onSave('/api/workspace/branding', { brandColour: colour, ...(logoStoragePath ? { logoStoragePath } : {}) })
     } finally { setUploading(false) }

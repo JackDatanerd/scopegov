@@ -3,6 +3,8 @@ export const runtime = 'nodejs'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession } from '@/lib/auth/session'
 import { stripAndParse } from '@/lib/utils/format'
+import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
+import { createServiceClient } from '@/lib/supabase/server'
 import Anthropic from '@anthropic-ai/sdk'
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
@@ -14,6 +16,12 @@ export async function POST(request: NextRequest) {
 
     const { briefText, projectType } = await request.json()
     if (!briefText?.trim()) return NextResponse.json({ error: 'briefText required' }, { status: 400 })
+
+    // FIX (audit round 3): no rate limiting existed on this or any other
+    // AI-cost route. See lib/utils/rate-limit.ts.
+    const service = createServiceClient()
+    const limited = await checkAiRateLimit(service, session.id, 'sow.parseBrief')
+    if (!limited.allowed) return NextResponse.json({ error: limited.message }, { status: 429 })
 
     // Carry-forward §1.4: Haiku for brief parsing — fast, reliable extraction
     const prompt = `Extract structured scope information from this text. Return ONLY valid JSON, no markdown fences, no explanation.
@@ -50,6 +58,7 @@ Rules:
     const raw   = msg.content.filter(b => b.type === 'text').map((b: any) => b.text).join('')
     const brief = stripAndParse<Record<string, unknown>>(raw)
 
+    await recordAiUsage(service, session.workspaceId, session.id, 'sow.parseBrief')
     return NextResponse.json({ brief })
   } catch (err) {
     console.error('Brief parse error:', err)
