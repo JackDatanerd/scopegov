@@ -3,11 +3,15 @@ import { useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
+import { safeRedirectPath } from '@/lib/utils/safe-redirect'
 
 export default function LoginForm() {
   const router = useRouter()
   const searchParams = useSearchParams()
-  const next = searchParams.get('next') || '/dashboard'
+  // FIX (audit round 3, item #7): validate at every point this value is
+  // read, not just at the final server-side redirect — see
+  // lib/utils/safe-redirect.ts.
+  const next = safeRedirectPath(searchParams.get('next'))
   const message = searchParams.get('message')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')

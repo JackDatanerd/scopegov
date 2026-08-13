@@ -2,6 +2,7 @@
 import { useState, useEffect, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import { safeRedirectPath } from '@/lib/utils/safe-redirect'
 
 function PanelLeft() {
   return (
@@ -21,7 +22,7 @@ function PanelLeft() {
 function MfaChallengeInner() {
   const router = useRouter()
   const searchParams = useSearchParams()
-  const next = searchParams.get('next') || '/dashboard'
+  const next = safeRedirectPath(searchParams.get('next'))
   const [supabase] = useState(() => createClient())
 
   const [factorId, setFactorId] = useState<string | null>(null)

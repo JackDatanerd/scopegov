@@ -6,13 +6,20 @@
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import type { EmailOtpType } from '@supabase/supabase-js'
+import { safeRedirectPath } from '@/lib/utils/safe-redirect'
 
 export async function GET(request: NextRequest) {
   const { searchParams, origin } = new URL(request.url)
   const code       = searchParams.get('code')
   const tokenHash  = searchParams.get('token_hash')
   const type       = searchParams.get('type') as EmailOtpType | null
-  const next       = searchParams.get('next') ?? '/dashboard'
+  // FIX (audit round 3, item #7): 'next' is attacker-controllable (it
+  // originates from the public /login page's own query string) and was
+  // concatenated directly into a Location header — see
+  // lib/utils/safe-redirect.ts for the exact open-redirect payload this
+  // allowed and why the origin+next concatenation didn't actually
+  // protect against it.
+  const next       = safeRedirectPath(searchParams.get('next'))
   const error      = searchParams.get('error')
   const errorDescription = searchParams.get('error_description')
 
