@@ -389,7 +389,7 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugLocked }
           <input className="finp" value={form.website} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('website', e.target.value)} placeholder="acme.com" />
         </div>
         <div className="fgrp">
-          <label className="flbl">Default payment instructions <span className="fhint">— pre-fills new invoices; wire/ACH details, "per PO terms", etc.</span></label>
+        <label className="flbl">Default payment instructions <span className="fhint">— pre-fills new invoices; wire/ACH details, &quot;per PO terms&quot;, etc.</span></label>
           <textarea className="finp" rows={3} value={form.defaultPaymentInstructions}
             onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => set('defaultPaymentInstructions', e.target.value)} />
         </div>
