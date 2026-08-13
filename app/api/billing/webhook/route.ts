@@ -18,7 +18,22 @@ async function verifyPaystackSignature(rawBody: string, signature: string | null
   const sig     = await crypto.subtle.sign('HMAC', key, encoder.encode(rawBody))
   const hash    = Array.from(new Uint8Array(sig))
     .map(b => b.toString(16).padStart(2, '0')).join('')
-  return hash === signature
+  return timingSafeEqualStr(hash, signature)
+}
+
+// FIX (audit round 2, item #4): plain `===` short-circuits on the first
+// mismatched character — a timing side-channel for signature forgery.
+// crypto.timingSafeEqual isn't usable here without importing Node's
+// crypto module, which BUG-007/054 above deliberately avoids for
+// edge/serverless compatibility, so this is a manual constant-time
+// comparison instead: always walks the full (fixed) hash length,
+// accumulating mismatches with XOR rather than branching or returning
+// early on the first difference.
+function timingSafeEqualStr(a: string, b: string): boolean {
+  if (a.length !== b.length) return false
+  let diff = 0
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
+  return diff === 0
 }
 
 // Plan code → tier mapping

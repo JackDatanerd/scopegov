@@ -2,6 +2,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { sanitizePlainText } from '@/lib/utils/sanitize'
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -84,19 +85,45 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       }
 
       case 'escalate': {
+        // FIX (audit round 2, item #5): every other case in this switch
+        // (resolve, close, exception, draft_co, confirm_out_of_scope) is
+        // gated behind a permission check — escalate was the one
+        // exception, letting any authenticated session member (any role)
+        // trigger it. Match the sibling 'resolve'/'close' actions.
+        if (!hasPermission(session, 'APPROVE_FLAGS'))
+          return NextResponse.json({ error: 'Missing permission: APPROVE_FLAGS' }, { status: 403 })
         if (!escalationNote || escalationNote.length < 10)
           return NextResponse.json({ error: 'Escalation note must be at least 10 characters' }, { status: 400 })
+
+        // FIX (audit round 2, item #5): escalateTo was never checked
+        // against workspace membership — resolve it scoped to this
+        // workspace, falling back to self-assignment if it doesn't
+        // resolve to an active member here, same treatment as
+        // co/[id]/escalate.
+        let resolvedEscalateTo: string | null = null
+        if (escalateTo) {
+          const { data: member } = await (service as any)
+            .from('workspace_members')
+            .select('user_id')
+            .eq('workspace_id', session.workspaceId)
+            .eq('user_id', escalateTo)
+            .eq('status', 'active')
+            .single()
+          if (member) resolvedEscalateTo = member.user_id
+        }
+        const safeNote = sanitizePlainText(escalationNote)
+
         // Spec §6.3: escalation NEVER changes status — it is an overlay
         await (service as any).from('guardian_flags').update({
-          escalated_to:    escalateTo || session.id,
-          escalation_note: escalationNote,
+          escalated_to:    resolvedEscalateTo || session.id,
+          escalation_note: safeNote,
           updated_at:      now,
         }).eq('id', id)
         await logAudit(service, {
           workspaceId: session.workspaceId, actorId: session.id,
           actorEmail: session.email, actorName: session.name,
           eventType: 'flag.escalated', entityType: 'guardian_flag', entityId: id,
-          entityName: flag.project_id, metadata: { escalated_to: escalateTo, note: escalationNote },
+          entityName: flag.project_id, metadata: { escalated_to: resolvedEscalateTo, note: safeNote },
         })
         break
       }

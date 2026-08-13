@@ -199,7 +199,13 @@ export default function CoPortalPage() {
             {co.note && (
               <div style={{ marginBottom: 24 }}>
                 <div className="portal-section-title">Context</div>
-                <div className="portal-section-body" dangerouslySetInnerHTML={{ __html: co.note }} />
+                {/* FIX (audit round 1, item #2): co.note is a plain textarea
+                    field (components/co/CoEditor.tsx), not rich text — it
+                    was being rendered with dangerouslySetInnerHTML on this
+                    public, unauthenticated page, allowing stored XSS via a
+                    direct API call. Render as plain text, preserving
+                    line breaks the way a textarea's content implies. */}
+                <div className="portal-section-body" style={{ whiteSpace: 'pre-wrap' }}>{co.note}</div>
               </div>
             )}
 

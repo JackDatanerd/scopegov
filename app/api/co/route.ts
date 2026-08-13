@@ -2,6 +2,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { sanitizePlainText } from '@/lib/utils/sanitize'
 
 export async function POST(request: NextRequest) {
   try {
@@ -29,7 +30,7 @@ export async function POST(request: NextRequest) {
         workspace_id: session.workspaceId,
         flag_id:      flagId || null,
         title:        title.trim(),
-        note:         note || null,
+        note:         note ? sanitizePlainText(note) || null : null,
         status:       'draft',
         line_items:   JSON.stringify(items),
         subtotal,

@@ -16,12 +16,27 @@ import { hasPermission } from '@/lib/auth/session'
 // member of that specific project (project_members, joined through
 // workspace_members — see BUG-058 note in app/api/projects/route.ts for
 // why this join can't be a naive project_members.user_id filter).
+//
+// FIX (audit round 2, item #6): this never checked that the project
+// itself belongs to the caller's workspace — it only checked whether a
+// project_members row links this user to this project_id, full stop. Most
+// callers happened to be safe because they separately re-fetch the
+// project scoped to session.workspaceId before calling this (see
+// app/api/projects/[id]/messages/route.ts's loadProject()), but two
+// callers (messages/read, messages/unread-count) called this directly
+// with no such check — and combined with a missing workspace check on
+// POST /api/projects/[id]/members (also fixed this round), a member of
+// one workspace could get a project_members row created against a
+// project in a completely different workspace and pass this check for
+// it. Scope the query by workspace_id here too so the primitive itself is
+// safe regardless of what the caller does around it.
 export async function canReadProject(service: any, session: SessionUser, projectId: string): Promise<boolean> {
   if (hasPermission(session, 'VIEW_ALL_PROJECTS')) return true
   const { data } = await service
     .from('project_members')
-    .select('project_id, workspace_members!inner(user_id)')
+    .select('project_id, projects!inner(workspace_id), workspace_members!inner(user_id)')
     .eq('project_id', projectId)
+    .eq('projects.workspace_id', session.workspaceId)
     .eq('workspace_members.user_id', session.id)
     .limit(1)
   return !!(data && data.length)

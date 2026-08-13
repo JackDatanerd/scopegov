@@ -22,6 +22,22 @@ export async function POST(
 
     const service = createServiceClient()
 
+    // FIX (audit round 2, item #6): projectId (from the URL) was never
+    // checked against the caller's workspace — only memberId was. A
+    // member of Workspace A could attach their own workspace_members row
+    // to a project belonging to Workspace B, which then satisfied
+    // canReadProject() for that foreign project (see fix in
+    // lib/utils/project-access.ts). Verify the project up front.
+    const { data: project } = await (service as any)
+      .from('projects')
+      .select('id')
+      .eq('id', projectId)
+      .eq('workspace_id', session.workspaceId)
+      .is('deleted_at', null)
+      .single()
+
+    if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
+
     // Verify the member belongs to this workspace
     const { data: member } = await (service as any)
       .from('workspace_members')

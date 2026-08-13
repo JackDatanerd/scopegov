@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { stripAndParse, stripHtml, countWords } from '@/lib/utils/format'
+import { sanitizeRichText } from '@/lib/utils/sanitize'
 import Anthropic from '@anthropic-ai/sdk'
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
@@ -67,7 +68,7 @@ No preamble, no explanation, no markdown fences. Just the HTML content.`
       console.warn(`Section regeneration exceeded word limit: ${newWords} > ${wordLimit}`)
     }
 
-    return NextResponse.json({ content: raw, wordCount: newWords })
+    return NextResponse.json({ content: sanitizeRichText(raw), wordCount: newWords })
   } catch (err) {
     console.error('Section regeneration error:', err)
     return NextResponse.json({ error: 'Regeneration failed. Please try again.' }, { status: 500 })

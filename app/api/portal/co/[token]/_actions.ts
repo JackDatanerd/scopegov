@@ -6,6 +6,7 @@ import { jwtVerify } from 'jose'
 import { logAudit } from '@/lib/utils/audit'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
+import { escapeHtml } from '@/lib/utils/sanitize'
 
 async function resolveCoAndToken(token: string, service: any) {
   const { data: revoked } = await (service as any)
@@ -98,8 +99,8 @@ export async function POST_DECLINE(request: NextRequest, token: string) {
         from: `ScopeGov <${process.env.RESEND_FROM_EMAIL}>`,
         to: emails,
         subject: `${client?.name} declined the change order — ${co.title}`,
-        html: `<p><strong>${client?.name}</strong> has declined the change order <strong>${co.title}</strong> on <strong>${co.projects?.name}</strong>.</p>
-        ${reason ? `<p><strong>Reason:</strong> ${reason}</p>` : ''}
+        html: `<p><strong>${escapeHtml(client?.name)}</strong> has declined the change order <strong>${escapeHtml(co.title)}</strong> on <strong>${escapeHtml(co.projects?.name)}</strong>.</p>
+        ${reason ? `<p><strong>Reason:</strong> ${escapeHtml(reason)}</p>` : ''}
         <p><a href="${process.env.NEXT_PUBLIC_APP_URL}/projects/${co.project_id}?tab=co">View in ScopeGov →</a></p>`,
       })
     }
@@ -161,8 +162,8 @@ export async function POST_COUNTER(request: NextRequest, token: string) {
         from: `ScopeGov <${process.env.RESEND_FROM_EMAIL}>`,
         to: emails,
         subject: `Counter offer received — ${co.title}`,
-        html: `<p><strong>${client?.name}</strong> has proposed a counter offer of <strong>${co.projects?.currency || 'USD'} ${parseFloat(counterAmount).toLocaleString()}</strong> on <strong>${co.title}</strong>.</p>
-        ${counterNote ? `<p><strong>Note:</strong> ${counterNote}</p>` : ''}
+        html: `<p><strong>${escapeHtml(client?.name)}</strong> has proposed a counter offer of <strong>${escapeHtml(co.projects?.currency || 'USD')} ${parseFloat(counterAmount).toLocaleString()}</strong> on <strong>${escapeHtml(co.title)}</strong>.</p>
+        ${counterNote ? `<p><strong>Note:</strong> ${escapeHtml(counterNote)}</p>` : ''}
         <p><a href="${process.env.NEXT_PUBLIC_APP_URL}/projects/${co.project_id}?tab=co">Review counter in ScopeGov →</a></p>`,
       })
     }

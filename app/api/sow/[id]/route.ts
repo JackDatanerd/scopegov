@@ -1,6 +1,7 @@
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
+import { sanitizeRichText } from '@/lib/utils/sanitize'
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -24,13 +25,18 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     const body = await request.json()
 
-    // Can update full sections array or a single section
+    // FIX (audit round 1, item #2): section content is rendered raw via
+    // dangerouslySetInnerHTML on the public, unauthenticated portal page —
+    // sanitize here (not just trust the TipTap editor's own constraints,
+    // which this API route bypasses entirely) so stored XSS can't reach
+    // storage in the first place. See lib/utils/sanitize.ts.
     let newSections = sow.sections || []
     if (body.sections) {
-      newSections = body.sections
+      newSections = (body.sections as any[]).map(s => ({ ...s, content: sanitizeRichText(s.content) }))
     } else if (body.sectionId && body.content !== undefined) {
+      const safeContent = sanitizeRichText(body.content)
       newSections = newSections.map((s: any) =>
-        s.id === body.sectionId ? { ...s, content: body.content } : s
+        s.id === body.sectionId ? { ...s, content: safeContent } : s
       )
     } else if (body.sectionId && body.visible !== undefined) {
       newSections = newSections.map((s: any) =>

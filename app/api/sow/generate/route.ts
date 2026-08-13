@@ -13,6 +13,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { stripAndParse } from '@/lib/utils/format'
 import { logAudit } from '@/lib/utils/audit'
+import { sanitizeRichText } from '@/lib/utils/sanitize'
 import Anthropic from '@anthropic-ai/sdk'
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
@@ -231,6 +232,13 @@ Rules:
           : 'AI returned invalid JSON. Please try again.',
       }, { status: 500 })
     }
+
+    // FIX (audit round 1, item #2): sanitize model-generated section HTML
+    // before it ever reaches storage — same portal dangerouslySetInnerHTML
+    // sink as PATCH /api/sow/[id], and a prompt-injected brief could in
+    // principle steer the model into emitting markup we don't want stored
+    // verbatim, not just the manual-edit path.
+    parsed.sections = (parsed.sections || []).map((s: any) => ({ ...s, content: sanitizeRichText(s.content) }))
 
     // Check for existing draft SOW on this project
     const { data: existingSow } = await (service as any)

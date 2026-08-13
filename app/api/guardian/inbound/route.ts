@@ -10,14 +10,23 @@ import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 
 // BUG-016: verify Postmark webhook signature before processing
+// FIX (audit round 2, item #4): plain `===` on a hex digest is not
+// constant-time — comparison can short-circuit on the first mismatched
+// byte, which is a (low-probability but non-zero) timing side-channel for
+// an attacker trying to forge this webhook's signature. Use
+// crypto.timingSafeEqual, guarding the length check first since it throws
+// on mismatched buffer lengths rather than just returning false.
 function verifyPostmarkSignature(body: string, signature: string | null): boolean {
   if (!signature) return false
   const secret = process.env.POSTMARK_INBOUND_WEBHOOK_SECRET
   if (!secret) return false
   // Postmark uses HMAC-SHA256
   const crypto = require('crypto')
-  const expected = crypto.createHmac('sha256', secret).update(body).digest('hex')
-  return expected === signature
+  const expected = crypto.createHmac('sha256', secret).update(body).digest()
+  let provided: Buffer
+  try { provided = Buffer.from(signature, 'hex') } catch { return false }
+  if (provided.length !== expected.length) return false
+  return crypto.timingSafeEqual(expected, provided)
 }
 
 export async function POST(request: NextRequest) {

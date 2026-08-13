@@ -15,8 +15,19 @@ export async function POST(request: NextRequest) {
     if (!hasPermission(session, 'INVITE_MEMBERS'))
       return NextResponse.json({ error: 'Missing permission: INVITE_MEMBERS' }, { status: 403 })
 
-    const { email, roleId, workspaceId } = await request.json()
-    const wsId = workspaceId || session.workspaceId
+    // FIX (audit round 2): workspaceId used to be taken from the request
+    // body (`workspaceId || session.workspaceId`), which meant the
+    // INVITE_MEMBERS check above only proved the caller could invite into
+    // THEIR OWN workspace, while every subsequent check and the insert
+    // itself ran against whatever workspace id the client sent — a
+    // classic confused-deputy bug letting any admin of any workspace
+    // invite arbitrary emails into ANY other workspace by id. There is no
+    // legitimate cross-workspace invite flow (compare
+    // app/api/workspace/switch/route.ts, which explicitly re-verifies
+    // membership before trusting a client-supplied workspace id) — always
+    // use the caller's own active workspace.
+    const { email, roleId } = await request.json()
+    const wsId = session.workspaceId
     if (!email?.trim()) return NextResponse.json({ error: 'Email required' }, { status: 400 })
 
     const service = createServiceClient()
