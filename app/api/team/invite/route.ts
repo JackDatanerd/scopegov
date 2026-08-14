@@ -7,6 +7,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { sendInviteEmail } from '@/lib/email/templates'
 import { PLAN_LIMITS } from '@/lib/utils/format'
 import { nanoid } from 'nanoid'
+import { roleWithinCeiling } from '@/lib/utils/permission-ceiling'
 
 export async function POST(request: NextRequest) {
   try {
@@ -41,8 +42,14 @@ export async function POST(request: NextRequest) {
     // insert below.
     if (roleId) {
       const { data: role } = await (service as any)
-        .from('roles').select('id').eq('id', roleId).eq('workspace_id', wsId).maybeSingle()
+        .from('roles').select('id,permissions').eq('id', roleId).eq('workspace_id', wsId).maybeSingle()
       if (!role) return NextResponse.json({ error: 'Invalid role for this workspace' }, { status: 400 })
+      // FIX (audit round 4, finding #1): an INVITE_MEMBERS holder without
+      // MANAGE_ROLES could still hand a brand-new member the workspace's
+      // most-privileged role. Same ceiling rule as everywhere else — can
+      // only assign a role whose permissions you already hold yourself.
+      if (!roleWithinCeiling(session, role))
+        return NextResponse.json({ error: 'Cannot invite someone into a role with permissions you don\u2019t hold yourself' }, { status: 403 })
     }
 
     // Seat limit check

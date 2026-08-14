@@ -67,12 +67,18 @@ export async function GET(request: NextRequest) {
       .textSearch('search_vector', tsQuery)
       .limit(4)
 
+    // FIX (audit round 4, finding #3): the `sub` fallback exposed client
+    // email to any authenticated member with zero permission check,
+    // while the Projects/COs blocks right above/below this correctly
+    // gate on VIEW_ALL_PROJECTS. Same rule the clients list/detail pages
+    // already apply — email only shown to VIEW_CLIENT_DATA holders.
+    const canViewClientData = hasPermission(session, 'VIEW_CLIENT_DATA')
     for (const c of (clients || [])) {
       results.push({
         type:  'client',
         id:    c.id,
         title: c.name,
-        sub:   c.company_name || c.email,
+        sub:   c.company_name || (canViewClientData ? c.email : ''),
         href:  `/clients/${c.id}`,
       })
     }

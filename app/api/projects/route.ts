@@ -48,6 +48,24 @@ export async function POST(request: NextRequest) {
     if (!resolvedClientId)
       return NextResponse.json({ error: 'Client is required' }, { status: 400 })
 
+    // FIX (audit round 4, finding #2 — HIGH): an explicitly-passed
+    // clientId (the "pick an existing client" path — the newClient
+    // branch above always creates/looks up scoped to this workspace
+    // already) was never checked against session.workspaceId before
+    // being written into projects.client_id. Exact same bug class
+    // already found and fixed for change_orders.project_id (see
+    // app/api/co/route.ts, round 3) — a member of Workspace A could
+    // point a new project at a client row belonging to Workspace B,
+    // leaking that client's name/email/billing address/VAT into A on
+    // every subsequent read (PDFs, portal sends, invoices all join
+    // projects → clients with no re-check), and potentially emailing an
+    // unrelated agency's real client under A's branding.
+    if (clientId) {
+      const { data: client } = await (service as any)
+        .from('clients').select('id').eq('id', clientId).eq('workspace_id', session.workspaceId).maybeSingle()
+      if (!client) return NextResponse.json({ error: 'Client not found' }, { status: 404 })
+    }
+
     // ── Create project ────────────────────────────────────────
     const { data: project, error: projErr } = await (service as any)
       .from('projects')

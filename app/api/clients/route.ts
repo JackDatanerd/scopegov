@@ -13,7 +13,19 @@ export async function GET() {
       .select('id,name,company_name,email,status,created_at')
       .eq('workspace_id', session.workspaceId)
       .order('name')
-    return NextResponse.json({ clients: clients || [] })
+
+    // FIX (audit round 4, finding #3): VIEW_CLIENT_DATA was enforced by
+    // redacting fields server-side on the client-detail page, but this
+    // list route shipped the raw email to every authenticated workspace
+    // member regardless of that permission — a plain curl/fetch of this
+    // endpoint bypassed the gate entirely. Redact at the source, same
+    // fix shape as clients/[id]/page.tsx.
+    const canViewClientData = hasPermission(session, 'VIEW_CLIENT_DATA')
+    const result = canViewClientData
+      ? (clients || [])
+      : (clients || []).map((c: any) => ({ ...c, email: null }))
+
+    return NextResponse.json({ clients: result })
   } catch { return NextResponse.json({ error: 'Error' }, { status: 500 }) }
 }
 

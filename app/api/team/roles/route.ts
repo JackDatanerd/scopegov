@@ -2,6 +2,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { permissionsBeyondCeiling } from '@/lib/utils/permission-ceiling'
 
 export async function POST(request: NextRequest) {
   try {
@@ -16,6 +17,16 @@ export async function POST(request: NextRequest) {
 
     const { name, description, permissions, isDefault } = await request.json()
     if (!name?.trim()) return NextResponse.json({ error: 'Role name required' }, { status: 400 })
+
+    // FIX (audit round 4, finding #1): MANAGE_ROLES let you shape the
+    // workspace's role structure — it was never meant to let you mint a
+    // role with permissions you don't personally hold and then assign it
+    // to yourself. You can only grant what you already have.
+    const beyond = permissionsBeyondCeiling(session, permissions)
+    if (beyond.length > 0)
+      return NextResponse.json({
+        error: `Cannot grant permissions you don't hold yourself: ${beyond.join(', ')}`,
+      }, { status: 403 })
 
     const service = createServiceClient()
 

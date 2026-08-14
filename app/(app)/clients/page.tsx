@@ -17,12 +17,30 @@ export default async function ClientsPage() {
     .eq('workspace_id', session.workspaceId)
     .order('name')
 
+  const canViewFinancials = hasPermission(session, 'VIEW_FINANCIALS')
+  const canViewClientData = hasPermission(session, 'VIEW_CLIENT_DATA')
+
+  // FIX (audit round 4, finding #3): this page shipped email, phone, and
+  // per-project contract_value/currency into the initial RSC payload
+  // unconditionally — ClientsClient.tsx only ever hid them in the
+  // rendered DOM (`canViewClientData ? show : hide`), so the raw data
+  // sat in the page source regardless of permission. Same fix already
+  // applied to clients/[id]/page.tsx; redact at the source here too.
+  const redacted = (clients || []).map((c: any) => ({
+    ...c,
+    email: canViewClientData ? c.email : null,
+    phone: canViewClientData ? c.phone : null,
+    projects: canViewFinancials
+      ? c.projects
+      : (c.projects || []).map((p: any) => ({ ...p, contract_value: null })),
+  }))
+
   return (
     <ClientsClient
-      clients={clients || []}
+      clients={redacted}
       canCreate={hasPermission(session, 'CREATE_PROJECTS')}
-      canViewFinancials={hasPermission(session, 'VIEW_FINANCIALS')}
-      canViewClientData={hasPermission(session, 'VIEW_CLIENT_DATA')}
+      canViewFinancials={canViewFinancials}
+      canViewClientData={canViewClientData}
     />
   )
 }

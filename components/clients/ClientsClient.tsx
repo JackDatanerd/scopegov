@@ -22,7 +22,7 @@ export default function ClientsClient({ clients, canCreate, canViewFinancials, c
     const q = search.toLowerCase()
     return clients.filter(c =>
       c.name.toLowerCase().includes(q) ||
-      c.email.toLowerCase().includes(q) ||
+      c.email?.toLowerCase().includes(q) ||
       c.company_name?.toLowerCase().includes(q)
     )
   }, [clients, search])
