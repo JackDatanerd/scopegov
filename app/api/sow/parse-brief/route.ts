@@ -7,7 +7,15 @@ import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
 import { createServiceClient } from '@/lib/supabase/server'
 import Anthropic from '@anthropic-ai/sdk'
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+// FIX (re-audit — build-blocking): was constructed at module scope, so an
+// unset ANTHROPIC_API_KEY turns importing this route into a hard build
+// failure instead of a runtime error. Lazy singleton, same fix as
+// lib/email/templates.ts and lib/ai/guardian.ts.
+let _client: Anthropic | null = null
+function anthropicClient(): Anthropic {
+  if (!_client) _client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+  return _client
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -49,7 +57,7 @@ Rules:
 - revisionRounds must be an integer between 1 and 5. Default 2 if not mentioned.
 - Never invent payment amounts or deadlines.`
 
-    const msg = await client.messages.create({
+    const msg = await anthropicClient().messages.create({
       model:      'claude-haiku-4-5-20251001',
       max_tokens: 1000,
       messages:   [{ role: 'user', content: prompt }],

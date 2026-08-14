@@ -7,7 +7,13 @@ import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
 import { Resend } from 'resend'
 
-const resend = new Resend(process.env.RESEND_API_KEY)
+// FIX (re-audit — build-blocking): module-scope instantiation, same class
+// as lib/email/templates.ts / lib/ai/guardian.ts — lazy singleton instead.
+let _resend: Resend | null = null
+function resendClient(): Resend {
+  if (!_resend) _resend = new Resend(process.env.RESEND_API_KEY)
+  return _resend
+}
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -41,7 +47,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const accent    = ws?.brand_colour || '#1A5C3A'
 
     // Event 2: SOW reminder — awaited (carry-forward §4.4)
-    await resend.emails.send({
+    await resendClient().emails.send({
       from:    `${ws?.agency_name} via ScopeGov <${process.env.RESEND_FROM_EMAIL}>`,
       to:      client?.email,
       cc:      client?.cc_emails?.filter(Boolean) || [],

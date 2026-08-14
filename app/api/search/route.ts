@@ -19,6 +19,20 @@ export async function GET(request: NextRequest) {
 
     const results: Array<{ type: string; id: string; title: string; sub: string; href: string }> = []
 
+    // FIX (re-audit): computed once and reused below for the Change Orders
+    // block, which was still filtering by workspace_id only — same class
+    // of gap as the Projects block right below used to have, just never
+    // propagated over. See app/api/projects/route.ts for the full
+    // explanation of why project_members can't be filtered by workspace_id
+    // or user_id directly.
+    let restrictedProjectIds: string[] | null = null
+    if (!canViewAll) {
+      const { data: myIds } = await (service as any)
+        .from('project_members').select('project_id, workspace_members!inner(user_id)')
+        .eq('workspace_members.user_id', session.id)
+      restrictedProjectIds = (myIds || []).map((r: any) => r.project_id)
+    }
+
     // ── Projects ──────────────────────────────────────────────
     let projQuery = (service as any)
       .from('projects')
@@ -28,16 +42,10 @@ export async function GET(request: NextRequest) {
       .textSearch('search_vector', tsQuery)
       .limit(5)
 
-    if (!canViewAll) {
-      // FIX: project_members has neither workspace_id nor user_id columns —
-      // see app/api/projects/route.ts for the full explanation. This
-      // silently returned nothing for anyone without VIEW_ALL_PROJECTS.
-      const { data: myIds } = await (service as any)
-        .from('project_members').select('project_id, workspace_members!inner(user_id)')
-        .eq('workspace_members.user_id', session.id)
-      const ids = (myIds || []).map((r: any) => r.project_id)
-      if (ids.length) projQuery = projQuery.in('id', ids)
-      else projQuery = projQuery.in('id', ['00000000-0000-0000-0000-000000000000']) // empty set
+    if (restrictedProjectIds) {
+      projQuery = restrictedProjectIds.length
+        ? projQuery.in('id', restrictedProjectIds)
+        : projQuery.in('id', ['00000000-0000-0000-0000-000000000000']) // empty set
     }
 
     const { data: projects } = await projQuery
@@ -70,12 +78,20 @@ export async function GET(request: NextRequest) {
     }
 
     // ── Change Orders (title match) ───────────────────────────
-    const { data: cos } = await (service as any)
+    let coQuery = (service as any)
       .from('change_orders')
       .select('id, title, status, project_id, projects(name)')
       .eq('workspace_id', wsId)
       .ilike('title', `%${escaped}%`)
       .limit(4)
+
+    if (restrictedProjectIds) {
+      coQuery = restrictedProjectIds.length
+        ? coQuery.in('project_id', restrictedProjectIds)
+        : coQuery.in('project_id', ['00000000-0000-0000-0000-000000000000'])
+    }
+
+    const { data: cos } = await coQuery
 
     for (const co of (cos || [])) {
       results.push({

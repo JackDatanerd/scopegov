@@ -23,15 +23,36 @@ export default async function ClientDetailPage({ params }: Props) {
 
   if (!client) notFound()
 
+  // FIX (re-audit, cosmetic-gate finding): select('*') shipped email,
+  // cc_emails, phone, vat_number, billing_address, and notes into the RSC
+  // payload for every viewer, regardless of VIEW_CLIENT_DATA — the JSX
+  // below only ever hid them, it never withheld them. Redact at the
+  // source instead, same as the projects/[id] page.
+  if (!canViewClientData) {
+    Object.assign(client, {
+      email: null, cc_emails: null, phone: null,
+      vat_number: null, billing_address: null,
+      payment_terms_note: null, notes: null,
+    })
+  }
+
   const canEditClientData = hasPermission(session, 'CREATE_PROJECTS')
 
-  const { data: projects = [] } = await (service as any)
+  const { data: projectsRaw = [] } = await (service as any)
     .from('projects')
     .select('id,name,disc,type,status,contract_value,currency,created_at,guardian_flags(status),change_orders(status),sow_documents(status)')
     .eq('client_id', id).eq('workspace_id', session.workspaceId).is('deleted_at', null)
     .order('created_at', { ascending: false })
 
-  const totalValue = (projects || []).reduce((s: number, p: any) => s + (p.contract_value || 0), 0)
+  // Same fix for contract_value — was shipped unconditionally, only the
+  // "Value" column and total below were ever gated in the UI.
+  const projects = canViewFinancials
+    ? projectsRaw
+    : (projectsRaw || []).map((p: any) => ({ ...p, contract_value: null }))
+
+  const totalValue = canViewFinancials
+    ? (projectsRaw || []).reduce((s: number, p: any) => s + (p.contract_value || 0), 0)
+    : 0
   const currency   = (projects || [])[0]?.currency || 'USD'
 
   function pillVariant(status: string): string {
@@ -173,8 +194,12 @@ export default async function ClientDetailPage({ params }: Props) {
             />
           )}
 
-          {/* Notes — ungated (spec §13.2) */}
-          {client.notes && (
+          {/* FIX (re-audit): was ungated ("spec §13.2" comment, no such
+              spec found anywhere in the repo) despite notes being part of
+              the same clients row as every other VIEW_CLIENT_DATA-gated
+              field. If §13.2 is a real, deliberate product decision made
+              outside this repo, this is a one-line revert. */}
+          {canViewClientData && client.notes && (
             <>
               <div className="sec-hd" style={{ marginBottom: 12 }}><div className="sec-title">Notes</div></div>
               <div className="surface surface-p">

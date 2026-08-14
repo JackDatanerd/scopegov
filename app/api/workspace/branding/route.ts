@@ -22,6 +22,17 @@ export async function PATCH(request: NextRequest) {
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
     if (brandColour) updates.brand_colour = brandColour
     if (logoStoragePath && typeof logoStoragePath === 'string') {
+      // FIX (re-audit, minor finding): logoStoragePath was accepted as an
+      // arbitrary string with no check that it's actually a path this user
+      // was allowed to upload to. The storage RLS policy for the `logos`
+      // bucket already restricts uploads to `<auth.uid()>/<filename>`
+      // ("Users can upload their own logo"), so mirror that shape here —
+      // this is defense-in-depth against setting the workspace's logo
+      // reference to a path outside that pattern.
+      const validPath = new RegExp(`^${session.id}/[a-zA-Z0-9._-]+$`)
+      if (!validPath.test(logoStoragePath)) {
+        return NextResponse.json({ error: 'Invalid logoStoragePath' }, { status: 400 })
+      }
       updates.logo_storage_path = logoStoragePath
     }
     // agencySignatureData: a base64 PNG data URL, or explicitly null to clear it

@@ -9,7 +9,15 @@ import { canReadProject } from '@/lib/utils/project-access'
 import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
 import Anthropic from '@anthropic-ai/sdk'
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+// FIX (re-audit — build-blocking): was constructed at module scope, so an
+// unset ANTHROPIC_API_KEY turns importing this route into a hard build
+// failure instead of a runtime error. Lazy singleton, same fix as
+// lib/email/templates.ts and lib/ai/guardian.ts.
+let _client: Anthropic | null = null
+function anthropicClient(): Anthropic {
+  if (!_client) _client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+  return _client
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -53,7 +61,7 @@ If you cannot improve within the word limit, return the current version verbatim
 Return ONLY the new section content as valid HTML (use <p>, <ul>, <li>, <strong>).
 No preamble, no explanation, no markdown fences. Just the HTML content.`
 
-    const msg = await client.messages.create({
+    const msg = await anthropicClient().messages.create({
       model:       'claude-haiku-4-5-20251001',
       max_tokens:  600,                            // BUG-032: 600 not 800
       messages:    [{ role: 'user', content: prompt }],

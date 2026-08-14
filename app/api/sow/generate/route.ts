@@ -18,7 +18,15 @@ import { canReadProject } from '@/lib/utils/project-access'
 import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
 import Anthropic from '@anthropic-ai/sdk'
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+// FIX (re-audit — build-blocking): was constructed at module scope, so an
+// unset ANTHROPIC_API_KEY turns importing this route into a hard build
+// failure instead of a runtime error. Lazy singleton, same fix as
+// lib/email/templates.ts and lib/ai/guardian.ts.
+let _client: Anthropic | null = null
+function anthropicClient(): Anthropic {
+  if (!_client) _client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+  return _client
+}
 const MODEL  = process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001'
 
 const PAYMENT_STRUCTURE_LABELS: Record<string, string> = {
@@ -208,7 +216,7 @@ Rules:
     let raw = ''
     let stopReason: string | null = null
     try {
-      const msg = await client.messages.create({
+      const msg = await anthropicClient().messages.create({
         model:      MODEL,
         // FIX: 4000 was genuinely tight for a full 14-section legal
         // document with "professional, authoritative language" — easily

@@ -44,6 +44,27 @@ export default async function ProjectPage({ params, searchParams }: Props) {
 
   if (!project) notFound()
 
+  // FIX (re-audit, cosmetic-gate finding): viewFinancials/viewClientData
+  // used to only control what the *client component* rendered, while the
+  // server component fetched and shipped the raw data to the browser in
+  // every RSC payload regardless of permission — same class of bug as the
+  // clients/[id] page already guards against with canViewClientData. Now
+  // computed up front so both the DB fetches below and the project object
+  // itself can actually withhold the data, not just hide it in the UI.
+  const viewFinancials  = hasPermission(session, 'VIEW_FINANCIALS')
+  const viewClientData  = hasPermission(session, 'VIEW_CLIENT_DATA')
+
+  if (!viewFinancials) {
+    project.contract_value = null
+    if (Array.isArray(project.change_orders)) {
+      project.change_orders = project.change_orders.map((co: any) => ({ ...co, total: null }))
+    }
+  }
+  if (!viewClientData && project.clients) {
+    const { id: clientId, name } = project.clients
+    project.clients = { id: clientId, name } // strip email, cc_emails, phone, notes
+  }
+
   // Check project access (own projects check)
   const canViewAll = hasPermission(session, 'VIEW_ALL_PROJECTS')
   if (!canViewAll) {
@@ -63,18 +84,28 @@ export default async function ProjectPage({ params, searchParams }: Props) {
   }
 
   // ── Fetch payment milestones ──────────────────────────────────────────
-  const { data: milestones = [] } = await (service as any)
-    .from('payment_milestones')
-    .select('*')
-    .eq('project_id', id)
-    .order('created_at', { ascending: true })
+  // FIX (re-audit): gated behind viewFinancials — was fetched unconditionally
+  // and shipped to the client regardless of permission.
+  const { data: milestones = [] } = viewFinancials
+    ? await (service as any)
+        .from('payment_milestones')
+        .select('*')
+        .eq('project_id', id)
+        .order('created_at', { ascending: true })
+    : { data: [] }
 
   // ── Fetch amendments ──────────────────────────────────────────────────
-  const { data: amendments = [] } = await (service as any)
+  const { data: amendmentsRaw = [] } = await (service as any)
     .from('amendments')
     .select('*')
     .eq('project_id', id)
     .order('created_at', { ascending: true })
+
+  // financial_impact is a dollar figure — redact it the same way as the
+  // rest of the financial surface when the viewer lacks VIEW_FINANCIALS.
+  const amendments = viewFinancials
+    ? amendmentsRaw
+    : (amendmentsRaw || []).map((a: any) => ({ ...a, financial_impact: null }))
 
   // ── Fetch team members ────────────────────────────────────────────────
   const { data: team = [] } = await (service as any)
@@ -92,25 +123,33 @@ export default async function ProjectPage({ params, searchParams }: Props) {
     .limit(50)
 
   // ── Fetch invoices (Phase 4a) ────────────────────────────────────────
-  const { data: invoices = [] } = await (service as any)
-    .from('invoices')
-    .select('id, milestone_id, sow_id, co_id, invoice_number, title, amount, amount_paid, currency, status, due_date, sent_at, paid_at, voided_at, token, created_at')
-    .eq('project_id', id)
-    .order('created_at', { ascending: false })
+  // FIX (re-audit): gated behind viewFinancials, same as milestones above.
+  const { data: invoices = [] } = viewFinancials
+    ? await (service as any)
+        .from('invoices')
+        .select('id, milestone_id, sow_id, co_id, invoice_number, title, amount, amount_paid, currency, status, due_date, sent_at, paid_at, voided_at, token, created_at')
+        .eq('project_id', id)
+        .order('created_at', { ascending: false })
+    : { data: [] }
 
   // ── Fetch reconciliation snapshot history (Phase 4) ──────────────────
-  const { data: reconciliation = [] } = await (service as any)
-    .from('contract_reconciliation_snapshots')
-    .select('contracted_value, invoiced_to_date, paid_to_date, at_risk_value, snapshot_date')
-    .eq('project_id', id)
-    .order('snapshot_date', { ascending: true })
-    .limit(90)
+  const { data: reconciliation = [] } = viewFinancials
+    ? await (service as any)
+        .from('contract_reconciliation_snapshots')
+        .select('contracted_value, invoiced_to_date, paid_to_date, at_risk_value, snapshot_date')
+        .eq('project_id', id)
+        .order('snapshot_date', { ascending: true })
+        .limit(90)
+    : { data: [] }
 
-  // Effective contract value
+  // Effective contract value — financial_impact/contract_value are both
+  // financial figures, so this derived total is withheld the same way.
   const amendmentTotal = (amendments || []).reduce(
     (s: number, a: any) => s + (a.financial_impact || 0), 0
   )
-  const effectiveContractValue = (project.contract_value || 0) + amendmentTotal
+  const effectiveContractValue = viewFinancials
+    ? (project.contract_value || 0) + amendmentTotal
+    : null
 
   // ── Fetch in-flight approval requests (Phase 3) ─────────────────────────
   // Keyed by "sow:<id>" / "co:<id>" so ProjectDetail can look one up per

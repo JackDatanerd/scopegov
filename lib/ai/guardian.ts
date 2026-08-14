@@ -4,8 +4,21 @@ import Anthropic from '@anthropic-ai/sdk'
 import { stripAndParse, stripHtml } from '@/lib/utils/format'
 import OpenAI from 'openai'
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-const openai    = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+// FIX (re-audit — build-blocking): both clients were constructed at module
+// scope, so an unset ANTHROPIC_API_KEY/OPENAI_API_KEY turned into a hard
+// build failure at "Collecting page data" for any route importing this
+// file, rather than a runtime error scoped to guardian classification.
+// Lazy singletons, matching the fix already applied in lib/email/templates.ts.
+let _anthropic: Anthropic | null = null
+function anthropicClient(): Anthropic {
+  if (!_anthropic) _anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+  return _anthropic
+}
+let _openai: OpenAI | null = null
+function openaiClient(): OpenAI {
+  if (!_openai) _openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+  return _openai
+}
 
 export type Sensitivity = 'conservative' | 'medium' | 'aggressive'
 
@@ -94,7 +107,7 @@ Rules:
 - reasoning: factual, one sentence. Do not interpret intent. Describe what matched or didn't match.
 - When in doubt, lean BORDERLINE rather than OUT_OF_SCOPE to minimise false positives.`
 
-  const msg = await anthropic.messages.create({
+  const msg = await anthropicClient().messages.create({
     model:       'claude-haiku-4-5-20251001', // Haiku acceptable for classification (carry-forward §1.5)
     max_tokens:  400,
     temperature: 0,                            // Classification prompt contract §1.6.2
@@ -137,7 +150,7 @@ Rules:
 // ── Embedding for dedup ───────────────────────────────────────
 // BUG-060: embedding ALWAYS computed; only PERSISTED for non-duplicates
 export async function getEmbedding(text: string): Promise<number[]> {
-  const res = await openai.embeddings.create({
+  const res = await openaiClient().embeddings.create({
     model: 'text-embedding-3-small',
     input: text.slice(0, 2000), // first 2000 chars for dedup (spec §1.6.4)
   })

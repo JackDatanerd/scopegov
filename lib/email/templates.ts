@@ -3,8 +3,19 @@ export const runtime = 'nodejs'
 import { Resend } from 'resend'
 import { escapeHtml } from '@/lib/utils/sanitize'
 
-const resend = new Resend(process.env.RESEND_API_KEY)
-const FROM   = process.env.RESEND_FROM_EMAIL || 'noreply@mail.scopegov.app'
+// FIX (re-audit — build-blocking): Resend was constructed at module scope,
+// so simply *importing* this file (which nearly every route does) threw if
+// RESEND_API_KEY was unset — turning a missing env var into a hard build
+// failure at Next.js's "Collecting page data" step instead of a runtime
+// error on the one route that actually sends an email. Same class of bug
+// ScopeShield already fixed for its Anthropic/OpenAI clients (lazy
+// singleton, 8+ sites) — applying it here too.
+let _resend: Resend | null = null
+function resendClient(): Resend {
+  if (!_resend) _resend = new Resend(process.env.RESEND_API_KEY)
+  return _resend
+}
+const FROM = process.env.RESEND_FROM_EMAIL || 'noreply@mail.scopegov.app'
 const BRAND_FROM = (agencyName: string) => `${agencyName} via ScopeGov`
 
 // FIX (audit round 4, finding #7): none of these templates HTML-escaped
@@ -159,7 +170,7 @@ export async function sendSowEmail(params: {
     ctaSecondary: `Or paste this link into your browser:<br><span style="font-family:monospace;font-size:11px;word-break:break-all;">${portalUrl}</span>`,
   })
 
-  return resend.emails.send({
+  return resendClient().emails.send({
     from:    `${BRAND_FROM(agencyNameRaw)} <${FROM}>`,
     to,
     cc:      cc?.filter(Boolean) || [],
@@ -201,7 +212,7 @@ export async function sendSowSignedAgencyEmail(params: {
     `,
   })
 
-  return resend.emails.send({
+  return resendClient().emails.send({
     from:    `ScopeGov <${FROM}>`,
     to,
     subject: `✓ ${clientNameRaw} signed the ${projectNameRaw} SOW`,
@@ -240,7 +251,7 @@ export async function sendSowSignedClientEmail(params: {
     ctaUrl: portalUrl,
   })
 
-  return resend.emails.send({
+  return resendClient().emails.send({
     from:    `${BRAND_FROM(agencyNameRaw)} <${FROM}>`,
     to,
     subject: `Your ${projectNameRaw} agreement is confirmed`,
@@ -283,7 +294,7 @@ export async function sendSowDeclinedEmail(params: {
     ctaUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects`,
   })
 
-  return resend.emails.send({
+  return resendClient().emails.send({
     from:    `ScopeGov <${FROM}>`,
     to,
     subject: `Client declined the ${projectNameRaw} SOW`,
@@ -331,7 +342,7 @@ export async function sendGuardianFlagEmail(params: {
     ctaUrl: projectUrl,
   })
 
-  return resend.emails.send({
+  return resendClient().emails.send({
     from:    `ScopeGov Guardian <${FROM}>`,
     to,
     subject: `[${severity.toUpperCase()}] Scope flag on ${projectNameRaw}`,
@@ -370,7 +381,7 @@ export async function sendInviteEmail(params: {
     ctaUrl: inviteUrl,
   })
 
-  return resend.emails.send({
+  return resendClient().emails.send({
     from:    `ScopeGov <${FROM}>`,
     to,
     subject: `${inviterNameRaw} invited you to join ${workspaceNameRaw} on ScopeGov`,
@@ -409,7 +420,7 @@ export async function sendTrialWarningEmail(params: {
     ctaUrl: upgradeUrl,
   })
 
-  return resend.emails.send({
+  return resendClient().emails.send({
     from:    `ScopeGov <${FROM}>`,
     to,
     subject: daysLeft === 0
@@ -448,7 +459,7 @@ export async function sendEscalationEmail(params: {
     ctaUrl: url,
   })
 
-  return resend.emails.send({
+  return resendClient().emails.send({
     from:    `ScopeGov <${FROM}>`,
     to,
     subject: `Escalated to you: ${entityNameRaw}`,
@@ -495,7 +506,7 @@ export async function sendApprovalRequestedEmail(params: {
     ctaUrl: url,
   })
 
-  return resend.emails.send({
+  return resendClient().emails.send({
     from:    `ScopeGov <${FROM}>`,
     to,
     subject: `Approval needed: ${documentTitleRaw} — ${projectNameRaw}`,
@@ -547,7 +558,7 @@ export async function sendApprovalDecisionEmail(params: {
     ctaUrl: url,
   })
 
-  return resend.emails.send({
+  return resendClient().emails.send({
     from:    `ScopeGov <${FROM}>`,
     to,
     subject: `${approved ? 'Approved' : 'Rejected'}: ${documentTitleRaw} — ${projectNameRaw}`,
@@ -596,7 +607,7 @@ export async function sendCoEmail(params: {
     ctaUrl: portalUrl,
   })
 
-  return resend.emails.send({
+  return resendClient().emails.send({
     from:    `${BRAND_FROM(agencyNameRaw)} <${FROM}>`,
     to,
     cc:      cc?.filter(Boolean) || [],
@@ -642,7 +653,7 @@ export async function sendCoAcceptedEmail(params: {
     ctaUrl: projectUrl,
   })
 
-  return resend.emails.send({
+  return resendClient().emails.send({
     from:    `ScopeGov <${FROM}>`,
     to,
     subject: `✓ Change order accepted — ${projectNameRaw} +${currency} ${total.toLocaleString()}`,
@@ -679,7 +690,7 @@ export async function sendPaymentFailedEmail(params: {
     ctaUrl: upgradeUrl,
   })
 
-  return resend.emails.send({
+  return resendClient().emails.send({
     from:    `ScopeGov <${FROM}>`,
     to,
     subject: `Action needed: Payment failed for ScopeGov — ${graceDaysLeft} days to resolve`,
@@ -731,7 +742,7 @@ export async function sendInvoiceEmail(params: {
     footerNote: 'This invoice is issued and tracked via ScopeGov on behalf of the agency above. ScopeGov does not process this payment — pay per the instructions provided by the agency.',
   })
 
-  return resend.emails.send({
+  return resendClient().emails.send({
     from:    `${BRAND_FROM(agencyNameRaw)} <${FROM}>`,
     to,
     cc:      cc?.filter(Boolean) || [],
@@ -772,7 +783,7 @@ export async function sendInvoiceReminderEmail(params: {
     ctaUrl: portalUrl,
   })
 
-  return resend.emails.send({
+  return resendClient().emails.send({
     from:    `${BRAND_FROM(agencyNameRaw)} <${FROM}>`,
     to,
     cc:      cc?.filter(Boolean) || [],
@@ -809,7 +820,7 @@ export async function sendInvoicePaymentRecordedEmail(params: {
     ctaUrl: projectUrl,
   })
 
-  return resend.emails.send({
+  return resendClient().emails.send({
     from:    `ScopeGov <${FROM}>`,
     to,
     subject: isFullyPaid
@@ -844,7 +855,7 @@ export async function sendInvoiceOverdueInternalEmail(params: {
     ctaUrl: projectUrl,
   })
 
-  return resend.emails.send({
+  return resendClient().emails.send({
     from:    `ScopeGov <${FROM}>`,
     to,
     subject: `Overdue: ${clientNameRaw} — ${currency} ${balanceDue.toLocaleString()} (${projectNameRaw})`,
@@ -873,7 +884,7 @@ export async function sendMfaEnabledEmail(params: { to: string; name: string }) 
       </p>
     `,
   })
-  return resend.emails.send({ from: `ScopeGov <${FROM}>`, to, subject: 'Two-factor authentication enabled on your ScopeGov account', html })
+  return resendClient().emails.send({ from: `ScopeGov <${FROM}>`, to, subject: 'Two-factor authentication enabled on your ScopeGov account', html })
 }
 
 // ── Security: MFA disabled ───────────────────────────────────
@@ -898,7 +909,7 @@ export async function sendMfaDisabledEmail(params: { to: string; name: string; v
       </p>
     `,
   })
-  return resend.emails.send({ from: `ScopeGov <${FROM}>`, to, subject: 'Two-factor authentication was disabled on your ScopeGov account', html })
+  return resendClient().emails.send({ from: `ScopeGov <${FROM}>`, to, subject: 'Two-factor authentication was disabled on your ScopeGov account', html })
 }
 
 // ── Security: backup codes regenerated ───────────────────────
@@ -922,5 +933,5 @@ export async function sendMfaBackupCodesRegeneratedEmail(params: { to: string; n
       </p>
     `,
   })
-  return resend.emails.send({ from: `ScopeGov <${FROM}>`, to, subject: 'New two-factor backup codes generated', html })
+  return resendClient().emails.send({ from: `ScopeGov <${FROM}>`, to, subject: 'New two-factor backup codes generated', html })
 }

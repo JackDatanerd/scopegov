@@ -46,13 +46,13 @@ export async function POST(request: NextRequest) {
     })
 
     if (rpcError) {
+      // FIX (re-audit, minor finding): raw Postgres error message/code/hint
+      // was returned straight to the browser — fine for local debugging,
+      // but an information-disclosure leftover for production. Log server-side
+      // only now.
       console.error('create_workspace_atomic failed:', JSON.stringify(rpcError))
-      // Return the actual Postgres error so we can diagnose in the browser
       return NextResponse.json({
         error: 'Failed to create workspace',
-        detail: rpcError.message || null,
-        code:   rpcError.code   || null,
-        hint:   rpcError.hint   || null,
       }, { status: 500 })
     }
 
