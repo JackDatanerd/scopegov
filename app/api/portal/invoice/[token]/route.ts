@@ -3,6 +3,7 @@ export const runtime = 'nodejs'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { jwtVerify } from 'jose'
+import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
 
 // GET /api/portal/invoice/[token] — read-only. No pay button, no checkout
 // flow: this is a document-delivery + status view, not a payment processor.
@@ -20,7 +21,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       .select(`id, title, amount, amount_paid, currency, status, due_date, sent_at,
         payment_instructions, invoice_number, workspace_id,
         projects(id, name, clients(name, company_name),
-          workspaces(agency_name, brand_colour, jwt_secret, logo_storage_path))`)
+          workspaces(agency_name, brand_colour, logo_storage_path))`)
       .eq('token', token).single()
 
     if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
@@ -28,8 +29,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       return NextResponse.json({ error: 'This invoice is no longer available' }, { status: 409 })
 
     const workspace = invoice.projects?.workspaces
+    // jwt_secret lives in workspace_secrets now, not on workspaces itself —
+    // see migration 013.
     try {
-      const secret = new TextEncoder().encode(workspace.jwt_secret)
+      const jwtSecret = await getWorkspaceJwtSecret(service, invoice.workspace_id)
+      if (!jwtSecret) throw new Error('no secret')
+      const secret = new TextEncoder().encode(jwtSecret)
       await jwtVerify(token, secret)
     } catch {
       return NextResponse.json({ error: 'Invalid or expired link' }, { status: 401 })

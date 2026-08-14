@@ -5,6 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { jwtVerify } from 'jose'
 import { logAudit } from '@/lib/utils/audit'
 import { sendCoAcceptedEmail } from '@/lib/email/templates'
+import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
 
 async function getCoByToken(token: string, service: any) {
   const { data: revoked } = await (service as any)
@@ -16,14 +17,17 @@ async function getCoByToken(token: string, service: any) {
     .select(`id,title,note,status,version,line_items,subtotal,tax_rate,tax_inclusive,
       total,expires_at,flag_id,workspace_id,accepted_by,accepted_at,client_signature_data,
       projects(id,name,currency,clients(name,email,cc_emails),
-        workspaces(id,agency_name,brand_colour,logo_storage_path,agency_signature_data,jwt_secret))`)
+        workspaces(id,agency_name,brand_colour,logo_storage_path,agency_signature_data))`)
     .eq('token', token).single()
 
   if (!co) return { state: 'invalid' }
 
-  const ws = co.projects?.workspaces
+  // jwt_secret lives in workspace_secrets now, not on workspaces itself —
+  // see migration 013.
   try {
-    const secret = new TextEncoder().encode(ws.jwt_secret)
+    const jwtSecret = await getWorkspaceJwtSecret(service, co.workspace_id)
+    if (!jwtSecret) throw new Error('no secret')
+    const secret = new TextEncoder().encode(jwtSecret)
     await jwtVerify(token, secret)
   } catch {
     if (co.expires_at && new Date(co.expires_at) < new Date()) return { state: 'expired' }

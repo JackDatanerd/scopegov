@@ -17,6 +17,7 @@ import { nanoid } from 'nanoid'
 import { sendSowEmail } from '@/lib/email/templates'
 import { logAudit } from '@/lib/utils/audit'
 import { assignDocumentNumber } from '@/lib/utils/document-number'
+import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
 
 export type SendSowResult =
   | { ok: true; token: string; portalUrl: string; projectId: string; projectName: string; documentNumber: string }
@@ -39,7 +40,7 @@ export async function sendSowDocument(service: any, params: {
     .select(`id, version, status, project_id, document_number,
       projects(id, name, disc, contract_value, currency, client_id,
         clients(name, email, cc_emails),
-        workspaces(id, agency_name, brand_colour, logo_storage_path, jwt_secret))`)
+        workspaces(id, agency_name, brand_colour, logo_storage_path))`)
     .eq('id', sowId).eq('workspace_id', workspaceId).single()
 
   if (!sow) return { ok: false, error: 'SOW not found', status: 404 }
@@ -51,7 +52,11 @@ export async function sendSowDocument(service: any, params: {
 
   if (!client?.email) return { ok: false, error: 'Client email is required to send SOW', status: 400 }
 
-  const secret    = new TextEncoder().encode(workspace.jwt_secret)
+  // jwt_secret lives in workspace_secrets now, not on workspaces itself —
+  // see migration 013.
+  const jwtSecret = await getWorkspaceJwtSecret(service, workspaceId)
+  if (!jwtSecret) return { ok: false, error: 'Workspace signing secret not found', status: 500 }
+  const secret    = new TextEncoder().encode(jwtSecret)
   const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) // 30 days
   const token     = await new SignJWT({
     sowId,

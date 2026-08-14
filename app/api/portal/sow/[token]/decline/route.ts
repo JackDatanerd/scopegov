@@ -7,6 +7,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { sendSowDeclinedEmail } from '@/lib/email/templates'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
+import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
@@ -20,15 +21,19 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const { data: sow } = await (service as any)
       .from('sow_documents')
-      .select('id,version,status,project_id,workspace_id,projects(id,name,workspaces(jwt_secret,agency_name),clients(name,email))')
+      .select('id,version,status,project_id,workspace_id,projects(id,name,workspaces(agency_name),clients(name,email))')
       .eq('token', token).single()
 
     if (!sow) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (sow.status !== 'awaiting_signature')
       return NextResponse.json({ error: 'SOW cannot be declined in current status' }, { status: 409 })
 
+    // jwt_secret lives in workspace_secrets now, not on workspaces itself —
+    // see migration 013.
     try {
-      const secret = new TextEncoder().encode(sow.projects.workspaces.jwt_secret)
+      const jwtSecret = await getWorkspaceJwtSecret(service, sow.workspace_id)
+      if (!jwtSecret) throw new Error('no secret')
+      const secret = new TextEncoder().encode(jwtSecret)
       await jwtVerify(token, secret)
     } catch {
       return NextResponse.json({ error: 'Invalid or expired link' }, { status: 401 })

@@ -7,6 +7,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { escapeHtml } from '@/lib/utils/sanitize'
+import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
 
 async function resolveCoAndToken(token: string, service: any) {
   const { data: revoked } = await (service as any)
@@ -16,13 +17,17 @@ async function resolveCoAndToken(token: string, service: any) {
   const { data: co } = await (service as any)
     .from('change_orders')
     .select(`id,title,status,flag_id,project_id,workspace_id,
-      projects(id,name,currency,clients(name,email),workspaces(agency_name,jwt_secret))`)
+      projects(id,name,currency,clients(name,email),workspaces(agency_name))`)
     .eq('token', token).single()
 
   if (!co) return { error: 'Not found', status: 404 }
 
+  // jwt_secret lives in workspace_secrets now, not on workspaces itself —
+  // see migration 013.
   try {
-    const secret = new TextEncoder().encode(co.projects.workspaces.jwt_secret)
+    const jwtSecret = await getWorkspaceJwtSecret(service, co.workspace_id)
+    if (!jwtSecret) throw new Error('no secret')
+    const secret = new TextEncoder().encode(jwtSecret)
     await jwtVerify(token, secret)
   } catch { return { error: 'Invalid or expired link', status: 401 } }
 

@@ -183,7 +183,7 @@ Per Bug Catalogue — verify these before deploying:
 - [ ] CO stall job: `awaiting_response` only, NOT `countered` (BUG-055)
 - [ ] Flag reversion fires on decline, close, AND withdraw (BUG-048)
 - [ ] `acceptedAt` set unconditionally on all acceptance paths (BUG-047)
-- [ ] `jwtSecret` excluded from all API responses (BUG-062)
+- [ ] `jwtSecret` lives ONLY in `workspace_secrets` (RLS deny-all, service_role only) — never re-add it as a column on `workspaces` itself, even with "exclude from API responses" discipline in app code. RLS is row-level, not column-level: a column on `workspaces` is readable by any active member directly via Supabase's REST API regardless of what the Next.js routes return (BUG-062 / migration 013)
 - [ ] `stallReason` cleared by state machine on Stalled→Active (BUG-046)
 - [ ] Amendment handler queries highest-versioned signed SOW (BUG-052)
 - [ ] Embedding computed for all submissions, persisted only for non-duplicates (BUG-060)
@@ -243,7 +243,7 @@ app/
 - Two JWT families (spec §0.4):
   1. Supabase session JWT — for authenticated app users
   2. Document JWT (HS256, workspace-specific secret) — for unauthenticated client portals
-- `jwtSecret` never in any API response (BUG-062)
+- `jwtSecret` isolated in its own `workspace_secrets` table (RLS deny-all, service_role only) — not just excluded from API responses. A column on `workspaces` itself would be readable by any active member directly via Supabase's REST API regardless of what our own routes return, since RLS is row-level, not column-level (BUG-062 / migration 013)
 - Middleware refreshes session on every request
 
 ### Background jobs (Vercel Cron)

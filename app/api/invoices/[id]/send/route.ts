@@ -9,6 +9,7 @@ import { sendInvoiceEmail } from '@/lib/email/templates'
 import { SignJWT } from 'jose'
 import { nanoid } from 'nanoid'
 import { canReadProject } from '@/lib/utils/project-access'
+import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -26,7 +27,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .from('invoices')
       .select(`id, title, amount, currency, status, due_date, payment_instructions, invoice_number,
         projects(id, name, client_id, clients(name, email, cc_emails, company_name),
-          workspaces(id, agency_name, brand_colour, jwt_secret))`)
+          workspaces(id, agency_name, brand_colour))`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!invoice) {
@@ -45,7 +46,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!client?.email)
       return NextResponse.json({ error: 'Client email required' }, { status: 400 })
 
-    const secret    = new TextEncoder().encode(workspace.jwt_secret)
+    // jwt_secret lives in workspace_secrets now, not on workspaces itself —
+    // see migration 013.
+    const jwtSecret = await getWorkspaceJwtSecret(service, session.workspaceId)
+    if (!jwtSecret) return NextResponse.json({ error: 'Workspace signing secret not found' }, { status: 500 })
+    const secret    = new TextEncoder().encode(jwtSecret)
     const expiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000) // invoices stay viewable longer than SOW/CO response windows
     const token     = await new SignJWT({
       invoiceId:   id,

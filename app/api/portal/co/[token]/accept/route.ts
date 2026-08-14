@@ -7,6 +7,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { sendCoAcceptedEmail } from '@/lib/email/templates'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
+import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
@@ -37,7 +38,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .select(`id,title,status,version,line_items,subtotal,tax_rate,tax_inclusive,total,flag_id,
         project_id,workspace_id,
         projects(id,name,currency,clients(name,email,cc_emails),
-          workspaces(id,agency_name,brand_colour,jwt_secret))`)
+          workspaces(id,agency_name,brand_colour))`)
       .eq('token', token).single()
 
     if (!co) return NextResponse.json({ error: 'CO not found' }, { status: 404 })
@@ -55,8 +56,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (co.status !== 'awaiting_response')
       return NextResponse.json({ error: 'CO cannot be accepted in current status' }, { status: 409 })
 
+    // jwt_secret lives in workspace_secrets now, not on workspaces itself —
+    // see migration 013.
     try {
-      const secret = new TextEncoder().encode(co.projects.workspaces.jwt_secret)
+      const jwtSecret = await getWorkspaceJwtSecret(service, co.workspace_id)
+      if (!jwtSecret) throw new Error('no secret')
+      const secret = new TextEncoder().encode(jwtSecret)
       await jwtVerify(token, secret)
     } catch {
       return NextResponse.json({ error: 'Invalid or expired link' }, { status: 401 })

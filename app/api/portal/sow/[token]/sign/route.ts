@@ -9,6 +9,7 @@ import { renderSowPdf } from '@/lib/pdf/renderer'
 import { nanoid } from 'nanoid'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
+import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
@@ -38,7 +39,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .select(`id, version, status, sections, metadata, expires_at, project_id, workspace_id,
         projects(id, name, disc, currency, contract_value, client_id, created_by,
           clients(name, email, cc_emails, company_name, billing_address, vat_number),
-          workspaces(id, agency_name, brand_colour, jwt_secret, logo_storage_path, agency_signature_data,
+          workspaces(id, agency_name, brand_colour, logo_storage_path, agency_signature_data,
             first_sow_signed_at, legal_address, tax_id, phone, website))`)
       .eq('token', token).single()
 
@@ -48,9 +49,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (sow.expires_at && new Date(sow.expires_at) < new Date())
       return NextResponse.json({ error: 'This link has expired' }, { status: 410 })
 
-    // Verify JWT
+    // Verify JWT — jwt_secret lives in workspace_secrets now, not on
+    // workspaces itself — see migration 013.
     try {
-      const secret = new TextEncoder().encode(sow.projects.workspaces.jwt_secret)
+      const jwtSecret = await getWorkspaceJwtSecret(service, sow.workspace_id)
+      if (!jwtSecret) throw new Error('no secret')
+      const secret = new TextEncoder().encode(jwtSecret)
       await jwtVerify(token, secret)
     } catch {
       return NextResponse.json({ error: 'Invalid or expired signing link' }, { status: 401 })

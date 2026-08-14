@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { jwtVerify } from 'jose'
 import { renderInvoicePdf } from '@/lib/pdf/renderer'
+import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
 
 // GET /api/portal/invoice/[token]/pdf — same document as /api/pdf/invoice/[id],
 // but gated by the client's portal token instead of an internal session, since
@@ -20,9 +21,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const { data: invoice } = await (service as any)
       .from('invoices')
       .select(`id, title, amount, amount_paid, currency, status, due_date, sent_at,
-        payment_instructions, invoice_number, po_number, project_id, milestone_id,
+        payment_instructions, invoice_number, po_number, project_id, milestone_id, workspace_id,
         projects(id, name, clients(name, company_name, billing_address, vat_number),
-          workspaces(agency_name, brand_colour, jwt_secret, logo_storage_path,
+          workspaces(agency_name, brand_colour, logo_storage_path,
             legal_address, tax_id, phone, website))`)
       .eq('token', token).single()
 
@@ -31,8 +32,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       return NextResponse.json({ error: 'This invoice is no longer available' }, { status: 409 })
 
     const workspace = invoice.projects?.workspaces
+    // jwt_secret lives in workspace_secrets now, not on workspaces itself —
+    // see migration 013.
     try {
-      const secret = new TextEncoder().encode(workspace.jwt_secret)
+      const jwtSecret = await getWorkspaceJwtSecret(service, invoice.workspace_id)
+      if (!jwtSecret) throw new Error('no secret')
+      const secret = new TextEncoder().encode(jwtSecret)
       await jwtVerify(token, secret)
     } catch {
       return NextResponse.json({ error: 'Invalid or expired link' }, { status: 401 })

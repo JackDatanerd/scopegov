@@ -81,9 +81,17 @@ export interface Workspace {
   updatedAt: string
 }
 
-export interface WorkspaceWithSecret extends Workspace {
-  jwtSecret: string // server-side only
-}
+// FIX (migration 013): jwt_secret no longer lives on public.workspaces at
+// all — it moved to public.workspace_secrets (RLS-locked to service_role
+// only) after the column was found readable by any active workspace
+// member directly through Supabase's PostgREST API, bypassing every
+// app-layer "never in API responses" guard. Fetch it via
+// lib/utils/workspace-secret.ts's getWorkspaceJwtSecret(), never by
+// selecting a jwt_secret column off workspaces again. WorkspaceWithSecret
+// intentionally removed rather than left stale — resist the urge to
+// recreate it by joining workspaces to workspace_secrets in a single
+// select; keep the two queries separate so it stays obvious this value
+// requires the service-role client specifically.
 
 // ── USERS ─────────────────────────────────────────────────────
 

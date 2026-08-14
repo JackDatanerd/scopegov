@@ -3,6 +3,7 @@ export const runtime = 'nodejs'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { jwtVerify } from 'jose'
+import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
@@ -30,16 +31,19 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       .select(`id, version, status, sections, metadata, expires_at, signed_at, signed_by, client_signature_data,
         projects(id, name, disc, contract_value, currency, client_id,
           clients(name, email),
-          workspaces(id, agency_name, brand_colour, logo_storage_path, agency_signature_data, jwt_secret))`)
+          workspaces(id, agency_name, brand_colour, logo_storage_path, agency_signature_data))`)
       .eq('token', token)
       .single()
 
     if (!sow) return NextResponse.json({ state: 'invalid' })
 
-    // Verify JWT with workspace-specific secret
+    // Verify JWT with workspace-specific secret — jwt_secret lives in
+    // workspace_secrets now, not on workspaces itself — see migration 013.
     const workspace = sow.projects?.workspaces
     try {
-      const secret = new TextEncoder().encode(workspace.jwt_secret)
+      const jwtSecret = workspace?.id ? await getWorkspaceJwtSecret(service, workspace.id) : null
+      if (!jwtSecret) throw new Error('no secret')
+      const secret = new TextEncoder().encode(jwtSecret)
       await jwtVerify(token, secret)
     } catch {
       // Token expired or invalid signature

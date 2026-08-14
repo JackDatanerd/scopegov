@@ -7,6 +7,7 @@ import { nanoid } from 'nanoid'
 import { sendCoEmail } from '@/lib/email/templates'
 import { logAudit } from '@/lib/utils/audit'
 import { assignDocumentNumber } from '@/lib/utils/document-number'
+import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
 
 export type SendCoResult =
   | { ok: true; token: string; portalUrl: string; projectId: string; coTitle: string; documentNumber: string }
@@ -30,7 +31,7 @@ export async function sendCoDocument(service: any, params: {
     .select(`id,title,status,note,total,version,document_number,
       projects(id,name,currency,client_id,
         clients(name,email,cc_emails),
-        workspaces(id,agency_name,brand_colour,jwt_secret))`)
+        workspaces(id,agency_name,brand_colour))`)
     .eq('id', coId).eq('workspace_id', workspaceId).single()
 
   if (!co) {
@@ -45,7 +46,11 @@ export async function sendCoDocument(service: any, params: {
 
   if (!client?.email) return { ok: false, error: 'Client email required', status: 400 }
 
-  const secret    = new TextEncoder().encode(workspace.jwt_secret)
+  // jwt_secret lives in workspace_secrets now, not on workspaces itself —
+  // see migration 013.
+  const jwtSecret = await getWorkspaceJwtSecret(service, workspaceId)
+  if (!jwtSecret) return { ok: false, error: 'Workspace signing secret not found', status: 500 }
+  const secret    = new TextEncoder().encode(jwtSecret)
   const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
   const token     = await new SignJWT({
     coId,
