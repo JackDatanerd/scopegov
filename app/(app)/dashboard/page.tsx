@@ -70,6 +70,7 @@ export default async function DashboardPage() {
     .order('updated_at', { ascending: false })
     .limit(80)
 
+  let accessibleProjectIds: string[] | null = null
   if (!canViewAll) {
     // FIX: project_members has neither workspace_id nor user_id columns —
     // see app/api/projects/route.ts for the full explanation. This
@@ -77,18 +78,39 @@ export default async function DashboardPage() {
     const { data: myIds } = await (service as any)
       .from('project_members').select('project_id, workspace_members!inner(user_id)')
       .eq('workspace_members.user_id', session.id)
-    const ids = (myIds || []).map((r: any) => r.project_id)
-    if (!ids.length) return <EmptyDash session={session} canCreate={canCreate} daysLeft={daysLeft} />
-    projQuery = projQuery.in('id', ids)
+    accessibleProjectIds = (myIds || []).map((r: any) => r.project_id)
+    if (!accessibleProjectIds?.length) return <EmptyDash session={session} canCreate={canCreate} daysLeft={daysLeft} />
+    projQuery = projQuery.in('id', accessibleProjectIds)
   }
 
   const { data: projects = [] } = await projQuery
   const { data: ws } = await (service as any)
     .from('workspaces').select('proactive_risk_alerts_enabled,proactive_risk_threshold')
     .eq('id', session.workspaceId).single()
-  const { data: activity = [] } = await (service as any)
+
+  // FIX (audit round 4, finding #8): this was workspace-wide with no
+  // project-membership filtering at all — a VIEW_OWN_PROJECTS-restricted
+  // member's dashboard showed audit_log rows (including entity names and
+  // financial metadata like CO/invoice amounts) for every project in the
+  // workspace, not just their own. audit_log has no project_id column and
+  // entity_id is polymorphic (project id for project.* events, but a
+  // sub-entity id like sow_id/co_id/invoice_id for most others), so it
+  // can't be reliably scoped by project for arbitrary event types without
+  // a per-entity-type join. Rather than ship a partially-correct filter,
+  // restricted users get a narrower but fully-correct feed: only
+  // project-lifecycle events (entity_type = 'project', where entity_id is
+  // guaranteed to be the project id itself) for projects they can access.
+  // A `project_id` column on audit_log, populated at write time, would
+  // let this show the full picture safely — worth a follow-up migration.
+  let activityQuery = (service as any)
     .from('audit_log').select('id,event_type,entity_name,actor_name,created_at,metadata')
     .eq('workspace_id', session.workspaceId).order('created_at', { ascending: false }).limit(14)
+
+  if (!canViewAll) {
+    activityQuery = activityQuery.eq('entity_type', 'project').in('entity_id', accessibleProjectIds || [])
+  }
+
+  const { data: activity = [] } = await activityQuery
 
   const active = (projects || []).filter((p: any) =>
     ['Active', 'Awaiting Signature', 'Intake', 'Changes Requested'].includes(p.status))

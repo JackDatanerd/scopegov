@@ -60,7 +60,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     // Notify agency (Event 5) — awaited
     try {
-      const emails = await getMemberEmailsWithPermission(service, sow.workspace_id, 'SEND_SOW', 25, 'sow_declined')
+      const emails = await getMemberEmailsWithPermission(service, sow.workspace_id, 'SEND_SOW', 25, 'sow_declined', project.id)
       if (emails.length) {
         await sendSowDeclinedEmail({
           to: emails, agencyName: project.workspaces.agency_name,
@@ -72,7 +72,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       workspaceId: sow.workspace_id, permission: 'SEND_SOW', eventType: 'sow_declined',
       type: 'sow_declined', title: `SOW declined — ${project.name}`,
       body: reason ? `${client.name} declined: ${reason}` : `${client.name} declined the Statement of Work.`,
-      entityType: 'project', entityId: project.id,
+      entityType: 'project', entityId: project.id, projectId: project.id,
     })
 
     return NextResponse.json({ ok: true })

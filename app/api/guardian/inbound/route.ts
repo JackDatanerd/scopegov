@@ -187,7 +187,7 @@ export async function POST(request: NextRequest) {
         await (service as any).from('guardian_checks').update({ flag_id: flag.id }).eq('id', checkRow.id)
 
         // Notify APPROVE_FLAGS holders
-        const emails = await getMemberEmailsWithPermission(service, project.workspace_id, 'APPROVE_FLAGS', 25, 'guardian_flag')
+        const emails = await getMemberEmailsWithPermission(service, project.workspace_id, 'APPROVE_FLAGS', 25, 'guardian_flag', project.id)
         if (emails.length) {
           try {
             await sendGuardianFlagEmail({
@@ -206,7 +206,7 @@ export async function POST(request: NextRequest) {
           workspaceId: project.workspace_id, permission: 'APPROVE_FLAGS', eventType: 'guardian_flag',
           type: 'guardian_flag', title: `Scope flag — ${project.name}`,
           body: classification.reasoning?.slice(0, 140) || 'A new out-of-scope request was flagged.',
-          entityType: 'project', entityId: project.id,
+          entityType: 'project', entityId: project.id, projectId: project.id,
         })
 
         await logAudit(service, {

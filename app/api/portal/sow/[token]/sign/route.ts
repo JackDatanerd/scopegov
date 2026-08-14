@@ -172,7 +172,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     // ── 9. Notify SEND_SOW holders (Event 3) — awaited ───────
     try {
-      const agencyEmails = await getMemberEmailsWithPermission(service, sow.workspace_id, 'SEND_SOW', 25, 'sow_signed')
+      const agencyEmails = await getMemberEmailsWithPermission(service, sow.workspace_id, 'SEND_SOW', 25, 'sow_signed', project.id)
       if (agencyEmails.length) {
         await sendSowSignedAgencyEmail({
           to:          agencyEmails,
@@ -189,7 +189,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       workspaceId: sow.workspace_id, permission: 'SEND_SOW', eventType: 'sow_signed',
       type: 'sow_signed', title: `SOW signed — ${project.name}`,
       body: `${signerName.trim()} signed the Statement of Work.`,
-      entityType: 'project', entityId: project.id,
+      entityType: 'project', entityId: project.id, projectId: project.id,
     })
 
     // ── 10. Confirm to client (Event 4) ───────────────────────

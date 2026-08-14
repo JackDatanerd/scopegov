@@ -21,11 +21,16 @@ interface NotifyParams {
   entityType?: string
   entityId?:   string
   excludeUserId?: string  // don't notify the person who triggered their own action
+  // FIX (audit round 4, finding #8): pass the entity's project when the
+  // event is project-scoped (guardian flag, invoice, CO/SOW) so recipients
+  // are additionally filtered to VIEW_ALL_PROJECTS holders or actual
+  // members of that project — see lib/utils/permissions-query.ts.
+  projectId?: string
 }
 
 export async function notifyMembersWithPermission(service: any, params: NotifyParams) {
   try {
-    let recipients = await getMembersWithPermission(service, params.workspaceId, params.permission, 25)
+    let recipients = await getMembersWithPermission(service, params.workspaceId, params.permission, 25, params.projectId)
     recipients = await filterByNotificationPreference(service, params.workspaceId, params.eventType, recipients)
     if (params.excludeUserId) recipients = recipients.filter(r => r.id !== params.excludeUserId)
     if (recipients.length === 0) return

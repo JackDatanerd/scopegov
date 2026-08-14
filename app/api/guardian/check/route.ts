@@ -216,7 +216,7 @@ export async function POST(request: NextRequest) {
         })
 
         // Email APPROVE_FLAGS holders (Event 18)
-        const emails = await getMemberEmailsWithPermission(service, session.workspaceId, 'APPROVE_FLAGS', 25, 'guardian_flag')
+        const emails = await getMemberEmailsWithPermission(service, session.workspaceId, 'APPROVE_FLAGS', 25, 'guardian_flag', projectId)
 
         if (emails.length) {
           try {
@@ -238,7 +238,7 @@ export async function POST(request: NextRequest) {
           workspaceId: session.workspaceId, permission: 'APPROVE_FLAGS', eventType: 'guardian_flag',
           type: 'guardian_flag', title: `Scope flag — ${project.name}`,
           body: classification.reasoning?.slice(0, 140) || 'A new out-of-scope request was flagged.',
-          entityType: 'project', entityId: projectId, excludeUserId: session.id,
+          entityType: 'project', entityId: projectId, excludeUserId: session.id, projectId,
         })
       }
     }

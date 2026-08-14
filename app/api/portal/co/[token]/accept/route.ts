@@ -143,7 +143,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     // Notify agency (Event 11) — awaited
     try {
-      const emails = await getMemberEmailsWithPermission(service, co.workspace_id, 'SEND_CHANGE_ORDERS', 25, 'co_accepted')
+      const emails = await getMemberEmailsWithPermission(service, co.workspace_id, 'SEND_CHANGE_ORDERS', 25, 'co_accepted', co.project_id)
       if (emails.length) {
         await sendCoAcceptedEmail({
           to: emails, agencyName: project.workspaces.agency_name,
@@ -158,7 +158,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       workspaceId: co.workspace_id, permission: 'SEND_CHANGE_ORDERS', eventType: 'co_accepted',
       type: 'co_accepted', title: `CO accepted — ${co.title}`,
       body: `${signerName.trim()} accepted ${project.currency || 'USD'} ${co.total} for ${project.name}.`,
-      entityType: 'project', entityId: co.project_id,
+      entityType: 'project', entityId: co.project_id, projectId: co.project_id,
     })
 
     return NextResponse.json({

@@ -90,7 +90,7 @@ export async function POST_DECLINE(request: NextRequest, token: string) {
 
   // Notify agency
   try {
-    const emails = await getMemberEmailsWithPermission(service, co.workspace_id, 'SEND_CHANGE_ORDERS', 25, 'co_declined')
+    const emails = await getMemberEmailsWithPermission(service, co.workspace_id, 'SEND_CHANGE_ORDERS', 25, 'co_declined', co.project_id)
     if (emails.length) {
       const { Resend } = await import('resend')
       const resend = new Resend(process.env.RESEND_API_KEY)
@@ -109,7 +109,7 @@ export async function POST_DECLINE(request: NextRequest, token: string) {
     workspaceId: co.workspace_id, permission: 'SEND_CHANGE_ORDERS', eventType: 'co_declined',
     type: 'co_declined', title: `CO declined — ${co.title}`,
     body: reason ? `${co.projects?.clients?.name}: ${reason}` : `${co.projects?.clients?.name} declined this change order.`,
-    entityType: 'project', entityId: co.project_id,
+    entityType: 'project', entityId: co.project_id, projectId: co.project_id,
   })
 
   return NextResponse.json({
@@ -160,7 +160,7 @@ export async function POST_COUNTER(request: NextRequest, token: string) {
 
   // Notify agency (Event 14)
   try {
-    const emails = await getMemberEmailsWithPermission(service, co.workspace_id, 'SEND_CHANGE_ORDERS')
+    const emails = await getMemberEmailsWithPermission(service, co.workspace_id, 'SEND_CHANGE_ORDERS', 25, undefined, co.project_id)
     if (emails.length) {
       const { Resend } = await import('resend')
       const resend = new Resend(process.env.RESEND_API_KEY)
@@ -179,7 +179,7 @@ export async function POST_COUNTER(request: NextRequest, token: string) {
     workspaceId: co.workspace_id, permission: 'SEND_CHANGE_ORDERS', eventType: 'co_countered',
     type: 'co_countered', title: `Counter offer — ${co.title}`,
     body: `${co.projects?.clients?.name} proposed ${co.projects?.currency || 'USD'} ${parsedAmount.toLocaleString()}.`,
-    entityType: 'project', entityId: co.project_id,
+    entityType: 'project', entityId: co.project_id, projectId: co.project_id,
   })
 
   return NextResponse.json({

@@ -11,25 +11,65 @@
 //    and unverified against this schema. Instead we fetch active members'
 //    effective_permissions and filter in JS, which works regardless of how
 //    the boolean was stored.
+//
+// FIX (audit round 4, finding #8): these lookups were purely permission-
+// based, with no awareness of per-project visibility at all. A workspace
+// member holding e.g. APPROVE_FLAGS but restricted to VIEW_OWN_PROJECTS
+// (not VIEW_ALL_PROJECTS) would still receive email/in-app notifications
+// — including financial amounts and document titles — for guardian flags,
+// invoices, and CO/SOW events on projects they have no access to and
+// would get a 403 trying to open directly. Same rule as
+// lib/utils/project-access.ts's canReadProject, now optionally applied
+// here too via the `projectId` parameter — pass it whenever the event
+// being notified about belongs to a specific project.
 
 import type { Permission } from '@/lib/supabase/types'
+
+async function filterToProjectAccess<T extends { id: string }>(
+  service: any, projectId: string, recipients: T[], permissionMap: Map<string, Record<string, boolean>>
+): Promise<T[]> {
+  if (recipients.length === 0) return recipients
+
+  const viewAllIds = new Set(
+    recipients.filter(r => permissionMap.get(r.id)?.VIEW_ALL_PROJECTS === true).map(r => r.id)
+  )
+  const remaining = recipients.filter(r => !viewAllIds.has(r.id))
+  let projectMemberIds = new Set<string>()
+  if (remaining.length) {
+    const { data } = await service
+      .from('project_members')
+      .select('workspace_members!inner(user_id)')
+      .eq('project_id', projectId)
+    projectMemberIds = new Set((data || []).map((r: any) => r.workspace_members.user_id))
+  }
+  return recipients.filter(r => viewAllIds.has(r.id) || projectMemberIds.has(r.id))
+}
 
 export async function getMembersWithPermission(
   service: any,
   workspaceId: string,
   permission: Permission,
-  limit = 25
+  limit = 25,
+  projectId?: string
 ): Promise<Array<{ id: string; name: string; email: string }>> {
   const { data: members } = await service
     .from('workspace_members')
-    .select('effective_permissions, users!workspace_members_user_id_fkey(id, name, email)')
+    .select('user_id, effective_permissions, users!workspace_members_user_id_fkey(id, name, email)')
     .eq('workspace_id', workspaceId)
     .eq('status', 'active')
     .limit(limit)
 
-  return (members || [])
+  const eligible = (members || [])
     .filter((m: any) => m.effective_permissions?.[permission] === true && m.users?.email)
-    .map((m: any) => ({ id: m.users.id, name: m.users.name, email: m.users.email }))
+
+  const permissionMap = new Map<string, Record<string, boolean>>(
+    eligible.map((m: any) => [m.user_id, m.effective_permissions])
+  )
+  let recipients = eligible.map((m: any) => ({ id: m.user_id, name: m.users.name, email: m.users.email }))
+
+  if (projectId) recipients = await filterToProjectAccess(service, projectId, recipients, permissionMap)
+
+  return recipients
 }
 
 // Notification preferences — defaults to enabled (true) when no row exists,
@@ -81,9 +121,10 @@ export async function getMemberEmailsWithPermission(
   workspaceId: string,
   permission: Permission,
   limit = 25,
-  eventType?: string
+  eventType?: string,
+  projectId?: string
 ): Promise<string[]> {
-  let members = await getMembersWithPermission(service, workspaceId, permission, limit)
+  let members = await getMembersWithPermission(service, workspaceId, permission, limit, projectId)
   if (eventType) members = await filterByNotificationPreference(service, workspaceId, eventType, members)
   return members.map(m => m.email)
 }

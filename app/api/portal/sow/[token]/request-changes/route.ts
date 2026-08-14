@@ -6,6 +6,7 @@ import { jwtVerify } from 'jose'
 import { logAudit } from '@/lib/utils/audit'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
+import { escapeHtml } from '@/lib/utils/sanitize'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
@@ -72,16 +73,24 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     // Notify agency members with SEND_SOW permission (Event 6)
     try {
-      const emails = await getMemberEmailsWithPermission(service, sow.workspace_id, 'SEND_SOW')
+      const emails = await getMemberEmailsWithPermission(service, sow.workspace_id, 'SEND_SOW', 25, undefined, project.id)
       if (emails.length) {
         const { Resend } = await import('resend')
         const resend = new Resend(process.env.RESEND_API_KEY)
+        // FIX (audit round 4, finding #7): client.name, project.name, and
+        // note are all interpolated raw into an inline HTML email here —
+        // note especially is typed directly into an unauthenticated
+        // portal form by whoever holds the signing link, making this a
+        // directly attacker-reachable injection point into an email your
+        // own team reads and trusts. See lib/utils/sanitize.ts's
+        // escapeHtml (same helper already used for this exact purpose in
+        // app/api/portal/co/[token]/_actions.ts).
         await resend.emails.send({
-          from: `${project.workspaces.agency_name} via ScopeGov <${process.env.RESEND_FROM_EMAIL}>`,
+          from: `${escapeHtml(project.workspaces.agency_name)} via ScopeGov <${process.env.RESEND_FROM_EMAIL}>`,
           to: emails,
           subject: `${client.name} requested changes on the ${project.name} SOW`,
-          html: `<p><strong>${client.name}</strong> has requested changes on the <strong>${project.name}</strong> SOW (v${sow.version}).</p>
-          <p><strong>Feedback:</strong> ${note}</p>
+          html: `<p><strong>${escapeHtml(client.name)}</strong> has requested changes on the <strong>${escapeHtml(project.name)}</strong> SOW (v${sow.version}).</p>
+          <p><strong>Feedback:</strong> ${escapeHtml(note)}</p>
           <p>A new draft (v${sow.version + 1}) has been created in ScopeGov for you to edit and resend.</p>
           <p><a href="${process.env.NEXT_PUBLIC_APP_URL}/projects/${project.id}?tab=sow">Open project in ScopeGov →</a></p>`,
         })
@@ -91,7 +100,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       workspaceId: sow.workspace_id, permission: 'SEND_SOW', eventType: 'sow_changes_requested',
       type: 'sow_changes_requested', title: `Changes requested — ${project.name}`,
       body: `${client.name}: ${note}`.slice(0, 160),
-      entityType: 'project', entityId: project.id,
+      entityType: 'project', entityId: project.id, projectId: project.id,
     })
 
     return NextResponse.json({ ok: true })

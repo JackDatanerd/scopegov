@@ -66,10 +66,10 @@ export async function POST(request: NextRequest) {
           eventType: 'invoice_overdue', type: 'invoice_overdue',
           title: `Invoice overdue — ${inv.projects?.name}`,
           body: `${inv.projects?.clients?.name || 'Client'} has ${inv.currency} ${balanceDue.toLocaleString()} overdue on "${inv.title}"`,
-          entityType: 'invoice', entityId: inv.id,
+          entityType: 'invoice', entityId: inv.id, projectId: inv.projects?.id,
         })
 
-        const emails = await getMemberEmailsWithPermission(service, inv.workspace_id, 'VIEW_FINANCIALS', 10, 'invoice_overdue')
+        const emails = await getMemberEmailsWithPermission(service, inv.workspace_id, 'VIEW_FINANCIALS', 10, 'invoice_overdue', inv.projects?.id)
         if (emails.length) {
           await sendInvoiceOverdueInternalEmail({
             to: emails,

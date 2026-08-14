@@ -1,10 +1,30 @@
 export const runtime = 'nodejs'
 
 import { Resend } from 'resend'
+import { escapeHtml } from '@/lib/utils/sanitize'
 
 const resend = new Resend(process.env.RESEND_API_KEY)
 const FROM   = process.env.RESEND_FROM_EMAIL || 'noreply@mail.scopegov.app'
 const BRAND_FROM = (agencyName: string) => `${agencyName} via ScopeGov`
+
+// FIX (audit round 4, finding #7): none of these templates HTML-escaped
+// interpolated dynamic content — client/project/agency names, notes,
+// descriptions, escalation text, and (most concerning) the AI-generated
+// `reasoning` field from Guardian classification, which is downstream of
+// unauthenticated inbound client email content (see app/api/guardian/
+// inbound/route.ts). A crafted inbound email could get its content
+// paraphrased into `reasoning` by the classifier and injected as raw
+// markup into an internal notification email your own team reads and
+// trusts. Applied below: every free-text field that reaches an HTML
+// `body`/`headline`/`label` is escaped at the point it's read out of
+// `params`; `subject` lines (plain text, not HTML) intentionally use the
+// original unescaped value so an "&" in a project name doesn't show up
+// as "&amp;" in someone's inbox subject line.
+//
+// Reuses lib/utils/sanitize.ts's escapeHtml — already the shared helper
+// for this exact purpose (see app/api/portal/co/[token]/_actions.ts's
+// ad-hoc emails), rather than a second copy living only in this file.
+
 
 // ── Color system ──────────────────────────────────────────────
 const C = {
@@ -93,8 +113,11 @@ export async function sendSowEmail(params: {
   projectName: string; contractValue: number; currency: string
   portalUrl: string; brandColour?: string; expiresAt: string
 }) {
-  const { to, cc, clientName, agencyName, projectName, contractValue,
+  const { to, cc, clientName: clientNameRaw, agencyName: agencyNameRaw, projectName: projectNameRaw, contractValue,
     currency, portalUrl, brandColour, expiresAt } = params
+  const clientName  = escapeHtml(clientNameRaw)
+  const agencyName  = escapeHtml(agencyNameRaw)
+  const projectName = escapeHtml(projectNameRaw)
 
   const expiryDate = new Date(expiresAt).toLocaleDateString('en-GB', { day:'numeric', month:'long', year:'numeric' })
 
@@ -137,10 +160,10 @@ export async function sendSowEmail(params: {
   })
 
   return resend.emails.send({
-    from:    `${BRAND_FROM(agencyName)} <${FROM}>`,
+    from:    `${BRAND_FROM(agencyNameRaw)} <${FROM}>`,
     to,
     cc:      cc?.filter(Boolean) || [],
-    subject: `Action required: Review your ${projectName} SOW`,
+    subject: `Action required: Review your ${projectNameRaw} SOW`,
     html,
   })
 }
@@ -151,7 +174,11 @@ export async function sendSowSignedAgencyEmail(params: {
   projectName: string; signedBy: string; portalUrl: string
   attachments?: Array<{ filename: string; content: string }>
 }) {
-  const { to, agencyName, clientName, projectName, signedBy, attachments } = params
+  const { to, agencyName: agencyNameRaw, clientName: clientNameRaw, projectName: projectNameRaw, signedBy: signedByRaw, attachments } = params
+  const agencyName  = escapeHtml(agencyNameRaw)
+  const clientName  = escapeHtml(clientNameRaw)
+  const projectName = escapeHtml(projectNameRaw)
+  const signedBy    = escapeHtml(signedByRaw)
 
   const html = baseTemplate({
     agencyName,
@@ -177,7 +204,7 @@ export async function sendSowSignedAgencyEmail(params: {
   return resend.emails.send({
     from:    `ScopeGov <${FROM}>`,
     to,
-    subject: `✓ ${clientName} signed the ${projectName} SOW`,
+    subject: `✓ ${clientNameRaw} signed the ${projectNameRaw} SOW`,
     html,
     ...(attachments?.length ? { attachments } : {}),
   })
@@ -189,7 +216,10 @@ export async function sendSowSignedClientEmail(params: {
   projectName: string; portalUrl: string
   attachments?: Array<{ filename: string; content: string }>
 }) {
-  const { to, clientName, agencyName, projectName, portalUrl, attachments } = params
+  const { to, clientName: clientNameRaw, agencyName: agencyNameRaw, projectName: projectNameRaw, portalUrl, attachments } = params
+  const clientName  = escapeHtml(clientNameRaw)
+  const agencyName  = escapeHtml(agencyNameRaw)
+  const projectName = escapeHtml(projectNameRaw)
 
   const html = baseTemplate({
     agencyName,
@@ -211,9 +241,9 @@ export async function sendSowSignedClientEmail(params: {
   })
 
   return resend.emails.send({
-    from:    `${BRAND_FROM(agencyName)} <${FROM}>`,
+    from:    `${BRAND_FROM(agencyNameRaw)} <${FROM}>`,
     to,
-    subject: `Your ${projectName} agreement is confirmed`,
+    subject: `Your ${projectNameRaw} agreement is confirmed`,
     html,
     ...(attachments?.length ? { attachments } : {}),
   })
@@ -224,7 +254,11 @@ export async function sendSowDeclinedEmail(params: {
   to: string[]; agencyName: string; clientName: string
   projectName: string; reason?: string
 }) {
-  const { to, agencyName, clientName, projectName, reason } = params
+  const { to, agencyName: agencyNameRaw, clientName: clientNameRaw, projectName: projectNameRaw, reason: reasonRaw } = params
+  const agencyName  = escapeHtml(agencyNameRaw)
+  const clientName  = escapeHtml(clientNameRaw)
+  const projectName = escapeHtml(projectNameRaw)
+  const reason      = escapeHtml(reasonRaw)
 
   const html = baseTemplate({
     agencyName,
@@ -252,7 +286,7 @@ export async function sendSowDeclinedEmail(params: {
   return resend.emails.send({
     from:    `ScopeGov <${FROM}>`,
     to,
-    subject: `Client declined the ${projectName} SOW`,
+    subject: `Client declined the ${projectNameRaw} SOW`,
     html,
   })
 }
@@ -263,7 +297,11 @@ export async function sendGuardianFlagEmail(params: {
   severity: string; description: string; sowReference: string
   projectUrl: string; path?: string
 }) {
-  const { to, agencyName, projectName, severity, description, sowReference, projectUrl, path } = params
+  const { to, agencyName, projectName: projectNameRaw, severity, description: descriptionRaw, sowReference: sowReferenceRaw, projectUrl, path: pathRaw } = params
+  const projectName   = escapeHtml(projectNameRaw)
+  const description   = escapeHtml(descriptionRaw)
+  const sowReference  = escapeHtml(sowReferenceRaw)
+  const path          = escapeHtml(pathRaw)
 
   const severityColour = severity === 'high' ? C.red : severity === 'medium' ? C.amber : C.text3
   const severityBg     = severity === 'high' ? C.redLt : severity === 'medium' ? C.amberLt : C.bg
@@ -296,7 +334,7 @@ export async function sendGuardianFlagEmail(params: {
   return resend.emails.send({
     from:    `ScopeGov Guardian <${FROM}>`,
     to,
-    subject: `[${severity.toUpperCase()}] Scope flag on ${projectName}`,
+    subject: `[${severity.toUpperCase()}] Scope flag on ${projectNameRaw}`,
     html,
   })
 }
@@ -306,7 +344,9 @@ export async function sendInviteEmail(params: {
   to: string; inviterName: string; workspaceName: string
   agencyName: string; inviteUrl: string; expiresAt: string
 }) {
-  const { to, inviterName, workspaceName, agencyName, inviteUrl, expiresAt } = params
+  const { to, inviterName: inviterNameRaw, workspaceName: workspaceNameRaw, agencyName, inviteUrl, expiresAt } = params
+  const inviterName   = escapeHtml(inviterNameRaw)
+  const workspaceName = escapeHtml(workspaceNameRaw)
 
   const html = baseTemplate({
     agencyName: 'ScopeGov',
@@ -333,7 +373,7 @@ export async function sendInviteEmail(params: {
   return resend.emails.send({
     from:    `ScopeGov <${FROM}>`,
     to,
-    subject: `${inviterName} invited you to join ${workspaceName} on ScopeGov`,
+    subject: `${inviterNameRaw} invited you to join ${workspaceNameRaw} on ScopeGov`,
     html,
   })
 }
@@ -343,7 +383,9 @@ export async function sendTrialWarningEmail(params: {
   to: string; name: string; agencyName: string
   daysLeft: number; upgradeUrl: string
 }) {
-  const { to, name, agencyName, daysLeft, upgradeUrl } = params
+  const { to, name: nameRaw, agencyName: agencyNameRaw, daysLeft, upgradeUrl } = params
+  const name       = escapeHtml(nameRaw)
+  const agencyName = escapeHtml(agencyNameRaw)
 
   const html = baseTemplate({
     agencyName: 'ScopeGov',
@@ -382,7 +424,10 @@ export async function sendEscalationEmail(params: {
   to: string; assigneeName: string; agencyName: string
   entityType: string; entityName: string; note: string; url: string
 }) {
-  const { to, assigneeName, agencyName, entityType, entityName, note, url } = params
+  const { to, assigneeName: assigneeNameRaw, agencyName, entityType, entityName: entityNameRaw, note: noteRaw, url } = params
+  const assigneeName = escapeHtml(assigneeNameRaw)
+  const entityName    = escapeHtml(entityNameRaw)
+  const note           = escapeHtml(noteRaw)
 
   const html = baseTemplate({
     agencyName: 'ScopeGov',
@@ -406,7 +451,7 @@ export async function sendEscalationEmail(params: {
   return resend.emails.send({
     from:    `ScopeGov <${FROM}>`,
     to,
-    subject: `Escalated to you: ${entityName}`,
+    subject: `Escalated to you: ${entityNameRaw}`,
     html,
   })
 }
@@ -420,8 +465,12 @@ export async function sendApprovalRequestedEmail(params: {
   stepNumber: number; totalSteps: number
   requestedByName: string; url: string
 }) {
-  const { to, approverName, documentLabel, documentTitle, projectName,
-    amount, currency, stepNumber, totalSteps, requestedByName, url } = params
+  const { to, approverName: approverNameRaw, documentLabel, documentTitle: documentTitleRaw, projectName: projectNameRaw,
+    amount, currency, stepNumber, totalSteps, requestedByName: requestedByNameRaw, url } = params
+  const approverName    = escapeHtml(approverNameRaw)
+  const documentTitle   = escapeHtml(documentTitleRaw)
+  const projectName     = escapeHtml(projectNameRaw)
+  const requestedByName = escapeHtml(requestedByNameRaw)
 
   const html = baseTemplate({
     agencyName: 'ScopeGov',
@@ -449,7 +498,7 @@ export async function sendApprovalRequestedEmail(params: {
   return resend.emails.send({
     from:    `ScopeGov <${FROM}>`,
     to,
-    subject: `Approval needed: ${documentTitle} — ${projectName}`,
+    subject: `Approval needed: ${documentTitleRaw} — ${projectNameRaw}`,
     html,
   })
 }
@@ -463,9 +512,14 @@ export async function sendApprovalDecisionEmail(params: {
   decidedByName: string; note?: string; url: string
   autoSent?: boolean
 }) {
-  const { to, requesterName, decision, documentLabel, documentTitle,
-    projectName, decidedByName, note, url, autoSent } = params
-  const approved = decision === 'approved'
+  const { to, requesterName: requesterNameRaw, decision, documentLabel, documentTitle: documentTitleRaw,
+    projectName: projectNameRaw, decidedByName: decidedByNameRaw, note: noteRaw, url, autoSent } = params
+  const approved       = decision === 'approved'
+  const requesterName  = escapeHtml(requesterNameRaw)
+  const documentTitle  = escapeHtml(documentTitleRaw)
+  const projectName    = escapeHtml(projectNameRaw)
+  const decidedByName  = escapeHtml(decidedByNameRaw)
+  const note           = escapeHtml(noteRaw)
 
   const html = baseTemplate({
     agencyName: 'ScopeGov',
@@ -496,7 +550,7 @@ export async function sendApprovalDecisionEmail(params: {
   return resend.emails.send({
     from:    `ScopeGov <${FROM}>`,
     to,
-    subject: `${approved ? 'Approved' : 'Rejected'}: ${documentTitle} — ${projectName}`,
+    subject: `${approved ? 'Approved' : 'Rejected'}: ${documentTitleRaw} — ${projectNameRaw}`,
     html,
   })
 }
@@ -507,8 +561,13 @@ export async function sendCoEmail(params: {
   projectName: string; coTitle: string; total: number; currency: string
   portalUrl: string; brandColour?: string; note?: string
 }) {
-  const { to, cc, clientName, agencyName, projectName, coTitle, total, currency,
-    portalUrl, brandColour, note } = params
+  const { to, cc, clientName: clientNameRaw, agencyName: agencyNameRaw, projectName: projectNameRaw, coTitle: coTitleRaw, total, currency,
+    portalUrl, brandColour, note: noteRaw } = params
+  const clientName  = escapeHtml(clientNameRaw)
+  const agencyName  = escapeHtml(agencyNameRaw)
+  const projectName = escapeHtml(projectNameRaw)
+  const coTitle     = escapeHtml(coTitleRaw)
+  const note        = escapeHtml(noteRaw)
 
   const html = baseTemplate({
     agencyName,
@@ -538,10 +597,10 @@ export async function sendCoEmail(params: {
   })
 
   return resend.emails.send({
-    from:    `${BRAND_FROM(agencyName)} <${FROM}>`,
+    from:    `${BRAND_FROM(agencyNameRaw)} <${FROM}>`,
     to,
     cc:      cc?.filter(Boolean) || [],
-    subject: `Change order: ${coTitle} — ${projectName}`,
+    subject: `Change order: ${coTitleRaw} — ${projectNameRaw}`,
     html,
   })
 }
@@ -552,7 +611,11 @@ export async function sendCoAcceptedEmail(params: {
   projectName: string; coTitle: string; total: number
   currency: string; acceptedBy: string; projectUrl: string
 }) {
-  const { to, agencyName, clientName, projectName, coTitle, total, currency, acceptedBy, projectUrl } = params
+  const { to, agencyName, clientName: clientNameRaw, projectName: projectNameRaw, coTitle: coTitleRaw, total, currency, acceptedBy: acceptedByRaw, projectUrl } = params
+  const clientName  = escapeHtml(clientNameRaw)
+  const projectName = escapeHtml(projectNameRaw)
+  const coTitle     = escapeHtml(coTitleRaw)
+  const acceptedBy  = escapeHtml(acceptedByRaw)
 
   const html = baseTemplate({
     agencyName: 'ScopeGov',
@@ -582,7 +645,7 @@ export async function sendCoAcceptedEmail(params: {
   return resend.emails.send({
     from:    `ScopeGov <${FROM}>`,
     to,
-    subject: `✓ Change order accepted — ${projectName} +${currency} ${total.toLocaleString()}`,
+    subject: `✓ Change order accepted — ${projectNameRaw} +${currency} ${total.toLocaleString()}`,
     html,
   })
 }
@@ -592,7 +655,9 @@ export async function sendPaymentFailedEmail(params: {
   to: string; name: string; agencyName: string
   upgradeUrl: string; graceDaysLeft: number
 }) {
-  const { to, name, agencyName, upgradeUrl, graceDaysLeft } = params
+  const { to, name: nameRaw, agencyName: agencyNameRaw, upgradeUrl, graceDaysLeft } = params
+  const name       = escapeHtml(nameRaw)
+  const agencyName = escapeHtml(agencyNameRaw)
 
   const html = baseTemplate({
     agencyName: 'ScopeGov',
@@ -629,8 +694,13 @@ export async function sendInvoiceEmail(params: {
   amount: number; currency: string; dueDate?: string | null
   portalUrl: string; brandColour?: string; paymentInstructions?: string | null
 }) {
-  const { to, cc, clientName, agencyName, projectName, invoiceNumber, title,
-    amount, currency, dueDate, portalUrl, brandColour, paymentInstructions } = params
+  const { to, cc, clientName: clientNameRaw, agencyName: agencyNameRaw, projectName: projectNameRaw, invoiceNumber, title: titleRaw,
+    amount, currency, dueDate, portalUrl, brandColour, paymentInstructions: paymentInstructionsRaw } = params
+  const clientName           = escapeHtml(clientNameRaw)
+  const agencyName           = escapeHtml(agencyNameRaw)
+  const projectName          = escapeHtml(projectNameRaw)
+  const title                = escapeHtml(titleRaw)
+  const paymentInstructions  = escapeHtml(paymentInstructionsRaw)
 
   const html = baseTemplate({
     agencyName,
@@ -662,10 +732,10 @@ export async function sendInvoiceEmail(params: {
   })
 
   return resend.emails.send({
-    from:    `${BRAND_FROM(agencyName)} <${FROM}>`,
+    from:    `${BRAND_FROM(agencyNameRaw)} <${FROM}>`,
     to,
     cc:      cc?.filter(Boolean) || [],
-    subject: `Invoice${invoiceNumber ? ` ${invoiceNumber}` : ''}: ${title} — ${projectName}`,
+    subject: `Invoice${invoiceNumber ? ` ${invoiceNumber}` : ''}: ${titleRaw} — ${projectNameRaw}`,
     html,
   })
 }
@@ -677,8 +747,12 @@ export async function sendInvoiceReminderEmail(params: {
   balanceDue: number; currency: string; dueDate?: string | null
   portalUrl: string; brandColour?: string; isOverdue?: boolean
 }) {
-  const { to, cc, clientName, agencyName, projectName, invoiceNumber, title,
+  const { to, cc, clientName: clientNameRaw, agencyName: agencyNameRaw, projectName: projectNameRaw, invoiceNumber, title: titleRaw,
     balanceDue, currency, dueDate, portalUrl, brandColour, isOverdue } = params
+  const clientName  = escapeHtml(clientNameRaw)
+  const agencyName  = escapeHtml(agencyNameRaw)
+  const projectName = escapeHtml(projectNameRaw)
+  const title       = escapeHtml(titleRaw)
 
   const html = baseTemplate({
     agencyName,
@@ -699,10 +773,10 @@ export async function sendInvoiceReminderEmail(params: {
   })
 
   return resend.emails.send({
-    from:    `${BRAND_FROM(agencyName)} <${FROM}>`,
+    from:    `${BRAND_FROM(agencyNameRaw)} <${FROM}>`,
     to,
     cc:      cc?.filter(Boolean) || [],
-    subject: `${isOverdue ? 'Overdue' : 'Reminder'}: Invoice${invoiceNumber ? ` ${invoiceNumber}` : ''} — ${projectName}`,
+    subject: `${isOverdue ? 'Overdue' : 'Reminder'}: Invoice${invoiceNumber ? ` ${invoiceNumber}` : ''} — ${projectNameRaw}`,
     html,
   })
 }
@@ -713,9 +787,11 @@ export async function sendInvoicePaymentRecordedEmail(params: {
   invoiceNumber?: string | null; amount: number; currency: string
   isFullyPaid: boolean; balanceRemaining: number; projectUrl: string
 }) {
-  const { to, clientName, projectName, invoiceNumber, amount, currency,
+  const { to, clientName: clientNameRaw, projectName: projectNameRaw, invoiceNumber, amount, currency,
     isFullyPaid, balanceRemaining, projectUrl } = params
   if (to.length === 0) return
+  const clientName  = escapeHtml(clientNameRaw)
+  const projectName = escapeHtml(projectNameRaw)
 
   const html = baseTemplate({
     agencyName: 'ScopeGov',
@@ -737,8 +813,8 @@ export async function sendInvoicePaymentRecordedEmail(params: {
     from:    `ScopeGov <${FROM}>`,
     to,
     subject: isFullyPaid
-      ? `✓ Invoice paid in full — ${projectName} (${currency} ${amount.toLocaleString()})`
-      : `Payment received — ${projectName} (${currency} ${amount.toLocaleString()})`,
+      ? `✓ Invoice paid in full — ${projectNameRaw} (${currency} ${amount.toLocaleString()})`
+      : `Payment received — ${projectNameRaw} (${currency} ${amount.toLocaleString()})`,
     html,
   })
 }
@@ -748,8 +824,10 @@ export async function sendInvoiceOverdueInternalEmail(params: {
   to: string[]; clientName: string; projectName: string
   invoiceNumber?: string | null; balanceDue: number; currency: string; projectUrl: string
 }) {
-  const { to, clientName, projectName, invoiceNumber, balanceDue, currency, projectUrl } = params
+  const { to, clientName: clientNameRaw, projectName: projectNameRaw, invoiceNumber, balanceDue, currency, projectUrl } = params
   if (to.length === 0) return
+  const clientName  = escapeHtml(clientNameRaw)
+  const projectName = escapeHtml(projectNameRaw)
 
   const html = baseTemplate({
     agencyName: 'ScopeGov',
@@ -769,14 +847,15 @@ export async function sendInvoiceOverdueInternalEmail(params: {
   return resend.emails.send({
     from:    `ScopeGov <${FROM}>`,
     to,
-    subject: `Overdue: ${clientName} — ${currency} ${balanceDue.toLocaleString()} (${projectName})`,
+    subject: `Overdue: ${clientNameRaw} — ${currency} ${balanceDue.toLocaleString()} (${projectNameRaw})`,
     html,
   })
 }
 
 // ── Security: MFA enabled ────────────────────────────────────
 export async function sendMfaEnabledEmail(params: { to: string; name: string }) {
-  const { to, name } = params
+  const { to, name: nameRaw } = params
+  const name = escapeHtml(nameRaw)
   const html = baseTemplate({
     agencyName: 'ScopeGov',
     headerColour: C.green,
@@ -799,7 +878,8 @@ export async function sendMfaEnabledEmail(params: { to: string; name: string }) 
 
 // ── Security: MFA disabled ───────────────────────────────────
 export async function sendMfaDisabledEmail(params: { to: string; name: string; via: 'user' | 'backup_code_recovery' }) {
-  const { to, name, via } = params
+  const { to, name: nameRaw, via } = params
+  const name = escapeHtml(nameRaw)
   const html = baseTemplate({
     agencyName: 'ScopeGov',
     headerColour: C.red,
@@ -823,7 +903,8 @@ export async function sendMfaDisabledEmail(params: { to: string; name: string; v
 
 // ── Security: backup codes regenerated ───────────────────────
 export async function sendMfaBackupCodesRegeneratedEmail(params: { to: string; name: string }) {
-  const { to, name } = params
+  const { to, name: nameRaw } = params
+  const name = escapeHtml(nameRaw)
   const html = baseTemplate({
     agencyName: 'ScopeGov',
     headerColour: C.amber,

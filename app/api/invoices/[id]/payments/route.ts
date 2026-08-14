@@ -113,11 +113,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       type: isFullyPaid ? 'invoice_paid' : 'invoice_payment_received',
       title: isFullyPaid ? `Invoice paid in full — ${invoice.projects?.name}` : `Payment received — ${invoice.projects?.name}`,
       body: `${invoice.projects?.clients?.name || 'Client'} paid ${invoice.currency} ${amount.toLocaleString()} on "${invoice.title}"`,
-      entityType: 'invoice', entityId: id, excludeUserId: session.id,
+      entityType: 'invoice', entityId: id, excludeUserId: session.id, projectId: invoice.project_id,
     })
 
     try {
-      const emails = await getMemberEmailsWithPermission(service, session.workspaceId, 'VIEW_FINANCIALS', 10, 'invoice_payment_received')
+      const emails = await getMemberEmailsWithPermission(service, session.workspaceId, 'VIEW_FINANCIALS', 10, 'invoice_payment_received', invoice.project_id)
       if (emails.length) {
         await sendInvoicePaymentRecordedEmail({
           to: emails,
