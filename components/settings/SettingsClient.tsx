@@ -420,8 +420,12 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, save
     const file = e.target.files?.[0]
     if (!file) return
     setFileError('')
-    if (!['image/png','image/jpeg','image/svg+xml'].includes(file.type)) {
-      setFileError('Please upload a PNG, JPG, or SVG file.')
+    // FIX (audit round 5): SVG dropped from accepted types — see
+    // app/api/workspace/branding/logo/route.ts for why (unsanitized SVG
+    // in a public bucket is a stored-XSS vector). This client-side check
+    // is just UX; the server route is the actual enforcement point.
+    if (!['image/png','image/jpeg'].includes(file.type)) {
+      setFileError('Please upload a PNG or JPG file.')
       e.target.value = ''
       return
     }
@@ -501,9 +505,9 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, save
           <div>
             <label className="btn btn-ghost btn-sm" style={{ cursor: 'pointer' }}>
               <i className="ti ti-upload" style={{ fontSize: 12 }} /> {logoFile ? 'Change logo' : 'Upload logo'}
-              <input type="file" accept="image/png,image/jpeg,image/svg+xml" style={{ display: 'none' }} onChange={handleLogoChange} />
+              <input type="file" accept="image/png,image/jpeg" style={{ display: 'none' }} onChange={handleLogoChange} />
             </label>
-            <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 5 }}>PNG, JPEG, or SVG · Max 2 MB</p>
+            <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 5 }}>PNG or JPEG · Max 2 MB</p>
             {fileError && <p className="ferr" style={{ marginTop: 4 }}>{fileError}</p>}
           </div>
         </div>

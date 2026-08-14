@@ -20,11 +20,35 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 // bypasses Storage RLS entirely), removing the browser from the write
 // path altogether.
 
+// FIX (audit round 5): this route allowed image/svg+xml with no content
+// verification at all, uploaded straight to the PUBLIC `logos` bucket.
+// Unlike the flag-evidence attachment route (which checks magic bytes
+// AND lives behind signed URLs in a private bucket), a spoofed or
+// genuinely SVG file here is served publicly from Supabase's own domain.
+// SVGs can carry live <script> — if the raw storage URL is ever opened
+// directly (not via an <img> tag, which browsers sandbox), that script
+// executes in the storage origin. Since every workspace's public logo
+// lives in the same bucket, this is a real stored-XSS/phishing vector,
+// not a theoretical one.
+//
+// Fix, product-scoped: drop SVG support entirely rather than building and
+// maintaining a bespoke SVG sanitizer (strip <script>, <foreignObject>,
+// event-handler attributes, external hrefs, etc.) for a single low-value
+// upload path. PNG/JPG covers every real agency-logo use case. If SVG
+// support is genuinely needed later, it needs a dedicated sanitizer
+// (e.g. DOMPurify's SVG profile), not a quick allowlist tweak here.
+//
+// Also adds the same magic-byte check the attachments route already has
+// — file.type is client-supplied and was previously trusted both as the
+// allowlist gate AND the stored object's Content-Type.
 const MAX_LOGO_BYTES = 2 * 1024 * 1024 // 2MB, matches the existing client-side limit
 const ALLOWED_TYPES: Record<string, string> = {
-  'image/png':     'png',
-  'image/jpeg':    'jpg',
-  'image/svg+xml': 'svg',
+  'image/png':  'png',
+  'image/jpeg': 'jpg',
+}
+const MAGIC_BYTES: Record<string, (buf: Buffer) => boolean> = {
+  'image/png':  buf => buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+  'image/jpeg': buf => buf.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff])),
 }
 
 export async function POST(request: NextRequest) {
@@ -43,7 +67,7 @@ export async function POST(request: NextRequest) {
 
     const ext = ALLOWED_TYPES[file.type]
     if (!ext) {
-      return NextResponse.json({ error: 'Please upload a PNG, JPG, or SVG file.' }, { status: 400 })
+      return NextResponse.json({ error: 'Please upload a PNG or JPG file.' }, { status: 400 })
     }
     if (file.size > MAX_LOGO_BYTES) {
       return NextResponse.json(
@@ -52,12 +76,17 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    const buffer = Buffer.from(await file.arrayBuffer())
+    if (!MAGIC_BYTES[file.type](buffer)) {
+      return NextResponse.json({ error: 'File content does not match its declared type' }, { status: 400 })
+    }
+
     const service = createServiceClient()
     // Path is derived server-side from the caller's own session workspace,
     // never trusted from the client — a member can only ever overwrite
     // their own workspace's logo.
     const path = `${session.workspaceId}/logo.${ext}`
-    const bytes = new Uint8Array(await file.arrayBuffer())
+    const bytes = new Uint8Array(buffer)
 
     const { error } = await (service as any).storage
       .from('logos')

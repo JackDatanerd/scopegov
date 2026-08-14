@@ -3,6 +3,7 @@ export const runtime = 'nodejs'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
+import { canReadProject } from '@/lib/utils/project-access'
 
 // GET /api/reports/reconciliation?projectId=&days=90
 // - With projectId: that project's latest snapshot + trend history (any
@@ -29,6 +30,15 @@ export async function GET(request: NextRequest) {
         .from('projects').select('id, name, currency')
         .eq('id', projectId).eq('workspace_id', session.workspaceId).single()
       if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
+      // FIX (audit round 5): the docstring above already says single-project
+      // access is meant for "any VIEW_FINANCIALS user who can see the
+      // project" — but nothing enforced the "can see" half. A
+      // VIEW_FINANCIALS holder without VIEW_ALL_PROJECTS could pass any
+      // projectId in the workspace and read that project's reconciliation
+      // snapshot regardless of whether they're assigned to it. Same
+      // primitive every other project-scoped route in this app already uses.
+      if (!(await canReadProject(service, session, projectId)))
+        return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
       const { data: history } = await (service as any)
         .from('contract_reconciliation_snapshots')

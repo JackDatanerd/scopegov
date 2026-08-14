@@ -8,6 +8,18 @@ export async function GET(request: NextRequest) {
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+    // FIX (audit round 5): both modes below are workspace-wide rollups —
+    // scope mode aggregates flags/exceptions/adjustments/amendments across
+    // EVERY project in the workspace, financial mode does the same for
+    // contract value/CO totals. /api/reports/portfolio and the portfolio
+    // branch of /api/reports/reconciliation already require
+    // VIEW_ALL_PROJECTS for exactly this reason (see their comments) —
+    // this route was the one place that rollup logic existed without the
+    // same gate, so a VIEW_OWN_PROJECTS-only member could pull scope and
+    // financial data for projects they aren't assigned to.
+    if (!hasPermission(session, 'VIEW_ALL_PROJECTS'))
+      return NextResponse.json({ error: 'Missing permission: VIEW_ALL_PROJECTS' }, { status: 403 })
+
     const { searchParams } = new URL(request.url)
     const mode   = searchParams.get('mode') || 'scope'
     const period = searchParams.get('period') || '90d'

@@ -41,7 +41,18 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .eq('token', token).single()
 
     if (!co) return NextResponse.json({ error: 'CO not found' }, { status: 404 })
-    if (!['awaiting_response','countered'].includes(co.status))
+    // FIX (audit round 5): once a client counters, this route used to
+    // still accept the CO directly at the ORIGINAL co.total — the portal
+    // UI hides the Accept button once status is 'countered' (see the GET
+    // route), but that's UI-only, and the token stays valid. A client
+    // could POST here directly and force-accept at the pre-counter price,
+    // bypassing the accept-counter flow that's supposed to be the only
+    // way to close out a countered CO (that route correctly uses
+    // counter_amount, and is agency-side, gated by SEND_CHANGE_ORDERS).
+    // Only 'awaiting_response' is a valid state for the CLIENT to accept
+    // from; once they've countered, the ball is in the agency's court —
+    // they resolve it via accept-counter, decline, or withdraw.
+    if (co.status !== 'awaiting_response')
       return NextResponse.json({ error: 'CO cannot be accepted in current status' }, { status: 409 })
 
     try {
