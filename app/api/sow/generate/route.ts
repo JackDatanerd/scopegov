@@ -1,22 +1,27 @@
 export const runtime = 'nodejs'
 // FIX: no explicit maxDuration was set, so this route ran under Vercel's
 // platform default (as low as 10s on some plans) — generating a full SOW
-// can legitimately take longer than that, especially now that max_tokens
-// is higher. This is a defensive complement to the max_tokens fix above,
-// not a replacement for it: truncated JSON was the confirmed symptom
-// (stripAndParse failing on a *received* response), but a real infra
-// timeout was also possible and worth ruling out explicitly.
-export const maxDuration = 60
+// can legitimately take longer than that, especially with up to 3 AI
+// attempts now possible per request (see lib/ai/sow-content.ts). This is
+// a defensive complement to the retry logic below, not a replacement for
+// it: a real infra timeout was also worth ruling out explicitly.
+// 60s was sized for a single generation attempt; worst case is now up to
+// 3 sequential attempts (see retry loop below), so this needs more room.
+export const maxDuration = 120
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
-import { stripAndParse } from '@/lib/utils/format'
 import { logAudit } from '@/lib/utils/audit'
 import { sanitizeRichText } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
 import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
 import Anthropic from '@anthropic-ai/sdk'
+import {
+  SOW_SECTION_DEFS, buildBoilerplateSections,
+  buildSowContentPrompt, parseDelimitedSections, buildFallbackSections,
+  SowContentParseError, type SowContentInput,
+} from '@/lib/ai/sow-content'
 
 // FIX (re-audit — build-blocking): was constructed at module scope, so an
 // unset ANTHROPIC_API_KEY turns importing this route into a hard build
@@ -73,188 +78,75 @@ export async function POST(request: NextRequest) {
     const paymentLabel  = PAYMENT_STRUCTURE_LABELS[paymentStructure] || paymentStructure
     const curr          = currency || project.currency || 'USD'
 
-    // ── AI Generation prompt ──────────────────────────────────
-    const prompt = `You are a professional contract drafter for a creative/digital agency.
-Generate a complete Statement of Work as strict JSON. Use ONLY the exact figures provided. Never invent payment amounts, fees, or rates.
-
-Agency: ${agencyName}
-Client: ${clientName}
-Project: ${project.name}${project.disc ? ` (${project.disc})` : ''}
-Project type: ${projectType}
-Contract value: ${curr} ${contractValue}
-
-Scope brief:
-Objective: ${objective || 'Not specified'}
-Deliverables:
-${deliverables || 'As discussed'}
-
-Out of scope (MUST be explicitly excluded):
-${outOfScope || 'To be defined'}
-
-Timeline: ${timeline || 'To be agreed'}
-Payment structure: ${paymentLabel}
-Revision rounds: ${revisionRounds || 2}
-Governing law: ${governingLaw}
-
-Return ONLY this JSON — no markdown, no preamble, no explanation:
-{
-  "sections": [
-    {
-      "id": "parties",
-      "title": "Parties",
-      "content": "<p>This Statement of Work is entered into between <strong>${agencyName}</strong> (\"Agency\") and <strong>${clientName}</strong> (\"Client\").</p>",
-      "visible": true,
-      "order": 1
-    },
-    {
-      "id": "overview",
-      "title": "Project Overview",
-      "content": "...",
-      "visible": true,
-      "order": 2
-    },
-    {
-      "id": "deliverables",
-      "title": "Deliverables",
-      "content": "...",
-      "visible": true,
-      "order": 3
-    },
-    {
-      "id": "oos",
-      "title": "Out of Scope",
-      "content": "...",
-      "visible": true,
-      "order": 4
-    },
-    {
-      "id": "assumptions",
-      "title": "Assumptions & Dependencies",
-      "content": "...",
-      "visible": true,
-      "order": 5
-    },
-    {
-      "id": "timeline",
-      "title": "Timeline & Milestones",
-      "content": "...",
-      "visible": true,
-      "order": 6
-    },
-    {
-      "id": "payment",
-      "title": "Payment Terms",
-      "content": "...",
-      "visible": true,
-      "order": 7
-    },
-    {
-      "id": "revisions",
-      "title": "Revision Policy",
-      "content": "...",
-      "visible": true,
-      "order": 8
-    },
-    {
-      "id": "ip",
-      "title": "Intellectual Property",
-      "content": "...",
-      "visible": true,
-      "order": 9
-    },
-    {
-      "id": "confidentiality",
-      "title": "Confidentiality",
-      "content": "...",
-      "visible": true,
-      "order": 10
-    },
-    {
-      "id": "termination",
-      "title": "Termination",
-      "content": "...",
-      "visible": true,
-      "order": 11
-    },
-    {
-      "id": "governing_law",
-      "title": "Governing Law",
-      "content": "<p>This Agreement is governed by the laws of ${governingLaw}.</p>",
-      "visible": true,
-      "order": 12
-    },
-    {
-      "id": "dispute",
-      "title": "Dispute Resolution",
-      "content": "...",
-      "visible": true,
-      "order": 13
-    },
-    {
-      "id": "signature",
-      "title": "Signatures",
-      "content": "<p>By signing below, both parties agree to the terms of this Statement of Work.</p>",
-      "visible": true,
-      "order": 14
-    }
-  ],
-  "metadata": {
-    "paymentStructure": "${paymentStructure}",
-    "revisionRounds": ${revisionRounds || 2},
-    "governingLaw": "${governingLaw}"
-  }
-}
-
-Rules:
-- All content must be proper HTML (use <p>, <ul>, <li>, <strong>). No raw text outside tags.
-- Payment section must state exactly "${curr} ${contractValue}" and the exact payment structure above. Do NOT invent percentages or amounts beyond what's stated.
-- Out of scope section must list every item from the out-of-scope brief as explicit exclusions. Be specific.
-- Revision policy must reference exactly ${revisionRounds || 2} revision round(s).
-- Write with professional, authoritative language appropriate for a legal document.
-- Never add a "late fee rate" or "revision fee" unless explicitly provided.`
-
-    let raw = ''
-    let stopReason: string | null = null
-    try {
-      const msg = await anthropicClient().messages.create({
-        model:      MODEL,
-        // FIX: 4000 was genuinely tight for a full 14-section legal
-        // document with "professional, authoritative language" — easily
-        // enough to truncate mid-generation, producing incomplete (and
-        // therefore unparseable) JSON. This is very likely the actual
-        // cause of "AI returned invalid JSON" rather than a Vercel
-        // infra-level timeout, since that error only fires *after* a
-        // response was successfully received and parsed.
-        max_tokens: 8000,
-        messages:   [{ role: 'user', content: prompt }],
-      })
-      raw = msg.content.filter(b => b.type === 'text').map((b: any) => b.text).join('')
-      stopReason = msg.stop_reason
-    } catch (aiErr) {
-      console.error('AI SOW generation failed:', aiErr)
-      return NextResponse.json({ error: 'AI generation failed. Please try again.' }, { status: 503 })
+    // ── AI content generation, with silent retries and a guaranteed
+    // deterministic fallback ────────────────────────────────────────
+    // FIX (production reliability — "AI returned invalid JSON. Please
+    // try again."): see lib/ai/sow-content.ts for the full writeup. In
+    // short: the model is never asked for JSON anymore (only plain
+    // delimited content, which is far more forgiving to parse), a
+    // couple of parse failures are retried silently server-side before
+    // the user ever sees anything, and if the model still can't produce
+    // a valid response, buildFallbackSections() guarantees a complete,
+    // usable SOW anyway — this endpoint can no longer hard-fail the
+    // user for reasons outside their control.
+    const contentInput: SowContentInput = {
+      agencyName, clientName, projectName: project.name, projectDisc: project.disc,
+      projectType, contractValue, currency: curr, objective, deliverables,
+      outOfScope, timeline, paymentLabel, revisionRounds: revisionRounds || 2, governingLaw,
     }
 
-    // BUG-027: stripAndParse on every AI response
-    let parsed: { sections: any[]; metadata: any }
-    try {
-      parsed = stripAndParse(raw)
-    } catch {
-      console.error('JSON parse failed, stop_reason:', stopReason, 'raw output:', raw.slice(0, 500))
-      const truncated = stopReason === 'max_tokens'
-      return NextResponse.json({
-        error: truncated
-          ? 'The generated SOW was too long and got cut off. Try shortening the brief or simplifying the deliverables list, then retry.'
-          : 'AI returned invalid JSON. Please try again.',
-      }, { status: 500 })
+    const MAX_ATTEMPTS = 3
+    let aiSections: Record<string, string> | null = null
+    let usedFallback = false
+    let lastStopReason: string | null = null
+
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS && !aiSections; attempt++) {
+      const prompt = buildSowContentPrompt(contentInput, { emphatic: attempt > 1 })
+      try {
+        const msg = await anthropicClient().messages.create({
+          model:      MODEL,
+          max_tokens: 8000,
+          messages:   [{ role: 'user', content: prompt }],
+        })
+        await recordAiUsage(service, session.workspaceId, session.id, 'sow.generate')
+        const raw = msg.content.filter(b => b.type === 'text').map((b: any) => b.text).join('')
+        lastStopReason = msg.stop_reason
+        aiSections = parseDelimitedSections(raw)
+      } catch (err) {
+        const reason = err instanceof SowContentParseError
+          ? err.message
+          : (err instanceof Error ? err.message : String(err))
+        console.error(`SOW content generation attempt ${attempt}/${MAX_ATTEMPTS} failed:`, reason, 'stop_reason:', lastStopReason)
+        // Loop continues to next attempt (or falls through to fallback below)
+      }
     }
 
-    // FIX (audit round 1, item #2): sanitize model-generated section HTML
-    // before it ever reaches storage — same portal dangerouslySetInnerHTML
-    // sink as PATCH /api/sow/[id], and a prompt-injected brief could in
-    // principle steer the model into emitting markup we don't want stored
-    // verbatim, not just the manual-edit path.
-    parsed.sections = (parsed.sections || []).map((s: any) => ({ ...s, content: sanitizeRichText(s.content) }))
+    if (!aiSections) {
+      console.error('SOW content generation: all attempts failed, using deterministic fallback', { projectId })
+      aiSections = buildFallbackSections(contentInput)
+      usedFallback = true
+    }
+
+    const boilerplate = buildBoilerplateSections(contentInput)
+    const allContent: Record<string, string> = { ...boilerplate, ...aiSections }
+
+    const parsed: { sections: any[]; metadata: any } = {
+      sections: SOW_SECTION_DEFS.map(def => ({
+        id: def.id,
+        title: def.title,
+        content: sanitizeRichText(allContent[def.id] || ''),
+        visible: true,
+        order: def.order,
+      })),
+      // Metadata is entirely server-derived from the request — never
+      // asked of the model, so it can never be malformed or missing.
+      metadata: {
+        paymentStructure: paymentStructure,
+        revisionRounds: revisionRounds || 2,
+        governingLaw: governingLaw,
+        aiGenerated: !usedFallback,
+      },
+    }
 
     // Check for existing draft SOW on this project
     const { data: existingSow } = await (service as any)
@@ -313,7 +205,8 @@ Rules:
       metadata: { project_type: projectType },
     })
 
-    await recordAiUsage(service, session.workspaceId, session.id, 'sow.generate')
+    // Note: AI usage is recorded per actual model call inside the retry
+    // loop above (accurate cost/rate-limit accounting), not again here.
     return NextResponse.json({ sowId })
   } catch (err) {
     console.error('SOW generate error:', err)
