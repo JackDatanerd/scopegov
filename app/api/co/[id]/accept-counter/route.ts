@@ -3,7 +3,19 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
+import { SignJWT } from 'jose'
+import { nanoid } from 'nanoid'
+import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
+import { sendCoCountersignatureRequestEmail } from '@/lib/email/templates'
 
+// FIX (doc-completeness audit, decision: require re-sign): this route used
+// to finalize the CO as 'accepted' the moment the agency accepted the
+// client's counter-offer — with no client signature ever captured for the
+// negotiated amount. It now moves the CO to 'awaiting_countersignature'
+// (migration 014) at the counter amount, issues a fresh signing link, and
+// emails the client to countersign. The CO only becomes 'accepted' — and
+// the amendment only gets created — once they do that, via
+// /api/portal/co/[token]/countersign (see lib/documents/finalize-co.ts).
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id }  = await params
@@ -15,7 +27,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const service = createServiceClient()
     const { data: co } = await (service as any)
       .from('change_orders')
-      .select('id,title,status,flag_id,counter_amount,counter_note,line_items,project_id,workspace_id,projects(id,name,currency)')
+      .select(`id,title,status,flag_id,counter_amount,counter_note,line_items,project_id,workspace_id,
+        projects(id,name,currency,clients(name,email,cc_emails),workspaces(id,agency_name,brand_colour))`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!co) return NextResponse.json({ error: 'CO not found' }, { status: 404 })
@@ -25,74 +38,60 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (co.status !== 'countered')
       return NextResponse.json({ error: 'CO is not in countered status' }, { status: 400 })
 
+    const project = co.projects
+    const client  = project?.clients
+    const ws      = project?.workspaces
+    if (!client?.email) return NextResponse.json({ error: 'Client email required' }, { status: 400 })
+
+    const jwtSecret = await getWorkspaceJwtSecret(service, session.workspaceId)
+    if (!jwtSecret) return NextResponse.json({ error: 'Workspace signing secret not found' }, { status: 500 })
+    const secret     = new TextEncoder().encode(jwtSecret)
+    const expiresAt  = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+    const newToken   = await new SignJWT({
+      coId: id, workspaceId: session.workspaceId, projectId: co.project_id,
+      clientEmail: client.email, action: 'countersign',
+    })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setExpirationTime(expiresAt)
+      .setJti(nanoid())
+      .sign(secret)
+
     const now = new Date().toISOString()
 
-    // BUG-047: acceptedAt unconditionally populated — including counter-accepted path
-    // BUG-047 spec: "counterAcceptedAt retained for audit; queries use acceptedAt alone"
     await (service as any).from('change_orders').update({
-      status:              'accepted',
-      accepted_at:         now,        // unconditional — always set on all acceptance paths
-      accepted_by:         session.name,
+      status:              'awaiting_countersignature',
       counter_accepted_at: now,
       counter_accepted_by: session.name,
-      responded_at:        now,
       total:               co.counter_amount || co.total,
+      token:               newToken,
+      expires_at:          expiresAt.toISOString(),
+      responded_at:        now,
       updated_at:          now,
     }).eq('id', id)
 
-    // BUG-052: highest-versioned signed SOW
-    const { data: signedSow } = await (service as any)
-      .from('sow_documents')
-      .select('id')
-      .eq('project_id', co.project_id)
-      .eq('status', 'signed')
-      .order('version', { ascending: false })
-      .limit(1).single()
-
-    if (signedSow) {
-      const lineItems    = typeof co.line_items === 'string' ? JSON.parse(co.line_items) : (co.line_items || [])
-      const deliverables = lineItems.map((l: any) => l.description).filter(Boolean)
-
-      await (service as any).from('amendments').insert({
-        project_id:          co.project_id,
-        workspace_id:        co.workspace_id,
-        change_order_id:     id,
-        signed_sow_id:       signedSow.id,
-        title:               `Amendment — ${co.title} (counter accepted)`,
-        added_deliverables:  deliverables,
-        removed_deliverables: [],
-        financial_impact:    co.counter_amount || co.total,
-        effective_at:        now,
-        pdf_path:            '',
-      })
-
-      // Update scope snapshot
-      const { data: snap } = await (service as any)
-        .from('project_scope_snapshot').select('id,deliverables').eq('project_id', co.project_id).single()
-      if (snap && deliverables.length) {
-        await (service as any).from('project_scope_snapshot').update({
-          deliverables:    [...(snap.deliverables || []), ...deliverables.map((d: string) => ({ title: d }))],
-          last_updated_at: now, last_updated_by: 'amendment',
-        }).eq('project_id', co.project_id)
-      }
-    }
-
-    // Resolve linked flag
-    if (co.flag_id) {
-      await (service as any).from('guardian_flags').update({
-        status: 'resolved', resolution: 'change_order', resolved_at: now, updated_at: now,
-      }).eq('id', co.flag_id)
-    }
+    // Flag resolution and amendment creation now happen once the client
+    // actually countersigns (finalizeCoAcceptance), not here.
 
     await logAudit(service, {
       workspaceId: session.workspaceId, actorId: session.id,
       actorEmail: session.email, actorName: session.name,
       eventType: 'co.counter_accepted', entityType: 'change_order',
       entityId: id, entityName: co.title,
-      metadata: { counter_amount: co.counter_amount, accepted_by: session.name },
+      metadata: { counter_amount: co.counter_amount, accepted_by: session.name, awaiting_countersignature: true },
     })
 
-    return NextResponse.json({ ok: true })
+    const portalUrl = `${process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL}/portal/co/${newToken}`
+    try {
+      await sendCoCountersignatureRequestEmail({
+        to: client.email, cc: client.cc_emails || [],
+        clientName: client.name, agencyName: ws?.agency_name,
+        projectName: project?.name, coTitle: co.title,
+        total: co.counter_amount || co.total, currency: project?.currency || 'USD',
+        portalUrl, brandColour: ws?.brand_colour,
+      })
+    } catch (e) { console.error('CO countersignature request email failed:', e) }
+
+    return NextResponse.json({ ok: true, awaitingCountersignature: true })
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
   }

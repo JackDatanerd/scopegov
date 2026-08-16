@@ -72,6 +72,7 @@ export async function POST(request: NextRequest) {
     const {
       projectId, milestoneId, sowId, coId,
       title, amount, dueDate, paymentInstructions, notes,
+      taxRate, taxInclusive,
     } = body || {}
 
     if (!projectId) return NextResponse.json({ error: 'projectId is required' }, { status: 400 })
@@ -96,6 +97,7 @@ export async function POST(request: NextRequest) {
     // Validate the linked source actually belongs to this project/workspace
     // and is in a billable state — an invoice against a still-draft SOW or
     // a not-yet-accepted CO would have nothing behind it to justify billing.
+    let coTaxDefaults: { taxRate: number; taxInclusive: boolean; subtotal: number } | null = null
     if (milestoneId) {
       const { data: milestone } = await (service as any)
         .from('payment_milestones').select('id, project_id, amount, status')
@@ -114,11 +116,37 @@ export async function POST(request: NextRequest) {
     }
     if (coId) {
       const { data: co } = await (service as any)
-        .from('change_orders').select('id, project_id, status')
+        .from('change_orders').select('id, project_id, status, subtotal, tax_rate, tax_inclusive')
         .eq('id', coId).eq('project_id', projectId).single()
       if (!co) return NextResponse.json({ error: 'Change order not found on this project' }, { status: 404 })
       if (co.status !== 'accepted')
         return NextResponse.json({ error: 'Only an accepted change order can be invoiced against' }, { status: 400 })
+      // FIX (doc-completeness audit, finding #2): carry the CO's own tax
+      // terms into the invoice by default, rather than silently dropping
+      // them — an accepted CO that had 8% tax on it shouldn't turn into
+      // a plain untaxed invoice line unless the agency explicitly
+      // overrides taxRate/taxInclusive in the request body.
+      if (taxRate === undefined) coTaxDefaults = { taxRate: co.tax_rate, taxInclusive: co.tax_inclusive, subtotal: co.subtotal }
+    }
+
+    const finalTaxRate      = taxRate !== undefined ? Number(taxRate) || 0 : (coTaxDefaults?.taxRate || 0)
+    const finalTaxInclusive = taxInclusive !== undefined ? !!taxInclusive : !!coTaxDefaults?.taxInclusive
+    // `amount` in the DB is always the grand total the client owes.
+    // The create form lets the agency enter either figure: if the entered
+    // amount is tax-inclusive, it already *is* the grand total and we
+    // back out the subtotal for display; if it's "before tax", the
+    // entered amount is the subtotal and we need to gross it up.
+    let finalAmount = numAmount
+    let finalSubtotal = numAmount
+    if (finalTaxRate > 0) {
+      if (finalTaxInclusive) {
+        finalSubtotal = numAmount / (1 + finalTaxRate / 100)
+      } else {
+        finalSubtotal = numAmount
+        finalAmount   = numAmount * (1 + finalTaxRate / 100)
+      }
+    } else if (coTaxDefaults) {
+      finalSubtotal = coTaxDefaults.subtotal ?? numAmount
     }
 
     const { data: invoice, error } = await (service as any)
@@ -130,7 +158,10 @@ export async function POST(request: NextRequest) {
         sow_id:        sowId || null,
         co_id:         coId || null,
         title:         title.trim(),
-        amount:        numAmount,
+        amount:        finalAmount,
+        subtotal:      finalSubtotal,
+        tax_rate:      finalTaxRate,
+        tax_inclusive: finalTaxInclusive,
         currency:      project.currency || 'USD',
         due_date:      dueDate || null,
         payment_instructions: paymentInstructions?.trim() || null,

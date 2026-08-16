@@ -18,7 +18,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const service = createServiceClient()
     const { data: invoice } = await (service as any)
       .from('invoices')
-      .select(`id, title, amount, amount_paid, currency, status, due_date, token, invoice_number, project_id,
+      .select(`id, title, amount, amount_paid, currency, status, due_date, token, invoice_number, project_id, payment_instructions,
         projects(id, name, clients(name, email, cc_emails), workspaces(agency_name, brand_colour))`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
@@ -51,6 +51,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         portalUrl,
         brandColour: workspace?.brand_colour,
         isOverdue:   invoice.status === 'overdue',
+        paymentInstructions: invoice.payment_instructions,
       })
     } catch (e) { console.error('Invoice reminder email failed:', e) }
 

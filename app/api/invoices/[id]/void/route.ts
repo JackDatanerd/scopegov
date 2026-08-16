@@ -5,6 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
+import { sendDocumentCancelledEmail } from '@/lib/email/templates'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -18,9 +19,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const reason: string | undefined = body?.reason?.trim()
 
     const service = createServiceClient()
+    // FIX (doc-completeness audit): only select() addition is
+    // sent_at/clients/workspaces — needed so the client can be notified
+    // that this invoice (which they may already have in their inbox) is
+    // no longer valid. Everything else in this route is unchanged.
     const { data: invoice } = await (service as any)
       .from('invoices')
-      .select('id, title, status, amount_paid, token, milestone_id, project_id')
+      .select(`id, title, status, amount_paid, token, milestone_id, project_id, sent_at,
+        projects(name, clients(name, email, cc_emails), workspaces(agency_name, brand_colour))`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
@@ -57,6 +63,22 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       await (service as any).from('payment_milestones')
         .update({ status: 'pending', invoiced_at: null })
         .eq('id', invoice.milestone_id).eq('status', 'invoiced')
+    }
+
+    // FIX (doc-completeness audit): notify the client — only relevant if
+    // it had actually been sent to them (draft invoices never reached
+    // them, so there's nothing to warn them about).
+    const client = invoice.projects?.clients
+    if (invoice.sent_at && client?.email) {
+      try {
+        await sendDocumentCancelledEmail({
+          to: client.email, cc: client.cc_emails || [],
+          clientName: client.name, agencyName: invoice.projects?.workspaces?.agency_name,
+          projectName: invoice.projects?.name, documentLabel: 'Invoice',
+          documentTitle: invoice.title, action: 'voided', reason: reason || null,
+          brandColour: invoice.projects?.workspaces?.brand_colour,
+        })
+      } catch (e) { console.error('Invoice voided client email failed:', e) }
     }
 
     await logAudit(service, {

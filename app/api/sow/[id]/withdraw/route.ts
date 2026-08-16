@@ -5,6 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
+import { sendDocumentCancelledEmail } from '@/lib/email/templates'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -14,10 +15,16 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!hasPermission(session, 'SEND_SOW'))
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
 
+    const body = await request.json().catch(() => ({}))
+    const reason: string | undefined = body?.reason?.trim()
+
     const service = createServiceClient()
+    // FIX (doc-completeness audit): added client/workspace so we can
+    // notify the client that the link/SOW they may already have is dead.
     const { data: sow } = await (service as any)
       .from('sow_documents')
-      .select('id,status,token,version,project_id,projects(id,name,status)')
+      .select(`id,status,token,version,project_id,
+        projects(id,name,status,clients(name,email,cc_emails),workspaces(agency_name,brand_colour))`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!sow) return NextResponse.json({ error: 'Not found' }, { status: 404 })
@@ -52,6 +59,23 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       entityId: id, entityName: sow.projects?.name,
       metadata: { version: sow.version },
     })
+
+    // FIX (doc-completeness audit): 'awaiting_signature' / 'changes_requested'
+    // are only reachable after the SOW was actually sent to the client, so
+    // if we got here they have a live link/email — tell them it's dead.
+    const client = sow.projects?.clients
+    if (client?.email) {
+      try {
+        await sendDocumentCancelledEmail({
+          to: client.email, cc: client.cc_emails || [],
+          clientName: client.name, agencyName: sow.projects?.workspaces?.agency_name,
+          projectName: sow.projects?.name, documentLabel: 'Statement of Work',
+          documentTitle: `${sow.projects?.name} — SOW v${sow.version}`,
+          action: 'withdrawn', reason: reason || null,
+          brandColour: sow.projects?.workspaces?.brand_colour,
+        })
+      } catch (e) { console.error('SOW withdrawn client email failed:', e) }
+    }
 
     return NextResponse.json({ ok: true })
   } catch (err) {

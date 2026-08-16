@@ -8,18 +8,35 @@ type PortalState =
   | 'withdrawn' | 'signed' | 'ready' | 'signing' | 'requesting' | 'declining'
   | 'changes_requested'
 
+interface PaymentScheduleItem {
+  title: string
+  amount: number | null
+  percentage: number | null
+  trigger: string | null
+  dueDate: string | null
+  status: string
+}
+
 interface SowData {
   id:          string
   projectName: string
   agencyName:  string
   brandColour: string
   logoUrl:     string | null
+  agencyAddress: string | null
+  agencyTaxId:   string | null
+  agencyPhone:   string | null
+  agencyWebsite: string | null
   agencySignatureData: string | null
   contractValue: number
   currency:    string
   clientName:  string
   clientEmail: string
+  clientCompany: string | null
+  clientBillingAddress: string | null
+  clientVatNumber:      string | null
   sections:    Array<{ id: string; title: string; content: string; visible: boolean; order: number }>
+  paymentSchedule: PaymentScheduleItem[]
   version:     number
   expiresAt:   string
 }
@@ -217,6 +234,61 @@ export default function SowPortalPage() {
               </div>
             </div>
           </div>
+
+          {/* Parties — FIX (doc-completeness audit): this block, plus the
+              payment schedule below, previously didn't exist on this page
+              at all, so the client signed without ever seeing the legal
+              addresses, tax IDs, or payment schedule that the PDF (only
+              generated after signing) already included. */}
+          <div className="portal-doc-body" style={{ paddingBottom: 0 }}>
+            <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap', marginBottom: 24, paddingBottom: 20, borderBottom: '1px solid #E5E1D8' }}>
+              <div style={{ flex: '1 1 220px' }}>
+                <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', color: '#909090', marginBottom: 6 }}>
+                  Agency (Service Provider)
+                </div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#1A1A1A' }}>{sow.agencyName}</div>
+                {sow.agencyAddress && <div style={{ fontSize: 12, color: '#555', whiteSpace: 'pre-line', marginTop: 2 }}>{sow.agencyAddress}</div>}
+                {(sow.agencyTaxId || sow.agencyPhone || sow.agencyWebsite) && (
+                  <div style={{ fontSize: 11, color: '#909090', marginTop: 4 }}>
+                    {[sow.agencyTaxId ? `Tax ID ${sow.agencyTaxId}` : null, sow.agencyPhone, sow.agencyWebsite].filter(Boolean).join('  ·  ')}
+                  </div>
+                )}
+              </div>
+              <div style={{ flex: '1 1 220px' }}>
+                <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', color: '#909090', marginBottom: 6 }}>
+                  Client
+                </div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#1A1A1A' }}>{sow.clientCompany || sow.clientName}</div>
+                {sow.clientCompany && <div style={{ fontSize: 12, color: '#555', marginTop: 2 }}>{sow.clientName}</div>}
+                {sow.clientBillingAddress && <div style={{ fontSize: 12, color: '#555', whiteSpace: 'pre-line', marginTop: 2 }}>{sow.clientBillingAddress}</div>}
+                {sow.clientVatNumber && <div style={{ fontSize: 11, color: '#909090', marginTop: 4 }}>VAT {sow.clientVatNumber}</div>}
+              </div>
+            </div>
+          </div>
+
+          {sow.paymentSchedule.length > 0 && (
+            <div className="portal-doc-body" style={{ paddingTop: 0, paddingBottom: 0 }}>
+              <div style={{ marginBottom: 24 }}>
+                <div className="portal-section-title">Payment schedule</div>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, marginTop: 8 }}>
+                  <tbody>
+                    {sow.paymentSchedule.map((m, i) => (
+                      <tr key={i}>
+                        <td style={{ padding: '8px 0', borderBottom: '1px solid #F2F0EA', color: '#333' }}>
+                          {m.title}
+                          {m.dueDate && <span style={{ color: '#909090', fontSize: 11 }}> · due {new Date(m.dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}</span>}
+                          {!m.dueDate && m.trigger && <span style={{ color: '#909090', fontSize: 11 }}> · {m.trigger}</span>}
+                        </td>
+                        <td style={{ padding: '8px 0', borderBottom: '1px solid #F2F0EA', textAlign: 'right', fontFamily: 'IBM Plex Mono, monospace', color: '#333' }}>
+                          {m.amount != null ? `${sow.currency} ${m.amount.toLocaleString()}` : m.percentage != null ? `${m.percentage}%` : ''}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           {/* Sections */}
           <div className="portal-doc-body">

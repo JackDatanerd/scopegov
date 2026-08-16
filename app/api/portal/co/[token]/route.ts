@@ -12,12 +12,17 @@ async function getCoByToken(token: string, service: any) {
     .from('revoked_tokens').select('reason').eq('token', token).single()
   if (revoked) return { state: revoked.reason === 'declined' ? 'declined' : 'revoked' }
 
+  // FIX (doc-completeness audit): same gap as the SOW portal route — legal
+  // and billing fields were never selected here, so the client accepted a
+  // CO without ever seeing the agency/client addresses or tax IDs that
+  // appear on the CO PDF.
   const { data: co } = await (service as any)
     .from('change_orders')
     .select(`id,title,note,status,version,line_items,subtotal,tax_rate,tax_inclusive,
       total,expires_at,flag_id,workspace_id,accepted_by,accepted_at,client_signature_data,
-      projects(id,name,currency,clients(name,email,cc_emails),
-        workspaces(id,agency_name,brand_colour,logo_storage_path,agency_signature_data))`)
+      projects(id,name,currency,clients(name,email,cc_emails,company_name,billing_address,vat_number),
+        workspaces(id,agency_name,brand_colour,logo_storage_path,agency_signature_data,
+          legal_address,tax_id,phone,website))`)
     .eq('token', token).single()
 
   if (!co) return { state: 'invalid' }
@@ -42,7 +47,11 @@ async function getCoByToken(token: string, service: any) {
   }
   if (['declined','withdrawn','closed','stalled','countered'].includes(co.status)) return { state: co.status }
 
-  return { co }
+  // FIX (doc-completeness audit, migration 014): a CO the agency has
+  // accepted at the client's counter amount now needs the client to
+  // countersign before it's final — distinct from the original
+  // accept/counter/decline form, which no longer applies here.
+  return { co, mode: co.status === 'awaiting_countersignature' ? 'countersign' : 'respond' }
 }
 
 // GET — return CO data for portal
@@ -59,6 +68,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     })
 
     const co  = result.co!
+    const mode = (result as any).mode || 'respond'
     const ws  = co.projects?.workspaces
     let logoUrl: string | null = null
     if (ws?.logo_storage_path) {
@@ -73,10 +83,15 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         id:          co.id,
         title:       co.title,
         note:        co.note,
+        mode,
         projectName: co.projects?.name,
         agencyName:  ws?.agency_name,
         brandColour: ws?.brand_colour || '#1A5C3A',
         logoUrl,
+        agencyAddress: ws?.legal_address || null,
+        agencyTaxId:   ws?.tax_id || null,
+        agencyPhone:   ws?.phone || null,
+        agencyWebsite: ws?.website || null,
         agencySignatureData: ws?.agency_signature_data || null,
         lineItems,
         subtotal:    co.subtotal,
@@ -85,6 +100,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         total:       co.total,
         currency:    co.projects?.currency || 'USD',
         clientName:  co.projects?.clients?.name || '',
+        clientCompany: co.projects?.clients?.company_name || null,
+        clientBillingAddress: co.projects?.clients?.billing_address || null,
+        clientVatNumber:      co.projects?.clients?.vat_number || null,
         version:     co.version,
         expiresAt:   co.expires_at,
       },

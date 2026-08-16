@@ -20,6 +20,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       .from('invoices')
       .select(`id, title, amount, amount_paid, currency, status, due_date, sent_at,
         payment_instructions, invoice_number, workspace_id,
+        subtotal, tax_rate, tax_inclusive,
         projects(id, name, clients(name, company_name),
           workspaces(agency_name, brand_colour, logo_storage_path))`)
       .eq('token', token).single()
@@ -58,6 +59,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         title: invoice.title,
         amount: invoice.amount,
         amountPaid: invoice.amount_paid,
+        subtotal: invoice.subtotal,
+        taxRate: invoice.tax_rate,
+        taxInclusive: invoice.tax_inclusive,
         currency: invoice.currency,
         status: invoice.status,
         dueDate: invoice.due_date,

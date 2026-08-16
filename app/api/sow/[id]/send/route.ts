@@ -26,7 +26,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // inside sendSowDocument (lib/documents/send-sow.ts).
     const { data: sow } = await (service as any)
       .from('sow_documents')
-      .select(`id, version, status, project_id,
+      .select(`id, version, status, project_id, sections,
         projects(id, name, disc, contract_value, currency)`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
@@ -38,6 +38,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const project = sow.projects
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
+
+    // FIX (doc-completeness audit, Group E — hard block): nothing
+    // previously stopped a SOW with a $0 contract value or with every
+    // section hidden/empty from being sent to a client for signature.
+    const visibleSections = (sow.sections || []).filter((s: any) => s.visible !== false && s.content?.trim())
+    if (visibleSections.length === 0)
+      return NextResponse.json({ error: 'Add at least one visible section before sending this SOW.' }, { status: 400 })
+    if (!project.contract_value || project.contract_value <= 0)
+      return NextResponse.json({ error: 'Set a contract value greater than zero before sending this SOW.' }, { status: 400 })
 
     // Phase 3 — Approval Chains: if a workflow matches this SOW's contract
     // value, halt here and wait on sign-off instead of sending. The

@@ -10,10 +10,15 @@ interface CoData {
   id:          string
   title:       string
   note:        string | null
+  mode:        'respond' | 'countersign'
   projectName: string
   agencyName:  string
   brandColour: string
   logoUrl:     string | null
+  agencyAddress: string | null
+  agencyTaxId:   string | null
+  agencyPhone:   string | null
+  agencyWebsite: string | null
   agencySignatureData: string | null
   lineItems:   Array<{ id: string; description: string; quantity: number; rate: number; total: number }>
   subtotal:    number
@@ -22,6 +27,9 @@ interface CoData {
   total:       number
   currency:    string
   clientName:  string
+  clientCompany: string | null
+  clientBillingAddress: string | null
+  clientVatNumber:      string | null
   version:     number
   expiresAt:   string
 }
@@ -52,6 +60,11 @@ export default function CoPortalPage() {
           return
         }
         setCo(json.co); setState('ready')
+        // FIX (doc-completeness audit, migration 014): a CO awaiting
+        // countersignature skips the "how would you like to respond"
+        // choice — the negotiation is over, this step is just capturing
+        // the client's signature on the agreed amount.
+        if (json.co?.mode === 'countersign') setMode('accept')
       })
       .catch(() => setState('invalid'))
   }, [token])
@@ -65,7 +78,7 @@ export default function CoPortalPage() {
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error)
-      if (action === 'accept') setAcceptedInfo({ acceptedBy: signerName.trim(), clientSignatureData: (extra?.signatureData as string) || null })
+      if (action === 'accept' || action === 'countersign') setAcceptedInfo({ acceptedBy: signerName.trim(), clientSignatureData: (extra?.signatureData as string) || null })
       setDoneMsg(json.message || 'Done')
       setState('done')
     } catch (err: unknown) {
@@ -195,7 +208,35 @@ export default function CoPortalPage() {
             </div>
           </div>
 
-          <div className="portal-doc-body">
+          {/* Parties — FIX (doc-completeness audit): previously missing
+              from this page entirely, same gap as the SOW portal. */}
+          <div className="portal-doc-body" style={{ paddingBottom: 0 }}>
+            <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap', marginBottom: 24, paddingBottom: 20, borderBottom: '1px solid #E5E1D8' }}>
+              <div style={{ flex: '1 1 220px' }}>
+                <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', color: '#909090', marginBottom: 6 }}>
+                  Agency (Service Provider)
+                </div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#1A1A1A' }}>{co.agencyName}</div>
+                {co.agencyAddress && <div style={{ fontSize: 12, color: '#555', whiteSpace: 'pre-line', marginTop: 2 }}>{co.agencyAddress}</div>}
+                {(co.agencyTaxId || co.agencyPhone || co.agencyWebsite) && (
+                  <div style={{ fontSize: 11, color: '#909090', marginTop: 4 }}>
+                    {[co.agencyTaxId ? `Tax ID ${co.agencyTaxId}` : null, co.agencyPhone, co.agencyWebsite].filter(Boolean).join('  ·  ')}
+                  </div>
+                )}
+              </div>
+              <div style={{ flex: '1 1 220px' }}>
+                <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', color: '#909090', marginBottom: 6 }}>
+                  Client
+                </div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#1A1A1A' }}>{co.clientCompany || co.clientName}</div>
+                {co.clientCompany && <div style={{ fontSize: 12, color: '#555', marginTop: 2 }}>{co.clientName}</div>}
+                {co.clientBillingAddress && <div style={{ fontSize: 12, color: '#555', whiteSpace: 'pre-line', marginTop: 2 }}>{co.clientBillingAddress}</div>}
+                {co.clientVatNumber && <div style={{ fontSize: 11, color: '#909090', marginTop: 4 }}>VAT {co.clientVatNumber}</div>}
+              </div>
+            </div>
+          </div>
+
+          <div className="portal-doc-body" style={{ paddingTop: 0 }}>
             {co.note && (
               <div style={{ marginBottom: 24 }}>
                 <div className="portal-section-title">Context</div>
@@ -252,7 +293,7 @@ export default function CoPortalPage() {
         </div>
 
         {/* Action card */}
-        {mode === 'view' && (
+        {mode === 'view' && co.mode !== 'countersign' && (
           <div className="portal-action-card" style={{ borderTopColor: accent }}>
             <h3 style={{ fontFamily: 'Georgia,serif', fontSize: 18, fontWeight: 400, margin: '0 0 6px' }}>How would you like to respond?</h3>
             <p style={{ fontSize: 13, color: '#555', margin: '0 0 18px', lineHeight: 1.6 }}>
@@ -271,9 +312,13 @@ export default function CoPortalPage() {
 
         {mode === 'accept' && (
           <div className="portal-action-card" style={{ borderTopColor: accent }}>
-            <h3 style={{ fontFamily: 'Georgia,serif', fontSize: 18, fontWeight: 400, margin: '0 0 6px' }}>Accept change order</h3>
+            <h3 style={{ fontFamily: 'Georgia,serif', fontSize: 18, fontWeight: 400, margin: '0 0 6px' }}>
+              {co.mode === 'countersign' ? 'Confirm change order' : 'Accept change order'}
+            </h3>
             <p style={{ fontSize: 13, color: '#555', margin: '0 0 16px' }}>
-              Type your name, draw your signature, and accept the additional scope and cost of <strong>{co.currency} {co.total.toLocaleString()}</strong>.
+              {co.mode === 'countersign'
+                ? <>{co.agencyName} has accepted your proposed amount. Type your name, draw your signature, and confirm the change order at <strong>{co.currency} {co.total.toLocaleString()}</strong>.</>
+                : <>Type your name, draw your signature, and accept the additional scope and cost of <strong>{co.currency} {co.total.toLocaleString()}</strong>.</>}
             </p>
             {error && <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 5, padding: '9px 12px', fontSize: 12, color: '#B91C1C', marginBottom: 12 }}>{error}</div>}
             <div style={{ marginBottom: 14 }}>
@@ -300,12 +345,14 @@ export default function CoPortalPage() {
                 onClick={() => {
                   const signatureData = sigPadRef.current?.toDataURL()
                   if (!signatureData) { setError('Please draw your signature to accept.'); return }
-                  submit('accept', { signatureData })
+                  submit(co.mode === 'countersign' ? 'countersign' : 'accept', { signatureData })
                 }}
                 disabled={submitting || signerName.trim().length < 3}>
-                {submitting ? <span className="spin" style={{ width: 14, height: 14 }} /> : `Accept as ${signerName || '…'}`}
+                {submitting ? <span className="spin" style={{ width: 14, height: 14 }} /> : `${co.mode === 'countersign' ? 'Confirm' : 'Accept'} as ${signerName || '…'}`}
               </button>
-              <button className="btn btn-ghost" onClick={() => { setMode('view'); setError('') }}>Cancel</button>
+              {co.mode !== 'countersign' && (
+                <button className="btn btn-ghost" onClick={() => { setMode('view'); setError('') }}>Cancel</button>
+              )}
             </div>
           </div>
         )}

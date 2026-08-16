@@ -110,6 +110,13 @@ export interface InvoicePdfData {
   title:        string
   amount:       number
   amountPaid:   number
+  // FIX (doc-completeness audit, finding #2): invoices had no tax
+  // breakdown at all even though the invoice already prints the client's
+  // VAT number. `subtotal` is only meaningful when taxRate > 0 —
+  // undefined/0 means this invoice predates or doesn't use tax.
+  subtotal?:    number | null
+  taxRate?:     number
+  taxInclusive?: boolean
   currency:     string
   status:       string
   dueDate?:     string | null
@@ -247,9 +254,9 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
             <Text style={s.partyLabel}>Agency (Service Provider)</Text>
             <Text style={s.partyName}>{data.agencyName}</Text>
             {formatAddress(data.agencyAddress).map((l, i) => <Text key={i} style={s.partyLine}>{l}</Text>)}
-            {(data.agencyTaxId || data.agencyPhone) && (
+            {(data.agencyTaxId || data.agencyPhone || data.agencyWebsite) && (
               <Text style={s.partyTax}>
-                {[data.agencyTaxId ? `Tax ID ${data.agencyTaxId}` : null, data.agencyPhone].filter(Boolean).join('  ·  ')}
+                {[data.agencyTaxId ? `Tax ID ${data.agencyTaxId}` : null, data.agencyPhone, data.agencyWebsite].filter(Boolean).join('  ·  ')}
               </Text>
             )}
           </View>
@@ -400,9 +407,9 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
             <Text style={s.partyLabel}>Agency (Service Provider)</Text>
             <Text style={s.partyName}>{data.agencyName}</Text>
             {formatAddress(data.agencyAddress).map((l, i) => <Text key={i} style={s.partyLine}>{l}</Text>)}
-            {(data.agencyTaxId || data.agencyPhone) && (
+            {(data.agencyTaxId || data.agencyPhone || data.agencyWebsite) && (
               <Text style={s.partyTax}>
-                {[data.agencyTaxId ? `Tax ID ${data.agencyTaxId}` : null, data.agencyPhone].filter(Boolean).join('  ·  ')}
+                {[data.agencyTaxId ? `Tax ID ${data.agencyTaxId}` : null, data.agencyPhone, data.agencyWebsite].filter(Boolean).join('  ·  ')}
               </Text>
             )}
           </View>
@@ -506,6 +513,11 @@ const INVOICE_METHOD_LABEL: Record<string, string> = {
 function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | null }) {
   const c = data.brandColour || '#1A5C3A'
   const balanceDue = Math.max(0, data.amount - data.amountPaid)
+  // FIX (doc-completeness audit, finding #2): tax breakdown, mirroring CoDocument.
+  const invSubtotal = data.subtotal ?? data.amount
+  const invTax = (data.taxRate || 0) > 0 && !data.taxInclusive
+    ? invSubtotal * (data.taxRate || 0) / 100
+    : 0
 
   const s = StyleSheet.create({
     page:      { fontFamily: 'Helvetica', fontSize: 10, color: '#1A1A1A', padding: '40 48' },
@@ -559,9 +571,9 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
             <Text style={s.partyLabel}>From</Text>
             <Text style={s.partyName}>{data.agencyName}</Text>
             {formatAddress(data.agencyAddress).map((l, i) => <Text key={i} style={s.partyLine}>{l}</Text>)}
-            {(data.agencyTaxId || data.agencyPhone) && (
+            {(data.agencyTaxId || data.agencyPhone || data.agencyWebsite) && (
               <Text style={s.partyTax}>
-                {[data.agencyTaxId ? `Tax ID ${data.agencyTaxId}` : null, data.agencyPhone].filter(Boolean).join('  ·  ')}
+                {[data.agencyTaxId ? `Tax ID ${data.agencyTaxId}` : null, data.agencyPhone, data.agencyWebsite].filter(Boolean).join('  ·  ')}
               </Text>
             )}
           </View>
@@ -586,9 +598,26 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
 
         <View style={s.totals}>
           <View style={s.totalRow}>
-            <Text style={{ color: '#909090' }}>Amount due</Text>
-            <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtMoney(data.amount)}</Text>
+            <Text style={{ color: '#909090' }}>{invTax > 0 || data.taxInclusive ? 'Subtotal' : 'Amount due'}</Text>
+            <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtMoney(invSubtotal)}</Text>
           </View>
+          {invTax > 0 && (
+            <View style={s.totalRow}>
+              <Text style={{ color: '#909090' }}>Tax ({data.taxRate}%)</Text>
+              <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtMoney(invTax)}</Text>
+            </View>
+          )}
+          {data.taxInclusive && (data.taxRate || 0) > 0 && (
+            <View style={s.totalRow}>
+              <Text style={{ color: '#909090' }}>Tax included ({data.taxRate}%)</Text>
+            </View>
+          )}
+          {(invTax > 0 || data.taxInclusive) && (
+            <View style={s.totalRow}>
+              <Text style={{ color: '#909090' }}>Amount due</Text>
+              <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtMoney(data.amount)}</Text>
+            </View>
+          )}
           {data.amountPaid > 0 && (
             <View style={s.totalRow}>
               <Text style={{ color: '#1A5C3A' }}>Paid to date</Text>

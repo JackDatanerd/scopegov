@@ -661,6 +661,95 @@ export async function sendCoAcceptedEmail(params: {
   })
 }
 
+// FIX (doc-completeness audit): sendCoAcceptedEmail (above) only ever
+// notified the AGENCY. The client — who just agreed to additional scope
+// and money — never received any confirmation or document at all. This
+// is the client-facing counterpart, mirroring sendSowSignedClientEmail.
+export async function sendCoAcceptedClientEmail(params: {
+  to: string; cc?: string[]; clientName: string; agencyName: string
+  projectName: string; coTitle: string; total: number; currency: string
+  portalUrl: string
+  attachments?: Array<{ filename: string; content: string }>
+}) {
+  const { to, cc, clientName: clientNameRaw, agencyName: agencyNameRaw, projectName: projectNameRaw,
+    coTitle: coTitleRaw, total, currency, portalUrl, attachments } = params
+  const clientName  = escapeHtml(clientNameRaw)
+  const agencyName  = escapeHtml(agencyNameRaw)
+  const projectName = escapeHtml(projectNameRaw)
+  const coTitle     = escapeHtml(coTitleRaw)
+
+  const html = baseTemplate({
+    agencyName,
+    headerColour: C.green,
+    label: 'Change order confirmation',
+    headline: 'Your change order is confirmed',
+    body: `
+      <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${clientName},</p>
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        This confirms the change order <strong>${coTitle}</strong> for <strong>${projectName}</strong>
+        with <strong>${agencyName}</strong>, for an additional <strong>${currency} ${total.toLocaleString()}</strong>.
+        A PDF copy is attached for your records.
+      </p>
+      <p style="font-size:13px;color:${C.text2};">
+        If you have any questions, please contact ${agencyName} directly.
+      </p>
+    `,
+    cta: 'Download PDF →',
+    ctaUrl: portalUrl,
+  })
+
+  return resendClient().emails.send({
+    from:    `${BRAND_FROM(agencyNameRaw)} <${FROM}>`,
+    to,
+    cc:      cc?.filter(Boolean) || [],
+    subject: `Your ${projectNameRaw} change order is confirmed`,
+    html,
+    ...(attachments?.length ? { attachments } : {}),
+  })
+}
+
+// FIX (doc-completeness audit): counter-accepted COs now need the client
+// to countersign at the negotiated total before the CO is final (see
+// migration 014) — this is the email carrying that new signing link.
+export async function sendCoCountersignatureRequestEmail(params: {
+  to: string; cc?: string[]; clientName: string; agencyName: string
+  projectName: string; coTitle: string; total: number; currency: string
+  portalUrl: string; brandColour?: string
+}) {
+  const { to, cc, clientName: clientNameRaw, agencyName: agencyNameRaw, projectName: projectNameRaw,
+    coTitle: coTitleRaw, total, currency, portalUrl, brandColour } = params
+  const clientName  = escapeHtml(clientNameRaw)
+  const agencyName  = escapeHtml(agencyNameRaw)
+  const projectName = escapeHtml(projectNameRaw)
+  const coTitle     = escapeHtml(coTitleRaw)
+
+  const html = baseTemplate({
+    agencyName,
+    headerColour: C.amber,
+    label: 'Signature needed',
+    headline: 'Please confirm your change order',
+    body: `
+      <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${clientName},</p>
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        <strong>${agencyName}</strong> has accepted your proposed amount for
+        <strong>${coTitle}</strong> on <strong>${projectName}</strong> —
+        <strong>${currency} ${total.toLocaleString()}</strong>. To finalize it,
+        please review and sign to confirm.
+      </p>
+    `,
+    cta: 'Review and sign →',
+    ctaUrl: portalUrl,
+  })
+
+  return resendClient().emails.send({
+    from:    `${BRAND_FROM(agencyNameRaw)} <${FROM}>`,
+    to,
+    cc:      cc?.filter(Boolean) || [],
+    subject: `Please confirm: ${coTitleRaw} — ${projectNameRaw}`,
+    html,
+  })
+}
+
 // ── Payment failed / grace period ────────────────────────────
 export async function sendPaymentFailedEmail(params: {
   to: string; name: string; agencyName: string
@@ -699,6 +788,54 @@ export async function sendPaymentFailedEmail(params: {
 }
 
 // ── Phase 4a: Invoice sent (client-facing) ──────────────────────
+// ── Document cancelled / voided / withdrawn (client-facing) ──────
+// FIX (doc-completeness audit): none of these existed. Voiding an invoice
+// or withdrawing a SOW/CO revoked the client's portal link server-side,
+// but the client — who may already have the original "here's what you
+// owe" or "please sign this" email sitting in their inbox — was never
+// told anything changed. A client acting on the stale email (e.g. paying
+// a voided invoice per its bank details) had nothing in-product warning
+// them. One shared template covers all three document types.
+export async function sendDocumentCancelledEmail(params: {
+  to: string; cc?: string[]; clientName: string; agencyName: string
+  projectName: string; documentLabel: string; documentTitle: string
+  action: 'voided' | 'withdrawn'; reason?: string | null; brandColour?: string
+}) {
+  const { to, cc, clientName: clientNameRaw, agencyName: agencyNameRaw, projectName: projectNameRaw,
+    documentLabel, documentTitle: documentTitleRaw, action, reason: reasonRaw, brandColour } = params
+  const clientName    = escapeHtml(clientNameRaw)
+  const agencyName    = escapeHtml(agencyNameRaw)
+  const projectName   = escapeHtml(projectNameRaw)
+  const documentTitle = escapeHtml(documentTitleRaw)
+  const reason        = reasonRaw ? escapeHtml(reasonRaw) : null
+  const verb = action === 'voided' ? 'voided' : 'withdrawn'
+
+  const html = baseTemplate({
+    agencyName,
+    headerColour: C.amber,
+    label: `${documentLabel} ${verb}`,
+    headline: `${documentTitle} has been ${verb}`,
+    body: `
+      <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${clientName},</p>
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        <strong>${agencyName}</strong> has ${verb} the ${documentLabel.toLowerCase()}
+        <strong>${documentTitle}</strong> on <strong>${projectName}</strong>. Any earlier link or copy
+        you have for it is no longer active${action === 'voided' ? ' — please disregard it, including any amount or payment details it referenced' : ''}.
+      </p>
+      ${reason ? `<p style="font-size:13px;color:${C.text2};"><strong>Note from ${agencyName}:</strong> ${reason}</p>` : ''}
+      <p style="font-size:13px;color:${C.text2};">If you have questions, please reach out to ${agencyName} directly.</p>
+    `,
+  })
+
+  return resendClient().emails.send({
+    from:    `${BRAND_FROM(agencyNameRaw)} <${FROM}>`,
+    to,
+    cc:      cc?.filter(Boolean) || [],
+    subject: `${documentLabel} ${verb}: ${documentTitleRaw} — ${projectNameRaw}`,
+    html,
+  })
+}
+
 export async function sendInvoiceEmail(params: {
   to: string; cc?: string[]; clientName: string; agencyName: string
   projectName: string; invoiceNumber?: string | null; title: string
@@ -757,13 +894,15 @@ export async function sendInvoiceReminderEmail(params: {
   projectName: string; invoiceNumber?: string | null; title: string
   balanceDue: number; currency: string; dueDate?: string | null
   portalUrl: string; brandColour?: string; isOverdue?: boolean
+  paymentInstructions?: string | null
 }) {
   const { to, cc, clientName: clientNameRaw, agencyName: agencyNameRaw, projectName: projectNameRaw, invoiceNumber, title: titleRaw,
-    balanceDue, currency, dueDate, portalUrl, brandColour, isOverdue } = params
+    balanceDue, currency, dueDate, portalUrl, brandColour, isOverdue, paymentInstructions: paymentInstructionsRaw } = params
   const clientName  = escapeHtml(clientNameRaw)
   const agencyName  = escapeHtml(agencyNameRaw)
   const projectName = escapeHtml(projectNameRaw)
   const title       = escapeHtml(titleRaw)
+  const paymentInstructions = escapeHtml(paymentInstructionsRaw)
 
   const html = baseTemplate({
     agencyName,
@@ -778,6 +917,12 @@ export async function sendInvoiceReminderEmail(params: {
         <strong>${projectName}</strong>.
         ${dueDate ? ` Due date was ${new Date(dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}.` : ''}
       </p>
+      ${paymentInstructions ? `
+      <div style="background:${C.bg};border:1px solid ${C.border};border-radius:6px;padding:14px 16px;margin:16px 0;">
+        <p style="font-size:11px;color:${C.text3};text-transform:uppercase;letter-spacing:.05em;margin:0 0 6px;">Payment instructions</p>
+        <p style="font-size:13px;color:${C.text2};margin:0;line-height:1.6;white-space:pre-line;">${paymentInstructions}</p>
+      </div>
+      ` : ''}
     `,
     cta: 'View invoice →',
     ctaUrl: portalUrl,

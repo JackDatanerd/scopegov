@@ -61,7 +61,17 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const service = createServiceClient()
     const { data: invoice } = await (service as any)
       .from('invoices')
-      .select(`id, title, amount, amount_paid, currency, status,
+      // FIX (re-audit): project_id was missing from this select, so
+      // invoice.project_id below was always undefined — which silently
+      // skipped the project-scoped notification filtering in
+      // lib/utils/permissions-query.ts (the fix from audit round 4,
+      // finding #8). A VIEW_FINANCIALS holder restricted to specific
+      // projects (not VIEW_ALL_PROJECTS) was still getting email + in-app
+      // notifications, including client name and dollar amount, for
+      // payments on projects they have no access to. Every other invoice
+      // route already selects project_id directly for exactly this reason
+      // — this one just missed it.
+      .select(`id, title, amount, amount_paid, currency, status, project_id,
         projects(id, name, clients(name), workspaces(agency_name))`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 

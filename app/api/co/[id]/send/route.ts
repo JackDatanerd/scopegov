@@ -24,7 +24,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // whole query (42703), which silently surfaces as "CO not found".
     const { data: co, error: coFetchErr } = await (service as any)
       .from('change_orders')
-      .select(`id,title,status,total,version,project_id,
+      .select(`id,title,status,total,line_items,version,project_id,
         projects(id,name,currency)`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
@@ -38,6 +38,16 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     if (co.status !== 'draft')
       return NextResponse.json({ error: 'Only draft COs can be sent' }, { status: 400 })
+
+    // FIX (doc-completeness audit, Group E — hard block): nothing
+    // previously stopped an empty or $0 change order from being sent —
+    // the client would be asked to accept/decline/sign a document that
+    // describes no actual work.
+    const lineItems = typeof co.line_items === 'string' ? JSON.parse(co.line_items) : (co.line_items || [])
+    if (lineItems.length === 0)
+      return NextResponse.json({ error: 'Add at least one line item before sending this change order.' }, { status: 400 })
+    if (!co.total || co.total <= 0)
+      return NextResponse.json({ error: 'This change order has no value — add line item amounts before sending.' }, { status: 400 })
 
     const project = co.projects
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })

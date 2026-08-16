@@ -45,6 +45,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     if (!client?.email)
       return NextResponse.json({ error: 'Client email required' }, { status: 400 })
+    // FIX (doc-completeness audit, Group E — hard block): an invoice with
+    // no due date gives the client no payment deadline at all, and one
+    // with no payment instructions gives them an amount owed and no way
+    // to actually pay it. Both were previously optional all the way
+    // through to send.
+    if (!invoice.due_date)
+      return NextResponse.json({ error: 'Add a due date before sending this invoice.' }, { status: 400 })
+    if (!invoice.payment_instructions?.trim())
+      return NextResponse.json({ error: 'Add payment instructions before sending this invoice.' }, { status: 400 })
 
     // jwt_secret lives in workspace_secrets now, not on workspaces itself —
     // see migration 013.

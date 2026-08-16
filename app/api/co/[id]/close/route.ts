@@ -21,7 +21,11 @@ async function handleTerminalCoState(
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   const TERMINAL_FROM: Record<string, string[]> = {
-    closed:    ['draft','awaiting_response','declined','countered','stalled'],
+    // FIX (doc-completeness audit, migration 014): 'awaiting_countersignature'
+    // added alongside 'awaiting_response' for consistency — a CO stuck
+    // waiting on either the client's initial response or their
+    // countersignature should be closable the same way.
+    closed:    ['draft','awaiting_response','declined','countered','stalled','awaiting_countersignature'],
     withdrawn: ['awaiting_response','draft'],
     declined:  ['awaiting_response'],
   }

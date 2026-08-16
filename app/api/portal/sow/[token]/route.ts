@@ -26,12 +26,19 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     }
 
     // Find SOW by token
+    // FIX (doc-completeness audit): this query never selected legal/billing
+    // fields (agency legal_address/tax_id/phone/website, client
+    // billing_address/vat_number), so the page a client actually reviews
+    // and signs on was missing details that only showed up later on the
+    // PDF generated after signing. Select them so the pre-signature view
+    // matches the document of record.
     const { data: sow } = await (service as any)
       .from('sow_documents')
       .select(`id, version, status, sections, metadata, expires_at, signed_at, signed_by, client_signature_data,
         projects(id, name, disc, contract_value, currency, client_id,
-          clients(name, email),
-          workspaces(id, agency_name, brand_colour, logo_storage_path, agency_signature_data))`)
+          clients(name, email, company_name, billing_address, vat_number),
+          workspaces(id, agency_name, brand_colour, logo_storage_path, agency_signature_data,
+            legal_address, tax_id, phone, website))`)
       .eq('token', token)
       .single()
 
@@ -80,6 +87,16 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const project = sow.projects
     const client  = project?.clients
 
+    // FIX (doc-completeness audit): payment schedule was never fetched
+    // for this page either — the client reviewed and signed the SOW
+    // without ever seeing the milestone/payment schedule that the PDF
+    // (generated only after signing) already showed.
+    const { data: milestones } = await (service as any)
+      .from('payment_milestones')
+      .select('title, amount, percentage, trigger, due_date, status')
+      .eq('sow_id', sow.id)
+      .order('due_date', { ascending: true, nullsFirst: false })
+
     return NextResponse.json({
       sow: {
         id:            sow.id,
@@ -87,12 +104,23 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         agencyName:    workspace.agency_name,
         brandColour:   workspace.brand_colour || '#1A5C3A',
         logoUrl,
+        agencyAddress: workspace.legal_address || null,
+        agencyTaxId:   workspace.tax_id || null,
+        agencyPhone:   workspace.phone || null,
+        agencyWebsite: workspace.website || null,
         agencySignatureData: workspace.agency_signature_data || null,
         contractValue: project.contract_value || 0,
         currency:      project.currency || 'USD',
         clientName:    client?.name || '',
         clientEmail:   client?.email || '',
+        clientCompany: client?.company_name || null,
+        clientBillingAddress: client?.billing_address || null,
+        clientVatNumber:      client?.vat_number || null,
         sections:      sow.sections || [],
+        paymentSchedule: (milestones || []).map((m: any) => ({
+          title: m.title, amount: m.amount, percentage: m.percentage,
+          trigger: m.trigger, dueDate: m.due_date, status: m.status,
+        })),
         version:       sow.version,
         expiresAt:     sow.expires_at,
       },

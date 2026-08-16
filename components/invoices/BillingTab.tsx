@@ -20,9 +20,10 @@ interface Props {
   permissions: { viewFinancials: boolean; sendInvoices: boolean }
   currency: string
   router: any
+  defaultPaymentInstructions?: string
 }
 
-export default function BillingTab({ project, milestones, invoices, reconciliation, permissions, currency, router }: Props) {
+export default function BillingTab({ project, milestones, invoices, reconciliation, permissions, currency, router, defaultPaymentInstructions = '' }: Props) {
   const [creating, setCreating]   = useState(false)
   const [payingId, setPayingId]   = useState<string | null>(null)
   const [voidingId, setVoidingId] = useState<string | null>(null)
@@ -45,8 +46,12 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
   const livePaid      = invoices.filter((i: any) => !['draft', 'void'].includes(i.status)).reduce((s: number, i: any) => s + Number(i.amount_paid || 0), 0)
   const invoicedToDate = latestSnapshot ? latestSnapshot.invoiced_to_date : liveInvoiced
   const paidToDate      = latestSnapshot ? latestSnapshot.paid_to_date : livePaid
+  // FIX (doc-completeness audit, migration 014): a CO awaiting
+  // countersignature is still open money, same as awaiting_response/
+  // countered — omitting it would understate at-risk value the moment
+  // the agency accepts a counter, right up until the client re-signs.
   const atRiskValue      = latestSnapshot ? latestSnapshot.at_risk_value : acceptedCos.length === 0
-    ? (project.change_orders || []).filter((c: any) => ['awaiting_response', 'countered'].includes(c.status)).reduce((s: number, c: any) => s + (c.total || 0), 0)
+    ? (project.change_orders || []).filter((c: any) => ['awaiting_response', 'countered', 'awaiting_countersignature'].includes(c.status)).reduce((s: number, c: any) => s + (c.total || 0), 0)
     : 0
 
   async function refresh() { router.refresh() }
@@ -203,6 +208,7 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
           milestones={billableMilestones}
           sows={signedSows}
           cos={acceptedCos}
+          defaultPaymentInstructions={defaultPaymentInstructions}
           onClose={() => setCreating(false)}
           onCreated={async () => { setCreating(false); await refresh() }}
         />
@@ -237,12 +243,22 @@ function MetricBlock({ label, value, color }: { label: string; value: string; co
 }
 
 // ── CREATE INVOICE ────────────────────────────────────────────
-function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos, onClose, onCreated }: any) {
+function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos, defaultPaymentInstructions, onClose, onCreated }: any) {
   const [source, setSource] = useState<{ type: 'milestone' | 'sow' | 'co' | ''; id: string }>({ type: '', id: '' })
   const [title, setTitle]   = useState('')
   const [amount, setAmount] = useState('')
   const [dueDate, setDueDate] = useState('')
-  const [paymentInstructions, setPaymentInstructions] = useState('')
+  // FIX (doc-completeness audit): workspace Settings had a "default payment
+  // instructions" field that was saved but never actually used anywhere —
+  // every invoice started blank regardless. Prefill from it; still editable
+  // per-invoice.
+  const [paymentInstructions, setPaymentInstructions] = useState(defaultPaymentInstructions || '')
+  // FIX (doc-completeness audit, finding #2): invoices previously had no
+  // way to carry tax at all. Defaults to 0 (no behavior change for
+  // agencies that don't need it); the amount entered is always the final
+  // amount the client owes — this rate just breaks it out on the PDF.
+  const [taxRate, setTaxRate] = useState('0')
+  const [taxInclusive, setTaxInclusive] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
 
@@ -273,6 +289,7 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
         body: JSON.stringify({
           projectId, title: title.trim(), amount: Number(amount), dueDate: dueDate || undefined,
           paymentInstructions: paymentInstructions.trim() || undefined,
+          taxRate: Number(taxRate) || 0, taxInclusive,
           milestoneId: source.type === 'milestone' ? source.id : undefined,
           sowId: source.type === 'sow' ? source.id : undefined,
           coId: source.type === 'co' ? source.id : undefined,
@@ -331,6 +348,22 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
               <div>
                 <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 5 }}>Amount ({projectCurrency})</label>
                 <input type="number" className="finp" value={amount} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAmount(e.target.value)} min={0} step="0.01" />
+              </div>
+            </div>
+
+            <div className="f2" style={{ marginBottom: 12 }}>
+              <div>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 5 }}>Tax rate (%) <span style={{ fontWeight: 400, color: 'var(--text-4)' }}>— optional</span></label>
+                <input type="number" className="finp" value={taxRate} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTaxRate(e.target.value)} min={0} max={100} step="0.01" />
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 5 }}>Amount entered above is</label>
+                <select className="finp" value={taxInclusive ? 'inclusive' : 'exclusive'}
+                  onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setTaxInclusive(e.target.value === 'inclusive')}
+                  disabled={Number(taxRate) <= 0}>
+                  <option value="inclusive">Tax-inclusive</option>
+                  <option value="exclusive">Before tax</option>
+                </select>
               </div>
             </div>
 

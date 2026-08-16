@@ -22,8 +22,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Only Active projects can be marked complete' }, { status: 400 })
 
     // Spec §5.3: blocked if any awaiting_response, countered, or stalled COs
+    // FIX (doc-completeness audit, migration 014): 'awaiting_countersignature'
+    // is just as open/unresolved as these — a project shouldn't be
+    // completable while a CO is sitting there waiting on the client's
+    // signature on the negotiated amount.
     const blockingCos = (project.change_orders || []).filter((co: any) =>
-      ['awaiting_response','countered','stalled'].includes(co.status)
+      ['awaiting_response','countered','stalled','awaiting_countersignature'].includes(co.status)
     )
     if (blockingCos.length > 0) {
       return NextResponse.json({

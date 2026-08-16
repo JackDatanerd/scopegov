@@ -46,6 +46,8 @@ function coPill(status: string): string {
     draft: 'slate', awaiting_response: 'amber', accepted: 'green',
     declined: 'red', countered: 'purple', closed: 'slate', stalled: 'red',
     withdrawn: 'slate', exception_granted: 'blue',
+    // FIX (doc-completeness audit, migration 014)
+    awaiting_countersignature: 'amber',
   }
   return m[status] || 'slate'
 }
@@ -70,6 +72,7 @@ interface Props {
   activity: any[]
   invoices: any[]
   reconciliation: any[]
+  defaultPaymentInstructions?: string
   effectiveContractValue: number
   initialTab: string
   isNewProject: boolean
@@ -83,6 +86,7 @@ interface Props {
 export default function ProjectDetail({
   project, milestones, amendments, team, activity, invoices, reconciliation,
   effectiveContractValue, initialTab, permissions, pendingApprovals = {}, session,
+  defaultPaymentInstructions = '',
 }: Props) {
   const router = useRouter()
   const [tab,        setTab]        = useState(initialTab)
@@ -124,14 +128,15 @@ export default function ProjectDetail({
   }
 
   const recoveredAmt  = amendments.reduce((s: number, a: any) => s + (a.financial_impact || 0), 0)
-  const openCos       = (project.change_orders || []).filter((co: any) => ['awaiting_response','countered'].includes(co.status))
+  // FIX (doc-completeness audit, migration 014)
+  const openCos       = (project.change_orders || []).filter((co: any) => ['awaiting_response','countered','awaiting_countersignature'].includes(co.status))
   const atRiskAmt     = openCos.reduce((s: number, co: any) => s + (co.total || 0), 0)
   const baseValue     = project.contract_value || 0
   const openFlagCount = (project.guardian_flags || []).filter((f: any) => f.status === 'open').length
 
   async function handleMarkComplete() {
     const blockingCos = (project.change_orders || []).filter((co: any) =>
-      ['awaiting_response','countered','stalled'].includes(co.status)
+      ['awaiting_response','countered','stalled','awaiting_countersignature'].includes(co.status)
     )
     if (blockingCos.length > 0) {
       setError(`${blockingCos.length} change order${blockingCos.length !== 1 ? 's' : ''} must be resolved before marking complete.`)
@@ -256,7 +261,7 @@ export default function ProjectDetail({
         {tab === 'sow'      && <SowTab project={project} sows={project.sow_documents || []} amendments={amendments} permissions={permissions} router={router} pendingApprovals={pendingApprovals} />}
         {tab === 'guardian' && <GuardianTab project={project} flags={project.guardian_flags || []} permissions={permissions} router={router} />}
         {tab === 'co'       && <CoTab project={project} cos={project.change_orders || []} permissions={permissions} currency={currency} pendingApprovals={pendingApprovals} />}
-        {tab === 'billing'  && <BillingTab project={project} milestones={milestones} invoices={invoices} reconciliation={reconciliation} permissions={permissions} currency={currency} router={router} />}
+        {tab === 'billing'  && <BillingTab project={project} milestones={milestones} invoices={invoices} reconciliation={reconciliation} permissions={permissions} currency={currency} router={router} defaultPaymentInstructions={defaultPaymentInstructions} />}
         {tab === 'discussion' && (
           <ProjectDiscussion
             projectId={project.id}
@@ -1025,6 +1030,12 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval }: any) 
             <Link href="/approvals"><button className="btn btn-ghost btn-xs">Awaiting approval</button></Link>
           )}
           {co.status === 'awaiting_response' && (
+            <button className="btn btn-ghost btn-xs" onClick={() => doAction('withdraw')} disabled={acting}>Withdraw</button>
+          )}
+          {/* FIX (doc-completeness audit, migration 014): CO is waiting on
+              the client's countersignature at the negotiated total — the
+              agency can still withdraw it, same as awaiting_response. */}
+          {co.status === 'awaiting_countersignature' && (
             <button className="btn btn-ghost btn-xs" onClick={() => doAction('withdraw')} disabled={acting}>Withdraw</button>
           )}
           {co.status === 'declined' && (

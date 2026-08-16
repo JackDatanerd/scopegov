@@ -169,6 +169,15 @@ export default async function ProjectPage({ params, searchParams }: Props) {
     }
   }
 
+  // FIX (doc-completeness audit): workspace.default_payment_instructions
+  // was set in Settings but never read anywhere — the new-invoice form
+  // always started blank. Fetch it so BillingTab can prefill.
+  const { data: workspaceBilling } = await (service as any)
+    .from('workspaces')
+    .select('default_payment_instructions')
+    .eq('id', session.workspaceId)
+    .single()
+
   return (
     <ProjectDetail
       project={project}
@@ -178,6 +187,7 @@ export default async function ProjectPage({ params, searchParams }: Props) {
       activity={activity || []}
       invoices={invoices || []}
       reconciliation={reconciliation || []}
+      defaultPaymentInstructions={workspaceBilling?.default_payment_instructions || ''}
       effectiveContractValue={effectiveContractValue}
       initialTab={tab}
       isNewProject={isNew === '1'}

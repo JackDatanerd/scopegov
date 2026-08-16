@@ -4,6 +4,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { cancelApprovalRequest } from '@/lib/approvals/engine'
 import { canReadProject } from '@/lib/utils/project-access'
+import { sendDocumentCancelledEmail } from '@/lib/email/templates'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -18,17 +19,28 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!hasPermission(session, 'SEND_CHANGE_ORDERS'))
       return NextResponse.json({ error: 'Missing permission: SEND_CHANGE_ORDERS' }, { status: 403 })
 
+    const body = await request.json().catch(() => ({}))
+    const reason: string | undefined = body?.reason?.trim()
+
     const service = createServiceClient()
+    // FIX (doc-completeness audit): added client/workspace so we can
+    // notify the client if this CO had already reached them.
     const { data: co } = await (service as any)
       .from('change_orders')
-      .select('id,title,status,flag_id,token,project_id,projects(name)')
+      .select(`id,title,status,flag_id,token,project_id,
+        projects(name,clients(name,email,cc_emails),workspaces(agency_name,brand_colour))`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!co) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (!(await canReadProject(service, session, co.project_id)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-    if (!['awaiting_response','draft'].includes(co.status))
+    // FIX (doc-completeness audit, migration 014): the agency should be
+    // able to cancel a CO that's waiting on the client to countersign the
+    // negotiated amount, same as any other open state.
+    if (!['awaiting_response','draft','awaiting_countersignature'].includes(co.status))
       return NextResponse.json({ error: 'Cannot withdraw CO in current status' }, { status: 400 })
+
+    const wasSentToClient = co.status !== 'draft'
 
     const now = new Date().toISOString()
     await (service as any).from('change_orders')
@@ -76,6 +88,22 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       eventType: 'co.withdrawn', entityType: 'change_order',
       entityId: id, entityName: co.title, metadata: {},
     })
+
+    // FIX (doc-completeness audit): notify the client if this CO had ever
+    // actually reached them — a draft never had a token sent, so nothing
+    // to warn them about in that case.
+    const client = co.projects?.clients
+    if (wasSentToClient && client?.email) {
+      try {
+        await sendDocumentCancelledEmail({
+          to: client.email, cc: client.cc_emails || [],
+          clientName: client.name, agencyName: co.projects?.workspaces?.agency_name,
+          projectName: co.projects?.name, documentLabel: 'Change Order',
+          documentTitle: co.title, action: 'withdrawn', reason: reason || null,
+          brandColour: co.projects?.workspaces?.brand_colour,
+        })
+      } catch (e) { console.error('CO withdrawn client email failed:', e) }
+    }
 
     return NextResponse.json({ ok: true })
   } catch (err) {

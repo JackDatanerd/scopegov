@@ -35,8 +35,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!co) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (!(await canReadProject(service, session, co.project_id)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-    if (co.status !== 'awaiting_response')
-      return NextResponse.json({ error: 'Can only remind on awaiting_response COs' }, { status: 400 })
+    // FIX (doc-completeness audit, migration 014): a CO waiting on the
+    // client to countersign the negotiated total is just as reminder-able
+    // as one still awaiting their initial response.
+    if (!['awaiting_response', 'awaiting_countersignature'].includes(co.status))
+      return NextResponse.json({ error: 'Can only remind on COs awaiting a client response' }, { status: 400 })
+
+    const isCountersign = co.status === 'awaiting_countersignature'
 
     const project   = co.projects
     const client    = project?.clients
@@ -49,7 +54,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       from:    `${ws?.agency_name} via ScopeGov <${process.env.RESEND_FROM_EMAIL}>`,
       to:      client?.email,
       cc:      client?.cc_emails?.filter(Boolean) || [],
-      subject: `Reminder: Change order awaiting your response — ${co.title}`,
+      subject: isCountersign
+        ? `Reminder: Please confirm your change order — ${co.title}`
+        : `Reminder: Change order awaiting your response — ${co.title}`,
       html: `<!DOCTYPE html><html><body style="font-family:-apple-system,sans-serif;background:#F2F0EA;margin:0;padding:40px 20px;">
       <div style="max-width:580px;margin:0 auto;background:#FFF;border:1px solid #E5E1D8;border-radius:8px;overflow:hidden;">
         <div style="background:${accent};padding:22px 28px;">
@@ -59,11 +66,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         <div style="padding:28px;">
           <p style="font-size:14px;color:#333;line-height:1.7;margin:0 0 16px;">Hi ${client?.name},</p>
           <p style="font-size:14px;color:#555;line-height:1.7;margin:0 0 20px;">
-            A change order for <strong>${project?.name}</strong> is awaiting your response.
+            ${isCountersign
+              ? `The agency has accepted your proposed amount for <strong>${project?.name}</strong> and it's ready for you to confirm.`
+              : `A change order for <strong>${project?.name}</strong> is awaiting your response.`}
             Total: <strong>${currency} ${(co.total || 0).toLocaleString()}</strong>
           </p>
           <a href="${portalUrl}" style="display:inline-block;background:${accent};color:#FFF;padding:12px 24px;border-radius:5px;font-size:13px;font-weight:600;text-decoration:none;">
-            Review &amp; Respond →
+            ${isCountersign ? 'Review &amp; Confirm →' : 'Review &amp; Respond →'}
           </a>
         </div>
       </div>

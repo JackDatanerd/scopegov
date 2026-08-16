@@ -9,6 +9,9 @@ interface InvoiceData {
   title: string
   amount: number
   amountPaid: number
+  subtotal?: number | null
+  taxRate?: number
+  taxInclusive?: boolean
   currency: string
   status: string
   dueDate: string | null
@@ -139,6 +142,22 @@ export default function InvoicePortalPage() {
 
           <div className="portal-doc-body">
             <div style={{ background: '#FAFAF6', border: '1px solid #F0F0EA', borderRadius: 6, padding: '14px 16px', marginBottom: 20 }}>
+              {/* FIX (doc-completeness audit, finding #2): tax breakdown,
+                  previously invisible everywhere including here. */}
+              {(invoice.taxRate || 0) > 0 && invoice.subtotal != null && (
+                <>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#555', marginBottom: 6 }}>
+                    <span>Subtotal</span>
+                    <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{invoice.currency} {invoice.subtotal.toLocaleString()}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#555', marginBottom: 6 }}>
+                    <span>Tax ({invoice.taxRate}%){invoice.taxInclusive ? ' — included' : ''}</span>
+                    <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>
+                      {invoice.taxInclusive ? '—' : `${invoice.currency} ${(invoice.amount - invoice.subtotal).toLocaleString()}`}
+                    </span>
+                  </div>
+                </>
+              )}
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#555', marginBottom: invoice.amountPaid > 0 ? 6 : 0 }}>
                 <span>Invoice amount</span>
                 <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{invoice.currency} {invoice.amount.toLocaleString()}</span>

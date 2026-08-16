@@ -37,6 +37,29 @@ export async function POST(request: NextRequest) {
     if (!(await canReadProject(service, session, projectId)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
+    // FIX (re-audit): flagId came straight from the request body with no
+    // check that it actually belongs to this project/workspace. Every
+    // downstream CO lifecycle action that touches a linked flag — close,
+    // withdraw, accept-counter, and the client portal's accept/decline/
+    // counter handlers — later fetches and updates guardian_flags by this
+    // raw id with no workspace_id filter of its own (they trust the CO's
+    // flag_id implicitly). Left unvalidated here, a member could set
+    // flagId to a UUID belonging to a DIFFERENT workspace's flag, and a
+    // later action on this CO would silently mutate that foreign flag's
+    // status — a cross-tenant write via the service-role client, which
+    // bypasses RLS entirely. Same rule as roleId in team/invite/route.ts:
+    // confirm the referenced row is actually ours before it ever reaches
+    // the insert.
+    let validatedFlagId: string | null = null
+    if (flagId) {
+      const { data: flag } = await (service as any)
+        .from('guardian_flags').select('id')
+        .eq('id', flagId).eq('project_id', projectId).eq('workspace_id', session.workspaceId)
+        .maybeSingle()
+      if (!flag) return NextResponse.json({ error: 'Flag not found on this project' }, { status: 400 })
+      validatedFlagId = flag.id
+    }
+
     const items   = lineItems || []
     const subtotal = items.reduce((s: number, l: any) => s + (l.quantity * l.rate), 0)
     const total    = taxInclusive
@@ -48,7 +71,7 @@ export async function POST(request: NextRequest) {
       .insert({
         project_id:   projectId,
         workspace_id: session.workspaceId,
-        flag_id:      flagId || null,
+        flag_id:      validatedFlagId,
         title:        title.trim(),
         note:         note ? sanitizePlainText(note) || null : null,
         status:       'draft',
