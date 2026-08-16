@@ -98,7 +98,13 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
   const [defaultsForm, setDefaultsForm] = useState(() => ({
     revRounds:    String(defaults?.revision_rounds || 2),
     payStructure: defaults?.payment_structure || '50_50',
-    govLaw:       defaults?.governing_law || 'United States',
+    // FIX (doc-completeness audit, finding #1): governing law used to be a
+    // second, independent field here (workspace_defaults.governing_law)
+    // that SOW generation never actually read — agencies would fill this
+    // in during onboarding, see it "saved," and every SOW would silently
+    // use the fallback country instead. There's now exactly one governing
+    // law field, on the Workspace tab, writing straight to
+    // workspaces.governing_law (the field SOW generation actually reads).
   }))
 
   const [guardianForm, setGuardianForm] = useState(() => ({
@@ -169,7 +175,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
         )}
 
         {tab === 'defaults' && (
-          <DefaultsTab form={defaultsForm} setForm={setDefaultsForm} permissions={permissions} onSave={patch} saving={saving} />
+          <DefaultsTab form={defaultsForm} setForm={setDefaultsForm} permissions={permissions} onSave={patch} saving={saving} setTab={setTab} />
         )}
 
         {tab === 'guardian' && (
@@ -328,8 +334,10 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugLocked }
             <input className="finp" value={form.timezone} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('timezone', e.target.value)} />
           </div>
           <div className="fgrp">
-            <label className="flbl">Governing law (default)</label>
-            <input className="finp" value={form.governingLaw} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('governingLaw', e.target.value)} />
+            <label className="flbl">Governing law</label>
+            <input className="finp" value={form.governingLaw} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('governingLaw', e.target.value)}
+              placeholder="e.g. Republic of Kenya" />
+            <span className="fhint">Used in the governing-law clause on every SOW you send.</span>
           </div>
         </div>
         <button className="btn btn-primary btn-sm" disabled={saving}
@@ -562,7 +570,7 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, save
 }
 
 // ── DEFAULTS ──────────────────────────────────────────────────
-function DefaultsTab({ form, setForm, permissions, onSave, saving }: any) {
+function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab }: any) {
   if (!permissions.manageWorkspace) return <Restricted />
 
   function set(key: string, value: string) {
@@ -595,13 +603,21 @@ function DefaultsTab({ form, setForm, permissions, onSave, saving }: any) {
             </select>
           </div>
         </div>
-        <div className="fgrp">
-          <label className="flbl">Default governing law</label>
-          <input className="finp" value={form.govLaw} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('govLaw', e.target.value)} />
-        </div>
-        <button className="btn btn-primary btn-sm" disabled={saving}
+        {/* FIX (doc-completeness audit, finding #1): this used to be a
+            second, disconnected "Default governing law" input that saved
+            to a column SOW generation never read — every SOW silently
+            defaulted regardless of what was typed here. Governing law now
+            lives in exactly one place. */}
+        <p style={{ fontSize: 12.5, color: 'var(--text-3)', marginBottom: 0, lineHeight: 1.6 }}>
+          Governing law is set on the{' '}
+          <button type="button" onClick={() => setTab?.('workspace')}
+            style={{ background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'var(--green)', textDecoration: 'underline', cursor: 'pointer' }}>
+            Workspace tab
+          </button>{' '}and applies to every SOW.
+        </p>
+        <button className="btn btn-primary btn-sm" style={{ marginTop: 14 }} disabled={saving}
           onClick={() => onSave('/api/workspace/defaults', {
-            revisionRounds: parseInt(form.revRounds), paymentStructure: form.payStructure, governingLaw: form.govLaw,
+            revisionRounds: parseInt(form.revRounds), paymentStructure: form.payStructure,
           })}>
           {saving ? <span className="spin" /> : 'Save defaults'}
         </button>

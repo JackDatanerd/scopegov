@@ -7,6 +7,7 @@ import { SignJWT } from 'jose'
 import { nanoid } from 'nanoid'
 import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
 import { sendCoCountersignatureRequestEmail } from '@/lib/email/templates'
+import { rescaleLineItemsToTotal } from '@/lib/utils/rescale-line-items'
 
 // FIX (doc-completeness audit, decision: require re-sign): this route used
 // to finalize the CO as 'accepted' the moment the agency accepted the
@@ -27,7 +28,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const service = createServiceClient()
     const { data: co } = await (service as any)
       .from('change_orders')
-      .select(`id,title,status,flag_id,counter_amount,counter_note,line_items,project_id,workspace_id,
+      .select(`id,title,status,flag_id,counter_amount,counter_note,line_items,subtotal,tax_rate,tax_inclusive,project_id,workspace_id,
         projects(id,name,currency,clients(name,email,cc_emails),workspaces(id,agency_name,brand_colour))`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
@@ -58,11 +59,26 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const now = new Date().toISOString()
 
+    // FIX (doc-completeness audit, finding #5): previously this only
+    // overwrote `total` with the counter amount, leaving `subtotal` and
+    // `line_items` at their pre-negotiation values — so the eventual PDF
+    // showed line items and a subtotal that didn't sum to the stated
+    // total, with tax computed off the stale subtotal on top of that.
+    // Rescale everything together so the negotiated amount is reflected
+    // consistently across line items, subtotal, and total.
+    const negotiatedTotal = co.counter_amount || co.total
+    const existingLineItems = typeof co.line_items === 'string'
+      ? JSON.parse(co.line_items) : (co.line_items || [])
+    const { lineItems: rescaledLineItems, subtotal: rescaledSubtotal, total: rescaledTotal } =
+      rescaleLineItemsToTotal(existingLineItems, negotiatedTotal, co.tax_rate || 0, !!co.tax_inclusive)
+
     await (service as any).from('change_orders').update({
       status:              'awaiting_countersignature',
       counter_accepted_at: now,
       counter_accepted_by: session.name,
-      total:               co.counter_amount || co.total,
+      line_items:          rescaledLineItems,
+      subtotal:            rescaledSubtotal,
+      total:               rescaledTotal,
       token:               newToken,
       expires_at:          expiresAt.toISOString(),
       responded_at:        now,

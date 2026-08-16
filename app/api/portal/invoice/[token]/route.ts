@@ -16,13 +16,21 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       .from('revoked_tokens').select('id').eq('token', token).single()
     if (revoked) return NextResponse.json({ error: 'Link no longer active' }, { status: 410 })
 
+    // FIX (doc-completeness audit, finding #3): this query never selected
+    // agency legal_address/tax_id/phone/website, client
+    // billing_address/vat_number, po_number, or milestone_id — so the
+    // page a client actually views (and would file this invoice from) was
+    // missing details the PDF (generated from a separate, more complete
+    // query in app/api/pdf/invoice/[id]/route.ts) already had. Mirrors the
+    // fix already applied to the SOW and CO portal routes.
     const { data: invoice } = await (service as any)
       .from('invoices')
       .select(`id, title, amount, amount_paid, currency, status, due_date, sent_at,
-        payment_instructions, invoice_number, workspace_id,
+        payment_instructions, invoice_number, po_number, project_id, milestone_id, workspace_id,
         subtotal, tax_rate, tax_inclusive,
-        projects(id, name, clients(name, company_name),
-          workspaces(agency_name, brand_colour, logo_storage_path))`)
+        projects(id, name, clients(name, company_name, billing_address, vat_number),
+          workspaces(agency_name, brand_colour, logo_storage_path,
+            legal_address, tax_id, phone, website))`)
       .eq('token', token).single()
 
     if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
@@ -47,6 +55,34 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       logoUrl = u?.publicUrl || null
     }
 
+    // FIX (doc-completeness audit, finding #3): milestone trigger text
+    // and contract position were already shown on the PDF (Phase 11) but
+    // never surfaced here — mirrors app/api/pdf/invoice/[id]/route.ts.
+    let milestoneTrigger: string | null = null
+    if (invoice.milestone_id) {
+      const { data: milestone } = await (service as any)
+        .from('payment_milestones').select('trigger').eq('id', invoice.milestone_id).single()
+      milestoneTrigger = milestone?.trigger || null
+    }
+
+    let contractPosition: { contractedValue: number; invoicedToDate: number; paidToDate: number } | null = null
+    if (invoice.project_id) {
+      const { data: snapshot } = await (service as any)
+        .from('contract_reconciliation_snapshots')
+        .select('contracted_value, invoiced_to_date, paid_to_date')
+        .eq('project_id', invoice.project_id)
+        .order('snapshot_date', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      if (snapshot) {
+        contractPosition = {
+          contractedValue: snapshot.contracted_value || 0,
+          invoicedToDate:  snapshot.invoiced_to_date || 0,
+          paidToDate:      snapshot.paid_to_date || 0,
+        }
+      }
+    }
+
     const { data: payments } = await (service as any)
       .from('invoice_payments')
       .select('amount, paid_at, method, reference_note')
@@ -68,10 +104,19 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         sentAt: invoice.sent_at,
         paymentInstructions: invoice.payment_instructions,
         invoiceNumber: invoice.invoice_number,
+        poNumber: invoice.po_number || null,
+        milestoneTrigger,
+        contractPosition,
         projectName: invoice.projects?.name,
         clientName: invoice.projects?.clients?.name,
         clientCompany: invoice.projects?.clients?.company_name,
+        clientBillingAddress: invoice.projects?.clients?.billing_address || null,
+        clientVatNumber: invoice.projects?.clients?.vat_number || null,
         agencyName: workspace?.agency_name,
+        agencyAddress: workspace?.legal_address || null,
+        agencyTaxId: workspace?.tax_id || null,
+        agencyPhone: workspace?.phone || null,
+        agencyWebsite: workspace?.website || null,
         brandColour: workspace?.brand_colour,
         logoUrl,
       },

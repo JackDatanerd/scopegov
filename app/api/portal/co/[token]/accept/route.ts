@@ -10,6 +10,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   try {
     const { token }      = await params
     const { signerName, signatureData } = await request.json()
+    // FIX (doc-completeness audit, finding #2): same capture pattern as
+    // app/api/portal/sow/[token]/sign/route.ts — see migration 015.
+    const ip              = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown'
 
     if (!signerName || signerName.trim().length < 3)
       return NextResponse.json({ error: 'Full name required' }, { status: 400 })
@@ -71,7 +74,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const client  = project.clients
 
     const result = await finalizeCoAcceptance(service, {
-      co, signerName: signerName.trim(), signatureData, source: 'direct',
+      co, signerName: signerName.trim(), signatureData, source: 'direct', signerIp: ip,
     })
     if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status })
 

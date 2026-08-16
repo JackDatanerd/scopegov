@@ -74,7 +74,21 @@ export async function POST(request: NextRequest) {
 
     const agencyName    = project.workspaces?.agency_name || session.agencyName
     const clientName    = project.clients?.company_name || project.clients?.name || 'Client'
-    const governingLaw  = project.workspaces?.governing_law || 'Republic of Kenya'
+    // FIX (doc-completeness audit, finding #1): this used to silently
+    // fall back to a hardcoded country ('Republic of Kenya') whenever
+    // workspaces.governing_law was unset — which, before the write-through
+    // fix in app/api/workspace/defaults/route.ts, was every workspace,
+    // regardless of what the agency thought they'd chosen during
+    // onboarding. Governing law is a real, material legal term of the
+    // contract; guessing it on the agency's behalf produced SOWs with a
+    // silently wrong jurisdiction. Hard-block instead, same pattern
+    // already used for invoice due date / payment instructions.
+    const governingLaw  = project.workspaces?.governing_law?.trim() || null
+    if (!governingLaw) {
+      return NextResponse.json({
+        error: 'Set your workspace\'s governing law in Settings → Workspace before generating a SOW.',
+      }, { status: 400 })
+    }
     const paymentLabel  = PAYMENT_STRUCTURE_LABELS[paymentStructure] || paymentStructure
     const curr          = currency || project.currency || 'USD'
 

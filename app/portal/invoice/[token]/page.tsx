@@ -18,10 +18,19 @@ interface InvoiceData {
   sentAt: string | null
   paymentInstructions: string | null
   invoiceNumber: string | null
+  poNumber: string | null
+  milestoneTrigger: string | null
+  contractPosition: { contractedValue: number; invoicedToDate: number; paidToDate: number } | null
   projectName: string
   clientName: string
   clientCompany: string | null
+  clientBillingAddress: string | null
+  clientVatNumber: string | null
   agencyName: string
+  agencyAddress: string | null
+  agencyTaxId: string | null
+  agencyPhone: string | null
+  agencyWebsite: string | null
   brandColour: string
   logoUrl: string | null
 }
@@ -140,6 +149,46 @@ export default function InvoicePortalPage() {
             </div>
           </div>
 
+          {/* Parties — FIX (doc-completeness audit, finding #3): this block,
+              plus PO number and milestone context below, previously didn't
+              exist on this page at all, even though the downloadable PDF
+              (rendered from a separately, more completely queried route)
+              already included them. A client reviewing the invoice
+              in-browser saw a thinner document than the one they'd get by
+              clicking "Download PDF" on the same page. Mirrors the fix
+              already applied to the SOW and CO portal pages. */}
+          <div className="portal-doc-body" style={{ paddingBottom: 0 }}>
+            <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap', marginBottom: 24, paddingBottom: 20, borderBottom: '1px solid #E5E1D8' }}>
+              <div style={{ flex: '1 1 220px' }}>
+                <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', color: '#909090', marginBottom: 6 }}>
+                  Agency
+                </div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#1A1A1A' }}>{invoice.agencyName}</div>
+                {invoice.agencyAddress && <div style={{ fontSize: 12, color: '#555', whiteSpace: 'pre-line', marginTop: 2 }}>{invoice.agencyAddress}</div>}
+                {(invoice.agencyTaxId || invoice.agencyPhone || invoice.agencyWebsite) && (
+                  <div style={{ fontSize: 11, color: '#909090', marginTop: 4 }}>
+                    {[invoice.agencyTaxId ? `Tax ID ${invoice.agencyTaxId}` : null, invoice.agencyPhone, invoice.agencyWebsite].filter(Boolean).join('  ·  ')}
+                  </div>
+                )}
+              </div>
+              <div style={{ flex: '1 1 220px' }}>
+                <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', color: '#909090', marginBottom: 6 }}>
+                  Billed to
+                </div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#1A1A1A' }}>{invoice.clientCompany || invoice.clientName}</div>
+                {invoice.clientCompany && <div style={{ fontSize: 12, color: '#555', marginTop: 2 }}>{invoice.clientName}</div>}
+                {invoice.clientBillingAddress && <div style={{ fontSize: 12, color: '#555', whiteSpace: 'pre-line', marginTop: 2 }}>{invoice.clientBillingAddress}</div>}
+                {invoice.clientVatNumber && <div style={{ fontSize: 11, color: '#909090', marginTop: 4 }}>VAT {invoice.clientVatNumber}</div>}
+                {invoice.poNumber && <div style={{ fontSize: 11, color: '#909090', marginTop: 4 }}>PO {invoice.poNumber}</div>}
+              </div>
+            </div>
+            {invoice.milestoneTrigger && (
+              <div style={{ fontSize: 12, color: '#909090', marginTop: -12, marginBottom: 20 }}>
+                Billed upon: {invoice.milestoneTrigger}
+              </div>
+            )}
+          </div>
+
           <div className="portal-doc-body">
             <div style={{ background: '#FAFAF6', border: '1px solid #F0F0EA', borderRadius: 6, padding: '14px 16px', marginBottom: 20 }}>
               {/* FIX (doc-completeness audit, finding #2): tax breakdown,
@@ -190,6 +239,34 @@ export default function InvoicePortalPage() {
                     <span style={{ fontFamily: 'IBM Plex Mono, monospace', color: '#333' }}>{invoice.currency} {p.amount.toLocaleString()}</span>
                   </div>
                 ))}
+              </div>
+            )}
+
+            {/* FIX (doc-completeness audit, finding #3): mirrors the
+                "Contract position" block already on the PDF — was never
+                surfaced here, so a client reviewing in-browser had no
+                running picture of contracted value vs. invoiced/paid. */}
+            {invoice.contractPosition && (
+              <div style={{ marginTop: 20 }}>
+                <div className="portal-section-title">Contract position</div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, color: '#555', padding: '5px 0' }}>
+                  <span>Contracted value</span>
+                  <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{invoice.currency} {invoice.contractPosition.contractedValue.toLocaleString()}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, color: '#555', padding: '5px 0' }}>
+                  <span>Invoiced to date (incl. this invoice)</span>
+                  <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{invoice.currency} {invoice.contractPosition.invoicedToDate.toLocaleString()}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, color: '#555', padding: '5px 0' }}>
+                  <span>Paid to date</span>
+                  <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{invoice.currency} {invoice.contractPosition.paidToDate.toLocaleString()}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, fontWeight: 600, padding: '8px 0 0', marginTop: 2, borderTop: '1px solid #E5E1D8' }}>
+                  <span>Remaining contract value</span>
+                  <span style={{ fontFamily: 'IBM Plex Mono, monospace', color: accent }}>
+                    {invoice.currency} {Math.max(0, invoice.contractPosition.contractedValue - invoice.contractPosition.invoicedToDate).toLocaleString()}
+                  </span>
+                </div>
               </div>
             )}
           </div>

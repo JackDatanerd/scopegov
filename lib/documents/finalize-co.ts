@@ -21,8 +21,15 @@ export async function finalizeCoAcceptance(service: any, params: {
   signerName: string
   signatureData: string
   source: 'direct' | 'countersignature'
+  // FIX (doc-completeness audit, finding #2): sow_documents.signer_ip has
+  // been captured on every SOW signature since 001_initial_schema.sql;
+  // change_orders had no equivalent column and neither acceptance path
+  // captured an IP at all, despite a CO amendment being just as legally
+  // binding as the original SOW. Optional (not required) so any other
+  // caller of this shared finalizer doesn't break if it can't resolve one.
+  signerIp?: string | null
 }) {
-  const { co, signerName, signatureData, source } = params
+  const { co, signerName, signatureData, source, signerIp } = params
   const project = co.projects
   const client  = project.clients
   const ws      = project.workspaces
@@ -44,6 +51,7 @@ export async function finalizeCoAcceptance(service: any, params: {
     accepted_at:           now,
     accepted_by:           signerName.trim(),
     client_signature_data: signatureData,
+    signer_ip:             signerIp || 'unknown',
     responded_at:          now,
     updated_at:            now,
   }).eq('id', co.id)
@@ -94,7 +102,7 @@ export async function finalizeCoAcceptance(service: any, params: {
     actorEmail: client.email, actorName: signerName.trim(),
     eventType: 'co.accepted', entityType: 'change_order',
     entityId: co.id, entityName: co.title,
-    metadata: { total: co.total, signer: signerName.trim(), flag_resolved: !!co.flag_id, source },
+    metadata: { total: co.total, signer: signerName.trim(), flag_resolved: !!co.flag_id, source, signer_ip: signerIp || 'unknown' },
   })
 
   // Build the accepted-CO PDF once, reused for both the agency and client

@@ -841,9 +841,15 @@ export async function sendInvoiceEmail(params: {
   projectName: string; invoiceNumber?: string | null; title: string
   amount: number; currency: string; dueDate?: string | null
   portalUrl: string; brandColour?: string; paymentInstructions?: string | null
+  // FIX (doc-completeness audit, finding #4): this email used to be
+  // link-only — no way to attach the invoice PDF, unlike the SOW/CO
+  // signed-confirmation emails. Many AP/procurement workflows expect an
+  // actual attached PDF to file the invoice against; optional so a
+  // failed PDF build (see the send route) still lets the email go out.
+  attachments?: Array<{ filename: string; content: string }>
 }) {
   const { to, cc, clientName: clientNameRaw, agencyName: agencyNameRaw, projectName: projectNameRaw, invoiceNumber, title: titleRaw,
-    amount, currency, dueDate, portalUrl, brandColour, paymentInstructions: paymentInstructionsRaw } = params
+    amount, currency, dueDate, portalUrl, brandColour, paymentInstructions: paymentInstructionsRaw, attachments } = params
   const clientName           = escapeHtml(clientNameRaw)
   const agencyName           = escapeHtml(agencyNameRaw)
   const projectName          = escapeHtml(projectNameRaw)
@@ -885,6 +891,7 @@ export async function sendInvoiceEmail(params: {
     cc:      cc?.filter(Boolean) || [],
     subject: `Invoice${invoiceNumber ? ` ${invoiceNumber}` : ''}: ${titleRaw} — ${projectNameRaw}`,
     html,
+    ...(attachments?.length ? { attachments } : {}),
   })
 }
 

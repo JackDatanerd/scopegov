@@ -7,6 +7,20 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 
+// FIX (doc-completeness audit, finding #1): governingLaw used to be
+// stored ONLY on workspace_defaults, a table nothing in SOW generation
+// ever reads — app/api/sow/generate/route.ts always read
+// workspaces.governing_law instead. Every agency that set this during
+// onboarding (where it defaulted to 'United States') got that value
+// saved, displayed as saved, and then silently ignored by every SOW,
+// which fell back to a hardcoded country instead. governing_law is now
+// write-through: still recorded on workspace_defaults for callers that
+// read the bundled defaults blob, but workspaces.governing_law — the
+// column actually consulted at generation time — is the source of
+// truth and gets updated in the same call. Callers that don't manage
+// governing law (e.g. the Settings → Defaults tab, post-fix) simply
+// omit governingLaw from the body and this leaves the workspace's
+// value untouched rather than clobbering it with a default.
 async function saveDefaults(workspaceId: string, body: any) {
   const { revisionRounds, paymentStructure, governingLaw } = body
   const service = createServiceClient()
@@ -19,14 +33,14 @@ async function saveDefaults(workspaceId: string, body: any) {
     .is('project_type', null)
     .maybeSingle()
 
-  const payload = {
+  const payload: Record<string, unknown> = {
     workspace_id:      workspaceId,
     project_type:      null,
     revision_rounds:   Number(revisionRounds) || 2,
     payment_structure: paymentStructure || '50_50',
-    governing_law:     governingLaw || 'United States',
     updated_at:        new Date().toISOString(),
   }
+  if (governingLaw !== undefined) payload.governing_law = governingLaw || null
 
   if (existing?.id) {
     const { error } = await (service as any)
@@ -39,6 +53,15 @@ async function saveDefaults(workspaceId: string, body: any) {
       .from('workspace_defaults')
       .insert(payload)
     if (error) throw new Error(error.message)
+  }
+
+  // The write-through: this is the field SOW generation actually reads.
+  if (governingLaw !== undefined && governingLaw !== null && String(governingLaw).trim() !== '') {
+    const { error: wsError } = await (service as any)
+      .from('workspaces')
+      .update({ governing_law: String(governingLaw).trim() })
+      .eq('id', workspaceId)
+    if (wsError) throw new Error(wsError.message)
   }
 }
 
@@ -95,13 +118,13 @@ export async function GET() {
     const [{ data: defaults }, { data: workspace }] = await Promise.all([
       (service as any)
         .from('workspace_defaults')
-        .select('revision_rounds, payment_structure, governing_law')
+        .select('revision_rounds, payment_structure')
         .eq('workspace_id', session.workspaceId)
         .is('project_type', null)
         .maybeSingle(),
       (service as any)
         .from('workspaces')
-        .select('currency')
+        .select('currency, governing_law')
         .eq('id', session.workspaceId)
         .single(),
     ])
@@ -109,7 +132,10 @@ export async function GET() {
     return NextResponse.json({
       revisionRounds:   defaults?.revision_rounds ?? 2,
       paymentStructure: defaults?.payment_structure ?? '50_50',
-      governingLaw:     defaults?.governing_law ?? 'United States',
+      // FIX (doc-completeness audit, finding #1): read from workspaces,
+      // the column SOW generation actually consults, not
+      // workspace_defaults — see saveDefaults() above for the full story.
+      governingLaw:     workspace?.governing_law ?? null,
       currency:         workspace?.currency ?? 'USD',
     })
   } catch (err) {

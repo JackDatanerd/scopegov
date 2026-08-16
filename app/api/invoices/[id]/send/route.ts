@@ -6,6 +6,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { assignDocumentNumber } from '@/lib/utils/document-number'
 import { sendInvoiceEmail } from '@/lib/email/templates'
+import { renderInvoicePdf } from '@/lib/pdf/renderer'
 import { SignJWT } from 'jose'
 import { nanoid } from 'nanoid'
 import { canReadProject } from '@/lib/utils/project-access'
@@ -26,8 +27,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { data: invoice, error: fetchErr } = await (service as any)
       .from('invoices')
       .select(`id, title, amount, currency, status, due_date, payment_instructions, invoice_number,
-        projects(id, name, client_id, clients(name, email, cc_emails, company_name),
-          workspaces(id, agency_name, brand_colour))`)
+        po_number, milestone_id, project_id, subtotal, tax_rate, tax_inclusive,
+        projects(id, name, client_id, clients(name, email, cc_emails, company_name, billing_address, vat_number),
+          workspaces(id, agency_name, brand_colour, logo_storage_path, legal_address, tax_id, phone, website))`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!invoice) {
@@ -93,6 +95,63 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }
 
     const portalUrl = `${process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL}/portal/invoice/${token}`
+
+    // FIX (doc-completeness audit, finding #4): the initial invoice email
+    // was link-only, unlike the SOW/CO signed-confirmation emails which
+    // attach the PDF. For SOW/CO the client has to visit the portal
+    // anyway to sign, so link-only is defensible there — but many
+    // procurement/AP workflows expect and auto-file an actual attached
+    // PDF, and a link-only invoice is more likely to get stuck or
+    // flagged by spam filtering before anyone ever pays it. Build the
+    // same PDF the portal/download endpoint serves and attach it here.
+    // Best-effort: if generation fails, the email still sends with the
+    // portal link, same fallback pattern used for the CO email below.
+    let pdfAttachment: { filename: string; content: string } | undefined
+    try {
+      let logoUrl: string | null = null
+      if (workspace?.logo_storage_path) {
+        const { data: u } = await (service as any).storage.from('logos').getPublicUrl(workspace.logo_storage_path)
+        logoUrl = u?.publicUrl || null
+      }
+      let milestoneTrigger: string | null = null
+      if (invoice.milestone_id) {
+        const { data: milestone } = await (service as any)
+          .from('payment_milestones').select('trigger').eq('id', invoice.milestone_id).single()
+        milestoneTrigger = milestone?.trigger || null
+      }
+      const pdfBuffer = await renderInvoicePdf({
+        agencyName:    workspace.agency_name || session.agencyName,
+        logoUrl,
+        brandColour:   workspace.brand_colour || '#1A5C3A',
+        agencyAddress: workspace.legal_address || null,
+        agencyTaxId:   workspace.tax_id || null,
+        agencyPhone:   workspace.phone || null,
+        agencyWebsite: workspace.website || null,
+        clientName:    client.name,
+        clientCompany: client.company_name || null,
+        clientBillingAddress: client.billing_address || null,
+        clientVatNumber:      client.vat_number || null,
+        poNumber:      invoice.po_number || null,
+        milestoneTrigger,
+        projectName:   project.name,
+        invoiceNumber,
+        title:         invoice.title,
+        amount:        invoice.amount,
+        amountPaid:    0,
+        subtotal:      invoice.subtotal,
+        taxRate:       invoice.tax_rate,
+        taxInclusive:  invoice.tax_inclusive,
+        currency:      invoice.currency,
+        status:        'sent',
+        dueDate:       invoice.due_date,
+        sentAt:        now,
+        paymentInstructions: invoice.payment_instructions,
+        payments:      [],
+        contractPosition: null,
+      })
+      pdfAttachment = { filename: `${invoiceNumber || 'Invoice'}-${project.name.replace(/[^a-z0-9]/gi, '-')}.pdf`, content: pdfBuffer.toString('base64') }
+    } catch (e) { console.error('Invoice PDF generation for email failed (email will send without attachment):', e) }
+
     try {
       await sendInvoiceEmail({
         to:          client.email,
@@ -108,6 +167,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         portalUrl,
         brandColour: workspace.brand_colour,
         paymentInstructions: invoice.payment_instructions,
+        attachments: pdfAttachment ? [pdfAttachment] : undefined,
       })
     } catch (e) { console.error('Invoice email failed:', e) }
 

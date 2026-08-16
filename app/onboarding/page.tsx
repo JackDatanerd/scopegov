@@ -47,7 +47,14 @@ export default function OnboardingPage() {
   // Step 2
   const [revisionRounds,   setRevisionRounds]   = useState('2')
   const [paymentStructure, setPaymentStructure] = useState('50_50')
-  const [governingLaw,     setGoverningLaw]     = useState('United States')
+  // FIX (doc-completeness audit, finding #1): this used to default to
+  // 'United States' and get saved to a column SOW generation never read,
+  // so agencies would see it "saved" during onboarding while every SOW
+  // silently used an unrelated fallback. Starts blank now — governing
+  // law is a real legal term of the contract, not something we should
+  // guess on the agency's behalf — and SOW generation hard-blocks until
+  // it's actually set (see app/api/sow/generate/route.ts).
+  const [governingLaw,     setGoverningLaw]     = useState('')
 
   // Step 3
   const [inviteEmail, setInviteEmail] = useState('')
@@ -376,10 +383,10 @@ export default function OnboardingPage() {
               </div>
             </div>
             <div className="fgrp">
-              <label className="flbl">Governing law</label>
+              <label className="flbl">Governing law <span className="fhint">— the contract law that governs your SOWs</span></label>
               <input className="finp" value={governingLaw}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setGoverningLaw(e.target.value)}
-                placeholder="United States" />
+                placeholder="e.g. Republic of Kenya" />
             </div>
 
             <div className="ob-nav">
