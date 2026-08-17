@@ -48,9 +48,22 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const client  = project.clients
 
     // Mark current version as changes_requested
-    await (service as any).from('sow_documents').update({
-      status: 'changes_requested', updated_at: now,
-    }).eq('id', sow.id)
+    // FIX (re-audit, race-condition finding): same class of gap already
+    // fixed on the sign route — this used to write unconditionally on
+    // `.eq('id', sow.id)`, so a Request Changes racing a near-simultaneous
+    // Sign could flip an already-signed SOW to 'changes_requested' (and
+    // spin up a redundant new draft version) after the fact. CAS on the
+    // still-'awaiting_signature' status closes the window.
+    const { data: updated, error: updateErr } = await (service as any)
+      .from('sow_documents')
+      .update({ status: 'changes_requested', updated_at: now })
+      .eq('id', sow.id)
+      .eq('status', 'awaiting_signature')
+      .select('id')
+
+    if (updateErr) return NextResponse.json({ error: 'Failed to request changes' }, { status: 500 })
+    if (!updated || updated.length === 0)
+      return NextResponse.json({ error: 'This SOW was already responded to' }, { status: 409 })
 
     // Create new draft version (same transaction per spec §1.3)
     const { data: newSow } = await (service as any).from('sow_documents').insert({

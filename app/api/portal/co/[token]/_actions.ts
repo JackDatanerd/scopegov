@@ -68,10 +68,29 @@ export async function POST_DECLINE(request: NextRequest, token: string) {
     return NextResponse.json({ error: 'CO cannot be declined in current status' }, { status: 409 })
 
   const now = new Date().toISOString()
-  await (service as any).from('change_orders').update({
-    status: 'declined', declined_at: now, declined_reason: reason || null,
-    responded_at: now, updated_at: now,
-  }).eq('id', co.id)
+  // FIX (re-audit, race-condition finding): this used to write
+  // unconditionally on `.eq('id', co.id)` — a read-then-write gap
+  // identical to the one already fixed on the accept/countersign paths
+  // (see finalize-co.ts). A client firing Accept and Decline for the
+  // same CO near-simultaneously could let Accept's CAS-protected write
+  // land first (status -> 'accepted', fully finalized with a real
+  // signature and agency notification), then have this unconditional
+  // write blindly flip it back to 'declined' anyway. CAS on the
+  // still-'awaiting_response' status here closes that window: only the
+  // request that actually wins the race continues past this point.
+  const { data: updated, error: updateErr } = await (service as any)
+    .from('change_orders')
+    .update({
+      status: 'declined', declined_at: now, declined_reason: reason || null,
+      responded_at: now, updated_at: now,
+    })
+    .eq('id', co.id)
+    .eq('status', 'awaiting_response')
+    .select('id')
+
+  if (updateErr) return NextResponse.json({ error: 'Failed to decline' }, { status: 500 })
+  if (!updated || updated.length === 0)
+    return NextResponse.json({ error: 'This change order was already responded to' }, { status: 409 })
 
   // Revoke token
   try {
@@ -145,13 +164,26 @@ export async function POST_COUNTER(request: NextRequest, token: string) {
     return NextResponse.json({ error: 'CO cannot be countered in current status' }, { status: 409 })
 
   const now = new Date().toISOString()
-  await (service as any).from('change_orders').update({
-    status:        'countered',
-    counter_amount: parsedAmount,
-    counter_note:  counterNote || null,
-    responded_at:  now,
-    updated_at:    now,
-  }).eq('id', co.id)
+  // FIX (re-audit, race-condition finding): same class of gap as
+  // POST_DECLINE above — an unconditional write here let a losing
+  // Counter request stomp a CO an Accept request had already CAS-won and
+  // finalized in the same instant. Guard the write the same way.
+  const { data: updated, error: updateErr } = await (service as any)
+    .from('change_orders')
+    .update({
+      status:        'countered',
+      counter_amount: parsedAmount,
+      counter_note:  counterNote || null,
+      responded_at:  now,
+      updated_at:    now,
+    })
+    .eq('id', co.id)
+    .eq('status', 'awaiting_response')
+    .select('id')
+
+  if (updateErr) return NextResponse.json({ error: 'Failed to submit counter offer' }, { status: 500 })
+  if (!updated || updated.length === 0)
+    return NextResponse.json({ error: 'This change order was already responded to' }, { status: 409 })
 
   await logAudit(service, {
     workspaceId: co.workspace_id,

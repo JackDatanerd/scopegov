@@ -44,9 +44,24 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const client  = project.clients
 
     // Decline SOW
-    await (service as any).from('sow_documents').update({
-      status: 'declined', declined_at: now, declined_reason: reason || null, updated_at: now,
-    }).eq('id', sow.id)
+    // FIX (re-audit, race-condition finding): same class of gap already
+    // fixed on the sign route (see that file's writeup) — this used to
+    // write unconditionally on `.eq('id', sow.id)`, so a Decline racing a
+    // near-simultaneous Sign could stomp an already-signed SOW back to
+    // 'declined' after the fact. CAS on the still-'awaiting_signature'
+    // status closes the window.
+    const { data: updated, error: updateErr } = await (service as any)
+      .from('sow_documents')
+      .update({
+        status: 'declined', declined_at: now, declined_reason: reason || null, updated_at: now,
+      })
+      .eq('id', sow.id)
+      .eq('status', 'awaiting_signature')
+      .select('id')
+
+    if (updateErr) return NextResponse.json({ error: 'Failed to decline' }, { status: 500 })
+    if (!updated || updated.length === 0)
+      return NextResponse.json({ error: 'This SOW was already responded to' }, { status: 409 })
 
     // Revoke token — reason: 'declined' (spec §4.3)
     await (service as any).from('revoked_tokens').insert({
