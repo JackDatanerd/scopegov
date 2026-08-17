@@ -91,7 +91,12 @@ export async function POST(request: Request) {
       })
     } catch (e) { console.error('MFA enable notification insert failed (non-fatal):', e) }
 
-    sendMfaEnabledEmail({ to: user.email!, name: user.user_metadata?.name || user.email! })
+    // FIX (re-audit): fire-and-forget email — not awaited — is unsafe in
+    // serverless (the function can freeze/terminate right after the
+    // response is sent, before the send completes). Same rule as
+    // everywhere else in this codebase: await email sends, even inside a
+    // .catch().
+    await sendMfaEnabledEmail({ to: user.email!, name: user.user_metadata?.name || user.email! })
       .catch(e => console.error('MFA enable email failed (non-fatal):', e))
 
     return NextResponse.json({ ok: true, backupCodes: plaintext })

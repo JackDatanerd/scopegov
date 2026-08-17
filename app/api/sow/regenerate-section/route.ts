@@ -78,10 +78,27 @@ No preamble, no explanation, no markdown fences. Just the HTML content.`
     }
 
     // Enforce word limit
+    // FIX (re-audit): this used to only log a warning on overflow and
+    // still return the oversized content — "HARD LIMIT" in the prompt
+    // above was advisory only, not actually enforced. A section is meant
+    // to never grow past its current length (BUG-032), and the model
+    // does occasionally ignore the instruction. Truncating the raw HTML
+    // string at a word boundary risks leaving an unclosed tag (a stray
+    // <strong> or <li> with no close), which is worse than just being
+    // over budget — sanitizeRichText() doesn't repair malformed markup,
+    // it removes disallowed tags/attributes. So on overflow, don't try
+    // to salvage the AI's output at all: fall back to the section's
+    // current content, which is already valid, already sanitized once
+    // (see PATCH /api/sow/[id]), and by definition respects the limit.
     const newWords = countWords(raw)
     if (newWords > wordLimit * 1.1) {
-      // Truncate — but this shouldn't happen with the prompt
-      console.warn(`Section regeneration exceeded word limit: ${newWords} > ${wordLimit}`)
+      console.warn(`Section regeneration exceeded word limit (${newWords} > ${wordLimit}) — falling back to current content`)
+      await recordAiUsage(service, session.workspaceId, session.id, 'sow.regenerateSection')
+      return NextResponse.json({
+        content: sanitizeRichText(currentContent || ''),
+        wordCount: currentWords,
+        truncated: true,
+      })
     }
 
     await recordAiUsage(service, session.workspaceId, session.id, 'sow.regenerateSection')

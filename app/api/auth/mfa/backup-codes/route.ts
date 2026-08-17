@@ -37,7 +37,13 @@ export async function POST() {
       eventType: 'security.mfa_backup_codes_regenerated', entityType: 'user', entityId: user.id, entityName: user.email!,
       metadata: {},
     })
-    sendMfaBackupCodesRegeneratedEmail({ to: user.email!, name: user.user_metadata?.name || user.email! })
+    // FIX (re-audit): fire-and-forget email — not awaited — is unsafe in
+    // serverless (the function can freeze/terminate right after the
+    // response is sent, before the send completes). Same rule as
+    // everywhere else in this codebase: await email sends, even inside a
+    // .catch(). This one confirms a backup-code regeneration, which
+    // invalidates every prior code — the user needs to actually receive it.
+    await sendMfaBackupCodesRegeneratedEmail({ to: user.email!, name: user.user_metadata?.name || user.email! })
       .catch(e => console.error('MFA backup codes regenerated email failed (non-fatal):', e))
 
     return NextResponse.json({ backupCodes: plaintext })

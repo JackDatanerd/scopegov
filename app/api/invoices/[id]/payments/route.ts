@@ -97,6 +97,18 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .single()
 
     if (error) {
+      // FIX (re-audit, race-condition finding): the app-layer `remaining`
+      // check above is a read-then-write race (two concurrent payment
+      // submissions can both read the balance before either commits) —
+      // the real backstop is the DB trigger added in migration 016,
+      // which locks the invoice row and rejects an overpaying insert.
+      // Surface that specific rejection as a normal 400, not a generic
+      // 500 — it's an expected outcome of the race, not a server fault.
+      if (error.message?.includes('exceed invoice balance')) {
+        return NextResponse.json({
+          error: 'This payment would exceed the invoice balance — someone may have just recorded another payment on it. Refresh and try again.',
+        }, { status: 409 })
+      }
       console.error('Invoice payment insert error:', error)
       return NextResponse.json({ error: 'Failed to record payment' }, { status: 500 })
     }

@@ -75,6 +75,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const result = await finalizeCoAcceptance(service, {
       co, signerName: signerName.trim(), signatureData, source: 'direct', signerIp: ip,
+      // FIX (re-audit, race-condition finding): see finalize-co.ts —
+      // this is the compare-and-swap guard, not just a pre-check.
+      expectedStatus: 'awaiting_response',
     })
     if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status })
 

@@ -75,7 +75,13 @@ export async function POST(request: Request) {
     // not a function` in this runtime instead of being swallowed — see
     // verify/route.ts for the full writeup and commit fa95fe0 for the
     // established fix pattern this now follows.
-    sendMfaDisabledEmail({ to: user.email!, name: user.user_metadata?.name || user.email!, via: 'backup_code_recovery' })
+    // FIX (re-audit): fire-and-forget email — not awaited — is unsafe in
+    // serverless (the function can freeze/terminate right after the
+    // response is sent, before the send completes). Same rule as
+    // everywhere else in this codebase: await email sends, even inside a
+    // .catch(). This one tells the user their MFA factor was just reset
+    // via a backup code — a real security event they need to see.
+    await sendMfaDisabledEmail({ to: user.email!, name: user.user_metadata?.name || user.email!, via: 'backup_code_recovery' })
       .catch(e => console.error('MFA recovery email failed (non-fatal):', e))
 
     return NextResponse.json({ ok: true })

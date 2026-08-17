@@ -84,7 +84,15 @@ export async function DELETE(request: Request) {
     // not a function` in this runtime instead of being swallowed — see
     // verify/route.ts for the full writeup and commit fa95fe0 for the
     // established fix pattern this now follows.
-    sendMfaDisabledEmail({ to: user.email!, name: user.user_metadata?.name || user.email!, via: 'user' })
+    // FIX (re-audit): this security-notification email was fire-and-
+    // forget — not awaited — which means Vercel's serverless runtime can
+    // freeze/terminate the function right after the response is sent,
+    // before the send actually completes. Same rule as everywhere else
+    // in this codebase: await email sends in serverless, never fire-and-
+    // forget them, even inside a .catch(). This is the one that tells a
+    // user their two-factor protection was just removed — it must not
+    // silently fail to send.
+    await sendMfaDisabledEmail({ to: user.email!, name: user.user_metadata?.name || user.email!, via: 'user' })
       .catch(e => console.error('MFA disable email failed (non-fatal):', e))
 
     return NextResponse.json({ ok: true })

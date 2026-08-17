@@ -72,18 +72,34 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { lineItems: rescaledLineItems, subtotal: rescaledSubtotal, total: rescaledTotal } =
       rescaleLineItemsToTotal(existingLineItems, negotiatedTotal, co.tax_rate || 0, !!co.tax_inclusive)
 
-    await (service as any).from('change_orders').update({
-      status:              'awaiting_countersignature',
-      counter_accepted_at: now,
-      counter_accepted_by: session.name,
-      line_items:          rescaledLineItems,
-      subtotal:            rescaledSubtotal,
-      total:               rescaledTotal,
-      token:               newToken,
-      expires_at:          expiresAt.toISOString(),
-      responded_at:        now,
-      updated_at:          now,
-    }).eq('id', id)
+    // FIX (re-audit, race-condition finding): CAS on the status this route
+    // itself just checked above — the read-then-write gap between that
+    // check and this write is a real window (two staff members, or one
+    // double-clicking Accept). Without this, a lost race would still
+    // silently overwrite the winner's negotiated line items/token/expiry
+    // and fire a second countersignature-request email carrying a token
+    // that immediately doesn't match the row anymore. See
+    // lib/documents/finalize-co.ts for the matching client-side fix.
+    const { data: updatedCo, error: updateErr } = await (service as any)
+      .from('change_orders').update({
+        status:              'awaiting_countersignature',
+        counter_accepted_at: now,
+        counter_accepted_by: session.name,
+        line_items:          rescaledLineItems,
+        subtotal:            rescaledSubtotal,
+        total:               rescaledTotal,
+        token:               newToken,
+        expires_at:          expiresAt.toISOString(),
+        responded_at:        now,
+        updated_at:          now,
+      })
+      .eq('id', id)
+      .eq('status', 'countered')
+      .select('id')
+
+    if (updateErr) return NextResponse.json({ error: 'Failed to accept counter' }, { status: 500 })
+    if (!updatedCo || updatedCo.length === 0)
+      return NextResponse.json({ error: 'This counter-offer was already responded to' }, { status: 409 })
 
     // Flag resolution and amendment creation now happen once the client
     // actually countersigns (finalizeCoAcceptance), not here.

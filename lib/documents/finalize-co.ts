@@ -28,8 +28,22 @@ export async function finalizeCoAcceptance(service: any, params: {
   // binding as the original SOW. Optional (not required) so any other
   // caller of this shared finalizer doesn't break if it can't resolve one.
   signerIp?: string | null
+  // FIX (re-audit, race-condition finding): the status this CO must
+  // currently be in for this acceptance to be valid — 'awaiting_response'
+  // for a direct accept, 'countered' for the agency-side accept-counter,
+  // 'awaiting_countersignature' for a client countersignature. Every
+  // caller already reads and checks co.status before calling this
+  // function, but that read-then-write gap is exactly the race window:
+  // two near-simultaneous requests (a double-click, or a client's
+  // browser silently retrying a timed-out fetch — both routine on a
+  // portal signing page) can each pass the caller's status check before
+  // either write lands, then both run this entire function. Requiring
+  // the UPDATE below to still match that expected status turns the
+  // whole finalize into a compare-and-swap: only the request that
+  // actually flips the row proceeds past it.
+  expectedStatus: string
 }) {
-  const { co, signerName, signatureData, source, signerIp } = params
+  const { co, signerName, signatureData, source, signerIp, expectedStatus } = params
   const project = co.projects
   const client  = project.clients
   const ws      = project.workspaces
@@ -46,15 +60,29 @@ export async function finalizeCoAcceptance(service: any, params: {
   if (!signedSow)
     return { ok: false as const, error: 'No signed SOW found for this project — cannot record this amendment', status: 422 }
 
-  await (service as any).from('change_orders').update({
-    status:                'accepted',
-    accepted_at:           now,
-    accepted_by:           signerName.trim(),
-    client_signature_data: signatureData,
-    signer_ip:             signerIp || 'unknown',
-    responded_at:          now,
-    updated_at:            now,
-  }).eq('id', co.id)
+  // Compare-and-swap: only succeeds if the row is still in the status the
+  // caller observed. A concurrent request that already flipped it (or beat
+  // us here) makes this match zero rows — `data` comes back empty, not an
+  // error — which is the race-loser signal checked right below.
+  const { data: updatedCo, error: updateErr } = await (service as any)
+    .from('change_orders')
+    .update({
+      status:                'accepted',
+      accepted_at:           now,
+      accepted_by:           signerName.trim(),
+      client_signature_data: signatureData,
+      signer_ip:             signerIp || 'unknown',
+      responded_at:          now,
+      updated_at:            now,
+    })
+    .eq('id', co.id)
+    .eq('status', expectedStatus)
+    .select('id')
+
+  if (updateErr)
+    return { ok: false as const, error: 'Failed to record acceptance', status: 500 }
+  if (!updatedCo || updatedCo.length === 0)
+    return { ok: false as const, error: 'This change order was already accepted', status: 409 }
 
   const lineItems    = typeof co.line_items === 'string' ? JSON.parse(co.line_items) : (co.line_items || [])
   const deliverables = lineItems.map((l: any) => l.description).filter(Boolean)

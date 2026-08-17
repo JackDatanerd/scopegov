@@ -66,15 +66,36 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const ws      = project.workspaces
 
     // ── 1. Mark SOW signed ───────────────────────────────────
-    await (service as any).from('sow_documents').update({
-      status:      'signed',
-      signed_at:   now,
-      signed_by:   signerName.trim(),
-      signer_email: client.email,
-      signer_ip:   ip,
-      client_signature_data: signatureData,
-      updated_at:  now,
-    }).eq('id', sow.id)
+    // FIX (re-audit, race-condition finding): the status check above
+    // (`sow.status !== 'awaiting_signature'`) reads then this writes —
+    // two near-simultaneous requests (a double-click, or a browser
+    // silently retrying a timed-out fetch on the signing page, both
+    // routine here) can both pass that read before either write lands,
+    // then both run this entire flow: two sets of milestones, two PDFs,
+    // duplicate agency/client emails, and a duplicate INSERT attempt on
+    // project_scope_snapshot below (which does have a UNIQUE(project_id)
+    // constraint, so the *second* request would previously crash with an
+    // unhandled DB error instead of failing cleanly). CAS on status here
+    // closes the window: only the request that actually flips the row
+    // continues past this point.
+    const { data: updatedSow, error: signUpdateErr } = await (service as any)
+      .from('sow_documents')
+      .update({
+        status:      'signed',
+        signed_at:   now,
+        signed_by:   signerName.trim(),
+        signer_email: client.email,
+        signer_ip:   ip,
+        client_signature_data: signatureData,
+        updated_at:  now,
+      })
+      .eq('id', sow.id)
+      .eq('status', 'awaiting_signature')
+      .select('id')
+
+    if (signUpdateErr) return NextResponse.json({ error: 'Failed to record signature' }, { status: 500 })
+    if (!updatedSow || updatedSow.length === 0)
+      return NextResponse.json({ error: 'This SOW was already signed' }, { status: 409 })
 
     // ── 2. Update project → Active ───────────────────────────
     await (service as any).from('projects').update({

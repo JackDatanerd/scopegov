@@ -56,6 +56,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const result = await finalizeCoAcceptance(service, {
       co, signerName: signerName.trim(), signatureData, source: 'countersignature', signerIp: ip,
+      // FIX (re-audit, race-condition finding): see finalize-co.ts —
+      // this is the compare-and-swap guard, not just a pre-check.
+      expectedStatus: 'awaiting_countersignature',
     })
     if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status })
 

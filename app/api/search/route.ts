@@ -17,6 +17,19 @@ export async function GET(request: NextRequest) {
     const escaped      = q.replace(/['"\\]/g, '').slice(0, 100)
     const tsQuery      = escaped.split(/\s+/).filter(Boolean).map(w => `${w}:*`).join(' & ')
 
+    // FIX (re-audit): the `q.length < 2` guard above runs on the RAW
+    // query, before the ['"\] strip — a query like `'''` is 3 raw chars
+    // (passes that check) but strips down to an empty string, producing
+    // an empty tsQuery. Postgres errors on `to_tsquery('')`, which this
+    // route's outer try/catch was silently swallowing into an empty
+    // result set with no distinction from "no matches" — technically
+    // harmless, but it also skipped straight to Change Orders' plain
+    // ilike (which tolerates an empty pattern fine) while pretending the
+    // whole search had "worked". Bail out explicitly instead so this
+    // stays an intentional no-op, not an unhandled Postgres error caught
+    // by accident.
+    if (!tsQuery) return NextResponse.json({ results: [] })
+
     const results: Array<{ type: string; id: string; title: string; sub: string; href: string }> = []
 
     // FIX (re-audit): computed once and reused below for the Change Orders
