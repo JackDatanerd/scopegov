@@ -13,6 +13,21 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const body    = await request.json()
     const service = createServiceClient()
 
+    // FIX (re-audit, finding — broken access control): this route had no
+    // general permission gate at all — only the narrower body.status ===
+    // 'Complete' branch below checked anything. canReadProject() confirms
+    // visibility, not edit rights, so any member merely assigned to a
+    // project (e.g. a Designer role holding only VIEW_OWN_PROJECTS /
+    // MARK_DELIVERABLE_STATUS, nothing edit-shaped) could PATCH its name,
+    // contract_value, start_date, internal_ref, or status (to anything
+    // other than literally 'Complete') with a direct request, even though
+    // the frontend never exposed a way to do so. Same reasoning and same
+    // permission as clients/[id]'s PATCH: there's no dedicated
+    // project-edit permission in the schema, so this reuses
+    // CREATE_PROJECTS rather than inventing and seeding a new one.
+    if (!hasPermission(session, 'CREATE_PROJECTS'))
+      return NextResponse.json({ error: 'Missing permission: CREATE_PROJECTS' }, { status: 403 })
+
     // Verify project belongs to workspace
     const { data: project } = await (service as any)
       .from('projects').select('id,name,status').eq('id', id)
