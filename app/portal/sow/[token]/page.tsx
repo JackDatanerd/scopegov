@@ -185,6 +185,15 @@ export default function SowPortalPage() {
               <div style={{ fontSize: 11, color: '#909090', marginTop: 8, borderTop: '1px solid #F0F0EA', paddingTop: 6 }}>{signedInfo.signedBy}</div>
             </div>
           )}
+          {/* FIX (audit): no client-facing SOW PDF route existed at all —
+              clients had no self-service way to get a copy of the signed
+              agreement outside of the one-time email. */}
+          {state === 'signed' && (
+            <a href={`/api/portal/sow/${token}/pdf`} className="btn btn-ghost btn-sm"
+               style={{ display: 'inline-flex', marginTop: 20 }}>
+              <i className="ti ti-download" style={{ fontSize: 14, marginRight: 6 }} /> Download PDF
+            </a>
+          )}
         </div>
       </PortalShell>
     )

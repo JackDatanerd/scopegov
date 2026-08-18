@@ -66,7 +66,11 @@ export async function POST(request: NextRequest) {
           eventType: 'invoice_overdue', type: 'invoice_overdue',
           title: `Invoice overdue — ${inv.projects?.name}`,
           body: `${inv.projects?.clients?.name || 'Client'} has ${inv.currency} ${balanceDue.toLocaleString()} overdue on "${inv.title}"`,
-          entityType: 'invoice', entityId: inv.id, projectId: inv.projects?.id,
+          // FIX (audit): entity_type was 'invoice' — NotificationBell's entityHref()
+          // has no case for 'invoice', so this notification was an unclickable dead
+          // end. Point at the project's Billing tab like every other notification
+          // type does.
+          entityType: 'project', entityId: inv.projects?.id, projectId: inv.projects?.id,
         })
 
         const emails = await getMemberEmailsWithPermission(service, inv.workspace_id, 'VIEW_FINANCIALS', 10, 'invoice_overdue', inv.projects?.id)

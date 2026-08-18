@@ -135,7 +135,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       type: isFullyPaid ? 'invoice_paid' : 'invoice_payment_received',
       title: isFullyPaid ? `Invoice paid in full — ${invoice.projects?.name}` : `Payment received — ${invoice.projects?.name}`,
       body: `${invoice.projects?.clients?.name || 'Client'} paid ${invoice.currency} ${amount.toLocaleString()} on "${invoice.title}"`,
-      entityType: 'invoice', entityId: id, excludeUserId: session.id, projectId: invoice.project_id,
+      // FIX (audit): entity_type was 'invoice' with entityId = invoice id, but
+      // NotificationBell's entityHref() only resolves 'project' / 'project_message'
+      // / 'approval_request' — clicking these notifications did nothing. Point at
+      // the project's Billing tab instead, matching the pattern every other
+      // notification type already uses.
+      entityType: 'project', entityId: invoice.project_id, excludeUserId: session.id, projectId: invoice.project_id,
     })
 
     try {

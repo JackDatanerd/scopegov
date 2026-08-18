@@ -42,6 +42,11 @@ const NOTIF_ITEMS = [
   { key: 'co_countered',          label: 'Change order countered',  desc: 'When a client proposes a different amount' },
   { key: 'guardian_flag',         label: 'Scope flag raised',       desc: 'When Guardian detects an out-of-scope request' },
   { key: 'escalation',            label: 'Escalation',              desc: 'When a matter is escalated to you' },
+  // FIX (audit): these three were fully wired server-side but had no toggle here,
+  // so they were permanently on with no way to mute them.
+  { key: 'invoice_payment_received', label: 'Invoice payment received', desc: 'When a client pays an invoice, in full or in part' },
+  { key: 'invoice_overdue',       label: 'Invoice overdue',         desc: 'When an invoice passes its due date unpaid' },
+  { key: 'approval_requested',    label: 'Approval requested',      desc: 'When a document needs your approval' },
   { key: 'trial_ending',          label: 'Trial ending',            desc: '3 days before trial expires' },
 ]
 

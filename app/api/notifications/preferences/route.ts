@@ -6,6 +6,11 @@ import { NextResponse, type NextRequest } from 'next/server'
 const EVENT_TYPES = [
   'sow_signed', 'sow_declined', 'sow_changes_requested', 'co_accepted', 'co_declined', 'co_countered',
   'guardian_flag', 'escalation', 'trial_ending',
+  // FIX (audit): these three are fully gated through filterByNotificationPreference
+  // in code (invoices/[id]/payments, cron/payment-overdue, approvals/engine) but
+  // were missing from this whitelist — PATCH would 400 on them and the Settings
+  // UI had no toggle, so they were permanently un-mutable.
+  'invoice_payment_received', 'invoice_overdue', 'approval_requested',
 ]
 
 export async function GET() {

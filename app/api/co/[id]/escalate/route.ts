@@ -5,6 +5,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { sendEscalationEmail } from '@/lib/email/templates'
 import { sanitizePlainText } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
+import { filterByNotificationPreference } from '@/lib/utils/permissions-query'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -67,18 +68,43 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }).eq('id', id)
 
     // Event 24: escalation notification
-    if (assignee?.email) {
+    // FIX (audit): 'escalation' has a real toggle in Settings → Notifications
+    // and is in the preferences EVENT_TYPES whitelist, but this route never
+    // checked it — the email always sent regardless of the assignee's
+    // preference, and no in-app notification was ever created (so it also
+    // never showed up in the bell). Gate the email by preference, same as
+    // every other notification type, and add the missing in-app row.
+    if (assignee?.email && resolvedEscalateTo) {
+      const [allowed] = await filterByNotificationPreference(
+        service, session.workspaceId, 'escalation',
+        [{ id: resolvedEscalateTo }]
+      )
+
       try {
-        await sendEscalationEmail({
-          to:          assignee.email,
-          assigneeName: assignee.name,
-          agencyName:  session.agencyName,
-          entityType:  'change order',
-          entityName:  co.projects?.name || '',
-          note:        safeNote,
-          url:         `${process.env.NEXT_PUBLIC_APP_URL}/projects/${co.project_id}?tab=co`,
+        await (service as any).from('notifications').insert({
+          workspace_id: session.workspaceId,
+          recipient_id: resolvedEscalateTo,
+          type:         'escalation',
+          title:        `Escalated — ${co.projects?.name || co.title}`,
+          body:         `${session.name} escalated "${co.title}": ${safeNote}`,
+          entity_type:  'project',
+          entity_id:    co.project_id,
         })
-      } catch (e) { console.error('Escalation email failed:', e) }
+      } catch { /* never let a notification failure break escalation */ }
+
+      if (allowed) {
+        try {
+          await sendEscalationEmail({
+            to:          assignee.email,
+            assigneeName: assignee.name,
+            agencyName:  session.agencyName,
+            entityType:  'change order',
+            entityName:  co.projects?.name || '',
+            note:        safeNote,
+            url:         `${process.env.NEXT_PUBLIC_APP_URL}/projects/${co.project_id}?tab=co`,
+          })
+        } catch (e) { console.error('Escalation email failed:', e) }
+      }
     }
 
     // co.escalated is an AUDIT EVENT TYPE — records the action

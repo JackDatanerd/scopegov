@@ -147,6 +147,13 @@ export default function CoPortalPage() {
               <img src={acceptedInfo.clientSignatureData} alt="Signature" style={{ height: 56, display: 'block', margin: '0 auto' }} />
             </div>
           )}
+          {/* FIX (audit): /api/portal/co/[token]/pdf already existed and worked —
+              it was only ever used as an email attachment link. Clients had no
+              self-service way to re-download the accepted CO from this page. */}
+          <a href={`/api/portal/co/${token}/pdf`} className="btn btn-ghost btn-sm"
+             style={{ display: 'inline-flex', marginTop: 20 }}>
+            <i className="ti ti-download" style={{ fontSize: 14, marginRight: 6 }} /> Download PDF
+          </a>
         </div>
       </PortalShell>
     )

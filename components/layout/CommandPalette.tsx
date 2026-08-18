@@ -17,7 +17,14 @@ const TYPE_ICONS: Record<string, string> = {
   sow:           'ti-file-text',
 }
 
-export default function CommandPalette() {
+interface Props {
+  // FIX (audit): Portfolio is permission-gated on the sidebar (VIEW_ALL_PROJECTS)
+  // but the palette had no way to know a user's permissions at all — passed
+  // down from the layout so the quick-nav list can match the sidebar exactly.
+  permissions?: string[]
+}
+
+export default function CommandPalette({ permissions = [] }: Props) {
   const router        = useRouter()
   const [open,    setOpen]    = useState(false)
   const [query,   setQuery]   = useState('')
@@ -165,7 +172,15 @@ export default function CommandPalette() {
               { label: 'Projects',    href: '/projects',    icon: 'ti-folder' },
               { label: 'Clients',     href: '/clients',     icon: 'ti-users' },
               { label: 'SOW Registry', href: '/sow',        icon: 'ti-file-description' },
+              // FIX (audit): Invoices, Approvals, Team, and Portfolio are all
+              // primary sidebar destinations that had no quick-nav entry here.
+              { label: 'Invoices',    href: '/invoices',    icon: 'ti-receipt-2' },
+              { label: 'Approvals',   href: '/approvals',   icon: 'ti-shield-check' },
               { label: 'Reports',     href: '/reports',     icon: 'ti-chart-bar' },
+              ...(permissions.includes('VIEW_ALL_PROJECTS')
+                ? [{ label: 'Portfolio', href: '/portfolio', icon: 'ti-building-skyscraper' }]
+                : []),
+              { label: 'Team',        href: '/team',        icon: 'ti-user-circle' },
               { label: 'Settings',    href: '/settings',    icon: 'ti-settings' },
             ].map(item => (
               <button key={item.href} onClick={() => navigate(item.href)}

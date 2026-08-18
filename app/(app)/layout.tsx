@@ -13,7 +13,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       <Sidebar session={session} />
       <main className="app-main">
         {children}
-        <CommandPalette />
+        <CommandPalette permissions={session.permissions} />
       </main>
     </div>
   )

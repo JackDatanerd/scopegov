@@ -15,6 +15,11 @@ interface Notification {
 }
 
 function entityHref(n: Notification): string | null {
+  // FIX (audit): invoice_paid / invoice_payment_received / invoice_overdue
+  // notifications point at a project (see notify call sites) — route them
+  // straight to the Billing tab instead of Overview.
+  if (n.entity_type === 'project' && n.entity_id && n.type.startsWith('invoice_'))
+    return `/projects/${n.entity_id}?tab=billing`
   if (n.entity_type === 'project' && n.entity_id) return `/projects/${n.entity_id}`
   if (n.entity_type === 'project_message' && n.entity_id) return `/projects/${n.entity_id}?tab=discussion`
   if (n.entity_type === 'approval_request' && n.entity_id) return `/approvals?highlight=${n.entity_id}`
