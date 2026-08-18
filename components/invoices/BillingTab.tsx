@@ -5,7 +5,7 @@
 // (app/(app)/invoices/page.tsx) and links back here for any action.
 
 'use client'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { formatCurrency, formatDate, invoiceStatusLabel, invoicePill } from '@/lib/utils/format'
 
 const METHOD_LABELS: Record<string, string> = {
@@ -27,6 +27,7 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
   const [creating, setCreating]   = useState(false)
   const [payingId, setPayingId]   = useState<string | null>(null)
   const [voidingId, setVoidingId] = useState<string | null>(null)
+  const [paymentsOpenId, setPaymentsOpenId] = useState<string | null>(null)
   const [busyId, setBusyId]       = useState<string | null>(null)
   const [error, setError]         = useState('')
 
@@ -145,6 +146,13 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
                         {formatCurrency(inv.amount_paid, inv.currency || currency)} paid · {formatCurrency(balance, inv.currency || currency)} due
                       </div>
                     )}
+                    {inv.amount_paid > 0 && permissions.sendInvoices && (
+                      <button
+                        style={{ fontSize: 11, marginTop: 2, background: 'none', border: 'none', padding: 0, color: 'var(--text-3)', textDecoration: 'underline', cursor: 'pointer' }}
+                        onClick={() => setPaymentsOpenId(paymentsOpenId === inv.id ? null : inv.id)}>
+                        {paymentsOpenId === inv.id ? 'Hide payments' : 'View payments'}
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -195,6 +203,10 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
                     </a>
                   )}
                 </div>
+
+                {paymentsOpenId === inv.id && (
+                  <PaymentsPanel invoice={inv} currency={currency} onChanged={refresh} />
+                )}
               </div>
             )
           })}
@@ -229,6 +241,75 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
           onVoided={async () => { setVoidingId(null); await refresh() }}
         />
       )}
+    </div>
+  )
+}
+
+// ── PAYMENTS PANEL ────────────────────────────────────────────
+// Lists an invoice's manually-recorded payments and lets an agency user
+// undo a mis-entered one. Was previously only reachable via a raw DELETE
+// to /api/invoices/[id]/payments/[paymentId] — no button existed anywhere.
+function PaymentsPanel({ invoice, currency, onChanged }: any) {
+  const [payments, setPayments] = useState<any[] | null>(null)
+  const [loading, setLoading]   = useState(true)
+  const [removingId, setRemovingId] = useState<string | null>(null)
+  const [error, setError]       = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    async function load() {
+      setLoading(true)
+      try {
+        const res  = await fetch(`/api/invoices/${invoice.id}/payments`)
+        const json = await res.json()
+        if (!cancelled) setPayments(json.payments || [])
+      } finally { if (!cancelled) setLoading(false) }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [invoice.id])
+
+  async function remove(paymentId: string) {
+    if (!confirm('Remove this payment? The invoice balance will update immediately.')) return
+    setRemovingId(paymentId); setError('')
+    try {
+      const res = await fetch(`/api/invoices/${invoice.id}/payments/${paymentId}`, { method: 'DELETE' })
+      const json = await res.json().catch(() => ({}))
+      if (res.ok) {
+        setPayments((prev) => (prev || []).filter((p) => p.id !== paymentId))
+        await onChanged()
+      } else setError(json.error || 'Could not remove that payment.')
+    } finally { setRemovingId(null) }
+  }
+
+  return (
+    <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
+      {loading ? (
+        <p style={{ fontSize: 12, color: 'var(--text-3)' }}>Loading payments…</p>
+      ) : !payments || payments.length === 0 ? (
+        <p style={{ fontSize: 12, color: 'var(--text-3)' }}>No payments recorded yet.</p>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {payments.map((p: any) => (
+            <div key={p.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12 }}>
+              <div>
+                <strong>{formatCurrency(p.amount, invoice.currency || currency)}</strong>
+                <span style={{ color: 'var(--text-3)' }}>
+                  {' '}· {METHOD_LABELS[p.method] || p.method} · {formatDate(p.paid_at)}
+                  {p.reference_note ? ` · ${p.reference_note}` : ''}
+                  {p.users?.name ? ` · logged by ${p.users.name}` : ''}
+                </span>
+              </div>
+              <button
+                style={{ background: 'none', border: 'none', padding: 0, color: 'var(--red)', cursor: 'pointer', fontSize: 12 }}
+                disabled={removingId === p.id} onClick={() => remove(p.id)}>
+                {removingId === p.id ? <span className="spin spin-dark" /> : 'Remove'}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      {error && <p style={{ fontSize: 11.5, color: 'var(--red)', marginTop: 6 }}>{error}</p>}
     </div>
   )
 }

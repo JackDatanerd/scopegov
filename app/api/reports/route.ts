@@ -11,9 +11,8 @@ export async function GET(request: NextRequest) {
     // FIX (audit round 5): both modes below are workspace-wide rollups —
     // scope mode aggregates flags/exceptions/adjustments/amendments across
     // EVERY project in the workspace, financial mode does the same for
-    // contract value/CO totals. /api/reports/portfolio and the portfolio
-    // branch of /api/reports/reconciliation already require
-    // VIEW_ALL_PROJECTS for exactly this reason (see their comments) —
+    // contract value/CO totals. /api/reports/portfolio already requires
+    // VIEW_ALL_PROJECTS for exactly this reason (see its comments) —
     // this route was the one place that rollup logic existed without the
     // same gate, so a VIEW_OWN_PROJECTS-only member could pull scope and
     // financial data for projects they aren't assigned to.

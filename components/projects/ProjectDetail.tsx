@@ -257,10 +257,10 @@ export default function ProjectDetail({
 
       {/* Tab content */}
       <div style={{ padding: '24px 40px', maxWidth: 1080 }}>
-        {tab === 'overview' && <OverviewTab project={project} milestones={milestones} amendments={amendments} permissions={permissions} currency={currency} />}
+        {tab === 'overview' && <OverviewTab project={project} milestones={milestones} amendments={amendments} permissions={permissions} currency={currency} router={router} />}
         {tab === 'sow'      && <SowTab project={project} sows={project.sow_documents || []} amendments={amendments} permissions={permissions} router={router} pendingApprovals={pendingApprovals} />}
         {tab === 'guardian' && <GuardianTab project={project} flags={project.guardian_flags || []} permissions={permissions} router={router} />}
-        {tab === 'co'       && <CoTab project={project} cos={project.change_orders || []} permissions={permissions} currency={currency} pendingApprovals={pendingApprovals} />}
+        {tab === 'co'       && <CoTab project={project} cos={project.change_orders || []} permissions={permissions} currency={currency} pendingApprovals={pendingApprovals} team={team} />}
         {tab === 'billing'  && <BillingTab project={project} milestones={milestones} invoices={invoices} reconciliation={reconciliation} permissions={permissions} currency={currency} router={router} defaultPaymentInstructions={defaultPaymentInstructions} />}
         {tab === 'discussion' && (
           <ProjectDiscussion
@@ -289,13 +289,58 @@ function MetricBlock({ label, value, color, bold }: { label: string; value: stri
   )
 }
 
+function ScopeAdjustModal({ projectId, deliverable, onClose, onDone }: any) {
+  const [newValue, setNewValue] = useState(deliverable)
+  const [reason, setReason]     = useState('')
+  const [busy, setBusy]         = useState(false)
+  const [error, setError]       = useState('')
+
+  async function submit() {
+    if (!newValue.trim() || !reason.trim()) { setError('Both fields are required.'); return }
+    setBusy(true); setError('')
+    try {
+      const res  = await fetch('/api/guardian/scope-adjustment', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId, deliverable, oldValue: deliverable, newValue: newValue.trim(), reason: reason.trim() }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (res.ok) onDone()
+      else setError(json.error || 'Could not save that adjustment.')
+    } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h2 className="modal-title">Adjust deliverable</h2>
+        <p style={{ fontSize: 13, color: 'var(--text-3)', marginBottom: 16 }}>
+          Corrects the scope snapshot directly — for fixing a typo or wording issue, not for adding/removing scope. Real scope changes still go through a change order.
+        </p>
+        <label className="form-label">Deliverable</label>
+        <input className="form-input" value={newValue} onChange={(e) => setNewValue(e.target.value)} style={{ marginBottom: 12 }} />
+        <label className="form-label">Reason for adjustment</label>
+        <textarea className="form-input" rows={2} value={reason} onChange={(e) => setReason(e.target.value)}
+          placeholder="e.g. Fixing a typo from the original SOW draft" />
+        {error && <p style={{ fontSize: 12, color: 'var(--red)', marginTop: 8 }}>{error}</p>}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+          <button className="btn btn-ghost btn-sm" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="btn btn-primary btn-sm" onClick={submit} disabled={busy}>
+            {busy ? <span className="spin" /> : 'Save adjustment'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── OVERVIEW TAB ──────────────────────────────────────────────
-function OverviewTab({ project, milestones, amendments, permissions, currency }: any) {
+function OverviewTab({ project, milestones, amendments, permissions, currency, router }: any) {
   // FIX: one-to-one relation (see /api/guardian/check for details) — no [0]
   const snapshot     = project.project_scope_snapshot
   const deliverables = snapshot?.deliverables || []
   const outOfScope   = snapshot?.out_of_scope || []
   const sowDocs      = project.sow_documents || []
+  const [adjustingDeliverable, setAdjustingDeliverable] = useState<string | null>(null)
   const hasSigned    = sowDocs.some((s: any) => s.status === 'signed')
   const latestSow    = sowDocs.length ? [...sowDocs].sort((a: any, b: any) => (b.version ?? 0) - (a.version ?? 0))[0] : null
   const paidAmount   = milestones.filter((m: any) => m.status === 'paid').reduce((s: number, m: any) => s + (m.amount || 0), 0)
@@ -361,9 +406,16 @@ function OverviewTab({ project, milestones, amendments, permissions, currency }:
               <>
                 <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>In scope</div>
                 {deliverables.map((d: any, i: number) => (
-                  <div key={i} className="scope-entry">
-                    <div className="scope-glyph in"><i className="ti ti-check" style={{ fontSize: 9 }} /></div>
-                    <span>{d.title || d}</span>
+                  <div key={i} className="scope-entry" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <div className="scope-glyph in"><i className="ti ti-check" style={{ fontSize: 9 }} /></div>
+                      <span>{d.title || d}</span>
+                    </div>
+                    {permissions.editSow && (
+                      <button className="btn-icon" title="Adjust wording" onClick={() => setAdjustingDeliverable(d.title || d)}>
+                        <i className="ti ti-pencil" style={{ fontSize: 11 }} />
+                      </button>
+                    )}
                   </div>
                 ))}
               </>
@@ -442,6 +494,11 @@ function OverviewTab({ project, milestones, amendments, permissions, currency }:
           )}
         </div>
       </div>
+      {adjustingDeliverable !== null && (
+        <ScopeAdjustModal projectId={project.id} deliverable={adjustingDeliverable}
+          onClose={() => setAdjustingDeliverable(null)}
+          onDone={() => { setAdjustingDeliverable(null); router.refresh() }} />
+      )}
     </div>
   )
 }
@@ -955,7 +1012,7 @@ function FlagCard({ flag, permissions, router, projectId }: any) {
 }
 
 // ── CO TAB ────────────────────────────────────────────────────
-function CoTab({ project, cos, permissions, currency, pendingApprovals }: any) {
+function CoTab({ project, cos, permissions, currency, pendingApprovals, team }: any) {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
@@ -977,16 +1034,68 @@ function CoTab({ project, cos, permissions, currency, pendingApprovals }: any) {
       ) : (
         cos.map((co: any) => (
           <CoCard key={co.id} co={co} currency={currency} permissions={permissions} projectId={project.id}
-            pendingApproval={pendingApprovals?.[`co:${co.id}`]} />
+            pendingApproval={pendingApprovals?.[`co:${co.id}`]} team={team} />
         ))
       )}
     </div>
   )
 }
 
-function CoCard({ co, currency, permissions, projectId, pendingApproval }: any) {
+function EscalateCoModal({ co, team, onClose, onDone }: any) {
+  const [escalateTo, setEscalateTo] = useState('')
+  const [note, setNote] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  async function submit() {
+    if (note.trim().length < 10) { setError('Note must be at least 10 characters.'); return }
+    setBusy(true); setError('')
+    try {
+      const res  = await fetch(`/api/co/${co.id}/escalate`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ escalateTo: escalateTo || null, escalationNote: note.trim() }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (res.ok) onDone()
+      else setError(json.error || 'Could not escalate — try again.')
+    } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h2 className="modal-title">Escalate change order</h2>
+        <p style={{ fontSize: 13, color: 'var(--text-3)', marginBottom: 16 }}>
+          Flag &ldquo;{co.title}&rdquo; for someone to step in. This doesn&rsquo;t change its status — it&rsquo;s just a heads-up.
+        </p>
+        <label className="form-label">Escalate to</label>
+        <select className="form-input" value={escalateTo} onChange={(e) => setEscalateTo(e.target.value)} style={{ marginBottom: 12 }}>
+          <option value="">Myself</option>
+          {(team || []).map((t: any) => {
+            const u = t.workspace_members?.users
+            return u ? <option key={t.workspace_members.id} value={t.workspace_members.id}>{u.name}</option> : null
+          })}
+        </select>
+        <label className="form-label">Why is this being escalated?</label>
+        <textarea className="form-input" rows={3} value={note} onChange={(e) => setNote(e.target.value)}
+          placeholder="e.g. Client has gone quiet for 2 weeks despite two reminders…" />
+        {error && <p style={{ fontSize: 12, color: 'var(--red)', marginTop: 8 }}>{error}</p>}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+          <button className="btn btn-ghost btn-sm" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="btn btn-primary btn-sm" onClick={submit} disabled={busy}>
+            {busy ? <span className="spin" /> : 'Escalate'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function CoCard({ co, currency, permissions, projectId, pendingApproval, team }: any) {
   const router = useRouter()
   const [acting, setActing] = useState(false)
+  const [reminded, setReminded] = useState(false)
+  const [escalating, setEscalating] = useState(false)
 
   async function doAction(action: string) {
     setActing(true)
@@ -997,6 +1106,14 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval }: any) 
         alert('Sent for approval — this CO will go to the client automatically once it\u2019s signed off.')
       }
       router.refresh()
+    } finally { setActing(false) }
+  }
+
+  async function remind() {
+    setActing(true)
+    try {
+      const res = await fetch(`/api/co/${co.id}/remind`, { method: 'POST' })
+      if (res.ok) { setReminded(true); setTimeout(() => setReminded(false), 3000) }
     } finally { setActing(false) }
   }
 
@@ -1044,14 +1161,28 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval }: any) 
           {co.status === 'countered' && permissions.sendCo && (
             <button className="btn btn-primary btn-xs" onClick={() => doAction('accept-counter')} disabled={acting}>Accept counter</button>
           )}
+          {['awaiting_response', 'awaiting_countersignature'].includes(co.status) && permissions.sendCo && (
+            <button className="btn btn-ghost btn-xs" onClick={remind} disabled={acting}>
+              {reminded ? <><i className="ti ti-check" style={{ fontSize: 12 }} /> Sent</> : 'Remind'}
+            </button>
+          )}
           {['countered','stalled','declined'].includes(co.status) && (
             <button className="btn btn-ghost btn-xs" onClick={() => doAction('close')} disabled={acting}>Close</button>
+          )}
+          {permissions.sendCo && !['closed', 'accepted', 'withdrawn'].includes(co.status) && (
+            <button className="btn-icon" title="Escalate" onClick={() => setEscalating(true)}>
+              <i className="ti ti-alert-triangle" style={{ fontSize: 13 }} />
+            </button>
           )}
           <Link href={`/projects/${projectId}/co/${co.id}`}>
             <button className="btn-icon"><i className="ti ti-eye" style={{ fontSize: 13 }} /></button>
           </Link>
         </div>
       </div>
+      {escalating && (
+        <EscalateCoModal co={co} team={team} onClose={() => setEscalating(false)}
+          onDone={() => { setEscalating(false); router.refresh() }} />
+      )}
     </div>
   )
 }

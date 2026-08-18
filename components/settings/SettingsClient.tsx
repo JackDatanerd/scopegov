@@ -691,8 +691,22 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
 
   const [planInterval, setPlanInterval] = useState<'monthly' | 'annual'>('monthly')
   const [upgrading,    setUpgrading]    = useState<string | null>(null)
+  const [cancelling,   setCancelling]   = useState(false)
+  const [cancelError,  setCancelError]  = useState('')
+  const [justCancelled, setJustCancelled] = useState(false)
 
   if (!permissions.manageBilling) return <Restricted />
+
+  async function handleCancel() {
+    if (!confirm('Cancel your subscription? You\u2019ll keep access until the end of the current billing period, then the workspace will be downgraded.')) return
+    setCancelling(true); setCancelError('')
+    try {
+      const res  = await fetch('/api/billing/cancel', { method: 'POST' })
+      const json = await res.json().catch(() => ({}))
+      if (res.ok) { setJustCancelled(true); window.location.reload() }
+      else setCancelError(json.error || 'Could not cancel — try again or contact support.')
+    } finally { setCancelling(false) }
+  }
 
   async function handleUpgrade(planKey: string) {
     setUpgrading(planKey)
@@ -743,11 +757,20 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
               <div style={{ fontSize: 12, color: 'var(--text-3)' }}>Renews {formatDate(billing.current_period_end)}</div>
             )}
           </div>
+          {planTier !== 'trial' && !billing?.cancels_at_period_end && (
+            <button className="btn btn-ghost btn-sm" style={{ color: 'var(--red)' }}
+              disabled={cancelling || justCancelled} onClick={handleCancel}>
+              {cancelling ? <span className="spin spin-dark" /> : 'Cancel subscription'}
+            </button>
+          )}
         </div>
         {billing?.cancels_at_period_end && (
           <div className="banner banner-warn" style={{ marginTop: 12 }}>
             <span>Subscription cancelled — access until {formatDate(billing.current_period_end)}</span>
           </div>
+        )}
+        {cancelError && (
+          <p style={{ fontSize: 12, color: 'var(--red)', marginTop: 10 }}>{cancelError}</p>
         )}
       </div>
       <div className="settings-section">
