@@ -1,4 +1,0 @@
-projects/ProjectDetail.tsx
-invoices/BillingTab.tsx
-settings/SettingsClient.tsx
-app/api/reports/reconciliation/route.ts
