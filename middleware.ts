@@ -57,6 +57,10 @@ export async function middleware(request: NextRequest) {
   const isPublicRoute =
     pathname.startsWith('/portal/') ||
     pathname.startsWith('/invite/') ||
+    // Marketing site's legal pages (Privacy, Terms, DPA, Security, Cookies) —
+    // must be reachable by logged-out visitors, and by anyone (e.g. App
+    // Store / procurement reviewers) without an account.
+    pathname.startsWith('/legal/') ||
     // BUG: the pages above were public but the APIs behind them were not.
     // An unauthenticated visitor's fetch('/api/portal/...') or
     // fetch('/api/team/invite/{token}') was silently redirected to /login

@@ -1,0 +1,98 @@
+.page {
+  --parchment: #F2F0EA;
+  --parchment-2: #EAE7DD;
+  --surface: #FFFFFF;
+  --green: #1A5C3A;
+  --green-dark: #0F2818;
+  --ink: #1B1B17;
+  --ink-2: #4A4A42;
+  --ink-3: #8B8B7F;
+  --border: #DFDBCE;
+  --gold: #92680A;
+  --gold-lt: #FBF4E3;
+  --serif: 'Cormorant Garamond', Georgia, serif;
+  --sans: 'IBM Plex Sans', -apple-system, sans-serif;
+  --mono: 'IBM Plex Mono', monospace;
+
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  font-family: var(--sans);
+  background: var(--parchment);
+  color: var(--ink);
+}
+.page a { color: var(--green); text-decoration: none; }
+.page a:hover { text-decoration: underline; }
+
+.header {
+  position: sticky; top: 0; z-index: 20;
+  background: rgba(242, 240, 234, .9);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border);
+}
+.headerInner {
+  max-width: 880px; margin: 0 auto; padding: 16px 32px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.brand { display: flex; align-items: center; gap: 9px; font-weight: 600; font-size: 15.5px; color: var(--ink); }
+.brandMark { width: 24px; height: 24px; flex-shrink: 0; }
+.backLink { font-size: 13px; font-weight: 500; color: var(--ink-2); }
+.backLink:hover { color: var(--green); }
+
+.main { flex: 1; padding: 64px 0 96px; }
+.wrap { max-width: 780px; margin: 0 auto; padding: 0 32px; }
+
+.docBadge {
+  font-family: var(--mono); font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase;
+  color: var(--green); margin-bottom: 18px; display: inline-block;
+}
+.title { font-family: var(--serif); font-weight: 500; font-size: 42px; color: var(--green-dark); line-height: 1.1; margin-bottom: 12px; }
+.meta { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); margin-bottom: 8px; }
+
+.reviewNote {
+  margin: 28px 0 40px; padding: 16px 18px;
+  background: var(--gold-lt); border: 1px solid #EBD9A5; border-radius: 8px;
+  font-size: 13px; color: #6b4c08; line-height: 1.6;
+}
+.reviewNote strong { color: var(--gold); }
+
+.toc {
+  margin: 32px 0 48px; padding: 20px 22px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+}
+.tocTitle { font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); margin-bottom: 12px; }
+.tocList { columns: 2; gap: 24px; list-style: none; padding: 0; margin: 0; }
+.tocList li { break-inside: avoid; margin-bottom: 8px; font-size: 13px; }
+
+.prose h2 {
+  font-family: var(--serif); font-size: 25px; font-weight: 600; color: var(--green-dark);
+  margin: 48px 0 14px; padding-top: 4px; scroll-margin-top: 90px;
+}
+.prose h2:first-child { margin-top: 0; }
+.prose h3 { font-size: 15px; font-weight: 600; color: var(--ink); margin: 26px 0 8px; }
+.prose p { font-size: 14.5px; color: var(--ink-2); line-height: 1.75; margin-bottom: 14px; }
+.prose ul, .prose ol { margin: 0 0 14px; padding-left: 22px; }
+.prose li { font-size: 14.5px; color: var(--ink-2); line-height: 1.7; margin-bottom: 6px; }
+.prose strong { color: var(--ink); font-weight: 600; }
+.prose a { font-weight: 500; }
+
+.placeholder {
+  color: var(--gold); background: var(--gold-lt); border-bottom: 1px dashed var(--gold);
+  padding: 0 3px; font-weight: 500; white-space: nowrap;
+}
+
+.table { width: 100%; border-collapse: collapse; margin: 4px 0 20px; font-size: 13px; }
+.table th, .table td { text-align: left; padding: 10px 12px; border: 1px solid var(--border); vertical-align: top; }
+.table th { background: var(--surface); font-family: var(--mono); font-size: 10.5px; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-3); font-weight: 500; }
+.table td { background: var(--surface); color: var(--ink-2); }
+
+.footer { border-top: 1px solid var(--border); background: var(--parchment-2); padding: 28px 0; }
+.footerInner { max-width: 880px; margin: 0 auto; padding: 0 32px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; font-size: 12px; color: var(--ink-3); }
+.footerLinks { display: flex; gap: 16px; }
+
+@media (max-width: 640px) {
+  .title { font-size: 32px; }
+  .tocList { columns: 1; }
+  .wrap { padding: 0 20px; }
+  .headerInner { padding: 14px 20px; }
+}
