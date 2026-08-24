@@ -226,7 +226,13 @@ export default function InvoicePortalPage() {
             {invoice.paymentInstructions && (
               <div style={{ marginBottom: 20 }}>
                 <div className="portal-section-title">Payment instructions</div>
-                <div className="portal-section-body" style={{ whiteSpace: 'pre-line' }}>{invoice.paymentInstructions}</div>
+                {/* FIX (doc-quality audit round 3): paymentInstructions is
+                    now Tiptap-authored rich text (components/invoices/
+                    BillingTab.tsx via RichTextField), sanitized server-side
+                    at write time with sanitizeRichTextOrNull before it
+                    reaches this public, unauthenticated page — same
+                    guarantee SOW sections and CO notes already have. */}
+                <div className="portal-section-body" dangerouslySetInnerHTML={{ __html: invoice.paymentInstructions }} />
               </div>
             )}
 

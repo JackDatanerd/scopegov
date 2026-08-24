@@ -1,5 +1,6 @@
 'use client'
 import { useState, useEffect, useRef } from 'react'
+import RichTextField from '@/components/ui/RichTextField'
 import { useRouter } from 'next/navigation'
 import { formatCurrency } from '@/lib/utils/format'
 import { nanoid } from 'nanoid'
@@ -256,10 +257,12 @@ export default function CoEditor({ projId, coId }: Props) {
 
         <div className="fgrp">
           <label className="flbl">Context note <span className="fhint">— optional, shown to client</span></label>
-          <textarea className="finp" style={{ minHeight: 80, resize: 'vertical' }}
-            value={note} disabled={isLocked}
-            onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setNote(e.target.value)}
-            placeholder="Brief explanation of why this work is additional scope…" />
+          <RichTextField
+            value={note}
+            onChange={setNote}
+            disabled={isLocked}
+            placeholder="Brief explanation of why this work is additional scope…"
+          />
         </div>
 
         {/* Line items */}

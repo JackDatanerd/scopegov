@@ -5,6 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
+import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -69,7 +70,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       update.amount = n
     }
     if (body.dueDate !== undefined) update.due_date = body.dueDate || null
-    if (body.paymentInstructions !== undefined) update.payment_instructions = body.paymentInstructions?.trim() || null
+    if (body.paymentInstructions !== undefined) update.payment_instructions = sanitizeRichTextOrNull(body.paymentInstructions)
     if (body.notes !== undefined) update.notes = body.notes?.trim() || null
 
     // Optional itemized breakdown — same footing rule as creation (see

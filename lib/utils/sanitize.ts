@@ -41,7 +41,19 @@ export function sanitizeRichText(html: string | null | undefined): string {
   return sanitizeHtml(html, RICH_TEXT_OPTIONS)
 }
 
-/** Strip ALL markup — for fields that must be plain text (CO notes, reasons, etc.) but are still rendered raw on a portal page. */
+/**
+ * Same as sanitizeRichText, but returns null for "empty" rich text —
+ * Tiptap emits `<p></p>` for a cleared editor, not an empty string, so a
+ * naive `html ? sanitizeRichText(html) : null` check treats a blank field
+ * as present content and renders an empty box on the document. Strips
+ * tags to check for actual remaining text before deciding.
+ */
+export function sanitizeRichTextOrNull(html: string | null | undefined): string | null {
+  const clean = sanitizeRichText(html)
+  return clean.replace(/<[^>]+>/g, '').trim() ? clean : null
+}
+
+/** Strip ALL markup — for fields that must be plain text but are still rendered raw on a portal page (e.g. titles, internal notes). CO `note` and Invoice `paymentInstructions` moved to sanitizeRichText/sanitizeRichTextOrNull — see RichTextField. */
 export function sanitizePlainText(text: string | null | undefined): string {
   if (!text) return ''
   return sanitizeHtml(text, { allowedTags: [], allowedAttributes: {} }).trim()

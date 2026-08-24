@@ -553,7 +553,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
         {data.note && (
           <View style={s.section}>
             <Text style={s.secTitle}><Text style={s.secNum}>{noteSecNum}. </Text>Reason for Change</Text>
-            <View style={s.noteBox}><Text>{stripHtml(data.note)}</Text></View>
+            <View style={s.noteBox}><RichText html={data.note} style={{ fontSize: 10, color: '#1A1A1A', lineHeight: 1.5 }} /></View>
           </View>
         )}
 
@@ -831,7 +831,7 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
         {data.paymentInstructions && (
           <View style={s.section}>
             <Text style={s.secTitle}>Payment instructions</Text>
-            <Text style={s.body}>{stripHtml(data.paymentInstructions)}</Text>
+            <RichText html={data.paymentInstructions} style={s.body} />
           </View>
         )}
 

@@ -6,7 +6,9 @@
 
 'use client'
 import { useState, useEffect } from 'react'
+import { nanoid } from 'nanoid'
 import { formatCurrency, formatDate, invoiceStatusLabel, invoicePill } from '@/lib/utils/format'
+import RichTextField from '@/components/ui/RichTextField'
 
 const METHOD_LABELS: Record<string, string> = {
   bank_transfer: 'Bank transfer', stripe: 'Stripe', check: 'Check', cash: 'Cash', other: 'Other',
@@ -343,17 +345,56 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
 
+  // FIX (doc-quality audit round 3): invoices could only ever bill a
+  // single flat line ("Wave 2 completion — $71,000"), but real invoices
+  // routinely mix a fixed-fee milestone with hourly T&M hours and a
+  // reimbursable expense line in one document (see the Meridian sample).
+  // Itemizing is opt-in — the common case (one flat amount) is unchanged
+  // — and mirrors CoEditor's line-item table exactly so the two forms
+  // feel like the same product. When itemized, `amount` is DERIVED from
+  // the rows (same convention CO already uses for `subtotal`), so there's
+  // no way for the UI to produce a total that doesn't foot to its own
+  // line items — the server-side validation in POST /api/invoices is a
+  // second belt-and-suspenders check, not the primary guard.
+  const [itemized, setItemized] = useState(false)
+  const [lineItems, setLineItems] = useState<Array<{ id: string; description: string; quantity: number; rate: number; total: number }>>(
+    [{ id: nanoid(), description: '', quantity: 1, rate: 0, total: 0 }]
+  )
+  const itemsSubtotal = lineItems.reduce((s, l) => s + l.total, 0)
+
+  function updateLineItem(id: string, field: 'description' | 'quantity' | 'rate', value: string | number) {
+    setLineItems(prev => prev.map(l => {
+      if (l.id !== id) return l
+      const updated = { ...l, [field]: value }
+      updated.total = updated.quantity * updated.rate
+      return updated
+    }))
+  }
+  function addLine() {
+    setLineItems(prev => [...prev, { id: nanoid(), description: '', quantity: 1, rate: 0, total: 0 }])
+  }
+  function removeLine(id: string) {
+    if (lineItems.length === 1) return
+    setLineItems(prev => prev.filter(l => l.id !== id))
+  }
+  // Keeps `amount` mirroring the line-item sum while itemized, so the
+  // existing tax/due-date/submit logic below (all built around a single
+  // `amount` figure) works unmodified either way.
+  useEffect(() => {
+    if (itemized) setAmount(itemsSubtotal ? String(itemsSubtotal) : '')
+  }, [itemized, itemsSubtotal])
+
   function pickSource(type: 'milestone' | 'sow' | 'co', id: string) {
     setSource({ type, id })
     if (type === 'milestone') {
       const m = milestones.find((x: any) => x.id === id)
-      if (m) { setTitle(m.title); setAmount(String(m.amount)) }
+      if (m) { setTitle(m.title); if (!itemized) setAmount(String(m.amount)) }
     } else if (type === 'sow') {
       const s = sows.find((x: any) => x.id === id)
       if (s) setTitle(`SOW v${s.version}${s.document_number ? ` (${s.document_number})` : ''}`)
     } else if (type === 'co') {
       const c = cos.find((x: any) => x.id === id)
-      if (c) { setTitle(c.title); setAmount(String(c.total)) }
+      if (c) { setTitle(c.title); if (!itemized) setAmount(String(c.total)) }
     }
   }
 
@@ -362,6 +403,8 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
     if (!source.type || !source.id) { setError('Select what this invoice is billing against.'); return }
     if (!title.trim()) { setError('Title is required.'); return }
     if (!amount || Number(amount) <= 0) { setError('Enter a valid amount.'); return }
+    const cleanItems = itemized ? lineItems.filter(l => l.description.trim()) : []
+    if (itemized && cleanItems.length === 0) { setError('Add at least one line item, or turn off itemizing.'); return }
 
     setSubmitting(true)
     try {
@@ -369,8 +412,9 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           projectId, title: title.trim(), amount: Number(amount), dueDate: dueDate || undefined,
-          paymentInstructions: paymentInstructions.trim() || undefined,
+          paymentInstructions: paymentInstructions || undefined,
           taxRate: Number(taxRate) || 0, taxInclusive,
+          lineItems: cleanItems.length > 0 ? cleanItems.map(({ id, ...rest }) => rest) : undefined,
           milestoneId: source.type === 'milestone' ? source.id : undefined,
           sowId: source.type === 'sow' ? source.id : undefined,
           coId: source.type === 'co' ? source.id : undefined,
@@ -428,9 +472,70 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
               </div>
               <div>
                 <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 5 }}>Amount ({projectCurrency})</label>
-                <input type="number" className="finp" value={amount} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAmount(e.target.value)} min={0} step="0.01" />
+                <input type="number" className="finp" value={amount} disabled={itemized}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAmount(e.target.value)} min={0} step="0.01" />
+                {itemized && <p style={{ fontSize: 10.5, color: 'var(--text-4)', marginTop: 4 }}>Set by line items below</p>}
               </div>
             </div>
+
+            <div style={{ marginBottom: 12 }}>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => setItemized(v => !v)}>
+                <i className={`ti ${itemized ? 'ti-list-numbers' : 'ti-plus'}`} style={{ fontSize: 12 }} />
+                {itemized ? 'Itemizing this invoice' : 'Itemize this invoice'}
+              </button>
+              {itemized && (
+                <span style={{ fontSize: 10.5, color: 'var(--text-4)', marginLeft: 8 }}>
+                  For mixed billing — fixed fee + hourly + reimbursable, all in one invoice
+                </span>
+              )}
+            </div>
+
+            {itemized && (
+              <div className="surface surface-p" style={{ marginBottom: 14 }}>
+                <div style={{ display: 'flex', fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
+                  letterSpacing: '.07em', color: 'var(--text-3)', paddingBottom: 8,
+                  borderBottom: '1px solid var(--border)', marginBottom: 8 }}>
+                  <span style={{ flex: 1 }}>Description</span>
+                  <span style={{ width: 64, textAlign: 'center' }}>Qty</span>
+                  <span style={{ width: 100, textAlign: 'right' }}>Rate</span>
+                  <span style={{ width: 100, textAlign: 'right' }}>Total</span>
+                  <span style={{ width: 32 }} />
+                </div>
+
+                {lineItems.map((item, idx) => (
+                  <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                    <input className="finp" style={{ flex: 1, fontSize: 12 }} value={item.description}
+                      placeholder={`Item ${idx + 1} — e.g. Hypercare support`}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateLineItem(item.id, 'description', e.target.value)} />
+                    <input type="number" className="finp" style={{ width: 64, fontSize: 12, textAlign: 'center' }}
+                      value={item.quantity} min={0} step="0.01"
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateLineItem(item.id, 'quantity', parseFloat(e.target.value) || 0)} />
+                    <input type="number" className="finp" style={{ width: 100, fontSize: 12, textAlign: 'right' }}
+                      value={item.rate} min={0} step="0.01"
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateLineItem(item.id, 'rate', parseFloat(e.target.value) || 0)} />
+                    <div style={{ width: 100, textAlign: 'right', fontSize: 13, fontFamily: 'IBM Plex Mono, monospace', color: 'var(--text-2)' }}>
+                      {formatCurrency(item.total, projectCurrency)}
+                    </div>
+                    <div style={{ width: 32, textAlign: 'right' }}>
+                      {lineItems.length > 1 && (
+                        <button className="btn-icon" onClick={() => removeLine(item.id)}>
+                          <i className="ti ti-x" style={{ fontSize: 12 }} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+
+                <button className="btn btn-ghost btn-sm" onClick={addLine} style={{ marginTop: 6 }}>
+                  <i className="ti ti-plus" style={{ fontSize: 12 }} /> Add line item
+                </button>
+
+                <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', fontSize: 13, fontWeight: 600 }}>
+                  <span>Total</span>
+                  <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{formatCurrency(itemsSubtotal, projectCurrency)}</span>
+                </div>
+              </div>
+            )}
 
             <div className="f2" style={{ marginBottom: 12 }}>
               <div>
@@ -455,9 +560,12 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
 
             <div style={{ marginBottom: 6 }}>
               <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 5 }}>Payment instructions <span style={{ fontWeight: 400, color: 'var(--text-4)' }}>— shown to the client</span></label>
-              <textarea className="finp" style={{ minHeight: 70 }} value={paymentInstructions}
-                onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setPaymentInstructions(e.target.value)}
-                placeholder="Bank details or &quot;per contract terms&quot;" />
+              <RichTextField
+                value={paymentInstructions}
+                onChange={setPaymentInstructions}
+                minHeight={70}
+                placeholder='Bank details or "per contract terms"'
+              />
             </div>
           </>
         )}

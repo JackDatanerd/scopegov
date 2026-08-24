@@ -1,7 +1,7 @@
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
-import { sanitizePlainText } from '@/lib/utils/sanitize'
+import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -56,7 +56,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     await (service as any).from('change_orders').update({
       title:               title?.trim(),
-      note:                note ? sanitizePlainText(note.trim()) || null : null,
+      note:                sanitizeRichTextOrNull(note),
       line_items:          JSON.stringify(items),
       subtotal,
       tax_rate:            parseFloat(taxRate) || 0,

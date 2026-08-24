@@ -5,6 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
+import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
 
 // GET /api/invoices?projectId=&status= — workspace-wide (or project-scoped) list
 export async function GET(request: NextRequest) {
@@ -187,7 +188,7 @@ export async function POST(request: NextRequest) {
         line_items:    JSON.stringify(cleanLineItems),
         currency:      project.currency || 'USD',
         due_date:      dueDate || null,
-        payment_instructions: paymentInstructions?.trim() || null,
+        payment_instructions: sanitizeRichTextOrNull(paymentInstructions),
         notes:         notes?.trim() || null,
         created_by:    session.id,
       })

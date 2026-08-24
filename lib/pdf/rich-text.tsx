@@ -109,7 +109,7 @@ function renderRuns(runs: InlineRun[]) {
 }
 
 /** Renders sanitized section HTML as react-pdf blocks, preserving bold/italic/underline/strike and rendering <ol> with real numbers instead of collapsing to bullets. */
-export function RichText({ html, style }: { html: string; style: any }) {
+export function RichText({ html, style }: { html: string | null | undefined; style: any }) {
   if (!html || !html.trim()) return null
   const blocks = splitBlocks(html)
 
