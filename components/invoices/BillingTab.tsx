@@ -362,6 +362,45 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
   )
   const itemsSubtotal = lineItems.reduce((s, l) => s + l.total, 0)
 
+  // AI draft — mirrors CoEditor's "Draft with AI" exactly: agency
+  // describes what's being billed, model proposes a title + itemized
+  // lines with pricing forced to 0 server-side, agency fills in rates
+  // and revises for convenience.
+  const [aiOpen,     setAiOpen]     = useState(false)
+  const [aiText,     setAiText]     = useState('')
+  const [aiDrafting, setAiDrafting] = useState(false)
+  const [aiError,    setAiError]    = useState('')
+
+  async function draftWithAi() {
+    if (!aiText.trim()) { setAiError('Describe what this invoice covers first.'); return }
+    setAiDrafting(true); setAiError('')
+    try {
+      const sourceLabel = source.type === 'milestone'
+        ? milestones.find((m: any) => m.id === source.id)?.title
+        : source.type === 'sow'
+          ? `SOW ${sows.find((s: any) => s.id === source.id)?.document_number || ''}`
+          : source.type === 'co'
+            ? cos.find((c: any) => c.id === source.id)?.title
+            : undefined
+      const res  = await fetch('/api/invoices/draft', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId, request: aiText, sourceLabel }),
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error)
+      if (json.title) setTitle(json.title)
+      if (json.lineItems?.length) {
+        setItemized(true)
+        setLineItems(json.lineItems.map((li: any) => ({
+          id: nanoid(), description: li.description, quantity: li.quantity || 1, rate: 0, total: 0,
+        })))
+      }
+      setAiOpen(false); setAiText('')
+    } catch (err: unknown) {
+      setAiError(err instanceof Error ? err.message : 'Could not draft this — try again or fill it in manually.')
+    } finally { setAiDrafting(false) }
+  }
+
   function updateLineItem(id: string, field: 'description' | 'quantity' | 'rate', value: string | number) {
     setLineItems(prev => prev.map(l => {
       if (l.id !== id) return l
@@ -464,6 +503,30 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
                 ))}
               </div>
             </div>
+
+            {!aiOpen && (
+              <button className="btn btn-ghost btn-sm" onClick={() => setAiOpen(true)} style={{ marginBottom: 16 }}>
+                <i className="ti ti-sparkles" style={{ fontSize: 12 }} /> Draft with AI
+              </button>
+            )}
+            {aiOpen && (
+              <div className="surface surface-p" style={{ marginBottom: 20 }}>
+                <label className="flbl">Describe what this invoice covers</label>
+                <textarea className="finp" style={{ minHeight: 80, resize: 'vertical', marginTop: 6 }} autoFocus
+                  value={aiText} placeholder="e.g. Wave 2 fixed-fee milestone completion, plus 62 hours of October hypercare support at $145/hr, plus on-site travel expenses…"
+                  onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setAiText(e.target.value)} />
+                {aiError && <p className="ferr" style={{ marginTop: 6 }}>{aiError}</p>}
+                <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 6 }}>
+                  Drafts a title and itemized line items from your description — pricing is always left at 0 for you to set.
+                </p>
+                <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                  <button className="btn btn-primary btn-sm" onClick={draftWithAi} disabled={aiDrafting}>
+                    {aiDrafting ? <span className="spin" /> : 'Draft'}
+                  </button>
+                  <button className="btn btn-ghost btn-sm" onClick={() => { setAiOpen(false); setAiText(''); setAiError('') }}>Cancel</button>
+                </div>
+              </div>
+            )}
 
             <div className="f2" style={{ marginBottom: 12 }}>
               <div>

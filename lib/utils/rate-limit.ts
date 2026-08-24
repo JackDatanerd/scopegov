@@ -27,6 +27,7 @@ const LIMITS: Record<string, { max: number; windowMinutes: number }> = {
   'sow.generate':          { max: 10, windowMinutes: 10 },
   'sow.regenerateSection': { max: 30, windowMinutes: 10 },
   'co.draft':              { max: 20, windowMinutes: 10 },
+  'invoice.draft':         { max: 20, windowMinutes: 10 },
   'guardian.check':        { max: 40, windowMinutes: 10 },
 }
 const DEFAULT_LIMIT = { max: 20, windowMinutes: 10 }
