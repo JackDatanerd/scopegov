@@ -2,6 +2,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams } from 'next/navigation'
 import SignaturePad, { type SignaturePadHandle } from '@/components/ui/SignaturePad'
+import { isTableSection, SOW_TABLE_SCHEMAS, type SowTableRow } from '@/lib/sow/table-schema'
 
 type PortalState =
   | 'loading' | 'invalid' | 'revoked' | 'expired' | 'declined'
@@ -35,7 +36,7 @@ interface SowData {
   clientCompany: string | null
   clientBillingAddress: string | null
   clientVatNumber:      string | null
-  sections:    Array<{ id: string; title: string; content: string; visible: boolean; order: number }>
+  sections:    Array<{ id: string; title: string; content: string; table?: SowTableRow[]; visible: boolean; order: number }>
   paymentSchedule: PaymentScheduleItem[]
   version:     number
   expiresAt:   string
@@ -299,16 +300,22 @@ export default function SowPortalPage() {
             </div>
           )}
 
-          {/* Sections */}
+          {/* Sections — Deliverables/Timeline/Roles render as tables
+              (same schema the PDF and editor use), matching what the
+              signer will see on the downloaded document. */}
           <div className="portal-doc-body">
             {visibleSections.map((section) => (
               <div key={section.id} className="portal-section" style={{ marginBottom: 24 }}>
                 <div className="portal-section-title">{section.title}</div>
-                <div
-                  className="portal-section-body"
-                  dangerouslySetInnerHTML={{ __html: section.content }}
-                  style={{ fontSize: 14, color: '#333', lineHeight: 1.75 }}
-                />
+                {isTableSection(section.id) ? (
+                  <SowPortalTable sectionId={section.id} rows={section.table || []} currency={sow.currency} />
+                ) : (
+                  <div
+                    className="portal-section-body"
+                    dangerouslySetInnerHTML={{ __html: section.content }}
+                    style={{ fontSize: 14, color: '#333', lineHeight: 1.75 }}
+                  />
+                )}
               </div>
             ))}
           </div>
@@ -513,5 +520,42 @@ function PortalShell({ children, accent, agencyName, logoUrl }: {
       </div>
       {children}
     </div>
+  )
+}
+
+/** Deliverables/Timeline/Roles table for the client-facing portal page — mirrors SowTable in lib/pdf/sow-table.tsx so the signer sees the same structure they'll get on the downloaded PDF. */
+function SowPortalTable({ sectionId, rows }: { sectionId: 'deliverables' | 'timeline' | 'roles'; rows: SowTableRow[]; currency?: string }) {
+  const schema = SOW_TABLE_SCHEMAS[sectionId]
+  if (!rows || rows.length === 0) return null
+  return (
+    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, marginTop: 8, border: '1px solid #E5E1D8', borderRadius: 4 }}>
+      <thead>
+        <tr>
+          {schema.columns.map(col => (
+            <th key={col.key} style={{
+              textAlign: col.align || 'left', padding: '8px 10px', fontSize: 11, fontWeight: 700,
+              color: '#909090', textTransform: 'uppercase', letterSpacing: '.04em',
+              background: '#F9F8F5', borderBottom: '1px solid #E5E1D8',
+            }}>
+              {col.label}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((row, i) => (
+          <tr key={i}>
+            {schema.columns.map(col => (
+              <td key={col.key} style={{
+                textAlign: col.align || 'left', padding: '8px 10px', color: '#333',
+                borderBottom: i === rows.length - 1 ? 'none' : '1px solid #F2F0EA',
+              }}>
+                {row[col.key] || '—'}
+              </td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
   )
 }

@@ -1,8 +1,24 @@
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
-import { sanitizeRichText } from '@/lib/utils/sanitize'
+import { sanitizeRichText, sanitizePlainText } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
+import { isTableSection, SOW_TABLE_SCHEMAS, type SowTableSectionId } from '@/lib/sow/table-schema'
+
+// Table rows are plain-text cells (rendered on the public portal page same
+// as prose content) — sanitizePlainText, not sanitizeRichText, since a
+// table cell was never meant to carry markup, only sanitized against
+// injection. Unknown keys are dropped rather than passed through so a
+// tampered PATCH body can't smuggle arbitrary fields into stored rows.
+function sanitizeTableRows(sectionId: string, rows: unknown): Array<Record<string, string>> {
+  if (!isTableSection(sectionId) || !Array.isArray(rows)) return []
+  const schema = SOW_TABLE_SCHEMAS[sectionId as SowTableSectionId]
+  return rows.map((row: any) => {
+    const clean: Record<string, string> = {}
+    for (const col of schema.columns) clean[col.key] = sanitizePlainText(row?.[col.key] ?? '')
+    return clean
+  })
+}
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -39,7 +55,16 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // storage in the first place. See lib/utils/sanitize.ts.
     let newSections = sow.sections || []
     if (body.sections) {
-      newSections = (body.sections as any[]).map(s => ({ ...s, content: sanitizeRichText(s.content) }))
+      newSections = (body.sections as any[]).map(s => ({
+        ...s,
+        content: sanitizeRichText(s.content),
+        ...(isTableSection(s.id) ? { table: sanitizeTableRows(s.id, s.table) } : {}),
+      }))
+    } else if (body.sectionId && body.table !== undefined) {
+      const safeTable = sanitizeTableRows(body.sectionId, body.table)
+      newSections = newSections.map((s: any) =>
+        s.id === body.sectionId ? { ...s, table: safeTable } : s
+      )
     } else if (body.sectionId && body.content !== undefined) {
       const safeContent = sanitizeRichText(body.content)
       newSections = newSections.map((s: any) =>

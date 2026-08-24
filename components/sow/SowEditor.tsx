@@ -8,9 +8,10 @@ import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
 import { sowSectionLabel, countWords } from '@/lib/utils/format'
+import { isTableSection, SOW_TABLE_SCHEMAS, blankRow, type SowTableRow, type SowTableSectionId } from '@/lib/sow/table-schema'
 
 interface Section {
-  id: string; title: string; content: string; visible: boolean; order: number
+  id: string; title: string; content: string; table?: SowTableRow[]; visible: boolean; order: number
 }
 
 interface Props {
@@ -23,7 +24,7 @@ interface Props {
 }
 
 const REQUIRED_SECTIONS = ['parties', 'deliverables', 'payment', 'signature']
-const SECTION_ORDER = ['parties','overview','deliverables','oos','assumptions','timeline','payment','revisions','ip','confidentiality','termination','governing_law','dispute','signature']
+const SECTION_ORDER = ['parties','overview','deliverables','oos','timeline','roles','assumptions','payment','revisions','ip','confidentiality','termination','governing_law','dispute','signature']
 
 export default function SowEditor({ sowId, sections: initialSections, isLocked, onSend, canSend, canEdit }: Props) {
   const [sections,      setSections]      = useState<Section[]>(
@@ -49,7 +50,7 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
       if (isLocked || !canEdit) return
       const html = editor.getHTML()
       setSections(prev => prev.map(s => s.id === activeSection ? { ...s, content: html } : s))
-      scheduleAutosave(activeSection, html)
+      scheduleAutosave(activeSection, { content: html })
     },
   }, [activeSection])
 
@@ -60,7 +61,7 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
     editor?.commands.setContent(target.content || '')
   }, [sections, editor])
 
-  function scheduleAutosave(sectionId: string, content: string) {
+  function scheduleAutosave(sectionId: string, payload: { content: string } | { table: SowTableRow[] }) {
     if (saveTimer.current) clearTimeout(saveTimer.current)
     setSaveStatus('saving')
     saveTimer.current = setTimeout(async () => {
@@ -68,12 +69,17 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
         const res = await fetch(`/api/sow/${sowId}`, {
           method:  'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({ sectionId, content }),
+          body:    JSON.stringify({ sectionId, ...payload }),
         })
         setSaveStatus(res.ok ? 'saved' : 'error')
         if (res.ok) setTimeout(() => setSaveStatus('idle'), 2000)
       } catch { setSaveStatus('error') }
     }, 1500)
+  }
+
+  function updateTable(sectionId: string, rows: SowTableRow[]) {
+    setSections(prev => prev.map(s => s.id === sectionId ? { ...s, table: rows } : s))
+    scheduleAutosave(sectionId, { table: rows })
   }
 
   async function handleRegen(sectionId: string) {
@@ -94,7 +100,7 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
       if (!res.ok) throw new Error(json.error)
       setSections(prev => prev.map(s => s.id === sectionId ? { ...s, content: json.content } : s))
       if (sectionId === activeSection) editor?.commands.setContent(json.content)
-      scheduleAutosave(sectionId, json.content)
+      scheduleAutosave(sectionId, { content: json.content })
       setShowRegen(null); setRegenInstruction('')
     } catch (err) {
       console.error('Regen failed:', err)
@@ -112,13 +118,20 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
     })
   }
 
-  const toolbar = editor ? (
+  const isTable = current ? isTableSection(current.id) : false
+
+  // Table sections (Deliverables/Timeline/Roles) don't get the rich-text
+  // toolbar or the AI "Improve" wand — regenerate-section only knows how
+  // to rewrite prose, and Bold/Italic/lists don't mean anything inside a
+  // table cell. They still get the save-status indicator and the
+  // show/hide toggle, same as every other section.
+  const toolbar = (editor || isTable) ? (
     <div className="editor-toolbar">
-      {[
-        { label: 'B',  cmd: () => editor.chain().focus().toggleBold().run(),         active: editor.isActive('bold') },
-        { label: 'I',  cmd: () => editor.chain().focus().toggleItalic().run(),       active: editor.isActive('italic') },
-        { label: '≡',  cmd: () => editor.chain().focus().toggleBulletList().run(),   active: editor.isActive('bulletList') },
-        { label: '1.', cmd: () => editor.chain().focus().toggleOrderedList().run(),  active: editor.isActive('orderedList') },
+      {!isTable && [
+        { label: 'B',  cmd: () => editor!.chain().focus().toggleBold().run(),         active: editor!.isActive('bold') },
+        { label: 'I',  cmd: () => editor!.chain().focus().toggleItalic().run(),       active: editor!.isActive('italic') },
+        { label: '≡',  cmd: () => editor!.chain().focus().toggleBulletList().run(),   active: editor!.isActive('bulletList') },
+        { label: '1.', cmd: () => editor!.chain().focus().toggleOrderedList().run(),  active: editor!.isActive('orderedList') },
       ].map((btn, i) => (
         <button key={i} type="button"
           className={btn.active ? 'is-active' : ''}
@@ -143,7 +156,7 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
             <i className={`ti ${current.visible ? 'ti-eye' : 'ti-eye-off'}`} style={{ fontSize: 11 }} />
           </button>
         )}
-        {!isLocked && canEdit && (
+        {!isTable && !isLocked && canEdit && (
           <button type="button" className="btn btn-ghost btn-xs"
             onClick={() => setShowRegen(showRegen === current?.id ? null : current?.id || null)}>
             <i className="ti ti-wand" style={{ fontSize: 11 }} /> Improve
@@ -154,6 +167,7 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
   ) : null
 
   const wordCount = countWords(current?.content || '')
+  const rowCount   = current?.table?.length || 0
 
   return (
     <div style={{ display: 'flex', height: '100%', minHeight: 500 }}>
@@ -191,7 +205,9 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
         <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div>
             <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{current?.title}</div>
-            <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>{wordCount} words</div>
+            <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>
+              {isTable ? `${rowCount} row${rowCount === 1 ? '' : 's'}` : `${wordCount} words`}
+            </div>
           </div>
           {isLocked && (
             <span className="pill pill-amber" style={{ fontSize: 10 }}>
@@ -223,16 +239,24 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
           </div>
         )}
 
-        <div className="editor-wrap" style={{ flex: 1, border: 'none', borderRadius: 0, display: 'flex', flexDirection: 'column' }}>
+        <div className="editor-wrap" style={{ flex: 1, border: 'none', borderRadius: 0, display: 'flex', flexDirection: 'column', overflowY: isTable ? 'auto' : undefined }}>
           {!isLocked && canEdit && toolbar}
-          {editor && (
+          {isTable && current && (
+            <TableSectionEditor
+              sectionId={current.id as SowTableSectionId}
+              rows={current.table || []}
+              editable={canEdit && !isLocked}
+              onChange={(rows) => updateTable(current.id, rows)}
+            />
+          )}
+          {!isTable && editor && (
             <EditorContent
               editor={editor}
               className="editor-body"
               style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', minHeight: 300 }}
             />
           )}
-          {(!editor || (isLocked || !canEdit)) && (
+          {!isTable && (!editor || (isLocked || !canEdit)) && (
             <div
               style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', fontSize: 13, lineHeight: 1.75, color: 'var(--text-2)' }}
               dangerouslySetInnerHTML={{ __html: current?.content || '<p style="color:var(--text-4)">No content</p>' }}
@@ -254,6 +278,127 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
           </div>
         )}
       </div>
+    </div>
+  )
+}
+// ── Table section editor (Deliverables / Timeline / Roles) ──────────────
+// Cell edits are debounced through the same autosave path as prose
+// (scheduleAutosave in the parent), so this only needs to report the full
+// row array upward on every keystroke — no separate save state to manage.
+
+function TableSectionEditor({
+  sectionId, rows, editable, onChange,
+}: {
+  sectionId: SowTableSectionId
+  rows: SowTableRow[]
+  editable: boolean
+  onChange: (rows: SowTableRow[]) => void
+}) {
+  const schema = SOW_TABLE_SCHEMAS[sectionId]
+
+  function updateCell(rowIndex: number, key: string, value: string) {
+    const next = rows.map((r, i) => i === rowIndex ? { ...r, [key]: value } : r)
+    onChange(next)
+  }
+
+  function addRow() {
+    onChange([...rows, blankRow(sectionId)])
+  }
+
+  function removeRow(rowIndex: number) {
+    onChange(rows.filter((_, i) => i !== rowIndex))
+  }
+
+  function moveRow(rowIndex: number, dir: -1 | 1) {
+    const target = rowIndex + dir
+    if (target < 0 || target >= rows.length) return
+    const next = [...rows]
+    ;[next[rowIndex], next[target]] = [next[target], next[rowIndex]]
+    onChange(next)
+  }
+
+  return (
+    <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px' }}>
+      {rows.length === 0 ? (
+        <div style={{
+          textAlign: 'center', padding: '32px 16px', color: 'var(--text-4)',
+          fontSize: 13, border: '1px dashed var(--border)', borderRadius: 6,
+        }}>
+          {schema.emptyRowLabel}
+        </div>
+      ) : (
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+          <thead>
+            <tr>
+              {schema.columns.map(col => (
+                <th key={col.key} style={{
+                  textAlign: col.align || 'left', padding: '0 8px 6px',
+                  fontSize: 10, fontWeight: 600, color: 'var(--text-3)',
+                  textTransform: 'uppercase', letterSpacing: '.04em',
+                }}>
+                  {col.label}
+                </th>
+              ))}
+              {editable && <th style={{ width: 64 }} />}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, i) => (
+              <tr key={i} style={{ borderTop: '1px solid var(--border)' }}>
+                {schema.columns.map(col => (
+                  <td key={col.key} style={{ padding: '6px 8px', verticalAlign: 'top' }}>
+                    {col.options ? (
+                      <select
+                        className="finp"
+                        style={{ width: '100%', fontSize: 12.5, padding: '5px 6px' }}
+                        value={row[col.key] || col.options[col.options.length - 1]}
+                        disabled={!editable}
+                        onChange={(e) => updateCell(i, col.key, e.target.value)}
+                      >
+                        {col.options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      </select>
+                    ) : (
+                      <textarea
+                        className="finp"
+                        rows={1}
+                        style={{
+                          width: '100%', fontSize: 12.5, padding: '5px 6px', resize: 'vertical',
+                          textAlign: col.align || 'left', minHeight: 30,
+                        }}
+                        value={row[col.key] || ''}
+                        disabled={!editable}
+                        onChange={(e) => updateCell(i, col.key, e.target.value)}
+                      />
+                    )}
+                  </td>
+                ))}
+                {editable && (
+                  <td style={{ padding: '6px 4px', whiteSpace: 'nowrap', verticalAlign: 'top' }}>
+                    <button type="button" className="btn btn-ghost btn-xs" title="Move up"
+                      onClick={() => moveRow(i, -1)} disabled={i === 0}>
+                      <i className="ti ti-chevron-up" style={{ fontSize: 11 }} />
+                    </button>
+                    <button type="button" className="btn btn-ghost btn-xs" title="Move down"
+                      onClick={() => moveRow(i, 1)} disabled={i === rows.length - 1}>
+                      <i className="ti ti-chevron-down" style={{ fontSize: 11 }} />
+                    </button>
+                    <button type="button" className="btn btn-ghost btn-xs" title="Remove row"
+                      onClick={() => removeRow(i)}>
+                      <i className="ti ti-trash" style={{ fontSize: 11, color: 'var(--red)' }} />
+                    </button>
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {editable && (
+        <button type="button" className="btn btn-ghost btn-sm" style={{ marginTop: 12 }} onClick={addRow}>
+          <i className="ti ti-plus" style={{ fontSize: 12 }} /> Add row
+        </button>
+      )}
     </div>
   )
 }

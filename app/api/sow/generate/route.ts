@@ -19,9 +19,11 @@ import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
 import Anthropic from '@anthropic-ai/sdk'
 import {
   SOW_SECTION_DEFS, buildBoilerplateSections,
-  buildSowContentPrompt, parseDelimitedSections, buildFallbackSections,
+  buildSowContentPrompt, parseDelimitedSections, parseTableSections,
+  buildFallbackSections, buildFallbackTables,
   SowContentParseError, type SowContentInput,
 } from '@/lib/ai/sow-content'
+import { TABLE_SECTION_IDS, type SowTableSectionId, type SowTableRow } from '@/lib/sow/table-schema'
 
 // FIX (re-audit — build-blocking): was constructed at module scope, so an
 // unset ANTHROPIC_API_KEY turns importing this route into a hard build
@@ -111,6 +113,7 @@ export async function POST(request: NextRequest) {
 
     const MAX_ATTEMPTS = 3
     let aiSections: Record<string, string> | null = null
+    let aiTables: Record<SowTableSectionId, SowTableRow[]> | null = null
     let usedFallback = false
     let lastStopReason: string | null = null
 
@@ -126,6 +129,7 @@ export async function POST(request: NextRequest) {
         const raw = msg.content.filter(b => b.type === 'text').map((b: any) => b.text).join('')
         lastStopReason = msg.stop_reason
         aiSections = parseDelimitedSections(raw)
+        aiTables = parseTableSections(raw)
       } catch (err) {
         const reason = err instanceof SowContentParseError
           ? err.message
@@ -141,6 +145,16 @@ export async function POST(request: NextRequest) {
       usedFallback = true
     }
 
+    // Tables are parsed leniently and never throw — a table can come back
+    // empty (model skipped it, or every row was malformed) without taking
+    // the whole generation down. Fall back per-table, not per-document.
+    const fallbackTables = buildFallbackTables(contentInput)
+    const tables: Record<SowTableSectionId, SowTableRow[]> = {
+      deliverables: aiTables?.deliverables?.length ? aiTables.deliverables : fallbackTables.deliverables,
+      timeline:     aiTables?.timeline?.length     ? aiTables.timeline     : fallbackTables.timeline,
+      roles:        aiTables?.roles?.length        ? aiTables.roles        : fallbackTables.roles,
+    }
+
     const boilerplate = buildBoilerplateSections(contentInput)
     const allContent: Record<string, string> = { ...boilerplate, ...aiSections }
 
@@ -149,6 +163,7 @@ export async function POST(request: NextRequest) {
         id: def.id,
         title: def.title,
         content: sanitizeRichText(allContent[def.id] || ''),
+        ...(TABLE_SECTION_IDS.includes(def.id as SowTableSectionId) ? { table: tables[def.id as SowTableSectionId] } : {}),
         visible: true,
         order: def.order,
       })),

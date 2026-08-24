@@ -9,6 +9,9 @@ import {
   StyleSheet, renderToBuffer,
 } from '@react-pdf/renderer'
 import { safeFetch } from '@/lib/utils/safe-fetch'
+import { RichText } from '@/lib/pdf/rich-text'
+import { SowTable } from '@/lib/pdf/sow-table'
+import { isTableSection, type SowTableRow } from '@/lib/sow/table-schema'
 
 // Phase 11: the ScopeGov credit in the footer of every document is a real
 // hyperlink now, not plain text — same URL everywhere so it's one place to
@@ -50,7 +53,7 @@ export interface SowPdfData {
   projectName:   string
   contractValue: number
   currency:      string
-  sections:      Array<{ id: string; title: string; content: string; visible: boolean; order: number }>
+  sections:      Array<{ id: string; title: string; content: string; table?: SowTableRow[]; visible: boolean; order: number }>
   paymentSchedule?: Array<{ title: string; amount: number; percentage: number | null; trigger: string; dueDate: string | null; status: string }>
   signedBy?:     string
   signedAt?:     string
@@ -59,6 +62,13 @@ export interface SowPdfData {
   version:       number
   isWatermarked?: boolean
   documentNumber?: string | null
+  // Optional one-line cross-reference to a governing Master Service
+  // Agreement, e.g. "Issued under the Master Service Agreement dated
+  // March 3, 2026." Sourced from sow_documents.metadata.msaReference —
+  // no dedicated settings field exists for this yet, so it only renders
+  // when explicitly present. Renders under the masthead, same placement
+  // pattern as a firm-issued SOW referencing its parent MSA.
+  msaReference?: string | null
 }
 
 export interface CoPdfData {
@@ -221,6 +231,10 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
     // Footer
     footer:     { flexDirection: 'row', justifyContent: 'space-between', marginTop: 28, paddingTop: 10, borderTop: `1 solid #E5E1D8`, fontSize: 8, color: '#B0B0B0' },
     footerLink: { color: '#B0B0B0', textDecoration: 'none' },
+    // Doc chrome — running masthead (continuation pages only) + page numbers
+    contMasthead: { flexDirection: 'row', justifyContent: 'space-between', fontSize: 7.5, color: '#B0B0B0', paddingBottom: 6, marginBottom: 14, borderBottom: '1 solid #F2F0EA' },
+    pageNum:      { position: 'absolute', bottom: 18, right: 48, fontSize: 8, color: '#C0C0C0' },
+    secNum:       { color: '#C0C0C0' },
   })
 
   const sections = data.sections
@@ -232,11 +246,26 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
       <Page size="A4" style={s.page}>
         {data.isWatermarked && <Text style={s.watermark}>DRAFT</Text>}
 
+        {/* Running masthead — fixed, only renders on page 2+ so a
+            multi-page SOW never loses its identity after the first page,
+            without repeating the full header (logo + contract value)
+            on every page. */}
+        <Text
+          style={s.contMasthead}
+          fixed
+          render={({ pageNumber }) =>
+            pageNumber > 1
+              ? `${data.agencyName} · Statement of Work${data.documentNumber ? ` · ${data.documentNumber}` : ''} · ${data.projectName}`
+              : ''
+          }
+        />
+
         {/* Header */}
         <View style={s.header}>
           <View>
             <Text style={s.h1}>Statement of Work</Text>
             <Text style={s.meta}>{data.documentNumber ? `${data.documentNumber} · ` : ''}Version {data.version} · {data.projectName}</Text>
+            {data.msaReference && <Text style={[s.meta, { marginTop: 2 }]}>{data.msaReference}</Text>}
             {data.signedAt && <Text style={[s.meta, { color: c, marginTop: 2 }]}>Signed {fmtDate(data.signedAt)}</Text>}
           </View>
           <View style={{ alignItems: 'flex-end' }}>
@@ -269,11 +298,18 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
           </View>
         </View>
 
-        {/* Sections */}
-        {sections.map(sec => (
-          <View key={sec.id} style={s.section} wrap={false}>
-            <Text style={s.secTitle}>{sec.title}</Text>
-            <Text style={s.body}>{stripHtml(sec.content)}</Text>
+        {/* Sections — numbered in document order, same convention as a
+            traditional firm-issued SOW (1. Project Overview, 2.
+            Deliverables, …). Deliverables/Timeline/Roles render as
+            tables; everything else renders as formatted rich text
+            (bold/italic/numbered lists now survive into the PDF instead
+            of being flattened by the old stripHtml() path). */}
+        {sections.map((sec, i) => (
+          <View key={sec.id} style={s.section} wrap={isTableSection(sec.id) ? undefined : false}>
+            <Text style={s.secTitle}><Text style={s.secNum}>{i + 1}. </Text>{sec.title}</Text>
+            {isTableSection(sec.id)
+              ? <SowTable sectionId={sec.id} rows={sec.table || []} />
+              : <RichText html={sec.content} style={s.body} />}
           </View>
         ))}
 
@@ -335,6 +371,15 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
           <Text>Scope governance by <Link src={SCOPEGOV_URL} style={s.footerLink}>ScopeGov</Link></Text>
           <Text>Generated {fmtDate(new Date().toISOString())}</Text>
         </View>
+
+        {/* Page numbers — fixed, only shown once the document actually
+            runs past one page, so a short single-page SOW doesn't get a
+            pointless "Page 1 of 1". */}
+        <Text
+          style={s.pageNum}
+          fixed
+          render={({ pageNumber, totalPages }) => (totalPages > 1 ? `Page ${pageNumber} of ${totalPages}` : '')}
+        />
       </Page>
     </Document>
   )
