@@ -72,7 +72,7 @@ export async function POST(request: NextRequest) {
     const {
       projectId, milestoneId, sowId, coId,
       title, amount, dueDate, paymentInstructions, notes,
-      taxRate, taxInclusive,
+      taxRate, taxInclusive, lineItems,
     } = body || {}
 
     if (!projectId) return NextResponse.json({ error: 'projectId is required' }, { status: 400 })
@@ -149,6 +149,28 @@ export async function POST(request: NextRequest) {
       finalSubtotal = coTaxDefaults.subtotal ?? numAmount
     }
 
+    // Optional itemized breakdown (migration 017). Soft rule enforced in
+    // code, not a DB constraint (matches the column's documented contract):
+    // if the agency supplies line items, they must foot to the invoice
+    // total — otherwise the PDF would show an itemized table whose rows
+    // don't sum to the number the client is actually being asked to pay,
+    // which is worse than not itemizing at all.
+    let cleanLineItems: Array<{ description: string; quantity: number; rate: number; total: number }> = []
+    if (Array.isArray(lineItems) && lineItems.length > 0) {
+      cleanLineItems = lineItems.map((l: any) => ({
+        description: String(l.description || '').trim().slice(0, 500),
+        quantity:    Number(l.quantity) || 0,
+        rate:        Number(l.rate) || 0,
+        total:       Number(l.total) || 0,
+      })).filter(l => l.description)
+      const itemSum = cleanLineItems.reduce((s, l) => s + l.total, 0)
+      if (cleanLineItems.length > 0 && Math.abs(itemSum - finalAmount) > 0.01) {
+        return NextResponse.json({
+          error: `Line items total ${itemSum.toFixed(2)} does not match invoice amount ${finalAmount.toFixed(2)}`,
+        }, { status: 400 })
+      }
+    }
+
     const { data: invoice, error } = await (service as any)
       .from('invoices')
       .insert({
@@ -162,6 +184,7 @@ export async function POST(request: NextRequest) {
         subtotal:      finalSubtotal,
         tax_rate:      finalTaxRate,
         tax_inclusive: finalTaxInclusive,
+        line_items:    JSON.stringify(cleanLineItems),
         currency:      project.currency || 'USD',
         due_date:      dueDate || null,
         payment_instructions: paymentInstructions?.trim() || null,

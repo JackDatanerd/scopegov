@@ -30,8 +30,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const { data: co } = await (service as any)
       .from('change_orders')
       .select(`id,title,note,status,line_items,subtotal,tax_rate,tax_inclusive,total,
-        document_number,accepted_by,accepted_at,client_signature_data,workspace_id,
-        projects(id,name,currency,clients(name,email,company_name,billing_address,vat_number),
+        document_number,accepted_by,accepted_at,client_signature_data,workspace_id,project_id,
+        projects(id,name,currency,contract_value,clients(name,email,company_name,billing_address,vat_number),
           workspaces(id,agency_name,brand_colour,logo_storage_path,agency_signature_data,
             legal_address,tax_id,phone,website))`)
       .eq('token', token).single()
@@ -64,6 +64,19 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
     const lineItems = typeof co.line_items === 'string' ? JSON.parse(co.line_items) : (co.line_items || [])
 
+    const { data: sow } = await (service as any)
+      .from('sow_documents')
+      .select('document_number')
+      .eq('project_id', co.project_id)
+      .eq('status', 'signed')
+      .order('version', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    const contractValueBefore = project?.contract_value != null
+      ? project.contract_value - (co.status === 'accepted' ? (co.total || 0) : 0)
+      : null
+
     const pdfBuffer = await renderCoPdf({
       agencyName:    ws?.agency_name || 'Agency',
       logoUrl,
@@ -85,11 +98,14 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       taxInclusive:  co.tax_inclusive,
       total:         co.total,
       currency:      project?.currency || 'USD',
+      status:        co.status,
       acceptedBy:    co.accepted_by,
       acceptedAt:    co.accepted_at,
       agencySignatureData: ws?.agency_signature_data || null,
       clientSignatureData: co.client_signature_data || null,
       documentNumber: co.document_number || null,
+      sowNumber:     sow?.document_number || null,
+      contractValueBefore,
     })
 
     const filename = `${co.document_number || 'CO'}.pdf`

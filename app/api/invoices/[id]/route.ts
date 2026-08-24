@@ -51,7 +51,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     const service = createServiceClient()
     const { data: invoice } = await (service as any)
-      .from('invoices').select('id, status, title, project_id')
+      .from('invoices').select('id, status, title, amount, project_id')
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
@@ -71,6 +71,31 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (body.dueDate !== undefined) update.due_date = body.dueDate || null
     if (body.paymentInstructions !== undefined) update.payment_instructions = body.paymentInstructions?.trim() || null
     if (body.notes !== undefined) update.notes = body.notes?.trim() || null
+
+    // Optional itemized breakdown — same footing rule as creation (see
+    // POST /api/invoices), checked against whichever amount is in effect
+    // after this update (the one just submitted, or the invoice's
+    // existing amount if this PATCH doesn't touch it).
+    if (body.lineItems !== undefined) {
+      const effectiveAmount = update.amount !== undefined ? update.amount : Number(invoice.amount)
+      const cleanLineItems = Array.isArray(body.lineItems)
+        ? body.lineItems.map((l: any) => ({
+            description: String(l.description || '').trim().slice(0, 500),
+            quantity:    Number(l.quantity) || 0,
+            rate:        Number(l.rate) || 0,
+            total:       Number(l.total) || 0,
+          })).filter((l: any) => l.description)
+        : []
+      if (cleanLineItems.length > 0) {
+        const itemSum = cleanLineItems.reduce((s: number, l: any) => s + l.total, 0)
+        if (Math.abs(itemSum - effectiveAmount) > 0.01) {
+          return NextResponse.json({
+            error: `Line items total ${itemSum.toFixed(2)} does not match invoice amount ${effectiveAmount.toFixed(2)}`,
+          }, { status: 400 })
+        }
+      }
+      update.line_items = JSON.stringify(cleanLineItems)
+    }
 
     const { error } = await (service as any).from('invoices').update(update).eq('id', id)
     if (error) return NextResponse.json({ error: 'Failed to update invoice' }, { status: 500 })

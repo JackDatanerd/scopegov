@@ -92,6 +92,13 @@ export interface CoPdfData {
   taxInclusive: boolean
   total:        number
   currency:     string
+  // FIX (doc-quality audit round 2): status was previously implied only
+  // by whether acceptedAt was set — a CO sent for review and still
+  // awaiting a client response rendered with no status indicator at all,
+  // unlike a firm-issued CO which always shows a clear "PENDING APPROVAL"
+  // badge. Optional so existing callers that haven't been updated yet
+  // don't break; the badge simply doesn't render without it.
+  status?:      string
   acceptedBy?:  string
   acceptedAt?:  string
   agencySignatureData?: string | null
@@ -99,6 +106,23 @@ export interface CoPdfData {
   isPartial?:   boolean
   partialNote?: string
   documentNumber?: string | null
+  // "Amends SOW No. X" cross-reference — the SOW this CO modifies.
+  // Resolved by the caller from the project's current signed SOW (there's
+  // no direct FK from change_orders to sow_documents), so it's best-effort
+  // and simply omitted if the project has no signed SOW on file.
+  sowNumber?:   string | null
+  // Original/Revised contract value block (Meridian's "Impact Analysis"
+  // equivalent). contractValueBefore is the project's contract_value
+  // before this CO's amount is applied. Known limitation, disclosed
+  // rather than silently wrong: for a CO that was accepted in the past
+  // and has since been followed by OTHER accepted COs on the same
+  // project, this is computed as (current contract_value − this CO's
+  // total), which is only exact when this is the most recently accepted
+  // CO. Getting this exactly right for arbitrary historical reordering
+  // would need a value snapshot captured at accept-time — not built in
+  // this pass. Correct for the common case: reviewing a pending CO, or
+  // the most recent accepted one.
+  contractValueBefore?: number | null
 }
 
 export interface InvoicePdfData {
@@ -134,6 +158,17 @@ export interface InvoicePdfData {
   paymentInstructions?: string | null
   payments:     Array<{ amount: number; paidAt: string; method: string; referenceNote?: string | null }>
   contractPosition?: { contractedValue: number; invoicedToDate: number; paidToDate: number } | null
+  // Cross-references (doc-quality audit round 2) — the underlying
+  // sow_id/co_id FKs already existed on `invoices`, just weren't being
+  // read into the PDF. Mirrors Meridian sample's "For services rendered
+  // under SOW No. X" / "as amended by Change Order No. Y" lines.
+  sowNumber?:   string | null
+  coNumber?:    string | null
+  coTitle?:     string | null
+  // Optional itemized breakdown (migration 017). Empty/undefined falls
+  // back to the existing single-line title+amount display — every
+  // invoice created before this pass keeps rendering exactly as before.
+  lineItems?:   Array<{ description: string; quantity: number; rate: number; total: number }>
 }
 
 // Resolve logo URL to base64 data URI for embedding in the PDF
@@ -387,8 +422,30 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
 
 // ── CO PDF ───────────────────────────────────────────────────
 
+// Firm-issued change orders always show a status badge, even (especially)
+// before acceptance — Meridian's sample shows "PENDING APPROVAL" front
+// and center. `accepted`/`declined` reuse the signature block's own
+// visual treatment below, so they're intentionally muted here to avoid
+// redundant emphasis; the states that most need a loud badge are the
+// in-limbo ones where nothing else on the page communicates status.
+const CO_STATUS_LABEL: Record<string, string> = {
+  draft:                     'Draft',
+  awaiting_response:         'Pending Approval',
+  awaiting_countersignature: 'Awaiting Countersignature',
+  accepted:                  'Accepted',
+  declined:                  'Declined',
+  countered:                 'Countered',
+  closed:                    'Closed',
+  stalled:                   'Stalled',
+  withdrawn:                 'Withdrawn',
+  exception_granted:         'Exception Granted',
+}
+const CO_STATUS_LOUD = new Set(['awaiting_response', 'awaiting_countersignature', 'countered', 'stalled'])
+
 function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
   const c = data.brandColour || '#1A5C3A'
+  const statusLabel = data.status ? (CO_STATUS_LABEL[data.status] || data.status) : null
+  const statusLoud  = data.status ? CO_STATUS_LOUD.has(data.status) : false
 
   const s = StyleSheet.create({
     page:      { fontFamily: 'Helvetica', fontSize: 10, color: '#1A1A1A', padding: '40 48' },
@@ -422,11 +479,28 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
     sigName:   { fontFamily: 'Helvetica-Bold', fontSize: 10 },
     footer:    { flexDirection: 'row', justifyContent: 'space-between', marginTop: 24, paddingTop: 10, borderTop: `1 solid #E5E1D8`, fontSize: 8, color: '#B0B0B0' },
     footerLink:{ color: '#B0B0B0', textDecoration: 'none' },
+    // Status badge + section numbering + impact block (doc-quality audit round 2)
+    statusBadge:  { fontSize: 8.5, fontFamily: 'Helvetica-Bold', textTransform: 'uppercase', letterSpacing: 0.6, paddingVertical: 3, paddingHorizontal: 8, borderRadius: 3, marginTop: 6, alignSelf: 'flex-end' },
+    secTitle:  { fontSize: 8, fontFamily: 'Helvetica-Bold', color: '#909090', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 6, borderBottom: '1 solid #E5E1D8', paddingBottom: 3 },
+    secNum:    { color: '#C0C0C0' },
+    section:   { marginBottom: 18 },
+    impactBox: { border: '1 solid #E5E1D8', borderRadius: 4, marginTop: 12, padding: '10 14' },
+    impactRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3, fontSize: 10 },
+    impactGrand: { flexDirection: 'row', justifyContent: 'space-between', paddingTop: 6, marginTop: 4, borderTop: '1 solid #1A1A1A', fontSize: 12, fontFamily: 'Helvetica-Bold' },
+    pageNum:   { position: 'absolute', bottom: 18, right: 48, fontSize: 8, color: '#C0C0C0' },
   })
 
   const tax = data.taxRate > 0 && !data.taxInclusive
     ? data.subtotal * data.taxRate / 100
     : 0
+
+  // Section numbering — computed from which optional sections are
+  // actually present, same convention as the SOW's "1. / 2. / 3.".
+  let secN = 0
+  const noteSecNum   = data.note ? ++secN : null
+  const itemsSecNum  = ++secN
+  const impactSecNum = (data.contractValueBefore != null) ? ++secN : null
+  const revisedValue = data.contractValueBefore != null ? data.contractValueBefore + data.total : null
 
   return (
     <Document>
@@ -437,12 +511,20 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
             <Text style={s.h1}>Change Order</Text>
             <Text style={s.meta}>{data.documentNumber ? `${data.documentNumber} · ` : ''}{data.coTitle}</Text>
             <Text style={s.meta}>{data.projectName}</Text>
+            {data.sowNumber && <Text style={[s.meta, { marginTop: 2 }]}>Amends SOW No. {data.sowNumber}</Text>}
             {data.acceptedAt && <Text style={[s.meta, { color: c, marginTop: 2 }]}>Accepted {fmtDate(data.acceptedAt)}</Text>}
           </View>
           <View style={{ alignItems: 'flex-end' }}>
             {logo
               ? <Image src={logo} style={s.logo} />
               : <Text style={s.agencyText}>{data.agencyName}</Text>}
+            {statusLabel && (
+              <Text style={[s.statusBadge, statusLoud
+                ? { backgroundColor: '#FDF3E7', color: '#B8611A' }
+                : { backgroundColor: '#F2F0EA', color: '#909090' }]}>
+                {statusLabel}
+              </Text>
+            )}
           </View>
         </View>
 
@@ -467,47 +549,79 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
           </View>
         </View>
 
-        {/* Note */}
-        {data.note && <View style={s.noteBox}><Text>{stripHtml(data.note)}</Text></View>}
+        {/* Reason for change */}
+        {data.note && (
+          <View style={s.section}>
+            <Text style={s.secTitle}><Text style={s.secNum}>{noteSecNum}. </Text>Reason for Change</Text>
+            <View style={s.noteBox}><Text>{stripHtml(data.note)}</Text></View>
+          </View>
+        )}
 
         {/* Line items table */}
-        <View style={s.tableHdr}>
-          <Text style={[s.th, { flex: 1 }]}>Description</Text>
-          <Text style={[s.th, { width: 40, textAlign: 'center' }]}>Qty</Text>
-          <Text style={[s.th, { width: 80, textAlign: 'right' }]}>Rate</Text>
-          <Text style={[s.th, { width: 80, textAlign: 'right' }]}>Total</Text>
-        </View>
-        {data.lineItems.map((item, i) => (
-          <View key={i} style={s.row}>
-            <Text style={[s.td, { flex: 1 }]}>{item.description}</Text>
-            <Text style={[s.td, s.mono, { width: 40, textAlign: 'center' }]}>{item.quantity}</Text>
-            <Text style={[s.td, s.mono, { width: 80, textAlign: 'right' }]}>{data.currency} {fmtMoney(item.rate)}</Text>
-            <Text style={[s.td, s.mono, { width: 80, textAlign: 'right' }]}>{data.currency} {fmtMoney(item.total)}</Text>
+        <View style={s.section}>
+          <Text style={s.secTitle}><Text style={s.secNum}>{itemsSecNum}. </Text>Description of Change</Text>
+          <View style={s.tableHdr}>
+            <Text style={[s.th, { flex: 1 }]}>Description</Text>
+            <Text style={[s.th, { width: 40, textAlign: 'center' }]}>Qty</Text>
+            <Text style={[s.th, { width: 80, textAlign: 'right' }]}>Rate</Text>
+            <Text style={[s.th, { width: 80, textAlign: 'right' }]}>Total</Text>
           </View>
-        ))}
+          {data.lineItems.map((item, i) => (
+            <View key={i} style={s.row}>
+              <Text style={[s.td, { flex: 1 }]}>{item.description}</Text>
+              <Text style={[s.td, s.mono, { width: 40, textAlign: 'center' }]}>{item.quantity}</Text>
+              <Text style={[s.td, s.mono, { width: 80, textAlign: 'right' }]}>{data.currency} {fmtMoney(item.rate)}</Text>
+              <Text style={[s.td, s.mono, { width: 80, textAlign: 'right' }]}>{data.currency} {fmtMoney(item.total)}</Text>
+            </View>
+          ))}
 
-        {/* Totals */}
-        <View style={s.totals}>
-          <View style={s.totalRow}>
-            <Text>Subtotal</Text>
-            <Text style={s.mono}>{data.currency} {fmtMoney(data.subtotal)}</Text>
-          </View>
-          {tax > 0 && (
+          {/* Totals */}
+          <View style={s.totals}>
             <View style={s.totalRow}>
-              <Text>Tax ({data.taxRate}%)</Text>
-              <Text style={s.mono}>{data.currency} {fmtMoney(tax)}</Text>
+              <Text>Subtotal</Text>
+              <Text style={s.mono}>{data.currency} {fmtMoney(data.subtotal)}</Text>
             </View>
-          )}
-          {data.taxInclusive && data.taxRate > 0 && (
-            <View style={s.totalRow}>
-              <Text style={{ color: '#909090' }}>Tax included ({data.taxRate}%)</Text>
+            {tax > 0 && (
+              <View style={s.totalRow}>
+                <Text>Tax ({data.taxRate}%)</Text>
+                <Text style={s.mono}>{data.currency} {fmtMoney(tax)}</Text>
+              </View>
+            )}
+            {data.taxInclusive && data.taxRate > 0 && (
+              <View style={s.totalRow}>
+                <Text style={{ color: '#909090' }}>Tax included ({data.taxRate}%)</Text>
+              </View>
+            )}
+            <View style={s.grandRow}>
+              <Text>Total</Text>
+              <Text style={[s.mono, { color: c }]}>{data.currency} {fmtMoney(data.total)}</Text>
             </View>
-          )}
-          <View style={s.grandRow}>
-            <Text>Total</Text>
-            <Text style={[s.mono, { color: c }]}>{data.currency} {fmtMoney(data.total)}</Text>
           </View>
         </View>
+
+        {/* Contract value impact — Meridian's "Impact Analysis" equivalent.
+            Only renders when the caller supplied contractValueBefore; a CO
+            record with no linked project contract value just skips this
+            section rather than showing a misleading $0 baseline. */}
+        {impactSecNum && revisedValue != null && (
+          <View style={s.section}>
+            <Text style={s.secTitle}><Text style={s.secNum}>{impactSecNum}. </Text>Contract Value Impact</Text>
+            <View style={s.impactBox}>
+              <View style={s.impactRow}>
+                <Text style={{ color: '#909090' }}>Original Contract Value</Text>
+                <Text style={s.mono}>{data.currency} {fmtMoney(data.contractValueBefore!)}</Text>
+              </View>
+              <View style={s.impactRow}>
+                <Text style={{ color: '#909090' }}>This Change Order</Text>
+                <Text style={s.mono}>+{data.currency} {fmtMoney(data.total)}</Text>
+              </View>
+              <View style={s.impactGrand}>
+                <Text>Revised Contract Value</Text>
+                <Text style={{ fontFamily: 'Courier-Bold', color: c }}>{data.currency} {fmtMoney(revisedValue)}</Text>
+              </View>
+            </View>
+          </View>
+        )}
 
         {/* Signature block */}
         <View style={s.sigBlock}>
@@ -540,6 +654,12 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
           <Text>Scope governance by <Link src={SCOPEGOV_URL} style={s.footerLink}>ScopeGov</Link></Text>
           <Text>Generated {fmtDate(new Date().toISOString())}</Text>
         </View>
+
+        <Text
+          style={s.pageNum}
+          fixed
+          render={({ pageNumber, totalPages }) => (totalPages > 1 ? `Page ${pageNumber} of ${totalPages}` : '')}
+        />
       </Page>
     </Document>
   )
@@ -593,6 +713,13 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
     footer:    { marginTop: 28, paddingTop: 10, borderTop: '1 solid #E5E1D8', fontSize: 8, color: '#B0B0B0' },
     footerRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 4 },
     footerLink:{ color: '#B0B0B0', textDecoration: 'none' },
+    pageNum:   { position: 'absolute', bottom: 18, right: 48, fontSize: 8, color: '#C0C0C0' },
+    // Multi-line itemization (migration 017)
+    itemsBox:  { border: '1 solid #E5E1D8', borderRadius: 4, marginBottom: 16, overflow: 'hidden' },
+    itemsHdr:  { flexDirection: 'row', backgroundColor: '#F9F8F5', borderBottom: '1 solid #E5E1D8', paddingVertical: 6, paddingHorizontal: 12 },
+    itemsTh:   { fontSize: 8, fontFamily: 'Helvetica-Bold', color: '#909090', textTransform: 'uppercase', letterSpacing: 0.5 },
+    itemsRow:  { flexDirection: 'row', paddingVertical: 8, paddingHorizontal: 12, borderBottom: '1 solid #F2F0EA' },
+    itemsTd:   { fontSize: 10, color: '#1A1A1A' },
   })
 
   return (
@@ -604,6 +731,13 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
             <Text style={s.meta}>{data.invoiceNumber ? `${data.invoiceNumber} · ` : ''}{data.projectName}</Text>
             {data.sentAt && <Text style={[s.meta, { marginTop: 2 }]}>Issued {fmtDate(data.sentAt)}{data.dueDate ? ` · Due ${fmtDate(data.dueDate)}` : ''}</Text>}
             {data.poNumber && <Text style={[s.meta, { marginTop: 2 }]}>PO {data.poNumber}</Text>}
+            {(data.sowNumber || data.coNumber) && (
+              <Text style={[s.meta, { marginTop: 2 }]}>
+                {data.sowNumber ? `For services under SOW No. ${data.sowNumber}` : ''}
+                {data.sowNumber && data.coNumber ? ', ' : ''}
+                {data.coNumber ? `as amended by Change Order No. ${data.coNumber}` : ''}
+              </Text>
+            )}
           </View>
           <View style={{ alignItems: 'flex-end' }}>
             {logo ? <Image src={logo} style={s.logo} /> : <Text style={s.agencyText}>{data.agencyName}</Text>}
@@ -631,15 +765,34 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
           </View>
         </View>
 
-        <View style={s.lineBox}>
-          <View style={s.lineRow}>
-            <View>
-              <Text style={s.lineDesc}>{data.title}</Text>
-              {data.milestoneTrigger && <Text style={s.lineSub}>{data.milestoneTrigger}</Text>}
+        {data.lineItems && data.lineItems.length > 0 ? (
+          <View style={s.itemsBox}>
+            <View style={s.itemsHdr}>
+              <Text style={[s.itemsTh, { flex: 1 }]}>Description</Text>
+              <Text style={[s.itemsTh, { width: 40, textAlign: 'center' }]}>Qty</Text>
+              <Text style={[s.itemsTh, { width: 90, textAlign: 'right' }]}>Rate</Text>
+              <Text style={[s.itemsTh, { width: 90, textAlign: 'right' }]}>Amount</Text>
             </View>
-            <Text style={s.lineAmt}>{data.currency} {fmtMoney(data.amount)}</Text>
+            {data.lineItems.map((item, i) => (
+              <View key={i} style={[s.itemsRow, i === data.lineItems!.length - 1 ? { borderBottom: 'none' } : {}]}>
+                <Text style={[s.itemsTd, { flex: 1 }]}>{item.description}</Text>
+                <Text style={[s.itemsTd, { width: 40, textAlign: 'center', fontFamily: 'Courier' }]}>{item.quantity}</Text>
+                <Text style={[s.itemsTd, { width: 90, textAlign: 'right', fontFamily: 'Courier' }]}>{item.rate ? `${data.currency} ${fmtMoney(item.rate)}` : '—'}</Text>
+                <Text style={[s.itemsTd, { width: 90, textAlign: 'right', fontFamily: 'Courier-Bold' }]}>{data.currency} {fmtMoney(item.total)}</Text>
+              </View>
+            ))}
           </View>
-        </View>
+        ) : (
+          <View style={s.lineBox}>
+            <View style={s.lineRow}>
+              <View>
+                <Text style={s.lineDesc}>{data.title}</Text>
+                {data.milestoneTrigger && <Text style={s.lineSub}>{data.milestoneTrigger}</Text>}
+              </View>
+              <Text style={s.lineAmt}>{data.currency} {fmtMoney(data.amount)}</Text>
+            </View>
+          </View>
+        )}
 
         <View style={s.totals}>
           <View style={s.totalRow}>
@@ -729,6 +882,12 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
             <Text>Generated {fmtDate(new Date().toISOString())}</Text>
           </View>
         </View>
+
+        <Text
+          style={s.pageNum}
+          fixed
+          render={({ pageNumber, totalPages }) => (totalPages > 1 ? `Page ${pageNumber} of ${totalPages}` : '')}
+        />
       </Page>
     </Document>
   )

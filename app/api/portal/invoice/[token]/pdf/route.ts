@@ -21,11 +21,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const { data: invoice } = await (service as any)
       .from('invoices')
       .select(`id, title, amount, amount_paid, currency, status, due_date, sent_at,
-        payment_instructions, invoice_number, po_number, project_id, milestone_id, workspace_id,
-        subtotal, tax_rate, tax_inclusive,
+        payment_instructions, invoice_number, po_number, project_id, milestone_id, sow_id, co_id, workspace_id,
+        subtotal, tax_rate, tax_inclusive, line_items,
         projects(id, name, clients(name, company_name, billing_address, vat_number),
           workspaces(agency_name, brand_colour, logo_storage_path,
-            legal_address, tax_id, phone, website))`)
+            legal_address, tax_id, phone, website)),
+        sow_documents(document_number), change_orders(document_number, title)`)
       .eq('token', token).single()
 
     if (!invoice) return NextResponse.json({ error: 'Not found' }, { status: 404 })
@@ -111,6 +112,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       dueDate:      invoice.due_date,
       sentAt:       invoice.sent_at,
       paymentInstructions: invoice.payment_instructions,
+      sowNumber:  invoice.sow_documents?.document_number || null,
+      coNumber:   invoice.change_orders?.document_number || null,
+      coTitle:    invoice.change_orders?.title || null,
+      lineItems:  typeof invoice.line_items === 'string' ? JSON.parse(invoice.line_items) : (invoice.line_items || []),
       payments:     (payments || []).map((p: any) => ({
         amount: p.amount, paidAt: p.paid_at, method: p.method, referenceNote: p.reference_note,
       })),
