@@ -16,6 +16,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const { data: co } = await (service as any)
       .from('change_orders')
       .select(`id, title, note, version, status, document_number, line_items, subtotal, tax_rate, tax_inclusive, total,
+        timeline_impact_days, scope_impact_note,
         accepted_at, accepted_by, client_signature_data, project_id,
         projects(id, name, currency, contract_value,
           clients(name, company_name, billing_address, vat_number),
@@ -89,6 +90,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       documentNumber: co.document_number || null,
       sowNumber:   sow?.document_number || null,
       contractValueBefore,
+      timelineImpactDays: co.timeline_impact_days ?? null,
+      scopeImpactNote:    co.scope_impact_note || null,
     })
 
     const filename = `CO-${co.title.replace(/[^a-z0-9]/gi, '-')}.pdf`

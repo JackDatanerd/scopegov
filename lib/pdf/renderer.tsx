@@ -112,6 +112,13 @@ export interface CoPdfData {
   // this pass. Correct for the common case: reviewing a pending CO, or
   // the most recent accepted one.
   contractValueBefore?: number | null
+  // Scope/Timeline impact rows (doc-quality audit round 3, migration
+  // 018) — Meridian's Impact Analysis shows Scope / Timeline / Value as
+  // three before-and-after rows; this was value-only until now. Both
+  // optional and independent of contractValueBefore — a CO can state a
+  // scope change with no financial impact, or vice versa.
+  timelineImpactDays?: number | null
+  scopeImpactNote?:    string | null
 }
 
 export interface InvoicePdfData {
@@ -500,7 +507,14 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
   let secN = 0
   const noteSecNum   = data.note ? ++secN : null
   const itemsSecNum  = ++secN
-  const impactSecNum = (data.contractValueBefore != null) ? ++secN : null
+  // FIX (doc-quality audit round 3): this block used to gate purely on
+  // contractValueBefore (renders only the Value row). Now gates on any
+  // of Scope/Timeline/Value being present, since a CO can carry a
+  // timeline or scope impact with no financial component at all.
+  const hasScopeImpact    = !!data.scopeImpactNote
+  const hasTimelineImpact = data.timelineImpactDays != null && data.timelineImpactDays !== 0
+  const hasValueImpact    = data.contractValueBefore != null
+  const impactSecNum = (hasScopeImpact || hasTimelineImpact || hasValueImpact) ? ++secN : null
   const revisedValue = data.contractValueBefore != null ? data.contractValueBefore + data.total : null
 
   return (
@@ -600,26 +614,46 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
           </View>
         </View>
 
-        {/* Contract value impact — Meridian's "Impact Analysis" equivalent.
-            Only renders when the caller supplied contractValueBefore; a CO
-            record with no linked project contract value just skips this
-            section rather than showing a misleading $0 baseline. */}
-        {impactSecNum && revisedValue != null && (
+        {/* Impact Analysis — Meridian's equivalent, now genuinely three
+            areas (Scope / Timeline / Value) instead of value-only.
+            FIX (doc-quality audit round 3, migration 018): previously
+            gated and titled around contract value alone, so a CO that
+            shifted a delivery date or added scope with no fee attached
+            had nowhere structured to say so — only the free-text "Reason
+            for Change" note, indistinguishable from general prose. Each
+            row is independent and optional; a CO can carry any subset. */}
+        {impactSecNum && (
           <View style={s.section}>
-            <Text style={s.secTitle}><Text style={s.secNum}>{impactSecNum}. </Text>Contract Value Impact</Text>
+            <Text style={s.secTitle}><Text style={s.secNum}>{impactSecNum}. </Text>Impact Analysis</Text>
             <View style={s.impactBox}>
-              <View style={s.impactRow}>
-                <Text style={{ color: '#909090' }}>Original Contract Value</Text>
-                <Text style={s.mono}>{data.currency} {fmtMoney(data.contractValueBefore!)}</Text>
-              </View>
-              <View style={s.impactRow}>
-                <Text style={{ color: '#909090' }}>This Change Order</Text>
-                <Text style={s.mono}>+{data.currency} {fmtMoney(data.total)}</Text>
-              </View>
-              <View style={s.impactGrand}>
-                <Text>Revised Contract Value</Text>
-                <Text style={{ fontFamily: 'Courier-Bold', color: c }}>{data.currency} {fmtMoney(revisedValue)}</Text>
-              </View>
+              {hasScopeImpact && (
+                <View style={[s.impactRow, { flexDirection: 'column', alignItems: 'flex-start', paddingBottom: 8 }]}>
+                  <Text style={{ color: '#909090', marginBottom: 3 }}>Scope</Text>
+                  <Text style={{ fontSize: 10, color: '#1A1A1A', lineHeight: 1.5 }}>{data.scopeImpactNote}</Text>
+                </View>
+              )}
+              {hasTimelineImpact && (
+                <View style={s.impactRow}>
+                  <Text style={{ color: '#909090' }}>Timeline</Text>
+                  <Text style={s.mono}>{data.timelineImpactDays! > 0 ? '+' : ''}{data.timelineImpactDays} day{Math.abs(data.timelineImpactDays!) === 1 ? '' : 's'}</Text>
+                </View>
+              )}
+              {hasValueImpact && revisedValue != null && (
+                <View style={(hasScopeImpact || hasTimelineImpact) ? { marginTop: 6, paddingTop: 6, borderTop: '1 solid #F2F0EA' } : undefined}>
+                  <View style={s.impactRow}>
+                    <Text style={{ color: '#909090' }}>Original Contract Value</Text>
+                    <Text style={s.mono}>{data.currency} {fmtMoney(data.contractValueBefore!)}</Text>
+                  </View>
+                  <View style={s.impactRow}>
+                    <Text style={{ color: '#909090' }}>This Change Order</Text>
+                    <Text style={s.mono}>+{data.currency} {fmtMoney(data.total)}</Text>
+                  </View>
+                  <View style={s.impactGrand}>
+                    <Text>Revised Contract Value</Text>
+                    <Text style={{ fontFamily: 'Courier-Bold', color: c }}>{data.currency} {fmtMoney(revisedValue)}</Text>
+                  </View>
+                </View>
+              )}
             </View>
           </View>
         )}
@@ -831,6 +865,22 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
             <Text style={{ color: c }}>{data.currency} {fmtMoney(balanceDue)}</Text>
           </View>
         </View>
+
+        {/* FIX (doc-quality audit round 3): anti-double-billing line,
+            Meridian's sample equivalent ("No amounts from that Change
+            Order's fixed-fee items are included in this invoice."). Only
+            claims what's always structurally true — this invoice bills
+            exactly what's itemized above, nothing else — since the data
+            model doesn't currently track cross-invoice overlap precisely
+            enough to name a specific excluded CO/milestone by number
+            without risking a false claim. Shown whenever there's a
+            SOW/CO cross-reference for a reader to potentially confuse
+            this invoice's scope with. */}
+        {(data.sowNumber || data.coNumber) && (
+          <Text style={{ fontSize: 8.5, color: '#909090', marginTop: 8, lineHeight: 1.5 }}>
+            This invoice reflects only the item{(data.lineItems?.length || 0) > 1 ? 's' : ''} itemized above — no other milestone, SOW, or change order amounts are included unless explicitly listed.
+          </Text>
+        )}
 
         {data.paymentInstructions && (
           <View style={s.section}>

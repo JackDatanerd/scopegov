@@ -30,6 +30,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const { data: co } = await (service as any)
       .from('change_orders')
       .select(`id,title,note,status,line_items,subtotal,tax_rate,tax_inclusive,total,
+        timeline_impact_days,scope_impact_note,
         document_number,accepted_by,accepted_at,client_signature_data,workspace_id,project_id,
         projects(id,name,currency,contract_value,clients(name,email,company_name,billing_address,vat_number),
           workspaces(id,agency_name,brand_colour,logo_storage_path,agency_signature_data,
@@ -106,6 +107,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       documentNumber: co.document_number || null,
       sowNumber:     sow?.document_number || null,
       contractValueBefore,
+      timelineImpactDays: co.timeline_impact_days ?? null,
+      scopeImpactNote:    co.scope_impact_note || null,
     })
 
     const filename = `${co.document_number || 'CO'}.pdf`

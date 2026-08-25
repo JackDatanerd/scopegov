@@ -168,6 +168,8 @@ export async function finalizeCoAcceptance(service: any, params: {
       agencySignatureData: ws.agency_signature_data || null,
       clientSignatureData: signatureData,
       documentNumber: co.document_number || null,
+      timelineImpactDays: co.timeline_impact_days ?? null,
+      scopeImpactNote:    co.scope_impact_note || null,
     })
     pdfAttachment = { filename: `CO-${project.name.replace(/[^a-z0-9]/gi, '-')}.pdf`, content: pdfBuffer.toString('base64') }
   } catch (e) { console.error('CO PDF generation for email failed (emails will send without attachment):', e) }

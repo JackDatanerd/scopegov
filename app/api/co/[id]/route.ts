@@ -47,7 +47,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       return NextResponse.json({ error: 'Only draft COs can be edited' }, { status: 409 })
 
     const body = await request.json()
-    const { title, note, lineItems, taxRate, taxInclusive, isRetainerRenewal } = body
+    const { title, note, lineItems, taxRate, taxInclusive, isRetainerRenewal, timelineImpactDays, scopeImpactNote } = body
 
     const items    = lineItems || []
     const subtotal = items.reduce((s: number, l: any) => s + (l.quantity * l.rate), 0)
@@ -63,6 +63,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       tax_inclusive:       taxInclusive || false,
       total,
       is_retainer_renewal: isRetainerRenewal || false,
+      timeline_impact_days: timelineImpactDays != null && timelineImpactDays !== '' ? parseInt(timelineImpactDays, 10) : null,
+      scope_impact_note:    scopeImpactNote?.trim() || null,
       updated_at:          new Date().toISOString(),
     }).eq('id', id)
 

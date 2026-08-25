@@ -28,6 +28,12 @@ export default function CoEditor({ projId, coId }: Props) {
   const [currency,     setCurrency]     = useState('USD')
   const [status,       setStatus]       = useState('draft')
   const [isRetainerRenewal, setIsRetainerRenewal] = useState(false)
+  // FIX (doc-quality audit round 3, migration 018): optional Impact
+  // Analysis fields — timelineImpactDays as a signed string so the input
+  // can hold '-5' mid-typing without parseInt fighting the user, cast to
+  // int (or null) only at save time; scopeImpactNote is free text.
+  const [timelineImpactDays, setTimelineImpactDays] = useState('')
+  const [scopeImpactNote,    setScopeImpactNote]    = useState('')
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const savedCoId = useRef<string | null>(coId || null)
   const [aiOpen,     setAiOpen]     = useState(false)
@@ -63,6 +69,8 @@ export default function CoEditor({ projId, coId }: Props) {
           setCurrency(co.currency || 'USD')
           setStatus(co.status || 'draft')
           setIsRetainerRenewal(co.is_retainer_renewal || false)
+          setTimelineImpactDays(co.timeline_impact_days != null ? String(co.timeline_impact_days) : '')
+          setScopeImpactNote(co.scope_impact_note || '')
         }
       })
       .catch(() => {})
@@ -101,7 +109,7 @@ export default function CoEditor({ projId, coId }: Props) {
         setSaveStatus('idle')
       }
     }, 1500)
-  }, [title, note, lineItems, taxRate, taxInclusive, isRetainerRenewal])
+  }, [title, note, lineItems, taxRate, taxInclusive, isRetainerRenewal, timelineImpactDays, scopeImpactNote])
 
   // FIX (CO send "not found" on a brand-new CO): doSave() used to always
   // call router.replace() to the new CO's own URL immediately after
@@ -123,6 +131,8 @@ export default function CoEditor({ projId, coId }: Props) {
         taxRate:   parseFloat(taxRate) || 0,
         taxInclusive,
         isRetainerRenewal,
+        timelineImpactDays: timelineImpactDays.trim() !== '' ? timelineImpactDays.trim() : null,
+        scopeImpactNote:    scopeImpactNote.trim() || null,
       }
       if (savedCoId.current) {
         const res = await fetch(`/api/co/${savedCoId.current}`, {
@@ -263,6 +273,26 @@ export default function CoEditor({ projId, coId }: Props) {
             disabled={isLocked}
             placeholder="Brief explanation of why this work is additional scope…"
           />
+        </div>
+
+        {/* FIX (doc-quality audit round 3, migration 018): Impact Analysis
+            fields — Scope and Timeline, alongside the Value impact the PDF
+            already computed automatically. Both optional; a CO with
+            neither set renders exactly as before. */}
+        <div className="fgrp">
+          <label className="flbl">Scope impact <span className="fhint">— optional, shown to client as its own line in Impact Analysis</span></label>
+          <textarea className="finp" style={{ minHeight: 50, resize: 'vertical' }} disabled={isLocked}
+            value={scopeImpactNote}
+            onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setScopeImpactNote(e.target.value)}
+            placeholder="e.g. NorthPoints API integration added as in-scope; see Appendix A-1" />
+        </div>
+
+        <div className="fgrp">
+          <label className="flbl">Timeline impact <span className="fhint">— optional, net day shift this CO introduces</span></label>
+          <input className="finp" type="number" step="1" style={{ maxWidth: 160 }} disabled={isLocked}
+            value={timelineImpactDays}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTimelineImpactDays(e.target.value)}
+            placeholder="e.g. 18 or -5" />
         </div>
 
         {/* Line items */}

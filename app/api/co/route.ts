@@ -13,7 +13,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
 
     const body    = await request.json()
-    const { projectId, title, note, lineItems, taxRate, taxInclusive, flagId } = body
+    const { projectId, title, note, lineItems, taxRate, taxInclusive, flagId, timelineImpactDays, scopeImpactNote } = body
     if (!projectId || !title)
       return NextResponse.json({ error: 'projectId and title required' }, { status: 400 })
 
@@ -80,6 +80,12 @@ export async function POST(request: NextRequest) {
         tax_rate:     parseFloat(taxRate) || 0,
         tax_inclusive: taxInclusive || false,
         total,
+        // FIX (doc-quality audit round 3, migration 018): captured
+        // alongside the rest of the CO at creation, same as note/line
+        // items — see the PDF renderer's Impact Analysis section for
+        // where this surfaces to the client.
+        timeline_impact_days: timelineImpactDays != null && timelineImpactDays !== '' ? parseInt(timelineImpactDays, 10) : null,
+        scope_impact_note:    scopeImpactNote?.trim() || null,
         created_by:   session.id,
       })
       .select('id').single()
