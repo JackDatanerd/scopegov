@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { jwtVerify } from 'jose'
 import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
+import { formatAddress } from '@/lib/utils/format'
 
 // GET /api/portal/invoice/[token] — read-only. No pay button, no checkout
 // flow: this is a document-delivery + status view, not a payment processor.
@@ -110,10 +111,11 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         projectName: invoice.projects?.name,
         clientName: invoice.projects?.clients?.name,
         clientCompany: invoice.projects?.clients?.company_name,
-        clientBillingAddress: invoice.projects?.clients?.billing_address || null,
+        clientBillingAddress: formatAddress(invoice.projects?.clients?.billing_address) || null,
         clientVatNumber: invoice.projects?.clients?.vat_number || null,
         agencyName: workspace?.agency_name,
-        agencyAddress: workspace?.legal_address || null,
+        // FIX (bug — React error #31, same root cause as the SOW portal route)
+        agencyAddress: formatAddress(workspace?.legal_address) || null,
         agencyTaxId: workspace?.tax_id || null,
         agencyPhone: workspace?.phone || null,
         agencyWebsite: workspace?.website || null,

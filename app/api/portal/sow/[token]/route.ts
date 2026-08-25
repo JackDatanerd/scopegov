@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { jwtVerify } from 'jose'
 import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
+import { formatAddress } from '@/lib/utils/format'
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
@@ -104,7 +105,16 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         agencyName:    workspace.agency_name,
         brandColour:   workspace.brand_colour || '#1A5C3A',
         logoUrl,
-        agencyAddress: workspace.legal_address || null,
+        // FIX (bug — React error #31): legal_address/billing_address are
+        // jsonb objects ({line1, line2, city, region, postalCode,
+        // country}), not strings. They were being passed straight through
+        // and rendered as a raw object in JSX on this page, which crashes
+        // React at render time (only surfaces once a workspace/client
+        // actually has an address on file — empty ones never hit this).
+        // Format to a display string here, matching what the PDF's
+        // formatAddress does, so the API contract for this field actually
+        // matches the `string | null` the page's interface always claimed.
+        agencyAddress: formatAddress(workspace.legal_address) || null,
         agencyTaxId:   workspace.tax_id || null,
         agencyPhone:   workspace.phone || null,
         agencyWebsite: workspace.website || null,
@@ -114,7 +124,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         clientName:    client?.name || '',
         clientEmail:   client?.email || '',
         clientCompany: client?.company_name || null,
-        clientBillingAddress: client?.billing_address || null,
+        clientBillingAddress: formatAddress(client?.billing_address) || null,
         clientVatNumber:      client?.vat_number || null,
         sections:      sow.sections || [],
         paymentSchedule: (milestones || []).map((m: any) => ({

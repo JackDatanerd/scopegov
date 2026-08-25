@@ -12,6 +12,7 @@ import { safeFetch } from '@/lib/utils/safe-fetch'
 import { RichText } from '@/lib/pdf/rich-text'
 import { SowTable } from '@/lib/pdf/sow-table'
 import { isTableSection, type SowTableRow } from '@/lib/sow/table-schema'
+import { formatAddressLines, type LegalAddress } from '@/lib/utils/format'
 
 // Phase 11: the ScopeGov credit in the footer of every document is a real
 // hyperlink now, not plain text — same URL everywhere so it's one place to
@@ -22,20 +23,8 @@ const SCOPEGOV_URL = 'https://scopegov.app'
 // client's "Bill To" address. Every field optional — a party with no
 // address on file just doesn't get an address block, the document still
 // renders fine (see formatAddress below).
-export interface LegalAddress {
-  line1?:      string | null
-  line2?:      string | null
-  city?:       string | null
-  region?:     string | null
-  postalCode?: string | null
-  country?:    string | null
-}
-
 function formatAddress(a: LegalAddress | null | undefined): string[] {
-  if (!a) return []
-  const cityLine = [a.city, a.region, a.postalCode].filter(Boolean).join(', ')
-  return [a.line1, a.line2, cityLine, a.country]
-    .filter((l): l is string => !!l && l.trim().length > 0)
+  return formatAddressLines(a)
 }
 
 export interface SowPdfData {

@@ -2,6 +2,42 @@
 // Re-export ALL_PERMISSIONS so components can import from one place
 export { ALL_PERMISSIONS } from '@/lib/supabase/types'
 
+// ── ADDRESS ───────────────────────────────────────────────────────────────────
+// FIX (bug — React error #31 "Objects are not valid as a React child"): the
+// SOW/CO/Invoice portal pages render `agencyAddress`/`clientBillingAddress`
+// as plain text, but workspaces.legal_address and clients.billing_address
+// are stored as jsonb objects ({line1, line2, city, region, postalCode,
+// country} — see LegalAddress below), not strings. The portal API routes
+// were passing that object straight through with no formatting, and the
+// page's TS interface incorrectly declared it as `string | null`, so
+// nothing caught the mismatch until it crashed in the browser at render
+// time. This was previously only solved inline inside lib/pdf/renderer.tsx
+// (a PDF-only, server-only module) — extracted here so any route/page that
+// needs to display an address, not just the PDF, can share one
+// implementation instead of re-deriving it (or, as happened here, silently
+// not doing it at all).
+export interface LegalAddress {
+  line1?:      string | null
+  line2?:      string | null
+  city?:       string | null
+  region?:     string | null
+  postalCode?: string | null
+  country?:    string | null
+}
+
+/** Address as an array of display lines (street, city/region/postal, country) — skips empty parts. */
+export function formatAddressLines(a: LegalAddress | null | undefined): string[] {
+  if (!a) return []
+  const cityLine = [a.city, a.region, a.postalCode].filter(Boolean).join(', ')
+  return [a.line1, a.line2, cityLine, a.country]
+    .filter((l): l is string => !!l && l.trim().length > 0)
+}
+
+/** Address as a single string, newline-separated — for contexts (like a portal page's plain div) that render one text node rather than one element per line. */
+export function formatAddress(a: LegalAddress | null | undefined): string {
+  return formatAddressLines(a).join('\n')
+}
+
 // ── CURRENCY ──────────────────────────────────────────────────────────────────
 export function formatCurrency(
   amount: number,

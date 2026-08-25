@@ -5,6 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { jwtVerify } from 'jose'
 import { logAudit } from '@/lib/utils/audit'
 import { sendCoAcceptedEmail } from '@/lib/email/templates'
+import { formatAddress } from '@/lib/utils/format'
 import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
 
 async function getCoByToken(token: string, service: any) {
@@ -88,7 +89,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         agencyName:  ws?.agency_name,
         brandColour: ws?.brand_colour || '#1A5C3A',
         logoUrl,
-        agencyAddress: ws?.legal_address || null,
+        // FIX (bug — React error #31, same root cause as the SOW portal
+        // route): legal_address/billing_address are jsonb objects, not
+        // strings — format before sending to the client.
+        agencyAddress: formatAddress(ws?.legal_address) || null,
         agencyTaxId:   ws?.tax_id || null,
         agencyPhone:   ws?.phone || null,
         agencyWebsite: ws?.website || null,
@@ -101,7 +105,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         currency:    co.projects?.currency || 'USD',
         clientName:  co.projects?.clients?.name || '',
         clientCompany: co.projects?.clients?.company_name || null,
-        clientBillingAddress: co.projects?.clients?.billing_address || null,
+        clientBillingAddress: formatAddress(co.projects?.clients?.billing_address) || null,
         clientVatNumber:      co.projects?.clients?.vat_number || null,
         version:     co.version,
         expiresAt:   co.expires_at,
