@@ -260,7 +260,7 @@ export function buildFallbackSections(input: SowContentInput): Record<string, st
     .map(l => `<li>${escapeHtml(l.replace(/^[-*]\s*/, ''))}</li>`).join('')
 
   return {
-    overview: `<p>${escapeHtml(input.objective || `${input.agencyName} will deliver a ${input.projectType} project for ${input.clientName} as described in the accompanying brief.`)}</p>`,
+    overview: `<p>${escapeHtml((input.objective || '').trim() || `${input.agencyName} will deliver a ${input.projectType} project for ${input.clientName} as described in the accompanying brief.`)}</p>`,
     oos: outOfScopeItems
       ? `<p>The following are explicitly excluded from this engagement:</p><ul>${outOfScopeItems}</ul>`
       : `<p>Any work not explicitly listed under Deliverables above is considered out of scope and will require a separate Change Order.</p>`,
@@ -276,10 +276,21 @@ export function buildFallbackSections(input: SowContentInput): Record<string, st
 
 /** Deterministic table fallback — same guarantee as buildFallbackSections: always produces at least one usable row per table from whatever the brief contains, never blocks document generation. */
 export function buildFallbackTables(input: SowContentInput): Record<SowTableSectionId, SowTableRow[]> {
-  const deliverableLines = (input.deliverables || 'Project deliverable as discussed with the Agency')
+  // FIX (bug — Deliverables/Timeline rendering completely empty): the old
+  // `input.deliverables || 'default text'` check treats a whitespace-only
+  // string (someone typed a space into the brief field, or left it with
+  // trailing whitespace, then deleted the rest) as truthy — so the
+  // fallback default never kicks in, and after .trim().filter(Boolean)
+  // the line array comes out empty. Zero rows means SowTable renders
+  // nothing at all, but the numbered section heading still prints above
+  // it — a heading floating over blank space, which is exactly what
+  // showed up on a real generated SOW. Trim BEFORE the `||` check so a
+  // whitespace-only brief field is treated the same as an empty one.
+  const deliverableLines = ((input.deliverables || '').trim() || 'Project deliverable as discussed with the Agency')
     .split('\n').map(l => l.trim().replace(/^[-*]\s*/, '')).filter(Boolean)
 
-  const timelineLines = (input.timeline || 'Delivery').split('\n').map(l => l.trim().replace(/^[-*]\s*/, '')).filter(Boolean)
+  const timelineLines = ((input.timeline || '').trim() || 'Delivery')
+    .split('\n').map(l => l.trim().replace(/^[-*]\s*/, '')).filter(Boolean)
 
   return {
     deliverables: deliverableLines.map(d => ({

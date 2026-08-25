@@ -5,6 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { jwtVerify } from 'jose'
 import { logAudit } from '@/lib/utils/audit'
 import { sendSowSignedAgencyEmail, sendSowSignedClientEmail } from '@/lib/email/templates'
+import { roundCurrency } from '@/lib/utils/format'
 import { renderSowPdf } from '@/lib/pdf/renderer'
 import { nanoid } from 'nanoid'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
@@ -266,18 +267,29 @@ async function createMilestones(
     const milestones = []
 
     if (structure === '50_50') {
+      // FIX (bug — payment split not summing to contract value): rounding
+      // each half independently (roundCurrency(cv * 0.5) applied to both)
+      // can produce two halves that don't sum back to the contract value
+      // when the total has an odd cent — e.g. $1599.97 * 0.5 = $799.985,
+      // which rounds to $799.99 on both sides, summing to $1599.98, a
+      // cent more than the contract. Round the first share, then set the
+      // second to whatever's left — guarantees an exact sum every time,
+      // with any leftover cent absorbed by the final milestone. Standard
+      // practice for splitting a currency total across N shares.
+      const upfront = roundCurrency(contractValue * 0.5)
+      const final   = roundCurrency(contractValue - upfront)
       milestones.push(
-        { title: 'Upfront payment (50%)',   amount: contractValue * 0.5, trigger: 'Project kick-off',       type: 'percentage', percentage: 50 },
-        { title: 'Final payment (50%)',      amount: contractValue * 0.5, trigger: 'Final delivery approval', type: 'percentage', percentage: 50 },
+        { title: 'Upfront payment (50%)',   amount: upfront, trigger: 'Project kick-off',       type: 'percentage', percentage: 50 },
+        { title: 'Final payment (50%)',      amount: final,   trigger: 'Final delivery approval', type: 'percentage', percentage: 50 },
       )
     } else if (structure === '100_upfront') {
-      milestones.push({ title: 'Full payment', amount: contractValue, trigger: 'Before work commences', type: 'fixed', percentage: null })
+      milestones.push({ title: 'Full payment', amount: roundCurrency(contractValue), trigger: 'Before work commences', type: 'fixed', percentage: null })
     } else if (structure === 'on_delivery') {
-      milestones.push({ title: 'Full payment', amount: contractValue, trigger: 'Final delivery approval', type: 'fixed', percentage: null })
+      milestones.push({ title: 'Full payment', amount: roundCurrency(contractValue), trigger: 'Final delivery approval', type: 'fixed', percentage: null })
     } else if (structure === 'monthly') {
-      milestones.push({ title: 'Monthly retainer', amount: contractValue, trigger: 'Monthly — first of month', type: 'retainer_monthly', percentage: null })
+      milestones.push({ title: 'Monthly retainer', amount: roundCurrency(contractValue), trigger: 'Monthly — first of month', type: 'retainer_monthly', percentage: null })
     } else {
-      milestones.push({ title: 'Project payment', amount: contractValue, trigger: 'As per agreement', type: 'fixed', percentage: null })
+      milestones.push({ title: 'Project payment', amount: roundCurrency(contractValue), trigger: 'As per agreement', type: 'fixed', percentage: null })
     }
 
     for (const m of milestones) {

@@ -38,6 +38,27 @@ export function formatAddress(a: LegalAddress | null | undefined): string {
   return formatAddressLines(a).join('\n')
 }
 
+// ── CURRENCY ROUNDING ─────────────────────────────────────────────────────────
+// FIX (bug — split-brain penny mismatch across SOW/CO/Invoice): contract
+// values were being accepted and stored with arbitrary decimal precision
+// (e.g. 1599.965 — three digits, which currency should never have) at both
+// project-creation and project-edit write paths, with no rounding. That
+// single unrounded value then diverged wherever it was independently
+// formatted downstream: `.toLocaleString()`-based display rounds the *true*
+// underlying binary float (which for 1599.965 is actually a hair under
+// .965, so it rounds DOWN to 1599.96), while an LLM asked to describe the
+// same value in prose does ordinary textbook rounding on the literal digit
+// string it's shown (.965 rounds UP to 1599.97) — same source number,
+// two different "correct" roundings, visible as a one-cent mismatch between
+// a PDF's header banner and its own body text. Worse, a raw percentage
+// split of an unrounded value (contractValue * 0.5) can produce a third
+// decimal digit outright (1599.97 * 0.5 = 799.985), which isn't a rounding
+// dispute at all — it's just not a valid currency amount. Round to the cent
+// at every point money is captured or computed, not just at display time.
+export function roundCurrency(n: number): number {
+  return Math.round((n + Number.EPSILON) * 100) / 100
+}
+
 // ── CURRENCY ──────────────────────────────────────────────────────────────────
 export function formatCurrency(
   amount: number,

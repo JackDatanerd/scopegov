@@ -24,6 +24,7 @@ import {
   SowContentParseError, type SowContentInput,
 } from '@/lib/ai/sow-content'
 import { TABLE_SECTION_IDS, type SowTableSectionId, type SowTableRow } from '@/lib/sow/table-schema'
+import { roundCurrency } from '@/lib/utils/format'
 
 // FIX (re-audit — build-blocking): was constructed at module scope, so an
 // unset ANTHROPIC_API_KEY turns importing this route into a hard build
@@ -54,10 +55,18 @@ export async function POST(request: NextRequest) {
     const {
       projectId, projectType, objective, deliverables,
       outOfScope, timeline, paymentStructure, revisionRounds,
-      contractValue, currency,
+      contractValue: rawContractValue, currency,
     } = await request.json()
 
     if (!projectId) return NextResponse.json({ error: 'projectId required' }, { status: 400 })
+
+    // FIX (bug — one-cent mismatch between PDF header and AI-drafted body
+    // text): see lib/utils/format.ts's roundCurrency doc comment. Rounding
+    // here means the AI is never shown a value with more than 2 decimal
+    // digits, so it can't independently round a raw 3-decimal figure to a
+    // different penny than the numeric display path does elsewhere in the
+    // document.
+    const contractValue = roundCurrency(Number(rawContractValue) || 0)
 
     const service = createServiceClient()
 

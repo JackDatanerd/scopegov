@@ -1,6 +1,7 @@
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
+import { roundCurrency } from '@/lib/utils/format'
 
 export async function POST(request: NextRequest) {
   try {
@@ -76,7 +77,7 @@ export async function POST(request: NextRequest) {
         disc:           disc?.trim() || null,
         type,
         status:         'Draft',
-        contract_value: parseFloat(contractValue) || 0,
+        contract_value: roundCurrency(parseFloat(contractValue) || 0),
         currency:       currency || 'USD',
         start_date:     startDate || null,
         internal_ref:   internalRef?.trim() || null,

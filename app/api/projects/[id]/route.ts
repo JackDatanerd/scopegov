@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
+import { roundCurrency } from '@/lib/utils/format'
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -58,7 +59,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     if (body.name)          updates.name          = body.name
     if (body.disc !== undefined) updates.disc      = body.disc || null
-    if (body.contractValue) updates.contract_value = parseFloat(body.contractValue)
+    if (body.contractValue) updates.contract_value = roundCurrency(parseFloat(body.contractValue))
     if (body.startDate !== undefined) updates.start_date = body.startDate || null
     if (body.internalRef !== undefined) updates.internal_ref = body.internalRef || null
 

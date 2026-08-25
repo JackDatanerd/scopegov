@@ -15,7 +15,26 @@ import { SOW_TABLE_SCHEMAS, type SowTableSectionId, type SowTableRow } from '@/l
 
 export function SowTable({ sectionId, rows }: { sectionId: SowTableSectionId; rows: SowTableRow[] }) {
   const schema = SOW_TABLE_SCHEMAS[sectionId]
-  if (!rows || rows.length === 0) return null
+
+  // FIX (bug — numbered section heading printed over completely blank
+  // space): returning null here on an empty table left the "N. Title"
+  // heading above it with nothing visibly underneath — happened on a
+  // real generated SOW where the deliverables/timeline brief was
+  // effectively blank. Root cause is fixed upstream (see
+  // buildFallbackTables' whitespace-trim fix in lib/ai/sow-content.ts),
+  // but this is the last line of defense: a table can still legitimately
+  // end up empty later (someone deletes every row in the editor), and a
+  // signed legal document silently missing its Deliverables section is a
+  // worse failure than an ugly one — so show a visible placeholder
+  // instead of hiding it, same principle as Out of Scope's own "To be
+  // defined" fallback text.
+  if (!rows || rows.length === 0) {
+    return (
+      <View style={{ border: '1 dashed #D8D4C8', borderRadius: 4, padding: '10 12' }}>
+        <Text style={{ fontSize: 9, color: '#B0B0B0', fontFamily: 'Helvetica-Oblique' }}>To be defined</Text>
+      </View>
+    )
+  }
 
   const totalFlex = schema.columns.reduce((sum, c) => sum + (c.width ?? 1), 0)
   const flexOf = (w?: number) => (w ?? 1) / totalFlex
