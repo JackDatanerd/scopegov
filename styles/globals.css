@@ -289,6 +289,16 @@ p, h1, h2, h3, h4, h5 { margin: 0; }
 .modal {
   position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%);
   z-index: 999; width: 100%; max-width: 480px;
+  /* FIX (UX audit): no max-height/overflow-y existed here at all, so any
+     modal taller than the viewport (the invoice modal is the usual
+     culprit — title, itemize toggle, line items, tax, due date, payment
+     instructions) extended off both the top and bottom edges. Being
+     position:fixed, it doesn't participate in page scroll either, so
+     there was no way to reach the cut-off content — not scrollable, not
+     reachable. Shared by all 13 modals across the app; capping height to
+     the viewport (minus breathing room) and scrolling internally fixes
+     every one of them, not just this one. */
+  max-height: calc(100vh - 64px); overflow-y: auto;
   background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius); box-shadow: var(--shadow-md);
   padding: 28px 30px;
