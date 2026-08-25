@@ -339,10 +339,16 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
 
         {/* Payment schedule — sourced from payment_milestones, already
             captured at SOW-build time but never shown on the SOW PDF
-            itself before now (it only ever surfaced inside the app). */}
+            itself before now (it only ever surfaced inside the app).
+            FIX (doc-quality audit round 3): this rendered with no section
+            number, breaking the 1./2./3. numbering convention every other
+            section follows — an unlabeled section reads as an afterthought
+            on a document a client is about to sign. Numbered as the next
+            section after whatever's in `sections`, same convention as the
+            loop above. */}
         {data.paymentSchedule && data.paymentSchedule.length > 0 && (
           <View style={s.section} wrap={false}>
-            <Text style={s.secTitle}>Payment Schedule</Text>
+            <Text style={s.secTitle}><Text style={s.secNum}>{sections.length + 1}. </Text>Payment Schedule</Text>
             <View style={s.schedHdr}>
               <Text style={[s.th, { flex: 1 }]}>Milestone</Text>
               <Text style={[s.th, { width: 90, textAlign: 'right' }]}>Amount</Text>
@@ -363,8 +369,14 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
           </View>
         )}
 
-        {/* Signature block */}
-        <View style={s.sigBlock}>
+        {/* Signature block. FIX (doc-quality audit round 3): had no
+            wrap={false}, so when this landed near a page boundary
+            react-pdf would split it mid-block — agency/client labels on
+            one page, the actual signature lines stranded alone on the
+            next, followed by a mostly-blank page. The one section of a
+            signed document that has to render as a single visual unit
+            was the one section not guarded against that. */}
+        <View style={s.sigBlock} wrap={false}>
           <View style={s.sigCol}>
             <Text style={s.sigLabel}>Agency — {data.agencyName}</Text>
             {data.agencySignatureData ? (
@@ -612,8 +624,11 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
           </View>
         )}
 
-        {/* Signature block */}
-        <View style={s.sigBlock}>
+        {/* Signature block. FIX (doc-quality audit round 3): same
+            missing wrap={false} as the SOW's — could split mid-block
+            across a page boundary, stranding the signature lines alone
+            on a near-empty trailing page. */}
+        <View style={s.sigBlock} wrap={false}>
           <View style={s.sigCol}>
             <Text style={s.sigLabel}>Agency — {data.agencyName}</Text>
             {data.agencySignatureData ? (

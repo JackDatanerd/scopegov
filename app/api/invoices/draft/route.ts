@@ -36,7 +36,12 @@ export async function POST(request: NextRequest) {
     // sourceLabel is optional context from the modal about what's already
     // been picked ("Bill against" — a milestone/SOW/CO name and amount) so
     // the draft doesn't ignore a source the agency already selected.
-    const { projectId, request: askText, sourceLabel } = await request.json()
+    // sourceContext (FIX, invoice-convenience audit) carries the picked
+    // milestone's own billingType/trigger/notes — structured data the
+    // milestone already had on file, so the model can tell a fixed-fee
+    // milestone apart from an hourly_cap/retainer one instead of guessing
+    // purely from prose the agency retyped.
+    const { projectId, request: askText, sourceLabel, sourceContext } = await request.json()
     if (!projectId) return NextResponse.json({ error: 'projectId required' }, { status: 400 })
     if (!askText?.trim()) return NextResponse.json({ error: 'Describe what this invoice covers' }, { status: 400 })
 
@@ -54,11 +59,21 @@ export async function POST(request: NextRequest) {
     const limited = await checkAiRateLimit(service, session.id, 'invoice.draft')
     if (!limited.allowed) return NextResponse.json({ error: limited.message }, { status: 429 })
 
+    const billingTypeGuidance: Record<string, string> = {
+      fixed:            'This is a flat fixed-fee milestone — one line item is normal.',
+      percentage:       'This is a percentage-of-contract milestone — one line item for the percentage tranche is normal.',
+      hourly_cap:       'This is hourly time-and-materials work with a cap — expect an hours line (quantity = hours worked) and possibly a separate reimbursable-expense line.',
+      retainer_monthly: 'This is a monthly retainer — one recurring line item for the period is normal.',
+    }
+
     const prompt = `You are drafting a client invoice for billable work already completed. Return ONLY valid JSON, no markdown fences, no explanation.
 
 Project: ${project.name} (${project.type})
 Currency: ${project.currency}
 ${sourceLabel ? `This invoice bills against: ${sourceLabel}` : 'No specific milestone/SOW/CO selected — this is a standalone invoice.'}
+${sourceContext?.billingType ? billingTypeGuidance[sourceContext.billingType] || '' : ''}
+${sourceContext?.trigger ? `Milestone billing trigger on file: "${sourceContext.trigger}"` : ''}
+${sourceContext?.notes ? `Milestone notes on file: "${sourceContext.notes}"` : ''}
 
 The agency describes what's being billed:
 """

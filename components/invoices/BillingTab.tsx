@@ -371,20 +371,44 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
   const [aiDrafting, setAiDrafting] = useState(false)
   const [aiError,    setAiError]    = useState('')
 
+  // FIX (invoice-convenience audit): a picked milestone already carries
+  // `trigger` (NOT NULL — always present) and optional `notes`, which is
+  // exactly the billing context the AI box was asking the agency to
+  // retype from scratch. Seeds the textarea from what's already on file
+  // so the agency reviews/edits instead of authoring from nothing — same
+  // principle as the due-date/tax-rate fix in pickSource above.
+  function milestoneSeedText(m: any): string {
+    return [m?.trigger, m?.notes].filter(Boolean).join(' — ')
+  }
+  function openAiDraft() {
+    setAiOpen(true)
+    if (!aiText.trim() && source.type === 'milestone') {
+      const m = milestones.find((x: any) => x.id === source.id)
+      if (m) setAiText(milestoneSeedText(m))
+    }
+  }
+
   async function draftWithAi() {
     if (!aiText.trim()) { setAiError('Describe what this invoice covers first.'); return }
     setAiDrafting(true); setAiError('')
     try {
-      const sourceLabel = source.type === 'milestone'
-        ? milestones.find((m: any) => m.id === source.id)?.title
-        : source.type === 'sow'
+      const milestone = source.type === 'milestone' ? milestones.find((m: any) => m.id === source.id) : null
+      const sourceLabel = milestone?.title
+        ?? (source.type === 'sow'
           ? `SOW ${sows.find((s: any) => s.id === source.id)?.document_number || ''}`
           : source.type === 'co'
             ? cos.find((c: any) => c.id === source.id)?.title
-            : undefined
+            : undefined)
+      // Structured milestone context — billing type (fixed/hourly_cap/
+      // percentage/retainer_monthly) tells the model what shape of line
+      // items to expect, on top of the trigger/notes prose already
+      // folded into aiText above.
+      const sourceContext = milestone
+        ? { billingType: milestone.type, trigger: milestone.trigger, notes: milestone.notes }
+        : undefined
       const res  = await fetch('/api/invoices/draft', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId, request: aiText, sourceLabel }),
+        body: JSON.stringify({ projectId, request: aiText, sourceLabel, sourceContext }),
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error)
@@ -427,7 +451,19 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
     setSource({ type, id })
     if (type === 'milestone') {
       const m = milestones.find((x: any) => x.id === id)
-      if (m) { setTitle(m.title); if (!itemized) setAmount(String(m.amount)) }
+      if (m) {
+        setTitle(m.title)
+        if (!itemized) setAmount(String(m.amount))
+        // FIX (invoice-convenience audit): due_date, tax_rate, and
+        // tax_inclusive are captured once on the milestone at SOW-build
+        // time and were being silently discarded here — every invoice
+        // against a milestone required retyping tax terms and a due date
+        // the system already had on file. Same failure pattern as the
+        // payment-instructions field before that got wired to Settings.
+        setDueDate(m.due_date || '')
+        setTaxRate(m.tax_rate != null ? String(m.tax_rate) : '0')
+        setTaxInclusive(m.tax_inclusive ?? true)
+      }
     } else if (type === 'sow') {
       const s = sows.find((x: any) => x.id === id)
       if (s) setTitle(`SOW v${s.version}${s.document_number ? ` (${s.document_number})` : ''}`)
@@ -505,7 +541,7 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
             </div>
 
             {!aiOpen && (
-              <button className="btn btn-ghost btn-sm" onClick={() => setAiOpen(true)} style={{ marginBottom: 16 }}>
+              <button className="btn btn-ghost btn-sm" onClick={openAiDraft} style={{ marginBottom: 16 }}>
                 <i className="ti ti-sparkles" style={{ fontSize: 12 }} /> Draft with AI
               </button>
             )}
