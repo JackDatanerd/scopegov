@@ -40,6 +40,13 @@ export default function CoEditor({ projId, coId }: Props) {
   const [aiText,     setAiText]     = useState('')
   const [aiDrafting, setAiDrafting] = useState(false)
   const [aiError,    setAiError]    = useState('')
+  // FIX: COs created via a Guardian flag's "Draft CO" action land here with
+  // flag_id set but nothing in the AI box — the user had to retype the
+  // client's request from the flag card. flagRequestText carries the
+  // original client wording (guardian_checks.content, joined server-side)
+  // so opening the AI panel can pre-fill it instead.
+  const [flagId,          setFlagId]          = useState<string | null>(null)
+  const [flagRequestText, setFlagRequestText] = useState<string | null>(null)
 
   // Derived totals
   const subtotal = lineItems.reduce((s, l) => s + (l.quantity * l.rate), 0)
@@ -71,6 +78,8 @@ export default function CoEditor({ projId, coId }: Props) {
           setIsRetainerRenewal(co.is_retainer_renewal || false)
           setTimelineImpactDays(co.timeline_impact_days != null ? String(co.timeline_impact_days) : '')
           setScopeImpactNote(co.scope_impact_note || '')
+          setFlagId(co.flag_id || null)
+          setFlagRequestText(co.flagRequestText || null)
         }
       })
       .catch(() => {})
@@ -182,12 +191,14 @@ export default function CoEditor({ projId, coId }: Props) {
     try {
       const res  = await fetch('/api/co/draft', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId: projId, request: aiText }),
+        body: JSON.stringify({ projectId: projId, request: aiText, flagId: flagId || undefined }),
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error)
       if (json.title) setTitle(json.title)
       if (json.note)  setNote(json.note)
+      if (json.scopeImpact) setScopeImpactNote(json.scopeImpact)
+      if (json.timelineImpactDays != null) setTimelineImpactDays(String(json.timelineImpactDays))
       if (json.lineItems?.length) {
         setLineItems(json.lineItems.map((li: any) => ({
           id: nanoid(), description: li.description, quantity: li.quantity || 1, rate: 0, total: 0,
@@ -235,7 +246,13 @@ export default function CoEditor({ projId, coId }: Props) {
         )}
 
         {!isLocked && !aiOpen && (
-          <button className="btn btn-ghost btn-sm" onClick={() => setAiOpen(true)} style={{ marginBottom: 16 }}>
+          <button className="btn btn-ghost btn-sm" onClick={() => {
+            // Pre-fill from the flag that spawned this CO, if any — but
+            // only the first time; don't clobber something the user
+            // already typed and closed the panel on.
+            if (!aiText && flagRequestText) setAiText(flagRequestText)
+            setAiOpen(true)
+          }} style={{ marginBottom: 16 }}>
             <i className="ti ti-sparkles" style={{ fontSize: 12 }} /> Draft with AI
           </button>
         )}

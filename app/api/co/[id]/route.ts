@@ -13,7 +13,13 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const service = createServiceClient()
     const { data: co } = await (service as any)
       .from('change_orders')
-      .select('*, projects(id,name,currency)')
+      // FIX: CO editor's "Draft with AI" panel needs the client's original
+      // wording for COs created from a Guardian flag (draft_co action),
+      // not just flag.description (the agency-facing scope-exceedance
+      // summary). That original text lives on guardian_checks.content,
+      // one hop past the flag via check_id — join both so the client can
+      // pre-fill the AI textarea instead of asking the user to retype it.
+      .select('*, projects(id,name,currency), guardian_flags(description,severity,sow_reference,guardian_checks(content))')
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!co) return NextResponse.json({ error: 'Not found' }, { status: 404 })
@@ -22,7 +28,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     // CO's full financial detail. See lib/utils/project-access.ts.
     if (!(await canReadProject(service, session, co.project_id)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-    return NextResponse.json({ co: { ...co, currency: co.projects?.currency } })
+
+    const flagRequestText: string | null = co.guardian_flags?.guardian_checks?.content ?? null
+    const { guardian_flags, ...coRest } = co
+    return NextResponse.json({ co: { ...coRest, currency: co.projects?.currency, flagRequestText } })
   } catch {
     return NextResponse.json({ error: 'Error' }, { status: 500 })
   }
