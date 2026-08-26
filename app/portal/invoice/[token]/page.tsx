@@ -1,6 +1,7 @@
 'use client'
 import { useState, useEffect } from 'react'
 import { useParams } from 'next/navigation'
+import PortalShell from '@/components/portal/PortalShell'
 
 type PortalState = 'loading' | 'error' | 'ready'
 
@@ -78,36 +79,13 @@ export default function InvoicePortalPage() {
   const accent = invoice?.brandColour || '#1A5C3A'
   const balanceDue = invoice ? Math.max(0, invoice.amount - invoice.amountPaid) : 0
 
-  const PortalShell = ({ children }: { children: React.ReactNode }) => (
-    <div className="portal-root">
-      <div className="portal-header">
-        <div className="portal-header-brand" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          {invoice?.logoUrl ? (
-            <img src={invoice.logoUrl} alt={invoice.agencyName} style={{ height: 26, objectFit: 'contain' }} />
-          ) : (
-            <>
-              <div style={{ width: 26, height: 26, background: accent, borderRadius: 5, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <i className="ti ti-receipt" style={{ fontSize: 14, color: '#FFF' }} />
-              </div>
-              <span style={{ fontSize: 14, fontWeight: 600 }}>{invoice?.agencyName || 'ScopeGov'}</span>
-            </>
-          )}
-        </div>
-        <div style={{ fontSize: 11, color: '#909090', display: 'flex', alignItems: 'center', gap: 5 }}>
-          <i className="ti ti-lock" style={{ fontSize: 11 }} /> Secured by ScopeGov
-        </div>
-      </div>
-      {children}
-    </div>
-  )
-
   if (state === 'loading') {
-    return <PortalShell><div style={{ display: 'flex', justifyContent: 'center', padding: 80 }}><span className="spin spin-dark" style={{ width: 24, height: 24 }} /></div></PortalShell>
+    return <PortalShell logoUrl={invoice?.logoUrl} agencyName={invoice?.agencyName} accent={accent} icon="ti-receipt"><div style={{ display: 'flex', justifyContent: 'center', padding: 80 }}><span className="spin spin-dark" style={{ width: 24, height: 24 }} /></div></PortalShell>
   }
 
   if (state === 'error') {
     return (
-      <PortalShell>
+      <PortalShell logoUrl={invoice?.logoUrl} agencyName={invoice?.agencyName} accent={accent} icon="ti-receipt">
         <div style={{ textAlign: 'center', padding: '80px 32px' }}>
           <div style={{ width: 64, height: 64, background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px' }}>
             <i className="ti ti-link-off" style={{ fontSize: 28, color: '#B91C1C' }} />
@@ -123,7 +101,7 @@ export default function InvoicePortalPage() {
   const statusMeta = STATUS_LABEL[invoice.status] || { label: invoice.status, bg: '#F5F5F0', fg: '#666' }
 
   return (
-    <PortalShell>
+    <PortalShell logoUrl={invoice?.logoUrl} agencyName={invoice?.agencyName} accent={accent} icon="ti-receipt">
       <div className="portal-body">
         <div className="portal-doc-surface">
           <div className="portal-doc-head">

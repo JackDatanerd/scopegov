@@ -64,8 +64,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // `line_items` at their pre-negotiation values — so the eventual PDF
     // showed line items and a subtotal that didn't sum to the stated
     // total, with tax computed off the stale subtotal on top of that.
-    // Rescale everything together so the negotiated amount is reflected
-    // consistently across line items, subtotal, and total.
+    // Reconcile line items, subtotal, and total against the negotiated
+    // amount via an explicit adjustment line (see rescale-line-items.ts —
+    // it no longer rescales existing rates, on purpose).
     const negotiatedTotal = co.counter_amount || co.total
     const existingLineItems = typeof co.line_items === 'string'
       ? JSON.parse(co.line_items) : (co.line_items || [])

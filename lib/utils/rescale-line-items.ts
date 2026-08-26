@@ -6,10 +6,23 @@
 // stayed at their pre-negotiation values. The rendered PDF/portal then
 // showed line items and a subtotal that didn't sum to the stated total,
 // and tax computed off the stale subtotal — a visibly broken legal
-// document. This proportionally rescales every line item's rate/total
-// (keeping quantity fixed) so the itemization always reconciles exactly
-// with the new negotiated total, under the same taxRate/taxInclusive
-// rules used everywhere else (CoEditor, renderer.tsx, portal page).
+// document.
+//
+// FIX (accounting correctness, follow-up): the original fix for that
+// closed the reconciliation gap by proportionally scaling every existing
+// line item's rate (quantity held fixed) to hit the new total. That's
+// wrong for a different reason: it silently rewrites the rate on every
+// line, including T&M lines where quantity is hours actually worked at
+// an agreed rate. A $150/hr line quietly becoming a $115/hr line
+// misrepresents what was actually charged, and gives the client-facing
+// document no visible record that a negotiation happened at all —
+// counter_amount/counter_note live on the row, not on the PDF.
+//
+// Now: leave every existing line item exactly as agreed (rate, quantity,
+// total untouched), and add ONE explicit adjustment line for the
+// difference — "Negotiated discount" (negative) or "Negotiated increase"
+// (positive) — so the document reconciles to the new total while still
+// showing the true original pricing on every other line.
 
 import { nanoid } from 'nanoid'
 
@@ -30,9 +43,11 @@ export interface RescaleResult {
 const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100
 
 /**
- * Rescales lineItems so they sum exactly to the subtotal implied by
- * newTotal (back-solving out tax when not tax-inclusive), and returns
- * the new subtotal/total to store alongside them.
+ * Reconciles lineItems to the subtotal implied by newTotal (back-solving
+ * out tax when not tax-inclusive) by appending a single explicit
+ * "Negotiated discount/increase" line for the difference, rather than
+ * altering any existing line's rate. Returns the new line items plus the
+ * subtotal/total to store alongside them.
  */
 export function rescaleLineItemsToTotal(
   lineItems: RescaleLineItem[],
@@ -44,42 +59,40 @@ export function rescaleLineItemsToTotal(
   const newSubtotal = taxInclusive || safeTaxRate === 0
     ? newTotal
     : newTotal / (1 + safeTaxRate / 100)
-
-  const oldSubtotal = lineItems.reduce((s, li) => s + (li.quantity * li.rate), 0)
-
-  let rescaled: RescaleLineItem[]
-
-  if (oldSubtotal > 0) {
-    const ratio = newSubtotal / oldSubtotal
-    rescaled = lineItems.map(li => {
-      const newItemTotal = round2(li.quantity * li.rate * ratio)
-      const newRate = li.quantity !== 0 ? round2(newItemTotal / li.quantity) : li.rate
-      return { ...li, rate: newRate, total: round2(li.quantity * newRate) }
-    })
-  } else {
-    // Nothing to scale from (e.g. an AI draft that was never priced before
-    // being sent) — fall back to one synthetic, clearly-labelled line item
-    // rather than leaving stale $0 items next to a nonzero total.
-    rescaled = [{
-      id: nanoid(),
-      description: 'Negotiated total (per client counter-offer)',
-      quantity: 1,
-      rate: round2(newSubtotal),
-      total: round2(newSubtotal),
-    }]
-  }
-
-  // Proportional scaling of independently-rounded lines can drift a cent
-  // or two from the target subtotal — force the last line to absorb it so
-  // the sum always matches exactly.
   const roundedSubtotal = round2(newSubtotal)
-  const currentSum = round2(rescaled.reduce((s, li) => s + li.total, 0))
-  const drift = round2(roundedSubtotal - currentSum)
-  if (drift !== 0 && rescaled.length > 0) {
-    const last = rescaled[rescaled.length - 1]
-    last.total = round2(last.total + drift)
-    last.rate = last.quantity !== 0 ? round2(last.total / last.quantity) : last.rate
+
+  const oldSubtotal = round2(lineItems.reduce((s, li) => s + (li.quantity * li.rate), 0))
+
+  // Nothing priced yet (e.g. an AI draft that was never priced before
+  // being sent) — one clearly-labelled line rather than a $0 item next to
+  // a nonzero total plus a same-amount "adjustment" line, which would
+  // just be a confusing way of saying the same thing twice.
+  if (oldSubtotal <= 0) {
+    return {
+      lineItems: [{
+        id: nanoid(),
+        description: 'Negotiated total (per client counter-offer)',
+        quantity: 1,
+        rate: roundedSubtotal,
+        total: roundedSubtotal,
+      }],
+      subtotal: roundedSubtotal,
+      total: round2(newTotal),
+    }
   }
 
-  return { lineItems: rescaled, subtotal: roundedSubtotal, total: round2(newTotal) }
+  const drift = round2(roundedSubtotal - oldSubtotal)
+  const lineItemsOut = lineItems.map(li => ({ ...li })) // preserve every original line's rate/quantity/total as-is
+
+  if (drift !== 0) {
+    lineItemsOut.push({
+      id: nanoid(),
+      description: drift < 0 ? 'Negotiated discount (per counter-offer)' : 'Negotiated increase (per counter-offer)',
+      quantity: 1,
+      rate: drift,
+      total: drift,
+    })
+  }
+
+  return { lineItems: lineItemsOut, subtotal: roundedSubtotal, total: round2(newTotal) }
 }

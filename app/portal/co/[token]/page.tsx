@@ -2,6 +2,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams } from 'next/navigation'
 import SignaturePad, { type SignaturePadHandle } from '@/components/ui/SignaturePad'
+import PortalShell from '@/components/portal/PortalShell'
 
 type CoState = 'loading' | 'invalid' | 'revoked' | 'expired' | 'accepted' | 'declined' | 'withdrawn' | 'closed' | 'stalled' | 'countered' | 'ready' | 'done'
 type CoMode  = 'view' | 'accept' | 'decline' | 'counter'
@@ -95,30 +96,7 @@ export default function CoPortalPage() {
         : null
     : null
 
-  const PortalShell = ({ children }: { children: React.ReactNode }) => (
-    <div className="portal-root">
-      <div className="portal-header">
-        <div className="portal-header-brand" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          {co?.logoUrl ? (
-            <img src={co.logoUrl} alt={co.agencyName} style={{ height: 26, objectFit: 'contain' }} />
-          ) : (
-            <>
-              <div style={{ width: 26, height: 26, background: accent, borderRadius: 5, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <i className="ti ti-scale" style={{ fontSize: 14, color: '#FFF' }} />
-              </div>
-              <span style={{ fontSize: 14, fontWeight: 600 }}>{co?.agencyName || 'ScopeGov'}</span>
-            </>
-          )}
-        </div>
-        <div style={{ fontSize: 11, color: '#909090', display: 'flex', alignItems: 'center', gap: 5 }}>
-          <i className="ti ti-lock" style={{ fontSize: 11 }} /> Secured by ScopeGov
-        </div>
-      </div>
-      {children}
-    </div>
-  )
-
-  if (state === 'loading') return <PortalShell><div style={{ display: 'flex', justifyContent: 'center', padding: 80 }}><span className="spin spin-dark" style={{ width: 24, height: 24 }} /></div></PortalShell>
+  if (state === 'loading') return <PortalShell logoUrl={co?.logoUrl} agencyName={co?.agencyName} accent={accent} icon="ti-scale"><div style={{ display: 'flex', justifyContent: 'center', padding: 80 }}><span className="spin spin-dark" style={{ width: 24, height: 24 }} /></div></PortalShell>
 
   const staticMsg: Record<string, { icon: string; iconBg: string; iconColor: string; title: string; body: string }> = {
     invalid:   { icon: 'ti-link-off', iconBg: '#FEF2F2', iconColor: '#B91C1C', title: 'Link not found', body: 'This link is invalid or has expired. Please contact the agency.' },
@@ -133,7 +111,7 @@ export default function CoPortalPage() {
 
   if (state === 'accepted') {
     return (
-      <PortalShell>
+      <PortalShell logoUrl={co?.logoUrl} agencyName={co?.agencyName} accent={accent} icon="ti-scale">
         <div style={{ textAlign: 'center', padding: '80px 32px' }}>
           <div style={{ width: 64, height: 64, background: '#EDFAF2', border: '1px solid #B7DCC8', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px' }}>
             <i className="ti ti-check" style={{ fontSize: 28, color: '#1A5C3A' }} />
@@ -162,7 +140,7 @@ export default function CoPortalPage() {
   if (staticMsg[state]) {
     const m = staticMsg[state]
     return (
-      <PortalShell>
+      <PortalShell logoUrl={co?.logoUrl} agencyName={co?.agencyName} accent={accent} icon="ti-scale">
         <div style={{ textAlign: 'center', padding: '80px 32px' }}>
           <div style={{ width: 64, height: 64, background: m.iconBg, border: `1px solid ${m.iconColor}40`, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px' }}>
             <i className={`ti ${m.icon}`} style={{ fontSize: 28, color: m.iconColor }} />
@@ -176,7 +154,7 @@ export default function CoPortalPage() {
 
   if (state === 'done') {
     return (
-      <PortalShell>
+      <PortalShell logoUrl={co?.logoUrl} agencyName={co?.agencyName} accent={accent} icon="ti-scale">
         <div style={{ textAlign: 'center', padding: '80px 32px' }}>
           <div style={{ width: 64, height: 64, background: '#EDFAF2', border: '1px solid #B7DCC8', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px' }}>
             <i className="ti ti-check" style={{ fontSize: 28, color: '#1A5C3A' }} />
@@ -191,7 +169,7 @@ export default function CoPortalPage() {
   if (!co) return null
 
   return (
-    <PortalShell>
+    <PortalShell logoUrl={co?.logoUrl} agencyName={co?.agencyName} accent={accent} icon="ti-scale">
       <div className="portal-body">
         {/* CO Document */}
         <div className="portal-doc-surface">
