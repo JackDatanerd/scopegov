@@ -13,13 +13,20 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const service = createServiceClient()
     const { data: co } = await (service as any)
       .from('change_orders')
-      // FIX: CO editor's "Draft with AI" panel needs the client's original
-      // wording for COs created from a Guardian flag (draft_co action),
-      // not just flag.description (the agency-facing scope-exceedance
-      // summary). That original text lives on guardian_checks.content,
-      // one hop past the flag via check_id — join both so the client can
-      // pre-fill the AI textarea instead of asking the user to retype it.
-      .select('*, projects(id,name,currency), guardian_flags(description,severity,sow_reference,guardian_checks(content))')
+      // FIX (regression, introduced same session as the flag-context AI
+      // draft feature): guardian_flags <-> guardian_checks has TWO FKs —
+      // guardian_flags.check_id -> guardian_checks.id (fk_flag_check) and
+      // guardian_checks.flag_id -> guardian_flags.id. An unhinted nested
+      // embed here is ambiguous to PostgREST ("more than one relationship
+      // was found"), so the whole query silently failed — `co` came back
+      // null, this route 404'd, and CoEditor's fetch (which never checked
+      // res.ok — also fixed, see components/co/CoEditor.tsx) rendered
+      // that as a blank untouched form with no visible error. Every CO
+      // fetch by id was broken by this, not just flag-linked ones.
+      // `!fk_flag_check` disambiguates to the correct direction, same
+      // hint pattern already used elsewhere in this codebase (see
+      // lib/utils/permissions-query.ts, app/api/team/[id]/route.ts).
+      .select('*, projects(id,name,currency), guardian_flags(description,severity,sow_reference,guardian_checks!fk_flag_check(content))')
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!co) return NextResponse.json({ error: 'Not found' }, { status: 404 })

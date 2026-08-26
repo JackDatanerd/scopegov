@@ -63,8 +63,15 @@ export default function CoEditor({ projId, coId }: Props) {
       return
     }
     fetch(`/api/co/${coId}`)
-      .then(r => r.json())
-      .then(json => {
+      .then(async r => {
+        const json = await r.json()
+        // FIX (regression follow-up): this used to ignore r.ok entirely
+        // and just check `if (json.co)` — any failed fetch (403, 404,
+        // 500, or the ambiguous-embed 500 that motivated this fix)
+        // rendered as a silent, untouched blank form. No error, no sign
+        // anything had gone wrong — indistinguishable from a fresh CO.
+        // Surface it instead.
+        if (!r.ok) { setError(json.error || 'Failed to load this change order.'); return }
         if (json.co) {
           const co = json.co
           setTitle(co.title || '')
