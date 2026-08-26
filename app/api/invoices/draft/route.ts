@@ -15,7 +15,6 @@ export const runtime = 'nodejs'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
-import { stripAndParse } from '@/lib/utils/format'
 import { canReadProject } from '@/lib/utils/project-access'
 import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
 import Anthropic from '@anthropic-ai/sdk'
@@ -24,6 +23,38 @@ let _client: Anthropic | null = null
 function anthropicClient(): Anthropic {
   if (!_client) _client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
   return _client
+}
+
+// Forced tool call instead of "return only JSON" + stripAndParse — matches
+// the fix applied to app/api/co/draft/route.ts on the same reliability
+// grounds: a schema the model must fill in doesn't fail on stray prose or
+// a missed fence the way free-text JSON occasionally did.
+const DRAFT_INVOICE_TOOL = {
+  name: 'draft_invoice',
+  description: 'Draft a client invoice for billable work already completed.',
+  input_schema: {
+    type: 'object' as const,
+    properties: {
+      title: {
+        type: 'string',
+        description: "Short, client-facing invoice title, e.g. 'Fleet Rollout — Wave 2 completion'. No placeholder text like 'TBD'.",
+      },
+      lineItems: {
+        type: 'array',
+        minItems: 1,
+        maxItems: 6,
+        items: {
+          type: 'object',
+          properties: {
+            description: { type: 'string', description: 'A specific billable line item.' },
+            quantity:    { type: 'number', description: 'Sensible unit (hours for T&M, 1 for a fixed-fee milestone or flat expense). Default 1 if unclear.' },
+          },
+          required: ['description', 'quantity'],
+        },
+      },
+    },
+    required: ['title', 'lineItems'],
+  },
 }
 
 export async function POST(request: NextRequest) {
@@ -66,7 +97,7 @@ export async function POST(request: NextRequest) {
       retainer_monthly: 'This is a monthly retainer — one recurring line item for the period is normal.',
     }
 
-    const prompt = `You are drafting a client invoice for billable work already completed. Return ONLY valid JSON, no markdown fences, no explanation.
+    const prompt = `You are drafting a client invoice for billable work already completed.
 
 Project: ${project.name} (${project.type})
 Currency: ${project.currency}
@@ -80,35 +111,27 @@ The agency describes what's being billed:
 ${askText.slice(0, 3000)}
 """
 
-Return this exact JSON structure:
-{
-  "title": "short invoice title, e.g. 'Fleet Rollout — Wave 2 completion'",
-  "lineItems": [
-    { "description": "specific billable line item", "quantity": 1, "rate": 0 }
-  ]
-}
-
 Rules:
 - Break the work into separate line items whenever it spans different billing bases — a fixed-fee milestone, hourly time-and-materials hours, and a reimbursable expense are three different lines, not one. If it's genuinely a single flat charge, one line item is fine.
-- Set "rate" to 0 for every line item. Never invent a dollar amount or an hourly rate — the agency prices each line themselves. This is non-negotiable.
+- Never set a dollar rate. Pricing always comes from the agency, not the model.
 - quantity should reflect a sensible unit (hours for T&M, 1 for a fixed-fee milestone or a flat expense reimbursement) — default to 1 if unclear.
 - Keep the title client-facing and professional — no internal jargon, no placeholder text like "TBD".`
 
     const msg = await anthropicClient().messages.create({
-      model:      'claude-haiku-4-5-20251001',
-      max_tokens: 1000,
-      messages:   [{ role: 'user', content: prompt }],
+      model:       'claude-haiku-4-5-20251001',
+      max_tokens:  1000,
+      tools:       [DRAFT_INVOICE_TOOL],
+      tool_choice: { type: 'tool', name: 'draft_invoice' },
+      messages:    [{ role: 'user', content: prompt }],
     })
 
-    const raw = msg.content.filter(b => b.type === 'text').map((b: any) => b.text).join('')
-
-    let parsed: { title: string; lineItems: Array<{ description: string; quantity: number; rate: number }> }
-    try {
-      parsed = stripAndParse(raw)
-    } catch {
-      console.error('Invoice draft JSON parse failed:', raw.slice(0, 500))
+    const toolUse = msg.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use')
+    if (!toolUse) {
+      console.error('Invoice draft: no tool_use block in response', msg.stop_reason)
       return NextResponse.json({ error: 'AI returned an unusable draft. Please try again or write it manually.' }, { status: 500 })
     }
+
+    const parsed = toolUse.input as { title: string; lineItems: Array<{ description: string; quantity: number }> }
 
     // Defensive: force every rate to 0 regardless of what the model
     // returned — same rule as CO drafting, pricing must always come from
