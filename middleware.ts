@@ -148,14 +148,44 @@ export async function middleware(request: NextRequest) {
   if (user && !isOnboarding && !isPublicRoute && !isAuthRoute) {
     // We check onboarding status via the workspace — only for non-API routes
     if (!pathname.startsWith('/api/')) {
-      const { data: member } = await (supabase as any)
-        .from('workspace_members')
-        .select('workspace:workspaces(onboarding_completed_at)')
-        .eq('user_id', user.id)
-        .eq('status', 'active')
-        .order('created_at', { ascending: true })
-        .limit(1)
-        .single()
+      // FIX (deep audit, Auth+MFA section): this used to check the OLDEST
+      // workspace_members row (order by created_at, limit 1), while
+      // lib/auth/session.ts — and everything the app actually renders —
+      // resolves "the" workspace via users.active_workspace_id, falling back
+      // to oldest only when active_workspace_id is unset/stale. A user who
+      // completed onboarding on their first (oldest) workspace and then
+      // created a second one (workspace/create sets active_workspace_id to
+      // the NEW workspace, which starts un-onboarded) could pass this gate
+      // on the old workspace's completed status while actually active in a
+      // workspace that never finished onboarding — missing e.g. governingLaw,
+      // which SOW generation hard-blocks on. app/(app)/layout.tsx's own
+      // session-based check (correct) was catching this in practice, but
+      // this gate should reflect the same workspace it's meant to gate.
+      const { data: userRow } = await (supabase as any)
+        .from('users').select('active_workspace_id').eq('id', user.id).maybeSingle()
+
+      let member: any = null
+      if (userRow?.active_workspace_id) {
+        const { data } = await (supabase as any)
+          .from('workspace_members')
+          .select('workspace:workspaces(onboarding_completed_at)')
+          .eq('user_id', user.id)
+          .eq('workspace_id', userRow.active_workspace_id)
+          .eq('status', 'active')
+          .maybeSingle()
+        member = data
+      }
+      if (!member) {
+        const { data } = await (supabase as any)
+          .from('workspace_members')
+          .select('workspace:workspaces(onboarding_completed_at)')
+          .eq('user_id', user.id)
+          .eq('status', 'active')
+          .order('created_at', { ascending: true })
+          .limit(1)
+          .maybeSingle()
+        member = data
+      }
 
       // No workspace_members row at all → user signed up but never completed
       // onboarding. Redirect to /onboarding instead of falling through to the

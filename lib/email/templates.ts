@@ -1219,3 +1219,35 @@ export async function sendMfaBackupCodesRegeneratedEmail(params: { to: string; n
   })
   return resendClient().emails.send({ from: `ScopeGov <${FROM}>`, to, subject: 'New two-factor backup codes generated', html })
 }
+
+// ── Security: password changed ───────────────────────────────
+// FIX (deep audit, Auth+MFA section): every other sensitive account
+// action (MFA enroll, MFA disable, backup-code regen, MFA recovery)
+// sends a confirmation email — password change, the single most
+// account-takeover-relevant action of all of them, sent none. Added
+// here and wired into both password-change surfaces: the authenticated
+// Settings flow (api/auth/change-password) and the recovery-link flow
+// (/reset-password), via api/auth/password-changed.
+export async function sendPasswordChangedEmail(params: { to: string; name: string; via: 'settings' | 'reset_link' }) {
+  const { to, name: nameRaw, via } = params
+  const name = escapeHtml(nameRaw)
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.red,
+    headerIcon: '🔑',
+    label: 'Security',
+    headline: 'Your password was changed',
+    body: `
+      <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${name},</p>
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        ${via === 'reset_link'
+          ? 'The password on your ScopeGov account was just reset using a password reset link, and every other session has been signed out.'
+          : 'The password on your ScopeGov account was just changed from your account settings.'}
+      </p>
+      <p style="font-size:13px;color:${C.text2};">
+        Didn't do this? Contact your workspace owner immediately${via === 'reset_link' ? '' : ' and reset your password'}.
+      </p>
+    `,
+  })
+  return resendClient().emails.send({ from: `ScopeGov <${FROM}>`, to, subject: 'Your ScopeGov password was changed', html })
+}

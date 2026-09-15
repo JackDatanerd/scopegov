@@ -58,6 +58,13 @@ export default function ResetPasswordPage() {
     try {
       const { error: err } = await supabase.auth.updateUser({ password })
       if (err) { setError(err.message); return }
+      // FIX (deep audit, Auth+MFA section): this flow previously left no
+      // trail — no audit_log entry, no "your password was changed" email —
+      // unlike every other sensitive account action. Must happen before
+      // signOut() below, while the recovery session that proves this was
+      // legitimate is still active. Best-effort: a notify failure must
+      // never block the user from finishing their reset.
+      await fetch('/api/auth/password-changed', { method: 'POST' }).catch(() => {})
       // Spec §16.2: all sessions invalidated on success
       await supabase.auth.signOut()
       setDone(true)

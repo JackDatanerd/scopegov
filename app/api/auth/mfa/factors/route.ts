@@ -4,7 +4,7 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
 import { logAudit } from '@/lib/utils/audit'
 import { sendMfaDisabledEmail } from '@/lib/email/templates'
-import { permissionsRequireMfa } from '@/lib/auth/mfa-policy'
+import { userHasAnyMfaMandatoryMembership } from '@/lib/auth/session'
 
 export async function GET() {
   try {
@@ -59,19 +59,21 @@ export async function DELETE(request: Request) {
     // endpoint was the one place that should have refused the disable
     // outright and explained why, rather than silently letting it happen
     // and relying on a different layer to catch the fallout.
+    //
+    // FIX (deep audit, Auth+MFA re-pass): the check above only looked at
+    // the ACTIVE workspace's permissions — a user with a mandatory role in
+    // a non-active workspace could still disable MFA here, only to be
+    // force-re-enrolled on their very next request by middleware (which
+    // correctly checks every membership). Use the same aggregate check
+    // middleware uses so this endpoint actually refuses it outright, as
+    // the comment above always intended.
     const service = createServiceClient()
     const { data: preCheckUser } = await (service as any)
       .from('users').select('active_workspace_id').eq('id', user.id).maybeSingle()
-    if (preCheckUser?.active_workspace_id) {
-      const { data: memberRow } = await (service as any)
-        .from('workspace_members').select('effective_permissions')
-        .eq('user_id', user.id).eq('workspace_id', preCheckUser.active_workspace_id)
-        .eq('status', 'active').maybeSingle()
-      if (permissionsRequireMfa(memberRow?.effective_permissions)) {
-        return NextResponse.json({
-          error: 'Your role requires two-factor authentication to stay enabled. Ask an admin to change your permissions first.',
-        }, { status: 403 })
-      }
+    if (await userHasAnyMfaMandatoryMembership(user.id)) {
+      return NextResponse.json({
+        error: 'Your role requires two-factor authentication to stay enabled. Ask an admin to change your permissions first.',
+      }, { status: 403 })
     }
 
     const body = await request.json().catch(() => ({}))

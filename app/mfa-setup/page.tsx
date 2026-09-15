@@ -1,5 +1,4 @@
-import { getSession } from '@/lib/auth/session'
-import { permissionsRequireMfa } from '@/lib/auth/mfa-policy'
+import { getSession, userHasAnyMfaMandatoryMembership } from '@/lib/auth/session'
 import { redirect } from 'next/navigation'
 import MfaSetupClient from '@/components/mfa/MfaSetupClient'
 // FIX (section-by-section re-audit): `next` used to be passed through raw.
@@ -20,7 +19,11 @@ export default async function MfaSetupPage({ searchParams }: Props) {
   if (!session) redirect('/login')
 
   const sp = await searchParams
-  const mandatory = permissionsRequireMfa(session.permissions)
+  // FIX (deep audit, Auth+MFA section): was permissionsRequireMfa(session.permissions),
+  // which only reflects the ACTIVE workspace. A user forced here because a
+  // NON-active membership mandates MFA saw this as optional and got a "Skip
+  // for now" link that just looped them back — see userHasAnyMfaMandatoryMembership.
+  const mandatory = await userHasAnyMfaMandatoryMembership(session.id)
 
   return (
     <MfaSetupClient

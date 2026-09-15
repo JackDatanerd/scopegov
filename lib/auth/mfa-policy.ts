@@ -33,6 +33,13 @@ export const MFA_REQUIRED_PERMISSIONS: Permission[] = [
   // as the APPROVE_DOCUMENTS miss above, just never swept to these two.
   'GRANT_EXCEPTIONS',
   'APPROVE_FLAGS',
+  // FIX (deep audit, Auth+MFA section): EXPORT_DATA is the classic
+  // post-account-compromise exfiltration path — bulk-downloading a
+  // workspace's projects/financials/client data — and every other
+  // read-sensitive permission in this list (VIEW_ALL_PROJECTS,
+  // VIEW_AUDIT_LOG) already required MFA on that same reasoning. This one
+  // had been missed.
+  'EXPORT_DATA',
 ]
 
 export function permissionsRequireMfa(permissions: Record<string, boolean> | Permission[] | null | undefined): boolean {

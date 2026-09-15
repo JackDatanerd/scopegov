@@ -2,7 +2,9 @@ export const runtime = 'nodejs'
 
 import { NextResponse, type NextRequest } from 'next/server'
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
-import { permissionsRequireMfa } from '@/lib/auth/mfa-policy'
+import { userHasAnyMfaMandatoryMembership } from '@/lib/auth/session'
+import { logAudit } from '@/lib/utils/audit'
+import { sendPasswordChangedEmail } from '@/lib/email/templates'
 
 // FIX (deep audit, section 5): password changes used to go straight from
 // the browser to `supabase.auth.updateUser({ password })` with no backend
@@ -28,14 +30,14 @@ export async function POST(request: NextRequest) {
     const { data: userRow } = await (service as any)
       .from('users').select('active_workspace_id').eq('id', user.id).maybeSingle()
 
-    let mandatory = false
-    if (userRow?.active_workspace_id) {
-      const { data: memberRow } = await (service as any)
-        .from('workspace_members').select('effective_permissions')
-        .eq('user_id', user.id).eq('workspace_id', userRow.active_workspace_id)
-        .eq('status', 'active').maybeSingle()
-      mandatory = permissionsRequireMfa(memberRow?.effective_permissions)
-    }
+    // FIX (deep audit, Auth+MFA re-pass): was scoped to only the active
+    // workspace's permissions (same gap as DELETE /api/auth/mfa/factors and
+    // mfa-setup's "mandatory" badge — see userHasAnyMfaMandatoryMembership).
+    // In practice middleware's blanket aal1-pending-aal2 gate already
+    // requires aal2 here for anyone with an enrolled factor regardless of
+    // role, so this was never actually bypassable — but it's worth being
+    // correct in its own right rather than relying on that other layer.
+    const mandatory = await userHasAnyMfaMandatoryMembership(user.id)
 
     if (mandatory) {
       const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
@@ -48,6 +50,20 @@ export async function POST(request: NextRequest) {
 
     const { error } = await supabase.auth.updateUser({ password })
     if (error) return NextResponse.json({ error: error.message }, { status: 400 })
+
+    // FIX (deep audit, Auth+MFA section): password change previously left
+    // no trail at all — every other sensitive account action here (MFA
+    // enroll/disable/recover/regenerate) writes to audit_log and emails
+    // the user; password change, the classic account-takeover action, did
+    // neither. Both non-fatal / best-effort, matching house style.
+    await logAudit(service, {
+      workspaceId: userRow?.active_workspace_id || '',
+      actorId: user.id, actorEmail: user.email!, actorName: user.user_metadata?.name || user.email!,
+      eventType: 'security.password_changed', entityType: 'user', entityId: user.id, entityName: user.email!,
+      metadata: { via: 'settings' },
+    })
+    await sendPasswordChangedEmail({ to: user.email!, name: user.user_metadata?.name || user.email!, via: 'settings' })
+      .catch(e => console.error('Password changed email failed (non-fatal):', e))
 
     return NextResponse.json({ ok: true })
   } catch (err) {

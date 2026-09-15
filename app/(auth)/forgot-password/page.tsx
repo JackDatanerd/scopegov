@@ -1,8 +1,11 @@
 // app/(auth)/forgot-password/page.tsx
-// FIX 1: redirectTo now points to callback?next=/reset-password so the PKCE
-// code exchange happens there and a valid session is established before
-// landing on /reset-password. Previously it pointed directly at /reset-password
-// which never called exchangeCodeForSession → no session → bounce to /login.
+// FIX (deep audit, Auth+MFA section): this header comment was stale —
+// it described routing through /api/auth/callback?next=/reset-password,
+// but the actual redirectTo below (and the "FIX 1 (v2)" comment right
+// above it) has pointed straight at /reset-password since that was
+// superseded. See app/(auth)/reset-password/page.tsx's "FIX 1 (v3)"
+// comment for the current, final version of this flow: the browser
+// Supabase client exchanges the code itself via detectSessionInUrl.
 
 'use client'
 import { useState } from 'react'

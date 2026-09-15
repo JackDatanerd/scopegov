@@ -2,6 +2,7 @@
 
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
 import type { SessionUser, Permission } from '@/lib/supabase/types'
+import { permissionsRequireMfa } from '@/lib/auth/mfa-policy'
 
 export async function getSession(): Promise<SessionUser | null> {
   try {
@@ -96,6 +97,29 @@ export async function getSession(): Promise<SessionUser | null> {
   } catch {
     return null
   }
+}
+
+// FIX (deep audit, Auth+MFA section): middleware.ts's forced-enrollment
+// gate correctly decides "does this user need MFA" by checking EVERY
+// active workspace membership — a Member in Workspace A who is also an
+// Admin in Workspace B must still enroll, even while A is active. But
+// three other call sites (mfa-setup's "mandatory" badge, DELETE
+// /api/auth/mfa/factors' own guard, and change-password's aal2 gate) all
+// asked the narrower question "does the ACTIVE workspace require it,"
+// using session.permissions or a single active_workspace_id lookup. That
+// mismatch let a user with a mandatory role in a non-active workspace see
+// mfa-setup's "Skip for now" link (looping them straight back once
+// middleware re-checked), and let the same user successfully disable MFA
+// through the factors endpoint that exists specifically to prevent that.
+// This is the one aggregate check all four sites should share.
+export async function userHasAnyMfaMandatoryMembership(userId: string): Promise<boolean> {
+  const service = createServiceClient()
+  const { data: memberships } = await (service as any)
+    .from('workspace_members')
+    .select('effective_permissions')
+    .eq('user_id', userId)
+    .eq('status', 'active')
+  return (memberships || []).some((m: any) => permissionsRequireMfa(m.effective_permissions))
 }
 
 export function hasPermission(session: SessionUser, permission: Permission): boolean {
