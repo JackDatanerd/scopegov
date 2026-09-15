@@ -1,7 +1,7 @@
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
-import { roundCurrency } from '@/lib/utils/format'
+import { roundCurrency, PLAN_LIMITS } from '@/lib/utils/format'
 
 export async function POST(request: NextRequest) {
   try {
@@ -17,6 +17,24 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Name and type are required' }, { status: 400 })
 
     const service   = createServiceClient()
+
+    // FIX (deep audit, section 7): PLAN_LIMITS.projects is defined and
+    // displayed to the user (Settings → Billing: "2 projects" / "Unlimited
+    // projects") but was never actually enforced anywhere — unlike seats,
+    // which app/api/team/invite/route.ts does check. A Solo or Starter
+    // workspace could create unlimited projects for free.
+    const projectLimit = PLAN_LIMITS[session.planTier]?.projects
+    if (projectLimit != null) {
+      const { count: existingCount } = await (service as any)
+        .from('projects').select('id', { count: 'exact', head: true })
+        .eq('workspace_id', session.workspaceId).is('deleted_at', null)
+      if ((existingCount || 0) >= projectLimit) {
+        return NextResponse.json({
+          error: `Your ${PLAN_LIMITS[session.planTier].name} plan is limited to ${projectLimit} project${projectLimit === 1 ? '' : 's'}. Upgrade to create more.`,
+        }, { status: 403 })
+      }
+    }
+
     let resolvedClientId = clientId
 
     // ── Create client if new ──────────────────────────────────

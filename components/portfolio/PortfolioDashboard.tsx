@@ -17,7 +17,7 @@ interface OpenFlag {
   contractValue: number | null; currency: string
 }
 interface StalledSow { projectId: string; projectName: string; clientName: string | null; since: string }
-interface StalledCo { id: string; title: string; total: number | null; projectId: string; projectName: string; since: string }
+interface StalledCo { id: string; title: string; total: number | null; currency: string; projectId: string; projectName: string; since: string }
 
 interface PortfolioData {
   currency: string
@@ -129,7 +129,7 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName }: { 
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24, alignItems: 'start', marginBottom: 24 }}>
-            <StalledPanel sows={data.stalledSows} cos={data.stalledCos} canViewFinancials={canViewFinancials} currency={data.currency} />
+            <StalledPanel sows={data.stalledSows} cos={data.stalledCos} canViewFinancials={canViewFinancials} />
             <ExceptionsPanel
               count={data.current!.exceptionsCount}
               value={data.current!.exceptionsValueTotal}
@@ -348,10 +348,13 @@ function SeverityBreakdown({ breakdown }: { breakdown: { high: number; medium: n
 }
 
 // ── STALLED DOCUMENTS ────────────────────────────────────────────
-function StalledPanel({ sows, cos, canViewFinancials, currency }: { sows: StalledSow[]; cos: StalledCo[]; canViewFinancials: boolean; currency: string }) {
+function StalledPanel({ sows, cos, canViewFinancials }: { sows: StalledSow[]; cos: StalledCo[]; canViewFinancials: boolean }) {
   const items = [
-    ...sows.map(s => ({ kind: 'SOW' as const, id: s.projectId, title: s.projectName, sub: s.clientName, since: s.since, projectId: s.projectId, amount: null as number | null })),
-    ...cos.map(c => ({ kind: 'CO' as const, id: c.id, title: c.title, sub: c.projectName, since: c.since, projectId: c.projectId, amount: c.total })),
+    ...sows.map(s => ({ kind: 'SOW' as const, id: s.projectId, title: s.projectName, sub: s.clientName, since: s.since, projectId: s.projectId, amount: null as number | null, currency: null as string | null })),
+    // FIX (deep audit, section 8): each CO now carries its own project's
+    // currency instead of borrowing the single workspace-wide dominant
+    // one — see the fix note on StalledCo / the API route.
+    ...cos.map(c => ({ kind: 'CO' as const, id: c.id, title: c.title, sub: c.projectName, since: c.since, projectId: c.projectId, amount: c.total, currency: c.currency })),
   ].sort((a, b) => new Date(a.since).getTime() - new Date(b.since).getTime())
 
   return (
@@ -374,7 +377,7 @@ function StalledPanel({ sows, cos, canViewFinancials, currency }: { sows: Stalle
             </div>
             <div style={{ textAlign: 'right', flexShrink: 0, marginLeft: 12 }}>
               {canViewFinancials && item.amount ? (
-                <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{formatCurrency(item.amount, currency)}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{formatCurrency(item.amount, item.currency || 'USD')}</div>
               ) : null}
               <div style={{ fontSize: 10.5, color: 'var(--text-4)' }}>since {formatRelative(item.since)}</div>
             </div>

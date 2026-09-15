@@ -2,6 +2,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { canReadProject } from '@/lib/utils/project-access'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -12,6 +13,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
 
     const service = createServiceClient()
+    // FIX (deep audit, section 7): every other project-mutation route
+    // (GET/PATCH/DELETE on [id]) checks canReadProject in addition to its
+    // permission gate — this one didn't. Since roles are fully custom, a
+    // MARK_PROJECT_COMPLETE-holding role isn't required to also hold
+    // VIEW_ALL_PROJECTS or membership on this specific project, so without
+    // this check such a role could complete ANY project in the workspace,
+    // including ones it can't otherwise see.
+    if (!(await canReadProject(service, session, id)))
+      return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     const { data: project } = await (service as any)
       .from('projects')

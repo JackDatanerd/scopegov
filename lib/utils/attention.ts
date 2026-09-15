@@ -15,6 +15,7 @@ export interface AttentionContext {
   workspace?: {
     proactiveRiskAlertsEnabled?: boolean
     proactiveRiskThreshold?: number
+    currency?: string
   }
 }
 
@@ -54,7 +55,19 @@ export function isAttentionWorthy({ project, workspace }: AttentionContext): boo
     const alertsEnabled = workspace?.proactiveRiskAlertsEnabled ?? true
     const threshold = workspace?.proactiveRiskThreshold ?? 10000
     const noSignedSow = !project.sowDocuments?.some(s => s.status === 'signed')
-    if (alertsEnabled && project.contractValue > threshold && noSignedSow) return true
+    // FIX (deep audit, section 7): threshold is a single, currency-less
+    // number configured in Settings — it's implicitly denominated in the
+    // workspace's own default currency. Comparing it directly against
+    // project.contractValue regardless of that project's own currency
+    // meant a project quoted in a different currency got compared against
+    // a wildly mismatched number (a KES-denominated project against a
+    // USD-tuned threshold, or vice versa) — flagging ordinary local-
+    // currency projects as high-risk, or missing genuinely high-value
+    // ones. There's no exchange-rate conversion anywhere in this codebase
+    // by design, so the honest fix is to only apply this rule when we
+    // know the comparison is apples-to-apples.
+    const currencyMatches = !workspace?.currency || !project.currency || project.currency === workspace.currency
+    if (alertsEnabled && currencyMatches && project.contractValue > threshold && noSignedSow) return true
   }
 
   return false

@@ -2,7 +2,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
-import { formatCurrency, formatRelative, projectStatusLabel, PLAN_LABELS } from '@/lib/utils/format'
+import { formatCurrency, formatCurrencyGroups, formatRelative, projectStatusLabel, PLAN_LABELS } from '@/lib/utils/format'
 import { isAttentionWorthy, attentionReason } from '@/lib/utils/attention'
 import type { SessionUser } from '@/lib/supabase/types'
 
@@ -121,8 +121,11 @@ export default async function DashboardPage() {
       workspace: { proactiveRiskAlertsEnabled: ws?.proactive_risk_alerts_enabled, proactiveRiskThreshold: ws?.proactive_risk_threshold },
     })
   )
-  const activeValue = active.reduce((s: number, p: any) => s + (p.contract_value || 0), 0)
-  const currency = active[0]?.currency || 'USD'
+  // FIX (deep audit, section 7): see currencyGroupedTotals in
+  // lib/utils/format.ts — this used to sum contract_value across every
+  // active project regardless of currency, then label the sum with
+  // active[0]'s currency.
+  const activeValueDisplay = formatCurrencyGroups(active, true)
 
   return (
     <div className="page" style={{ maxWidth: 980 }}>
@@ -172,8 +175,8 @@ export default async function DashboardPage() {
         </div>
         <div className="mc">
           <div className="mc-lbl">Active contract value</div>
-          <div className="mc-val green">
-            {canViewFinances ? formatCurrency(activeValue, currency, true) : '—'}
+          <div className="mc-val green" style={{ fontSize: activeValueDisplay.includes('·') ? 16 : undefined }}>
+            {canViewFinances ? activeValueDisplay : '—'}
           </div>
           <div className="mc-sub">Across active projects</div>
         </div>

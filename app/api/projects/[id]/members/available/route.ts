@@ -5,7 +5,8 @@ export const runtime = 'nodejs'
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
-import { getSession } from '@/lib/auth/session'
+import { getSession, hasPermission } from '@/lib/auth/session'
+import { canReadProject } from '@/lib/utils/project-access'
 
 export async function GET(
   _request: NextRequest,
@@ -17,6 +18,17 @@ export async function GET(
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
     const service = createServiceClient()
+
+    // FIX (deep audit, section 7): this had no permission or project-
+    // visibility check at all beyond "is logged in" — unlike POST on the
+    // sibling route (ASSIGN_TEAM_MEMBERS + a verified project). In
+    // practice this doesn't leak anything the Team page doesn't already
+    // show any authenticated member, but it's the only endpoint in this
+    // whole section that skipped both checks. Bring it in line.
+    if (!hasPermission(session, 'ASSIGN_TEAM_MEMBERS'))
+      return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
+    if (!(await canReadProject(service, session, projectId)))
+      return NextResponse.json({ error: 'Project not found' }, { status: 404 })
 
     // Get member IDs already on the project
     const { data: existing } = await (service as any)

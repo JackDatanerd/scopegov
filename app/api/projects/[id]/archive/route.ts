@@ -2,6 +2,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { canReadProject } from '@/lib/utils/project-access'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -14,6 +15,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
 
     const service = createServiceClient()
+    // FIX (deep audit, section 7): same gap as complete/route.ts — added
+    // the same canReadProject check so a narrowly-scoped custom role can't
+    // archive a project it can't otherwise see.
+    if (!(await canReadProject(service, session, id)))
+      return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     const { data: project } = await (service as any)
       .from('projects').select('id,name,status').eq('id', id).eq('workspace_id', session.workspaceId).single()

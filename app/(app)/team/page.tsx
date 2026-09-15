@@ -20,7 +20,7 @@ export default async function TeamPage() {
 
   const service = createServiceClient()
 
-  const [membersRes, rolesRes] = await Promise.all([
+  const [membersRes, rolesRes, deactivatedRes] = await Promise.all([
     (service as any)
       .from('workspace_members')
       .select(`
@@ -37,17 +37,32 @@ export default async function TeamPage() {
       .select('id, name, permissions, is_default, description')
       .eq('workspace_id', session.workspaceId)
       .order('name'),
+    // FIX (deep audit, section 6): deactivation was a one-way door — there
+    // was no way to even SEE deactivated members in this UI, let alone
+    // undo a mistaken or malicious deactivation. Fetch them separately so
+    // TeamClient can offer a Reactivate action.
+    (service as any)
+      .from('workspace_members')
+      .select(`
+        id, status, deactivated_at, effective_permissions,
+        users!workspace_members_user_id_fkey(id, name, email, avatar_url)
+      `)
+      .eq('workspace_id', session.workspaceId)
+      .eq('status', 'deactivated')
+      .order('deactivated_at', { ascending: false }),
   ])
 
   const members = membersRes.data || []
   const roles   = rolesRes.data  || []
   const active  = members.filter((m: any) => m.status === 'active')
   const pending = members.filter((m: any) => m.status === 'invited')
+  const deactivated = deactivatedRes.data || []
 
   return (
     <TeamClient
       members={active}
       pendingInvites={pending}
+      deactivatedMembers={deactivated}
       roles={roles}
       session={session}
       canInvite={hasPermission(session, 'INVITE_MEMBERS')}

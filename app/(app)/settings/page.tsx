@@ -20,7 +20,14 @@ export default async function SettingsPage() {
   const [wsRes, billingRes, defaultsRes] = await Promise.all([
     (service as any)
       .from('workspaces')
-      .select('id,name,slug,slug_changed_at,agency_name,brand_colour,logo_storage_path,agency_signature_data,industry,currency,timezone,sow_language,governing_law,proactive_risk_threshold,proactive_risk_alerts_enabled,guardian_sensitivity_tier,plan_tier,trial_ends_at,created_at')
+      // FIX (deep audit, section 5): this select list omitted tax_id, phone,
+      // website, default_payment_instructions, and legal_address — the
+      // entire "Billing identity" block that SettingsClient renders and
+      // lets people save. workspace/settings/route.ts writes all five
+      // correctly; they just never came back on the next page load, so a
+      // successful save looked exactly like a failed one (fields render
+      // blank again on refresh, even though the data is in Postgres).
+      .select('id,name,slug,slug_changed_at,agency_name,brand_colour,logo_storage_path,agency_signature_data,industry,currency,timezone,sow_language,governing_law,proactive_risk_threshold,proactive_risk_alerts_enabled,guardian_sensitivity_tier,plan_tier,trial_ends_at,created_at,tax_id,phone,website,default_payment_instructions,legal_address')
       .eq('id', session.workspaceId)
       .single(),
     (service as any)

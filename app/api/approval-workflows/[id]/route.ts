@@ -42,6 +42,24 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         if ((!s.approverRoleId && !s.approverUserId) || (s.approverRoleId && s.approverUserId))
           return NextResponse.json({ error: 'Each step needs exactly one approver — a role or a person' }, { status: 400 })
       }
+      // FIX (deep audit, section 5): same ownership check added to POST —
+      // see the comment there for why.
+      const roleIds = steps.map(s => s.approverRoleId).filter(Boolean) as string[]
+      const userIds = steps.map(s => s.approverUserId).filter(Boolean) as string[]
+      if (roleIds.length) {
+        const { count: roleCount } = await (service as any)
+          .from('roles').select('id', { count: 'exact', head: true })
+          .eq('workspace_id', session.workspaceId).in('id', roleIds)
+        if ((roleCount || 0) !== new Set(roleIds).size)
+          return NextResponse.json({ error: 'One or more selected roles are not part of this workspace' }, { status: 400 })
+      }
+      if (userIds.length) {
+        const { count: userCount } = await (service as any)
+          .from('workspace_members').select('id', { count: 'exact', head: true })
+          .eq('workspace_id', session.workspaceId).eq('status', 'active').in('user_id', userIds)
+        if ((userCount || 0) !== new Set(userIds).size)
+          return NextResponse.json({ error: 'One or more selected approvers are not active members of this workspace' }, { status: 400 })
+      }
       await (service as any).from('approval_workflow_steps').delete().eq('workflow_id', id)
       if (steps.length > 0) {
         await (service as any).from('approval_workflow_steps').insert(

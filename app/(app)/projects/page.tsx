@@ -47,12 +47,26 @@ export default async function ProjectsPage() {
 
   const { data: projects = [] } = await query
 
+  // FIX (deep audit, section 7): fetch the workspace's actual Guardian
+  // settings so "needs attention" here matches the Dashboard instead of
+  // silently falling back to isAttentionWorthy's hardcoded defaults.
+  const { data: ws } = await (service as any)
+    .from('workspaces')
+    .select('proactive_risk_alerts_enabled, proactive_risk_threshold, currency')
+    .eq('id', session.workspaceId)
+    .maybeSingle()
+
   return (
     <ProjectsClient
       projects={projects || []}
       canCreate={canCreate}
       canViewFinancials={hasPermission(session, 'VIEW_FINANCIALS')}
       session={session}
+      workspaceSettings={{
+        proactiveRiskAlertsEnabled: ws?.proactive_risk_alerts_enabled,
+        proactiveRiskThreshold: ws?.proactive_risk_threshold,
+        currency: ws?.currency,
+      }}
     />
   )
 }

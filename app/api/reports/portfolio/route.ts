@@ -51,7 +51,15 @@ export async function GET(request: NextRequest) {
         .eq('workspace_id', wsId).eq('status', 'Stalled').eq('stall_reason', 'sow_unsigned')
         .order('updated_at', { ascending: true }),
       (service as any).from('change_orders')
-        .select('id, title, total, project_id, updated_at, projects(id, name)')
+        // FIX (deep audit, section 8): this never selected the CO's own
+        // project currency — the frontend then rendered every stalled
+        // CO's amount using the single workspace-wide dominant currency
+        // (see `currency` in the response, used in StalledPanel). For a
+        // stalled CO belonging to a minority-currency project, that's not
+        // a rounding artifact like the count/value mismatches above — it
+        // prints the wrong currency symbol on a real figure outright (a
+        // KES 200,000 change order rendered as "$200,000").
+        .select('id, title, total, project_id, updated_at, projects(id, name, currency)')
         .eq('workspace_id', wsId).eq('status', 'stalled')
         .order('updated_at', { ascending: true }),
     ])
@@ -100,6 +108,7 @@ export async function GET(request: NextRequest) {
       })),
       stalledCos: (stalledCosRes.data || []).map((c: any) => ({
         id: c.id, title: c.title, total: canViewFinancials ? c.total : null,
+        currency: c.projects?.currency || 'USD',
         projectId: c.project_id, projectName: c.projects?.name || 'Unknown project', since: c.updated_at,
       })),
       hasSnapshots: history.length > 0,

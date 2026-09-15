@@ -225,8 +225,17 @@ function AccountTab({ session, supabase, router }: any) {
     if (newPw.length < 8)    { setErr('Password must be at least 8 characters'); return }
     setPwLoading(true); setMsg(''); setErr('')
     try {
-      const { error } = await supabase.auth.updateUser({ password: newPw })
-      if (error) throw error
+      // FIX (deep audit, section 5): this used to call
+      // supabase.auth.updateUser() directly from the browser, with no
+      // re-authentication check at all — unlike disabling MFA, which
+      // requires proving aal2 first. Route it through a server endpoint
+      // that enforces the same rule when this account's role mandates MFA.
+      const res = await fetch('/api/auth/change-password', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: newPw }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json.error || 'Failed to update password')
       setMsg('Password updated.')
       setNewPw(''); setConfirmPw('')
       await supabase.auth.signOut()

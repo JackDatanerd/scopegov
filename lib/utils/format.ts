@@ -60,6 +60,37 @@ export function roundCurrency(n: number): number {
 }
 
 // ── CURRENCY ──────────────────────────────────────────────────────────────────
+// FIX (deep audit, section 7): dashboard and projects-list "total contract
+// value" metrics used to sum raw contract_value across every project in a
+// group regardless of currency, then label the sum with whichever
+// project happened to be first in the array — silently adding e.g. USD
+// and KES figures together and mislabelling the result. There's no
+// exchange-rate conversion anywhere in this codebase (by design — see
+// scope-health-rollup/route.ts), so the only honest fix is to never sum
+// across currencies: group first, sum within each group, and show every
+// currency present instead of picking one.
+export function currencyGroupedTotals(
+  items: Array<{ contract_value?: number | null; currency?: string | null }>
+): Array<{ currency: string; total: number }> {
+  const totals = new Map<string, number>()
+  for (const item of items) {
+    const currency = item.currency || 'USD'
+    totals.set(currency, (totals.get(currency) || 0) + (item.contract_value || 0))
+  }
+  return Array.from(totals.entries())
+    .map(([currency, total]) => ({ currency, total }))
+    .sort((a, b) => b.total - a.total)
+}
+
+export function formatCurrencyGroups(
+  items: Array<{ contract_value?: number | null; currency?: string | null }>,
+  compact = false
+): string {
+  const groups = currencyGroupedTotals(items).filter(g => g.total > 0)
+  if (groups.length === 0) return formatCurrency(0, 'USD', compact)
+  return groups.map(g => formatCurrency(g.total, g.currency, compact)).join(' · ')
+}
+
 export function formatCurrency(
   amount: number,
   currency: string = 'USD',

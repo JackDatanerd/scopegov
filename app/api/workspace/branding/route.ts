@@ -22,14 +22,15 @@ export async function PATCH(request: NextRequest) {
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
     if (brandColour) updates.brand_colour = brandColour
     if (logoStoragePath && typeof logoStoragePath === 'string') {
-      // FIX (re-audit, minor finding): logoStoragePath was accepted as an
-      // arbitrary string with no check that it's actually a path this user
-      // was allowed to upload to. The storage RLS policy for the `logos`
-      // bucket already restricts uploads to `<auth.uid()>/<filename>`
-      // ("Users can upload their own logo"), so mirror that shape here —
-      // this is defense-in-depth against setting the workspace's logo
-      // reference to a path outside that pattern.
-      const validPath = new RegExp(`^${session.id}/[a-zA-Z0-9._-]+$`)
+      // FIX (deep audit, section 5): this validated against
+      // `${session.id}/...` — the user's own auth id — on the theory that
+      // it mirrored a storage RLS policy shape. But the actual upload route
+      // (branding/logo/route.ts) writes to `${session.workspaceId}/logo.<ext>`.
+      // A user's id is essentially never equal to their workspace's id, so
+      // this rejected every real upload with "Invalid logoStoragePath" and
+      // silently broke logo-saving entirely. Validate against the path the
+      // upload route actually produces.
+      const validPath = new RegExp(`^${session.workspaceId}/logo\\.[a-zA-Z0-9]+$`)
       if (!validPath.test(logoStoragePath)) {
         return NextResponse.json({ error: 'Invalid logoStoragePath' }, { status: 400 })
       }

@@ -65,6 +65,33 @@ export async function POST(request: NextRequest) {
     }
 
     const service = createServiceClient()
+
+    // FIX (deep audit, section 5): approverRoleId/approverUserId were
+    // inserted with no check that they actually belong to this workspace.
+    // The UI only ever offers valid options so this wasn't reachable
+    // through normal use, but it's the only mutation in the whole Settings
+    // surface that trusted a client-supplied foreign-key id with zero
+    // ownership check — everywhere else in this file (workspace_id
+    // scoping, permission gates) that check is deliberate. Belt-and-
+    // suspenders against a stale/tampered request wiring a step to a role
+    // or person outside this workspace.
+    const roleIds = steps.map(s => s.approverRoleId).filter(Boolean) as string[]
+    const userIds = steps.map(s => s.approverUserId).filter(Boolean) as string[]
+    if (roleIds.length) {
+      const { count } = await (service as any)
+        .from('roles').select('id', { count: 'exact', head: true })
+        .eq('workspace_id', session.workspaceId).in('id', roleIds)
+      if ((count || 0) !== new Set(roleIds).size)
+        return NextResponse.json({ error: 'One or more selected roles are not part of this workspace' }, { status: 400 })
+    }
+    if (userIds.length) {
+      const { count } = await (service as any)
+        .from('workspace_members').select('id', { count: 'exact', head: true })
+        .eq('workspace_id', session.workspaceId).eq('status', 'active').in('user_id', userIds)
+      if ((count || 0) !== new Set(userIds).size)
+        return NextResponse.json({ error: 'One or more selected approvers are not active members of this workspace' }, { status: 400 })
+    }
+
     const { data: workflow, error: insertErr } = await (service as any)
       .from('approval_workflows')
       .insert({

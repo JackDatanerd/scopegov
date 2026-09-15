@@ -10,16 +10,17 @@ import type { SessionUser } from '@/lib/supabase/types'
 import { initials, avatarColour, formatDate, ALL_PERMISSIONS } from '@/lib/utils/format'
 
 interface Props {
-  members:        any[]
-  pendingInvites: any[]
-  roles:          any[]
-  session:        SessionUser
-  canInvite:      boolean
-  canManageRoles: boolean
-  workspaceId:    string
+  members:            any[]
+  pendingInvites:     any[]
+  deactivatedMembers?: any[]
+  roles:              any[]
+  session:            SessionUser
+  canInvite:          boolean
+  canManageRoles:     boolean
+  workspaceId:        string
 }
 
-export default function TeamClient({ members, pendingInvites, roles, session, canInvite, canManageRoles, workspaceId }: Props) {
+export default function TeamClient({ members, pendingInvites, deactivatedMembers = [], roles, session, canInvite, canManageRoles, workspaceId }: Props) {
   const router  = useRouter()
   const [tab,   setTab]   = useState<'members' | 'roles'>('members')
   const [modal, setModal] = useState<'invite' | 'role' | null>(null)
@@ -32,6 +33,7 @@ export default function TeamClient({ members, pendingInvites, roles, session, ca
   const [editPerms, setEditPerms] = useState<Record<string, boolean>>({})
   const [loading, setLoading] = useState(false)
   const [error,   setError]   = useState('')
+  const [notice,  setNotice]  = useState('')
 
   async function handleInvite(e: React.FormEvent) {
     e.preventDefault()
@@ -52,29 +54,59 @@ export default function TeamClient({ members, pendingInvites, roles, session, ca
 
   async function handleDeactivate(memberId: string, memberName: string) {
     if (!confirm(`Deactivate ${memberName}? They will lose workspace access immediately.`)) return
+    setError(''); setNotice('')
     const res = await fetch(`/api/team/${memberId}`, { method: 'DELETE' })
-    if (res.ok) router.refresh()
+    const json = await res.json().catch(() => ({}))
+    if (!res.ok) { setError(json.error || 'Could not deactivate member'); return }
+    if (json.warning) setNotice(json.warning)
+    router.refresh()
   }
 
+  // FIX (deep audit, section 6): this used to PATCH `{ status: 'deactivated' }`
+  // to clear the old invite row before resending — but PATCH never handled
+  // a `status` field at all, so that call was a silent no-op, and the
+  // follow-up POST always 409'd with "an invite is already pending" since
+  // the old row was never actually cleared. DELETE already does exactly
+  // what "deactivate this pending invite" needs and is fully permission-
+  // consistent with the Revoke button right next to Resend — reuse it.
   async function handleResendInvite(m: any) {
     const email = m.invited_email || m.users?.email
     if (!email) return
-    // Deactivate old invite row then fire a fresh invite
-    await fetch(`/api/team/${m.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'deactivated' }),
-    })
-    await fetch('/api/team/invite', {
+    setError(''); setNotice('')
+    const delRes = await fetch(`/api/team/${m.id}`, { method: 'DELETE' })
+    if (!delRes.ok) {
+      const j = await delRes.json().catch(() => ({}))
+      setError(j.error || 'Could not resend invite'); return
+    }
+    const res = await fetch('/api/team/invite', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, roleId: m.role_id || null, workspaceId }),
     })
+    const json = await res.json().catch(() => ({}))
+    if (!res.ok) { setError(json.error || 'Could not resend invite'); return }
     router.refresh()
   }
 
   async function handleRevokeInvite(memberId: string) {
-    await fetch(`/api/team/${memberId}`, { method: 'DELETE' })
+    setError('')
+    const res = await fetch(`/api/team/${memberId}`, { method: 'DELETE' })
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}))
+      setError(j.error || 'Could not revoke invite'); return
+    }
+    router.refresh()
+  }
+
+  async function handleReactivate(memberId: string, memberName: string) {
+    if (!confirm(`Reactivate ${memberName}? They will regain the access their previous role held.`)) return
+    setError(''); setNotice('')
+    const res = await fetch(`/api/team/${memberId}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'active' }),
+    })
+    const json = await res.json().catch(() => ({}))
+    if (!res.ok) { setError(json.error || 'Could not reactivate member'); return }
     router.refresh()
   }
 
@@ -111,6 +143,16 @@ export default function TeamClient({ members, pendingInvites, roles, session, ca
     } finally { setLoading(false) }
   }
 
+  // FIX (deep audit, section 6): roles could be created but never deleted.
+  async function handleDeleteRole(roleId: string, roleName: string) {
+    if (!confirm(`Delete the "${roleName}" role? This can't be undone.`)) return
+    setError(''); setNotice('')
+    const res = await fetch(`/api/team/roles/${roleId}`, { method: 'DELETE' })
+    const json = await res.json().catch(() => ({}))
+    if (!res.ok) { setError(json.error || 'Could not delete role'); return }
+    router.refresh()
+  }
+
   return (
     <div className="page" style={{ maxWidth: 960 }}>
       <div className="page-hd">
@@ -126,6 +168,9 @@ export default function TeamClient({ members, pendingInvites, roles, session, ca
           )}
         </div>
       </div>
+
+      {error && <div className="auth-error" style={{ marginBottom: 16 }}>{error}</div>}
+      {notice && <div className="auth-success" style={{ marginBottom: 16 }}>{notice}</div>}
 
       <div className="tabbar" style={{ marginBottom: 24 }}>
         <button className={`tabi${tab === 'members' ? ' act' : ''}`} onClick={() => setTab('members')}>
@@ -216,6 +261,42 @@ export default function TeamClient({ members, pendingInvites, roles, session, ca
               </div>
             </div>
           )}
+
+          {/* FIX (deep audit, section 6): deactivated members were
+             previously invisible in this UI entirely, with no way to undo
+             a deactivation. */}
+          {canInvite && deactivatedMembers.length > 0 && (
+            <div style={{ marginTop: 24 }}>
+              <div className="sec-hd"><div className="sec-title">Deactivated ({deactivatedMembers.length})</div></div>
+              <div className="surface" style={{ overflow: 'hidden' }}>
+                <table className="gov-table" style={{ width: '100%' }}>
+                  <thead>
+                    <tr><th>Name</th><th>Email</th><th>Deactivated</th><th /></tr>
+                  </thead>
+                  <tbody>
+                    {deactivatedMembers.map((m: any) => {
+                      const u = m.users
+                      const name = u?.name || u?.email || 'Unknown'
+                      return (
+                        <tr key={m.id}>
+                          <td className="td-primary" style={{ color: 'var(--text-3)' }}>{name}</td>
+                          <td style={{ color: 'var(--text-3)', fontSize: 12 }}>{u?.email}</td>
+                          <td style={{ color: 'var(--text-3)', fontSize: 12 }}>{m.deactivated_at ? formatDate(m.deactivated_at) : '—'}</td>
+                          <td>
+                            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                              <button className="btn btn-ghost btn-xs" onClick={() => handleReactivate(m.id, name)}>
+                                Reactivate
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </>
       )}
 
@@ -259,9 +340,16 @@ export default function TeamClient({ members, pendingInvites, roles, session, ca
                       </td>
                       <td>
                         {!r.is_default && canManageRoles && (
-                          <button className="btn-icon" onClick={() => { setEditRole(r); setEditPerms(r.permissions || {}) }}>
-                            <i className="ti ti-pencil" style={{ fontSize: 13 }} />
-                          </button>
+                          <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                            <button className="btn-icon" onClick={() => { setEditRole(r); setEditPerms(r.permissions || {}) }}>
+                              <i className="ti ti-pencil" style={{ fontSize: 13 }} />
+                            </button>
+                            <button className="btn-icon" style={{ color: 'var(--red)' }}
+                              title={memberCount > 0 ? 'Reassign members before deleting' : 'Delete role'}
+                              onClick={() => handleDeleteRole(r.id, r.name)}>
+                              <i className="ti ti-trash" style={{ fontSize: 13 }} />
+                            </button>
+                          </div>
                         )}
                       </td>
                     </tr>

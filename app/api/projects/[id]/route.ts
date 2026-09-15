@@ -31,7 +31,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     // Verify project belongs to workspace
     const { data: project } = await (service as any)
-      .from('projects').select('id,name,status').eq('id', id)
+      .from('projects').select('id,name,status,contract_value,currency,sow_documents(status)').eq('id', id)
       .eq('workspace_id', session.workspaceId).single()
     if (!project) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     // FIX (audit round 3): see lib/utils/project-access.ts.
@@ -40,6 +40,12 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
     let eventType = 'project.updated'
+    // FIX (deep audit, section 7): the audit entry for this route only
+    // ever logged `{ from: project.status, to: body.status }` — for any
+    // edit that wasn't a status change (name, contract value, internal
+    // ref...), the audit trail captured nothing about what actually
+    // changed. Build it properly instead.
+    const changes: Record<string, { from: unknown; to: unknown }> = {}
 
     if (body.status) {
       if (!hasPermission(session, 'MARK_PROJECT_COMPLETE') && body.status === 'Complete')
@@ -47,6 +53,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
       updates.status = body.status
       eventType = 'project.status_changed'
+      changes.status = { from: project.status, to: body.status }
 
       // BUG-046: clear stallReason when transitioning Stalled → Active
       if (body.status === 'Active' && project.status === 'Stalled') {
@@ -57,9 +64,32 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       }
     }
 
-    if (body.name)          updates.name          = body.name
-    if (body.disc !== undefined) updates.disc      = body.disc || null
-    if (body.contractValue) updates.contract_value = roundCurrency(parseFloat(body.contractValue))
+    if (body.name && body.name !== project.name) {
+      changes.name = { from: project.name, to: body.name }
+      updates.name = body.name
+    }
+    if (body.disc !== undefined) updates.disc = body.disc || null
+    if (body.contractValue) {
+      const newValue = roundCurrency(parseFloat(body.contractValue))
+      if (newValue !== project.contract_value) {
+        // FIX (deep audit, section 7 — significant): contract_value feeds
+        // the signed SOW PDF, CO drafting, dashboard/portfolio totals, and
+        // approval-workflow threshold matching — it isn't cosmetic. This
+        // let anyone with CREATE_PROJECTS silently edit it after a SOW was
+        // already signed, with no lock and (until the fix above) no audit
+        // trail of the change at all. Once a SOW is signed, the contracted
+        // value should only move through a Change Order, which has its
+        // own approval/audit trail — not a quiet edit here.
+        const hasSignedSow = (project.sow_documents || []).some((s: any) => s.status === 'signed')
+        if (hasSignedSow) {
+          return NextResponse.json({
+            error: 'This project has a signed SOW — use a change order to adjust the contract value.',
+          }, { status: 409 })
+        }
+        changes.contractValue = { from: project.contract_value, to: newValue }
+        updates.contract_value = newValue
+      }
+    }
     if (body.startDate !== undefined) updates.start_date = body.startDate || null
     if (body.internalRef !== undefined) updates.internal_ref = body.internalRef || null
 
@@ -74,7 +104,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       entityType:  'project',
       entityId:    id,
       entityName:  project.name,
-      metadata:    { from: project.status, to: body.status },
+      metadata:    changes,
     })
 
     return NextResponse.json({ ok: true })

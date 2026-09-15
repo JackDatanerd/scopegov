@@ -3,7 +3,7 @@ import { useState, useMemo } from 'react'
 import Link from 'next/link'
 import type { SessionUser } from '@/lib/supabase/types'
 import { isAttentionWorthy, attentionReason } from '@/lib/utils/attention'
-import { formatCurrency, formatDate, projectStatusLabel, PROJECT_TYPE_ICONS } from '@/lib/utils/format'
+import { formatCurrency, formatCurrencyGroups, formatDate, projectStatusLabel, PROJECT_TYPE_ICONS } from '@/lib/utils/format'
 
 type ProjectRow = any // all .from() calls use (supabase as any) per BUG-039
 
@@ -47,9 +47,21 @@ interface Props {
   canCreate: boolean
   canViewFinancials: boolean
   session: SessionUser
+  // FIX (deep audit, section 7): this page previously never received the
+  // workspace's actual Guardian settings at all, so "needs attention"
+  // here silently used isAttentionWorthy's hardcoded defaults (10000
+  // threshold, alerts enabled) regardless of what the workspace had
+  // configured in Settings — meaning a project could show as attention-
+  // worthy here and not on the Dashboard (which did pass real settings),
+  // or vice versa, for the exact same project.
+  workspaceSettings?: {
+    proactiveRiskAlertsEnabled?: boolean
+    proactiveRiskThreshold?: number
+    currency?: string
+  }
 }
 
-export default function ProjectsClient({ projects, canCreate, canViewFinancials }: Props) {
+export default function ProjectsClient({ projects, canCreate, canViewFinancials, workspaceSettings }: Props) {
   const [tab,    setTab]    = useState('active')
   const [search, setSearch] = useState('')
   const [view,   setView]   = useState<'grouped' | 'list'>('grouped')
@@ -73,6 +85,11 @@ export default function ProjectsClient({ projects, canCreate, canViewFinancials 
       project: {
         ...p, contractValue: p.contract_value, stallReason: p.stall_reason,
         guardianFlags: p.guardian_flags, changeOrders: p.change_orders, sowDocuments: p.sow_documents,
+      },
+      workspace: {
+        proactiveRiskAlertsEnabled: workspaceSettings?.proactiveRiskAlertsEnabled,
+        proactiveRiskThreshold: workspaceSettings?.proactiveRiskThreshold,
+        currency: workspaceSettings?.currency,
       },
     })
   }
@@ -206,7 +223,12 @@ function ClientGroup({ group, canViewFinancials, projectAttention }: {
 }) {
   const [expanded, setExpanded] = useState(true)
   const attnCount   = group.projects.filter(projectAttention).length
-  const totalValue  = group.projects.reduce((s: number, p: ProjectRow) => s + (p.contract_value || 0), 0)
+  // FIX (deep audit, section 7): see currencyGroupedTotals in
+  // lib/utils/format.ts — this used to sum contract_value across the
+  // group regardless of currency, then label the sum with the first
+  // project's currency.
+  const totalValueDisplay = formatCurrencyGroups(group.projects, true)
+  const hasValue = group.projects.some(p => (p.contract_value || 0) > 0)
 
   return (
     <div style={{ marginBottom: 10 }}>
@@ -221,8 +243,8 @@ function ClientGroup({ group, canViewFinancials, projectAttention }: {
         <i className={`ti ti-chevron-${expanded ? 'down' : 'right'}`} style={{ fontSize: 12, color: 'var(--text-3)' }} />
         <span style={{ fontSize: 13, fontWeight: 600 }}>{group.clientName}</span>
         <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{group.projects.length} project{group.projects.length !== 1 ? 's' : ''}</span>
-        {canViewFinancials && totalValue > 0 && (
-          <span style={{ fontSize: 12, color: 'var(--text-3)' }}>· {formatCurrency(totalValue, group.projects[0]?.currency, true)}</span>
+        {canViewFinancials && hasValue && (
+          <span style={{ fontSize: 12, color: 'var(--text-3)' }}>· {totalValueDisplay}</span>
         )}
         {attnCount > 0 && (
           <span className="attn-marker" style={{ marginLeft: 'auto' }}>{attnCount} need attention</span>

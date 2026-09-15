@@ -1244,6 +1244,7 @@ function TeamTab({ project, team, permissions }: any) {
   }
 
   const [addError, setAddError] = useState('')
+  const [removingId, setRemovingId] = useState<string | null>(null)
 
   async function addMember(memberId: string) {
     setAddingId(memberId); setAddError('')
@@ -1256,6 +1257,21 @@ function TeamTab({ project, team, permissions }: any) {
       if (res.ok) { setAdding(false); router.refresh() }
       else setAddError(json.error || 'Could not add that member — try again.')
     } finally { setAddingId(null) }
+  }
+
+  // FIX (deep audit, section 7): there was previously no way to remove a
+  // member from a project short of deactivating them from the whole
+  // workspace.
+  async function removeMember(memberId: string, name: string) {
+    if (!confirm(`Remove ${name} from this project?`)) return
+    setRemovingId(memberId)
+    try {
+      const res = await fetch(`/api/projects/${project.id}/members`, {
+        method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ memberId }),
+      })
+      if (res.ok) router.refresh()
+    } finally { setRemovingId(null) }
   }
 
   return (
@@ -1285,6 +1301,13 @@ function TeamTab({ project, team, permissions }: any) {
                   <div style={{ fontSize: 12, color: 'var(--text-3)' }}>{u.email}</div>
                 </div>
                 <span style={{ fontSize: 12, color: 'var(--text-3)' }}>Added {formatDate(t.added_at)}</span>
+                {permissions.assignTeam && (
+                  <button className="btn-icon" style={{ color: 'var(--red)' }}
+                    disabled={removingId === t.workspace_members?.id}
+                    onClick={() => removeMember(t.workspace_members?.id, u.name)}>
+                    {removingId === t.workspace_members?.id ? <span className="spin spin-dark" /> : <i className="ti ti-x" style={{ fontSize: 13 }} />}
+                  </button>
+                )}
               </div>
             ) : null
           })}

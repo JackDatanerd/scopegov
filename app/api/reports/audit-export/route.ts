@@ -118,14 +118,29 @@ export async function GET(request: Request) {
     const fetchLimit = projectEntityIds ? Math.max(maxRows * 4, 5000) : maxRows + 1
     const { data: rawRows, count } = await query.limit(fetchLimit)
 
-    let rows = (rawRows || []) as any[]
+    const rawFetched = (rawRows || []) as any[]
+    let rows = rawFetched
     if (projectEntityIds) {
       const idSet = new Set(projectEntityIds)
       rows = rows.filter(r => r.entity_id && idSet.has(r.entity_id))
     }
 
+    // FIX (deep audit, section 5): with a project filter active, the raw
+    // (unfiltered) fetch is capped at `fetchLimit` and project-matching
+    // rows are found by filtering that capped set in memory. If the date
+    // range actually contains MORE matching rows than `fetchLimit` — a
+    // busy workspace, unrelated to this project — older project-relevant
+    // events past that cutoff were never even fetched, so they're silently
+    // missing from both `rows` and this export, with `truncated` staying
+    // false whenever the post-filter count happened to land under
+    // `maxRows`. That's a correctness gap in a compliance export whose
+    // whole point is being trustworthy as "the complete record" — the
+    // fetch hitting its own ceiling must count as truncation regardless of
+    // how many rows survive the project filter.
+    const rawFetchWasCapped = projectEntityIds ? rawFetched.length >= fetchLimit : false
+
     const totalCount = projectEntityIds ? rows.length : (count ?? rows.length)
-    const truncated = rows.length > maxRows
+    const truncated = rows.length > maxRows || rawFetchWasCapped
     const pageRows = rows.slice(0, maxRows)
 
     // Log the export itself — who pulled the audit trail, and with what

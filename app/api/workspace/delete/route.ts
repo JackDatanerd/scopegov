@@ -6,6 +6,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { cancelPaystackSubscription } from '@/lib/integrations/paystack'
+import { logAudit } from '@/lib/utils/audit'
 
 export async function DELETE() {
   try {
@@ -17,15 +18,44 @@ export async function DELETE() {
     const service = createServiceClient()
 
     // Block deletion if any signed SOW exists
-    const { count } = await (service as any)
+    const { count: signedSowCount } = await (service as any)
       .from('sow_documents')
       .select('id', { count: 'exact', head: true })
       .eq('workspace_id', session.workspaceId)
       .eq('status', 'signed')
 
-    if ((count || 0) > 0) {
+    if ((signedSowCount || 0) > 0) {
       return NextResponse.json({
         error: 'Workspaces with signed documents cannot be deleted. Contact support@scopegov.app.',
+      }, { status: 409 })
+    }
+
+    // FIX (deep audit, section 5): this guard only ever looked at
+    // sow_documents. An accepted change order is just as binding as a
+    // signed SOW (change_orders.status can reach 'accepted'), and
+    // invoice_payments is a real ledger of money the agency has actually
+    // collected from clients — deleting the workspace wiped both with no
+    // check at all. Block on either.
+    const { count: acceptedCoCount } = await (service as any)
+      .from('change_orders')
+      .select('id', { count: 'exact', head: true })
+      .eq('workspace_id', session.workspaceId)
+      .eq('status', 'accepted')
+
+    if ((acceptedCoCount || 0) > 0) {
+      return NextResponse.json({
+        error: 'Workspaces with accepted change orders cannot be deleted. Contact support@scopegov.app.',
+      }, { status: 409 })
+    }
+
+    const { count: paymentCount } = await (service as any)
+      .from('invoice_payments')
+      .select('id', { count: 'exact', head: true })
+      .eq('workspace_id', session.workspaceId)
+
+    if ((paymentCount || 0) > 0) {
+      return NextResponse.json({
+        error: 'Workspaces with recorded invoice payments cannot be deleted. Contact support@scopegov.app.',
       }, { status: 409 })
     }
 
@@ -60,6 +90,16 @@ export async function DELETE() {
       .update({ status: 'deactivated' })
       .eq('workspace_id', session.workspaceId)
       .neq('status', 'deactivated')
+
+    // FIX (deep audit, section 5): record the deletion itself in the
+    // audit trail — a workspace-ending action had no entry at all.
+    await logAudit(service, {
+      workspaceId: session.workspaceId, actorId: session.id,
+      actorEmail: session.email, actorName: session.name,
+      eventType: 'workspace.deleted', entityType: 'workspace',
+      entityId: session.workspaceId, entityName: session.agencyName,
+      metadata: { billing_cancelled: !!billing?.paystack_subscription_code },
+    })
 
     return NextResponse.json({ ok: true })
   } catch (err) {

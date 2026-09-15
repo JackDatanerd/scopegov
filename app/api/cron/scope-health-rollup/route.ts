@@ -58,7 +58,11 @@ export async function POST(request: NextRequest) {
 async function rollupWorkspace(service: any, workspaceId: string, snapshotDate: string) {
   const [projectsRes, flagsRes, exceptionsRes, coRes] = await Promise.all([
     service.from('projects')
-      .select('id, status, contract_value, currency')
+      // FIX (deep audit, section 8): stall_reason wasn't selected, so
+      // stalled_sow_count below couldn't distinguish "stalled because the
+      // SOW never got signed" from "stalled manually" — see the fix note
+      // at stalledSowCount.
+      .select('id, status, stall_reason, contract_value, currency')
       .eq('workspace_id', workspaceId)
       .is('deleted_at', null),
     service.from('guardian_flags')
@@ -102,11 +106,24 @@ async function rollupWorkspace(service: any, workspaceId: string, snapshotDate: 
 
   const bySeverity: Record<string, number> = { high: 0, medium: 0, low: 0 }
   let atRisk = 0
+  // FIX (deep audit, section 8 — the flagship finding): open_flags_count
+  // used to be flags.length — EVERY open flag, all currencies — while
+  // open_flags_by_severity only counted flags on dominant-currency
+  // projects (the loop below `continue`s past anything else before
+  // incrementing bySeverity). That meant the dashboard's headline "open
+  // flags" number and its own severity breakdown could disagree for any
+  // multi-currency workspace, AND a flag on a minority-currency project
+  // was silently invisible in the severity/risk breakdown while still
+  // counting in the header — exactly backwards for a governance tool.
+  // Count only what actually gets scored, so the header and the
+  // breakdown always agree.
+  let openFlagsCount = 0
 
   for (const f of flags) {
     const project = projectById[f.project_id]
     if (!project) continue
     if ((project.currency || 'USD') !== currency) continue // keep single-currency, like reports route
+    openFlagsCount++
     const sev = f.severity in bySeverity ? f.severity : 'low'
     bySeverity[sev]++
     const mult = SEVERITY_MULTIPLIER[f.severity] ?? SEVERITY_MULTIPLIER.low
@@ -114,10 +131,14 @@ async function rollupWorkspace(service: any, workspaceId: string, snapshotDate: 
   }
 
   let exceptionsValueTotal = 0
+  // Same fix as openFlagsCount above, for exceptions_count vs
+  // exceptions_value_total.
+  let exceptionsCount = 0
   for (const e of exceptions) {
     const project = projectById[e.project_id]
     if (!project) continue
     if ((project.currency || 'USD') !== currency) continue
+    exceptionsCount++
     const sev = e.guardian_flags?.severity
     const mult = sev ? (SEVERITY_MULTIPLIER[sev] ?? 1.0) : 1.0
     const value = (e.estimated_value || 0) * mult
@@ -125,8 +146,16 @@ async function rollupWorkspace(service: any, workspaceId: string, snapshotDate: 
     atRisk += value
   }
 
+  // FIX (deep audit, section 8): this used to count every project with
+  // status === 'Stalled', regardless of why — but the portfolio API's
+  // drill-down list (app/api/reports/portfolio/route.ts) only lists
+  // projects with stall_reason === 'sow_unsigned'. A project can also
+  // land in 'Stalled' with stall_reason 'manual' (any admin can manually
+  // stall a project — see PATCH /api/projects/[id]), which meant the
+  // metric-strip count and the drill-down list it labels could disagree.
+  // Match the drill-down's own definition of "stalled SOW".
   const stalledSowCount = projects.filter(
-    (p: any) => p.status === 'Stalled'
+    (p: any) => p.status === 'Stalled' && p.stall_reason === 'sow_unsigned'
   ).length
   const activeProjectCount = projects.filter((p: any) =>
     ['Active', 'Awaiting Signature', 'Intake', 'Changes Requested', 'Stalled'].includes(p.status)
@@ -136,9 +165,9 @@ async function rollupWorkspace(service: any, workspaceId: string, snapshotDate: 
     {
       workspace_id: workspaceId,
       snapshot_date: snapshotDate,
-      open_flags_count: flags.length,
+      open_flags_count: openFlagsCount,
       open_flags_by_severity: bySeverity,
-      exceptions_count: exceptions.length,
+      exceptions_count: exceptionsCount,
       exceptions_value_total: exceptionsValueTotal,
       contract_value_at_risk: Math.round(atRisk * 100) / 100,
       stalled_sow_count: stalledSowCount,

@@ -59,6 +59,20 @@ export async function PATCH(request: NextRequest) {
         if (ws?.slug_changed_at) {
           return NextResponse.json({ error: 'Workspace slug can only be changed once' }, { status: 409 })
         }
+        // FIX (deep audit, section 5): slug has a UNIQUE constraint
+        // (001_initial_schema.sql), but this route never pre-checked for a
+        // collision before attempting the update — on a taken slug, the
+        // raw Postgres error ("duplicate key value violates unique
+        // constraint...") bubbled straight to the UI via the catch-all
+        // below. That's a rough thing to see on a field the UI itself
+        // warns is a one-time, permanent choice. Check first and give a
+        // plain-language answer instead.
+        const { count: slugTaken } = await (service as any)
+          .from('workspaces').select('id', { count: 'exact', head: true })
+          .eq('slug', newSlug).neq('id', session.workspaceId)
+        if ((slugTaken || 0) > 0) {
+          return NextResponse.json({ error: 'That URL is already taken. Please choose another.' }, { status: 409 })
+        }
         updates.slug            = newSlug
         updates.slug_changed_at = new Date().toISOString()
       }
@@ -67,7 +81,14 @@ export async function PATCH(request: NextRequest) {
     const { error } = await (service as any)
       .from('workspaces').update(updates).eq('id', session.workspaceId)
 
-    if (error) throw new Error(error.message)
+    if (error) {
+      // Belt-and-suspenders against a race between the pre-check above and
+      // this update (two people saving the same brand-new slug at once).
+      if ((error as any).code === '23505') {
+        return NextResponse.json({ error: 'That URL is already taken. Please choose another.' }, { status: 409 })
+      }
+      throw new Error(error.message)
+    }
 
     await logAudit(service, {
       workspaceId: session.workspaceId, actorId: session.id,

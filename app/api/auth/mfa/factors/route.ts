@@ -4,6 +4,7 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
 import { logAudit } from '@/lib/utils/audit'
 import { sendMfaDisabledEmail } from '@/lib/email/templates'
+import { permissionsRequireMfa } from '@/lib/auth/mfa-policy'
 
 export async function GET() {
   try {
@@ -48,6 +49,31 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ error: 'Re-verify your authenticator code before disabling two-factor authentication.' }, { status: 403 })
     }
 
+    // FIX (deep audit, section 5): this route had no server-side check at
+    // all for whether the caller's role currently mandates MFA —
+    // `permissionsRequireMfa` was only ever checked client-side (to grey
+    // out the button in MfaSection.tsx) and in middleware.ts (which blocks
+    // the account on its *next* request once it detects aal1-only, forcing
+    // re-enrollment). That net still worked — a mandatory account got
+    // locked out the moment it tried to do anything else — but this
+    // endpoint was the one place that should have refused the disable
+    // outright and explained why, rather than silently letting it happen
+    // and relying on a different layer to catch the fallout.
+    const service = createServiceClient()
+    const { data: preCheckUser } = await (service as any)
+      .from('users').select('active_workspace_id').eq('id', user.id).maybeSingle()
+    if (preCheckUser?.active_workspace_id) {
+      const { data: memberRow } = await (service as any)
+        .from('workspace_members').select('effective_permissions')
+        .eq('user_id', user.id).eq('workspace_id', preCheckUser.active_workspace_id)
+        .eq('status', 'active').maybeSingle()
+      if (permissionsRequireMfa(memberRow?.effective_permissions)) {
+        return NextResponse.json({
+          error: 'Your role requires two-factor authentication to stay enabled. Ask an admin to change your permissions first.',
+        }, { status: 403 })
+      }
+    }
+
     const body = await request.json().catch(() => ({}))
     const { factorId } = body as { factorId?: string }
     if (!factorId) return NextResponse.json({ error: 'factorId is required' }, { status: 400 })
@@ -55,7 +81,6 @@ export async function DELETE(request: Request) {
     const { error } = await supabase.auth.mfa.unenroll({ factorId })
     if (error) return NextResponse.json({ error: error.message }, { status: 400 })
 
-    const service = createServiceClient()
     // Consume any remaining backup codes — they were tied to the factor
     // that no longer exists; leaving them active would let a leaked code
     // silently persist as a route back into an account.
@@ -63,10 +88,9 @@ export async function DELETE(request: Request) {
       .update({ used_at: new Date().toISOString() })
       .eq('user_id', user.id).is('used_at', null)
 
-    const { data: userRow } = await (service as any).from('users').select('active_workspace_id').eq('id', user.id).maybeSingle()
     try {
       await logAudit(service, {
-        workspaceId: userRow?.active_workspace_id || '',
+        workspaceId: preCheckUser?.active_workspace_id || '',
         actorId: user.id, actorEmail: user.email!, actorName: user.user_metadata?.name || user.email!,
         eventType: 'security.mfa_disabled', entityType: 'user', entityId: user.id, entityName: user.email!,
         metadata: { via: 'user' },
@@ -74,7 +98,7 @@ export async function DELETE(request: Request) {
     } catch (e) { console.error('MFA disable audit log failed (non-fatal):', e) }
     try {
       await (service as any).from('notifications').insert({
-        workspace_id: userRow?.active_workspace_id, recipient_id: user.id,
+        workspace_id: preCheckUser?.active_workspace_id, recipient_id: user.id,
         type: 'security', title: 'Two-factor authentication disabled',
         body: 'Your account no longer requires an authenticator code to sign in.',
       })
