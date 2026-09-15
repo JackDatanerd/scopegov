@@ -32,10 +32,24 @@ export default async function SowPage() {
 
   const safeSows = sows || []
 
+  // FIX (re-audit): these stats used to be computed from `safeSows`, which
+  // is capped by `limit` (10 for solo tier, 500 otherwise). "Total SOWs"
+  // was really "count of the first `limit` fetched" — silently wrong for
+  // any workspace that ever exceeds that cap, with no disclaimer outside
+  // the solo-tier banner. Use exact counts, unaffected by the row limit.
+  const [{ count: totalCount }, { count: signedCount }, { count: pendingCount }] = await Promise.all([
+    (service as any).from('sow_documents').select('id', { count: 'exact', head: true })
+      .eq('workspace_id', session.workspaceId),
+    (service as any).from('sow_documents').select('id', { count: 'exact', head: true })
+      .eq('workspace_id', session.workspaceId).eq('status', 'signed'),
+    (service as any).from('sow_documents').select('id', { count: 'exact', head: true })
+      .eq('workspace_id', session.workspaceId).eq('status', 'awaiting_signature'),
+  ])
+
   const stats = {
-    total:   safeSows.length,
-    signed:  safeSows.filter((s: any) => s.status === 'signed').length,
-    pending: safeSows.filter((s: any) => s.status === 'awaiting_signature').length,
+    total:   totalCount   ?? safeSows.length,
+    signed:  signedCount  ?? safeSows.filter((s: any) => s.status === 'signed').length,
+    pending: pendingCount ?? safeSows.filter((s: any) => s.status === 'awaiting_signature').length,
   }
 
   return (

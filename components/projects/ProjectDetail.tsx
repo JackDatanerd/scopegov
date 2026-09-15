@@ -514,7 +514,12 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
   const [sending, setSending] = useState(false)
   const [error,   setError]   = useState('')
   const [sentForApproval, setSentForApproval] = useState(false)
-  const currentSow = sows[0]
+  // FIX (re-audit, "current SOW" finding): defense-in-depth on top of the
+  // server-side .order() fix in app/(app)/projects/[id]/page.tsx — sort
+  // here too so this never silently picks a stale version if `sows` ever
+  // arrives unsorted from some other caller.
+  const sortedSows = [...(sows || [])].sort((a: any, b: any) => b.version - a.version)
+  const currentSow = sortedSows[0]
   const pendingApproval = currentSow ? pendingApprovals?.[`sow:${currentSow.id}`] : null
 
   // FIX: previously this tab's empty state just described what to do
@@ -543,8 +548,21 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
     router.refresh()
   }
 
+  // FIX (re-audit): this had zero feedback — no loading state, no error
+  // handling, no refresh — unlike its siblings handleSendSow/handleWithdraw
+  // right above it. A failed reminder (e.g. cooldown, or the SOW no longer
+  // being awaiting_signature) gave the user no signal either way.
+  const [reminding, setReminding] = useState(false)
   async function handleRemind() {
-    await fetch(`/api/sow/${currentSow.id}/remind`, { method: 'POST' })
+    setReminding(true); setError('')
+    try {
+      const res  = await fetch(`/api/sow/${currentSow.id}/remind`, { method: 'POST' })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error || 'Failed to send reminder')
+      router.refresh()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to send reminder')
+    } finally { setReminding(false) }
   }
 
   return (
@@ -559,7 +577,7 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
           </div>
         </div>
       )}
-      {sows.length === 0 ? (
+      {sortedSows.length === 0 ? (
         <div className="surface">
           <div className="empty-state">
             <i className="ti ti-file-description empty-state-icon" />
@@ -611,7 +629,9 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
                   )}
                   {currentSow.status === 'awaiting_signature' && (
                     <>
-                      <button className="btn btn-ghost btn-sm" onClick={handleRemind}><i className="ti ti-refresh" style={{ fontSize: 12 }} /> Remind</button>
+                      <button className="btn btn-ghost btn-sm" onClick={handleRemind} disabled={reminding}>
+                        {reminding ? <span className="spin" /> : <><i className="ti ti-refresh" style={{ fontSize: 12 }} /> Remind</>}
+                      </button>
                       <button className="btn btn-ghost btn-sm" onClick={handleWithdraw}><i className="ti ti-x" style={{ fontSize: 12 }} /> Withdraw</button>
                     </>
                   )}
@@ -624,10 +644,10 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
               </div>
             </div>
           )}
-          {sows.length > 1 && (
+          {sortedSows.length > 1 && (
             <div>
               <div className="sec-title" style={{ marginBottom: 10 }}>Version history</div>
-              {sows.map((s: any) => (
+              {sortedSows.map((s: any) => (
                 <div key={s.id} className="surface surface-p" style={{ marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <div>
                     <span style={{ fontSize: 13, fontWeight: 500 }}>v{s.version}</span>

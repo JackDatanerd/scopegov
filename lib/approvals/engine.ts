@@ -73,7 +73,7 @@ export async function evaluateApprovalGate(service: any, params: GateParams): Pr
 
   const { data: workflows } = await service
     .from('approval_workflows')
-    .select('id, threshold_amount')
+    .select('id, threshold_amount, threshold_currency')
     .eq('workspace_id', workspaceId)
     .eq('document_type', documentType)
     .eq('is_active', true)
@@ -81,8 +81,19 @@ export async function evaluateApprovalGate(service: any, params: GateParams): Pr
   // Best match = highest threshold the document's amount still clears.
   // A NULL threshold is a catch-all and sorts last, so a more specific
   // tiered rule always wins over a blanket one when both would apply.
+  // FIX (re-audit): a thresholded workflow is only comparable against a
+  // document in the SAME currency — see migration 023's comment. A
+  // "$10,000" threshold has no defensible meaning against a JPY or KES
+  // amount, so a currency-mismatched thresholded workflow no longer
+  // matches at all (rather than comparing raw digits across currencies).
+  // Currency-agnostic (threshold_amount == null, "applies to every
+  // document of this type") workflows are unaffected — there's no amount
+  // being compared for them.
   const matching = (workflows || [])
-    .filter((w: any) => w.threshold_amount == null || params.amount >= Number(w.threshold_amount))
+    .filter((w: any) =>
+      w.threshold_amount == null ||
+      (w.threshold_currency === params.currency && params.amount >= Number(w.threshold_amount))
+    )
     .sort((a: any, b: any) => {
       if (a.threshold_amount == null) return 1
       if (b.threshold_amount == null) return -1
@@ -217,9 +228,23 @@ export async function recordApprovalDecision(service: any, params: DecisionParam
   const docTitle       = request.context?.title || documentLabel
   const projectName    = request.context?.project_name || ''
 
-  await service.from('approval_steps').update({
+  // FIX (re-audit, critical race-condition finding): this is the exact
+  // read-then-write pattern that got an explicit CAS guard everywhere else
+  // in the app (SOW/CO sign, decline, accept, countersign) after a
+  // double-click or two near-simultaneous triggers turned out to be a real
+  // risk — but the engine's own decision path, on the busiest multi-user
+  // surface in the product (a role-based step can have several eligible
+  // approvers), never got the same guard. Two people (or one double-click)
+  // approving the same step at once could both pass the `step.status
+  // !== 'pending'` read above and both reach here; if it's the final step,
+  // both branches below would independently fire the auto-send, emailing
+  // the client twice with two different tokens (only the last write's
+  // stays valid). Guard the actual write and bail if someone already won.
+  const { data: decided } = await service.from('approval_steps').update({
     status: params.decision, decided_by: params.actor.id, decided_at: now, note: params.note || null,
-  }).eq('id', step.id)
+  }).eq('id', step.id).eq('status', 'pending').select('id').maybeSingle()
+
+  if (!decided) return { ok: false, error: 'This step has already been decided', status: 409 }
 
   const { data: requester } = await service
     .from('users').select('id, name, email').eq('id', request.requested_by).maybeSingle()
@@ -345,9 +370,15 @@ export async function cancelApprovalRequest(service: any, params: {
   if (!request) return
 
   const now = new Date().toISOString()
-  await service.from('approval_requests').update({
+  // FIX (re-audit): no CAS here either — a cancel racing a genuine
+  // approve/reject decision landing in between the read above and this
+  // write could blindly overwrite a real decision back to 'cancelled'.
+  // Lower-likelihood than the decision-vs-decision race above, but same
+  // root cause. If someone else's decision won the race, leave it be.
+  const { data: cancelled } = await service.from('approval_requests').update({
     status: 'cancelled', decided_at: now, updated_at: now,
-  }).eq('id', request.id)
+  }).eq('id', request.id).eq('status', 'pending').select('id').maybeSingle()
+  if (!cancelled) return
   await service.from('approval_steps').update({ status: 'skipped' })
     .eq('request_id', request.id).eq('status', 'pending')
 

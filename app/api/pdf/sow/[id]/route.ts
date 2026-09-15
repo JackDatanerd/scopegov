@@ -74,7 +74,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       agencySignatureData: ws?.agency_signature_data || null,
       clientSignatureData: sow.client_signature_data || null,
       version:       sow.version,
-      isWatermarked: sow.status === 'draft',
+      // FIX (re-audit): only 'draft' was watermarked. An 'awaiting_signature'
+      // or 'changes_requested' SOW downloaded internally had no watermark
+      // and no signature block, making it visually indistinguishable from a
+      // final, signed document if forwarded externally. Watermark anything
+      // that isn't yet signed.
+      isWatermarked: sow.status !== 'signed',
       documentNumber: sow.document_number || null,
     })
 

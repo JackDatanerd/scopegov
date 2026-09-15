@@ -37,6 +37,14 @@ export default async function ProjectPage({ params, searchParams }: Props) {
       sow_documents(id, version, status, sent_at, signed_at, created_at, document_number),
       project_scope_snapshot(id, deliverables, out_of_scope, last_updated_at)
     `)
+    // FIX (re-audit, "current SOW" finding): the sow_documents/change_orders
+    // embeds had no explicit order, so PostgREST returned them in whatever
+    // order the underlying scan happened to produce — not guaranteed to be
+    // version order. ProjectDetail's SowTab does `sows[0]` to decide which
+    // SOW the Edit/Send/Withdraw/Remind buttons act on; without this, that
+    // could silently be a stale/withdrawn version instead of the live one.
+    .order('version', { ascending: false, foreignTable: 'sow_documents' })
+    .order('version', { ascending: false, foreignTable: 'change_orders' })
     .eq('id', id)
     .eq('workspace_id', session.workspaceId)
     .is('deleted_at', null)

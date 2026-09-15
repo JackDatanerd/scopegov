@@ -49,7 +49,14 @@ export function SowTable({ sectionId, rows }: { sectionId: SowTableSectionId; ro
   }
 
   return (
-    <View style={s.box} wrap={false}>
+    // FIX (re-audit): wrap={false} forced this whole table to stay on one
+    // page — the outer section wrapper in renderer.tsx already allows
+    // table sections to split across pages, but this inner box overrode
+    // that by refusing to split itself. A table taller than one full page
+    // (a large enterprise SOW with many deliverables/timeline phases)
+    // would overflow off the bottom rather than paginate. Let it wrap like
+    // everything else; react-pdf splits at row boundaries.
+    <View style={s.box}>
       <View style={s.hdrRow}>
         {schema.columns.map(col => (
           <Text key={col.key} style={[s.th, { flex: flexOf(col.width), textAlign: col.align || 'left' }]}>

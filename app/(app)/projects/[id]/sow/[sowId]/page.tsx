@@ -15,6 +15,7 @@ export default function SowEditorPage() {
   const [sending,  setSending]  = useState(false)
   const [error,    setError]    = useState('')
   const [isLocked, setIsLocked] = useState(false)
+  const [perms,    setPerms]    = useState<{ canEdit: boolean; canSend: boolean }>({ canEdit: false, canSend: false })
 
   useEffect(() => {
     fetch(`/api/sow/${sowId}`)
@@ -25,6 +26,7 @@ export default function SowEditorPage() {
           // BUG-023: isLocked managed as local state — no reload required
           setIsLocked(!!json.sow.sent_at)
         }
+        if (json.permissions) setPerms(json.permissions)
       })
       .finally(() => setLoading(false))
   }, [sowId])
@@ -96,14 +98,14 @@ export default function SowEditorPage() {
             <i className="ti ti-download" style={{ fontSize: 12 }} />
             {isLocked ? 'Download PDF' : 'Preview PDF'}
           </a>
-          {!isLocked && (
+          {!isLocked && perms.canSend && (
             <button className="btn btn-primary btn-sm" onClick={handleSend} disabled={sending}>
               {sending
                 ? <><span className="spin" style={{ width: 12, height: 12 }} /> Sending…</>
                 : <><i className="ti ti-send" style={{ fontSize: 12 }} /> Send to client</>}
             </button>
           )}
-          {isLocked && sow.status === 'awaiting_signature' && (
+          {isLocked && sow.status === 'awaiting_signature' && perms.canSend && (
             <button
               className="btn btn-ghost btn-sm"
               onClick={async () => {
@@ -124,8 +126,8 @@ export default function SowEditorPage() {
           sowId={sowId}
           sections={sow.sections || []}
           isLocked={isLocked}
-          canSend={!isLocked}
-          canEdit={!isLocked}
+          canSend={!isLocked && perms.canSend}
+          canEdit={!isLocked && perms.canEdit}
         />
       </div>
     </div>

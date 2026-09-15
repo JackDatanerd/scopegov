@@ -38,7 +38,7 @@ export async function GET(request: NextRequest) {
         .select(REQUEST_FIELDS)
         .eq('workspace_id', session.workspaceId)
         .order('created_at', { ascending: false })
-        .limit(150)
+        .limit(500)
 
       return NextResponse.json({ requests: data || [], scope: 'all' })
     }
@@ -56,13 +56,20 @@ export async function GET(request: NextRequest) {
       .eq('status', 'active')
       .maybeSingle()
 
+    // FIX (re-audit): 150 pending requests workspace-wide, fetched
+    // oldest-first, before the "assigned to me" filter runs in JS. In a
+    // busy workspace with 150+ pending requests across all users, a
+    // genuinely-mine request newer than the cutoff would never appear —
+    // no warning, the badge and queue would just silently undercount.
+    // Match the 500 cap used elsewhere in the app (e.g. the SOW registry)
+    // rather than a much tighter one specific to this endpoint.
     const { data: pending } = await (service as any)
       .from('approval_requests')
       .select(REQUEST_FIELDS)
       .eq('workspace_id', session.workspaceId)
       .eq('status', 'pending')
       .order('created_at', { ascending: true })
-      .limit(150)
+      .limit(500)
 
     const mine = (pending || []).filter((r: any) => {
       const step = (r.approval_steps || []).find((s: any) => s.step_order === r.current_step)

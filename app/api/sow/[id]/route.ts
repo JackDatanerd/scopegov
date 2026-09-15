@@ -4,6 +4,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { sanitizeRichText, sanitizePlainText } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
 import { isTableSection, SOW_TABLE_SCHEMAS, type SowTableSectionId } from '@/lib/sow/table-schema'
+import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
 
 // Table rows are plain-text cells (rendered on the public portal page same
 // as prose content) — sanitizePlainText, not sanitizeRichText, since a
@@ -45,6 +46,22 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // Lock check — sentAt makes document permanently read-only (spec §0.6)
     if (sow.sent_at)
       return NextResponse.json({ error: 'SOW is locked after sending. Withdraw to edit.' }, { status: 409 })
+
+    // FIX (re-audit, critical finding): a SOW gated by an approval workflow
+    // never leaves status:'draft' until the chain clears — the gate
+    // intercepts BEFORE sendSowDocument ever runs — so this route's only
+    // lock condition (sent_at) never applied to a gated draft. Approvers
+    // were reviewing a snapshot of title/amount, but nothing stopped the
+    // actual document from being edited out from under that snapshot
+    // before the final approval fired the real send. Block edits while a
+    // decision is outstanding — the requester can cancel it (which reopens
+    // editing) if they need to change something first.
+    if (await getPendingApprovalForDocument(service, 'sow', id)) {
+      return NextResponse.json(
+        { error: 'This SOW has a pending approval request — cancel it before editing.' },
+        { status: 409 }
+      )
+    }
 
     const body = await request.json()
 
@@ -104,7 +121,21 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     if (!sow) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (!(await canReadProject(service, session, sow.project_id)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-    return NextResponse.json({ sow })
+    // FIX (re-audit): the editor page (app/(app)/projects/[id]/sow/[sowId]/page.tsx)
+    // derived canEdit/canSend purely from isLocked, with no awareness of the
+    // caller's actual permissions — it relied entirely on the entry-point
+    // link in ProjectDetail.tsx being hidden for users without EDIT_SOW/
+    // SEND_SOW. A direct or bookmarked URL visit by someone lacking those
+    // permissions saw a fully "live" editor that just 403'd on save,
+    // surfacing as a confusing generic "Save failed". Return the real
+    // permission flags so the page can gate itself too.
+    return NextResponse.json({
+      sow,
+      permissions: {
+        canEdit: hasPermission(session, 'EDIT_SOW'),
+        canSend: hasPermission(session, 'SEND_SOW'),
+      },
+    })
   } catch {
     return NextResponse.json({ error: 'Error' }, { status: 500 })
   }

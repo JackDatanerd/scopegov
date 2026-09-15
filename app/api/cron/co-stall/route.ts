@@ -28,12 +28,19 @@ export async function POST(request: NextRequest) {
     // unless they happened to check the dashboard. For a product whose
     // whole premise is not letting things go silently stale, that was a
     // real gap. Need project name + client name for the new notification.
+    // FIX (re-audit): change_orders has no `deleted_at` column — it was
+    // never added in any migration. Filtering on it made PostgREST reject
+    // the query outright (42703, column does not exist) on every single
+    // run; since only `data` was destructured (error silently discarded),
+    // this cron has been returning `{ok:true, stalled:0}` while doing
+    // nothing at all, every time it's run since the feature shipped —
+    // including the notification wiring added just above, which has
+    // therefore never actually fired either.
     const { data: staleCOs } = await (service as any)
       .from('change_orders')
       .select('id, title, project_id, workspace_id, sent_at, projects(name, clients(name))')
       .eq('status', 'awaiting_response')  // NOT countered
       .lt('sent_at', cutoff)
-      .is('deleted_at', null)
 
     let stalled = 0
     for (const co of (staleCOs || [])) {

@@ -58,7 +58,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'This SOW was already responded to' }, { status: 409 })
 
     // Create new draft version (same transaction per spec §1.3)
-    const { data: newSow } = await (service as any).from('sow_documents').insert({
+    // FIX (re-audit): the insert's error was never checked. If it failed,
+    // the flow used to proceed anyway — the old SOW is now locked
+    // ('changes_requested' + sent_at already set, so PATCH /api/sow/[id]
+    // refuses to edit it) with no new draft ever created, leaving the
+    // agency with no way back into editing short of the generic
+    // /api/sow/generate fallback. Roll the status change back and tell the
+    // client to retry instead of silently stranding the project.
+    const { data: newSow, error: newSowErr } = await (service as any).from('sow_documents').insert({
       project_id:          project.id,
       workspace_id:        sow.workspace_id,
       version:             sow.version + 1,
@@ -67,6 +74,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       metadata:            sow.metadata,
       previous_version_id: sow.id,
     }).select('id').single()
+
+    if (newSowErr || !newSow) {
+      console.error('request-changes: new draft version insert failed', newSowErr)
+      await (service as any).from('sow_documents')
+        .update({ status: 'awaiting_signature', updated_at: new Date().toISOString() })
+        .eq('id', sow.id).eq('status', 'changes_requested')
+      return NextResponse.json({ error: 'Something went wrong submitting your changes — please try again.' }, { status: 500 })
+    }
 
     // Update project status to Changes Requested
     // FIX (re-audit, portal section): also clears stall_reason, same

@@ -1,7 +1,7 @@
 export const runtime = 'nodejs'
 
 import { NextResponse, type NextRequest } from 'next/server'
-import { getSession } from '@/lib/auth/session'
+import { getSession, hasPermission } from '@/lib/auth/session'
 import { stripAndParse } from '@/lib/utils/format'
 import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
 import { createServiceClient } from '@/lib/supabase/server'
@@ -21,6 +21,12 @@ export async function POST(request: NextRequest) {
   try {
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    // FIX (re-audit): sibling routes (generate, regenerate-section) both
+    // require EDIT_SOW — this one didn't, letting anyone with a session
+    // (including a read-only member) spend the AI rate-limit budget with
+    // no ability to actually use the result.
+    if (!hasPermission(session, 'EDIT_SOW'))
+      return NextResponse.json({ error: 'Missing permission: EDIT_SOW' }, { status: 403 })
 
     const { briefText, projectType } = await request.json()
     if (!briefText?.trim()) return NextResponse.json({ error: 'briefText required' }, { status: 400 })

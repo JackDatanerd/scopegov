@@ -78,14 +78,29 @@ export async function sendSowDocument(service: any, params: {
   const documentNumber = sow.document_number || await assignDocumentNumber(service, workspaceId, 'sow')
 
   // Update SOW: draft → awaiting_signature. Note: 'sent' is NOT a status (spec §1.3)
-  await (service as any).from('sow_documents').update({
+  // FIX (re-audit, race-condition finding): every client-portal action
+  // (sign/decline/counter/accept/countersign) already guards its status
+  // transition with a CAS (.eq('status', <expected>)) to survive a
+  // double-click or two near-simultaneous triggers — this send path,
+  // called from both the manual "Send" button and the approval engine's
+  // auto-send-on-final-approval, never got the same guard. Two racing
+  // callers could both pass the earlier `status !== 'draft'` read and both
+  // reach here, burning two document numbers and emailing the client two
+  // different tokens (only the last write's token stays valid — the first
+  // email's link silently 404s). Guard the transition itself and bail if
+  // another caller already won the race.
+  const { data: sent } = await (service as any).from('sow_documents').update({
     status:          'awaiting_signature',
     sent_at:         now,
     token,
     expires_at:      expiresAt.toISOString(),
     document_number: documentNumber,
     updated_at:      now,
-  }).eq('id', sowId)
+  }).eq('id', sowId).eq('status', 'draft').select('id').maybeSingle()
+
+  if (!sent) {
+    return { ok: false, error: 'This SOW was already sent by another action', status: 409 }
+  }
 
   await (service as any).from('projects').update({
     status:     'Awaiting Signature',

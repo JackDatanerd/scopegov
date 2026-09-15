@@ -80,18 +80,26 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // Phase 0: assign sequential document number at send.
     const invoiceNumber = invoice.invoice_number || await assignDocumentNumber(service, session.workspaceId, 'invoice')
 
-    const { error: updateErr } = await (service as any).from('invoices').update({
+    // FIX (re-audit, race-condition finding): same missing CAS pattern
+    // found and fixed in send-sow.ts / send-co.ts — a double-click (or any
+    // other double-invocation) could otherwise both pass the earlier
+    // `status !== 'draft'` read and both send, burning two document
+    // numbers and emailing the client two different tokens.
+    const { data: sent, error: updateErr } = await (service as any).from('invoices').update({
       status:         'sent',
       sent_at:        now,
       token,
       expires_at:     expiresAt.toISOString(),
       invoice_number: invoiceNumber,
       updated_at:     now,
-    }).eq('id', id)
+    }).eq('id', id).eq('status', 'draft').select('id').maybeSingle()
 
     if (updateErr) {
       console.error('Invoice send: update failed', updateErr)
       return NextResponse.json({ error: 'Failed to send invoice' }, { status: 500 })
+    }
+    if (!sent) {
+      return NextResponse.json({ error: 'This invoice was already sent by another action' }, { status: 409 })
     }
 
     const portalUrl = `${process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL}/portal/invoice/${token}`

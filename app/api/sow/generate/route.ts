@@ -12,6 +12,7 @@ export const maxDuration = 120
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
+import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
 import { logAudit } from '@/lib/utils/audit'
 import { sanitizeRichText } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
@@ -199,6 +200,18 @@ export async function POST(request: NextRequest) {
     let sowId: string
 
     if (existingSow) {
+      // FIX (re-audit, critical finding, same gate-bypass class as
+      // api/sow/[id]/route.ts PATCH): this reuses the existing draft row
+      // — including one currently gated by a pending approval request —
+      // and overwrites its content wholesale via AI regeneration. Same
+      // fix: refuse to touch a draft with an approval decision
+      // outstanding.
+      if (await getPendingApprovalForDocument(service, 'sow', existingSow.id)) {
+        return NextResponse.json(
+          { error: 'This SOW has a pending approval request — cancel it before regenerating.' },
+          { status: 409 }
+        )
+      }
       // Update existing draft
       await (service as any).from('sow_documents')
         .update({ sections: parsed.sections, metadata: parsed.metadata, updated_at: new Date().toISOString() })

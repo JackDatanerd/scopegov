@@ -3,7 +3,7 @@
 // /api/pdf/sow/${sowId} — was always returning 404 for the actual SOW.
 
 'use client'
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
@@ -35,7 +35,13 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
   const [regenLoading,     setRegenLoading]     = useState<string | null>(null)
   const [regenInstruction, setRegenInstruction] = useState('')
   const [showRegen,        setShowRegen]        = useState<string | null>(null)
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // FIX (re-audit, data-loss finding): this used to be a single shared
+  // timer, so editing section A then switching to section B inside the
+  // 1.5s debounce window would clearTimeout() A's pending save entirely —
+  // never sent to the server, no error, no indication anything was lost.
+  // Keyed per-section so switching sections can no longer cancel another
+  // section's in-flight save.
+  const saveTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
 
   const current = sections.find(s => s.id === activeSection) || sections[0]
 
@@ -62,9 +68,11 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
   }, [sections, editor])
 
   function scheduleAutosave(sectionId: string, payload: { content: string } | { table: SowTableRow[] }) {
-    if (saveTimer.current) clearTimeout(saveTimer.current)
+    const existing = saveTimers.current.get(sectionId)
+    if (existing) clearTimeout(existing)
     setSaveStatus('saving')
-    saveTimer.current = setTimeout(async () => {
+    const timer = setTimeout(async () => {
+      saveTimers.current.delete(sectionId)
       try {
         const res = await fetch(`/api/sow/${sowId}`, {
           method:  'PATCH',
@@ -72,10 +80,28 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
           body:    JSON.stringify({ sectionId, ...payload }),
         })
         setSaveStatus(res.ok ? 'saved' : 'error')
-        if (res.ok) setTimeout(() => setSaveStatus('idle'), 2000)
-      } catch { setSaveStatus('error') }
+        if (res.ok && saveTimers.current.size === 0) setTimeout(() => setSaveStatus('idle'), 2000)
+      } catch {
+        setSaveStatus('error')
+      }
     }, 1500)
+    saveTimers.current.set(sectionId, timer)
   }
+
+  // FIX (re-audit, data-loss finding): warn before the tab closes/navigates
+  // away while a section's edit hasn't been persisted yet — previously a
+  // user could type, leave within the 1.5s debounce window, and lose the
+  // edit with zero indication anything went wrong.
+  useEffect(() => {
+    function handleBeforeUnload(e: BeforeUnloadEvent) {
+      if (saveTimers.current.size > 0) {
+        e.preventDefault()
+        e.returnValue = ''
+      }
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [])
 
   function updateTable(sectionId: string, rows: SowTableRow[]) {
     setSections(prev => prev.map(s => s.id === sectionId ? { ...s, table: rows } : s))

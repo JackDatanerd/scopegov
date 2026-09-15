@@ -5,6 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
+import { checkReminderCooldown } from '@/lib/utils/reminder-cooldown'
 import { Resend } from 'resend'
 
 // FIX (re-audit — build-blocking): module-scope instantiation, same class
@@ -39,6 +40,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Can only remind on SOWs awaiting signature' }, { status: 400 })
     if (!sow.token)
       return NextResponse.json({ error: 'No portal link found — resend the SOW' }, { status: 400 })
+
+    // FIX (re-audit): no cooldown existed at all — an agency user could
+    // spam this button and spam the client's inbox with no rate limit.
+    const cooldown = await checkReminderCooldown(service, 'sow', id)
+    if (!cooldown.allowed) return NextResponse.json({ error: cooldown.message }, { status: 429 })
 
     const project   = sow.projects
     const client    = project?.clients

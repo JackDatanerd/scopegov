@@ -6,6 +6,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { sendInvoiceReminderEmail } from '@/lib/email/templates'
 import { canReadProject } from '@/lib/utils/project-access'
+import { checkReminderCooldown } from '@/lib/utils/reminder-cooldown'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -29,6 +30,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Can only remind on unpaid, sent invoices' }, { status: 400 })
     if (!invoice.token)
       return NextResponse.json({ error: 'No portal link found — resend the invoice' }, { status: 400 })
+
+    // FIX (re-audit): no cooldown existed at all — an agency user could
+    // spam this button and spam the client's inbox with no rate limit.
+    const cooldown = await checkReminderCooldown(service, 'invoice', id)
+    if (!cooldown.allowed) return NextResponse.json({ error: cooldown.message }, { status: 429 })
 
     const project   = invoice.projects
     const client    = project?.clients

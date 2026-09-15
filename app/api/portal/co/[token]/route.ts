@@ -11,7 +11,28 @@ import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
 async function getCoByToken(token: string, service: any) {
   const { data: revoked } = await (service as any)
     .from('revoked_tokens').select('reason').eq('token', token).single()
-  if (revoked) return { state: revoked.reason === 'declined' ? 'declined' : 'revoked' }
+
+  // FIX (re-audit, critical finding): this used to map ANY non-'declined'
+  // revoked reason — including 'superseded', which accept/route.ts and
+  // countersign/route.ts both insert the instant a client successfully
+  // accepts — straight to a generic 'revoked' state, before ever reaching
+  // the co.status === 'accepted' branch below (which already returns
+  // acceptedBy/clientSignatureData, clearly built for exactly this
+  // revisit case, but was unreachable). A client who accepted a CO, then
+  // later re-clicked the *original* email link (still sitting in their
+  // inbox — the confirmation email was patched to link elsewhere, but the
+  // original send-out email never was), saw "This link is no longer
+  // active" instead of their own accepted document.
+  //
+  // 'declined' and 'superseded' never touch change_orders.token, so the
+  // CO is still resolvable by token below — let co.status (which already
+  // handles every terminal state correctly, including 'accepted') drive
+  // the response instead of guessing from the revocation reason. Only
+  // 'withdrawn' (api/co/[id]/withdraw) actually nulls the token, making
+  // the CO unresolvable by token afterward — that's the one reason that
+  // must be trusted directly, and it now maps to the dedicated 'withdrawn'
+  // state the frontend already supports, instead of generic 'revoked'.
+  if (revoked && revoked.reason === 'withdrawn') return { state: 'withdrawn' }
 
   // FIX (doc-completeness audit): same gap as the SOW portal route — legal
   // and billing fields were never selected here, so the client accepted a
@@ -26,7 +47,7 @@ async function getCoByToken(token: string, service: any) {
           legal_address,tax_id,phone,website))`)
     .eq('token', token).single()
 
-  if (!co) return { state: 'invalid' }
+  if (!co) return { state: revoked ? 'revoked' : 'invalid' }
 
   // jwt_secret lives in workspace_secrets now, not on workspaces itself —
   // see migration 013.

@@ -5,6 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
+import { checkReminderCooldown } from '@/lib/utils/reminder-cooldown'
 import { Resend } from 'resend'
 
 // FIX (re-audit — build-blocking): module-scope instantiation, same class
@@ -49,6 +50,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // instead of a dead end.
     if (!['awaiting_response', 'awaiting_countersignature', 'stalled'].includes(co.status))
       return NextResponse.json({ error: 'Can only remind on COs awaiting a client response' }, { status: 400 })
+
+    // FIX (re-audit): no cooldown existed at all — an agency user could
+    // spam this button and spam the client's inbox with no rate limit.
+    const cooldown = await checkReminderCooldown(service, 'change_order', id)
+    if (!cooldown.allowed) return NextResponse.json({ error: cooldown.message }, { status: 429 })
 
     const isCountersign = co.status === 'awaiting_countersignature'
     const wasStalled     = co.status === 'stalled'

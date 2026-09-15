@@ -37,7 +37,7 @@ export default async function ApprovalWorkflowsPage() {
     (service as any)
       .from('approval_workflows')
       .select(`
-        id, document_type, name, threshold_amount, is_active, created_at,
+        id, document_type, name, threshold_amount, threshold_currency, is_active, created_at,
         approval_workflow_steps(id, step_order, approver_role_id, approver_user_id,
           roles(id, name),
           user:users!approval_workflow_steps_approver_user_id_fkey(id, name, email))

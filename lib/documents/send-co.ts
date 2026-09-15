@@ -70,14 +70,24 @@ export async function sendCoDocument(service: any, params: {
   // creation). Never re-assign if already numbered.
   const documentNumber = co.document_number || await assignDocumentNumber(service, workspaceId, 'co')
 
-  await (service as any).from('change_orders').update({
+  // FIX (re-audit, race-condition finding): same missing CAS as
+  // send-sow.ts — see that file's comment for the full rationale. Two
+  // racing callers (manual Send + approval-engine auto-send, or a
+  // double-click) could otherwise both pass the earlier `status !== 'draft'`
+  // read and both send, burning two document numbers and emailing the
+  // client two different tokens.
+  const { data: sent } = await (service as any).from('change_orders').update({
     status:          'awaiting_response',
     sent_at:         now,
     token,
     expires_at:      expiresAt.toISOString(),
     document_number: documentNumber,
     updated_at:      now,
-  }).eq('id', coId)
+  }).eq('id', coId).eq('status', 'draft').select('id').maybeSingle()
+
+  if (!sent) {
+    return { ok: false, error: 'This change order was already sent by another action', status: 409 }
+  }
 
   const portalUrl = `${process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL}/portal/co/${token}`
   try {

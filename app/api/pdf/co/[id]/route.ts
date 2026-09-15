@@ -83,6 +83,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       total:       co.total || 0,
       currency:    co.projects?.currency || 'USD',
       status:      co.status,
+      // FIX (re-audit): CoDocument had no watermark support at all — a
+      // draft CO previewed from CoEditor before ever being sent was
+      // visually identical to a final, client-signed one.
+      isWatermarked: co.status === 'draft',
       acceptedBy:  co.accepted_by || undefined,
       acceptedAt:  co.accepted_at || undefined,
       agencySignatureData: ws?.agency_signature_data || null,

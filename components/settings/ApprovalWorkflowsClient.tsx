@@ -19,6 +19,7 @@ interface Workflow {
   document_type: 'sow' | 'co'
   name: string
   threshold_amount: number | null
+  threshold_currency: string | null
   is_active: boolean
   created_at: string
   approval_workflow_steps: WorkflowStep[]
@@ -113,7 +114,7 @@ export default function ApprovalWorkflowsClient({ initialWorkflows, roles, membe
                     <div style={{ fontSize: 13.5, fontWeight: 500 }}>{w.name}</div>
                     <div style={{ fontSize: 12, color: 'var(--text-3)' }}>
                       {w.threshold_amount != null
-                        ? `Applies at ${formatCurrency(w.threshold_amount, 'USD')} and above`
+                        ? `Applies at ${formatCurrency(w.threshold_amount, w.threshold_currency || 'USD')} and above (${w.threshold_currency || 'USD'} only)`
                         : 'Applies to every document of this type'}
                       {' · '}
                       {w.approval_workflow_steps.length} step{w.approval_workflow_steps.length !== 1 ? 's' : ''}:{' '}
@@ -158,6 +159,7 @@ function WorkflowEditorModal({ workflow, defaultType, roles, members, onClose, o
   const [name, setName] = useState(workflow?.name || '')
   const [hasThreshold, setHasThreshold] = useState(workflow?.threshold_amount != null)
   const [threshold, setThreshold] = useState(workflow?.threshold_amount != null ? String(workflow.threshold_amount) : '')
+  const [thresholdCurrency, setThresholdCurrency] = useState(workflow?.threshold_currency || 'USD')
   const [steps, setSteps] = useState<StepDraft[]>(
     workflow
       ? workflow.approval_workflow_steps
@@ -197,6 +199,7 @@ function WorkflowEditorModal({ workflow, defaultType, roles, members, onClose, o
         documentType: documentType,
         name: name.trim(),
         thresholdAmount: hasThreshold && threshold !== '' ? Number(threshold) : null,
+        thresholdCurrency: hasThreshold && threshold !== '' ? thresholdCurrency : null,
         steps: cleanSteps.map(s => s.kind === 'role' ? { approverRoleId: s.id } : { approverUserId: s.id }),
       }
       const res = await fetch(isEdit ? `/api/approval-workflows/${workflow!.id}` : '/api/approval-workflows', {
@@ -235,11 +238,18 @@ function WorkflowEditorModal({ workflow, defaultType, roles, members, onClose, o
             Only apply above a value threshold
           </label>
           {hasThreshold && (
-            <input className="finp" type="number" min="0" value={threshold}
-              onChange={e => setThreshold(e.target.value)} placeholder="25000" style={{ marginTop: 8, maxWidth: 200 }} />
+            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+              <select className="finp" value={thresholdCurrency} onChange={e => setThresholdCurrency(e.target.value)} style={{ maxWidth: 90 }}>
+                {['USD','KES','GBP','EUR','ZAR','NGN','GHS','AED'].map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+              <input className="finp" type="number" min="0" value={threshold}
+                onChange={e => setThreshold(e.target.value)} placeholder="25000" style={{ maxWidth: 200 }} />
+            </div>
           )}
           <p className="fhint">
-            {hasThreshold ? 'Leave off and this rule catches everything of this document type instead.' : 'Applies to every document of this type, regardless of value.'}
+            {hasThreshold
+              ? `Leave off and this rule catches everything of this document type instead. Only matches documents in ${thresholdCurrency} — a document in another currency won't be gated by this rule.`
+              : 'Applies to every document of this type, regardless of value or currency.'}
           </p>
         </div>
 

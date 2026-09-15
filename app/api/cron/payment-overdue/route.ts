@@ -48,9 +48,20 @@ export async function POST(request: NextRequest) {
 
     for (const inv of (overdueInvoices || [])) {
       try {
-        await (service as any).from('invoices')
+        // FIX (re-audit): same false-audit-entry-on-race gap already fixed
+        // in sow-stall/co-stall — the guarded UPDATE was correct, but its
+        // result was never checked before unconditionally logging + firing
+        // "invoice overdue" notifications to the whole finance team. If a
+        // payment landed between the SELECT above and this UPDATE (a real
+        // possibility — payments and this cron are both independent,
+        // regular events), the invoice is correctly left alone in the DB
+        // but the team still gets told it's overdue.
+        const { data: updated } = await (service as any).from('invoices')
           .update({ status: 'overdue', updated_at: now.toISOString() })
           .eq('id', inv.id).in('status', ['sent', 'partially_paid']) // guard against a payment landing between select and update
+          .select('id')
+
+        if (!updated || updated.length === 0) continue
 
         const balanceDue = Number(inv.amount) - Number(inv.amount_paid)
 

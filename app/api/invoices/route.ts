@@ -165,9 +165,18 @@ export async function POST(request: NextRequest) {
         total:       Number(l.total) || 0,
       })).filter(l => l.description)
       const itemSum = cleanLineItems.reduce((s, l) => s + l.total, 0)
-      if (cleanLineItems.length > 0 && Math.abs(itemSum - finalAmount) > 0.01) {
+      // FIX (re-audit, critical finding): this compared against
+      // `finalAmount` (the tax-inclusive grand total) instead of
+      // `finalSubtotal` — but line items are a pre-tax breakdown (the same
+      // convention change_orders.line_items already uses: subtotal is
+      // derived from summing items, tax is applied once on top). Any
+      // itemized invoice with a non-zero, tax-EXCLUSIVE rate would always
+      // fail this check by exactly the tax amount, making that combination
+      // completely uncreatable. Tax-inclusive happened to work by
+      // coincidence, since finalAmount === finalSubtotal in that case.
+      if (cleanLineItems.length > 0 && Math.abs(itemSum - finalSubtotal) > 0.01) {
         return NextResponse.json({
-          error: `Line items total ${itemSum.toFixed(2)} does not match invoice amount ${finalAmount.toFixed(2)}`,
+          error: `Line items total ${itemSum.toFixed(2)} does not match invoice subtotal ${finalSubtotal.toFixed(2)}`,
         }, { status: 400 })
       }
     }

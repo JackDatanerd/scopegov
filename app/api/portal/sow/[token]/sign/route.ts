@@ -150,9 +150,23 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     await (service as any).from('projects').update({ guardian_email: guardianEmail }).eq('id', project.id)
 
     // ── 4. Create scope snapshot (spec §0.13 — in same transaction) ─
-    const sections     = sow.sections || []
-    const deliverables = extractDeliverables(sections.find((s: any) => s.id === 'deliverables')?.content || '')
-    const outOfScope   = extractDeliverables(sections.find((s: any) => s.id === 'oos')?.content || '')
+    // FIX (re-audit): the 'deliverables' section moved from prose `content`
+    // to a structured `table` (lib/sow/table-schema.ts) in the doc-quality
+    // refactor, but this extraction never followed — it was reading a field
+    // that's now always ''. Every SOW signed since then wrote an EMPTY
+    // deliverables array into project_scope_snapshot, which Guardian's
+    // scope-creep classifier and CO drafting both rely on as the agreed
+    // baseline. Read the table first; fall back to the old HTML extraction
+    // only for pre-refactor SOWs that may still carry prose content with no
+    // table rows.
+    const sections = sow.sections || []
+    const deliverablesSection = sections.find((s: any) => s.id === 'deliverables')
+    const deliverables = (deliverablesSection?.table || []).length > 0
+      ? (deliverablesSection.table as Array<Record<string, string>>)
+          .map(row => ({ title: (row.deliverable || '').trim() }))
+          .filter(d => d.title)
+      : extractDeliverables(deliverablesSection?.content || '')
+    const outOfScope = extractDeliverables(sections.find((s: any) => s.id === 'oos')?.content || '')
 
     const { data: existingSnap } = await (service as any)
       .from('project_scope_snapshot').select('id').eq('project_id', project.id).single()
@@ -180,7 +194,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }
 
     // ── 6. Create payment milestones from SOW metadata ────────
-    await createMilestones(service, project.id, sow.id, sow.metadata, project.contract_value, project.currency)
+    await createMilestones(service, project.id, sow.id, sow.workspace_id, sow.metadata, project.contract_value, project.currency)
 
     // ── 7. Audit log ──────────────────────────────────────────
     await logAudit(service, {
@@ -297,8 +311,18 @@ function extractDeliverables(html: string): Array<{ title: string }> {
   return items.slice(0, 50)
 }
 
+// FIX (re-audit): this used to (a) insert milestones one at a time in a
+// loop, so a failure partway through a multi-milestone structure (e.g. the
+// 50/50 split) could leave only the first milestone on file with no
+// indication anything was wrong, and (b) swallow any failure into
+// console.error only — the SOW still ends up 'signed' with NO payment
+// milestones at all, silently blocking invoicing for the project with
+// nothing operator-visible. Insert as a single batch (one INSERT statement
+// is atomic — either all rows land or none do, no partial split) and log
+// an audit entry on failure so it's at least discoverable, rather than a
+// server log line nobody will see.
 async function createMilestones(
-  service: any, projectId: string, sowId: string,
+  service: any, projectId: string, sowId: string, workspaceId: string,
   metadata: any, contractValue: number, currency: string
 ) {
   try {
@@ -331,8 +355,8 @@ async function createMilestones(
       milestones.push({ title: 'Project payment', amount: roundCurrency(contractValue), trigger: 'As per agreement', type: 'fixed', percentage: null })
     }
 
-    for (const m of milestones) {
-      await (service as any).from('payment_milestones').insert({
+    const { error: insertErr } = await (service as any).from('payment_milestones').insert(
+      milestones.map(m => ({
         project_id:   projectId,
         sow_id:       sowId,
         title:        m.title,
@@ -343,7 +367,23 @@ async function createMilestones(
         tax_rate:     0,
         tax_inclusive: false,
         status:       'pending',
-      })
+      }))
+    )
+
+    if (insertErr) {
+      console.error('Milestone creation failed:', insertErr)
+      await logAudit(service, {
+        workspaceId, actorId: '', actorEmail: 'system@scopegov.app', actorName: 'ScopeGov',
+        eventType: 'sow.milestones_creation_failed', entityType: 'sow', entityId: sowId,
+        metadata: { project_id: projectId, error: insertErr.message || String(insertErr) },
+      }).catch(() => {})
     }
-  } catch (e) { console.error('Milestone creation failed:', e) }
+  } catch (e) {
+    console.error('Milestone creation failed:', e)
+    await logAudit(service, {
+      workspaceId, actorId: '', actorEmail: 'system@scopegov.app', actorName: 'ScopeGov',
+      eventType: 'sow.milestones_creation_failed', entityType: 'sow', entityId: sowId,
+      metadata: { project_id: projectId, error: e instanceof Error ? e.message : String(e) },
+    }).catch(() => {})
+  }
 }

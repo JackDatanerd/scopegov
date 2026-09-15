@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
+import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -61,6 +62,19 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     if (co.status !== 'draft')
       return NextResponse.json({ error: 'Only draft COs can be edited' }, { status: 409 })
+
+    // FIX (re-audit, critical finding): same gate-bypass gap fixed in
+    // api/sow/[id]/route.ts — a CO gated by an approval workflow never
+    // leaves status:'draft' until the chain clears, so this route's only
+    // lock condition (status !== 'draft') never applied to a gated draft.
+    // Nothing stopped the document being edited out from under the
+    // snapshot the approvers were actually reviewing.
+    if (await getPendingApprovalForDocument(service, 'co', id)) {
+      return NextResponse.json(
+        { error: 'This change order has a pending approval request — cancel it before editing.' },
+        { status: 409 }
+      )
+    }
 
     const body = await request.json()
     const { title, note, lineItems, taxRate, taxInclusive, isRetainerRenewal, timelineImpactDays, scopeImpactNote } = body

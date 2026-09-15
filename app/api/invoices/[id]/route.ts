@@ -52,7 +52,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     const service = createServiceClient()
     const { data: invoice } = await (service as any)
-      .from('invoices').select('id, status, title, amount, project_id')
+      .from('invoices').select('id, status, title, amount, subtotal, tax_rate, tax_inclusive, project_id')
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
@@ -73,12 +73,38 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (body.paymentInstructions !== undefined) update.payment_instructions = sanitizeRichTextOrNull(body.paymentInstructions)
     if (body.notes !== undefined) update.notes = body.notes?.trim() || null
 
+    // FIX (re-audit): `amount` could be changed here with no recompute of
+    // `subtotal`/`tax_rate` at all — editing a draft invoice's amount left
+    // the stored tax breakdown referencing the OLD amount, so the
+    // next-sent PDF's subtotal+tax could stop summing to the new total.
+    // Recompute the same way POST /api/invoices does whenever amount or
+    // either tax field changes, using whichever values are in effect
+    // (freshly patched, or the invoice's existing ones).
+    const touchesTax = body.amount !== undefined || body.taxRate !== undefined || body.taxInclusive !== undefined
+    let finalSubtotal = invoice.subtotal != null ? Number(invoice.subtotal) : Number(invoice.amount)
+    if (touchesTax) {
+      const finalAmount      = update.amount !== undefined ? update.amount : Number(invoice.amount)
+      const finalTaxRate     = body.taxRate !== undefined ? (Number(body.taxRate) || 0) : Number(invoice.tax_rate || 0)
+      const finalTaxInclusive = body.taxInclusive !== undefined ? !!body.taxInclusive : !!invoice.tax_inclusive
+      finalSubtotal = finalTaxRate > 0
+        ? (finalTaxInclusive ? finalAmount / (1 + finalTaxRate / 100) : finalAmount)
+        : finalAmount
+      update.subtotal      = finalSubtotal
+      update.tax_rate      = finalTaxRate
+      update.tax_inclusive = finalTaxInclusive
+      // A tax-exclusive rate change grosses the total up, same as creation.
+      if (finalTaxRate > 0 && !finalTaxInclusive) update.amount = finalAmount * (1 + finalTaxRate / 100)
+    }
+
     // Optional itemized breakdown — same footing rule as creation (see
-    // POST /api/invoices), checked against whichever amount is in effect
-    // after this update (the one just submitted, or the invoice's
-    // existing amount if this PATCH doesn't touch it).
+    // POST /api/invoices), checked against the (possibly just-recomputed)
+    // SUBTOTAL, not the tax-inclusive grand total — line items are a
+    // pre-tax breakdown (same convention change_orders.line_items uses).
+    // FIX (re-audit, critical finding): this used to compare against
+    // `effectiveAmount` (the grand total) — see POST /api/invoices for the
+    // full explanation of why that made itemized + tax-exclusive invoices
+    // permanently unsaveable.
     if (body.lineItems !== undefined) {
-      const effectiveAmount = update.amount !== undefined ? update.amount : Number(invoice.amount)
       const cleanLineItems = Array.isArray(body.lineItems)
         ? body.lineItems.map((l: any) => ({
             description: String(l.description || '').trim().slice(0, 500),
@@ -89,9 +115,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         : []
       if (cleanLineItems.length > 0) {
         const itemSum = cleanLineItems.reduce((s: number, l: any) => s + l.total, 0)
-        if (Math.abs(itemSum - effectiveAmount) > 0.01) {
+        if (Math.abs(itemSum - finalSubtotal) > 0.01) {
           return NextResponse.json({
-            error: `Line items total ${itemSum.toFixed(2)} does not match invoice amount ${effectiveAmount.toFixed(2)}`,
+            error: `Line items total ${itemSum.toFixed(2)} does not match invoice subtotal ${finalSubtotal.toFixed(2)}`,
           }, { status: 400 })
         }
       }

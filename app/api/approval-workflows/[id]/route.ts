@@ -18,7 +18,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     const service = createServiceClient()
     const { data: existing } = await (service as any)
-      .from('approval_workflows').select('id, name')
+      .from('approval_workflows').select('id, name, threshold_amount, threshold_currency')
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
     if (!existing) return NextResponse.json({ error: 'Workflow not found' }, { status: 404 })
 
@@ -29,6 +29,18 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (body?.thresholdAmount !== undefined) {
       patch.threshold_amount = body.thresholdAmount === '' || body.thresholdAmount == null
         ? null : Number(body.thresholdAmount)
+    }
+    // FIX (re-audit): see migration 023 / api/approval-workflows/route.ts —
+    // threshold_currency must travel with threshold_amount. Resolve the
+    // effective amount (either what's being patched now, or what's
+    // already stored) to decide whether a currency is required at all.
+    const effectiveAmount = patch.threshold_amount !== undefined ? patch.threshold_amount : existing.threshold_amount
+    if (effectiveAmount == null) {
+      patch.threshold_currency = null
+    } else if (body?.thresholdCurrency !== undefined) {
+      patch.threshold_currency = (body.thresholdCurrency || 'USD').toUpperCase()
+    } else if (!existing.threshold_currency) {
+      patch.threshold_currency = 'USD' // amount is being set for the first time with no currency supplied
     }
 
     await (service as any).from('approval_workflows').update(patch).eq('id', id)

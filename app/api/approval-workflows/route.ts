@@ -24,7 +24,7 @@ export async function GET() {
     const { data: workflows } = await (service as any)
       .from('approval_workflows')
       .select(`
-        id, document_type, name, threshold_amount, is_active, created_at,
+        id, document_type, name, threshold_amount, threshold_currency, is_active, created_at,
         approval_workflow_steps(id, step_order, approver_role_id, approver_user_id,
           roles(id, name),
           user:users!approval_workflow_steps_approver_user_id_fkey(id, name, email))
@@ -50,6 +50,13 @@ export async function POST(request: NextRequest) {
     const name: string = (body?.name || '').trim()
     const thresholdAmount = body?.thresholdAmount === '' || body?.thresholdAmount == null
       ? null : Number(body.thresholdAmount)
+    // FIX (re-audit): threshold_amount was compared against a document's
+    // amount with no currency awareness at all — see migration 023.
+    // Required whenever a threshold is actually set (a currency-agnostic
+    // "applies to every document" workflow has no amount to denominate).
+    const thresholdCurrency: string | null = thresholdAmount != null
+      ? (body?.thresholdCurrency || 'USD').toUpperCase()
+      : null
     const steps: Array<{ approverRoleId?: string; approverUserId?: string }> = Array.isArray(body?.steps) ? body.steps : []
 
     if (!['sow', 'co'].includes(documentType))
@@ -99,6 +106,7 @@ export async function POST(request: NextRequest) {
         document_type: documentType,
         name,
         threshold_amount: thresholdAmount,
+        threshold_currency: thresholdCurrency,
         is_active: true,
         created_by: session.id,
       })
@@ -122,7 +130,7 @@ export async function POST(request: NextRequest) {
       actorId: session.id, actorEmail: session.email, actorName: session.name,
       eventType: 'approval_workflow.created', entityType: 'approval_workflow',
       entityId: workflow.id, entityName: name,
-      metadata: { document_type: documentType, threshold_amount: thresholdAmount, steps: steps.length },
+      metadata: { document_type: documentType, threshold_amount: thresholdAmount, threshold_currency: thresholdCurrency, steps: steps.length },
     })
 
     return NextResponse.json({ ok: true, id: workflow.id })

@@ -88,6 +88,7 @@ export interface CoPdfData {
   // badge. Optional so existing callers that haven't been updated yet
   // don't break; the badge simply doesn't render without it.
   status?:      string
+  isWatermarked?: boolean
   acceptedBy?:  string
   acceptedAt?:  string
   agencySignatureData?: string | null
@@ -468,6 +469,10 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
     partyName: { fontFamily: 'Helvetica-Bold', fontSize: 11 },
     partyLine: { fontSize: 9, color: '#666', lineHeight: 1.5, marginTop: 3 },
     partyTax:  { fontSize: 8.5, color: '#909090', marginTop: 4 },
+    // FIX (re-audit): CoDocument never had a draft watermark at all,
+    // unlike SowDocument. A draft CO (downloadable from CoEditor before
+    // it's ever sent) was visually identical to a final, client-signed one.
+    watermark: { position: 'absolute', top: '45%', left: '20%', fontSize: 64, color: 'rgba(0,0,0,0.04)', transform: 'rotate(-30deg)' },
     // Table
     tableHdr:  { flexDirection: 'row', borderBottom: `1 solid #E5E1D8`, paddingBottom: 5, marginBottom: 2 },
     th:        { fontSize: 8, fontFamily: 'Helvetica-Bold', color: '#909090', textTransform: 'uppercase', letterSpacing: 0.5 },
@@ -520,6 +525,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
   return (
     <Document>
       <Page size="A4" style={s.page}>
+        {data.isWatermarked && <Text style={s.watermark}>DRAFT</Text>}
         {/* Header */}
         <View style={s.header}>
           <View>
