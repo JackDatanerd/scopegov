@@ -128,11 +128,25 @@ export default function OnboardingPage() {
     if (workspaceId) {
       setLoading(true); setError('')
       try {
-        await fetch('/api/workspace/settings', {
+        // FIX (section-by-section re-audit): this used to be a
+        // fire-and-forget .catch(() => {}) that swallowed any server-side
+        // rejection and silently advanced regardless — same shape the
+        // invite step (below) was already fixed for. A failed save here
+        // now blocks advancing and shows why, instead of the user
+        // believing their agency identity edits were saved when they
+        // weren't.
+        const res  = await fetch('/api/workspace/settings', {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ agencyName, industry, currency, timezone }),
-        }).catch(() => {}) // non-fatal — don't block navigation on this
+        })
+        const json = await res.json().catch(() => ({}))
+        if (!res.ok) {
+          setError(json.error || 'Could not save those changes — try again.')
+          return
+        }
         setStep(1)
+      } catch {
+        setError('Could not save those changes — try again.')
       } finally { setLoading(false) }
       return
     }
@@ -153,11 +167,32 @@ export default function OnboardingPage() {
   }
 
   /* ── Step 1: Branding ─────────────────────────────────────── */
+  // FIX (section-by-section re-audit — headline finding): this used to
+  // upload directly from the browser via the anon-key client to
+  // `${workspaceId}/logo.${ext}`. The `logos` bucket's storage policy is
+  // scoped `<auth.uid()>/<filename>` (see api/workspace/branding/route.ts),
+  // keyed on the USER, not the workspace — a brand-new workspace's UUID
+  // is never equal to the current user's id, so that upload was rejected
+  // by storage RLS on every single run, for every user, silently (the
+  // failure was swallowed and the FileReader preview kept showing the
+  // picked image regardless, so nobody could tell). It was ALSO,
+  // independently, the exact insecure pattern
+  // api/workspace/branding/logo/route.ts exists specifically to replace:
+  // a client-side-only write with no magic-byte check, and — the serious
+  // part — this file's own accepted-types list still allowed
+  // image/svg+xml, the same live stored-XSS vector (a `<script>` inside
+  // an SVG served from the public bucket's own origin) the team already
+  // found and fixed by dropping SVG support entirely for the equivalent
+  // Settings-page flow. It was inert today only by accident of the path
+  // mismatch above. Fixed by routing through the same hardened
+  // server-side endpoint Settings already uses (FormData POST, PNG/JPG
+  // only, magic-byte verified, service-role write) instead of
+  // reimplementing upload logic here.
   function handleLogoChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file) return
-    if (!['image/png','image/jpeg','image/svg+xml'].includes(file.type)) {
-      setError('Logo must be PNG, JPEG, or SVG.'); return
+    if (!['image/png','image/jpeg'].includes(file.type)) {
+      setError('Logo must be PNG or JPG.'); return
     }
     setLogoFile(file)
     const reader = new FileReader()
@@ -170,21 +205,30 @@ export default function OnboardingPage() {
     setLoading(true)
     setError('')
     try {
-      let logoStoragePath: string | null = null
+      let logoStoragePath: string | undefined
       if (logoFile) {
         setUploading(true)
-        const ext  = logoFile.name.split('.').pop()
-        const path = `${workspaceId}/logo.${ext}`
-        const { error: upErr } = await (supabase as any).storage
-          .from('logos').upload(path, logoFile, { upsert: true })
+        const body = new FormData()
+        body.append('file', logoFile)
+        const upRes  = await fetch('/api/workspace/branding/logo', { method: 'POST', body })
+        const upJson = await upRes.json().catch(() => ({}))
         setUploading(false)
-        if (!upErr) logoStoragePath = path
+        if (!upRes.ok) {
+          setError(upJson.error || 'Could not upload logo — you can add it later in Settings.')
+          return
+        }
+        logoStoragePath = upJson.logoStoragePath
       }
-      await fetch('/api/workspace/branding', {
+      const res  = await fetch('/api/workspace/branding', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId, brandColour, logoStoragePath }),
+        body: JSON.stringify({ workspaceId, brandColour, ...(logoStoragePath ? { logoStoragePath } : {}) }),
       })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setError(json.error || 'Branding save failed — you can update this in Settings.')
+        return
+      }
       setStep(2)
     } catch { setError('Branding save failed — you can update this in Settings.') }
     finally { setLoading(false); setUploading(false) }
@@ -193,11 +237,30 @@ export default function OnboardingPage() {
   /* ── Step 2: Defaults ─────────────────────────────────────── */
   async function submitDefaults() {
     if (workspaceId) {
-      await fetch('/api/workspace/defaults', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId, revisionRounds: parseInt(revisionRounds), paymentStructure, governingLaw }),
-      }).catch(() => {}) // non-fatal
+      setLoading(true); setError('')
+      // FIX (section-by-section re-audit): this used to be a
+      // fire-and-forget .catch(() => {}) marked "non-fatal" that silently
+      // advanced regardless of the response. governingLaw is the exact
+      // field api/sow/generate/route.ts hard-blocks SOW generation
+      // without — a silently-failed save here meant the user believed
+      // governing law was set (they typed it, clicked Continue, saw no
+      // error) and only discovered otherwise when SOW generation blocked
+      // them, with nothing connecting that back to this step.
+      try {
+        const res  = await fetch('/api/workspace/defaults', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspaceId, revisionRounds: parseInt(revisionRounds), paymentStructure, governingLaw }),
+        })
+        const json = await res.json().catch(() => ({}))
+        if (!res.ok) {
+          setError(json.error || 'Could not save your defaults — try again, or skip this step.')
+          return
+        }
+      } catch {
+        setError('Could not save your defaults — try again, or skip this step.')
+        return
+      } finally { setLoading(false) }
     }
     setStep(3)
   }
@@ -361,6 +424,7 @@ export default function OnboardingPage() {
           <div>
             <h2 className="ob-title">Set your SOW defaults</h2>
             <p className="ob-sub">These pre-fill every new Statement of Work. You can override them per project at any time.</p>
+            {error && <div className="auth-error">{error}</div>}
 
             <div className="f2">
               <div className="fgrp">
@@ -395,8 +459,8 @@ export default function OnboardingPage() {
               </button>
               <div style={{ flex: 1 }} />
               <button className="ob-skip" onClick={() => setStep(3)}>Skip</button>
-              <button className="btn btn-primary" onClick={submitDefaults}>
-                Continue <i className="ti ti-arrow-right" style={{ fontSize: 12 }} />
+              <button className="btn btn-primary" onClick={submitDefaults} disabled={loading}>
+                {loading ? <span className="spin" /> : <>Continue <i className="ti ti-arrow-right" style={{ fontSize: 12 }} /></>}
               </button>
             </div>
           </div>

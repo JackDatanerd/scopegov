@@ -3,6 +3,7 @@ import {
   permissionsBeyondCeiling,
   withinPermissionCeiling,
   roleWithinCeiling,
+  permissionsBeyondActorForTarget,
 } from '@/lib/utils/permission-ceiling'
 import type { SessionUser } from '@/lib/supabase/types'
 
@@ -68,5 +69,30 @@ describe('permission-ceiling — privilege escalation guard', () => {
     const a = actor(['MANAGE_ROLES', 'VIEW_OWN_PROJECTS', 'EDIT_SOW'])
     const juniorRole = { permissions: { VIEW_OWN_PROJECTS: true, EDIT_SOW: true } }
     expect(roleWithinCeiling(a, juniorRole)).toBe(true)
+  })
+
+  // FIX (section-by-section re-audit, RLS+permissions Finding 2)
+  // regression: permissionsBeyondCeiling's "false grants nothing" rule is
+  // correct for the GRANT direction, but PATCH /api/team/roles/[id] and
+  // PATCH /api/team/[id] used to apply that same check when editing an
+  // EXISTING role/member — meaning an all-false payload always passed,
+  // with no floor check on what the target currently holds. That let a
+  // bare MANAGE_ROLES holder zero out the Owner role (or strip an
+  // individual member with permission_overrides) even though they held
+  // none of what they were removing. Pin the floor-check helper so it
+  // can't regress: an actor missing ANY permission the target currently,
+  // effectively holds must be blocked — independent of what the
+  // requested change actually does.
+  it('permissionsBeyondActorForTarget blocks touching a target that currently holds more than the actor, even though the check is direction-agnostic', () => {
+    const a = actor(['MANAGE_ROLES'])
+    const ownerCurrentPermissions = { MANAGE_ROLES: true, MANAGE_WORKSPACE_SETTINGS: true, DELETE_PROJECTS: true }
+    const outOfReach = permissionsBeyondActorForTarget(a, ownerCurrentPermissions)
+    expect(outOfReach.sort()).toEqual(['DELETE_PROJECTS', 'MANAGE_WORKSPACE_SETTINGS'])
+  })
+
+  it('permissionsBeyondActorForTarget allows touching a target fully within the actor\'s ceiling', () => {
+    const a = actor(['MANAGE_ROLES', 'MANAGE_WORKSPACE_SETTINGS', 'DELETE_PROJECTS'])
+    const targetCurrentPermissions = { MANAGE_ROLES: true, DELETE_PROJECTS: true }
+    expect(permissionsBeyondActorForTarget(a, targetCurrentPermissions)).toEqual([])
   })
 })

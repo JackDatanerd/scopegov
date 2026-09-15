@@ -11,8 +11,12 @@ export async function PATCH(request: NextRequest) {
     if (!name?.trim()) return NextResponse.json({ error: 'Name required' }, { status: 400 })
 
     const service = createServiceClient()
-    await (service as any).from('users').update({ name: name.trim(), updated_at: new Date().toISOString() })
+    // FIX (section-by-section re-audit): unchecked write, same false-
+    // success shape as complete-onboarding — now checked and surfaced.
+    const { error } = await (service as any).from('users')
+      .update({ name: name.trim(), updated_at: new Date().toISOString() })
       .eq('id', session.id)
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
     return NextResponse.json({ ok: true })
   } catch (err) {

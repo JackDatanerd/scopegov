@@ -5,6 +5,7 @@
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
+import { cancelPaystackSubscription } from '@/lib/integrations/paystack'
 
 export async function DELETE() {
   try {
@@ -27,6 +28,22 @@ export async function DELETE() {
         error: 'Workspaces with signed documents cannot be deleted. Contact support@scopegov.app.',
       }, { status: 409 })
     }
+
+    // FIX (section-by-section re-audit, Workspace lifecycle Finding 1 —
+    // CRITICAL): deletion never cancelled the workspace's Paystack
+    // subscription — it kept renewing/charging indefinitely with no
+    // workspace left to manage it from. Cancel before soft-deleting so a
+    // failure here (Paystack unreachable, etc.) still surfaces before the
+    // workspace becomes inaccessible; cancelPaystackSubscription() itself
+    // is a no-op + logged-only-on-failure if there's no active
+    // subscription or the call fails, matching billing/cancel's own
+    // best-effort handling.
+    const { data: billing } = await (service as any)
+      .from('billing')
+      .select('paystack_subscription_code, paystack_email_token')
+      .eq('workspace_id', session.workspaceId)
+      .maybeSingle()
+    await cancelPaystackSubscription(billing)
 
     const now = new Date().toISOString()
 

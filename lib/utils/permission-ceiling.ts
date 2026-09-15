@@ -60,3 +60,31 @@ export function roleWithinCeiling(actor: SessionUser, role: { permissions: Recor
   if (!role) return true // no role / null role_id grants nothing
   return withinPermissionCeiling(actor, role.permissions)
 }
+
+// FIX (section-by-section re-audit, RLS+permissions Finding 2 —
+// CRITICAL): permissionsBeyondCeiling() only ever checks the NEW `true`
+// keys being requested, by design (a `false` entry revokes, it doesn't
+// escalate). But PATCH /api/team/roles/[id] and PATCH /api/team/[id]
+// applied that exact same check when editing an EXISTING role/member's
+// permissions — which means setting every key to `false` always passes
+// (grantedKeys() returns nothing to check), with no floor check on what
+// the target CURRENTLY holds. Since the "Owner" role is nothing more
+// than an ordinarily-editable row (name='Owner', permissions=all-true)
+// with no structural protection anywhere, any member holding bare
+// MANAGE_ROLES could zero out the Owner role's permissions entirely —
+// trg_role_permissions_propagate (migration 001) then instantly rewrites
+// effective_permissions for every member holding it, including the real
+// founder. The identical gap applies per-member via permission_overrides
+// on PATCH /api/team/[id].
+//
+// Fix: a second, independent check alongside the ceiling — before
+// touching a role or a member's overrides, the actor must already hold
+// EVERYTHING the target currently, effectively has. You can't touch a
+// principal whose current permission set isn't fully inside your own
+// ceiling, regardless of which direction the requested change points.
+export function permissionsBeyondActorForTarget(
+  actor: SessionUser,
+  targetCurrentPermissions: Record<string, unknown> | null | undefined
+): string[] {
+  return permissionsBeyondCeiling(actor, targetCurrentPermissions)
+}

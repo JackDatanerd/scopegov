@@ -2,6 +2,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { cancelPaystackSubscription } from '@/lib/integrations/paystack'
 
 export async function POST(request: NextRequest) {
   try {
@@ -33,30 +34,11 @@ export async function POST(request: NextRequest) {
     }
 
     // Call Paystack to disable subscription
-    try {
-      const resp = await fetch('https://api.paystack.co/subscription/disable', {
-        method:  'POST',
-        headers: {
-          'Authorization': `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
-          'Content-Type':  'application/json',
-        },
-        body: JSON.stringify({
-          code:  billing.paystack_subscription_code,
-          token: billing.paystack_email_token,
-        }),
-      })
-      if (!resp.ok) {
-        const err = await resp.json()
-        // Carry-forward §5.6: non-renewing status after recent cancel
-        if (err.message?.includes('already') || err.message?.includes('non-renewing')) {
-          // Already cancelled — still mark locally
-        } else {
-          console.error('Paystack disable error:', err)
-        }
-      }
-    } catch (e) {
-      console.error('Paystack disable call failed:', e)
-    }
+    // FIX (section-by-section re-audit): extracted to
+    // lib/integrations/paystack.ts so workspace/delete can share the
+    // exact same cancellation logic instead of independently forgetting
+    // to call it.
+    await cancelPaystackSubscription(billing)
 
     // Mark locally — spec says store cancels_at_period_end: true
     await (service as any).from('billing').update({

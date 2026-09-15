@@ -22,6 +22,17 @@ export const MFA_REQUIRED_PERMISSIONS: Permission[] = [
   // about — approving/rejecting SOWs and COs (money authorization) never
   // triggered the MFA requirement.
   'APPROVE_DOCUMENTS',
+  // FIX (section-by-section re-audit): the two permissions that actually
+  // perform this product's core governance-bypass actions were missing.
+  // GRANT_EXCEPTIONS writes a dollar-valued entry to exceptions_log and
+  // resolves a Guardian scope-drift flag as bypassed (see
+  // app/api/guardian/flags/[id]/route.ts's 'exception' action) — this is
+  // the single most sensitive action in a scope-governance product.
+  // APPROVE_FLAGS (resolve/close/escalate) is the same tier. Meanwhile
+  // merely-read VIEW_ALL_PROJECTS was already forcing MFA. Same gap class
+  // as the APPROVE_DOCUMENTS miss above, just never swept to these two.
+  'GRANT_EXCEPTIONS',
+  'APPROVE_FLAGS',
 ]
 
 export function permissionsRequireMfa(permissions: Record<string, boolean> | Permission[] | null | undefined): boolean {

@@ -3,7 +3,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
-import { permissionsBeyondCeiling, roleWithinCeiling } from '@/lib/utils/permission-ceiling'
+import { permissionsBeyondCeiling, permissionsBeyondActorForTarget, roleWithinCeiling } from '@/lib/utils/permission-ceiling'
 
 export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -62,6 +62,29 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const body    = await request.json()
     const service = createServiceClient()
     const updates: Record<string, unknown> = {}
+
+    // FIX (section-by-section re-audit, RLS+permissions Finding 2 —
+    // CRITICAL): the ceiling checks below only ever block granting a NEW
+    // true permission beyond the actor's own — a `false`-only
+    // permissionOverrides payload always passes, since revoking isn't
+    // escalation. That meant a bare MANAGE_ROLES holder could strip ANY
+    // other member — including one with more permissions than the actor,
+    // e.g. the actual workspace Owner — of everything, one member row at
+    // a time. Floor check first, independent of direction: you cannot
+    // touch a member who currently, effectively holds anything you don't
+    // hold yourself.
+    if (body.permissionOverrides !== undefined || body.roleId !== undefined) {
+      const { data: targetMember } = await (service as any)
+        .from('workspace_members').select('effective_permissions')
+        .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
+      if (!targetMember) return NextResponse.json({ error: 'Member not found' }, { status: 404 })
+
+      const outOfReach = permissionsBeyondActorForTarget(session, targetMember.effective_permissions)
+      if (outOfReach.length > 0)
+        return NextResponse.json({
+          error: `Cannot modify a member who holds permissions you don't hold yourself: ${outOfReach.join(', ')}`,
+        }, { status: 403 })
+    }
 
     // FIX (audit round 4, finding #1 — CRITICAL): this let a MANAGE_ROLES
     // holder set permission_overrides on ANY member row — including their

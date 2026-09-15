@@ -31,4 +31,19 @@ describe('permissionsRequireMfa', () => {
     expect(permissionsRequireMfa(['APPROVE_DOCUMENTS'])).toBe(true)
     expect(permissionsRequireMfa({ APPROVE_DOCUMENTS: true })).toBe(true)
   })
+
+  // FIX (section-by-section re-audit) regression: GRANT_EXCEPTIONS and
+  // APPROVE_FLAGS are the two permissions that actually perform this
+  // product's governance-bypass actions (granting a scope exception,
+  // resolving a Guardian flag) and must trigger MFA. Pin them so the gap
+  // that let mere read access (VIEW_ALL_PROJECTS) require MFA while the
+  // actual bypass actions didn't can't regress.
+  it('GRANT_EXCEPTIONS and APPROVE_FLAGS are in the required list and trigger MFA', () => {
+    expect(MFA_REQUIRED_PERMISSIONS).toContain('GRANT_EXCEPTIONS')
+    expect(MFA_REQUIRED_PERMISSIONS).toContain('APPROVE_FLAGS')
+    expect(permissionsRequireMfa(['GRANT_EXCEPTIONS'])).toBe(true)
+    expect(permissionsRequireMfa(['APPROVE_FLAGS'])).toBe(true)
+    expect(permissionsRequireMfa({ GRANT_EXCEPTIONS: true })).toBe(true)
+    expect(permissionsRequireMfa({ APPROVE_FLAGS: true })).toBe(true)
+  })
 })

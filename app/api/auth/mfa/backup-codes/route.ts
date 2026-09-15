@@ -26,9 +26,18 @@ export async function POST() {
     await (service as any).from('user_mfa_backup_codes')
       .update({ used_at: new Date().toISOString() })
       .eq('user_id', user.id).is('used_at', null)
-    await (service as any).from('user_mfa_backup_codes').insert(
+    // FIX (section-by-section re-audit): this insert's error was never
+    // checked, unlike the identical insert in mfa/verify/route.ts's
+    // first-enrollment path ("don't hand plaintext codes to the user for
+    // a set that doesn't exist server-side"). A failed insert here still
+    // invalidated the user's OLD codes (the update above already ran) and
+    // then returned brand-new plaintext codes that were never persisted —
+    // the user would believe they have valid backup codes when in fact
+    // they have none. Same guard, applied here too.
+    const { error: insertErr } = await (service as any).from('user_mfa_backup_codes').insert(
       hashes.map(code_hash => ({ user_id: user.id, code_hash }))
     )
+    if (insertErr) throw insertErr
 
     const { data: userRow } = await (service as any).from('users').select('active_workspace_id').eq('id', user.id).maybeSingle()
     await logAudit(service, {
