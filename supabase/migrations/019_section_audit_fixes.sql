@@ -77,6 +77,39 @@ GRANT UPDATE (name, updated_at) ON public.users TO authenticated;
 -- attacker (or just an ordinary user) could reset their 14-day trial
 -- indefinitely by creating a new workspace whenever the old one expired.
 -- One active (non-deleted) trial workspace per creator, DB-enforced.
+--
+-- Live production data already violates this in at least one case
+-- (found running this migration — a CREATE UNIQUE INDEX against
+-- pre-existing duplicates fails rather than silently corrupting
+-- anything, which is exactly why it's a plain index and not a
+-- destructive cleanup). Rather than guess which of a creator's existing
+-- trial workspaces is "the real one" and delete or repurpose the rest,
+-- grandfather every currently-existing violation in place — nothing
+-- existing is touched, deleted, or has its plan_tier changed — and only
+-- enforce the cap on workspaces that don't carry the exemption. New
+-- workspaces created via the app never set this column, so it defaults
+-- to false and they're fully subject to the cap; only duplicates that
+-- already existed as of this migration are exempted.
+ALTER TABLE public.workspaces
+  ADD COLUMN IF NOT EXISTS trial_cap_exempt boolean NOT NULL DEFAULT false;
+
+-- For each creator with more than one active trial workspace, keep the
+-- single MOST RECENTLY created one subject to the cap and exempt the
+-- rest — the newest one is treated as "the current trial" going
+-- forward, since it's the one most likely to still be the one actually
+-- in use; the others keep working exactly as before, just outside the
+-- new constraint.
+WITH ranked AS (
+  SELECT id, created_by,
+         row_number() OVER (PARTITION BY created_by ORDER BY created_at DESC) AS rn
+  FROM public.workspaces
+  WHERE plan_tier = 'trial' AND deleted_at IS NULL
+)
+UPDATE public.workspaces w
+SET trial_cap_exempt = true
+FROM ranked r
+WHERE w.id = r.id AND r.rn > 1;
+
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_trial_per_creator
   ON public.workspaces (created_by)
-  WHERE plan_tier = 'trial' AND deleted_at IS NULL;
+  WHERE plan_tier = 'trial' AND deleted_at IS NULL AND trial_cap_exempt = false;
