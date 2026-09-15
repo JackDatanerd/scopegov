@@ -28,7 +28,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const service = createServiceClient()
     const { data: co } = await (service as any)
       .from('change_orders')
-      .select(`id,title,status,flag_id,counter_amount,counter_note,line_items,subtotal,tax_rate,tax_inclusive,project_id,workspace_id,
+      .select(`id,title,status,flag_id,counter_amount,counter_note,line_items,subtotal,tax_rate,tax_inclusive,project_id,workspace_id,token,
         projects(id,name,currency,clients(name,email,cc_emails),workspaces(id,agency_name,brand_colour))`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
@@ -101,6 +101,23 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (updateErr) return NextResponse.json({ error: 'Failed to accept counter' }, { status: 500 })
     if (!updatedCo || updatedCo.length === 0)
       return NextResponse.json({ error: 'This counter-offer was already responded to' }, { status: 409 })
+
+    // FIX (re-audit, portal section): the client's old counter-response
+    // token was invalidated purely by being overwritten in the column
+    // above (change_orders.token = newToken) — every other invalidation
+    // path in this app (decline, sign, direct accept) explicitly inserts
+    // into revoked_tokens with a reason instead. Functionally the old
+    // token already stops matching any row either way, but revisiting it
+    // returned a generic {state:'invalid'} instead of a specific reason
+    // like every other dead link in the app gets. Purely a consistency
+    // fix — best-effort, doesn't block the response if it fails.
+    if (co.token) {
+      try {
+        await (service as any).from('revoked_tokens').insert({
+          token: co.token, token_type: 'co', reason: 'superseded',
+        })
+      } catch (e) { console.error('revoked_tokens insert for superseded counter token failed:', e) }
+    }
 
     // Flag resolution and amendment creation now happen once the client
     // actually countersigns (finalizeCoAcceptance), not here.

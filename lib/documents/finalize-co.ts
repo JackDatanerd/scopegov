@@ -15,6 +15,9 @@ import { renderCoPdf } from '@/lib/pdf/renderer'
 import { sendCoAcceptedEmail, sendCoAcceptedClientEmail } from '@/lib/email/templates'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
+import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
+import { SignJWT } from 'jose'
+import { nanoid } from 'nanoid'
 
 export async function finalizeCoAcceptance(service: any, params: {
   co: any                 // change_orders row joined with projects/clients/workspaces, plus resolved `total`
@@ -106,6 +109,35 @@ export async function finalizeCoAcceptance(service: any, params: {
   })
   if (amendErr) console.error('Amendment insert failed after CO accept:', amendErr, { coId: co.id })
 
+  // FIX (re-audit, portal section): the accept token expires a flat 30
+  // days from when the CO was *sent* (send-co.ts) and, unlike
+  // accept-counter, direct acceptance never reissued it — so the PDF
+  // redownload link below (which reuses the same token) went dead a fixed
+  // 30 days post-send regardless of how close to that deadline the client
+  // actually accepted. Reissuing a fresh, long-lived token here brings
+  // direct-accept to parity with accept-counter's existing behavior.
+  let coToken = co.token
+  try {
+    const jwtSecret = await getWorkspaceJwtSecret(service, co.workspace_id)
+    if (jwtSecret) {
+      const secret = new TextEncoder().encode(jwtSecret)
+      const newExpiresAt = new Date(Date.now() + 2 * 365 * 24 * 60 * 60 * 1000) // 2 years
+      const newToken = await new SignJWT({
+        coId: co.id, workspaceId: co.workspace_id, projectId: co.project_id,
+        clientEmail: client.email, action: 'view',
+      })
+        .setProtectedHeader({ alg: 'HS256' })
+        .setExpirationTime(newExpiresAt)
+        .setJti(nanoid())
+        .sign(secret)
+
+      await (service as any).from('change_orders').update({
+        token: newToken, expires_at: newExpiresAt.toISOString(),
+      }).eq('id', co.id)
+      coToken = newToken
+    }
+  } catch (e) { console.error('CO post-acceptance token reissue failed (original link stays in effect):', e) }
+
   try {
     const { data: snap } = await (service as any)
       .from('project_scope_snapshot').select('id,deliverables').eq('project_id', co.project_id).single()
@@ -177,12 +209,18 @@ export async function finalizeCoAcceptance(service: any, params: {
   try {
     const emails = await getMemberEmailsWithPermission(service, co.workspace_id, 'SEND_CHANGE_ORDERS', 25, 'co_accepted', co.project_id)
     if (emails.length) {
+      // FIX (re-audit, notifications section): pdfAttachment was already
+      // generated above (used for the client email 20 lines below) but
+      // was never passed here — the client got a PDF copy of the executed
+      // change order, the agency team that just closed the deal didn't,
+      // and had to go find it in the app separately.
       await sendCoAcceptedEmail({
         to: emails, agencyName: ws.agency_name,
         clientName: client.name, projectName: project.name,
         coTitle: co.title, total: co.total, currency: project.currency || 'USD',
         acceptedBy: signerName.trim(),
         projectUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects/${co.project_id}?tab=co`,
+        attachments: pdfAttachment ? [pdfAttachment] : undefined,
       })
     }
   } catch (e) { console.error('CO accepted agency email failed:', e) }
@@ -196,7 +234,7 @@ export async function finalizeCoAcceptance(service: any, params: {
   // read-only once the CO is 'accepted' (see the pdf route for why).
   try {
     if (client?.email) {
-      const pdfUrl = `${process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL}/api/portal/co/${co.token || ''}/pdf`
+      const pdfUrl = `${process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL}/api/portal/co/${coToken || ''}/pdf`
       await sendCoAcceptedClientEmail({
         to: client.email, cc: client.cc_emails || [],
         clientName: client.name, agencyName: ws.agency_name,
@@ -215,5 +253,5 @@ export async function finalizeCoAcceptance(service: any, params: {
     entityType: 'project', entityId: co.project_id, projectId: co.project_id,
   })
 
-  return { ok: true as const, agencyName: ws.agency_name }
+  return { ok: true as const, agencyName: ws.agency_name, token: coToken }
 }

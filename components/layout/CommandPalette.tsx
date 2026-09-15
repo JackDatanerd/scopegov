@@ -15,6 +15,9 @@ const TYPE_ICONS: Record<string, string> = {
   client:        'ti-user',
   change_order:  'ti-git-merge',
   sow:           'ti-file-text',
+  // FIX (build, search section): invoice results now come back from
+  // /api/search (see that route) — needed an icon to match.
+  invoice:       'ti-receipt-2',
 }
 
 interface Props {
@@ -33,6 +36,15 @@ export default function CommandPalette({ permissions = [] }: Props) {
   const [idx,     setIdx]     = useState(0)
   const inputRef  = useRef<HTMLInputElement>(null)
   const debounce  = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // FIX (re-audit, search section): no request-cancellation or staleness
+  // guard existed — search() unconditionally did setResults(json.results)
+  // on every response. If the user paused twice mid-typing (two separate
+  // debounce windows, each a real request) and those two responses
+  // resolved out of order — plausible on any real network — the results
+  // shown could silently belong to an earlier, already-abandoned query.
+  // A monotonic sequence ref, bumped per request and checked on resolve,
+  // fixes it without needing AbortController plumbing through fetch.
+  const seq = useRef(0)
 
   // Cmd+K / Ctrl+K shortcut
   useEffect(() => {
@@ -59,13 +71,17 @@ export default function CommandPalette({ permissions = [] }: Props) {
     if (debounce.current) clearTimeout(debounce.current)
     if (!q.trim() || q.length < 2) { setResults([]); return }
     debounce.current = setTimeout(async () => {
+      const mySeq = ++seq.current
       setLoading(true)
       try {
         const res  = await fetch(`/api/search?q=${encodeURIComponent(q)}`)
         const json = await res.json()
+        if (mySeq !== seq.current) return // a newer query has since started — drop this stale response
         setResults(json.results || [])
         setIdx(0)
-      } finally { setLoading(false) }
+      } finally {
+        if (mySeq === seq.current) setLoading(false)
+      }
     }, 200)
   }, [])
 
@@ -108,7 +124,7 @@ export default function CommandPalette({ permissions = [] }: Props) {
             value={query}
             onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Search projects, clients, change orders…"
+            placeholder="Search projects, clients, SOWs, change orders, invoices…"
             style={{ flex: 1, border: 'none', outline: 'none', fontSize: 14, background: 'transparent', color: 'var(--text)' }}
           />
           {loading && <span className="spin spin-dark" style={{ width: 14, height: 14 }} />}

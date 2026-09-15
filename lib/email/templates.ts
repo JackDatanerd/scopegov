@@ -302,13 +302,58 @@ export async function sendSowDeclinedEmail(params: {
   })
 }
 
+// FIX (build, cron section): sow-stall used to be a pure status flip —
+// no email, no in-app notification, just an audit-log row nobody would
+// see unless they happened to check the dashboard. For a product whose
+// whole premise is catching things before they go silently stale, a
+// stalled SOW that tells no one was a real gap, not just a nice-to-have.
+export async function sendSowStalledEmail(params: {
+  to: string[]; clientName: string; projectName: string
+  daysSinceSent: number; projectUrl: string
+}) {
+  const { to, clientName: clientNameRaw, projectName: projectNameRaw, daysSinceSent, projectUrl } = params
+  const clientName  = escapeHtml(clientNameRaw)
+  const projectName = escapeHtml(projectNameRaw)
+
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.amber,
+    label: 'SOW stalled',
+    headline: `${clientName} hasn't signed — ${projectName}`,
+    body: `
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        The Statement of Work for <strong>${projectName}</strong> has been awaiting <strong>${clientName}</strong>'s
+        signature for over ${daysSinceSent} days with no response.
+      </p>
+      <p style="font-size:13px;color:${C.text2};margin:0;">
+        Worth a follow-up — you can send a reminder or check in directly from the project page.
+      </p>
+    `,
+    cta: 'Open project →',
+    ctaUrl: projectUrl,
+  })
+
+  return resendClient().emails.send({
+    from:    `ScopeGov <${FROM}>`,
+    to,
+    subject: `SOW stalled — ${projectNameRaw} awaiting signature ${daysSinceSent}+ days`,
+    html,
+  })
+}
+
 // ── Event 18: Guardian flag raised ────────────────────────────
 export async function sendGuardianFlagEmail(params: {
-  to: string[]; agencyName: string; projectName: string
+  to: string[]; projectName: string
   severity: string; description: string; sowReference: string
   projectUrl: string; path?: string
 }) {
-  const { to, agencyName, projectName: projectNameRaw, severity, description: descriptionRaw, sowReference: sowReferenceRaw, projectUrl, path: pathRaw } = params
+  // FIX (re-audit, notifications section): `agencyName` was accepted here
+  // and destructured but never once referenced in the template body below
+  // — this email is unconditionally branded "ScopeGov" (it's the
+  // platform's own automated flag, not agency-branded correspondence),
+  // so the param was dead weight in the signature. Dropped it and updated
+  // both call sites (guardian/check, guardian/inbound) accordingly.
+  const { to, projectName: projectNameRaw, severity, description: descriptionRaw, sowReference: sowReferenceRaw, projectUrl, path: pathRaw } = params
   const projectName   = escapeHtml(projectNameRaw)
   const description   = escapeHtml(descriptionRaw)
   const sowReference  = escapeHtml(sowReferenceRaw)
@@ -616,13 +661,52 @@ export async function sendCoEmail(params: {
   })
 }
 
+// FIX (build, cron section): co-stall's counterpart to sendSowStalledEmail
+// above — same gap, same fix. A stalled CO used to be a pure status flip
+// with zero outbound signal.
+export async function sendCoStalledEmail(params: {
+  to: string[]; clientName: string; projectName: string; coTitle: string
+  daysSinceSent: number; projectUrl: string
+}) {
+  const { to, clientName: clientNameRaw, projectName: projectNameRaw, coTitle: coTitleRaw, daysSinceSent, projectUrl } = params
+  const clientName  = escapeHtml(clientNameRaw)
+  const projectName = escapeHtml(projectNameRaw)
+  const coTitle     = escapeHtml(coTitleRaw)
+
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.amber,
+    label: 'Change order stalled',
+    headline: `${clientName} hasn't responded — ${coTitle}`,
+    body: `
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        The change order <strong>${coTitle}</strong> on <strong>${projectName}</strong> has been awaiting
+        <strong>${clientName}</strong>'s response for over ${daysSinceSent} days with no reply.
+      </p>
+      <p style="font-size:13px;color:${C.text2};margin:0;">
+        Worth a follow-up — you can send a reminder or escalate directly from the project page.
+      </p>
+    `,
+    cta: 'Open project →',
+    ctaUrl: projectUrl,
+  })
+
+  return resendClient().emails.send({
+    from:    `ScopeGov <${FROM}>`,
+    to,
+    subject: `Change order stalled — ${coTitleRaw} awaiting response ${daysSinceSent}+ days`,
+    html,
+  })
+}
+
 // ── Event 11: CO accepted (agency) ───────────────────────────
 export async function sendCoAcceptedEmail(params: {
   to: string[]; agencyName: string; clientName: string
   projectName: string; coTitle: string; total: number
   currency: string; acceptedBy: string; projectUrl: string
+  attachments?: Array<{ filename: string; content: string }>
 }) {
-  const { to, agencyName, clientName: clientNameRaw, projectName: projectNameRaw, coTitle: coTitleRaw, total, currency, acceptedBy: acceptedByRaw, projectUrl } = params
+  const { to, agencyName, clientName: clientNameRaw, projectName: projectNameRaw, coTitle: coTitleRaw, total, currency, acceptedBy: acceptedByRaw, projectUrl, attachments } = params
   const clientName  = escapeHtml(clientNameRaw)
   const projectName = escapeHtml(projectNameRaw)
   const coTitle     = escapeHtml(coTitleRaw)
@@ -658,6 +742,7 @@ export async function sendCoAcceptedEmail(params: {
     to,
     subject: `✓ Change order accepted — ${projectNameRaw} +${currency} ${total.toLocaleString()}`,
     html,
+    ...(attachments?.length ? { attachments } : {}),
   })
 }
 
@@ -783,6 +868,46 @@ export async function sendPaymentFailedEmail(params: {
     from:    `ScopeGov <${FROM}>`,
     to,
     subject: `Action needed: Payment failed for ScopeGov — ${graceDaysLeft} days to resolve`,
+    html,
+  })
+}
+
+// FIX (build, cron section): companion to sendPaymentFailedEmail — that
+// one covers "we tried to charge you and it failed", this covers "you
+// cancelled, and your paid period has now genuinely ended" (see the
+// cancelled-subscription enforcement step in cron/payment-overdue). Same
+// downgrade outcome, deliberately calmer tone — this isn't a payment
+// problem, it's an expected transition the person asked for.
+export async function sendSubscriptionEndedEmail(params: {
+  to: string; name: string; agencyName: string; upgradeUrl: string
+}) {
+  const { to, name: nameRaw, agencyName: agencyNameRaw, upgradeUrl } = params
+  const name       = escapeHtml(nameRaw)
+  const agencyName = escapeHtml(agencyNameRaw)
+
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.text3,
+    label: 'Subscription ended',
+    headline: 'Your ScopeGov subscription has ended',
+    body: `
+      <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${name},</p>
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        As requested, <strong>${agencyName}</strong>&apos;s paid subscription period has now ended and
+        your workspace has moved to the Solo plan.
+      </p>
+      <p style="font-size:13px;color:${C.text2};">
+        Your data hasn't gone anywhere — resubscribe any time to get your full plan's limits back.
+      </p>
+    `,
+    cta: 'Resubscribe →',
+    ctaUrl: upgradeUrl,
+  })
+
+  return resendClient().emails.send({
+    from:    `ScopeGov <${FROM}>`,
+    to,
+    subject: `Your ScopeGov subscription has ended — ${agencyNameRaw} moved to Solo`,
     html,
   })
 }

@@ -45,4 +45,15 @@ describe('verifyCronSecret', () => {
     process.env.CRON_SECRET = ''
     expect(verifyCronSecret(fakeRequest('Bearer '))).toBe(false)
   })
+
+  // FIX (re-audit, cron section): regression for the timing-safe compare —
+  // a same-length-but-wrong value must still be rejected. This is the case
+  // plain `===` also handled correctly; what changed is *how* it's
+  // rejected (constant-time via crypto.timingSafeEqual instead of a
+  // short-circuiting string comparison), not the outcome, so this test
+  // exists to pin the outcome rather than the mechanism.
+  it('rejects a same-length wrong token', () => {
+    process.env.CRON_SECRET = 'super-secret-value'
+    expect(verifyCronSecret(fakeRequest('Bearer super-secret-valuf'))).toBe(false)
+  })
 })

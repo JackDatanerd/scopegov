@@ -38,10 +38,26 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // FIX (doc-completeness audit, migration 014): a CO waiting on the
     // client to countersign the negotiated total is just as reminder-able
     // as one still awaiting their initial response.
-    if (!['awaiting_response', 'awaiting_countersignature'].includes(co.status))
+    // FIX (re-audit, cron/portal section): 'stalled' used to be excluded
+    // here entirely — once co-stall's cron auto-stalled a CO, this route
+    // rejected with 400 and the CO detail page hid the Remind button (see
+    // components/projects/ProjectDetail.tsx), leaving Close or Escalate as
+    // the only actions. There was no way back to "still trying to reach
+    // the client" short of an internal escalation. Allowing a remind from
+    // 'stalled' — and un-stalling the CO back to 'awaiting_response' with
+    // a fresh sent_at below — gives the agency an actual "try again" path
+    // instead of a dead end.
+    if (!['awaiting_response', 'awaiting_countersignature', 'stalled'].includes(co.status))
       return NextResponse.json({ error: 'Can only remind on COs awaiting a client response' }, { status: 400 })
 
     const isCountersign = co.status === 'awaiting_countersignature'
+    const wasStalled     = co.status === 'stalled'
+
+    if (wasStalled) {
+      await (service as any).from('change_orders').update({
+        status: 'awaiting_response', sent_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      }).eq('id', id).eq('status', 'stalled')
+    }
 
     const project   = co.projects
     const client    = project?.clients
@@ -87,7 +103,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       actorEmail: session.email, actorName: session.name,
       eventType: 'reminder.sent', entityType: 'change_order',
       entityId: id, entityName: co.title,
-      metadata: { type: 'co', client_email: client?.email },
+      metadata: { type: 'co', client_email: client?.email, was_stalled: wasStalled },
     })
 
     return NextResponse.json({ ok: true })

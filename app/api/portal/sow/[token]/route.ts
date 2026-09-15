@@ -2,9 +2,8 @@ export const runtime = 'nodejs'
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
-import { jwtVerify } from 'jose'
-import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
 import { formatAddress } from '@/lib/utils/format'
+import { checkRevokedToken, verifySowJwt } from './_shared'
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
@@ -12,16 +11,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const service   = createServiceClient()
 
     // Check revoked tokens first
-    const { data: revoked } = await (service as any)
-      .from('revoked_tokens')
-      .select('reason')
-      .eq('token', token)
-      .single()
+    const { revoked, reason: revokedReason } = await checkRevokedToken(service, token)
 
     if (revoked) {
       return NextResponse.json({
-        state: revoked.reason === 'declined' ? 'declined'
-          : revoked.reason === 'withdrawn' ? 'withdrawn'
+        state: revokedReason === 'declined' ? 'declined'
+          : revokedReason === 'withdrawn' ? 'withdrawn'
           : 'revoked',
       })
     }
@@ -48,12 +43,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     // Verify JWT with workspace-specific secret — jwt_secret lives in
     // workspace_secrets now, not on workspaces itself — see migration 013.
     const workspace = sow.projects?.workspaces
-    try {
-      const jwtSecret = workspace?.id ? await getWorkspaceJwtSecret(service, workspace.id) : null
-      if (!jwtSecret) throw new Error('no secret')
-      const secret = new TextEncoder().encode(jwtSecret)
-      await jwtVerify(token, secret)
-    } catch {
+    const jwtOk = workspace?.id ? await verifySowJwt(service, token, workspace.id) : false
+    if (!jwtOk) {
       // Token expired or invalid signature
       if (sow.expires_at && new Date(sow.expires_at) < new Date()) {
         return NextResponse.json({ state: 'expired' })

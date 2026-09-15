@@ -2,6 +2,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { sanitizeDisplayName } from '@/lib/utils/sanitize'
 
 export async function PATCH(request: NextRequest) {
   try {
@@ -38,6 +39,14 @@ export async function PATCH(request: NextRequest) {
     for (const [key, col] of Object.entries(fieldMap)) {
       if (body[key] !== undefined) updates[col] = body[key]
     }
+
+    // FIX (re-audit, notifications section): same gap as workspace/create
+    // — agency_name (and the workspace's own display `name`) flow
+    // unescaped-for-headers into email "From" display names and subject
+    // lines across ~10 templates, with no length cap or control-character
+    // restriction anywhere on the settings-update path either.
+    if (typeof updates.agency_name === 'string') updates.agency_name = sanitizeDisplayName(updates.agency_name)
+    if (typeof updates.name === 'string')        updates.name        = sanitizeDisplayName(updates.name)
 
     // legalAddress is a structured object (line1/line2/city/region/postalCode/country),
     // not a flat scalar, so it doesn't fit the fieldMap loop above. Stored as-is in the

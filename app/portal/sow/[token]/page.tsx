@@ -1,6 +1,6 @@
 'use client'
 import { useState, useEffect, useRef } from 'react'
-import { useParams } from 'next/navigation'
+import { useParams, useRouter } from 'next/navigation'
 import SignaturePad, { type SignaturePadHandle } from '@/components/ui/SignaturePad'
 import { isTableSection, SOW_TABLE_SCHEMAS, type SowTableRow } from '@/lib/sow/table-schema'
 
@@ -44,6 +44,7 @@ interface SowData {
 
 export default function SowPortalPage() {
   const params      = useParams()
+  const router       = useRouter()
   const token       = params.token as string
   const [state,     setState]     = useState<PortalState>('loading')
   const [sow,       setSow]       = useState<SowData | null>(null)
@@ -94,6 +95,15 @@ export default function SowPortalPage() {
       if (!res.ok) throw new Error(json.error)
       setSignedInfo({ signedBy: signerName.trim(), clientSignatureData: signatureData })
       setState('signed')
+      // FIX (re-audit, portal section): the sign route reissues a fresh,
+      // long-lived token for post-signature access (see sign/route.ts) and
+      // returns it here — swap the URL to it via replace (no new history
+      // entry) so a refresh or a bookmark of this page keeps working past
+      // the original signing link's short expiry window, instead of 404ing
+      // the moment the client revisits their own executed document later.
+      if (json.token && json.token !== token) {
+        router.replace(`/portal/sow/${json.token}`)
+      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.')
     } finally { setSubmitting(false) }

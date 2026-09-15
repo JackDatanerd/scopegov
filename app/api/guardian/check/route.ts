@@ -222,7 +222,6 @@ export async function POST(request: NextRequest) {
           try {
             await sendGuardianFlagEmail({
               to:           emails,
-              agencyName:   project.workspaces?.agency_name || '',
               projectName:  project.name,
               severity,
               description:  classification.reasoning,

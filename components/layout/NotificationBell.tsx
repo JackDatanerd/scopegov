@@ -20,6 +20,20 @@ function entityHref(n: Notification): string | null {
   // straight to the Billing tab instead of Overview.
   if (n.entity_type === 'project' && n.entity_id && n.type.startsWith('invoice_'))
     return `/projects/${n.entity_id}?tab=billing`
+  // FIX (re-audit, notifications section): the invoice fix above was
+  // never generalized — guardian_flag notifications landed on plain
+  // Overview instead of the Guardian tab, and co_*/sow_* notifications
+  // landed on Overview instead of their respective tabs, even though the
+  // *email* for every one of these events already deep-links correctly
+  // (see sendGuardianFlagEmail's path param, and the ?tab=co/?tab=sow
+  // URLs built into every co-stall/sow-stall/co_accepted/sow_signed etc.
+  // notify call site). The in-app bell just never matched that.
+  if (n.entity_type === 'project' && n.entity_id && n.type.startsWith('guardian_'))
+    return `/projects/${n.entity_id}?tab=guardian`
+  if (n.entity_type === 'project' && n.entity_id && n.type.startsWith('co_'))
+    return `/projects/${n.entity_id}?tab=co`
+  if (n.entity_type === 'project' && n.entity_id && n.type.startsWith('sow_'))
+    return `/projects/${n.entity_id}?tab=sow`
   if (n.entity_type === 'project' && n.entity_id) return `/projects/${n.entity_id}`
   if (n.entity_type === 'project_message' && n.entity_id) return `/projects/${n.entity_id}?tab=discussion`
   if (n.entity_type === 'approval_request' && n.entity_id) return `/approvals?highlight=${n.entity_id}`
@@ -41,15 +55,18 @@ export default function NotificationBell() {
   const [open, setOpen] = useState(false)
   const [items, setItems] = useState<Notification[]>([])
   const [loaded, setLoaded] = useState(false)
+  const [unreadCount, setUnreadCount] = useState(0)
   const ref = useRef<HTMLDivElement>(null)
-
-  const unreadCount = items.filter(n => !n.read).length
 
   async function load() {
     try {
       const res = await fetch('/api/notifications')
       const json = await res.json()
       setItems(json.notifications || [])
+      // FIX (re-audit, notifications section): unreadCount now comes from
+      // the server's own unbounded count query, not items.filter(!read)
+      // over the client-side 50-row list — see api/notifications/route.ts.
+      setUnreadCount(json.unreadCount ?? (json.notifications || []).filter((n: Notification) => !n.read).length)
     } catch { /* fail silently — not worth surfacing an error for this */ }
     finally { setLoaded(true) }
   }
@@ -73,6 +90,7 @@ export default function NotificationBell() {
 
   async function markAllRead() {
     setItems(prev => prev.map(n => ({ ...n, read: true })))
+    setUnreadCount(0)
     try {
       await fetch('/api/notifications', {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
@@ -84,6 +102,7 @@ export default function NotificationBell() {
   async function handleClick(n: Notification) {
     if (!n.read) {
       setItems(prev => prev.map(x => x.id === n.id ? { ...x, read: true } : x))
+      setUnreadCount(prev => Math.max(0, prev - 1))
       fetch('/api/notifications', {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids: [n.id] }),

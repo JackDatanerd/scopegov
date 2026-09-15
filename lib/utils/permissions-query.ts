@@ -52,12 +52,24 @@ export async function getMembersWithPermission(
   limit = 25,
   projectId?: string
 ): Promise<Array<{ id: string; name: string; email: string }>> {
+  // FIX (re-audit, notifications section): `.limit(limit)` used to be
+  // applied to the raw active-members query, BEFORE the permission filter
+  // below — so in any workspace with more than `limit` active members,
+  // whoever happened to land outside that first arbitrary (unordered —
+  // there was no .order() either) batch was silently excluded from ever
+  // receiving this notification, regardless of whether they actually held
+  // the permission. The cap needs to apply to the *eligible* set, after
+  // filtering, not to the pool it's filtered from. Ordering added for
+  // determinism; a generous upper bound (10x the largest limit any caller
+  // passes today) keeps this from becoming an unbounded query on a very
+  // large workspace while not truncating realistic team sizes.
   const { data: members } = await service
     .from('workspace_members')
     .select('user_id, effective_permissions, users!workspace_members_user_id_fkey(id, name, email)')
     .eq('workspace_id', workspaceId)
     .eq('status', 'active')
-    .limit(limit)
+    .order('user_id')
+    .limit(500)
 
   const eligible = (members || [])
     .filter((m: any) => m.effective_permissions?.[permission] === true && m.users?.email)
@@ -69,7 +81,7 @@ export async function getMembersWithPermission(
 
   if (projectId) recipients = await filterToProjectAccess(service, projectId, recipients, permissionMap)
 
-  return recipients
+  return recipients.slice(0, limit)
 }
 
 // Notification preferences — defaults to enabled (true) when no row exists,

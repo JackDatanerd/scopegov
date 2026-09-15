@@ -3,9 +3,38 @@ export const runtime = 'nodejs'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
+import { Resend } from 'resend'
 
 // FIX (audit round 3): local copy replaced with the shared,
 // null-safe helper — see lib/utils/verify-cron.ts.
+
+// FIX (build, cron section): this whole route detected real problems
+// (elevated classification-failure rate, unresolved failures sitting for
+// 24h+) but only ever `console.error`d them — literally commented "Could
+// also POST to a Slack webhook here". Nobody was actually paged. This
+// isn't scoped to a single workspace (it's a platform-wide health check
+// across every workspace's guardian_checks), so it can't go through the
+// normal per-workspace notification system — it needs its own ops
+// recipient. OPS_ALERT_EMAIL is optional; if unset this still degrades to
+// the previous console.error-only behavior rather than crashing the cron.
+let _resend: Resend | null = null
+function resendClient(): Resend {
+  if (!_resend) _resend = new Resend(process.env.RESEND_API_KEY)
+  return _resend
+}
+
+async function alertOps(subject: string, lines: string[]) {
+  const to = process.env.OPS_ALERT_EMAIL
+  if (!to) return
+  try {
+    await resendClient().emails.send({
+      from:    `ScopeGov Ops <${process.env.RESEND_FROM_EMAIL}>`,
+      to,
+      subject: `[Guardian Health] ${subject}`,
+      html: `<div style="font-family:monospace;white-space:pre-wrap;">${lines.map(l => l.replace(/</g, '&lt;')).join('\n')}</div>`,
+    })
+  } catch (e) { console.error('Guardian health ops alert email failed:', e) }
+}
 
 export async function POST(request: NextRequest) {
   if (!verifyCronSecret(request))
@@ -26,9 +55,9 @@ export async function POST(request: NextRequest) {
     const rate   = total > 0 ? failed / total : 0
 
     if (rate > 0.01 && total >= 5) {
-      // Alert ops — in production this would hit PagerDuty/Slack
-      console.error(`[GUARDIAN ALERT] Classification failure rate: ${(rate * 100).toFixed(1)}% (${failed}/${total} in last 15 min)`)
-      // Could also POST to a Slack webhook here
+      const msg = `Classification failure rate: ${(rate * 100).toFixed(1)}% (${failed}/${total} in last 15 min)`
+      console.error(`[GUARDIAN ALERT] ${msg}`)
+      await alertOps('Elevated classification failure rate', [msg])
     }
 
     // Alert on unresolved failures > 24h
@@ -41,7 +70,9 @@ export async function POST(request: NextRequest) {
       .eq('outcome', 'pending')
 
     if ((unresolvedCount || 0) > 0) {
-      console.error(`[GUARDIAN ALERT] ${unresolvedCount} unresolved classification failures older than 24h`)
+      const msg = `${unresolvedCount} unresolved classification failures older than 24h`
+      console.error(`[GUARDIAN ALERT] ${msg}`)
+      await alertOps('Unresolved classification failures', [msg])
     }
 
     return NextResponse.json({ ok: true, total, failed, rate: rate.toFixed(3) })

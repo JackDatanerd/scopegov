@@ -25,7 +25,18 @@ export async function POST(request: NextRequest) {
     const { data: projects, error: projErr } = await (service as any)
       .from('projects')
       .select('id, workspace_id, contract_value, status')
-      .neq('status', 'archived')
+      // FIX (re-audit, cron section): projects.status is the project_status
+      // enum ('Draft'|'Intake'|'Awaiting Signature'|'Changes Requested'|
+      // 'Active'|'Stalled'|'Complete'|'Archived') — capital A. 'archived'
+      // (lowercase) isn't a valid enum literal, so Postgres rejected the
+      // cast with "invalid input value for enum project_status" on every
+      // single run. The route's own catch block turned that into a 500,
+      // meaning contract_reconciliation_snapshots was never written —
+      // silently emptying the reconciliation trend chart on the project
+      // detail page, invoices page, and invoice PDFs. (clients.status uses
+      // lowercase 'active'/'archived' — this was very likely copied from
+      // that table's convention by mistake.)
+      .neq('status', 'Archived')
 
     if (projErr) {
       console.error('Reconciliation rollup: project fetch failed', projErr)

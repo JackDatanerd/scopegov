@@ -37,20 +37,33 @@ export async function POST(request: NextRequest) {
         // Stop generating past retainer duration
         if (monthsSigned >= (p.retainer_duration_months || 12)) continue
 
-        // Check if milestone already exists for this month
-        const monthKey = `${year}-${String(month).padStart(2, '0')}`
-        const { data: existing } = await (service as any)
+        const monthKey   = `${year}-${String(month).padStart(2, '0')}`
+        const dueDate    = `${year}-${String(month).padStart(2, '0')}-01`
+
+        // FIX (re-audit, cron section): the old check searched for
+        // monthKey ("2026-12") *inside the title string*, but the title
+        // is generated below as "Monthly retainer — December 2026" — a
+        // completely different format with zero textual overlap. That
+        // `.like()` could never match, so this dedup check silently never
+        // worked: any re-run in the same month (retry, redeploy, manual
+        // trigger) created a second real-money milestone, and `.single()`
+        // on a lookup that could match 0+ rows compounded it further by
+        // erroring (not throwing — supabase-js returns an error object,
+        // which was also never checked) instead of ever returning `null`
+        // cleanly. due_date is always set deterministically to the 1st of
+        // the target month by this same function, so matching on it
+        // (alongside project + type) is an exact, format-independent key.
+        const { data: existing, error: existingErr } = await (service as any)
           .from('payment_milestones')
           .select('id')
           .eq('project_id', p.id)
           .eq('type', 'retainer_monthly')
-          .like('title', `%${monthKey}%`)
-          .single()
+          .eq('due_date', dueDate)
 
-        if (existing) continue
+        if (existingErr) { console.error('Retainer milestone dedup check failed for project:', p.id, existingErr); continue }
+        if (existing?.length) continue
 
         const monthLabel = now.toLocaleString('en-US', { month: 'long', year: 'numeric' })
-        const dueDate    = `${year}-${String(month).padStart(2, '0')}-01`
 
         await (service as any).from('payment_milestones').insert({
           project_id:   p.id,

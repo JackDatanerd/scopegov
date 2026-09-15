@@ -17,19 +17,40 @@ export async function POST(request: NextRequest) {
     const d7ago    = new Date(now.getTime() - 7  * 86400000).toISOString()
     const d30ago   = new Date(now.getTime() - 30 * 86400000).toISOString()
 
-    // Hard-delete invite rows older than 30 days
-    const { data: purged } = await (service as any)
+    // FIX (re-audit, cron section): d7ago was computed and never used —
+    // invites sat at status='invited' for the full 30-day grace period
+    // even though their token (7-day validity, see team/invite/route.ts)
+    // was long dead, which (a) showed "Pending" in the team UI for an
+    // invite nobody could actually accept anymore, and (b) blocked
+    // re-inviting the same email for up to 30 extra days, since the
+    // pending-invite uniqueness check in team/invite/route.ts only looks
+    // at status='invited' with no expiry awareness of its own. Flipping
+    // status to 'expired' the moment the 7-day token window closes fixes
+    // both — the UI can now distinguish "expired" from "invited", and the
+    // uniqueness check (which only matches status='invited') stops
+    // blocking a fresh invite the instant this runs.
+    const { error: expireErr } = await (service as any)
+      .from('workspace_members')
+      .update({ status: 'expired' })
+      .eq('status', 'invited')
+      .lt('invite_token_expires_at', d7ago)
+    if (expireErr) console.error('Invite expiry transition failed:', expireErr)
+
+    // Hard-delete invite rows (invited or already-expired) older than 30 days
+    const { data: purged, error: purgeErr } = await (service as any)
       .from('workspace_members')
       .delete()
-      .eq('status', 'invited')
+      .in('status', ['invited', 'expired'])
       .lt('invite_token_expires_at', d30ago)
       .select('id')
+    if (purgeErr) console.error('Invite purge failed:', purgeErr)
 
     // revoked_tokens cleanup (purge rows older than 60 days)
     const d60ago = new Date(now.getTime() - 60 * 86400000).toISOString()
-    await (service as any).from('revoked_tokens')
+    const { error: revokedErr } = await (service as any).from('revoked_tokens')
       .delete()
       .lt('revoked_at', d60ago)
+    if (revokedErr) console.error('revoked_tokens cleanup failed:', revokedErr)
 
     // User anonymization (deletedAt < now - 30 days)
     const { data: toAnonymize } = await (service as any)
@@ -55,7 +76,7 @@ export async function POST(request: NextRequest) {
       ok: true,
       purgedInvites: purged?.length || 0,
       anonymizedUsers: anonymized,
-    })
+    }, { status: (expireErr || purgeErr || revokedErr) ? 207 : 200 })
   } catch (err) {
     console.error('Cleanup cron error:', err)
     return NextResponse.json({ error: 'Cron failed' }, { status: 500 })

@@ -1,6 +1,6 @@
 'use client'
 import { useState, useEffect, useRef } from 'react'
-import { useParams } from 'next/navigation'
+import { useParams, useRouter } from 'next/navigation'
 import SignaturePad, { type SignaturePadHandle } from '@/components/ui/SignaturePad'
 import PortalShell from '@/components/portal/PortalShell'
 
@@ -37,6 +37,7 @@ interface CoData {
 
 export default function CoPortalPage() {
   const params   = useParams()
+  const router    = useRouter()
   const token    = params.token as string
   const [state,  setState]  = useState<CoState>('loading')
   const [co,     setCo]     = useState<CoData | null>(null)
@@ -82,6 +83,14 @@ export default function CoPortalPage() {
       if (action === 'accept' || action === 'countersign') setAcceptedInfo({ acceptedBy: signerName.trim(), clientSignatureData: (extra?.signatureData as string) || null })
       setDoneMsg(json.message || 'Done')
       setState('done')
+      // FIX (re-audit, portal section): accept/countersign both reissue a
+      // fresh, long-lived token (see finalize-co.ts) — swap the URL to it
+      // so a refresh or a bookmark of this page keeps working past the
+      // original signing link's short expiry, matching the SOW portal
+      // page's equivalent fix.
+      if ((action === 'accept' || action === 'countersign') && json.token && json.token !== token) {
+        router.replace(`/portal/co/${json.token}`)
+      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.')
     } finally { setSubmitting(false) }
@@ -295,6 +304,13 @@ export default function CoPortalPage() {
               <button className="btn btn-ghost" onClick={() => setMode('counter')}>Propose counter</button>
               <button className="btn btn-ghost" style={{ color: '#B91C1C', borderColor: '#FECACA' }} onClick={() => setMode('decline')}>Decline</button>
             </div>
+            {/* FIX (re-audit, portal section): co.expiresAt was fetched
+                into CoData but never rendered anywhere — the sibling SOW
+                portal page shows this same field. Without it the client
+                has no warning before their link goes dead. */}
+            <p style={{ fontSize: 11, color: '#B0B0B0', marginTop: 14 }}>
+              This link expires {new Date(co.expiresAt).toLocaleDateString('en-GB', { day:'numeric', month:'long', year:'numeric' })}.
+            </p>
           </div>
         )}
 

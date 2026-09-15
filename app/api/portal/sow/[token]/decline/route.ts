@@ -2,12 +2,11 @@ export const runtime = 'nodejs'
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
-import { jwtVerify } from 'jose'
 import { logAudit } from '@/lib/utils/audit'
 import { sendSowDeclinedEmail } from '@/lib/email/templates'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
-import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
+import { checkRevokedToken, verifySowJwt } from '../_shared'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
@@ -15,8 +14,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { reason } = await request.json().catch(() => ({ reason: null }))
     const service    = createServiceClient()
 
-    const { data: revoked } = await (service as any)
-      .from('revoked_tokens').select('id').eq('token', token).single()
+    const { revoked } = await checkRevokedToken(service, token)
     if (revoked) return NextResponse.json({ error: 'Link no longer active' }, { status: 410 })
 
     const { data: sow } = await (service as any)
@@ -30,14 +28,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     // jwt_secret lives in workspace_secrets now, not on workspaces itself —
     // see migration 013.
-    try {
-      const jwtSecret = await getWorkspaceJwtSecret(service, sow.workspace_id)
-      if (!jwtSecret) throw new Error('no secret')
-      const secret = new TextEncoder().encode(jwtSecret)
-      await jwtVerify(token, secret)
-    } catch {
+    if (!(await verifySowJwt(service, token, sow.workspace_id)))
       return NextResponse.json({ error: 'Invalid or expired link' }, { status: 401 })
-    }
 
     const now     = new Date().toISOString()
     const project = sow.projects
@@ -67,6 +59,21 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     await (service as any).from('revoked_tokens').insert({
       token, token_type: 'sow', reason: 'declined',
     })
+
+    // FIX (re-audit, cron/portal section): if sow-stall's cron already
+    // flipped this project to status='Stalled'/stall_reason='sow_unsigned'
+    // before the client got around to responding, "stays at Awaiting
+    // Signature" (the comment below) was only true in the case where the
+    // cron hadn't fired yet. When it had, the project was left stuck
+    // showing "SOW unsigned — project stalled" forever instead of "Client
+    // declined SOW" — attentionReason() checks status==='Stalled' before
+    // ever looking at the SOW's actual status (see lib/utils/attention.ts).
+    // Only undo the auto-stall specifically caused by *this* SOW
+    // (stall_reason==='sow_unsigned') — a project stalled manually for an
+    // unrelated reason should stay stalled regardless of what happens here.
+    await (service as any).from('projects').update({
+      status: 'Awaiting Signature', stall_reason: null, updated_at: now,
+    }).eq('id', project.id).eq('status', 'Stalled').eq('stall_reason', 'sow_unsigned')
 
     // Project stays at Awaiting Signature — surfaces on attention list (spec §4.3)
 

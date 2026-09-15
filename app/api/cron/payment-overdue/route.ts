@@ -2,7 +2,7 @@ export const runtime = 'nodejs'
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
-import { sendTrialWarningEmail, sendPaymentFailedEmail, sendInvoiceOverdueInternalEmail } from '@/lib/email/templates'
+import { sendTrialWarningEmail, sendPaymentFailedEmail, sendInvoiceOverdueInternalEmail, sendSubscriptionEndedEmail } from '@/lib/email/templates'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
@@ -186,11 +186,62 @@ export async function POST(request: NextRequest) {
       } catch (e) { console.error('Grace enforcement error:', e) }
     }
 
+    // ── 4. Cancelled subscriptions past their paid period end ──────
+    // FIX (build, cron section): app/api/billing/cancel/route.ts sets
+    // cancels_at_period_end=true and app/api/billing/webhook/route.ts's
+    // subscription.disable handler does the same, but nothing ever
+    // checked "has this cancelled subscription's period actually ended
+    // yet?" current_period_end was stored and then never read anywhere
+    // except display. A workspace that cancelled and simply stopped
+    // paying (no charge is ever attempted, so no charge.success /
+    // invoice.payment_failed webhook fires either way) kept full paid
+    // access indefinitely. This is the missing enforcement step.
+    const { data: cancelledExpired } = await (service as any)
+      .from('billing')
+      .select('workspace_id, current_period_end, workspaces(id,agency_name,plan_tier,workspace_members!inner(user_id,status,users!inner(name,email)))')
+      .eq('cancels_at_period_end', true)
+      .not('current_period_end', 'is', null)
+      .lt('current_period_end', now.toISOString())
+
+    for (const b of (cancelledExpired || [])) {
+      try {
+        const ws = b.workspaces
+        if (!ws || ws.plan_tier === 'solo') continue
+
+        await (service as any).from('workspaces')
+          .update({ plan_tier: 'solo', updated_at: now.toISOString() })
+          .eq('id', ws.id)
+
+        await (service as any).from('billing')
+          .update({ cancels_at_period_end: false, paystack_subscription_code: null, paystack_customer_code: null })
+          .eq('workspace_id', b.workspace_id)
+
+        await (service as any).from('audit_log').insert({
+          workspace_id: ws.id, actor_id: null,
+          actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
+          event_type: 'billing.subscription_ended', entity_type: 'workspace',
+          entity_id: ws.id, entity_name: ws.agency_name,
+          metadata: { converted_to: 'solo', period_end: b.current_period_end },
+        })
+
+        const owner = (ws.workspace_members || [])
+          .filter((m: any) => m.status === 'active')
+          .map((m: any) => m.users)[0]
+        if (owner) {
+          await sendSubscriptionEndedEmail({
+            to: owner.email, name: owner.name, agencyName: ws.agency_name,
+            upgradeUrl: `${process.env.NEXT_PUBLIC_APP_URL}/settings?tab=billing`,
+          })
+        }
+      } catch (e) { console.error('Cancelled-subscription enforcement error:', e) }
+    }
+
     return NextResponse.json({
       ok: true,
       overdueMarked: overdueMilestones?.length || 0,
       invoicesOverdue: overdueInvoices?.length || 0,
       trialsExpired: expiredTrials?.length || 0,
+      cancelledSubscriptionsEnded: cancelledExpired?.length || 0,
     })
   } catch (err) {
     console.error('Payment overdue cron error:', err)

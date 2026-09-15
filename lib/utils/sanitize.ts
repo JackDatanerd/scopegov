@@ -69,3 +69,24 @@ export function escapeHtml(text: string | null | undefined): string {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;')
 }
+
+// FIX (re-audit, notifications section): workspaces.agency_name had no
+// length cap or character restriction at creation (workspace/create just
+// checked it was truthy) and flows unescaped-for-*headers* into email
+// "From" display names (BRAND_FROM(agencyNameRaw) in lib/email/templates.ts)
+// and subject lines across ~10 templates. escapeHtml (above) protects the
+// HTML body, correctly, but it doesn't address header-style injection —
+// a different character class (CR/LF) that HTML-escaping was never meant
+// to catch. Whether Resend's JSON-API "from" field is actually exploitable
+// this way is unclear (it's not raw SMTP header composition), but there's
+// no reason a display name needs newlines or control characters, so this
+// closes the gap defensively regardless of that uncertainty.
+export function sanitizeDisplayName(text: string | null | undefined, maxLength = 120): string {
+  if (!text) return ''
+  return text
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\r\n\x00-\x1F\x7F]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLength)
+}

@@ -2,15 +2,16 @@ export const runtime = 'nodejs'
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
-import { jwtVerify } from 'jose'
+import { SignJWT } from 'jose'
+import { nanoid } from 'nanoid'
 import { logAudit } from '@/lib/utils/audit'
 import { sendSowSignedAgencyEmail, sendSowSignedClientEmail } from '@/lib/email/templates'
 import { roundCurrency } from '@/lib/utils/format'
 import { renderSowPdf } from '@/lib/pdf/renderer'
-import { nanoid } from 'nanoid'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
+import { checkRevokedToken, verifySowJwt } from '../_shared'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
@@ -30,8 +31,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const service = createServiceClient()
 
     // Check revoked
-    const { data: revoked } = await (service as any)
-      .from('revoked_tokens').select('id').eq('token', token).single()
+    const { revoked } = await checkRevokedToken(service, token)
     if (revoked) return NextResponse.json({ error: 'This link is no longer active' }, { status: 410 })
 
     // Fetch SOW
@@ -52,14 +52,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     // Verify JWT — jwt_secret lives in workspace_secrets now, not on
     // workspaces itself — see migration 013.
-    try {
-      const jwtSecret = await getWorkspaceJwtSecret(service, sow.workspace_id)
-      if (!jwtSecret) throw new Error('no secret')
-      const secret = new TextEncoder().encode(jwtSecret)
-      await jwtVerify(token, secret)
-    } catch {
+    if (!(await verifySowJwt(service, token, sow.workspace_id)))
       return NextResponse.json({ error: 'Invalid or expired signing link' }, { status: 401 })
-    }
 
     const now     = new Date().toISOString()
     const project = sow.projects
@@ -98,9 +92,54 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!updatedSow || updatedSow.length === 0)
       return NextResponse.json({ error: 'This SOW was already signed' }, { status: 409 })
 
+    // ── 1b. Reissue a long-lived token for post-signature access ─────
+    // FIX (re-audit, portal section): the signing token carries a flat
+    // 30-day expiry *from when the SOW was sent* (send-sow.ts), and this
+    // route never reissued it on signature — so the "self-service
+    // redownload" link handed to the client below (and /pdf, which checks
+    // the same token) would go dead a fixed 30 days after send, regardless
+    // of how close to that deadline the client actually signed. A SOW
+    // signed on day 25 left the client 5 days to ever see their own
+    // executed document again. Minting a fresh, long-lived token at the
+    // moment of signature — same pattern the CO accept-counter flow
+    // already uses correctly — decouples "how long do they have to sign"
+    // from "how long can they keep the record of having signed."
+    let clientToken = token
+    try {
+      const jwtSecret = await getWorkspaceJwtSecret(service, sow.workspace_id)
+      if (jwtSecret) {
+        const secret = new TextEncoder().encode(jwtSecret)
+        const newExpiresAt = new Date(Date.now() + 2 * 365 * 24 * 60 * 60 * 1000) // 2 years
+        const newToken = await new SignJWT({
+          sowId: sow.id, workspaceId: sow.workspace_id, projectId: project.id,
+          clientEmail: client.email, action: 'view',
+        })
+          .setProtectedHeader({ alg: 'HS256' })
+          .setExpirationTime(newExpiresAt)
+          .setJti(nanoid())
+          .sign(secret)
+
+        await (service as any).from('sow_documents').update({
+          token: newToken, expires_at: newExpiresAt.toISOString(),
+        }).eq('id', sow.id)
+        clientToken = newToken
+      }
+    } catch (e) { console.error('SOW post-signature token reissue failed (original link stays in effect):', e) }
+
     // ── 2. Update project → Active ───────────────────────────
+    // FIX (re-audit, portal section): also clears stall_reason — if
+    // sow-stall's cron had already flipped this project to
+    // status='Stalled'/stall_reason='sow_unsigned' before the client got
+    // around to signing, this update took it out of Stalled (via neq
+    // above) but left stall_reason='sow_unsigned' sitting on an Active
+    // project. Currently harmless (nothing reads stall_reason off a
+    // non-Stalled project) but stale data waiting to confuse the next
+    // feature that trusts it — and the manual PATCH path in
+    // app/api/projects/[id]/route.ts already clears it on this exact
+    // transition (BUG-046), so this brings the automated path to parity.
     await (service as any).from('projects').update({
       status:        'Active',
+      stall_reason:  null,
       updated_at:    now,
     }).eq('id', project.id).neq('status', 'Active')
 
@@ -225,12 +264,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         clientName:  client.name,
         agencyName:  ws.agency_name,
         projectName: project.name,
-        portalUrl:   `${process.env.NEXT_PUBLIC_APP_URL}/portal/sow/${token}`,
+        portalUrl:   `${process.env.NEXT_PUBLIC_APP_URL}/portal/sow/${clientToken}`,
         attachments: pdfAttachment ? [pdfAttachment] : undefined,
       })
     } catch (e) { console.error('Client confirm email failed:', e) }
 
-    return NextResponse.json({ ok: true, guardianEmail })
+    return NextResponse.json({ ok: true, guardianEmail, token: clientToken })
   } catch (err) {
     console.error('SOW sign error:', err)
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })

@@ -2,6 +2,7 @@ import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/
 import { NextResponse, type NextRequest } from 'next/server'
 import { nanoid } from 'nanoid'
 import crypto from 'crypto'
+import { sanitizeDisplayName } from '@/lib/utils/sanitize'
 
 function generateSlug(name: string): string {
   return name.toLowerCase()
@@ -17,7 +18,8 @@ export async function POST(request: NextRequest) {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-    const { agencyName, industry, currency, timezone } = await request.json()
+    const { agencyName: agencyNameRaw, industry, currency, timezone } = await request.json()
+    const agencyName = sanitizeDisplayName(agencyNameRaw)
     if (!agencyName || !industry) {
       return NextResponse.json({ error: 'Agency name and industry are required' }, { status: 400 })
     }

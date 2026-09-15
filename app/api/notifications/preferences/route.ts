@@ -11,6 +11,9 @@ const EVENT_TYPES = [
   // were missing from this whitelist — PATCH would 400 on them and the Settings
   // UI had no toggle, so they were permanently un-mutable.
   'invoice_payment_received', 'invoice_overdue', 'approval_requested',
+  // FIX (build, cron section): co-stall/sow-stall now actually notify (see
+  // cron/co-stall and cron/sow-stall) — same whitelist requirement as above.
+  'co_stalled', 'sow_stalled',
 ]
 
 export async function GET() {

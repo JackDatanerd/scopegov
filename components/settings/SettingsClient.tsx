@@ -48,6 +48,10 @@ const NOTIF_ITEMS = [
   { key: 'invoice_overdue',       label: 'Invoice overdue',         desc: 'When an invoice passes its due date unpaid' },
   { key: 'approval_requested',    label: 'Approval requested',      desc: 'When a document needs your approval' },
   { key: 'trial_ending',          label: 'Trial ending',            desc: '3 days before trial expires' },
+  // FIX (build, cron section): co-stall/sow-stall now actually notify —
+  // same "wire it server-side, add the toggle" pattern as the three above.
+  { key: 'sow_stalled',           label: 'SOW stalled',             desc: "When a client hasn't signed a SOW in 7+ days" },
+  { key: 'co_stalled',            label: 'Change order stalled',    desc: "When a client hasn't responded to a change order in 5+ days" },
 ]
 
 interface Props {

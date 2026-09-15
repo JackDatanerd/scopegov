@@ -2,12 +2,11 @@ export const runtime = 'nodejs'
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
-import { jwtVerify } from 'jose'
 import { logAudit } from '@/lib/utils/audit'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { escapeHtml } from '@/lib/utils/sanitize'
-import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
+import { checkRevokedToken, verifySowJwt } from '../_shared'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
@@ -19,8 +18,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const service = createServiceClient()
 
-    const { data: revoked } = await (service as any)
-      .from('revoked_tokens').select('id').eq('token', token).single()
+    const { revoked } = await checkRevokedToken(service, token)
     if (revoked) return NextResponse.json({ error: 'Link no longer active' }, { status: 410 })
 
     const { data: sow } = await (service as any)
@@ -34,14 +32,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     // jwt_secret lives in workspace_secrets now, not on workspaces itself —
     // see migration 013.
-    try {
-      const jwtSecret = await getWorkspaceJwtSecret(service, sow.workspace_id)
-      if (!jwtSecret) throw new Error('no secret')
-      const secret = new TextEncoder().encode(jwtSecret)
-      await jwtVerify(token, secret)
-    } catch {
+    if (!(await verifySowJwt(service, token, sow.workspace_id)))
       return NextResponse.json({ error: 'Invalid or expired link' }, { status: 401 })
-    }
 
     const now     = new Date().toISOString()
     const project = sow.projects
@@ -77,8 +69,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }).select('id').single()
 
     // Update project status to Changes Requested
+    // FIX (re-audit, portal section): also clears stall_reason, same
+    // data-hygiene fix as the sign route — harmless today since nothing
+    // reads stall_reason off a non-Stalled project, but stale otherwise.
     await (service as any).from('projects').update({
-      status: 'Changes Requested', updated_at: now,
+      status: 'Changes Requested', stall_reason: null, updated_at: now,
     }).eq('id', project.id)
 
     await logAudit(service, {

@@ -122,6 +122,72 @@ export async function GET(request: NextRequest) {
       })
     }
 
+    // FIX (build, search section): SOW documents were entirely unsearchable
+    // — the command palette frontend already had an icon mapped for a
+    // `type: 'sow'` result (TYPE_ICONS in CommandPalette.tsx) that never
+    // arrived, and the placeholder text ("Search projects, clients, change
+    // orders…") silently reflected the gap by omission. sow_documents has
+    // no title/tsvector column of its own (only projects and clients do —
+    // see migration 001), so this matches the same way change_orders does:
+    // ilike against the *project's* name via an embedded-resource filter
+    // (same pattern already used in cron/sow-stall — a non-matching
+    // project comes back as a null embed, not a filtered-out row, hence
+    // the `if (!s.projects) continue` guard).
+    let sowQuery = (service as any)
+      .from('sow_documents')
+      .select('id, status, version, project_id, projects(name)')
+      .eq('workspace_id', wsId)
+      .neq('status', 'draft')
+      .ilike('projects.name', `%${escaped}%`)
+      .limit(4)
+
+    if (restrictedProjectIds) {
+      sowQuery = restrictedProjectIds.length
+        ? sowQuery.in('project_id', restrictedProjectIds)
+        : sowQuery.in('project_id', ['00000000-0000-0000-0000-000000000000'])
+    }
+
+    const { data: sows } = await sowQuery
+    for (const s of (sows || [])) {
+      if (!s.projects) continue
+      results.push({
+        type:  'sow',
+        id:    s.id,
+        title: `SOW — ${s.projects.name}`,
+        sub:   `v${s.version} · ${s.status}`,
+        href:  `/projects/${s.project_id}?tab=sow`,
+      })
+    }
+
+    // FIX (build, search section): invoices were entirely unsearchable too
+    // — gated behind VIEW_FINANCIALS to match the canonical invoices list
+    // route (app/api/invoices/route.ts).
+    if (hasPermission(session, 'VIEW_FINANCIALS')) {
+      let invQuery = (service as any)
+        .from('invoices')
+        .select('id, title, invoice_number, status, project_id, projects(name)')
+        .eq('workspace_id', wsId)
+        .or(`title.ilike.%${escaped}%,invoice_number.ilike.%${escaped}%`)
+        .limit(4)
+
+      if (restrictedProjectIds) {
+        invQuery = restrictedProjectIds.length
+          ? invQuery.in('project_id', restrictedProjectIds)
+          : invQuery.in('project_id', ['00000000-0000-0000-0000-000000000000'])
+      }
+
+      const { data: invoices } = await invQuery
+      for (const inv of (invoices || [])) {
+        results.push({
+          type:  'invoice',
+          id:    inv.id,
+          title: inv.invoice_number ? `${inv.invoice_number} — ${inv.title}` : inv.title,
+          sub:   `${inv.projects?.name || ''} · Invoice · ${inv.status}`,
+          href:  `/projects/${inv.project_id}?tab=billing`,
+        })
+      }
+    }
+
     return NextResponse.json({ results, query: q })
   } catch (err) {
     console.error('Search error:', err)

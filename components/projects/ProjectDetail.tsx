@@ -1161,9 +1161,13 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
           {co.status === 'countered' && permissions.sendCo && (
             <button className="btn btn-primary btn-xs" onClick={() => doAction('accept-counter')} disabled={acting}>Accept counter</button>
           )}
-          {['awaiting_response', 'awaiting_countersignature'].includes(co.status) && permissions.sendCo && (
+          {/* FIX (re-audit, cron/portal section): 'stalled' now allowed —
+              a CO auto-stalled by the co-stall cron used to have no way
+              back except Close or Escalate. remind() un-stalls it server
+              side (see api/co/[id]/remind/route.ts) before sending. */}
+          {['awaiting_response', 'awaiting_countersignature', 'stalled'].includes(co.status) && permissions.sendCo && (
             <button className="btn btn-ghost btn-xs" onClick={remind} disabled={acting}>
-              {reminded ? <><i className="ti ti-check" style={{ fontSize: 12 }} /> Sent</> : 'Remind'}
+              {reminded ? <><i className="ti ti-check" style={{ fontSize: 12 }} /> Sent</> : (co.status === 'stalled' ? 'Try again' : 'Remind')}
             </button>
           )}
           {['countered','stalled','declined'].includes(co.status) && (

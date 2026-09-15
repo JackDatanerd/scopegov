@@ -72,6 +72,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({
       ok: true,
       message: `Thank you, ${signerName.trim()}. The change order is confirmed. ${result.agencyName} has been notified.`,
+      token: result.token,
     })
   } catch (err) {
     console.error('CO countersign error:', err)

@@ -42,24 +42,37 @@ export async function POST(request: NextRequest) {
         (new Date(ws.trial_ends_at).getTime() - now.getTime()) / 86400000
       ))
 
-      // Find workspace owner
-      const owners: { id: string; name: string; email: string }[] = (ws.workspace_members || [])
+      // FIX (re-audit, cron section): this is every active workspace
+      // member (opted in by default), not specifically "the owner" —
+      // filterByNotificationPreference already narrows it to whoever
+      // hasn't opted out of trial_ending.
+      const members: { id: string; name: string; email: string }[] = (ws.workspace_members || [])
         .filter((m: any) => m.status === 'active' && m.users)
         .map((m: any) => ({ id: m.user_id, name: m.users.name, email: m.users.email }))
 
-      const enabledOwners = await filterByNotificationPreference(service, ws.id, 'trial_ending', owners)
+      const enabledMembers = await filterByNotificationPreference(service, ws.id, 'trial_ending', members)
 
-      for (const owner of enabledOwners) {
+      for (const owner of enabledMembers) {
         try {
-          // Check if warning already sent (simple audit log check)
+          // FIX (re-audit, cron section): the "already sent today" check
+          // only scoped by workspace_id + event_type, not by recipient. In
+          // a workspace with more than one active member opted into
+          // trial_ending, the first member processed in this loop inserts
+          // the audit_log row below — then every subsequent member in the
+          // *same run* sees that row and gets skipped, because nothing here
+          // distinguished "already sent to this workspace today" from
+          // "already sent to THIS PERSON today". Only one member of any
+          // multi-member workspace ever actually got the email. Matching
+          // on metadata->>sent_to as well fixes that.
           const { data: alreadySent } = await (service as any)
             .from('audit_log')
             .select('id')
             .eq('workspace_id', ws.id)
             .eq('event_type', 'billing.trial_ending_soon')
+            .eq('metadata->>sent_to', owner.email)
             .gte('created_at', new Date(now.getTime() - 24 * 3600000).toISOString())
             .limit(1)
-            .single()
+            .maybeSingle()
 
           if (alreadySent) continue
 
