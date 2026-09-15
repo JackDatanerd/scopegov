@@ -1,4 +1,9 @@
 export const runtime = 'nodejs'
+// FEATURE (cron audit, section 17): loops every workspace with 4 queries
+// each (already parallelized via Promise.all below); no maxDuration was
+// set anywhere for this route, same timeout-risk gap as reconciliation-
+// rollup — see the note there.
+export const maxDuration = 300
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
@@ -78,7 +83,7 @@ async function rollupWorkspace(service: any, workspaceId: string, snapshotDate: 
       .select('id, project_id, estimated_value, flag_id, guardian_flags(severity)')
       .eq('workspace_id', workspaceId),
     service.from('change_orders')
-      .select('id')
+      .select('id, project_id')
       .eq('workspace_id', workspaceId)
       .eq('status', 'stalled'),
   ])
@@ -157,6 +162,18 @@ async function rollupWorkspace(service: any, workspaceId: string, snapshotDate: 
   const stalledSowCount = projects.filter(
     (p: any) => p.status === 'Stalled' && p.stall_reason === 'sow_unsigned'
   ).length
+
+  // FIX (cron audit, section 17): this used to be stalledCOs.length —
+  // every stalled CO in the workspace, regardless of currency — while
+  // every other count in this same snapshot (open flags, exceptions,
+  // stalled SOWs) is scoped to the snapshot's single dominant currency.
+  // In a multi-currency workspace, that made this one field inconsistent
+  // with the rest of an otherwise single-currency snapshot. Match the
+  // same dominant-currency scoping used everywhere else here.
+  const stalledCoCount = stalledCOs.filter((c: any) => {
+    const project = projectById[c.project_id]
+    return project && (project.currency || 'USD') === currency
+  }).length
   const activeProjectCount = projects.filter((p: any) =>
     ['Active', 'Awaiting Signature', 'Intake', 'Changes Requested', 'Stalled'].includes(p.status)
   ).length
@@ -171,7 +188,7 @@ async function rollupWorkspace(service: any, workspaceId: string, snapshotDate: 
       exceptions_value_total: exceptionsValueTotal,
       contract_value_at_risk: Math.round(atRisk * 100) / 100,
       stalled_sow_count: stalledSowCount,
-      stalled_co_count: stalledCOs.length,
+      stalled_co_count: stalledCoCount,
       active_project_count: activeProjectCount,
       currency,
     },

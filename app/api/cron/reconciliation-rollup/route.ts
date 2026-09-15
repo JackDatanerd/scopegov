@@ -1,4 +1,15 @@
 export const runtime = 'nodejs'
+// FEATURE (cron audit, section 17): this loops every non-archived project
+// across every workspace, doing 3 DB round-trips per project (now 1 batch
+// of 3 run in parallel — see below), with no pagination or maxDuration
+// override anywhere in this route or in vercel.json. As project count
+// grows this risks hitting Vercel's default function timeout, which kills
+// the loop mid-way with no catchable error — that day's snapshot for
+// whatever project wasn't reached yet is just silently missing. 300s is
+// the max duration available without Fluid Compute; if project volume
+// ever outgrows that too, this needs real batching (chunk projects, one
+// invocation per chunk) rather than a bigger number here.
+export const maxDuration = 300
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
@@ -46,33 +57,38 @@ export async function POST(request: NextRequest) {
     let written = 0
     for (const project of (projects || [])) {
       try {
-        // Contracted value: base contract + accepted amendments. Mirrors
-        // the exact effectiveContractValue calc used on the project detail
-        // page (BUG-053: amendments.financial_impact already excludes
-        // exceptions_log, so this doesn't need to filter that separately).
-        const { data: amendments } = await (service as any)
-          .from('amendments').select('financial_impact').eq('project_id', project.id)
-        const amendmentTotal = (amendments || []).reduce((s: number, a: any) => s + (a.financial_impact || 0), 0)
+        // FIX (cron audit, section 17): these 3 queries used to run one
+        // after another (3 sequential round-trips per project); they don't
+        // depend on each other, so running them concurrently cuts this
+        // loop's wall-clock time roughly 3x — meaningful given there's no
+        // pagination and this runs across every project in every workspace.
+        const [amendmentsRes, invoicesRes, openCosRes] = await Promise.all([
+          // Contracted value: base contract + accepted amendments. Mirrors
+          // the exact effectiveContractValue calc used on the project detail
+          // page (BUG-053: amendments.financial_impact already excludes
+          // exceptions_log, so this doesn't need to filter that separately).
+          (service as any).from('amendments').select('financial_impact').eq('project_id', project.id),
+          // Invoiced / paid to date — only invoices that were ever actually
+          // sent count (draft has nothing sent yet; void was withdrawn).
+          // amount_paid is the trigger-maintained running total from
+          // invoice_payments (004_invoicing.sql), so summing it here is
+          // equivalent to summing invoice_payments directly but cheaper.
+          (service as any).from('invoices').select('amount, amount_paid, status').eq('project_id', project.id),
+          // At-risk: change orders sent to the client but not yet accepted —
+          // same "at risk (pending COs)" definition already shown on the
+          // project overview page, rolled here so it's comparable over time.
+          (service as any).from('change_orders').select('total').eq('project_id', project.id)
+            .in('status', ['awaiting_response', 'countered']),
+        ])
+
+        const amendmentTotal = (amendmentsRes.data || []).reduce((s: number, a: any) => s + (a.financial_impact || 0), 0)
         const contractedValue = (project.contract_value || 0) + amendmentTotal
 
-        // Invoiced / paid to date — only invoices that were ever actually
-        // sent count (draft has nothing sent yet; void was withdrawn).
-        // amount_paid is the trigger-maintained running total from
-        // invoice_payments (004_invoicing.sql), so summing it here is
-        // equivalent to summing invoice_payments directly but cheaper.
-        const { data: invoices } = await (service as any)
-          .from('invoices').select('amount, amount_paid, status').eq('project_id', project.id)
-        const billedInvoices = (invoices || []).filter((i: any) => !['draft', 'void'].includes(i.status))
+        const billedInvoices = (invoicesRes.data || []).filter((i: any) => !['draft', 'void'].includes(i.status))
         const invoicedToDate = billedInvoices.reduce((s: number, i: any) => s + (i.amount || 0), 0)
         const paidToDate     = billedInvoices.reduce((s: number, i: any) => s + (i.amount_paid || 0), 0)
 
-        // At-risk: change orders sent to the client but not yet accepted —
-        // same "at risk (pending COs)" definition already shown on the
-        // project overview page, rolled here so it's comparable over time.
-        const { data: openCos } = await (service as any)
-          .from('change_orders').select('total').eq('project_id', project.id)
-          .in('status', ['awaiting_response', 'countered'])
-        const atRiskValue = (openCos || []).reduce((s: number, c: any) => s + (c.total || 0), 0)
+        const atRiskValue = (openCosRes.data || []).reduce((s: number, c: any) => s + (c.total || 0), 0)
 
         const { error: upsertErr } = await (service as any)
           .from('contract_reconciliation_snapshots')

@@ -397,24 +397,39 @@ export async function cancelApprovalRequest(service: any, params: {
 // same step for longer than the reminder window — re-notifies whoever
 // the CURRENT step is assigned to, exactly as if the step had just
 // become active.
-export async function sendApprovalReminder(service: any, requestId: string): Promise<boolean> {
+// FIX (cron audit, section 17 — flagship finding): this used to return
+// `true` unconditionally after calling notifyStepApprovers, which itself
+// silently no-ops when it ends up with zero recipients (approver_role_id
+// has no active holder, or — see the fix in notifyStepApprovers below —
+// approver_user_id points at someone no longer an active member of this
+// workspace). approval-stall/route.ts trusts this return value to decide
+// whether to reset the stall clock and log 'approval.reminder_sent' — so
+// a broken approver assignment was resetting the clock and recording a
+// reminder that reached nobody, every 2 days, forever. The request just
+// sat there invisibly: exactly the silent-stall failure mode this whole
+// product exists to catch, reproduced inside the mechanism built to catch
+// it. Returning a real tri-state lets the cron tell "reminded" apart from
+// "nobody to remind" and act on that instead of assuming success.
+export async function sendApprovalReminder(
+  service: any, requestId: string
+): Promise<'sent' | 'no_recipients' | 'not_found'> {
   const { data: request } = await service
     .from('approval_requests')
     .select('id, workspace_id, document_type, current_step, total_steps, context, requested_by')
     .eq('id', requestId).eq('status', 'pending').single()
-  if (!request) return false
+  if (!request) return 'not_found'
 
   const { data: step } = await service
     .from('approval_steps')
     .select('step_order, approver_role_id, approver_user_id')
     .eq('request_id', requestId).eq('step_order', request.current_step).single()
-  if (!step) return false
+  if (!step) return 'not_found'
 
   const { data: requester } = await service
     .from('users').select('id, name, email').eq('id', request.requested_by).maybeSingle()
-  if (!requester) return false
+  if (!requester) return 'not_found'
 
-  await notifyStepApprovers(service, {
+  const notifiedCount = await notifyStepApprovers(service, {
     workspaceId: request.workspace_id, requestId: request.id, step,
     documentType: request.document_type, documentTitle: request.context?.title || '',
     projectName: request.context?.project_name || '', amount: request.context?.amount || 0,
@@ -422,7 +437,7 @@ export async function sendApprovalReminder(service: any, requestId: string): Pro
     requestedBy: { id: requester.id, name: requester.name, email: requester.email },
     totalSteps: request.total_steps,
   })
-  return true
+  return notifiedCount > 0 ? 'sent' : 'no_recipients'
 }
 
 // ── LOOKUP ───────────────────────────────────────────────────────
@@ -446,17 +461,30 @@ async function notifyStepApprovers(service: any, args: {
   projectName: string; amount: number; currency: string
   requestedBy: { id: string; name: string; email: string }
   totalSteps: number
-}) {
+}): Promise<number> {
   let recipients: Array<{ id: string; name: string; email: string }> = []
   if (args.step.approver_user_id) {
-    const { data: u } = await service.from('users')
-      .select('id, name, email').eq('id', args.step.approver_user_id).maybeSingle()
-    if (u) recipients = [u]
+    // FIX (cron audit, section 17): this used to look the user up directly
+    // in `users`, with no check that they're still an active member of
+    // THIS workspace — a user removed or deactivated from the workspace
+    // (but whose `users` row obviously still exists) kept getting emailed
+    // to approve documents in a workspace they can no longer even open.
+    // getMembersWithRole already checks workspace_members.status='active'
+    // for the role-assignment path below; a specific-user assignment
+    // needs the same check.
+    const { data: m } = await service
+      .from('workspace_members')
+      .select('user_id, users!workspace_members_user_id_fkey(id, name, email)')
+      .eq('workspace_id', args.workspaceId)
+      .eq('user_id', args.step.approver_user_id)
+      .eq('status', 'active')
+      .maybeSingle()
+    if (m?.users) recipients = [{ id: m.users.id, name: m.users.name, email: m.users.email }]
   } else if (args.step.approver_role_id) {
     recipients = await getMembersWithRole(service, args.workspaceId, args.step.approver_role_id)
   }
   recipients = await filterByNotificationPreference(service, args.workspaceId, 'approval_requested', recipients)
-  if (recipients.length === 0) return
+  if (recipients.length === 0) return 0
 
   const documentLabel = args.documentType === 'sow' ? 'SOW' : 'Change order'
 
@@ -483,6 +511,8 @@ async function notifyStepApprovers(service: any, args: {
       url: `${appUrl}/approvals?highlight=${args.requestId}`,
     }).catch(e => console.error('approval requested email failed:', e))
   ))
+
+  return recipients.length
 }
 
 async function notifyRequester(service: any, args: {

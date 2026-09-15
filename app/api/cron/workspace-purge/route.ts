@@ -7,53 +7,65 @@ import { verifyCronSecret } from '@/lib/utils/verify-cron'
 // FIX (audit round 3): local copy replaced with the shared,
 // null-safe helper — see lib/utils/verify-cron.ts.
 
+// FIX (cron audit, section 17): this route was the one exception in the
+// whole cron/ directory with no top-level try/catch — every other route
+// here wraps its entire body so an unexpected throw (a bad env var,
+// createServiceClient() itself failing, a transient network error on the
+// very first query) is logged and turned into a clean 500 instead of an
+// unhandled exception. This is also the one route doing irreversible hard
+// deletes, which makes it the last place that safety net should be missing.
 export async function POST(request: NextRequest) {
   if (!verifyCronSecret(request))
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const service  = createServiceClient()
-  const cutoff7yr = new Date(Date.now() - 7 * 365 * 86400000).toISOString()
+  try {
+    const service  = createServiceClient()
+    const cutoff7yr = new Date(Date.now() - 7 * 365 * 86400000).toISOString()
 
-  const { data: candidates, error: findErr } = await (service as any)
-    .from('workspaces')
-    .select('id')
-    .not('deleted_at', 'is', null)
-    .lt('deleted_at', cutoff7yr)
+    const { data: candidates, error: findErr } = await (service as any)
+      .from('workspaces')
+      .select('id')
+      .not('deleted_at', 'is', null)
+      .lt('deleted_at', cutoff7yr)
 
-  if (findErr) {
-    console.error('Workspace purge candidate lookup failed:', findErr)
+    if (findErr) {
+      console.error('Workspace purge candidate lookup failed:', findErr)
+      return NextResponse.json({ error: 'Cron failed' }, { status: 500 })
+    }
+
+    // FIX (cron audit, section 17): same root cause as project-purge — a
+    // bulk `.delete()` straight against workspaces, with projects.workspace_id
+    // (and sow_documents/change_orders/invoices/guardian_*/clients.workspace_id,
+    // etc.) all ON DELETE RESTRICT, and `error` never checked. A soft-deleted
+    // workspace still has every project it ever had (workspace delete only
+    // blocks on an unsigned SOW — see app/api/workspace/delete/route.ts — it
+    // never removes the workspace's projects), so this DELETE failed on
+    // essentially every real workspace, silently, forever. purge_workspace()
+    // (migration 020) purges every project first via purge_project(), then
+    // the workspace-level tables, then the workspace row itself, atomically.
+    let purgedCount = 0
+    const failures: Array<{ id: string; error: string }> = []
+    for (const w of (candidates || [])) {
+      const { error: purgeErr } = await (service as any).rpc('purge_workspace', { p_workspace_id: w.id })
+      if (purgeErr) {
+        console.error(`Workspace purge failed for ${w.id}:`, purgeErr)
+        failures.push({ id: w.id, error: purgeErr.message })
+      } else {
+        purgedCount++
+      }
+    }
+
+    console.log(`[WORKSPACE PURGE] Hard-deleted ${purgedCount}/${(candidates || []).length} workspaces older than 7 years`)
+    return NextResponse.json({
+      ok: failures.length === 0,
+      purged: purgedCount,
+      failed: failures.length,
+      ...(failures.length ? { failures } : {}),
+    }, { status: failures.length ? 207 : 200 })
+  } catch (err) {
+    console.error('Workspace purge cron error:', err)
     return NextResponse.json({ error: 'Cron failed' }, { status: 500 })
   }
-
-  // FIX (cron audit, section 17): same root cause as project-purge — a
-  // bulk `.delete()` straight against workspaces, with projects.workspace_id
-  // (and sow_documents/change_orders/invoices/guardian_*/clients.workspace_id,
-  // etc.) all ON DELETE RESTRICT, and `error` never checked. A soft-deleted
-  // workspace still has every project it ever had (workspace delete only
-  // blocks on an unsigned SOW — see app/api/workspace/delete/route.ts — it
-  // never removes the workspace's projects), so this DELETE failed on
-  // essentially every real workspace, silently, forever. purge_workspace()
-  // (migration 019) purges every project first via purge_project(), then
-  // the workspace-level tables, then the workspace row itself, atomically.
-  let purgedCount = 0
-  const failures: Array<{ id: string; error: string }> = []
-  for (const w of (candidates || [])) {
-    const { error: purgeErr } = await (service as any).rpc('purge_workspace', { p_workspace_id: w.id })
-    if (purgeErr) {
-      console.error(`Workspace purge failed for ${w.id}:`, purgeErr)
-      failures.push({ id: w.id, error: purgeErr.message })
-    } else {
-      purgedCount++
-    }
-  }
-
-  console.log(`[WORKSPACE PURGE] Hard-deleted ${purgedCount}/${(candidates || []).length} workspaces older than 7 years`)
-  return NextResponse.json({
-    ok: failures.length === 0,
-    purged: purgedCount,
-    failed: failures.length,
-    ...(failures.length ? { failures } : {}),
-  }, { status: failures.length ? 207 : 200 })
 }
 
 // FIX (cron): Vercel Cron Jobs invoke the configured path with a GET

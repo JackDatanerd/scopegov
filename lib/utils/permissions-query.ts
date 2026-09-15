@@ -50,7 +50,19 @@ export async function getMembersWithPermission(
   workspaceId: string,
   permission: Permission,
   limit = 25,
-  projectId?: string
+  projectId?: string,
+  // FIX (cron audit, section 17): the same "cap applied before the final
+  // filter" bug this function's own comment below describes fixing — for
+  // the permission check — was still present one layer up: both callers
+  // (getMemberEmailsWithPermission and notifyMembersWithPermission)
+  // applied filterByNotificationPreference AFTER calling this function,
+  // which had already sliced to `limit`. In a workspace with more eligible
+  // members than `limit`, an opted-out member still consumed a slot in
+  // that slice — so an opted-in member past the cutoff never got notified
+  // even though room existed once the opt-out was accounted for. Accepting
+  // eventType here lets preference filtering happen before the slice,
+  // same as project-access filtering already does.
+  eventType?: string
 ): Promise<Array<{ id: string; name: string; email: string }>> {
   // FIX (re-audit, notifications section): `.limit(limit)` used to be
   // applied to the raw active-members query, BEFORE the permission filter
@@ -80,6 +92,7 @@ export async function getMembersWithPermission(
   let recipients = eligible.map((m: any) => ({ id: m.user_id, name: m.users.name, email: m.users.email }))
 
   if (projectId) recipients = await filterToProjectAccess(service, projectId, recipients, permissionMap)
+  if (eventType) recipients = await filterByNotificationPreference(service, workspaceId, eventType, recipients)
 
   return recipients.slice(0, limit)
 }
@@ -136,7 +149,9 @@ export async function getMemberEmailsWithPermission(
   eventType?: string,
   projectId?: string
 ): Promise<string[]> {
-  let members = await getMembersWithPermission(service, workspaceId, permission, limit, projectId)
-  if (eventType) members = await filterByNotificationPreference(service, workspaceId, eventType, members)
+  // FIX (cron audit, section 17): eventType now passed straight into
+  // getMembersWithPermission so preference filtering happens before the
+  // limit slice, not after it — see the fix note on that function.
+  const members = await getMembersWithPermission(service, workspaceId, permission, limit, projectId, eventType)
   return members.map(m => m.email)
 }

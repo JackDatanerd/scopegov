@@ -42,6 +42,18 @@ export async function POST(request: NextRequest) {
         (new Date(ws.trial_ends_at).getTime() - now.getTime()) / 86400000
       ))
 
+      // FIX (cron audit, section 17): daysLeft can be 0 here for a trial
+      // that has *already* passed trial_ends_at within the last 24h (this
+      // query's own window includes yesterday) but that payment-overdue's
+      // trial-expiry step (runs an hour later, 9am vs this route's 8am)
+      // hasn't processed yet. Both routes send sendTrialWarningEmail with
+      // daysLeft: 0 and near-identical subject lines, tracked under two
+      // different, uncoordinated audit_log event types — so a workspace in
+      // that narrow window could get both within the hour. This route is
+      // the advance warning; the actual "trial has ended" moment (with the
+      // real downgrade attached) belongs to payment-overdue alone.
+      if (daysLeft <= 0) continue
+
       // FIX (re-audit, cron section): this is every active workspace
       // member (opted in by default), not specifically "the owner" —
       // filterByNotificationPreference already narrows it to whoever

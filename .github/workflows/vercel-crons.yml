@@ -1,5 +1,21 @@
 name: Vercel Sub-Hourly Crons
 
+# FEATURE (cron audit, section 17): this workflow used to be the *only*
+# way sow-stall, co-stall, and guardian-health ever ran — vercel.json only
+# covered the 9 daily-or-slower jobs, since Vercel Cron on this plan can
+# schedule sub-hourly too (see vercel.json). GitHub's own docs say
+# `schedule`-triggered workflows can be delayed under platform load and
+# are auto-disabled after 60 days with no repo activity — a real gap for
+# a health check meant to run every 15 minutes, or a stall check central
+# to this product's whole pitch. All 3 endpoints are now also registered
+# directly in vercel.json as the reliable primary trigger; this workflow
+# stays wired up purely as a redundant backup. Running both is safe:
+# sow-stall/co-stall each guard their write with an optimistic-lock check
+# (a double-fire just loses the race harmlessly on whichever invocation
+# runs second), and guardian-health's ops alerts are now cooldown-guarded
+# (see ops_alert_state, migration 025) so a double-fire there doesn't mean
+# a double email either.
+
 on:
   schedule:
     # sow-stall: hourly, on the hour

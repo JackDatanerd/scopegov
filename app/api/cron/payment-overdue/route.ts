@@ -168,13 +168,30 @@ export async function POST(request: NextRequest) {
         const ws = b.workspaces
         if (!ws || ws.plan_tier === 'solo') continue
 
+        // FIX (cron audit, section 17): this used to update `workspaces`
+        // unconditionally on whatever was fetched by the select above, with
+        // no re-check that grace_period_started_at was still set (and still
+        // past cutoff) at write time — unlike every other mutating step in
+        // this same file (invoice overdue, trial expiry), which all guard
+        // their update with an .eq() on the condition that qualified the
+        // row. If a payment cleared the grace period in the gap between
+        // select and update, this would still downgrade a customer who'd
+        // just paid. Guarding the billing update itself first — and only
+        // proceeding to downgrade the workspace if that guarded update
+        // actually matched a row — closes the same race the other steps
+        // already close.
+        const { data: guardedBilling } = await (service as any).from('billing')
+          .update({ grace_period_started_at: null, paystack_subscription_code: null })
+          .eq('workspace_id', b.workspace_id)
+          .not('grace_period_started_at', 'is', null)
+          .lt('grace_period_started_at', graceCutoff)
+          .select('workspace_id')
+
+        if (!guardedBilling?.length) continue // grace period cleared concurrently — lost the race, nothing to do
+
         await (service as any).from('workspaces')
           .update({ plan_tier: 'solo', updated_at: now.toISOString() })
           .eq('id', ws.id)
-
-        await (service as any).from('billing')
-          .update({ grace_period_started_at: null, paystack_subscription_code: null })
-          .eq('workspace_id', b.workspace_id)
 
         await (service as any).from('audit_log').insert({
           workspace_id: ws.id, actor_id: null,
@@ -219,13 +236,24 @@ export async function POST(request: NextRequest) {
         const ws = b.workspaces
         if (!ws || ws.plan_tier === 'solo') continue
 
+        // FIX (cron audit, section 17): same missing guard as the grace-
+        // period step above — no re-check that cancels_at_period_end was
+        // still true (and current_period_end still passed) at write time.
+        // A reactivation landing between select and update would still get
+        // downgraded. Guard the billing update itself and only downgrade
+        // the workspace if it actually matched.
+        const { data: guardedBilling } = await (service as any).from('billing')
+          .update({ cancels_at_period_end: false, paystack_subscription_code: null, paystack_customer_code: null })
+          .eq('workspace_id', b.workspace_id)
+          .eq('cancels_at_period_end', true)
+          .lt('current_period_end', now.toISOString())
+          .select('workspace_id')
+
+        if (!guardedBilling?.length) continue // reactivated concurrently — lost the race, nothing to do
+
         await (service as any).from('workspaces')
           .update({ plan_tier: 'solo', updated_at: now.toISOString() })
           .eq('id', ws.id)
-
-        await (service as any).from('billing')
-          .update({ cancels_at_period_end: false, paystack_subscription_code: null, paystack_customer_code: null })
-          .eq('workspace_id', b.workspace_id)
 
         await (service as any).from('audit_log').insert({
           workspace_id: ws.id, actor_id: null,

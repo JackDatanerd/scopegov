@@ -36,6 +36,21 @@ async function alertOps(subject: string, lines: string[]) {
   } catch (e) { console.error('Guardian health ops alert email failed:', e) }
 }
 
+// FIX (cron audit, section 17): this route runs every 15 minutes and had
+// no cooldown on either alert — an issue that stays elevated/unresolved
+// re-triggered a fresh ops email every single run for as long as it lasted,
+// unlike every other recurring notification in this codebase. `key` is a
+// stable per-alert-type identifier (this route only has two); `cooldownMs`
+// caps how often that specific alert can actually fire an email, while the
+// console.error above it still logs every run either way, so nothing about
+// server-side visibility is lost — only the inbox spam is.
+async function shouldAlert(service: any, key: string, cooldownMs: number): Promise<boolean> {
+  const { data } = await service.from('ops_alert_state').select('last_sent_at').eq('key', key).maybeSingle()
+  if (data && Date.now() - new Date(data.last_sent_at).getTime() < cooldownMs) return false
+  await service.from('ops_alert_state').upsert({ key, last_sent_at: new Date().toISOString() })
+  return true
+}
+
 export async function POST(request: NextRequest) {
   if (!verifyCronSecret(request))
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -57,7 +72,9 @@ export async function POST(request: NextRequest) {
     if (rate > 0.01 && total >= 5) {
       const msg = `Classification failure rate: ${(rate * 100).toFixed(1)}% (${failed}/${total} in last 15 min)`
       console.error(`[GUARDIAN ALERT] ${msg}`)
-      await alertOps('Elevated classification failure rate', [msg])
+      if (await shouldAlert(service, 'guardian_health:elevated_failure_rate', 60 * 60000)) {
+        await alertOps('Elevated classification failure rate', [msg])
+      }
     }
 
     // Alert on unresolved failures > 24h
@@ -72,7 +89,9 @@ export async function POST(request: NextRequest) {
     if ((unresolvedCount || 0) > 0) {
       const msg = `${unresolvedCount} unresolved classification failures older than 24h`
       console.error(`[GUARDIAN ALERT] ${msg}`)
-      await alertOps('Unresolved classification failures', [msg])
+      if (await shouldAlert(service, 'guardian_health:unresolved_failures', 6 * 3600000)) {
+        await alertOps('Unresolved classification failures', [msg])
+      }
     }
 
     return NextResponse.json({ ok: true, total, failed, rate: rate.toFixed(3) })

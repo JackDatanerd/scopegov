@@ -8,7 +8,7 @@
 // email recipients (getMembersWithPermission / filterByNotificationPreference)
 // so the two stay consistent.
 
-import { getMembersWithPermission, filterByNotificationPreference } from './permissions-query'
+import { getMembersWithPermission } from './permissions-query'
 import type { Permission } from '@/lib/supabase/types'
 
 interface NotifyParams {
@@ -30,8 +30,15 @@ interface NotifyParams {
 
 export async function notifyMembersWithPermission(service: any, params: NotifyParams) {
   try {
-    let recipients = await getMembersWithPermission(service, params.workspaceId, params.permission, 25, params.projectId)
-    recipients = await filterByNotificationPreference(service, params.workspaceId, params.eventType, recipients)
+    // FIX (cron audit, section 17): eventType now passed into
+    // getMembersWithPermission itself so the notification-preference
+    // filter runs before the limit-25 slice, not after — see the fix note
+    // on that function. Filtering here, one layer up and after the slice
+    // already happened, could silently under-notify a workspace with more
+    // eligible members than the cap.
+    let recipients = await getMembersWithPermission(
+      service, params.workspaceId, params.permission, 25, params.projectId, params.eventType
+    )
     if (params.excludeUserId) recipients = recipients.filter(r => r.id !== params.excludeUserId)
     if (recipients.length === 0) return
 

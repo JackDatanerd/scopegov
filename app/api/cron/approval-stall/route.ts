@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { sendApprovalReminder } from '@/lib/approvals/engine'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
+import { notifyMembersWithPermission } from '@/lib/utils/notify'
 
 // FIX (audit round 3): local copy replaced with the shared,
 // null-safe helper — see lib/utils/verify-cron.ts.
@@ -32,10 +33,11 @@ export async function POST(request: NextRequest) {
       .lt('updated_at', cutoff)
 
     let reminded = 0
+    let escalated = 0
     for (const r of (stale || [])) {
       try {
-        const sent = await sendApprovalReminder(service, r.id)
-        if (sent) {
+        const result = await sendApprovalReminder(service, r.id)
+        if (result === 'sent') {
           await (service as any).from('approval_requests')
             .update({ updated_at: now.toISOString() }).eq('id', r.id)
           await (service as any).from('audit_log').insert({
@@ -49,11 +51,42 @@ export async function POST(request: NextRequest) {
             metadata:     { days_pending: threshold },
           })
           reminded++
+        } else if (result === 'no_recipients') {
+          // FIX (cron audit, section 17): sendApprovalReminder used to
+          // report success here regardless of whether anyone was actually
+          // reachable — see the fix note there. A broken approver
+          // assignment (role with no active holder, or a specific user no
+          // longer active in this workspace) needs a human to fix the
+          // assignment itself, not another silent retry. Tell whoever can
+          // fix it (MANAGE_ROLES holders) and leave updated_at untouched
+          // so this keeps surfacing daily — at this cron's own cadence,
+          // not a spammier one — until the assignment is corrected.
+          await (service as any).from('audit_log').insert({
+            workspace_id: r.workspace_id,
+            actor_id:     null,
+            actor_email:  'cron@scopegov.app',
+            actor_name:   'ScopeGov',
+            event_type:   'approval.no_reachable_approver',
+            entity_type:  'approval_request',
+            entity_id:    r.id,
+            metadata:     { days_pending: threshold },
+          })
+          await notifyMembersWithPermission(service, {
+            workspaceId: r.workspace_id, permission: 'MANAGE_ROLES',
+            eventType: 'approval_no_reachable_approver', type: 'approval_no_reachable_approver',
+            title: 'Approval step has no reachable approver',
+            body: `A pending approval has been stalled for ${threshold}+ days and its assigned approver (role or user) can't be reached — check the approval workflow's assignment.`,
+            entityType: 'approval_request', entityId: r.id,
+          })
+          escalated++
         }
+        // 'not_found' means the request/step/requester lookup itself came
+        // back empty — an orphaned or already-resolved row race; nothing
+        // to remind or escalate.
       } catch (e) { console.error('Approval reminder error:', e) }
     }
 
-    return NextResponse.json({ ok: true, reminded })
+    return NextResponse.json({ ok: true, reminded, escalated })
   } catch (err) {
     console.error('Approval stall cron error:', err)
     return NextResponse.json({ error: 'Cron failed' }, { status: 500 })
