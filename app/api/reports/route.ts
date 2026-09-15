@@ -57,15 +57,6 @@ export async function GET(request: NextRequest) {
       const projCurrencyById: Record<string, string> = {}
       for (const p of (projCurrencyRes.data || [])) projCurrencyById[p.id] = p.currency || 'USD'
 
-      // Aggregate flags by project
-      const flagMap: Record<string, { project_id: string; project_name: string; flag_count: number }> = {}
-      for (const f of flags) {
-        const pid = f.projects?.id
-        if (!pid) continue
-        if (!flagMap[pid]) flagMap[pid] = { project_id: pid, project_name: f.projects.name, flag_count: 0 }
-        flagMap[pid].flag_count++
-      }
-
       // FIX: recovered_value and exception totals were summed across every
       // project's currency with a hardcoded 'USD' label — same bug as
       // financial mode. Filter to one currency at a time here too.
@@ -82,14 +73,42 @@ export async function GET(request: NextRequest) {
       const exceptionsInCurrency = exceptions.filter((e: any) => (e.projects?.currency || 'USD') === currency)
       const recoveredValue = amendments.reduce((s: number, a: any) => s + (a.financial_impact || 0), 0)
 
+      // FIX (audit round 6): total_flags/converted_to_co/flagsByProject
+      // used to be built from the raw, currency-unfiltered `flags` array —
+      // every flag across every currency in the workspace — while this
+      // same response's exceptionsByProject/recovered_value ARE filtered
+      // to the selected currency. In a multi-currency workspace, switching
+      // the currency selector would change two of these numbers and leave
+      // the other two exactly the same, with no way for either the API
+      // consumer or a person reading the report to tell they don't
+      // reconcile with each other.
+      const flagsInCurrency = flags.filter((f: any) => (projCurrencyById[f.projects?.id] || 'USD') === currency)
+      const flagMapInCurrency: Record<string, { project_id: string; project_name: string; flag_count: number }> = {}
+      for (const f of flagsInCurrency) {
+        const pid = f.projects?.id
+        if (!pid) continue
+        if (!flagMapInCurrency[pid]) flagMapInCurrency[pid] = { project_id: pid, project_name: f.projects.name, flag_count: 0 }
+        flagMapInCurrency[pid].flag_count++
+      }
+
       return NextResponse.json({
         metrics: {
-          total_flags:     flags.length,
-          converted_to_co: flags.filter((f: any) => f.status === 'converted_to_co').length,
+          total_flags:     flagsInCurrency.length,
+          converted_to_co: flagsInCurrency.filter((f: any) => f.status === 'converted_to_co').length,
           recovered_value: canSeeFinancials ? recoveredValue : null,
         },
-        flagsByProject:      Object.values(flagMap).sort((a, b) => b.flag_count - a.flag_count),
-        exceptionsByProject: exceptionsInCurrency,
+        flagsByProject: Object.values(flagMapInCurrency).sort((a, b) => b.flag_count - a.flag_count),
+        // FIX (audit round 6): recovered_value is nulled above for anyone
+        // without VIEW_FINANCIALS, but exceptionsInCurrency carries each
+        // exception's estimated_value — a raw dollar figure — completely
+        // unconditionally. Someone with VIEW_ALL_PROJECTS (all that's
+        // needed to hit scope mode) but not VIEW_FINANCIALS could see
+        // recovered_value hidden right above and every exception's real
+        // dollar value in the very same response. Apply the same gate.
+        exceptionsByProject: exceptionsInCurrency.map((e: any) => ({
+          ...e,
+          estimated_value: canSeeFinancials ? e.estimated_value : null,
+        })),
         adjustments,
         currency,
         mixedCurrencies,
@@ -102,8 +121,16 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Missing permission: VIEW_FINANCIALS' }, { status: 403 })
 
     const [projectsRes, amendmentsRes, cosRes2] = await Promise.all([
+      // FIX (audit round 6): was `.not('status', 'in', '("Draft","Archived")')`
+      // — a hand-built, double-quoted PostgREST filter string. Every other
+      // in/not-in filter in this codebase uses `.in()`/an unquoted list;
+      // this was the only place written this way, and while PostgREST's
+      // `in` syntax does support double-quoted list elements, it wasn't
+      // worth leaving as the one unverified, non-idiomatic filter sitting
+      // in the financial-reporting query. Two plain `.neq()` calls are
+      // unambiguous for a two-value exclusion list.
       (service as any).from('projects').select('id,name,type,contract_value,currency,client_id,clients(id,name)')
-        .eq('workspace_id', wsId).is('deleted_at', null).not('status', 'in', '("Draft","Archived")'),
+        .eq('workspace_id', wsId).is('deleted_at', null).neq('status', 'Draft').neq('status', 'Archived'),
       (service as any).from('amendments').select('id,financial_impact,project_id')
         .eq('workspace_id', wsId).gte('created_at', since),
       (service as any).from('change_orders').select('id,status,total,project_id')

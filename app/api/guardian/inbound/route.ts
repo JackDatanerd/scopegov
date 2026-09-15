@@ -8,6 +8,7 @@ import { sendGuardianFlagEmail } from '@/lib/email/templates'
 import { logAudit } from '@/lib/utils/audit'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
+import { checkAiRateLimitByProject, recordAiUsageByProject } from '@/lib/utils/rate-limit'
 
 // BUG-016: verify Postmark webhook signature before processing
 // FIX (audit round 2, item #4): plain `===` on a hex digest is not
@@ -57,7 +58,11 @@ export async function POST(request: NextRequest) {
     // Extract project ID from guardian email address
     // Format: proj-{8chars}@guard.scopegov.app
     const guardianDomain = process.env.NEXT_PUBLIC_GUARDIAN_EMAIL_DOMAIN || 'guard.scopegov.app'
-    const emailMatch     = toEmail.match(new RegExp(`proj-([a-z0-9]+)@${guardianDomain.replace('.', '\\.')}`, 'i'))
+    // FIX (audit round 6): String.replace('.', ...) with no /g flag only
+    // escapes the FIRST dot. For a two-dot domain like guard.scopegov.app,
+    // the second dot stayed a live regex wildcard (matches any character),
+    // loosening the match beyond what was intended. Escape every dot.
+    const emailMatch     = toEmail.match(new RegExp(`proj-([a-z0-9]+)@${guardianDomain.replace(/\./g, '\\.')}`, 'i'))
     if (!emailMatch) {
       return NextResponse.json({ ok: true, message: 'Not a Guardian address — ignored' })
     }
@@ -95,10 +100,28 @@ export async function POST(request: NextRequest) {
     // FIX: one-to-one relation (see /api/guardian/check for details) — no [0]
     const snapshot    = project.project_scope_snapshot
 
+    // FIX (audit round 6): this route runs the exact same paid embedding +
+    // classification pipeline as /api/guardian/check, which got rate
+    // limiting in a prior round specifically because of that cost — this
+    // sibling endpoint was missed. It's arguably the higher-risk of the
+    // two: it needs zero UI interaction, just email volume to the
+    // project's guardian address. No user session exists here to key a
+    // limit on, so this is keyed by project instead (see rate-limit.ts).
+    const limited = await checkAiRateLimitByProject(service, project.id, 'guardian.inbound')
+    if (!limited.allowed) {
+      console.warn(`Guardian inbound rate limit hit for project ${project.id}`)
+      return NextResponse.json({ ok: true, message: 'Rate limited — try again later' })
+    }
+
     // ── Embedding + dedup ─────────────────────────────────────
     let embedding: number[] | null = null
     try { embedding = await getEmbedding(cleanContent.slice(0, 500)) }
     catch { /* non-fatal */ }
+
+    // FIX (audit round 6): record usage as soon as a real attempt was made
+    // (same reasoning as api/guardian/check) rather than only on the
+    // eventual full-success path.
+    await recordAiUsageByProject(service, project.workspace_id, project.id, 'guardian.inbound')
 
     let isDuplicate    = false
     let duplicateOfId: string | null = null
@@ -167,10 +190,16 @@ export async function POST(request: NextRequest) {
       classified_at:     new Date().toISOString(),
     }).eq('id', checkRow.id)
 
-    // ── Create flag if out_of_scope ───────────────────────────
-    if (classification.outcome === 'out_of_scope') {
-      const severity = classification.creepConfidence >= 0.90 ? 'high'
+    // ── Create flag if out_of_scope OR borderline ─────────────
+    // FIX (audit round 6): mirrors api/guardian/check — 'borderline' used
+    // to be a dead end here too. See that route's STEP 6 comment for the
+    // full reasoning.
+    if (classification.outcome === 'out_of_scope' || classification.outcome === 'borderline') {
+      const isBorderline = classification.outcome === 'borderline'
+      const severity = isBorderline ? 'info' : (
+        classification.creepConfidence >= 0.90 ? 'high'
         : classification.creepConfidence >= 0.75 ? 'medium' : 'low'
+      )
 
       const { data: flag } = await (service as any).from('guardian_flags').insert({
         project_id:    project.id,
@@ -180,38 +209,43 @@ export async function POST(request: NextRequest) {
         severity,
         description:   classification.reasoning,
         sow_reference: classification.matchedReference || 'General scope',
-        status:        'open',
+        status:        isBorderline ? 'borderline_review' : 'open',
       }).select('id').single()
 
       if (flag) {
         await (service as any).from('guardian_checks').update({ flag_id: flag.id }).eq('id', checkRow.id)
 
-        // Notify APPROVE_FLAGS holders
-        const emails = await getMemberEmailsWithPermission(service, project.workspace_id, 'APPROVE_FLAGS', 25, 'guardian_flag', project.id)
-        if (emails.length) {
-          try {
-            await sendGuardianFlagEmail({
-              to: emails,
-              projectName:  project.name,
-              severity,
-              description:  classification.reasoning,
-              sowReference: classification.matchedReference || 'General scope',
-              projectUrl:   `${process.env.NEXT_PUBLIC_APP_URL}/projects/${project.id}?tab=guardian`,
-              path:         `Email from ${fromEmail}`,
-            })
-          } catch (e) { console.error('Flag email failed:', e) }
+        if (!isBorderline) {
+          // Notify APPROVE_FLAGS holders — full-confidence flags only
+          const emails = await getMemberEmailsWithPermission(service, project.workspace_id, 'APPROVE_FLAGS', 25, 'guardian_flag', project.id)
+          if (emails.length) {
+            try {
+              await sendGuardianFlagEmail({
+                to: emails,
+                projectName:  project.name,
+                severity,
+                description:  classification.reasoning,
+                sowReference: classification.matchedReference || 'General scope',
+                projectUrl:   `${process.env.NEXT_PUBLIC_APP_URL}/projects/${project.id}?tab=guardian`,
+                path:         `Email from ${fromEmail}`,
+              })
+            } catch (e) { console.error('Flag email failed:', e) }
+          }
         }
         await notifyMembersWithPermission(service, {
           workspaceId: project.workspace_id, permission: 'APPROVE_FLAGS', eventType: 'guardian_flag',
-          type: 'guardian_flag', title: `Scope flag — ${project.name}`,
-          body: classification.reasoning?.slice(0, 140) || 'A new out-of-scope request was flagged.',
+          type: 'guardian_flag',
+          title: isBorderline ? `Borderline scope item — ${project.name}` : `Scope flag — ${project.name}`,
+          body: classification.reasoning?.slice(0, 140) || (isBorderline
+            ? 'A possible scope item needs a quick look.'
+            : 'A new out-of-scope request was flagged.'),
           entityType: 'project', entityId: project.id, projectId: project.id,
         })
 
         await logAudit(service, {
           workspaceId: project.workspace_id, actorId: 'system',
           actorEmail: 'guardian@scopegov.app', actorName: 'Guardian',
-          eventType: 'flag.raised', entityType: 'guardian_flag',
+          eventType: isBorderline ? 'flag.borderline_created' : 'flag.raised', entityType: 'guardian_flag',
           entityId: flag.id, entityName: project.name,
           metadata: { severity, source: 'email', from: fromEmail },
         })

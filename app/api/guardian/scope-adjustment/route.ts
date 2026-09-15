@@ -2,6 +2,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { getClientIp } from '@/lib/utils/request-ip'
 import { canReadProject } from '@/lib/utils/project-access'
 
 export async function POST(request: NextRequest) {
@@ -27,8 +28,66 @@ export async function POST(request: NextRequest) {
 
     const now = new Date().toISOString()
 
-    // Spec §1.6.7: scope_adjustments record + synchronous row-locked snapshot write
-    // + Activity entry — all in one transaction (best-effort sequential here)
+    // FIX (audit round 6): this route's own prior comment admitted the
+    // spec's "synchronous row-locked snapshot write... all in one
+    // transaction" wasn't actually built — it was a plain read-modify-write
+    // with no lock and no transaction ("best-effort sequential here"). Two
+    // concurrent adjustments to the same project could silently clobber
+    // each other's change to `deliverables`. It also matched the target
+    // deliverable by title with `.map()` and, if nothing matched (stale
+    // client state, a rename, a typo), silently produced an *unchanged*
+    // array while still recording a scope_adjustments row and an audit
+    // entry claiming the change happened — the audit trail and the actual
+    // scope-of-record could diverge with no error to anyone.
+    //
+    // Fixed by reordering (validate + write the snapshot BEFORE recording
+    // history, so the two can never disagree) and by using an optimistic-
+    // concurrency version column (project_scope_snapshot.version) in place
+    // of a real row lock, since supabase-js can't take one or wrap this in
+    // a transaction.
+    const { data: snap } = await (service as any)
+      .from('project_scope_snapshot').select('id,deliverables,version').eq('project_id', projectId).single()
+
+    if (snap) {
+      let matched = false
+      const deliverables = (snap.deliverables || []).map((d: any) => {
+        if (d && typeof d === 'object' && d.title === deliverable) {
+          matched = true
+          return { ...d, title: newValue } // preserve any other fields on the deliverable, not just title
+        }
+        if (d === deliverable) { matched = true; return { title: newValue } }
+        return d
+      })
+
+      if (!matched) {
+        return NextResponse.json({
+          error: `Deliverable "${deliverable}" was not found in the current scope snapshot — it may have changed since this page loaded. Refresh and try again.`,
+        }, { status: 409 })
+      }
+
+      const { data: updatedSnap, error: snapErr } = await (service as any)
+        .from('project_scope_snapshot')
+        .update({
+          deliverables,
+          last_updated_at: now,
+          last_updated_by: 'scope_adjustment',
+          version: (snap.version || 1) + 1,
+        })
+        .eq('project_id', projectId)
+        .eq('version', snap.version) // compare-and-swap — fails (0 rows) if someone else updated it first
+        .select('id')
+
+      if (snapErr) throw new Error(snapErr.message)
+      if (!updatedSnap || updatedSnap.length === 0) {
+        return NextResponse.json({
+          error: 'The scope snapshot changed while processing this adjustment — please retry.',
+        }, { status: 409 })
+      }
+    }
+
+    // Only recorded once the snapshot write (if any) has actually
+    // succeeded, so this history entry can never describe a change that
+    // didn't really land.
     const { data: adjustment, error: adjErr } = await (service as any)
       .from('scope_adjustments').insert({
         project_id:   projectId,
@@ -42,24 +101,9 @@ export async function POST(request: NextRequest) {
 
     if (adjErr) throw new Error(adjErr.message)
 
-    // Update scope snapshot — replace the matching deliverable
-    const { data: snap } = await (service as any)
-      .from('project_scope_snapshot').select('id,deliverables').eq('project_id', projectId).single()
-
-    if (snap) {
-      const deliverables = (snap.deliverables || []).map((d: any) =>
-        (d.title === deliverable || d === deliverable) ? { title: newValue } : d
-      )
-      await (service as any).from('project_scope_snapshot').update({
-        deliverables,
-        last_updated_at: now,
-        last_updated_by: 'scope_adjustment',
-      }).eq('project_id', projectId)
-    }
-
     await logAudit(service, {
       workspaceId: session.workspaceId, actorId: session.id,
-      actorEmail: session.email, actorName: session.name,
+      actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
       eventType: 'project.scope_adjustment_made', entityType: 'project',
       entityId: projectId, entityName: project.name,
       metadata: { deliverable, old_value: oldValue, new_value: newValue, reason },

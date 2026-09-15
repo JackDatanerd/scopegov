@@ -2,6 +2,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { getClientIp } from '@/lib/utils/request-ip'
 
 export async function GET() {
   try {
@@ -37,9 +38,31 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
 
     const body    = await request.json()
-    const { name, companyName, email, phone, notes, timezone, billingAddress, vatNumber } = body
+    const { name, companyName, email, phone, notes, timezone, billingAddress, vatNumber, ccEmails } = body
     if (!name?.trim() || !email?.trim())
       return NextResponse.json({ error: 'Name and email required' }, { status: 400 })
+    // FIX (audit round 6): only presence was checked, not shape — an
+    // unvalidated address here is what every invoice/SOW/CO for this
+    // client actually gets sent to, so a typo means silent, permanent
+    // delivery failure with no error at creation time.
+    const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+    if (!EMAIL_RE.test(email.trim()))
+      return NextResponse.json({ error: 'Please enter a valid email address' }, { status: 400 })
+
+    // FIX (audit round 6): cc_emails is read by every document-send route
+    // (invoice/SOW/CO send, remind, void, withdraw, portal accept) but had
+    // no create/edit path anywhere — every client's cc_emails was
+    // permanently stuck at '{}'. Accept it here (and in PATCH) same as any
+    // other contact field: comma/newline-separated string or array, each
+    // entry validated and lowercased like the primary email.
+    let normalizedCcEmails: string[] = []
+    if (ccEmails) {
+      const raw = Array.isArray(ccEmails) ? ccEmails : String(ccEmails).split(/[,\n]/)
+      normalizedCcEmails = raw.map((e: string) => e.trim().toLowerCase()).filter(Boolean)
+      const invalid = normalizedCcEmails.find(e => !EMAIL_RE.test(e))
+      if (invalid)
+        return NextResponse.json({ error: `Invalid CC email address: ${invalid}` }, { status: 400 })
+    }
 
     const service = createServiceClient()
 
@@ -56,6 +79,7 @@ export async function POST(request: NextRequest) {
         name:         name.trim(),
         company_name: companyName?.trim() || null,
         email:        email.toLowerCase().trim(),
+        cc_emails:    normalizedCcEmails,
         phone:        phone?.trim() || null,
         notes:        notes?.trim() || null,
         timezone:     timezone || null,
@@ -67,10 +91,18 @@ export async function POST(request: NextRequest) {
         vat_number:      vatNumber?.trim() || null,
       }).select('id').single()
 
+    // FIX (audit round 6): the manual dupe-check above has a TOCTOU window
+    // that's actually closed by the DB's own UNIQUE(workspace_id, email)
+    // constraint — good — but a race that slips through it surfaced as a
+    // raw Postgres constraint-violation message via the generic catch
+    // below instead of the same clean 409 the pre-check was written to
+    // produce. Catch that one specific case explicitly.
+    if (error?.code === '23505')
+      return NextResponse.json({ error: 'A client with this email already exists' }, { status: 409 })
     if (error) throw new Error(error.message)
     await logAudit(service, {
       workspaceId: session.workspaceId, actorId: session.id,
-      actorEmail: session.email, actorName: session.name,
+      actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
       eventType: 'client.created', entityType: 'client',
       entityId: client.id, entityName: name.trim(), metadata: {},
     })

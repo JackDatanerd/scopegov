@@ -4,6 +4,8 @@ import { redirect, notFound } from 'next/navigation'
 import Link from 'next/link'
 import { formatCurrency, formatDate, projectStatusLabel } from '@/lib/utils/format'
 import BillingDetailsCard from '@/components/clients/BillingDetailsCard'
+import ClientContactCard from '@/components/clients/ClientContactCard'
+import ArchiveClientButton from '@/components/clients/ArchiveClientButton'
 
 interface Props { params: Promise<{ id: string }> }
 
@@ -75,16 +77,24 @@ export default async function ClientDetailPage({ params }: Props) {
       {/* Header */}
       <div className="page-hd">
         <div>
-          <h1 className="page-title">{client.name}</h1>
+          <h1 className="page-title">
+            {client.name}
+            {client.status === 'archived' && (
+              <span style={{ marginLeft: 10, fontSize: 11, padding: '2px 8px', borderRadius: 4, background: 'var(--bg-3)', color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: 0.4, verticalAlign: 'middle' }}>Archived</span>
+            )}
+          </h1>
           {client.company_name && (
             <p className="page-sub">{client.company_name}</p>
           )}
         </div>
-        <Link href={`/projects/new?clientId=${id}`}>
-          <button className="btn btn-primary">
-            <i className="ti ti-plus" style={{ fontSize: 13 }} /> New project
-          </button>
-        </Link>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {canEditClientData && <ArchiveClientButton clientId={id} status={client.status || 'active'} />}
+          <Link href={`/projects/new?clientId=${id}`}>
+            <button className="btn btn-primary">
+              <i className="ti ti-plus" style={{ fontSize: 13 }} /> New project
+            </button>
+          </Link>
+        </div>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 280px', gap: 24, alignItems: 'start' }}>
@@ -149,39 +159,28 @@ export default async function ClientDetailPage({ params }: Props) {
 
         {/* Contact card + notes */}
         <div>
-          <div className="sec-hd" style={{ marginBottom: 12 }}><div className="sec-title">Contact details</div></div>
-          <div className="surface surface-p" style={{ marginBottom: 16 }}>
-            {canViewClientData ? (
-              <>
-                <div className="settings-row" style={{ paddingTop: 0 }}>
-                  <span className="settings-row-key" style={{ fontSize: 12 }}>Email</span>
-                  <a href={`mailto:${client.email}`} style={{ fontSize: 13, color: 'var(--green)' }}>{client.email}</a>
-                </div>
-                {client.phone && (
-                  <div className="settings-row">
-                    <span className="settings-row-key" style={{ fontSize: 12 }}>Phone</span>
-                    <span className="settings-row-val">{client.phone}</span>
-                  </div>
-                )}
-                {client.cc_emails?.length > 0 && (
-                  <div className="settings-row">
-                    <span className="settings-row-key" style={{ fontSize: 12 }}>CC</span>
-                    <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{client.cc_emails.join(', ')}</div>
-                  </div>
-                )}
-                {client.payment_terms_note && (
-                  <div className="settings-row" style={{ paddingBottom: 0, borderBottom: 'none' }}>
-                    <span className="settings-row-key" style={{ fontSize: 12 }}>Payment terms</span>
-                    <span className="settings-row-val" style={{ fontSize: 11 }}>{client.payment_terms_note}</span>
-                  </div>
-                )}
-              </>
-            ) : (
-              <p style={{ fontSize: 13, color: 'var(--text-3)', fontStyle: 'italic', textAlign: 'center', padding: '16px 0' }}>
-                Restricted — requires VIEW_CLIENT_DATA permission
-              </p>
-            )}
-          </div>
+          {canViewClientData ? (
+            <ClientContactCard
+              clientId={client.id}
+              name={client.name}
+              companyName={client.company_name}
+              email={client.email}
+              phone={client.phone}
+              ccEmails={client.cc_emails}
+              paymentTermsNote={client.payment_terms_note}
+              notes={client.notes}
+              editable={canEditClientData}
+            />
+          ) : (
+            <>
+              <div className="sec-hd" style={{ marginBottom: 12 }}><div className="sec-title">Contact details</div></div>
+              <div className="surface surface-p" style={{ marginBottom: 16 }}>
+                <p style={{ fontSize: 13, color: 'var(--text-3)', fontStyle: 'italic', textAlign: 'center', padding: '16px 0' }}>
+                  Restricted — requires VIEW_CLIENT_DATA permission
+                </p>
+              </div>
+            </>
+          )}
 
           {/* Phase 11: billing address + VAT — feeds the "Bill To" block on
               every Invoice/SOW/CO PDF for this client (lib/pdf/renderer.tsx) */}
@@ -192,20 +191,6 @@ export default async function ClientDetailPage({ params }: Props) {
               billingAddress={client.billing_address}
               editable={canEditClientData}
             />
-          )}
-
-          {/* FIX (re-audit): was ungated ("spec §13.2" comment, no such
-              spec found anywhere in the repo) despite notes being part of
-              the same clients row as every other VIEW_CLIENT_DATA-gated
-              field. If §13.2 is a real, deliberate product decision made
-              outside this repo, this is a one-line revert. */}
-          {canViewClientData && client.notes && (
-            <>
-              <div className="sec-hd" style={{ marginBottom: 12 }}><div className="sec-title">Notes</div></div>
-              <div className="surface surface-p">
-                <p style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.7, margin: 0 }}>{client.notes}</p>
-              </div>
-            </>
           )}
 
           <div style={{ marginTop: 20 }}>

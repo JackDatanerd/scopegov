@@ -10,12 +10,33 @@
 // settings). Extracted from app/api/billing/cancel/route.ts's existing,
 // working cancellation call so both routes share one implementation
 // instead of drifting.
+//
+// FIX (audit round 6, Billing deep-dive): this used to return void and
+// swallow every failure into a console.error, with both callers
+// (billing/cancel and workspace/delete) proceeding unconditionally
+// afterwards. That's the right call for workspace/delete — you don't want
+// to block someone from deleting their workspace because Paystack is
+// briefly unreachable, and the failure is still logged so it isn't lost.
+// But billing/cancel is the user-facing "cancel my subscription" button,
+// and swallowing the failure there meant a customer could be told
+// cancellation succeeded while the real Paystack subscription kept
+// renewing and would charge their card again — with cancels_at_period_end
+// then set locally, blocking any retry through the UI ("already scheduled
+// for cancellation"). Return a real result so each caller can decide what
+// "best-effort" means for its own situation, instead of hiding the
+// outcome from both of them equally.
+
+export interface CancelPaystackResult {
+  ok: boolean
+  alreadyCancelled: boolean
+  error?: string
+}
 
 export async function cancelPaystackSubscription(billing: {
   paystack_subscription_code?: string | null
   paystack_email_token?: string | null
-} | null | undefined): Promise<void> {
-  if (!billing?.paystack_subscription_code) return // nothing to cancel
+} | null | undefined): Promise<CancelPaystackResult> {
+  if (!billing?.paystack_subscription_code) return { ok: true, alreadyCancelled: true } // nothing to cancel
 
   try {
     const resp = await fetch('https://api.paystack.co/subscription/disable', {
@@ -33,15 +54,17 @@ export async function cancelPaystackSubscription(billing: {
       const err = await resp.json().catch(() => ({}))
       if (err.message?.includes('already') || err.message?.includes('non-renewing')) {
         // Already cancelled — nothing further to do.
-      } else {
-        console.error('Paystack disable error:', err)
+        return { ok: true, alreadyCancelled: true }
       }
+      console.error('Paystack disable error:', err)
+      return { ok: false, alreadyCancelled: false, error: err.message || 'Paystack declined the cancellation request' }
     }
+    return { ok: true, alreadyCancelled: false }
   } catch (e) {
-    // Best-effort: never block the caller's own operation (workspace
-    // deletion, plan cancellation) on Paystack being reachable. Logged so
-    // it isn't silently lost — an un-cancelled subscription behind a
-    // deleted workspace needs a human to notice and follow up.
+    // Logged either way so a failure is never silently lost — callers
+    // decide separately whether to also block on it (see billing/cancel
+    // vs workspace/delete for the two different answers to that).
     console.error('Paystack disable call failed:', e)
+    return { ok: false, alreadyCancelled: false, error: e instanceof Error ? e.message : 'Could not reach Paystack' }
   }
 }

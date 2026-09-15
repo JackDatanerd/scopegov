@@ -16,16 +16,26 @@ export default function ClientsClient({ clients, canCreate, canViewFinancials, c
   const [company, setCompany] = useState('')
   const [email,   setEmail]   = useState('')
   const [phone,   setPhone]   = useState('')
+  const [ccEmails, setCcEmails] = useState('')
+  // FIX (audit round 6): clients.status (active/archived) has existed
+  // since the initial schema and was even selected by the page query, but
+  // nothing ever read or filtered by it — every client showed up mixed
+  // together forever with no way to hide the ones an agency no longer
+  // works with. Default to hiding archived ones, same as most list views.
+  const [showArchived, setShowArchived] = useState(false)
+
+  const archivedCount = useMemo(() => clients.filter(c => c.status === 'archived').length, [clients])
 
   const filtered = useMemo(() => {
-    if (!search.trim()) return clients
+    const base = showArchived ? clients : clients.filter(c => c.status !== 'archived')
+    if (!search.trim()) return base
     const q = search.toLowerCase()
-    return clients.filter(c =>
+    return base.filter(c =>
       c.name.toLowerCase().includes(q) ||
       c.email?.toLowerCase().includes(q) ||
       c.company_name?.toLowerCase().includes(q)
     )
-  }, [clients, search])
+  }, [clients, search, showArchived])
 
   function clientStats(c: any) {
     const projects  = c.projects || []
@@ -43,12 +53,12 @@ export default function ClientsClient({ clients, canCreate, canViewFinancials, c
     try {
       const res  = await fetch('/api/clients', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, companyName: company, email, phone }),
+        body: JSON.stringify({ name, companyName: company, email, phone, ccEmails }),
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error)
       setModal(false)
-      setName(''); setCompany(''); setEmail(''); setPhone('')
+      setName(''); setCompany(''); setEmail(''); setPhone(''); setCcEmails('')
       router.refresh()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to create client')
@@ -71,10 +81,18 @@ export default function ClientsClient({ clients, canCreate, canViewFinancials, c
       </div>
 
       {/* Search */}
-      <div className="search-wrap" style={{ marginBottom: 16, maxWidth: 280 }}>
-        <i className="ti ti-search search-ic" />
-        <input className="finp search-inp" placeholder="Search clients…" value={search}
-          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearch(e.target.value)} />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 16, flexWrap: 'wrap' }}>
+        <div className="search-wrap" style={{ maxWidth: 280 }}>
+          <i className="ti ti-search search-ic" />
+          <input className="finp search-inp" placeholder="Search clients…" value={search}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearch(e.target.value)} />
+        </div>
+        {archivedCount > 0 && (
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--text-2)', cursor: 'pointer' }}>
+            <input type="checkbox" checked={showArchived} onChange={e => setShowArchived(e.target.checked)} />
+            Show archived ({archivedCount})
+          </label>
+        )}
       </div>
 
       {/* Table */}
@@ -109,7 +127,12 @@ export default function ClientsClient({ clients, canCreate, canViewFinancials, c
                 return (
                   <tr key={c.id} onClick={() => router.push(`/clients/${c.id}`)}>
                     <td>
-                      <div className="td-primary">{c.name}</div>
+                      <div className="td-primary">
+                        {c.name}
+                        {c.status === 'archived' && (
+                          <span style={{ marginLeft: 8, fontSize: 10, padding: '1px 6px', borderRadius: 4, background: 'var(--bg-3)', color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: 0.4 }}>Archived</span>
+                        )}
+                      </div>
                       {c.company_name && <div className="td-sub">{c.company_name}</div>}
                     </td>
                     <td>
@@ -176,6 +199,13 @@ export default function ClientsClient({ clients, canCreate, canViewFinancials, c
                     onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPhone(e.target.value)}
                     placeholder="+254 7xx xxx xxx" />
                 </div>
+              </div>
+              <div className="fgrp">
+                <label className="flbl">CC on emails <span className="fhint">— optional, comma-separated</span></label>
+                <input className="finp" value={ccEmails}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCcEmails(e.target.value)}
+                  placeholder="finance@acme.com, legal@acme.com" />
+                <p className="fhint" style={{ marginTop: 4 }}>These addresses are CC&apos;d on every invoice, SOW, and change order sent to this client.</p>
               </div>
               <div className="modal-footer">
                 <button type="button" className="btn btn-ghost" onClick={() => setModal(false)}>Cancel</button>

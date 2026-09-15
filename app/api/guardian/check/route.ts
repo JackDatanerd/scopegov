@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { getClientIp } from '@/lib/utils/request-ip'
 import { stripHtml } from '@/lib/utils/format'
 import {
   classifyGuardianCheck, getEmbedding, cosineSimilarity,
@@ -25,6 +26,12 @@ export async function POST(request: NextRequest) {
     const { projectId, content, source = 'paste', isRetroactive = false } = await request.json()
     if (!projectId || !content?.trim())
       return NextResponse.json({ error: 'projectId and content required' }, { status: 400 })
+    // FIX (audit round 6): `source` was passed straight to the DB insert
+    // with no validation against its own CHECK (source IN ('email','paste',
+    // 'slack','webhook')) — an invalid value burned a real embedding call
+    // before dying on the DB constraint as a generic 500. Reject it up front.
+    if (!['email', 'paste', 'slack', 'webhook'].includes(source))
+      return NextResponse.json({ error: `Invalid source: ${source}` }, { status: 400 })
 
     const service = createServiceClient()
 
@@ -65,6 +72,18 @@ export async function POST(request: NextRequest) {
       console.error('Embedding failed:', embErr)
       // Non-fatal — dedup skipped if embedding fails
     }
+
+    // FIX (audit round 6): recordAiUsage used to only fire at the very end
+    // of the full-success path — the isDuplicate/pending-snapshot/
+    // classification-failed early returns below all skip it, even though
+    // each of them still spent a real embedding call (and the
+    // classification-failed path spends a classification call too) before
+    // bailing out. Since checkAiRateLimit above counts *these* usage rows,
+    // that meant the exact rate limiter added to stop AI-cost abuse never
+    // counted three of its four possible outcomes. Record usage as soon as
+    // we know a real attempt was made, not only on the outcome that
+    // happens to reach the bottom of the function.
+    await recordAiUsage(service, session.workspaceId, session.id, 'guardian.check')
 
     // ── STEP 2: Dedup check (cosine similarity > 0.85) ────────
     let isDuplicate    = false
@@ -115,7 +134,7 @@ export async function POST(request: NextRequest) {
     if (isDuplicate) {
       await logAudit(service, {
         workspaceId: session.workspaceId, actorId: session.id,
-        actorEmail: session.email, actorName: session.name,
+        actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
         eventType: 'check.duplicate_skipped', entityType: 'guardian_check',
         entityId: checkRow.id, entityName: project.name,
         metadata: { duplicate_of: duplicateOfId },
@@ -158,7 +177,7 @@ export async function POST(request: NextRequest) {
         .update({ classification_failed: true, outcome: 'pending' }).eq('id', checkRow.id)
       await logAudit(service, {
         workspaceId: session.workspaceId, actorId: session.id,
-        actorEmail: session.email, actorName: session.name,
+        actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
         eventType: 'check.classification_failed', entityType: 'guardian_check',
         entityId: checkRow.id, entityName: project.name, metadata: {},
       })
@@ -178,17 +197,31 @@ export async function POST(request: NextRequest) {
 
     await logAudit(service, {
       workspaceId: session.workspaceId, actorId: session.id,
-      actorEmail: session.email, actorName: session.name,
+      actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
       eventType: 'check.classified', entityType: 'guardian_check',
       entityId: checkRow.id, entityName: project.name,
       metadata: { outcome: classification.outcome, creep_confidence: classification.creepConfidence },
     })
 
-    // ── STEP 6: Create flag if out_of_scope ───────────────────
+    // ── STEP 6: Create flag if out_of_scope OR borderline ─────
+    // FIX (audit round 6): 'borderline' is a real outcome the classifier
+    // produces on purpose (it's instructed to prefer it over 'out_of_scope'
+    // to cut false positives) but nothing ever created a flag, notification,
+    // or any reviewable record for it — every borderline check just sat in
+    // guardian_checks with outcome='borderline' and was never seen by
+    // anyone again. Give it a real (lower-key) flag: a 'borderline_review'
+    // status, no false severity claim, an in-app notification but not the
+    // full email blast (this tier is deliberately lower-signal — an inbox
+    // ping for every borderline guess would defeat the point of having the
+    // tier at all). A reviewer resolves it via the flags/[id] PATCH
+    // 'confirm_out_of_scope' or 'dismiss_borderline' actions.
     let flagId: string | null = null
-    if (classification.outcome === 'out_of_scope') {
-      const severity = classification.creepConfidence >= 0.90 ? 'high'
+    if (classification.outcome === 'out_of_scope' || classification.outcome === 'borderline') {
+      const isBorderline = classification.outcome === 'borderline'
+      const severity = isBorderline ? 'info' : (
+        classification.creepConfidence >= 0.90 ? 'high'
         : classification.creepConfidence >= 0.75 ? 'medium' : 'low'
+      )
 
       const { data: flag } = await (service as any).from('guardian_flags').insert({
         project_id:    projectId,
@@ -198,7 +231,7 @@ export async function POST(request: NextRequest) {
         severity,
         description:   classification.reasoning,
         sow_reference: classification.matchedReference || 'General scope',
-        status:        'open',
+        status:        isBorderline ? 'borderline_review' : 'open',
       }).select('id').single()
 
       if (flag) {
@@ -207,42 +240,46 @@ export async function POST(request: NextRequest) {
 
         await logAudit(service, {
           workspaceId: session.workspaceId, actorId: session.id,
-          actorEmail: session.email, actorName: session.name,
-          eventType: 'flag.raised', entityType: 'guardian_flag',
+          actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
+          eventType: isBorderline ? 'flag.borderline_created' : 'flag.raised', entityType: 'guardian_flag',
           // FIX: logAudit's entityId is `string | undefined`; flagId is `string | null`
           // (declared type wins over `any`-typed flag.id during narrowing). Coerce here.
           entityId: flagId ?? undefined, entityName: project.name,
           metadata: { severity, creep_confidence: classification.creepConfidence },
         })
 
-        // Email APPROVE_FLAGS holders (Event 18)
-        const emails = await getMemberEmailsWithPermission(service, session.workspaceId, 'APPROVE_FLAGS', 25, 'guardian_flag', projectId)
+        if (!isBorderline) {
+          // Email APPROVE_FLAGS holders (Event 18) — full-confidence flags only
+          const emails = await getMemberEmailsWithPermission(service, session.workspaceId, 'APPROVE_FLAGS', 25, 'guardian_flag', projectId)
 
-        if (emails.length) {
-          try {
-            await sendGuardianFlagEmail({
-              to:           emails,
-              projectName:  project.name,
-              severity,
-              description:  classification.reasoning,
-              sowReference: classification.matchedReference || 'General scope',
-              projectUrl:   `${process.env.NEXT_PUBLIC_APP_URL}/projects/${projectId}?tab=guardian`,
-              path:         source,
-            })
-          } catch (emailErr) {
-            console.error('Guardian flag email failed:', emailErr)
+          if (emails.length) {
+            try {
+              await sendGuardianFlagEmail({
+                to:           emails,
+                projectName:  project.name,
+                severity,
+                description:  classification.reasoning,
+                sowReference: classification.matchedReference || 'General scope',
+                projectUrl:   `${process.env.NEXT_PUBLIC_APP_URL}/projects/${projectId}?tab=guardian`,
+                path:         source,
+              })
+            } catch (emailErr) {
+              console.error('Guardian flag email failed:', emailErr)
+            }
           }
         }
         await notifyMembersWithPermission(service, {
           workspaceId: session.workspaceId, permission: 'APPROVE_FLAGS', eventType: 'guardian_flag',
-          type: 'guardian_flag', title: `Scope flag — ${project.name}`,
-          body: classification.reasoning?.slice(0, 140) || 'A new out-of-scope request was flagged.',
+          type: 'guardian_flag',
+          title: isBorderline ? `Borderline scope item — ${project.name}` : `Scope flag — ${project.name}`,
+          body: classification.reasoning?.slice(0, 140) || (isBorderline
+            ? 'A possible scope item needs a quick look.'
+            : 'A new out-of-scope request was flagged.'),
           entityType: 'project', entityId: projectId, excludeUserId: session.id, projectId,
         })
       }
     }
 
-    await recordAiUsage(service, session.workspaceId, session.id, 'guardian.check')
     return NextResponse.json({
       checkId:         checkRow.id,
       outcome:         classification.outcome,

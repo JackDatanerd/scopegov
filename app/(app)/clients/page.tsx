@@ -13,7 +13,7 @@ export default async function ClientsPage() {
   const { data: clients = [] } = await (service as any)
     .from('clients')
     .select(`id, name, company_name, email, phone, status, created_at,
-      projects(id, status, contract_value, currency)`)
+      projects(id, status, contract_value, currency, deleted_at)`)
     .eq('workspace_id', session.workspaceId)
     .order('name')
 
@@ -30,9 +30,13 @@ export default async function ClientsPage() {
     ...c,
     email: canViewClientData ? c.email : null,
     phone: canViewClientData ? c.phone : null,
-    projects: canViewFinancials
-      ? c.projects
-      : (c.projects || []).map((p: any) => ({ ...p, contract_value: null })),
+    // FIX (audit round 6): this join had no deleted_at filter, so
+    // clientStats() on the list page counted soft-deleted projects while
+    // the client detail page (which does filter .is('deleted_at', null))
+    // correctly excludes them — the same client's project count/total
+    // value could disagree between the two screens.
+    projects: (canViewFinancials ? c.projects : (c.projects || []).map((p: any) => ({ ...p, contract_value: null })))
+      .filter((p: any) => !p.deleted_at),
   }))
 
   return (

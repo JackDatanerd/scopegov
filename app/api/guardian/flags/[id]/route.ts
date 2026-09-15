@@ -2,6 +2,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { getClientIp } from '@/lib/utils/request-ip'
 import { sanitizePlainText } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
 
@@ -18,7 +19,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     const { data: flag } = await (service as any)
       .from('guardian_flags')
-      .select('id,status,project_id,description,severity,sow_reference,change_order_id')
+      .select('id,status,project_id,description,severity,sow_reference,change_order_id,projects(name)')
       .eq('id', id)
       .eq('workspace_id', session.workspaceId)
       .single()
@@ -28,19 +29,32 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (!(await canReadProject(service, session, flag.project_id)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
+    // FIX (audit round 6): every audit-log entry written by this route used
+    // flag.project_id (a raw UUID) as entityName instead of the project's
+    // actual name — every other Guardian route (check, inbound,
+    // scope-adjustment) logs the readable name. Made the audit log/CSV
+    // export show a UUID for every flag action instead of a project name.
+    const projectName = flag.projects?.name || flag.project_id
+
     switch (action) {
       case 'resolve': {
         if (!hasPermission(session, 'APPROVE_FLAGS'))
           return NextResponse.json({ error: 'Missing permission: APPROVE_FLAGS' }, { status: 403 })
+        // FIX (audit round 6): no action in this switch checked the flag's
+        // current status before mutating it — resolve/close/exception could
+        // all be fired on a flag that was already resolved, closed, or
+        // converted to a change order, silently overwriting that state.
+        if (flag.status !== 'open')
+          return NextResponse.json({ error: `Cannot resolve a flag with status "${flag.status}"` }, { status: 409 })
         await (service as any).from('guardian_flags').update({
           status: 'resolved', resolution: 'closed',
           resolved_by: session.id, resolved_at: now, updated_at: now,
         }).eq('id', id)
         await logAudit(service, {
           workspaceId: session.workspaceId, actorId: session.id,
-          actorEmail: session.email, actorName: session.name,
+          actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
           eventType: 'flag.resolved', entityType: 'guardian_flag',
-          entityId: id, entityName: flag.project_id, metadata: {},
+          entityId: id, entityName: projectName, metadata: {},
         })
         break
       }
@@ -48,15 +62,17 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       case 'close': {
         if (!hasPermission(session, 'APPROVE_FLAGS'))
           return NextResponse.json({ error: 'Missing permission: APPROVE_FLAGS' }, { status: 403 })
+        if (!['open', 'resolved'].includes(flag.status))
+          return NextResponse.json({ error: `Cannot close a flag with status "${flag.status}"` }, { status: 409 })
         await (service as any).from('guardian_flags').update({
           status: 'closed', resolution: 'closed', close_reason: reason || null,
           resolved_by: session.id, resolved_at: now, updated_at: now,
         }).eq('id', id)
         await logAudit(service, {
           workspaceId: session.workspaceId, actorId: session.id,
-          actorEmail: session.email, actorName: session.name,
+          actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
           eventType: 'flag.closed', entityType: 'guardian_flag', entityId: id,
-          entityName: flag.project_id, metadata: { reason },
+          entityName: projectName, metadata: { reason },
         })
         break
       }
@@ -64,6 +80,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       case 'exception': {
         if (!hasPermission(session, 'GRANT_EXCEPTIONS'))
           return NextResponse.json({ error: 'Missing permission: GRANT_EXCEPTIONS' }, { status: 403 })
+        if (flag.status !== 'open')
+          return NextResponse.json({ error: `Cannot grant an exception on a flag with status "${flag.status}"` }, { status: 409 })
         const { estimatedValue, grantedWhat, exceptionReason } = body
         await (service as any).from('exceptions_log').insert({
           project_id:   flag.project_id,
@@ -81,9 +99,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         }).eq('id', id)
         await logAudit(service, {
           workspaceId: session.workspaceId, actorId: session.id,
-          actorEmail: session.email, actorName: session.name,
+          actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
           eventType: 'flag.exception_granted', entityType: 'guardian_flag', entityId: id,
-          entityName: flag.project_id, metadata: { estimated_value: estimatedValue },
+          entityName: projectName, metadata: { estimated_value: estimatedValue },
         })
         break
       }
@@ -125,9 +143,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         }).eq('id', id)
         await logAudit(service, {
           workspaceId: session.workspaceId, actorId: session.id,
-          actorEmail: session.email, actorName: session.name,
+          actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
           eventType: 'flag.escalated', entityType: 'guardian_flag', entityId: id,
-          entityName: flag.project_id, metadata: { escalated_to: resolvedEscalateTo, note: safeNote },
+          entityName: projectName, metadata: { escalated_to: resolvedEscalateTo, note: safeNote },
         })
         break
       }
@@ -135,8 +153,36 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       case 'draft_co': {
         if (!hasPermission(session, 'CREATE_CHANGE_ORDERS'))
           return NextResponse.json({ error: 'Missing permission: CREATE_CHANGE_ORDERS' }, { status: 403 })
+        // FIX (audit round 6): this action had no precondition check at
+        // all — clicking it twice (or a slow-network double-submit, or two
+        // concurrent requests) created two separate change_orders rows
+        // both flag_id-linked to this flag (change_orders.flag_id has no
+        // unique constraint), with guardian_flags.change_order_id only
+        // ever pointing at whichever insert finished last, leaving the
+        // other one orphaned but live. A plain "read flag.status, then
+        // decide" check still has the same race — two concurrent requests
+        // can both read status='open' before either writes. Use the same
+        // compare-and-swap approach already used for this codebase's
+        // signing routes: atomically claim the flag first (the update only
+        // succeeds if it's still open AND unconverted), and only create
+        // the change order if that claim succeeds.
+        const { data: claimed } = await (service as any)
+          .from('guardian_flags')
+          .update({ status: 'converted_to_co', updated_at: now })
+          .eq('id', id).eq('status', 'open').is('change_order_id', null)
+          .select('id')
+
+        if (!claimed || claimed.length === 0) {
+          return NextResponse.json({
+            error: flag.change_order_id
+              ? 'A change order has already been drafted from this flag'
+              : `Cannot draft a change order from a flag with status "${flag.status}"`,
+            coId: flag.change_order_id || undefined,
+          }, { status: 409 })
+        }
+
         // Create CO draft pre-filled from flag (spec §6.2)
-        const { data: co } = await (service as any).from('change_orders').insert({
+        const { data: co, error: coErr } = await (service as any).from('change_orders').insert({
           project_id:   flag.project_id,
           workspace_id: session.workspaceId,
           flag_id:      id,
@@ -156,33 +202,67 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
         if (co) {
           await (service as any).from('guardian_flags').update({
-            status:         'converted_to_co',
-            change_order_id: co.id,
-            updated_at:     now,
+            change_order_id: co.id, updated_at: now,
           }).eq('id', id)
           await logAudit(service, {
             workspaceId: session.workspaceId, actorId: session.id,
-            actorEmail: session.email, actorName: session.name,
+            actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
             eventType: 'flag.converted_to_co', entityType: 'guardian_flag', entityId: id,
-            entityName: flag.project_id, metadata: { co_id: co.id },
+            entityName: projectName, metadata: { co_id: co.id },
           })
           return NextResponse.json({ ok: true, coId: co.id })
         }
-        break
+
+        // CO creation failed after the claim succeeded — release the claim
+        // so the flag isn't stranded as 'converted_to_co' with no CO.
+        await (service as any).from('guardian_flags').update({
+          status: 'open', updated_at: now,
+        }).eq('id', id)
+        return NextResponse.json({ error: coErr?.message || 'Could not create change order' }, { status: 500 })
       }
 
       case 'confirm_out_of_scope': {
-        // Borderline confirmed as out of scope — creates flag (spec §1.6.6, Event 18)
+        // FIX (audit round 6): this action's own comment always claimed to
+        // be the reviewer step for a borderline item ("Borderline
+        // confirmed as out of scope"), but nothing ever created a flag in
+        // a state this could act on — 'borderline_review' didn't exist as
+        // a status until this fix round, so this action was unreachable.
+        // Now that check/route.ts and inbound/route.ts actually create
+        // borderline_review flags, gate the transition on that status.
         if (!hasPermission(session, 'APPROVE_FLAGS'))
           return NextResponse.json({ error: 'Missing permission: APPROVE_FLAGS' }, { status: 403 })
+        if (flag.status !== 'borderline_review')
+          return NextResponse.json({ error: `Cannot confirm a flag with status "${flag.status}" as out of scope` }, { status: 409 })
         await (service as any).from('guardian_flags').update({
           status: 'open', updated_at: now,
         }).eq('id', id)
         await logAudit(service, {
           workspaceId: session.workspaceId, actorId: session.id,
-          actorEmail: session.email, actorName: session.name,
+          actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
           eventType: 'flag.borderline_reviewed', entityType: 'guardian_flag', entityId: id,
-          entityName: flag.project_id, metadata: { confirmed_as: 'out_of_scope' },
+          entityName: projectName, metadata: { confirmed_as: 'out_of_scope' },
+        })
+        break
+      }
+
+      case 'dismiss_borderline': {
+        // FIX (audit round 6): borderline_review flags need a way to be
+        // dismissed as a false positive, not just confirmed — otherwise
+        // every borderline item a reviewer disagrees with just sits open
+        // forever with no closing action available.
+        if (!hasPermission(session, 'APPROVE_FLAGS'))
+          return NextResponse.json({ error: 'Missing permission: APPROVE_FLAGS' }, { status: 403 })
+        if (flag.status !== 'borderline_review')
+          return NextResponse.json({ error: `Cannot dismiss a flag with status "${flag.status}"` }, { status: 409 })
+        await (service as any).from('guardian_flags').update({
+          status: 'closed', resolution: 'not_out_of_scope', close_reason: reason || null,
+          resolved_by: session.id, resolved_at: now, updated_at: now,
+        }).eq('id', id)
+        await logAudit(service, {
+          workspaceId: session.workspaceId, actorId: session.id,
+          actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
+          eventType: 'flag.borderline_reviewed', entityType: 'guardian_flag', entityId: id,
+          entityName: projectName, metadata: { confirmed_as: 'in_scope', reason },
         })
         break
       }

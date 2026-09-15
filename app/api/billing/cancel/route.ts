@@ -2,6 +2,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { getClientIp } from '@/lib/utils/request-ip'
 import { cancelPaystackSubscription } from '@/lib/integrations/paystack'
 
 export async function POST(request: NextRequest) {
@@ -38,7 +39,23 @@ export async function POST(request: NextRequest) {
     // lib/integrations/paystack.ts so workspace/delete can share the
     // exact same cancellation logic instead of independently forgetting
     // to call it.
-    await cancelPaystackSubscription(billing)
+    //
+    // FIX (audit round 6): this used to ignore the outcome entirely
+    // (the helper was `void`-returning) and fall through unconditionally
+    // to marking cancels_at_period_end: true locally — telling the
+    // customer their cancellation succeeded even when the real Paystack
+    // call failed for a reason other than "already cancelled." That left
+    // the real subscription renewing (and charging the customer again on
+    // schedule) while the local flag then blocked any retry through the
+    // UI ("already scheduled for cancellation"). The helper now returns a
+    // real result — only proceed to the local write when Paystack
+    // actually agrees the subscription won't renew.
+    const result = await cancelPaystackSubscription(billing)
+    if (!result.ok) {
+      return NextResponse.json({
+        error: 'We could not reach Paystack to cancel your subscription. Nothing has been charged or changed — please try again in a moment, or contact support@scopegov.app if this keeps happening.',
+      }, { status: 502 })
+    }
 
     // Mark locally — spec says store cancels_at_period_end: true
     await (service as any).from('billing').update({
@@ -48,10 +65,10 @@ export async function POST(request: NextRequest) {
 
     await logAudit(service, {
       workspaceId: session.workspaceId, actorId: session.id,
-      actorEmail: session.email, actorName: session.name,
+      actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
       eventType: 'billing.plan_changed', entityType: 'workspace',
       entityId: session.workspaceId, entityName: session.agencyName,
-      metadata: { action: 'cancellation_requested', ends_at: billing.current_period_end },
+      metadata: { action: 'cancellation_requested', ends_at: billing.current_period_end, was_already_non_renewing_upstream: result.alreadyCancelled },
     })
 
     return NextResponse.json({ ok: true, endsAt: billing.current_period_end })

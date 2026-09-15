@@ -4,6 +4,7 @@ import { NextResponse } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { logAudit } from '@/lib/utils/audit'
+import { getClientIp } from '@/lib/utils/request-ip'
 import { renderAuditReportPdf, type AuditReportRow } from '@/lib/pdf/audit-report'
 
 // GET /api/reports/audit-export
@@ -20,7 +21,7 @@ import { renderAuditReportPdf, type AuditReportRow } from '@/lib/pdf/audit-repor
 
 const MAX_ROWS_CSV = 25000
 const MAX_ROWS_PDF = 1000
-const MAX_ROWS_JSON = 500 // table view is paginated by the UI, not a bulk export
+const MAX_ROWS_JSON = 500 // table view shows a "truncated, use CSV export" banner beyond this — see components/settings/AuditLogClient.tsx (no true pagination exists here)
 
 export async function GET(request: Request) {
   try {
@@ -84,8 +85,21 @@ export async function GET(request: Request) {
 
     let actorName: string | undefined
     if (actorId) {
-      const { data: u } = await (service as any).from('users').select('name').eq('id', actorId).maybeSingle()
-      actorName = u?.name
+      // FIX (audit round 6): this lookup had no workspace scope, unlike
+      // every other query in this route — passing an arbitrary actorId
+      // for a user in a different workspace would pull that person's real
+      // name into this workspace's exported PDF ("Filters: actor: X"). The
+      // actual audit_log rows returned were still safely workspace-scoped
+      // (nothing in the log itself leaked), but this name lookup wasn't.
+      // Scope it through workspace_members instead of querying `users`
+      // directly.
+      const { data: member } = await (service as any)
+        .from('workspace_members')
+        .select('users(name)')
+        .eq('workspace_id', session.workspaceId)
+        .eq('user_id', actorId)
+        .maybeSingle()
+      actorName = member?.users?.name
     }
 
     // ── Base query — server-side filters that ARE indexed columns ────────
@@ -112,35 +126,26 @@ export async function GET(request: Request) {
       query = query.or(`event_type.ilike.%${escaped}%,entity_name.ilike.%${escaped}%`)
     }
 
-    // Project filtering happens in-memory below, so we need to over-fetch
-    // when a project filter is active (can't push an IN-across-entity-types
-    // condition down cleanly). Bounded to a sane ceiling either way.
-    const fetchLimit = projectEntityIds ? Math.max(maxRows * 4, 5000) : maxRows + 1
-    const { data: rawRows, count } = await query.limit(fetchLimit)
+    // FIX (audit round 6): a previous pass (see the "deep audit, section 5"
+    // history in this file) already noticed the project filter's
+    // over-fetch-then-filter-in-memory approach could silently miss rows
+    // past its fetch ceiling, and patched it to at least flag `truncated`
+    // when that ceiling was hit. That stops the export from confidently
+    // lying about completeness, but the underlying rows are still never
+    // fetched — a "trustworthy audit export" that has to tell you it might
+    // be incomplete is still incomplete. We already resolve the exact set
+    // of entity_ids that belong to the project right above
+    // (projectEntityIds) — there's no reason not to push that down as a
+    // real SQL filter instead of over-fetching and hoping. This also makes
+    // `count` exact instead of an in-memory approximation, so `truncated`
+    // and `totalCount` are simply correct rather than best-effort.
+    if (projectEntityIds) query = query.in('entity_id', projectEntityIds)
 
-    const rawFetched = (rawRows || []) as any[]
-    let rows = rawFetched
-    if (projectEntityIds) {
-      const idSet = new Set(projectEntityIds)
-      rows = rows.filter(r => r.entity_id && idSet.has(r.entity_id))
-    }
+    const { data: rawRows, count } = await query.limit(maxRows + 1)
 
-    // FIX (deep audit, section 5): with a project filter active, the raw
-    // (unfiltered) fetch is capped at `fetchLimit` and project-matching
-    // rows are found by filtering that capped set in memory. If the date
-    // range actually contains MORE matching rows than `fetchLimit` — a
-    // busy workspace, unrelated to this project — older project-relevant
-    // events past that cutoff were never even fetched, so they're silently
-    // missing from both `rows` and this export, with `truncated` staying
-    // false whenever the post-filter count happened to land under
-    // `maxRows`. That's a correctness gap in a compliance export whose
-    // whole point is being trustworthy as "the complete record" — the
-    // fetch hitting its own ceiling must count as truncation regardless of
-    // how many rows survive the project filter.
-    const rawFetchWasCapped = projectEntityIds ? rawFetched.length >= fetchLimit : false
-
-    const totalCount = projectEntityIds ? rows.length : (count ?? rows.length)
-    const truncated = rows.length > maxRows || rawFetchWasCapped
+    const rows = (rawRows || []) as any[]
+    const totalCount = count ?? rows.length
+    const truncated = rows.length > maxRows
     const pageRows = rows.slice(0, maxRows)
 
     // Log the export itself — who pulled the audit trail, and with what
@@ -149,7 +154,7 @@ export async function GET(request: Request) {
     if (format !== 'json') {
       await logAudit(service, {
         workspaceId: session.workspaceId,
-        actorId: session.id, actorEmail: session.email, actorName: session.name,
+        actorId: session.id, actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
         eventType: 'audit_log.exported',
         entityType: 'workspace', entityId: session.workspaceId, entityName: session.workspaceName,
         metadata: { format, from: from.toISOString(), to: toInclusive.toISOString(), project_id: projectId || null, actor_id: actorId || null, row_count: pageRows.length },

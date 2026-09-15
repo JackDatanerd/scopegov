@@ -1141,6 +1141,13 @@ export async function sendInvoiceOverdueInternalEmail(params: {
 }
 
 // ── Security: MFA enabled ────────────────────────────────────
+// (audit round 6: this file previously also gained a sendOpsAlertEmail
+// here for the guardian-health cron's alerting gap — a parallel session
+// fixed that same gap independently, inline in the cron route itself
+// using its own Resend client, before this reached the repo. Dropped the
+// duplicate here rather than ship two different ways to send the same
+// alert.)
+
 export async function sendMfaEnabledEmail(params: { to: string; name: string }) {
   const { to, name: nameRaw } = params
   const name = escapeHtml(nameRaw)
