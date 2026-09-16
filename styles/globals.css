@@ -392,12 +392,18 @@ p, h1, h2, h3, h4, h5 { margin: 0; }
 .flag-card.severity-high { border-left: 3px solid var(--red); }
 .flag-card.severity-medium { border-left: 3px solid var(--amber); }
 .flag-card.severity-low { border-left: 3px solid var(--text-4); }
+/* FIX (re-audit, Guardian ghost-feature finding): 'info' severity (used by
+   borderline_review flags) had no rule at all, so those cards rendered
+   with no left-border accent — the one styling detail that was easy to
+   overlook once the buttons above were the more visible gap. */
+.flag-card.severity-info { border-left: 3px solid var(--text-4); }
 .flag-body { padding: 14px 16px; }
 .flag-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
 .flag-severity { font-size: 9px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .flag-severity.high { color: var(--red); }
 .flag-severity.medium { color: var(--amber); }
 .flag-severity.low { color: var(--text-3); }
+.flag-severity.info { color: var(--text-3); }
 .flag-desc { font-size: 13px; color: var(--text-2); line-height: 1.55; margin-bottom: 8px; }
 .flag-ref { font-size: 11px; color: var(--text-3); font-style: italic; }
 

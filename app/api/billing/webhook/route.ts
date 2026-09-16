@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { logAudit } from '@/lib/utils/audit'
 import { sendTrialWarningEmail, sendPaymentFailedEmail } from '@/lib/email/templates'
+import { cancelPaystackSubscription, fetchPaystackNextPaymentDate } from '@/lib/integrations/paystack'
 
 // BUG-007 / BUG-054: Web Crypto HMAC — never import Node crypto in edge/serverless
 async function verifyPaystackSignature(rawBody: string, signature: string | null): Promise<boolean> {
@@ -141,6 +142,32 @@ export async function POST(request: NextRequest) {
         const { data: prevWs } = await (service as any)
           .from('workspaces').select('plan_tier').eq('id', workspaceId).single()
 
+        // FIX (re-audit, Billing section — CRITICAL): changing plans (the
+        // Upgrade/Downgrade buttons in Settings are always active, even for
+        // an already-paying workspace) opens a fresh Paystack Popup
+        // checkout, which creates a BRAND NEW subscription. Nothing here
+        // ever disabled the previous one before overwriting it below —
+        // Paystack does not auto-cancel a customer's other subscriptions
+        // when a new one is created for them, so the old subscription kept
+        // renewing and charging on its own schedule, invisibly, once the
+        // local record only pointed at the new one. Disable the old
+        // subscription first (best-effort — a failure here must not block
+        // recording the new, already-paid-for subscription; it's logged
+        // loudly instead so it doesn't disappear silently).
+        const { data: prevBilling } = await (service as any)
+          .from('billing').select('paystack_subscription_code, paystack_email_token').eq('workspace_id', workspaceId).maybeSingle()
+
+        if (prevBilling?.paystack_subscription_code && prevBilling.paystack_subscription_code !== subCode) {
+          const cancelResult = await cancelPaystackSubscription(prevBilling)
+          if (!cancelResult.ok) {
+            console.error(
+              `[BILLING] Failed to disable previous Paystack subscription ${prevBilling.paystack_subscription_code} ` +
+              `for workspace ${workspaceId} while switching to ${subCode} — customer may now be double-billed. ` +
+              `Manual intervention required: ${cancelResult.error}`
+            )
+          }
+        }
+
         // BUG-054: planTier ONLY updated on webhook — never browser callback
         await (service as any).from('workspaces').update({
           plan_tier: newTier,
@@ -160,12 +187,16 @@ export async function POST(request: NextRequest) {
           updated_at:                 new Date().toISOString(),
         }, { onConflict: 'workspace_id' })
 
+        // FIX (re-audit): all 4 logAudit calls in this file were actorId:
+        // 'system' — an invalid uuid for the actor_id FK, so every one of
+        // these inserts failed silently (see lib/utils/audit.ts). null is
+        // the correct "no human actor" value for a webhook-driven event.
         await logAudit(service, {
-          workspaceId, actorId: 'system',
+          workspaceId, actorId: null,
           actorEmail: customerEmail, actorName: 'Paystack',
           eventType: 'billing.plan_changed', entityType: 'workspace',
           entityId: workspaceId, entityName: customerEmail,
-          metadata: { from: prevWs?.plan_tier, to: newTier, plan_code: planCode },
+          metadata: { from: prevWs?.plan_tier, to: newTier, plan_code: planCode, previous_subscription_disabled: prevBilling?.paystack_subscription_code && prevBilling.paystack_subscription_code !== subCode ? true : undefined },
         })
         break
       }
@@ -177,14 +208,43 @@ export async function POST(request: NextRequest) {
         const workspaceId = await resolveWorkspaceId(service, event.data, customerEmail)
         if (!workspaceId) break
 
-        // Clear any grace period
+        // FIX (re-audit, Billing section — CRITICAL): current_period_end
+        // was only ever set once, in subscription.create, and never
+        // refreshed here on a successful renewal charge — this app doesn't
+        // handle invoice.create/invoice.update, the events Paystack's own
+        // docs say carry the fresh per-cycle date. That staleness collided
+        // directly with cron/payment-overdue's cancelled-subscription sweep
+        // (cancels_at_period_end=true AND current_period_end < now): a
+        // customer who cancels after even one successful renewal had
+        // current_period_end still frozen at their very FIRST cycle's end
+        // date, already in the past — so the very next cron run downgraded
+        // them immediately, taking away time they'd already paid for and
+        // directly contradicting what the cancel dialog itself promises
+        // ("you'll keep access until the end of the current billing
+        // period"). Pull the fresh next_payment_date straight from the
+        // Subscription resource on every successful renewal charge.
+        const { data: billingRow } = await (service as any)
+          .from('billing').select('paystack_subscription_code').eq('workspace_id', workspaceId).maybeSingle()
+
+        let nextPeriodEnd: string | null = null
+        if (billingRow?.paystack_subscription_code) {
+          nextPeriodEnd = await fetchPaystackNextPaymentDate(billingRow.paystack_subscription_code)
+          if (!nextPeriodEnd) {
+            console.error(`[BILLING] Could not refresh current_period_end for workspace ${workspaceId} after a successful charge — it will remain stale until the next successful renewal.`)
+          }
+        }
+
+        // Clear any grace period, and refresh the period end if we got one
+        // — a failure to refresh must not block clearing the grace period,
+        // since the payment itself did succeed.
         await (service as any).from('billing').update({
           grace_period_started_at: null,
+          ...(nextPeriodEnd ? { current_period_end: nextPeriodEnd } : {}),
           updated_at: new Date().toISOString(),
         }).eq('workspace_id', workspaceId)
 
         await logAudit(service, {
-          workspaceId, actorId: 'system',
+          workspaceId, actorId: null,
           actorEmail: customerEmail, actorName: 'Paystack',
           eventType: 'billing.payment_succeeded', entityType: 'workspace',
           entityId: workspaceId, entityName: customerEmail,
@@ -209,7 +269,7 @@ export async function POST(request: NextRequest) {
         }).eq('workspace_id', workspaceId)
 
         await logAudit(service, {
-          workspaceId, actorId: 'system',
+          workspaceId, actorId: null,
           actorEmail: customerEmail, actorName: 'Paystack',
           eventType: 'billing.payment_failed_grace_started', entityType: 'workspace',
           entityId: workspaceId, entityName: customerEmail, metadata: {},
@@ -228,7 +288,18 @@ export async function POST(request: NextRequest) {
       }
 
       // ── Cancellation / disable ─────────────────────────────
-      case 'subscription.disable': {
+      // FIX (re-audit, Billing section): subscription.not_renew was
+      // entirely unhandled — it fell into the default case below and did
+      // nothing. Per Paystack's own docs this is the event for "the
+      // customer cancelled, but the current billing period hasn't ended
+      // yet" — exactly this app's cancels_at_period_end concept. Handling
+      // only subscription.disable meant a cancellation delivered as
+      // not_renew instead left cancels_at_period_end false, so
+      // cron/payment-overdue would never even consider that workspace for
+      // its (now correctly guarded, see current_period_end fix above)
+      // end-of-period downgrade.
+      case 'subscription.disable':
+      case 'subscription.not_renew': {
         const customerEmail = event.data?.customer?.email
         if (!customerEmail) break
         const workspaceId = await resolveWorkspaceId(service, event.data, customerEmail)
@@ -241,11 +312,11 @@ export async function POST(request: NextRequest) {
         }).eq('workspace_id', workspaceId)
 
         await logAudit(service, {
-          workspaceId, actorId: 'system',
+          workspaceId, actorId: null,
           actorEmail: customerEmail, actorName: 'Paystack',
           eventType: 'billing.plan_changed', entityType: 'workspace',
           entityId: workspaceId, entityName: customerEmail,
-          metadata: { action: 'subscription_disabled' },
+          metadata: { action: event.event === 'subscription.not_renew' ? 'subscription_not_renewing' : 'subscription_disabled' },
         })
         break
       }

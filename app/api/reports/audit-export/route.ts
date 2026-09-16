@@ -30,6 +30,13 @@ export async function GET(request: Request) {
     if (!hasPermission(session, 'VIEW_AUDIT_LOG')) {
       return NextResponse.json({ error: 'Missing permission: VIEW_AUDIT_LOG' }, { status: 403 })
     }
+    // FIX (re-audit): VIEW_AUDIT_LOG and VIEW_FINANCIALS are independent
+    // toggles on a fully custom per-workspace role (roles.permissions
+    // jsonb — no fixed role table), so a role with audit access but no
+    // financial visibility is a realistic combination, not a contrived
+    // edge case. Used below to redact dollar figures out of the CSV's
+    // Metadata column — see toCsv/redactMetadata for the full note.
+    const canViewFinancials = hasPermission(session, 'VIEW_FINANCIALS')
 
     const url = new URL(request.url)
     const format = (url.searchParams.get('format') || 'json') as 'json' | 'csv' | 'pdf'
@@ -63,12 +70,20 @@ export async function GET(request: Request) {
     let projectEntityIds: string[] | null = null
     let projectName: string | undefined
     if (projectId) {
-      const [proj, sows, cos, flags, checks] = await Promise.all([
+      const [proj, sows, cos, flags, checks, exceptions] = await Promise.all([
         (service as any).from('projects').select('id, name').eq('id', projectId).eq('workspace_id', session.workspaceId).maybeSingle(),
         (service as any).from('sow_documents').select('id').eq('project_id', projectId),
         (service as any).from('change_orders').select('id').eq('project_id', projectId),
         (service as any).from('guardian_flags').select('id').eq('project_id', projectId),
         (service as any).from('guardian_checks').select('id').eq('project_id', projectId),
+        // FIX (re-audit): exceptions_log was never resolved here, so
+        // flag_comment.added/flag_attachment.added events logged against an
+        // exception (entityType: 'exception', entityId: exceptions_log.id —
+        // see scope-governance/[entityType]/.../comments and attachments)
+        // silently vanished from a project-filtered audit export, even
+        // though granting/discussing an exception is squarely
+        // project-scoped activity.
+        (service as any).from('exceptions_log').select('id').eq('project_id', projectId),
       ])
       projectName = proj.data?.name
       projectEntityIds = [
@@ -77,6 +92,7 @@ export async function GET(request: Request) {
         ...(cos.data || []).map((r: any) => r.id),
         ...(flags.data || []).map((r: any) => r.id),
         ...(checks.data || []).map((r: any) => r.id),
+        ...(exceptions.data || []).map((r: any) => r.id),
       ]
       if (!proj.data) {
         return NextResponse.json({ error: 'Project not found' }, { status: 404 })
@@ -172,7 +188,7 @@ export async function GET(request: Request) {
     }
 
     if (format === 'csv') {
-      const csv = toCsv(pageRows)
+      const csv = toCsv(pageRows, canViewFinancials)
       // BUG-008 convention: Uint8Array for NextResponse BodyInit
       return new NextResponse(new Uint8Array(Buffer.from(csv, 'utf-8')), {
         headers: {
@@ -230,10 +246,33 @@ function csvCell(value: unknown): string {
   return str
 }
 
-function toCsv(rows: any[]): string {
+// FIX (re-audit): the JSON view (format=json, above) and the PDF export
+// (AuditReportRow, below) both deliberately curate their row shape and
+// never surface `metadata` at all — but toCsv dumped it raw, unfiltered by
+// VIEW_FINANCIALS, for every row. audit_log.metadata routinely carries real
+// dollar figures (invoice amounts, CO totals, payment amounts, exception
+// estimated_value, Paystack payment amounts) — this is exactly the class of
+// leak /api/reports' scope mode was hardened against for
+// exceptionsByProject.estimated_value. Strip the known financial keys
+// rather than the whole metadata blob, so non-financial context (reasons,
+// escalation notes, from/to plan tiers) is still preserved for a reader who
+// genuinely can't see amounts.
+const FINANCIAL_METADATA_KEYS = ['amount', 'balance_due', 'estimated_value', 'counter_amount', 'total', 'subtotal']
+function redactMetadata(metadata: Record<string, unknown> | null | undefined, canViewFinancials: boolean) {
+  if (!metadata || !Object.keys(metadata).length) return metadata
+  if (canViewFinancials) return metadata
+  const redacted: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(metadata)) {
+    redacted[key] = FINANCIAL_METADATA_KEYS.includes(key) ? '[redacted]' : value
+  }
+  return redacted
+}
+
+function toCsv(rows: any[], canViewFinancials: boolean): string {
   const header = ['Timestamp (UTC)', 'Event', 'Entity type', 'Entity', 'Actor name', 'Actor email', 'IP address', 'Metadata']
   const lines = [header.map(csvCell).join(',')]
   for (const r of rows) {
+    const metadata = redactMetadata(r.metadata, canViewFinancials)
     lines.push([
       new Date(r.created_at).toISOString(),
       r.event_type,
@@ -242,7 +281,7 @@ function toCsv(rows: any[]): string {
       r.actor_name || 'System',
       r.actor_email || '',
       r.ip_address || '',
-      r.metadata && Object.keys(r.metadata).length ? JSON.stringify(r.metadata) : '',
+      metadata && Object.keys(metadata).length ? JSON.stringify(metadata) : '',
     ].map(csvCell).join(','))
   }
   return lines.join('\r\n')

@@ -14,7 +14,13 @@ export default async function AuditLogPage() {
         <h1 className="page-title">Audit Log</h1>
         <div className="surface surface-p" style={{ textAlign: 'center', padding: 48 }}>
           <i className="ti ti-lock" style={{ fontSize: 28, color: 'var(--text-4)', display: 'block', marginBottom: 12 }} />
-          <p style={{ fontSize: 13, color: 'var(--text-2)' }}>Audit log access requires the VIEW_AUDIT_LOG permission (Owner only).</p>
+          {/* FIX (re-audit, Reports & Audit section): this said "(Owner
+              only)" but roles here are fully custom per-workspace
+              (roles.permissions jsonb, no fixed role table) — VIEW_AUDIT_LOG
+              can be granted to any role, independently of VIEW_FINANCIALS or
+              anything else. The old copy implied a narrower, fixed
+              permission model than this app actually has. */}
+          <p style={{ fontSize: 13, color: 'var(--text-2)' }}>Audit log access requires the VIEW_AUDIT_LOG permission.</p>
         </div>
       </div>
     )
@@ -30,15 +36,21 @@ export default async function AuditLogPage() {
       .order('name'),
     (service as any)
       .from('workspace_members')
-      .select('user_id, users!workspace_members_user_id_fkey(id, name, email)')
-      .eq('workspace_id', session.workspaceId)
-      .eq('status', 'active'),
+      // FIX (re-audit, Reports & Audit section): this used to filter to
+      // .eq('status', 'active') only. The backend (audit-export's actorId
+      // param) has always accepted any actor, active or not — this was the
+      // only thing stopping someone from filtering the audit log by a
+      // departed member, which is precisely when "what did this person do
+      // before they left" tends to matter for a compliance-grade record.
+      // Fetch everyone and let the client label inactive ones.
+      .select('user_id, status, users!workspace_members_user_id_fkey(id, name, email)')
+      .eq('workspace_id', session.workspaceId),
   ])
 
   const projects = (projectsRes.data || []).map((p: any) => ({ id: p.id, name: p.name }))
   const members = (membersRes.data || [])
     .filter((m: any) => m.users)
-    .map((m: any) => ({ id: m.users.id, name: m.users.name || m.users.email, email: m.users.email }))
+    .map((m: any) => ({ id: m.users.id, name: m.users.name || m.users.email, email: m.users.email, active: m.status === 'active' }))
 
   return <AuditLogClient projects={projects} members={members} />
 }

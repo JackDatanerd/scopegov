@@ -1,7 +1,7 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, Suspense } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { PROJECT_TYPE_ICONS } from '@/lib/utils/format'
 import type { ProjectType, Client } from '@/lib/supabase/types'
 
@@ -18,7 +18,24 @@ const PROJECT_TYPES: Array<{ key: ProjectType; label: string; sub: string }> = [
 ]
 
 export default function NewProjectPage() {
+  // FIX (re-audit, Clients section): this page never read the clientId
+  // query param at all — the two "New project" links on a client's detail
+  // page (/projects/new?clientId=...) silently did nothing with it, forcing
+  // the person to re-search and re-select the same client by hand, with a
+  // real risk of creating an accidental duplicate client record if the
+  // name/email they type doesn't match exactly. Wrapped in Suspense per
+  // Next's requirement for useSearchParams (see app/mfa-challenge/page.tsx
+  // for the same pattern already used in this codebase).
+  return (
+    <Suspense fallback={null}>
+      <NewProjectPageInner />
+    </Suspense>
+  )
+}
+
+function NewProjectPageInner() {
   const router   = useRouter()
+  const searchParams = useSearchParams()
   const supabase = createClient()
   const [step,    setStep]    = useState(0)
   const [loading, setLoading] = useState(false)
@@ -60,7 +77,20 @@ export default function NewProjectPage() {
   ]
 
   useEffect(() => {
-    fetch('/api/clients').then(r => r.json()).then(json => setClients(json.clients || [])).catch(() => {})
+    fetch('/api/clients').then(r => r.json()).then(json => {
+      const list = json.clients || []
+      setClients(list)
+      // FIX (re-audit, Clients section): resolve the ?clientId= deep link
+      // now that the client list is loaded — it was previously ignored
+      // entirely (no useSearchParams usage in this file at all).
+      const preselectId = searchParams.get('clientId')
+      if (preselectId) {
+        const match = list.find((c: Client) => c.id === preselectId)
+        if (match) {
+          setClientId(match.id); setClientName(match.name); setClientSearch(match.name)
+        }
+      }
+    }).catch(() => {})
     // FIX: prefill from saved workspace defaults instead of the hardcoded
     // '50_50' / 2 / 'USD' fallbacks that were previously never overridden.
     fetch('/api/workspace/defaults')
@@ -194,7 +224,16 @@ export default function NewProjectPage() {
                           <button key={c.id} type="button"
                             style={{ display: 'block', width: '100%', textAlign: 'left', padding: '10px 12px', background: 'none', border: 'none', cursor: 'pointer', borderBottom: '1px solid var(--surface-2)' }}
                             onClick={() => { setClientId(c.id); setClientName(c.name); setClientSearch(c.name) }}>
-                            <div style={{ fontSize: 13, fontWeight: 500 }}>{c.name}</div>
+                            <div style={{ fontSize: 13, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 6 }}>
+                              {c.name}
+                              {/* FIX (re-audit, Clients section): this list showed archived
+                                  clients with zero indication — selecting one silently
+                                  attached them to a brand-new active project with no
+                                  warning. (The server now reactivates them on creation;
+                                  this at least tells the person that's what's about to
+                                  happen instead of it being invisible.) */}
+                              {c.status === 'archived' && <span className="pill pill-slate pill-sm">Archived</span>}
+                            </div>
                             <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{c.email}</div>
                           </button>
                         ))

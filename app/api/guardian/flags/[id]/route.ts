@@ -17,9 +17,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const service = createServiceClient()
     const now     = new Date().toISOString()
 
+    // FIX (re-audit): added check_id + the linked guardian_checks.creep_
+    // confidence so 'confirm_out_of_scope' below can give the flag a real
+    // severity instead of leaving it at the placeholder 'info' forever —
+    // see that case for the full note.
     const { data: flag } = await (service as any)
       .from('guardian_flags')
-      .select('id,status,project_id,description,severity,sow_reference,change_order_id,projects(name)')
+      .select('id,status,project_id,description,severity,sow_reference,change_order_id,check_id,projects(name),guardian_checks(creep_confidence)')
       .eq('id', id)
       .eq('workspace_id', session.workspaceId)
       .single()
@@ -233,14 +237,28 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           return NextResponse.json({ error: 'Missing permission: APPROVE_FLAGS' }, { status: 403 })
         if (flag.status !== 'borderline_review')
           return NextResponse.json({ error: `Cannot confirm a flag with status "${flag.status}" as out of scope` }, { status: 409 })
+        // FIX (re-audit): this left severity at 'info' forever — the
+        // placeholder value borderline flags are created with specifically
+        // so they don't falsely claim a high/medium/low confidence (see
+        // guardian/check's comment). Once a human confirms it IS real scope
+        // creep, it's no longer borderline — give it a real severity using
+        // the exact same creepConfidence thresholds guardian/check uses for
+        // a same out_of_scope flag, so it stops being silently undercounted
+        // as 'low' everywhere severity is aggregated (e.g.
+        // cron/scope-health-rollup's contract-value-at-risk math, which has
+        // no 'info' bucket at all).
+        const creepConfidence = flag.guardian_checks?.creep_confidence
+        const severity = typeof creepConfidence === 'number'
+          ? (creepConfidence >= 0.90 ? 'high' : creepConfidence >= 0.75 ? 'medium' : 'low')
+          : 'medium' // no linked check (shouldn't happen via the normal flow) — safe non-extreme default
         await (service as any).from('guardian_flags').update({
-          status: 'open', updated_at: now,
+          status: 'open', severity, updated_at: now,
         }).eq('id', id)
         await logAudit(service, {
           workspaceId: session.workspaceId, actorId: session.id,
           actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
           eventType: 'flag.borderline_reviewed', entityType: 'guardian_flag', entityId: id,
-          entityName: projectName, metadata: { confirmed_as: 'out_of_scope' },
+          entityName: projectName, metadata: { confirmed_as: 'out_of_scope', severity },
         })
         break
       }

@@ -90,12 +90,27 @@ export async function POST(request: NextRequest) {
     let duplicateOfId: string | null = null
 
     if (embedding) {
+      // FIX (re-audit): this used to match against ANY prior check with an
+      // embedding, including ones that were never actually classified
+      // ('pending' — no signed SOW yet at submission time, or
+      // 'classification_failed'). That created a permanent dead end: the
+      // original unclassified check sits there forever (nothing ever
+      // retries it), and the natural next step — the user resubmitting the
+      // same content once the SOW IS signed — just matched straight back
+      // to it and got silently returned as outcome:'duplicate', so the
+      // content could never actually get classified at all. Only treat a
+      // check as a dedup candidate if it already reached a real verdict.
       const { data: recentChecks } = await (service as any)
         .from('guardian_checks')
         .select('id, embedding')
         .eq('project_id', projectId)
         .eq('is_duplicate', false)
         .not('embedding', 'is', null)
+        // FIX (re-audit): two plain .neq() calls, matching this codebase's
+        // own established preference (see /api/reports's "audit round 6"
+        // comment) over a hand-built .not(col,'in',...) filter string.
+        .neq('outcome', 'pending')
+        .neq('outcome', 'classification_failed')
         .gte('created_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
         .limit(100)
 

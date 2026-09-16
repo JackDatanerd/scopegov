@@ -3,7 +3,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import { formatRelative } from '@/lib/utils/format'
 
 interface Project { id: string; name: string }
-interface Member { id: string; name: string; email: string }
+interface Member { id: string; name: string; email: string; active: boolean }
 interface Row {
   id?: string
   eventType: string
@@ -148,7 +148,11 @@ export default function AuditLogClient({ projects, members }: { projects: Projec
             <label className="flbl">User</label>
             <select className="finp" value={actorId} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setActorId(e.target.value)}>
               <option value="">All users</option>
-              {members.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+              {/* FIX (re-audit, Reports & Audit section): the dropdown used
+                  to be built from active members only. Departed members are
+                  now included (labeled) so the audit log can actually be
+                  filtered by someone who's since left the workspace. */}
+              {members.map(m => <option key={m.id} value={m.id}>{m.name}{!m.active ? ' (Former member)' : ''}</option>)}
             </select>
           </div>
           <div className="fgrp" style={{ margin: 0, flex: 1, minWidth: 180 }}>

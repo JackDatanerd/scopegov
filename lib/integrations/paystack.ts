@@ -32,6 +32,32 @@ export interface CancelPaystackResult {
   error?: string
 }
 
+// FIX (re-audit, Billing section): billing.current_period_end was only ever
+// set once, in the subscription.create webhook handler, and never refreshed
+// on renewal. The webhook doesn't handle invoice.create/invoice.update (the
+// events Paystack's own docs say carry the fresh per-cycle date), so
+// charge.success — the one renewal event this app already handles — calls
+// this to pull the current next_payment_date straight from the
+// Subscription resource instead. Same field name (next_payment_date) this
+// codebase already trusts from the subscription.create webhook payload,
+// just read from the Fetch Subscription API instead of a webhook body.
+export async function fetchPaystackNextPaymentDate(subscriptionCode: string): Promise<string | null> {
+  try {
+    const resp = await fetch(`https://api.paystack.co/subscription/${encodeURIComponent(subscriptionCode)}`, {
+      headers: { 'Authorization': `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
+    })
+    if (!resp.ok) {
+      console.error('Paystack fetch-subscription error:', await resp.text().catch(() => resp.statusText))
+      return null
+    }
+    const body = await resp.json().catch(() => null)
+    return body?.data?.next_payment_date || null
+  } catch (e) {
+    console.error('Paystack fetch-subscription call failed:', e)
+    return null
+  }
+}
+
 export async function cancelPaystackSubscription(billing: {
   paystack_subscription_code?: string | null
   paystack_email_token?: string | null

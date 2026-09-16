@@ -127,12 +127,19 @@ export async function POST(request: NextRequest) {
     let duplicateOfId: string | null = null
 
     if (embedding) {
+      // FIX (re-audit): same dead-end dedup gap as guardian/check — see that
+      // file's note. A check that was never actually classified ('pending'
+      // or 'classification_failed') must not be a valid dedup match, or a
+      // legitimate resubmission just silently bounces off the orphaned
+      // original forever instead of ever getting classified.
       const { data: recentChecks } = await (service as any)
         .from('guardian_checks')
         .select('id, embedding')
         .eq('project_id', project.id)
         .eq('is_duplicate', false)
         .not('embedding', 'is', null)
+        .neq('outcome', 'pending')
+        .neq('outcome', 'classification_failed')
         .gte('created_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
         .limit(100)
 
@@ -242,8 +249,12 @@ export async function POST(request: NextRequest) {
           entityType: 'project', entityId: project.id, projectId: project.id,
         })
 
+        // FIX (re-audit): was actorId: 'system' — an invalid uuid for the
+        // actor_id FK, which made this insert fail silently every time
+        // (see lib/utils/audit.ts). null is the correct "no human actor"
+        // value; actorName/actorEmail below still identify this as Guardian.
         await logAudit(service, {
-          workspaceId: project.workspace_id, actorId: 'system',
+          workspaceId: project.workspace_id, actorId: null,
           actorEmail: 'guardian@scopegov.app', actorName: 'Guardian',
           eventType: isBorderline ? 'flag.borderline_created' : 'flag.raised', entityType: 'guardian_flag',
           entityId: flag.id, entityName: project.name,

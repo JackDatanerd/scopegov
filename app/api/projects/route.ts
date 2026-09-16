@@ -42,13 +42,30 @@ export async function POST(request: NextRequest) {
       // Check for duplicate email in this workspace
       const { data: existing } = await (service as any)
         .from('clients')
-        .select('id, name')
+        .select('id, name, status')
         .eq('workspace_id', session.workspaceId)
         .eq('email', newClient.email.toLowerCase().trim())
         .single()
 
       if (existing) {
         resolvedClientId = existing.id
+        // FIX (re-audit, Clients section): reusing an existing client by
+        // matched email silently kept whatever status they already had —
+        // an archived client (someone the agency marked "done working
+        // with") could get attached to a brand-new active project and stay
+        // tagged "Archived" everywhere, including the Clients list, which
+        // hides archived clients by default. Starting a new project with
+        // them is an unambiguous "we're working with them again" signal.
+        if (existing.status === 'archived') {
+          await (service as any).from('clients').update({ status: 'active' }).eq('id', existing.id)
+          await (service as any).from('audit_log').insert({
+            workspace_id: session.workspaceId, actor_id: session.id,
+            actor_email: session.email, actor_name: session.name,
+            event_type: 'client.reactivated', entity_type: 'client',
+            entity_id: existing.id, entity_name: existing.name,
+            metadata: { reason: 'new_project' },
+          })
+        }
       } else {
         const { data: created, error: clientErr } = await (service as any)
           .from('clients')
@@ -81,8 +98,24 @@ export async function POST(request: NextRequest) {
     // unrelated agency's real client under A's branding.
     if (clientId) {
       const { data: client } = await (service as any)
-        .from('clients').select('id').eq('id', clientId).eq('workspace_id', session.workspaceId).maybeSingle()
+        .from('clients').select('id, name, status').eq('id', clientId).eq('workspace_id', session.workspaceId).maybeSingle()
       if (!client) return NextResponse.json({ error: 'Client not found' }, { status: 404 })
+      // FIX (re-audit, Clients section): an archived client could be picked
+      // from the "search existing clients" list here with zero warning and
+      // zero effect on their status — the archive feature only ever showed
+      // up on the Clients list page itself. A new active project is a clear
+      // signal they're no longer archived; reactivate them the same way the
+      // inline-new-client-by-email-match path above now does.
+      if (client.status === 'archived') {
+        await (service as any).from('clients').update({ status: 'active' }).eq('id', client.id)
+        await (service as any).from('audit_log').insert({
+          workspace_id: session.workspaceId, actor_id: session.id,
+          actor_email: session.email, actor_name: session.name,
+          event_type: 'client.reactivated', entity_type: 'client',
+          entity_id: client.id, entity_name: client.name,
+          metadata: { reason: 'new_project' },
+        })
+      }
     }
 
     // ── Create project ────────────────────────────────────────

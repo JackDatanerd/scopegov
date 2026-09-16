@@ -52,7 +52,10 @@ function coPill(status: string): string {
   return m[status] || 'slate'
 }
 function flagPill(status: string): string {
-  const m: Record<string, string> = { open: 'red', resolved: 'green', closed: 'slate', converted_to_co: 'blue' }
+  // FIX (re-audit, Guardian ghost-feature finding): borderline_review had no
+  // entry, so any flag in that status rendered with the flat default
+  // ('slate') pill — no visual distinction from an already-closed flag.
+  const m: Record<string, string> = { open: 'red', borderline_review: 'amber', resolved: 'green', closed: 'slate', converted_to_co: 'blue' }
   return m[status] || 'slate'
 }
 
@@ -132,7 +135,13 @@ export default function ProjectDetail({
   const openCos       = (project.change_orders || []).filter((co: any) => ['awaiting_response','countered','awaiting_countersignature'].includes(co.status))
   const atRiskAmt     = openCos.reduce((s: number, co: any) => s + (co.total || 0), 0)
   const baseValue     = project.contract_value || 0
-  const openFlagCount = (project.guardian_flags || []).filter((f: any) => f.status === 'open').length
+  // FIX (re-audit, Guardian ghost-feature finding): this badge only ever
+  // counted status === 'open', so a borderline_review flag — which needs a
+  // human to confirm or dismiss it just as much as an open flag needs
+  // resolving — raised zero visual signal anywhere in the product.
+  const openFlagCount = (project.guardian_flags || []).filter(
+    (f: any) => f.status === 'open' || f.status === 'borderline_review'
+  ).length
 
   async function handleMarkComplete() {
     const blockingCos = (project.change_orders || []).filter((co: any) =>
@@ -834,6 +843,12 @@ function GuardianTab({ project, flags, permissions, router }: any) {
 
   const isActive   = project.status === 'Active'
   const openFlags  = flags.filter((f: any) => f.status === 'open')
+  // FIX (re-audit, Guardian ghost-feature finding): borderline_review flags
+  // (added in a prior fix round) were entirely invisible in this UI — no
+  // filter chip, no action buttons, and excluded from every "needs
+  // attention" count. Treating them alongside 'open' here is the minimum
+  // needed for anyone to even notice they exist.
+  const needsReviewFlags = flags.filter((f: any) => f.status === 'open' || f.status === 'borderline_review')
   const filteredFlags = filterStatus === 'all' ? flags : flags.filter((f: any) => f.status === filterStatus)
 
   async function handlePasteSubmit() {
@@ -859,7 +874,11 @@ function GuardianTab({ project, flags, permissions, router }: any) {
   const VERDICT_COPY: Record<string, { icon: string; color: string; bg: string; title: string }> = {
     in_scope:              { icon: 'ti-shield-check', color: 'var(--green)', bg: 'var(--green-lt)', title: 'In scope — no action needed' },
     covered_by_co:         { icon: 'ti-shield-check', color: 'var(--green)', bg: 'var(--green-lt)', title: 'Covered by an accepted change order' },
-    borderline:            { icon: 'ti-shield-half-filled', color: 'var(--amber)', bg: '#FFF7ED', title: 'Borderline — worth a human look, but no flag raised' },
+    // FIX (re-audit, Guardian ghost-feature finding): this copy predates
+    // borderline items actually raising a flag — it was still telling the
+    // user "no flag raised" even after a borderline_review flag had just
+    // been created below.
+    borderline:            { icon: 'ti-shield-half-filled', color: 'var(--amber)', bg: '#FFF7ED', title: 'Borderline — flagged for human review' },
     out_of_scope:          { icon: 'ti-shield-x', color: 'var(--red)', bg: 'var(--red-lt)', title: 'Out of scope — flag created below' },
     duplicate:             { icon: 'ti-copy', color: 'var(--text-3)', bg: 'var(--surface-2)', title: 'Duplicate of a recent check — skipped' },
     pending:               { icon: 'ti-clock', color: 'var(--text-3)', bg: 'var(--surface-2)', title: 'No signed SOW yet — nothing to check against' },
@@ -936,7 +955,11 @@ function GuardianTab({ project, flags, permissions, router }: any) {
 
       {flags.length > 0 && (
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 16 }}>
-          {['all','open','converted_to_co','resolved','closed'].map(s => (
+          {/* FIX (re-audit, Guardian ghost-feature finding): added the
+              borderline_review chip — it had no filter at all, so even
+              "All" scrolling past it gave no way to isolate just the
+              items waiting on a human's confirm/dismiss call. */}
+          {['all','open','borderline_review','converted_to_co','resolved','closed'].map(s => (
             <button key={s} onClick={() => setFilterStatus(s)}
               style={{
                 padding: '4px 11px', borderRadius: 99, fontSize: 12, cursor: 'pointer',
@@ -946,6 +969,7 @@ function GuardianTab({ project, flags, permissions, router }: any) {
               }}>
               {s === 'all' ? `All (${flags.length})` :
                s === 'open' ? `Open (${openFlags.length})` :
+               s === 'borderline_review' ? `Needs review (${needsReviewFlags.length - openFlags.length})` :
                s === 'converted_to_co' ? 'CO Created' :
                s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
             </button>
@@ -1018,6 +1042,21 @@ function FlagCard({ flag, permissions, router, projectId }: any) {
               {permissions.grantExceptions && (
                 <button className="btn btn-ghost btn-xs" onClick={() => handleAction('exception')} disabled={acting}>Exception</button>
               )}
+            </div>
+          )}
+          {/* FIX (re-audit, Guardian ghost-feature finding): confirm_out_of_
+              scope/dismiss_borderline have existed as flag actions since a
+              prior fix round, but nothing in this UI ever rendered a button
+              for status === 'borderline_review' — every borderline flag
+              was a dead end no one could act on. */}
+          {flag.status === 'borderline_review' && permissions.approveFlags && (
+            <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+              <button className="btn btn-primary btn-xs" onClick={() => handleAction('confirm_out_of_scope')} disabled={acting}>
+                Confirm out of scope
+              </button>
+              <button className="btn btn-ghost btn-xs" onClick={() => handleAction('dismiss_borderline')} disabled={acting}>
+                Dismiss
+              </button>
             </div>
           )}
         </div>
