@@ -61,9 +61,18 @@ export default function OnboardingPage() {
 
   const STORAGE_KEY_PREFIX = 'scopegov_onboarding_'
   const [restored, setRestored] = useState(false)
+  // FIX (deep audit, Workspace lifecycle + Onboarding sections — headline
+  // finding): see api/workspace/onboarding-status/route.ts for the full
+  // story. 'waiting' means this user is an ordinary member (not the
+  // creator) of a real workspace they were invited into that hasn't
+  // finished onboarding yet — render a waiting screen instead of ever
+  // reaching the steps below, which would otherwise spin up a second,
+  // unrelated workspace for them.
+  const [gate, setGate] = useState<'loading' | 'create' | 'waiting'>('loading')
+  const [waitingFor, setWaitingFor] = useState<{ agencyName: string; creatorName: string } | null>(null)
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data: { user } }) => {
+    supabase.auth.getUser().then(async ({ data: { user } }) => {
       if (!user) { router.push('/login'); return }
 
       // FIX: restore in-progress onboarding after a refresh instead of
@@ -87,14 +96,46 @@ export default function OnboardingPage() {
             if (s.paymentStructure) setPaymentStructure(s.paymentStructure)
             if (s.governingLaw)     setGoverningLaw(s.governingLaw)
             setRestored(true)
+            setGate('create')
             return
           }
         }
       } catch { /* corrupt/unavailable storage — just start fresh */ }
 
+      // No local progress found — ask the server whether this user should
+      // actually be starting a NEW workspace at all, before assuming so.
+      try {
+        const res  = await fetch('/api/workspace/onboarding-status')
+        const json = await res.json().catch(() => ({}))
+        if (res.ok) {
+          if (json.status === 'complete') { router.push('/dashboard'); return }
+          if (json.status === 'waiting') {
+            setWaitingFor({ agencyName: json.agencyName, creatorName: json.creatorName })
+            setGate('waiting')
+            setRestored(true)
+            return
+          }
+          if (json.status === 'resume' && json.workspaceId) {
+            // Creator of an incomplete workspace, but with no local
+            // progress (new device, cleared storage) — resume it server-
+            // side instead of creating a duplicate.
+            setWorkspaceId(json.workspaceId)
+            if (json.agencyName) setAgencyName(json.agencyName)
+            if (json.industry)   setIndustry(json.industry)
+            if (json.currency)   setCurrency(json.currency)
+            if (json.timezone)   setTimezone(json.timezone)
+            setStep(1)
+            setRestored(true)
+            setGate('create')
+            return
+          }
+        }
+      } catch { /* status check failed — fall through to normal new-workspace flow */ }
+
       const userName = user.user_metadata?.name || ''
       if (userName) setAgencyName(`${userName.split(' ')[0]}'s Agency`)
       setRestored(true)
+      setGate('create')
     })
   }, [])
 
@@ -303,6 +344,38 @@ export default function OnboardingPage() {
       clearSavedProgress()
       router.push('/dashboard')
     } finally { setLoading(false) }
+  }
+
+  // FIX (deep audit, Workspace lifecycle + Onboarding sections): brief
+  // blank beat while onboarding-status resolves, rather than flashing
+  // Step 1 of the wizard (and its "Continue" button) for a split second
+  // before possibly redirecting into 'waiting' or 'complete'.
+  if (gate === 'loading') {
+    return <div className="ob-root"><div className="ob-card" /></div>
+  }
+
+  if (gate === 'waiting') {
+    return (
+      <div className="ob-root">
+        <div className="ob-card" style={{ textAlign: 'center', padding: '8px 0' }}>
+          <div style={{ width: 64, height: 64, background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px' }}>
+            <i className="ti ti-hourglass" style={{ fontSize: 28, color: 'var(--text-3)' }} />
+          </div>
+          <h2 className="ob-title" style={{ textAlign: 'center' }}>Almost there</h2>
+          <p className="ob-sub" style={{ textAlign: 'center', marginBottom: 28 }}>
+            You've joined <strong style={{ color: 'var(--text)' }}>{waitingFor?.agencyName}</strong> on ScopeGov,
+            but {waitingFor?.creatorName} hasn't finished setting up the workspace yet. Once they do, you'll
+            get full access automatically — no need to do anything here.
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 280, margin: '0 auto' }}>
+            <button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'center' }}
+              onClick={() => supabase.auth.signOut().then(() => router.push('/login'))}>
+              Sign out
+            </button>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   return (

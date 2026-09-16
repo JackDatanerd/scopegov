@@ -7,6 +7,7 @@ import { NextResponse } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { cancelPaystackSubscription } from '@/lib/integrations/paystack'
 import { logAudit } from '@/lib/utils/audit'
+import { sendWorkspaceDeletedEmail } from '@/lib/email/templates'
 
 export async function DELETE() {
   try {
@@ -77,6 +78,18 @@ export async function DELETE() {
 
     const now = new Date().toISOString()
 
+    // FIX (deep audit, Workspace lifecycle section): capture the other
+    // active members BEFORE deactivating them — every other consequential
+    // account-level event in this codebase (MFA changes, password
+    // changes) emails the affected person; a team's entire workspace
+    // disappearing under them got nothing at all.
+    const { data: otherMembers } = await (service as any)
+      .from('workspace_members')
+      .select('user:users(email, name)')
+      .eq('workspace_id', session.workspaceId)
+      .eq('status', 'active')
+      .neq('user_id', session.id)
+
     // Soft delete workspace
     await (service as any)
       .from('workspaces')
@@ -90,6 +103,17 @@ export async function DELETE() {
       .update({ status: 'deactivated' })
       .eq('workspace_id', session.workspaceId)
       .neq('status', 'deactivated')
+
+    // Best-effort — must never block the deletion itself, which has
+    // already succeeded by this point.
+    for (const m of (otherMembers || [])) {
+      const u = m?.user
+      if (!u?.email) continue
+      await sendWorkspaceDeletedEmail({
+        to: u.email, name: u.name || u.email,
+        agencyName: session.agencyName, deletedByName: session.name,
+      }).catch(e => console.error('Workspace deleted email failed (non-fatal):', e))
+    }
 
     // FIX (deep audit, section 5): record the deletion itself in the
     // audit trail — a workspace-ending action had no entry at all.

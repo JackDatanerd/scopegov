@@ -1251,3 +1251,36 @@ export async function sendPasswordChangedEmail(params: { to: string; name: strin
   })
   return resendClient().emails.send({ from: `ScopeGov <${FROM}>`, to, subject: 'Your ScopeGov password was changed', html })
 }
+
+// ── Workspace deleted ─────────────────────────────────────────
+// FIX (deep audit, Workspace lifecycle section): deleting a workspace
+// silently deactivates every OTHER active member's access with zero
+// warning — no email, no notification, nothing. Every other consequential
+// account-level event in this codebase (MFA changes, password changes)
+// emails the affected person; a team's entire workspace disappearing out
+// from under them got nothing. Sent to every active member except the
+// one who performed the deletion, before their membership is deactivated.
+export async function sendWorkspaceDeletedEmail(params: { to: string; name: string; agencyName: string; deletedByName: string }) {
+  const { to, name: nameRaw, agencyName: agencyNameRaw, deletedByName: deletedByRaw } = params
+  const name = escapeHtml(nameRaw)
+  const agencyName = escapeHtml(agencyNameRaw)
+  const deletedBy = escapeHtml(deletedByRaw)
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.red,
+    headerIcon: '🗑️',
+    label: 'Workspace',
+    headline: `${agencyName} has been deleted`,
+    body: `
+      <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${name},</p>
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        ${deletedBy} deleted the <strong>${agencyName}</strong> workspace on ScopeGov. Your access to its
+        projects, documents, and data has ended.
+      </p>
+      <p style="font-size:13px;color:${C.text2};">
+        Didn't expect this? Contact ${deletedBy} directly to find out more.
+      </p>
+    `,
+  })
+  return resendClient().emails.send({ from: `ScopeGov <${FROM}>`, to, subject: `${agencyNameRaw} has been deleted`, html })
+}
