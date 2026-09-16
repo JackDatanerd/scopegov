@@ -1,6 +1,7 @@
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
+import { logAudit } from '@/lib/utils/audit'
 
 export async function PATCH(request: NextRequest) {
   try {
@@ -47,6 +48,27 @@ export async function PATCH(request: NextRequest) {
       .eq('id', session.workspaceId)  // ← from session, not body
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+
+    // FIX (deep audit, section 5 re-pass): this route changes the agency's
+    // brand colour, logo, and — most materially — agency_signature_data,
+    // which is auto-applied as a binding signature on every SOW/CO sent
+    // from here on. None of that was ever recorded in the audit trail,
+    // unlike every other workspace-settings mutation. Log which fields
+    // changed; the signature image itself is deliberately excluded from
+    // metadata (it's a data URL, not something an audit row should carry).
+    if (Object.keys(updates).length > 1) {
+      const changedFields = Object.keys(updates).filter(k => k !== 'updated_at')
+      await logAudit(service, {
+        workspaceId: session.workspaceId, actorId: session.id,
+        actorEmail: session.email, actorName: session.name,
+        eventType: agencySignatureData !== undefined && Object.keys(updates).length === (updates.updated_at ? 2 : 1)
+          ? (agencySignatureData === null ? 'workspace.signature_removed' : 'workspace.signature_updated')
+          : 'workspace.branding_updated',
+        entityType: 'workspace', entityId: session.workspaceId, entityName: session.workspaceName,
+        metadata: { fields: changedFields },
+      })
+    }
+
     return NextResponse.json({ ok: true })
   } catch (err) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

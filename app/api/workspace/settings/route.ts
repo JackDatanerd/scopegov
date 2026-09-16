@@ -40,6 +40,19 @@ export async function PATCH(request: NextRequest) {
       if (body[key] !== undefined) updates[col] = body[key]
     }
 
+    // FIX (deep audit, section 5 re-pass): completes the SOW-language
+    // feature (see components/settings/SettingsClient.tsx and
+    // lib/ai/sow-content.ts). Validate against the curated set the
+    // generator actually has boilerplate translations for — an
+    // unrecognized code would otherwise silently fall back to English at
+    // generation time with no indication anything was wrong.
+    if (typeof updates.sow_language === 'string') {
+      const SUPPORTED_SOW_LANGUAGES = ['en', 'es', 'fr', 'pt', 'de', 'sw']
+      if (!SUPPORTED_SOW_LANGUAGES.includes(updates.sow_language)) {
+        return NextResponse.json({ error: 'Unsupported SOW language' }, { status: 400 })
+      }
+    }
+
     // FIX (re-audit, notifications section): same gap as workspace/create
     // — agency_name (and the workspace's own display `name`) flow
     // unescaped-for-headers into email "From" display names and subject

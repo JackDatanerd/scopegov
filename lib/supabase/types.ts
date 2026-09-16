@@ -152,7 +152,23 @@ export type Permission =
   | 'INVITE_MEMBERS'
   | 'MANAGE_ROLES'
   | 'MANAGE_BILLING'
-  | 'EXPORT_DATA'
+  // FIX (deep audit, section 5 re-pass): 'EXPORT_DATA' used to live here
+  // and rendered as its own checkbox in the Team → Roles editor, distinct
+  // from VIEW_AUDIT_LOG — but nothing anywhere ever checked it. Migration
+  // 006's own comment already documents the deliberate call not to add a
+  // separate export permission ("would always be set identically to
+  // VIEW_AUDIT_LOG anyway"); this contradicted that and let an admin
+  // believe unchecking "Export Data" on a role restricted CSV/PDF audit
+  // exports for it, when in reality VIEW_AUDIT_LOG alone still allowed
+  // both. Removed rather than wired up, per that existing decision. Any
+  // workspace with a role that already has an EXPORT_DATA key set in its
+  // stored permissions jsonb is unaffected — it's simply an inert extra
+  // key now, same as before it was ever checked anywhere. (A later,
+  // separate audit pass on Auth+MFA independently rediscovered
+  // 'EXPORT_DATA' and — without the context above — added it to
+  // lib/auth/mfa-policy.ts's MFA_REQUIRED_PERMISSIONS as if it were a
+  // real, enforced permission. That reference has been removed too; see
+  // that file's comment.)
   | 'DELETE_PROJECTS'
   | 'VIEW_AUDIT_LOG'
   | 'MANAGE_WORKSPACE_SETTINGS'
@@ -170,7 +186,7 @@ export const ALL_PERMISSIONS: Permission[] = [
   'APPROVE_FLAGS', 'GRANT_EXCEPTIONS', 'MARK_DELIVERABLE_STATUS', 'MARK_PAYMENT_MILESTONES',
   'MARK_PROJECT_COMPLETE', 'ASSIGN_TEAM_MEMBERS', 'SUBMIT_GUARDIAN_CHECKS',
   'ACCESS_GUARDIAN_HISTORY', 'INVITE_MEMBERS', 'MANAGE_ROLES', 'MANAGE_BILLING',
-  'EXPORT_DATA', 'DELETE_PROJECTS', 'VIEW_AUDIT_LOG', 'MANAGE_WORKSPACE_SETTINGS',
+  'DELETE_PROJECTS', 'VIEW_AUDIT_LOG', 'MANAGE_WORKSPACE_SETTINGS',
   'SEND_INVOICES', 'APPROVE_DOCUMENTS',
 ]
 

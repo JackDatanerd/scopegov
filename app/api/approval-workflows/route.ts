@@ -73,6 +73,27 @@ export async function POST(request: NextRequest) {
 
     const service = createServiceClient()
 
+    // FIX (deep audit, section 5 re-pass): nothing stopped two active,
+    // threshold-less ("catches every document of this type") workflows
+    // from existing side by side. evaluateApprovalGate() sorts NULL
+    // thresholds last and just takes the first match, so the second
+    // catch-all rule an admin creates silently never fires — with no
+    // warning that it's dead on arrival. A tiered rule (with a threshold)
+    // stacking on top of a catch-all is the actual intended design (see
+    // the sort comment in lib/approvals/engine.ts) and isn't blocked here
+    // — only the truly ambiguous case of two unconditional rules.
+    if (thresholdAmount == null) {
+      const { count: dupeCatchAll } = await (service as any)
+        .from('approval_workflows').select('id', { count: 'exact', head: true })
+        .eq('workspace_id', session.workspaceId).eq('document_type', documentType)
+        .eq('is_active', true).is('threshold_amount', null)
+      if ((dupeCatchAll || 0) > 0) {
+        return NextResponse.json({
+          error: `An active catch-all ${documentType === 'sow' ? 'SOW' : 'change order'} workflow already exists (applies to every document, no threshold). Add a value threshold to this one, or edit the existing rule instead.`,
+        }, { status: 409 })
+      }
+    }
+
     // FIX (deep audit, section 5): approverRoleId/approverUserId were
     // inserted with no check that they actually belong to this workspace.
     // The UI only ever offers valid options so this wasn't reachable
@@ -116,7 +137,15 @@ export async function POST(request: NextRequest) {
     if (insertErr || !workflow)
       return NextResponse.json({ error: insertErr?.message || 'Could not create workflow' }, { status: 500 })
 
-    await (service as any).from('approval_workflow_steps').insert(
+    // FIX (deep audit, section 5 re-pass): this insert's result was
+    // discarded — a failure here left an ACTIVE workflow row with zero
+    // steps. evaluateApprovalGate() explicitly treats a zero-step workflow
+    // as "no approval needed" (lib/approvals/engine.ts), so the failure
+    // mode wasn't a visible error, it was a silently unguarded approval
+    // gate that looked configured. Check the error and roll back the
+    // parent row rather than leave a broken, falsely-active workflow
+    // behind.
+    const { error: stepsErr } = await (service as any).from('approval_workflow_steps').insert(
       steps.map((s, i) => ({
         workflow_id: workflow.id,
         step_order: i + 1,
@@ -124,6 +153,10 @@ export async function POST(request: NextRequest) {
         approver_user_id: s.approverUserId || null,
       }))
     )
+    if (stepsErr) {
+      await (service as any).from('approval_workflows').delete().eq('id', workflow.id)
+      return NextResponse.json({ error: 'Could not save approval steps — try again' }, { status: 500 })
+    }
 
     await logAudit(service, {
       workspaceId: session.workspaceId,

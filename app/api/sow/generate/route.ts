@@ -119,6 +119,12 @@ export async function POST(request: NextRequest) {
       agencyName, clientName, projectName: project.name, projectDisc: project.disc,
       projectType, contractValue, currency: curr, objective, deliverables,
       outOfScope, timeline, paymentLabel, revisionRounds: revisionRounds || 2, governingLaw,
+      // FIX (deep audit, section 5 re-pass): sow_language was already
+      // being selected right above (line 76) and then dropped on the
+      // floor — the workspace's language preference never actually
+      // reached generation. See lib/ai/sow-content.ts for the prompt
+      // instruction and translated boilerplate this now drives.
+      language: project.workspaces?.sow_language || 'en',
     }
 
     const MAX_ATTEMPTS = 3

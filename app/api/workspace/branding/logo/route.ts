@@ -3,6 +3,7 @@ export const runtime = 'nodejs'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
+import { logAudit } from '@/lib/utils/audit'
 
 // FIX (audit round 3, finding #5): the browser previously wrote logo
 // files straight to Supabase Storage (`supabase.storage.from('logos')
@@ -88,6 +89,18 @@ export async function POST(request: NextRequest) {
     const path = `${session.workspaceId}/logo.${ext}`
     const bytes = new Uint8Array(buffer)
 
+    // FIX (deep audit, section 5 re-pass): the path is keyed by extension
+    // (logo.png vs logo.jpg), so switching file types (upload a PNG, later
+    // switch to a JPG) never overwrote the old object — `upsert: true`
+    // only replaces an object at the exact same path. The previous logo
+    // was left behind in the public bucket forever, unreferenced. Look up
+    // whatever's currently on record and, if this upload lands at a
+    // different path, remove the stale one after the new one is safely in
+    // place. Best-effort: a failure here shouldn't fail the upload itself.
+    const { data: existingWs } = await (service as any)
+      .from('workspaces').select('logo_storage_path').eq('id', session.workspaceId).maybeSingle()
+    const previousPath: string | undefined = existingWs?.logo_storage_path
+
     const { error } = await (service as any).storage
       .from('logos')
       .upload(path, bytes, { upsert: true, contentType: file.type })
@@ -96,6 +109,19 @@ export async function POST(request: NextRequest) {
       console.error('Logo upload error:', error)
       return NextResponse.json({ error: 'Upload failed' }, { status: 500 })
     }
+
+    if (previousPath && previousPath !== path) {
+      const { error: removeErr } = await (service as any).storage.from('logos').remove([previousPath])
+      if (removeErr) console.error('Stale logo cleanup failed (non-fatal):', removeErr)
+    }
+
+    await logAudit(service, {
+      workspaceId: session.workspaceId, actorId: session.id,
+      actorEmail: session.email, actorName: session.name,
+      eventType: 'workspace.logo_uploaded', entityType: 'workspace',
+      entityId: session.workspaceId, entityName: session.workspaceName,
+      metadata: { path },
+    })
 
     return NextResponse.json({ logoStoragePath: path })
   } catch (err) {

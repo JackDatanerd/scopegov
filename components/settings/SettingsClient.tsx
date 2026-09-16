@@ -14,12 +14,51 @@ import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { SessionUser } from '@/lib/supabase/types'
-import { PLAN_LABELS, PLAN_LIMITS, formatDate } from '@/lib/utils/format'
+import { PLAN_LABELS, PLAN_LIMITS, PROJECT_TYPE_LABELS, formatDate } from '@/lib/utils/format'
 import SignaturePad, { type SignaturePadHandle } from '@/components/ui/SignaturePad'
 import MfaSection from '@/components/settings/MfaSection'
 import { permissionsRequireMfa } from '@/lib/auth/mfa-policy'
 
 type SettingsTab = 'account' | 'workspace' | 'branding' | 'defaults' | 'guardian' | 'billing' | 'notifications' | 'integrations' | 'danger'
+
+// FIX (deep audit, section 5 re-pass): backs the Timezone select below.
+// Intl.supportedValuesOf is available in every modern browser and in
+// Node 18+ (this app's runtime), but wrapped defensively — an older
+// embedded webview or a polyfill gap shouldn't be able to break the
+// Workspace tab from rendering at all, just fall back to a short list of
+// common zones covering this product's actual customer base.
+const IANA_TIMEZONES: string[] = (() => {
+  try {
+    // @ts-ignore — supportedValuesOf isn't in older lib.es TS targets
+    if (typeof Intl.supportedValuesOf === 'function') return Intl.supportedValuesOf('timeZone')
+  } catch { /* fall through to static list */ }
+  return [
+    'UTC', 'Africa/Nairobi', 'Africa/Lagos', 'Africa/Johannesburg', 'Africa/Cairo',
+    'Africa/Accra', 'Europe/London', 'Europe/Paris', 'Europe/Berlin', 'Europe/Madrid',
+    'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles',
+    'America/Sao_Paulo', 'Asia/Dubai', 'Asia/Kolkata', 'Asia/Singapore',
+    'Asia/Shanghai', 'Asia/Tokyo', 'Australia/Sydney',
+  ]
+})()
+
+// FIX (deep audit, section 5 re-pass): completes the SOW-language feature.
+// `sow_language` already existed as a writable workspace column and was
+// even selected (unused) inside app/api/sow/generate/route.ts's own
+// query — the data plumbing was there, but no UI ever set it and nothing
+// ever read it back out to affect generation. See lib/ai/sow-content.ts
+// for the generation side and app/api/sow/generate/route.ts for where
+// this is now actually threaded through. Scoped to a curated list rather
+// than free text, since each entry needs matching translated boilerplate
+// (buildBoilerplateSections) — adding a language means adding both an
+// entry here and translations there, not just a string.
+const SOW_LANGUAGES: Array<{ code: string; label: string }> = [
+  { code: 'en', label: 'English' },
+  { code: 'es', label: 'Spanish (Español)' },
+  { code: 'fr', label: 'French (Français)' },
+  { code: 'pt', label: 'Portuguese (Português)' },
+  { code: 'de', label: 'German (Deutsch)' },
+  { code: 'sw', label: 'Swahili (Kiswahili)' },
+]
 
 const TABS: { key: SettingsTab; label: string }[] = [
   { key: 'account',       label: 'Account' },
@@ -73,7 +112,7 @@ interface Props {
   defaults:    any
   logoUrl:     string | null
   session:     SessionUser
-  permissions: { manageWorkspace: boolean; manageBilling: boolean; viewAuditLog: boolean; exportData: boolean; manageRoles: boolean }
+  permissions: { manageWorkspace: boolean; manageBilling: boolean; viewAuditLog: boolean; manageRoles: boolean }
 }
 
 export default function SettingsClient({ workspace, billing, defaults, logoUrl, session, permissions }: Props) {
@@ -93,6 +132,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
     timezone:     workspace?.timezone || '',
     currency:     workspace?.currency || 'USD',
     governingLaw: workspace?.governing_law || '',
+    sowLanguage:  workspace?.sow_language || 'en',
     slug:         workspace?.slug || '',
     // Phase 11 — document billing identity. Printed on every SOW/CO/Invoice
     // PDF as the agency's "From" block; all optional, PDFs render fine
@@ -173,6 +213,16 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
               fit the flat form-field pattern the other tabs use). */}
           {permissions.manageWorkspace && (
             <Link href="/settings/approvals" className="settings-nav-item">Approval workflows</Link>
+          )}
+          {/* FIX (deep audit, section 5 re-pass): `permissions.manageRoles`
+              was computed on the server and passed all the way down to
+              this component and never actually used — no shortcut existed
+              anywhere in Settings to the Roles editor, despite Team →
+              Roles being exactly the kind of "workspace configuration"
+              link that belongs alongside Audit log / Approval workflows
+              here. */}
+          {permissions.manageRoles && (
+            <Link href="/team?tab=roles" className="settings-nav-item">Manage roles</Link>
           )}
         </div>
       </div>
@@ -362,7 +412,24 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugLocked }
         <div className="f2">
           <div className="fgrp">
             <label className="flbl">Timezone</label>
-            <input className="finp" value={form.timezone} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('timezone', e.target.value)} />
+            {/* FIX (deep audit, section 5 re-pass): this was a bare free-text
+                input — any string ("asdf", empty, a typo) saved without
+                complaint. Nothing in the app currently reads workspace
+                timezone for scheduling or display, but storing garbage in a
+                field literally named "timezone" is its own small landmine
+                for whenever something finally does. A constrained select
+                over the real IANA list costs nothing and makes the stored
+                value trustworthy the day it's needed. */}
+            <select className="finp" value={form.timezone} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => set('timezone', e.target.value)}>
+              <option value="">Not set</option>
+              {/* A previously-saved free-text value that isn't a real IANA
+                  zone (from before this was a select) still shows up as its
+                  own option instead of silently vanishing from the field. */}
+              {form.timezone && !IANA_TIMEZONES.includes(form.timezone) && (
+                <option value={form.timezone}>{form.timezone} (unrecognized — please re-select)</option>
+              )}
+              {IANA_TIMEZONES.map((tz: string) => <option key={tz} value={tz}>{tz.replace(/_/g, ' ')}</option>)}
+            </select>
           </div>
           <div className="fgrp">
             <label className="flbl">Governing law</label>
@@ -370,6 +437,14 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugLocked }
               placeholder="e.g. Republic of Kenya" />
             <span className="fhint">Used in the governing-law clause on every SOW you send.</span>
           </div>
+        </div>
+        <div className="fgrp">
+          <label className="flbl">SOW language</label>
+          <select className="finp" style={{ maxWidth: 280 }} value={form.sowLanguage}
+            onChange={(e: React.ChangeEvent<HTMLSelectElement>) => set('sowLanguage', e.target.value)}>
+            {SOW_LANGUAGES.map(l => <option key={l.code} value={l.code}>{l.label}</option>)}
+          </select>
+          <span className="fhint">The language every new SOW is drafted in — the client-facing content, and the standard clauses (parties, governing law, signature block).</span>
         </div>
         <button className="btn btn-primary btn-sm" disabled={saving}
           onClick={() => onSave('/api/workspace/settings', form)}>
@@ -601,11 +676,87 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, save
 }
 
 // ── DEFAULTS ──────────────────────────────────────────────────
-function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab }: any) {
-  if (!permissions.manageWorkspace) return <Restricted />
+// FIX (deep audit, section 5 re-pass): completes per-project-type SOW
+// defaults — see app/api/workspace/defaults/route.ts for the full
+// writeup of why workspace_defaults always supported this and nothing
+// ever used it.
+const DEFAULTS_PROJECT_TYPES = Object.keys(PROJECT_TYPE_LABELS)
 
+function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab }: any) {
   function set(key: string, value: string) {
     setForm((f: any) => ({ ...f, [key]: value }))
+  }
+
+  // 'global' behaves exactly as this tab always did (form/setForm/onSave
+  // from the parent, seeded server-side). Picking a specific project type
+  // switches to a locally-fetched override scoped to just that type.
+  //
+  // FIX (deep audit, section 5 re-pass): these hooks must run before the
+  // `permissions.manageWorkspace` early return below — this component
+  // previously had no hooks of its own (just the form/setForm passed in
+  // from the parent), so the early return above the function body never
+  // mattered. Adding hooks here without moving the permission check broke
+  // the rules of hooks (an unprivileged member hits the `<Restricted />`
+  // return and skips every hook below it, while a privileged member
+  // doesn't — a different hook count between renders/users).
+  const [scope, setScope] = useState<string>('global')
+  const [typeData, setTypeData] = useState<{ revisionRounds: number; paymentStructure: string; isOverride: boolean } | null>(null)
+  const [typeLoading, setTypeLoading] = useState(false)
+  const isGlobal = scope === 'global'
+
+  useEffect(() => {
+    if (isGlobal) { setTypeData(null); return }
+    let cancelled = false
+    setTypeLoading(true)
+    fetch(`/api/workspace/defaults?projectType=${scope}`)
+      .then(r => r.json())
+      .then(json => { if (!cancelled) setTypeData(json) })
+      .catch(() => { if (!cancelled) setTypeData(null) })
+      .finally(() => { if (!cancelled) setTypeLoading(false) })
+    return () => { cancelled = true }
+  }, [scope, isGlobal])
+
+  if (!permissions.manageWorkspace) return <Restricted />
+
+  const revValue = isGlobal ? form.revRounds : String(typeData?.revisionRounds ?? 2)
+  const payValue = isGlobal ? form.payStructure : (typeData?.paymentStructure ?? '50_50')
+
+  function setTypeField(patch: Partial<{ revisionRounds: number; paymentStructure: string }>) {
+    setTypeData(d => ({
+      revisionRounds: d?.revisionRounds ?? 2, paymentStructure: d?.paymentStructure ?? '50_50',
+      isOverride: d?.isOverride ?? false, ...patch,
+    }))
+  }
+
+  async function refetchType() {
+    const res = await fetch(`/api/workspace/defaults?projectType=${scope}`)
+    if (res.ok) setTypeData(await res.json())
+  }
+
+  async function saveCurrent() {
+    if (isGlobal) {
+      await onSave('/api/workspace/defaults', { revisionRounds: parseInt(form.revRounds), paymentStructure: form.payStructure })
+      return
+    }
+    const ok = await onSave('/api/workspace/defaults', {
+      revisionRounds: typeData?.revisionRounds ?? 2,
+      paymentStructure: typeData?.paymentStructure ?? '50_50',
+      projectType: scope,
+    })
+    // router.refresh() inside onSave only refreshes server-provided props
+    // (the global row) — this tab's per-type view is client-fetched, so
+    // re-pull it directly to reflect the save (isOverride flips to true).
+    if (ok) await refetchType()
+  }
+
+  async function removeOverride() {
+    if (isGlobal || !typeData?.isOverride) return
+    if (!confirm(`Remove the ${PROJECT_TYPE_LABELS[scope]} override? New ${PROJECT_TYPE_LABELS[scope]} projects will go back to using the global default.`)) return
+    setTypeLoading(true)
+    try {
+      const res = await fetch(`/api/workspace/defaults?projectType=${scope}`, { method: 'DELETE' })
+      if (res.ok) await refetchType()
+    } finally { setTypeLoading(false) }
   }
 
   return (
@@ -614,18 +765,36 @@ function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab }: any
       <div className="settings-section">
         <div className="settings-section-title">Default SOW settings</div>
         <p style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 18, lineHeight: 1.6 }}>
-          These values pre-fill every new Statement of Work. You can override them per project.
+          These values pre-fill every new Statement of Work. You can override them per project, and now per project type below.
         </p>
+
+        <div className="fgrp" style={{ marginBottom: 18, maxWidth: 340 }}>
+          <label className="flbl">Applies to</label>
+          <select className="finp" value={scope} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setScope(e.target.value)}>
+            <option value="global">Global default (all project types)</option>
+            {DEFAULTS_PROJECT_TYPES.map(pt => <option key={pt} value={pt}>{PROJECT_TYPE_LABELS[pt]}</option>)}
+          </select>
+          {!isGlobal && (
+            <p className="fhint">
+              {typeLoading ? 'Loading…' : typeData?.isOverride
+                ? `${PROJECT_TYPE_LABELS[scope]} projects use this override instead of the global default.`
+                : `No override yet — ${PROJECT_TYPE_LABELS[scope]} projects currently fall back to the global default. Change a value and save to create one.`}
+            </p>
+          )}
+        </div>
+
         <div className="f2">
           <div className="fgrp">
             <label className="flbl">Default revision rounds</label>
-            <select className="finp" value={form.revRounds} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => set('revRounds', e.target.value)}>
+            <select className="finp" disabled={typeLoading} value={revValue}
+              onChange={(e: React.ChangeEvent<HTMLSelectElement>) => isGlobal ? set('revRounds', e.target.value) : setTypeField({ revisionRounds: parseInt(e.target.value) })}>
               {['1','2','3','4','5'].map(n => <option key={n} value={n}>{n} round{n !== '1' ? 's' : ''}</option>)}
             </select>
           </div>
           <div className="fgrp">
             <label className="flbl">Default payment structure</label>
-            <select className="finp" value={form.payStructure} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => set('payStructure', e.target.value)}>
+            <select className="finp" disabled={typeLoading} value={payValue}
+              onChange={(e: React.ChangeEvent<HTMLSelectElement>) => isGlobal ? set('payStructure', e.target.value) : setTypeField({ paymentStructure: e.target.value })}>
               <option value="50_50">50% upfront / 50% on delivery</option>
               <option value="100_upfront">100% upfront</option>
               <option value="milestones">Milestone-based</option>
@@ -638,20 +807,26 @@ function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab }: any
             second, disconnected "Default governing law" input that saved
             to a column SOW generation never read — every SOW silently
             defaulted regardless of what was typed here. Governing law now
-            lives in exactly one place. */}
+            lives in exactly one place, and — unlike revision rounds and
+            payment structure — is never project-type-specific, since a
+            workspace only has one legal jurisdiction. */}
         <p style={{ fontSize: 12.5, color: 'var(--text-3)', marginBottom: 0, lineHeight: 1.6 }}>
           Governing law is set on the{' '}
           <button type="button" onClick={() => setTab?.('workspace')}
             style={{ background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'var(--green)', textDecoration: 'underline', cursor: 'pointer' }}>
             Workspace tab
-          </button>{' '}and applies to every SOW.
+          </button>{' '}and applies to every SOW, regardless of project type.
         </p>
-        <button className="btn btn-primary btn-sm" style={{ marginTop: 14 }} disabled={saving}
-          onClick={() => onSave('/api/workspace/defaults', {
-            revisionRounds: parseInt(form.revRounds), paymentStructure: form.payStructure,
-          })}>
-          {saving ? <span className="spin" /> : 'Save defaults'}
-        </button>
+        <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
+          <button className="btn btn-primary btn-sm" disabled={saving || typeLoading} onClick={saveCurrent}>
+            {saving ? <span className="spin" /> : isGlobal ? 'Save defaults' : `Save ${PROJECT_TYPE_LABELS[scope]} override`}
+          </button>
+          {!isGlobal && typeData?.isOverride && (
+            <button className="btn btn-ghost btn-sm" disabled={saving || typeLoading} onClick={removeOverride}>
+              Remove override
+            </button>
+          )}
+        </div>
       </div>
     </div>
   )
@@ -700,11 +875,23 @@ function GuardianTab({ form, setForm, permissions, onSave, saving }: any) {
           </div>
         )}
         <button className="btn btn-primary btn-sm" disabled={saving}
-          onClick={() => onSave('/api/workspace/settings', {
-            guardianSensitivityTier: form.sensitivity,
-            proactiveRiskAlertsEnabled: form.riskEnabled,
-            proactiveRiskThreshold: parseFloat(form.riskThreshold) || 10000,
-          })}>
+          onClick={() => {
+            // FIX (deep audit, section 5 re-pass): `parseFloat(...) || 10000`
+            // treated a deliberately-entered 0 — "alert on any project
+            // without a signed SOW, regardless of value" — as falsy and
+            // silently replaced it with the 10,000 default. The input kept
+            // showing "0", so the save looked like it worked when the
+            // actually-persisted threshold was 10x what was on screen.
+            // Only fall back to the default when the field is genuinely
+            // unparseable (blank/garbage), not when it parses to a valid 0.
+            const parsed = parseFloat(form.riskThreshold)
+            const threshold = Number.isFinite(parsed) && parsed >= 0 ? parsed : 10000
+            onSave('/api/workspace/settings', {
+              guardianSensitivityTier: form.sensitivity,
+              proactiveRiskAlertsEnabled: form.riskEnabled,
+              proactiveRiskThreshold: threshold,
+            })
+          }}>
           {saving ? <span className="spin" /> : 'Save settings'}
         </button>
       </div>

@@ -18,7 +18,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     const service = createServiceClient()
     const { data: existing } = await (service as any)
-      .from('approval_workflows').select('id, name, threshold_amount, threshold_currency')
+      .from('approval_workflows').select('id, name, document_type, is_active, threshold_amount, threshold_currency')
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
     if (!existing) return NextResponse.json({ error: 'Workflow not found' }, { status: 404 })
 
@@ -41,6 +41,25 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       patch.threshold_currency = (body.thresholdCurrency || 'USD').toUpperCase()
     } else if (!existing.threshold_currency) {
       patch.threshold_currency = 'USD' // amount is being set for the first time with no currency supplied
+    }
+
+    // FIX (deep audit, section 5 re-pass): same duplicate-catch-all guard
+    // as POST — check the state this edit would *result in* (active +
+    // threshold null), not just the fields present on this request, since
+    // either flipping is_active on or clearing the threshold on an
+    // otherwise-unchanged row can create the same silent-collision.
+    const resultingActive    = 'is_active' in patch ? (patch.is_active as boolean) : existing.is_active
+    const resultingThreshold = 'threshold_amount' in patch ? patch.threshold_amount : existing.threshold_amount
+    if (resultingActive && resultingThreshold == null) {
+      const { count: dupeCatchAll } = await (service as any)
+        .from('approval_workflows').select('id', { count: 'exact', head: true })
+        .eq('workspace_id', session.workspaceId).eq('document_type', existing.document_type)
+        .eq('is_active', true).is('threshold_amount', null).neq('id', id)
+      if ((dupeCatchAll || 0) > 0) {
+        return NextResponse.json({
+          error: `An active catch-all ${existing.document_type === 'sow' ? 'SOW' : 'change order'} workflow already exists. Add a value threshold to this one, or deactivate the other rule first.`,
+        }, { status: 409 })
+      }
     }
 
     await (service as any).from('approval_workflows').update(patch).eq('id', id)
@@ -74,7 +93,15 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       }
       await (service as any).from('approval_workflow_steps').delete().eq('workflow_id', id)
       if (steps.length > 0) {
-        await (service as any).from('approval_workflow_steps').insert(
+        // FIX (deep audit, section 5 re-pass): same unchecked insert as
+        // POST /api/approval-workflows — a failure here (after the old
+        // steps were already deleted) left an active workflow with zero
+        // steps, which evaluateApprovalGate() silently treats as "no
+        // approval needed." Surface the failure instead of pretending the
+        // edit succeeded; the workflow is deactivated so it can't gate
+        // (or fail to gate) anything while its steps are in a broken
+        // state, and the admin can retry the edit.
+        const { error: stepsErr } = await (service as any).from('approval_workflow_steps').insert(
           steps.map((s, i) => ({
             workflow_id: id,
             step_order: i + 1,
@@ -82,6 +109,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
             approver_user_id: s.approverUserId || null,
           }))
         )
+        if (stepsErr) {
+          await (service as any).from('approval_workflows')
+            .update({ is_active: false, updated_at: new Date().toISOString() }).eq('id', id)
+          return NextResponse.json({
+            error: 'Could not save the updated approval steps — this workflow has been paused to avoid running with no approvers. Please try editing it again.',
+          }, { status: 500 })
+        }
       }
     }
 

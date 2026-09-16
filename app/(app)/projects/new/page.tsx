@@ -91,17 +91,46 @@ function NewProjectPageInner() {
         }
       }
     }).catch(() => {})
-    // FIX: prefill from saved workspace defaults instead of the hardcoded
-    // '50_50' / 2 / 'USD' fallbacks that were previously never overridden.
-    fetch('/api/workspace/defaults')
+  }, [])
+
+  // FIX (deep audit, section 5 re-pass): completes per-project-type SOW
+  // defaults (see app/api/workspace/defaults/route.ts) — this always
+  // fetched only the workspace-wide global row, so picking a different
+  // project type here never changed the pre-filled payment structure /
+  // revision rounds even when the agency had configured a specific
+  // override for that type in Settings → Defaults. Refetches whenever
+  // projectType changes; `defaultsTouched` stops it from clobbering a
+  // value the person already deliberately edited on Step 2 after
+  // changing their mind about the project type back on Step 1.
+  const [defaultsTouched, setDefaultsTouched] = useState(false)
+  // FIX: currency was previously only ever set once on mount, so a
+  // manual change to it here could never be clobbered. Making this
+  // effect re-run on projectType changes introduced exactly that risk
+  // for currency too (it's workspace-wide, not per-type, so every
+  // refetch would return the same value and stomp a deliberate manual
+  // pick) — tracked separately since it can be touched independently of
+  // payment structure / revision rounds.
+  const [currencyTouched, setCurrencyTouched] = useState(false)
+  useEffect(() => {
+    let cancelled = false
+    fetch(`/api/workspace/defaults?projectType=${projectType}`)
       .then(r => r.json())
       .then(json => {
-        if (json.paymentStructure) setPaymentStructure(json.paymentStructure)
-        if (json.revisionRounds)   setRevisionRounds(String(json.revisionRounds))
-        if (json.currency)         setCurrency(json.currency)
+        if (cancelled) return
+        if (json.currency && !currencyTouched) setCurrency(json.currency)
+        if (!defaultsTouched) {
+          if (json.paymentStructure) setPaymentStructure(json.paymentStructure)
+          if (json.revisionRounds)   setRevisionRounds(String(json.revisionRounds))
+        }
       })
       .catch(() => {})
-  }, [])
+    return () => { cancelled = true }
+    // currencyTouched/defaultsTouched are intentionally excluded — they
+    // gate what the response is allowed to overwrite, not what should
+    // trigger a new fetch. Including them would refetch on every edit to
+    // an unrelated field for no reason.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectType])
 
   const filteredClients = clients.filter(c =>
     c.name.toLowerCase().includes(clientSearch.toLowerCase()) ||
@@ -153,6 +182,11 @@ function NewProjectPageInner() {
       setTimeline(brief.timeline || '')
       setPaymentStructure(brief.paymentStructure || '50_50')
       setRevisionRounds(String(brief.revisionRounds || 2))
+      // Mark touched: these came from the AI-parsed brief, a more
+      // specific source than the workspace/type default this component
+      // pre-fills from. If the person goes back and changes project type
+      // afterward, that shouldn't silently discard what was just parsed.
+      setDefaultsTouched(true)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Could not parse brief — please fill in manually')
       setBriefMode('manual')
@@ -306,7 +340,7 @@ function NewProjectPageInner() {
               </div>
               <div className="fgrp">
                 <label className="flbl">Currency</label>
-                <select className="finp" value={currency} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setCurrency(e.target.value)}>
+                <select className="finp" value={currency} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => { setCurrencyTouched(true); setCurrency(e.target.value) }}>
                   {['USD','KES','GBP','EUR','ZAR','NGN','GHS','AED'].map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
               </div>
@@ -398,7 +432,7 @@ function NewProjectPageInner() {
                 <div className="f2">
                   <div className="fgrp">
                     <label className="flbl">Payment structure</label>
-                    <select className="finp" value={paymentStructure} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setPaymentStructure(e.target.value)}>
+                    <select className="finp" value={paymentStructure} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => { setDefaultsTouched(true); setPaymentStructure(e.target.value) }}>
                       <option value="50_50">50% upfront, 50% on delivery</option>
                       <option value="100_upfront">100% upfront</option>
                       <option value="milestones">Milestone-based</option>
@@ -408,7 +442,7 @@ function NewProjectPageInner() {
                   </div>
                   <div className="fgrp">
                     <label className="flbl">Revision rounds</label>
-                    <select className="finp" value={revisionRounds} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setRevisionRounds(e.target.value)}>
+                    <select className="finp" value={revisionRounds} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => { setDefaultsTouched(true); setRevisionRounds(e.target.value) }}>
                       {['1','2','3','4','5'].map(n => <option key={n} value={n}>{n} round{n !== '1' ? 's' : ''}</option>)}
                     </select>
                   </div>

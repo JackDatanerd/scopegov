@@ -5,7 +5,7 @@
 
 'use client'
 import { useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import type { SessionUser } from '@/lib/supabase/types'
 import { initials, avatarColour, formatDate, ALL_PERMISSIONS } from '@/lib/utils/format'
 
@@ -22,7 +22,14 @@ interface Props {
 
 export default function TeamClient({ members, pendingInvites, deactivatedMembers = [], roles, session, canInvite, canManageRoles, workspaceId }: Props) {
   const router  = useRouter()
-  const [tab,   setTab]   = useState<'members' | 'roles'>('members')
+  const searchParams = useSearchParams()
+  // FIX (deep audit, section 5 re-pass): Settings computed a `manageRoles`
+  // permission and passed it into SettingsClient with no consumer at all —
+  // there was no way to land directly on this Roles tab from anywhere in
+  // Settings despite the wiring implying one was intended. Support the
+  // same `?tab=` deep-link pattern SettingsClient already uses so a link
+  // elsewhere in the app can open straight to Roles.
+  const [tab,   setTab]   = useState<'members' | 'roles'>(searchParams.get('tab') === 'roles' ? 'roles' : 'members')
   const [modal, setModal] = useState<'invite' | 'role' | null>(null)
   const [inviteEmail,  setInviteEmail]  = useState('')
   const [inviteRoleId, setInviteRoleId] = useState('')

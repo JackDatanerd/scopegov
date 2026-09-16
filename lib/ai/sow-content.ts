@@ -87,19 +87,72 @@ export interface SowContentInput {
   paymentLabel: string
   revisionRounds: number
   governingLaw: string
+  // FIX (deep audit, section 5 re-pass): completes the SOW-language
+  // feature. workspaces.sow_language existed, was writable from Settings
+  // API-side, and was even already selected (unused) inside
+  // app/api/sow/generate/route.ts's own query — but nothing threaded it
+  // through to generation. Defaults to English so every existing caller
+  // that doesn't pass this keeps behaving exactly as before.
+  language?: string
+}
+
+// Supported SOW languages and the model-facing name used in the prompt
+// instruction. Must stay in sync with the curated list in
+// components/settings/SettingsClient.tsx (SOW_LANGUAGES) and the
+// server-side validation in app/api/workspace/settings/route.ts — each
+// entry needs a matching translation below, so this is deliberately a
+// closed set rather than accepting arbitrary language codes.
+const SOW_LANGUAGE_NAMES: Record<string, string> = {
+  en: 'English', es: 'Spanish', fr: 'French', pt: 'Portuguese', de: 'German', sw: 'Swahili',
 }
 
 // ── 1. Boilerplate sections — deterministic, never asked of the model ──
+//
+// These three sections are never sent to the AI (see AI_SECTION_IDS
+// below), so language-switching them means translating the template
+// itself rather than instructing a model. Only the languages in
+// SOW_LANGUAGE_NAMES are supported; an unrecognized code falls back to
+// English rather than emitting a mixed-language document.
+
+const BOILERPLATE_TEMPLATES: Record<string, (agency: string, client: string, law: string) => Record<string, string>> = {
+  en: (agency, client, law) => ({
+    parties: `<p>This Statement of Work is entered into between <strong>${agency}</strong> ("Agency") and <strong>${client}</strong> ("Client").</p>`,
+    governing_law: `<p>This Agreement is governed by the laws of ${law}.</p>`,
+    signature: `<p>By signing below, both parties agree to the terms of this Statement of Work.</p>`,
+  }),
+  es: (agency, client, law) => ({
+    parties: `<p>Este Acuerdo de Alcance de Trabajo se celebra entre <strong>${agency}</strong> ("la Agencia") y <strong>${client}</strong> ("el Cliente").</p>`,
+    governing_law: `<p>Este Acuerdo se rige por las leyes de ${law}.</p>`,
+    signature: `<p>Al firmar a continuación, ambas partes aceptan los términos de este Acuerdo de Alcance de Trabajo.</p>`,
+  }),
+  fr: (agency, client, law) => ({
+    parties: `<p>Le présent Énoncé des travaux est conclu entre <strong>${agency}</strong> (l'« Agence ») et <strong>${client}</strong> (le « Client »).</p>`,
+    governing_law: `<p>Le présent Accord est régi par les lois de ${law}.</p>`,
+    signature: `<p>En signant ci-dessous, les deux parties acceptent les termes du présent Énoncé des travaux.</p>`,
+  }),
+  pt: (agency, client, law) => ({
+    parties: `<p>Este Termo de Abertura de Escopo é celebrado entre <strong>${agency}</strong> ("Agência") e <strong>${client}</strong> ("Cliente").</p>`,
+    governing_law: `<p>Este Acordo é regido pelas leis de ${law}.</p>`,
+    signature: `<p>Ao assinar abaixo, ambas as partes concordam com os termos deste Termo de Abertura de Escopo.</p>`,
+  }),
+  de: (agency, client, law) => ({
+    parties: `<p>Diese Leistungsbeschreibung wird zwischen <strong>${agency}</strong> ("Agentur") und <strong>${client}</strong> ("Kunde") geschlossen.</p>`,
+    governing_law: `<p>Diese Vereinbarung unterliegt den Gesetzen von ${law}.</p>`,
+    signature: `<p>Mit der nachstehenden Unterschrift stimmen beide Parteien den Bedingungen dieser Leistungsbeschreibung zu.</p>`,
+  }),
+  sw: (agency, client, law) => ({
+    parties: `<p>Hati hii ya Wigo wa Kazi imeingiwa kati ya <strong>${agency}</strong> ("Wakala") na <strong>${client}</strong> ("Mteja").</p>`,
+    governing_law: `<p>Makubaliano haya yanaongozwa na sheria za ${law}.</p>`,
+    signature: `<p>Kwa kutia sahihi hapa chini, pande zote mbili zinakubali masharti ya Hati hii ya Wigo wa Kazi.</p>`,
+  }),
+}
 
 export function buildBoilerplateSections(input: SowContentInput): Record<string, string> {
   const agency = escapeHtml(input.agencyName)
   const client = escapeHtml(input.clientName)
   const law    = escapeHtml(input.governingLaw)
-  return {
-    parties: `<p>This Statement of Work is entered into between <strong>${agency}</strong> ("Agency") and <strong>${client}</strong> ("Client").</p>`,
-    governing_law: `<p>This Agreement is governed by the laws of ${law}.</p>`,
-    signature: `<p>By signing below, both parties agree to the terms of this Statement of Work.</p>`,
-  }
+  const template = BOILERPLATE_TEMPLATES[input.language || 'en'] || BOILERPLATE_TEMPLATES.en
+  return template(agency, client, law)
 }
 
 // ── 2. Prompt — plain delimited content only, never JSON ───────────────
@@ -117,6 +170,17 @@ export function buildSowContentPrompt(input: SowContentInput, opts?: { emphatic?
   const deliverableCols = SOW_TABLE_SCHEMAS.deliverables.columns.map(c => c.label).join(' | ')
   const timelineCols    = SOW_TABLE_SCHEMAS.timeline.columns.map(c => c.label).join(' | ')
   const rolesCols       = SOW_TABLE_SCHEMAS.roles.columns.map(c => c.label).join(' | ')
+
+  // FIX (deep audit, section 5 re-pass): the only half of the
+  // SOW-language feature the model itself needs to know about — the
+  // section markers, table markers, and column labels below must stay in
+  // English regardless (they're parsed by exact string match in
+  // parseDelimitedSections/parseTableSections), only the drafted content
+  // switches language.
+  const languageName = SOW_LANGUAGE_NAMES[input.language || 'en']
+  const languageInstruction = languageName && languageName !== 'English'
+    ? `\n\nWrite ALL drafted section content and table row text in ${languageName}. Keep the section/table MARKER lines themselves exactly as specified below (in English, unchanged) — only the content after each marker is in ${languageName}.`
+    : ''
 
   return `You are a professional contract drafter for a creative/digital agency.
 Draft the content for a Statement of Work. Use ONLY the exact figures provided below. Never invent payment amounts, fees, rates, or revision counts.
@@ -173,7 +237,7 @@ Rules:
 - Deliverables table rows must cover every item in the deliverables brief above — one row per deliverable, not grouped.
 - Roles table must reflect that ${input.agencyName} is the Provider and ${input.clientName} is the Client.
 - Write with professional, authoritative language appropriate for a legal document.
-- Never add a "late fee rate" or "revision fee" unless explicitly provided.${reminder}`
+- Never add a "late fee rate" or "revision fee" unless explicitly provided.${languageInstruction}${reminder}`
 }
 
 // ── 3. Parsers — tolerant of anything except the markers themselves ────

@@ -62,7 +62,8 @@ export default async function SettingsPage() {
         manageWorkspace: hasPermission(session, 'MANAGE_WORKSPACE_SETTINGS'),
         manageBilling:   hasPermission(session, 'MANAGE_BILLING'),
         viewAuditLog:    hasPermission(session, 'VIEW_AUDIT_LOG'),
-        exportData:      hasPermission(session, 'EXPORT_DATA'),
+        // FIX (deep audit, section 5 re-pass): EXPORT_DATA removed — see
+        // lib/supabase/types.ts for why; it never gated anything.
         manageRoles:     hasPermission(session, 'MANAGE_ROLES'),
       }}
     />
