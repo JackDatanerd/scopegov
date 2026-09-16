@@ -528,4 +528,11 @@ export interface SessionUser {
   emailVerifiedAt: string | null
   logoStoragePath: string | null
   brandColour: string | null
+  // FIX (deep audit, Auth+MFA re-pass — password confirmation): whether
+  // this account has an actual password set (an 'email' provider identity)
+  // as opposed to being Google-OAuth-only. Drives whether Settings' change-
+  // password form asks for the current password at all — an OAuth-only
+  // account has none to confirm, and this is really "set a password for
+  // the first time," not "change" one.
+  hasPasswordIdentity: boolean
 }

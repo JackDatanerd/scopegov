@@ -272,6 +272,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
 // ── ACCOUNT ──────────────────────────────────────────────────
 function AccountTab({ session, supabase, router, mfaMandatory }: any) {
   const [name,        setName]        = useState(session.name)
+  const [currentPw,   setCurrentPw]   = useState('')
   const [newPw,       setNewPw]       = useState('')
   const [confirmPw,   setConfirmPw]   = useState('')
   const [pwLoading,   setPwLoading]   = useState(false)
@@ -300,14 +301,19 @@ function AccountTab({ session, supabase, router, mfaMandatory }: any) {
       // re-authentication check at all — unlike disabling MFA, which
       // requires proving aal2 first. Route it through a server endpoint
       // that enforces the same rule when this account's role mandates MFA.
+      //
+      // FIX (deep audit, Auth+MFA re-pass — password confirmation): now
+      // also sends currentPassword — required and verified server-side
+      // for any account with a real password (session.hasPasswordIdentity
+      // decides whether the field even renders below).
       const res = await fetch('/api/auth/change-password', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: newPw }),
+        body: JSON.stringify({ password: newPw, currentPassword: currentPw }),
       })
       const json = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(json.error || 'Failed to update password')
       setMsg('Password updated.')
-      setNewPw(''); setConfirmPw('')
+      setCurrentPw(''); setNewPw(''); setConfirmPw('')
       await supabase.auth.signOut()
       router.push('/login?message=Password+updated.+Please+sign+in+again.')
     } catch (e: any) { setErr(e.message) } finally { setPwLoading(false) }
@@ -339,6 +345,18 @@ function AccountTab({ session, supabase, router, mfaMandatory }: any) {
       <div className="settings-section">
         <div className="settings-section-title">Change password</div>
         <form onSubmit={savePassword}>
+          {/* FIX (deep audit, Auth+MFA re-pass — password confirmation):
+              an OAuth-only account (session.hasPasswordIdentity false) has
+              no existing password to confirm — this is setting one for the
+              first time, not changing it, so the field doesn't apply. */}
+          {session.hasPasswordIdentity && (
+            <div className="fgrp">
+              <label className="flbl">Current password</label>
+              <input type="password" className="finp" value={currentPw}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCurrentPw(e.target.value)}
+                placeholder="Current password" autoComplete="current-password" />
+            </div>
+          )}
           <div className="fgrp">
             <label className="flbl">New password <span className="fhint">— 8 characters minimum</span></label>
             <input type="password" className="finp" value={newPw}
@@ -354,7 +372,7 @@ function AccountTab({ session, supabase, router, mfaMandatory }: any) {
             {confirmPw && confirmPw !== newPw && <p className="ferr">Passwords don&apos;t match.</p>}
           </div>
           <button type="submit" className="btn btn-primary btn-sm"
-            disabled={pwLoading || !newPw || !confirmPw || newPw !== confirmPw}>
+            disabled={pwLoading || !newPw || !confirmPw || newPw !== confirmPw || (session.hasPasswordIdentity && !currentPw)}>
             {pwLoading ? <span className="spin" /> : 'Update password'}
           </button>
         </form>

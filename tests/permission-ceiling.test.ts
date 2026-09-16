@@ -23,6 +23,7 @@ function actor(permissions: string[]): SessionUser {
     emailVerifiedAt: new Date().toISOString(),
     logoStoragePath: null,
     brandColour: null,
+    hasPasswordIdentity: true,
   }
 }
 

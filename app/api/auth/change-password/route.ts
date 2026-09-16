@@ -1,7 +1,7 @@
 export const runtime = 'nodejs'
 
 import { NextResponse, type NextRequest } from 'next/server'
-import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
+import { createServerSupabaseClient, createServiceClient, createStatelessAuthClient } from '@/lib/supabase/server'
 import { userHasAnyMfaMandatoryMembership } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { sendPasswordChangedEmail } from '@/lib/email/templates'
@@ -15,15 +15,40 @@ import { sendPasswordChangedEmail } from '@/lib/email/templates'
 // an equally account-taking-over-capable action, had no equivalent check
 // anywhere. This route restores that parity: same aal2 rule, only when
 // the caller's current role actually mandates MFA.
+//
+// FIX (deep audit, Auth+MFA re-pass — password confirmation): the aal2
+// gate above only ever applied to accounts whose role mandates MFA — for
+// everyone else, a live session cookie alone was sufficient to change the
+// password, with no proof the caller actually knows it (e.g. a hijacked or
+// left-open session, or an XSS-stolen cookie). Now requires the current
+// password for any account that has one, regardless of MFA policy,
+// verified against Supabase directly rather than trusted from the client.
 export async function POST(request: NextRequest) {
   try {
     const supabase = await createServerSupabaseClient()
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-    const { password } = await request.json().catch(() => ({}))
+    const { password, currentPassword } = await request.json().catch(() => ({}))
     if (!password || typeof password !== 'string' || password.length < 8) {
       return NextResponse.json({ error: 'Password must be at least 8 characters' }, { status: 400 })
+    }
+
+    // An OAuth-only account (Google sign-in, no 'email' identity) has no
+    // existing password to confirm — this is "set a password for the
+    // first time," not "change" one, so there's nothing to verify against.
+    const hasPasswordIdentity = (user.identities || []).some((i: any) => i.provider === 'email')
+    if (hasPasswordIdentity) {
+      if (!currentPassword || typeof currentPassword !== 'string') {
+        return NextResponse.json({ error: 'Current password is required' }, { status: 400 })
+      }
+      const verifyClient = createStatelessAuthClient()
+      const { error: verifyError } = await verifyClient.auth.signInWithPassword({
+        email: user.email!, password: currentPassword,
+      })
+      if (verifyError) {
+        return NextResponse.json({ error: 'Current password is incorrect' }, { status: 401 })
+      }
     }
 
     const service = createServiceClient()

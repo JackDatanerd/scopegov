@@ -93,6 +93,7 @@ export async function getSession(): Promise<SessionUser | null> {
       emailVerifiedAt:      u?.email_verified_at || user.email_confirmed_at || null,
       logoStoragePath:      ws?.logo_storage_path || null,
       brandColour:          ws?.brand_colour || null,
+      hasPasswordIdentity:  (user.identities || []).some((i: any) => i.provider === 'email'),
     }
   } catch {
     return null

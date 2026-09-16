@@ -37,3 +37,22 @@ export function createServiceClient() {
     { auth: { autoRefreshToken: false, persistSession: false } }
   )
 }
+
+// ── Stateless auth-only client (deep audit, Auth+MFA re-pass) ─────────────
+// For verifying a credential (e.g. "confirm your current password before
+// changing it") without disturbing the caller's real, cookie-backed
+// session. Built directly with the anon key via plain @supabase/supabase-js
+// — no @supabase/ssr cookie adapter at all, so a signInWithPassword() call
+// against this client can never read or overwrite the request's actual
+// session cookies, and persistSession/autoRefreshToken are both off so it
+// discards whatever session it creates the moment this client falls out of
+// scope. Anon key, not service role — this only ever asks GoTrue "is this
+// email+password combination valid," the same privilege level a real login
+// attempt has.
+export function createStatelessAuthClient() {
+  return createSupabaseClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    { auth: { autoRefreshToken: false, persistSession: false } }
+  )
+}
