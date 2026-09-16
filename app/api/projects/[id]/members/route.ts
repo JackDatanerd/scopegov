@@ -5,6 +5,7 @@ export const runtime = 'nodejs'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
+import { logAudit } from '@/lib/utils/audit'
 
 export async function POST(
   request: NextRequest,
@@ -41,7 +42,7 @@ export async function POST(
     // Verify the member belongs to this workspace
     const { data: member } = await (service as any)
       .from('workspace_members')
-      .select('id')
+      .select('id, users!workspace_members_user_id_fkey(name, email)')
       .eq('id', memberId)
       .eq('workspace_id', session.workspaceId)
       .eq('status', 'active')
@@ -59,6 +60,19 @@ export async function POST(
       }, { onConflict: 'project_id,member_id' })
 
     if (error) throw new Error(error.message)
+
+    // FIX (deep audit, section 7): every other project mutation
+    // (create/update/delete/archive/complete, even SOW/CO actions) writes
+    // an audit_log row — assigning or removing someone from a project
+    // never did, leaving no record of team-composition changes at all.
+    await logAudit(service, {
+      workspaceId: session.workspaceId, actorId: session.id,
+      actorEmail: session.email, actorName: session.name,
+      eventType: 'project_member.added', entityType: 'project',
+      entityId: projectId, entityName: member.users?.name || member.users?.email || 'Unknown',
+      metadata: { member_id: memberId },
+    })
+
     return NextResponse.json({ ok: true })
   } catch (err) {
     return NextResponse.json(
@@ -93,9 +107,25 @@ export async function DELETE(
       .eq('id', projectId).eq('workspace_id', session.workspaceId).is('deleted_at', null).single()
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
 
+    // FIX (deep audit, section 7): fetch who's being removed before the
+    // delete, so the audit entry below can name them the same way the add
+    // path does above.
+    const { data: member } = await (service as any)
+      .from('workspace_members')
+      .select('id, users!workspace_members_user_id_fkey(name, email)')
+      .eq('id', memberId).eq('workspace_id', session.workspaceId).maybeSingle()
+
     await (service as any)
       .from('project_members').delete()
       .eq('project_id', projectId).eq('member_id', memberId)
+
+    await logAudit(service, {
+      workspaceId: session.workspaceId, actorId: session.id,
+      actorEmail: session.email, actorName: session.name,
+      eventType: 'project_member.removed', entityType: 'project',
+      entityId: projectId, entityName: member?.users?.name || member?.users?.email || 'Unknown',
+      metadata: { member_id: memberId },
+    })
 
     return NextResponse.json({ ok: true })
   } catch (err) {

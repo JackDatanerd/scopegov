@@ -61,10 +61,16 @@ export default async function DashboardPage() {
     ? Math.max(0, Math.ceil((new Date(session.trialEndsAt).getTime() - Date.now()) / 86400000))
     : null
 
+  // FIX (deep audit, section 7): this select fed the same isAttentionWorthy
+  // / attentionReason predicate as app/(app)/projects/page.tsx, but with a
+  // narrower shape — sow_documents(status) had no `version`, so the
+  // "highest version actually sent to the client" sort those functions do
+  // degenerated to an arbitrary pick (all comparisons return 0). Bring the
+  // select in line with the Projects list's so the two pages agree.
   let projQuery = (service as any)
     .from('projects')
     .select(`id,name,disc,type,status,stall_reason,contract_value,currency,updated_at,
-      clients(id,name),guardian_flags(status),change_orders(status),sow_documents(status)`)
+      clients(id,name),guardian_flags(status),change_orders(status),sow_documents(id,status,version)`)
     .eq('workspace_id', session.workspaceId)
     .is('deleted_at', null)
     .order('updated_at', { ascending: false })
@@ -84,8 +90,14 @@ export default async function DashboardPage() {
   }
 
   const { data: projects = [] } = await projQuery
+  // FIX (deep audit, section 7): this omitted `currency`, so
+  // isAttentionWorthy's currency-mismatch guard on the proactive-risk-alert
+  // rule (workspace?.currency undefined → currencyMatches always true)
+  // was silently defeated here — the exact guard it's meant to enforce was
+  // correctly applied on the Projects list (which does fetch currency) and
+  // not on the Dashboard, for the same project.
   const { data: ws } = await (service as any)
-    .from('workspaces').select('proactive_risk_alerts_enabled,proactive_risk_threshold')
+    .from('workspaces').select('proactive_risk_alerts_enabled,proactive_risk_threshold,currency')
     .eq('id', session.workspaceId).single()
 
   // FIX (audit round 4, finding #8): this was workspace-wide with no
@@ -118,7 +130,7 @@ export default async function DashboardPage() {
     isAttentionWorthy({
       project: { ...p, contractValue: p.contract_value, stallReason: p.stall_reason,
         guardianFlags: p.guardian_flags, changeOrders: p.change_orders, sowDocuments: p.sow_documents },
-      workspace: { proactiveRiskAlertsEnabled: ws?.proactive_risk_alerts_enabled, proactiveRiskThreshold: ws?.proactive_risk_threshold },
+      workspace: { proactiveRiskAlertsEnabled: ws?.proactive_risk_alerts_enabled, proactiveRiskThreshold: ws?.proactive_risk_threshold, currency: ws?.currency },
     })
   )
   // FIX (deep audit, section 7): see currencyGroupedTotals in

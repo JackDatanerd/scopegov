@@ -33,7 +33,9 @@ interface PortfolioData {
     snapshotDate: string
   } | null
   history: HistoryPoint[]
-  trend: { openFlagsDelta: number; atRiskDelta: number } | null
+  // FIX (deep audit, section 8): atRiskDelta is now null when the viewer
+  // lacks VIEW_FINANCIALS — see api/reports/portfolio/route.ts.
+  trend: { openFlagsDelta: number; atRiskDelta: number | null } | null
   openFlags: OpenFlag[]
   stalledSows: StalledSow[]
   stalledCos: StalledCo[]
@@ -60,11 +62,20 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName }: { 
   const [flagFilter, setFlagFilter] = useState<'all' | 'high' | 'medium' | 'low'>('all')
 
   useEffect(() => {
+    // FIX (deep audit, section 8): no cancellation guard — switching
+    // periods twice quickly let a slower earlier response land after a
+    // faster later one and silently overwrite it, showing stale-period
+    // data with no indication anything was wrong. Same pattern already
+    // used for this exact class of bug elsewhere (see the `cancelled`
+    // flag on the workspace-defaults fetch in app/(app)/projects/new/
+    // page.tsx).
+    let cancelled = false
     setLoading(true)
     fetch(`/api/reports/portfolio?period=${period}`)
       .then(r => r.json())
-      .then(json => { setData(json); setLoading(false) })
-      .catch(() => setLoading(false))
+      .then(json => { if (!cancelled) { setData(json); setLoading(false) } })
+      .catch(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
   }, [period])
 
   const filteredFlags = useMemo(() => {
@@ -229,7 +240,7 @@ function MetricStrip({ data, canViewFinancials }: { data: PortfolioData; canView
           {canViewFinancials && c.contractValueAtRisk !== null ? formatCurrency(c.contractValueAtRisk, data.currency, true) : '—'}
         </div>
         <div className="mc-sub">
-          {canViewFinancials && trend
+          {canViewFinancials && trend && trend.atRiskDelta !== null
             ? `${trend.atRiskDelta >= 0 ? '+' : ''}${formatCurrency(trend.atRiskDelta, data.currency, true)} vs period start`
             : 'Severity-weighted estimate'}
         </div>

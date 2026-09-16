@@ -64,7 +64,7 @@ interface Permissions {
   approveFlags: boolean; grantExceptions: boolean; markComplete: boolean
   markDeliverable: boolean; markMilestone: boolean; submitGuardian: boolean
   viewGuardianHistory: boolean; assignTeam: boolean; viewFinancials: boolean
-  deleteProject: boolean; sendInvoices: boolean
+  deleteProject: boolean; sendInvoices: boolean; moderateMessages: boolean
 }
 
 interface Props {
@@ -173,6 +173,20 @@ export default function ProjectDetail({
     } finally { setArchiving(false) }
   }
 
+  // FIX (deep audit, section 7): Archived was a one-way door — no UI or
+  // API path back to Complete. Mirrors handleArchive's shape.
+  const [unarchiving, setUnarchiving] = useState(false)
+  async function handleUnarchive() {
+    setUnarchiving(true); setError('')
+    try {
+      const res = await fetch(`/api/projects/${project.id}/unarchive`, { method: 'POST' })
+      if (!res.ok) { const j = await res.json(); throw new Error(j.error) }
+      router.refresh()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Something went wrong')
+    } finally { setUnarchiving(false) }
+  }
+
   return (
     <div>
       {/* Header */}
@@ -216,6 +230,11 @@ export default function ProjectDetail({
             {permissions.markComplete && project.status === 'Complete' && (
               <button className="btn btn-ghost btn-sm" onClick={handleArchive} disabled={archiving}>
                 {archiving ? <span className="spin spin-dark" /> : <><i className="ti ti-archive" style={{ fontSize: 12 }} /> Archive</>}
+              </button>
+            )}
+            {permissions.markComplete && project.status === 'Archived' && (
+              <button className="btn btn-ghost btn-sm" onClick={handleUnarchive} disabled={unarchiving}>
+                {unarchiving ? <span className="spin spin-dark" /> : <><i className="ti ti-archive-off" style={{ fontSize: 12 }} /> Unarchive</>}
               </button>
             )}
             {canDelete && (
@@ -275,6 +294,7 @@ export default function ProjectDetail({
           <ProjectDiscussion
             projectId={project.id}
             currentUserId={session.id}
+            canModerate={permissions.moderateMessages}
             onRead={() => setUnreadMessages(0)}
             team={team
               .map((t: any) => t.workspace_members?.users)
@@ -391,6 +411,16 @@ function OverviewTab({ project, milestones, amendments, permissions, currency, r
               <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 2 }}>Start date</div>
               <div>{project.start_date ? formatDate(project.start_date) : '—'}</div>
             </div>
+            {project.type === 'retainer' && (
+              <div>
+                <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 2 }}>Retainer duration</div>
+                <div>
+                  {project.retainer_duration_months
+                    ? `${project.retainer_duration_months} month${project.retainer_duration_months !== 1 ? 's' : ''}`
+                    : 'Not set — monthly billing won\u2019t auto-generate'}
+                </div>
+              </div>
+            )}
             <div>
               <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 2 }}>SOW status</div>
               <div>{latestSow ? (SOW_STATUS_LABEL[latestSow.status] || latestSow.status) : 'No SOW created yet'}{latestSow ? ` · v${latestSow.version}` : ''}</div>

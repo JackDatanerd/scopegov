@@ -56,6 +56,13 @@ function NewProjectPageInner() {
   const [currency,     setCurrency]     = useState('USD')
   const [startDate,    setStartDate]    = useState('')
   const [internalRef,  setInternalRef]  = useState('')
+  // FIX (deep audit, section 7 — flagship finding): retainer_duration_months
+  // is read by api/cron/retainer-milestones to decide when to stop
+  // generating monthly retainer invoices, but had no field anywhere in
+  // the product to set it — it was permanently null, so the cron's
+  // `.not('retainer_duration_months', 'is', null)` filter matched zero
+  // projects, ever. Only meaningful for the 'retainer' project type.
+  const [retainerMonths, setRetainerMonths] = useState('12')
 
   // Step 1: Brief
   const [briefMode,    setBriefMode]    = useState<'ai' | 'manual'>('ai')
@@ -154,6 +161,7 @@ function NewProjectPageInner() {
           name: projectName, disc: projectDisc || null, type: projectType,
           contractValue: parseFloat(contractValue) || 0, currency,
           startDate: startDate || null, internalRef: internalRef || null,
+          retainerDurationMonths: projectType === 'retainer' ? (retainerMonths || null) : null,
         }),
       })
       const json = await res.json()
@@ -352,12 +360,27 @@ function NewProjectPageInner() {
                 <input type="date" className="finp" value={startDate}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) => setStartDate(e.target.value)} />
               </div>
-              <div className="fgrp">
+              {projectType === 'retainer' ? (
+                <div className="fgrp">
+                  <label className="flbl">Retainer duration <span className="fhint">— months</span></label>
+                  <input type="number" className="finp" value={retainerMonths} min={1} max={60} step="1" placeholder="12"
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRetainerMonths(e.target.value)} />
+                </div>
+              ) : (
+                <div className="fgrp">
+                  <label className="flbl">Internal ref <span className="fhint">— optional</span></label>
+                  <input className="finp" value={internalRef} placeholder="INV-2024-001"
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setInternalRef(e.target.value)} />
+                </div>
+              )}
+            </div>
+            {projectType === 'retainer' && (
+              <div className="fgrp" style={{ marginBottom: 24 }}>
                 <label className="flbl">Internal ref <span className="fhint">— optional</span></label>
                 <input className="finp" value={internalRef} placeholder="INV-2024-001"
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) => setInternalRef(e.target.value)} />
               </div>
-            </div>
+            )}
 
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
               <button type="submit" className="btn btn-primary" disabled={loading || !projectName || (!clientId && (!clientName || !clientEmail))}>

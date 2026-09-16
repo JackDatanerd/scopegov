@@ -35,12 +35,25 @@ export async function GET(request: NextRequest) {
     const latest = history.length ? history[history.length - 1] : null
     const earliest = history.length ? history[0] : null
 
+    // FIX (deep audit, section 8): scope_health_rollup deliberately scopes
+    // open_flags_count / stalled_co_count to the workspace's single
+    // dominant currency for that snapshot (see app/api/cron/scope-health-
+    // rollup/route.ts) — the same discipline exceptions_count and
+    // stalled_sow_count follow. The drill-down queries below had no such
+    // filter, so in a multi-currency workspace the metric strip's "Open
+    // scope flags" count and the "Stalled documents" count could disagree
+    // outright with the length of the very list rendered underneath them
+    // (data.openFlags.length / items.length in PortfolioDashboard.tsx) —
+    // scope both to the same dominant currency the snapshot used.
+    const dominantCurrency = latest?.currency || 'USD'
+
     // Drill-down: current open flags across the whole portfolio, newest first.
     const { data: openFlags } = await (service as any)
       .from('guardian_flags')
-      .select('id, severity, description, sow_reference, created_at, project_id, projects(id, name, contract_value, currency, clients(name))')
+      .select('id, severity, description, sow_reference, created_at, project_id, projects!inner(id, name, contract_value, currency, clients(name))')
       .eq('workspace_id', wsId)
       .eq('status', 'open')
+      .eq('projects.currency', dominantCurrency)
       .order('created_at', { ascending: false })
       .limit(100)
 
@@ -59,16 +72,31 @@ export async function GET(request: NextRequest) {
         // a rounding artifact like the count/value mismatches above — it
         // prints the wrong currency symbol on a real figure outright (a
         // KES 200,000 change order rendered as "$200,000").
-        .select('id, title, total, project_id, updated_at, projects(id, name, currency)')
+        //
+        // FIX (deep audit, section 8): also scoped to dominantCurrency —
+        // see the openFlags note above. stalled_co_count in the snapshot
+        // is dominant-currency-scoped; this drill-down wasn't, so the two
+        // could disagree the same way.
+        .select('id, title, total, project_id, updated_at, projects!inner(id, name, currency)')
         .eq('workspace_id', wsId).eq('status', 'stalled')
+        .eq('projects.currency', dominantCurrency)
         .order('updated_at', { ascending: true }),
     ])
 
     // Movement vs the start of the selected period, so the dashboard can
     // show a trend arrow, not just a static count.
+    // FIX (deep audit, section 8): atRiskDelta is a dollar figure derived
+    // from contract_value_at_risk, exactly like current.contractValueAtRisk
+    // and history[].contractValueAtRisk right below — both of those are
+    // correctly redacted behind canViewFinancials, this wasn't. A
+    // VIEW_ALL_PROJECTS holder without VIEW_FINANCIALS could read the raw
+    // at-risk delta straight out of the response even though the UI never
+    // renders it for them and every other financial figure here is null.
     const trend = earliest && latest ? {
       openFlagsDelta: latest.open_flags_count - earliest.open_flags_count,
-      atRiskDelta: Math.round((latest.contract_value_at_risk - earliest.contract_value_at_risk) * 100) / 100,
+      atRiskDelta: canViewFinancials
+        ? Math.round((latest.contract_value_at_risk - earliest.contract_value_at_risk) * 100) / 100
+        : null,
     } : null
 
     return NextResponse.json({

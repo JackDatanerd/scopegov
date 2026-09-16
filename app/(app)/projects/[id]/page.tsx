@@ -10,9 +10,17 @@ interface Props {
 
 export async function generateMetadata({ params }: Props) {
   const { id } = await params
+  // FIX (deep audit, section 7 — cross-tenant leak): this ran with no
+  // session check and no workspace filter at all, unlike the page
+  // component below (which checks both). Any request for
+  // /projects/<uuid> — authenticated or not, any workspace — leaked that
+  // project's name via the page <title>, independent of whether the page
+  // body then redirected or 404'd. Scope it exactly like the page does.
+  const session = await getSession()
+  if (!session) return { title: 'Project' }
   const service = createServiceClient()
   const { data: p } = await (service as any)
-    .from('projects').select('name').eq('id', id).single()
+    .from('projects').select('name').eq('id', id).eq('workspace_id', session.workspaceId).single()
   return { title: p?.name || 'Project' }
 }
 
@@ -227,6 +235,14 @@ export default async function ProjectPage({ params, searchParams }: Props) {
         viewFinancials: hasPermission(session, 'VIEW_FINANCIALS'),
         deleteProject: hasPermission(session, 'DELETE_PROJECTS'),
         sendInvoices: hasPermission(session, 'SEND_INVOICES'),
+        // FIX (deep audit, section 7): DELETE /api/projects/[id]/messages/
+        // [messageId] already lets an admin (MANAGE_WORKSPACE_SETTINGS)
+        // delete anyone's message — moderation of a stray/inappropriate
+        // post shouldn't require a database console — but no permission
+        // for it ever reached the frontend, so the Discussion tab never
+        // showed a delete affordance for anything but the author's own
+        // messages.
+        moderateMessages: hasPermission(session, 'MANAGE_WORKSPACE_SETTINGS'),
       }}
     />
   )

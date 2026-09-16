@@ -69,11 +69,17 @@ function MessageBody({ body, currentUserId }: { body: string; currentUserId: str
 }
 
 export default function ProjectDiscussion({
-  projectId, team, currentUserId, onRead,
+  projectId, team, currentUserId, canModerate, onRead,
 }: {
   projectId: string
   team: TeamMember[]
   currentUserId: string
+  // FIX (deep audit, section 7): the DELETE endpoint already allows an
+  // admin (MANAGE_WORKSPACE_SETTINGS) to remove any message, not just
+  // their own — this component had no way to know that and only ever
+  // showed the delete action for the author. See app/(app)/projects/[id]/
+  // page.tsx's `moderateMessages` permission.
+  canModerate?: boolean
   onRead?: () => void
 }) {
   const [messages, setMessages] = useState<Message[]>([])
@@ -236,13 +242,15 @@ export default function ProjectDiscussion({
                 )}
               </div>
 
-              {!m.deleted && m.isMine && editingId !== m.id && (
+              {!m.deleted && (m.isMine || canModerate) && editingId !== m.id && (
                 <div className="pm-actions" style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-                  <button className="btn-icon" title="Edit" onClick={() => startEdit(m)}
-                    style={{ width: 22, height: 22, border: 'none', background: 'none', cursor: 'pointer', color: 'var(--text-3)' }}>
-                    <i className="ti ti-pencil" style={{ fontSize: 12 }} />
-                  </button>
-                  <button className="btn-icon" title="Delete" onClick={() => removeMessage(m.id)}
+                  {m.isMine && (
+                    <button className="btn-icon" title="Edit" onClick={() => startEdit(m)}
+                      style={{ width: 22, height: 22, border: 'none', background: 'none', cursor: 'pointer', color: 'var(--text-3)' }}>
+                      <i className="ti ti-pencil" style={{ fontSize: 12 }} />
+                    </button>
+                  )}
+                  <button className="btn-icon" title={m.isMine ? 'Delete' : 'Remove message (admin)'} onClick={() => removeMessage(m.id)}
                     style={{ width: 22, height: 22, border: 'none', background: 'none', cursor: 'pointer', color: 'var(--text-3)' }}>
                     <i className="ti ti-trash" style={{ fontSize: 12 }} />
                   </button>

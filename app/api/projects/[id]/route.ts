@@ -31,7 +31,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     // Verify project belongs to workspace
     const { data: project } = await (service as any)
-      .from('projects').select('id,name,status,contract_value,currency,sow_documents(status)').eq('id', id)
+      .from('projects').select('id,name,status,type,contract_value,currency,retainer_duration_months,sow_documents(status)').eq('id', id)
       .eq('workspace_id', session.workspaceId).single()
     if (!project) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     // FIX (audit round 3): see lib/utils/project-access.ts.
@@ -110,6 +110,27 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     }
     if (body.startDate !== undefined) updates.start_date = body.startDate || null
     if (body.internalRef !== undefined) updates.internal_ref = body.internalRef || null
+
+    // FIX (deep audit, section 7 — flagship finding): retainer_duration_months
+    // had no write path anywhere in the product — see POST /api/projects
+    // for the full explanation. Allow it here too, for retainer projects
+    // whose term wasn't set (or needs correcting) after creation.
+    if (body.retainerDurationMonths !== undefined && project.type === 'retainer') {
+      if (body.retainerDurationMonths === null || body.retainerDurationMonths === '') {
+        if (project.retainer_duration_months !== null) {
+          changes.retainerDurationMonths = { from: project.retainer_duration_months, to: null }
+          updates.retainer_duration_months = null
+        }
+      } else {
+        const parsed = parseInt(body.retainerDurationMonths, 10)
+        if (!Number.isFinite(parsed) || parsed < 1 || parsed > 60)
+          return NextResponse.json({ error: 'Retainer duration must be between 1 and 60 months' }, { status: 400 })
+        if (parsed !== project.retainer_duration_months) {
+          changes.retainerDurationMonths = { from: project.retainer_duration_months, to: parsed }
+          updates.retainer_duration_months = parsed
+        }
+      }
+    }
 
     await (service as any).from('projects').update(updates).eq('id', id)
 

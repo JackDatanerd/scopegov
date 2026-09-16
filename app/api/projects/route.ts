@@ -11,10 +11,28 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Missing permission: CREATE_PROJECTS' }, { status: 403 })
 
     const body = await request.json()
-    const { clientId, newClient, name, disc, type, contractValue, currency, startDate, internalRef } = body
+    const { clientId, newClient, name, disc, type, contractValue, currency, startDate, internalRef, retainerDurationMonths } = body
 
     if (!name?.trim() || !type)
       return NextResponse.json({ error: 'Name and type are required' }, { status: 400 })
+
+    // FIX (deep audit, section 7 — flagship finding): retainer_duration_months
+    // is read by api/cron/retainer-milestones, which only ever considers
+    // projects where it's NOT NULL — but nothing wrote this column
+    // anywhere (not here, not PATCH /api/projects/[id], no settings page).
+    // It was permanently null for every project, so the monthly
+    // retainer-billing cron matched zero projects, ever. Accept it here
+    // for type='retainer' the same way contractValue/currency are
+    // accepted; a stray value for a non-retainer type is just ignored
+    // rather than erroring, since it has no effect on anything for those
+    // types.
+    let retainerDuration: number | null = null
+    if (type === 'retainer' && retainerDurationMonths != null && retainerDurationMonths !== '') {
+      const parsed = parseInt(retainerDurationMonths, 10)
+      if (!Number.isFinite(parsed) || parsed < 1 || parsed > 60)
+        return NextResponse.json({ error: 'Retainer duration must be between 1 and 60 months' }, { status: 400 })
+      retainerDuration = parsed
+    }
 
     // FIX (section-11 audit, pass 2): currency was taken straight from the
     // request body with no normalization. The dropdown in the new-project
@@ -146,6 +164,7 @@ export async function POST(request: NextRequest) {
         currency:       normalizedCurrency || 'USD',
         start_date:     startDate || null,
         internal_ref:   internalRef?.trim() || null,
+        retainer_duration_months: retainerDuration,
         created_by:     session.id,
       })
       .select('id')
