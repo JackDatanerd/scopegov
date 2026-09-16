@@ -277,6 +277,8 @@ function AccountTab({ session, supabase, router, mfaMandatory }: any) {
   const [confirmPw,   setConfirmPw]   = useState('')
   const [pwLoading,   setPwLoading]   = useState(false)
   const [nameLoading, setNameLoading] = useState(false)
+  const [sessionsLoading, setSessionsLoading] = useState(false)
+  const [sessionsMsg,     setSessionsMsg]     = useState('')
   const [msg,         setMsg]         = useState('')
   const [err,         setErr]         = useState('')
 
@@ -317,6 +319,18 @@ function AccountTab({ session, supabase, router, mfaMandatory }: any) {
       await supabase.auth.signOut()
       router.push('/login?message=Password+updated.+Please+sign+in+again.')
     } catch (e: any) { setErr(e.message) } finally { setPwLoading(false) }
+  }
+
+  // FEATURE (deep audit, Auth+MFA re-pass — session management): see
+  // api/auth/signout-others/route.ts for the full writeup.
+  async function signOutOtherSessions() {
+    setSessionsLoading(true); setSessionsMsg(''); setErr('')
+    try {
+      const res = await fetch('/api/auth/signout-others', { method: 'POST' })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json.error || 'Failed to sign out other sessions')
+      setSessionsMsg('Signed out of all other sessions. This device stays signed in.')
+    } catch (e: any) { setErr(e.message) } finally { setSessionsLoading(false) }
   }
 
   return (
@@ -376,6 +390,16 @@ function AccountTab({ session, supabase, router, mfaMandatory }: any) {
             {pwLoading ? <span className="spin" /> : 'Update password'}
           </button>
         </form>
+      </div>
+      <div className="settings-section">
+        <div className="settings-section-title">Sessions</div>
+        <p style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 12 }}>
+          Sign out of every other browser or device where you&apos;re currently logged in — this one stays signed in.
+        </p>
+        {sessionsMsg && <div className="auth-success" style={{ marginBottom: 14 }}>{sessionsMsg}</div>}
+        <button type="button" className="btn btn-secondary btn-sm" disabled={sessionsLoading} onClick={signOutOtherSessions}>
+          {sessionsLoading ? <span className="spin" /> : 'Sign out of all other sessions'}
+        </button>
       </div>
       {/* FIX (deep audit, Auth+MFA re-pass): was permissionsRequireMfa(
           session.permissions) — checks only the ACTIVE workspace's

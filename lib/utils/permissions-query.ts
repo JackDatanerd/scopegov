@@ -167,13 +167,28 @@ export async function getMembersWithRole(
   limit = 25,
   projectId?: string
 ): Promise<Array<{ id: string; name: string; email: string }>> {
+  // FIX (deep audit, RLS+permissions re-pass): this reintroduced the exact
+  // "cap applied before the final filter" bug already fixed for the
+  // sibling getMembersWithPermission above (see "audit round 4, finding
+  // #8" and "cron audit, section 17") — `.limit(limit)` ran on the raw
+  // role-membership query, BEFORE filterToProjectAccess() below could
+  // remove anyone not assigned to this project, and with no `.order()`
+  // for determinism either. In a workspace with more than `limit` active
+  // members holding this role, a legitimately project-assigned approver
+  // could be silently excluded from ever being notified their approval is
+  // needed, simply for not landing in the first, arbitrarily-ordered
+  // batch Postgres returned — while members who get filtered out right
+  // afterward for lacking project access had already consumed a slot in
+  // that batch. Same fix shape: fetch a generous, ordered upper bound,
+  // filter, THEN slice to `limit`.
   const { data: members } = await service
     .from('workspace_members')
     .select('user_id, effective_permissions, users!workspace_members_user_id_fkey(id, name, email)')
     .eq('workspace_id', workspaceId)
     .eq('role_id', roleId)
     .eq('status', 'active')
-    .limit(limit)
+    .order('user_id')
+    .limit(500)
 
   const eligible = (members || []).filter((m: any) => m.users?.email)
   const permissionMap = new Map<string, Record<string, boolean>>(
@@ -183,7 +198,7 @@ export async function getMembersWithRole(
 
   if (projectId) recipients = await filterToProjectAccess(service, projectId, recipients, permissionMap)
 
-  return recipients
+  return recipients.slice(0, limit)
 }
 
 export async function getMemberEmailsWithPermission(

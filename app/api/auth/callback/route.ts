@@ -9,6 +9,29 @@ import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/
 import { NextResponse, type NextRequest } from 'next/server'
 import type { EmailOtpType } from '@supabase/supabase-js'
 import { safeRedirectPath } from '@/lib/utils/safe-redirect'
+import { logAudit } from '@/lib/utils/audit'
+
+// FIX (deep audit, Auth+MFA re-pass — login audit trail): see
+// api/auth/login-event/route.ts for the full writeup. This route is
+// already server-side and already has `user` in hand for both the OAuth
+// (code) and email-confirmation (token_hash) flows, so it logs directly
+// rather than making a second round trip. Only called once a member row
+// (and therefore a workspace to attribute the entry to) exists — a
+// brand-new signup with no workspace yet has nowhere for a per-workspace
+// audit_log row to point.
+async function logLoginEvent(
+  serviceClient: ReturnType<typeof createServiceClient>,
+  user: { id: string; email?: string | null; user_metadata?: any },
+  workspaceId: string,
+  method: 'google' | 'email_confirmation'
+) {
+  await logAudit(serviceClient as any, {
+    workspaceId, actorId: user.id,
+    actorEmail: user.email || '', actorName: user.user_metadata?.name || user.email || '',
+    eventType: 'security.login_succeeded', entityType: 'user', entityId: user.id, entityName: user.email || '',
+    metadata: { method },
+  })
+}
 
 export async function GET(request: NextRequest) {
   const { searchParams, origin } = new URL(request.url)
@@ -49,13 +72,14 @@ export async function GET(request: NextRequest) {
 
         const { data: member } = await (supabase as any)
           .from('workspace_members')
-          .select('id, workspace:workspaces(onboarding_completed_at)')
+          .select('id, workspace_id, workspace:workspaces(onboarding_completed_at)')
           .eq('user_id', user.id)
           .eq('status', 'active')
           .limit(1)
           .single()
 
         if (!member) return NextResponse.redirect(`${origin}/onboarding`)
+        await logLoginEvent(serviceClient, user, member.workspace_id, 'google')
         if (!member.workspace?.onboarding_completed_at) {
           return NextResponse.redirect(`${origin}/onboarding`)
         }
@@ -79,13 +103,14 @@ export async function GET(request: NextRequest) {
 
         const { data: member } = await (supabase as any)
           .from('workspace_members')
-          .select('id, workspace:workspaces(onboarding_completed_at)')
+          .select('id, workspace_id, workspace:workspaces(onboarding_completed_at)')
           .eq('user_id', user.id)
           .eq('status', 'active')
           .limit(1)
           .single()
 
         if (!member) return NextResponse.redirect(`${origin}/onboarding`)
+        await logLoginEvent(serviceClient, user, member.workspace_id, 'email_confirmation')
         if (!member.workspace?.onboarding_completed_at) {
           return NextResponse.redirect(`${origin}/onboarding`)
         }

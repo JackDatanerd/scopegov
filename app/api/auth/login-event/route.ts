@@ -1,0 +1,76 @@
+export const runtime = 'nodejs'
+
+import { NextResponse, type NextRequest } from 'next/server'
+import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
+import { logAudit } from '@/lib/utils/audit'
+
+// FEATURE (deep audit, Auth+MFA section — feature gap): every other
+// security-sensitive account action in this app writes to audit_log
+// (password changed, MFA enrolled/disabled/backup-code-used/regenerated)
+// — but a successful sign-in itself never has, because
+// app/(auth)/login/LoginForm.tsx calls supabase.auth.signInWithPassword()
+// straight from the browser, with no server route in that path to attach
+// a log entry to. For a product whose stated purpose is a governance /
+// audit trail, that's a real gap: the most basic security event (who
+// accessed the workspace, and when) was the one thing missing from it.
+//
+// This route is called by LoginForm.tsx right after a password sign-in
+// succeeds (the browser call has already set the session cookie by the
+// time this fires, so getUser() here reflects the just-established
+// session) and by api/auth/callback/route.ts for OAuth and email-
+// confirmation logins, which already run server-side.
+//
+// Deliberately scoped to SUCCESSFUL logins only this round. Logging
+// FAILED attempts too would need its own unauthenticated endpoint (no
+// session exists yet to attribute the attempt to), which raises a
+// separate question this pass doesn't answer: what stops that endpoint
+// itself from being used to spam a targeted workspace's audit trail with
+// fabricated failure entries. Flagging that as a deliberate deferral
+// rather than shipping an under-designed anti-abuse story for a
+// compliance-log feature.
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = await createServerSupabaseClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+    const body = await request.json().catch(() => ({}))
+    const method = body?.method === 'google' ? 'google' : 'password'
+
+    const service = createServiceClient()
+    const { data: userRow } = await (service as any)
+      .from('users').select('active_workspace_id').eq('id', user.id).maybeSingle()
+
+    // Mirrors resolveActiveWorkspaceId in mfa/verify/route.ts: fall back to
+    // the oldest active membership when active_workspace_id is unset —
+    // covers the very first login right after signup, before onboarding
+    // has run and active_workspace_id has ever been set.
+    let workspaceId: string | null = userRow?.active_workspace_id || null
+    if (!workspaceId) {
+      const { data: member } = await (service as any)
+        .from('workspace_members')
+        .select('workspace_id').eq('user_id', user.id).eq('status', 'active')
+        .order('created_at', { ascending: true }).limit(1).maybeSingle()
+      workspaceId = member?.workspace_id || null
+    }
+
+    // No workspace yet (e.g. mid-signup, before onboarding creates one) —
+    // audit_log is a per-workspace record with a NOT NULL workspace_id,
+    // so there's nowhere to attribute this login to yet. Nothing to log.
+    if (!workspaceId) return NextResponse.json({ ok: true })
+
+    await logAudit(service, {
+      workspaceId, actorId: user.id,
+      actorEmail: user.email!, actorName: user.user_metadata?.name || user.email!,
+      eventType: 'security.login_succeeded', entityType: 'user', entityId: user.id, entityName: user.email!,
+      metadata: { method },
+    })
+
+    return NextResponse.json({ ok: true })
+  } catch (err) {
+    // Best-effort — a logging failure must never block or fail a login
+    // that has already succeeded by the time this is called.
+    console.error('login-event audit log error (non-fatal):', err)
+    return NextResponse.json({ ok: true })
+  }
+}

@@ -27,6 +27,20 @@ export default function LoginForm() {
       const { error: err } = await supabase.auth.signInWithPassword({ email, password })
       if (err) { setError(err.message.includes('Invalid') ? 'Incorrect email or password.' : err.message); return }
 
+      // FIX (deep audit, Auth+MFA re-pass — login audit trail): the browser
+      // session cookie is already set by the call above, so this reflects
+      // the just-established session. Fire-and-forget is safe here (unlike
+      // the "always await email sends" rule elsewhere in this codebase) —
+      // that rule exists because a serverless function can freeze right
+      // after responding, killing an unawaited promise mid-flight; this
+      // fetch runs in the browser, which has no such lifecycle, so it will
+      // complete on its own regardless of what this component does next.
+      // A logging failure must never block or delay getting the user in.
+      fetch('/api/auth/login-event', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ method: 'password' }),
+      }).catch(() => {})
+
       // Middleware enforces the MFA gate regardless, but checking here too
       // avoids a flash of the dashboard before being bounced to the
       // challenge screen. getAuthenticatorAssuranceLevel() reads the local

@@ -107,7 +107,17 @@ export async function middleware(request: NextRequest) {
     // response, which it never even inspects), the failure was completely
     // silent — no audit trail and no security email for the exact accounts
     // (MFA-enrolled ones) where a password-reset notification matters most.
-    pathname.startsWith('/api/auth/password-changed')
+    pathname.startsWith('/api/auth/password-changed') ||
+    // FIX (deep audit, Auth+MFA re-pass — login audit trail): same
+    // reasoning as /api/auth/password-changed just above. LoginForm.tsx
+    // calls this immediately after signInWithPassword() succeeds, which
+    // for an MFA-enrolled account is still aal1 with nextLevel 'aal2' —
+    // the user hasn't reached /mfa-challenge yet. Without this, the
+    // aal1-pending-aal2 block below would 401 the very login-event call
+    // meant to record that password verification just succeeded, for
+    // exactly the governance-sensitive, MFA-mandatory accounts this audit
+    // trail matters most for.
+    pathname.startsWith('/api/auth/login-event')
 
   // ── Not authenticated → redirect to login ─────────────────────────────────
   if (!user && !isAuthRoute && !isPublicRoute && !isOnboarding) {
