@@ -1,6 +1,6 @@
 // app/(app)/sow/page.tsx
 
-import { getSession } from '@/lib/auth/session'
+import { getSession, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
@@ -17,13 +17,34 @@ export default async function SowPage() {
   const isSoloCapped = session.planTier === 'solo'
   const limit        = isSoloCapped ? 10 : 500
 
-  const { data: sows = [], error: sowErr } = await (service as any)
+  // FIX (section-9 audit): this page had no project-membership filtering
+  // at all — every SOW in the workspace (client name, contract value,
+  // status) was returned to any authenticated member, including one
+  // deliberately restricted to VIEW_OWN_PROJECTS with no VIEW_ALL_PROJECTS.
+  // Every other document list in the app (api/sow/[id], api/projects,
+  // api/invoices) already gates on project membership — this registry
+  // page was the one place that didn't. /invoices/page.tsx copied this
+  // same gap; fixed there too.
+  const canViewAll = hasPermission(session, 'VIEW_ALL_PROJECTS')
+  let allowedProjectIds: string[] | null = null
+  if (!canViewAll) {
+    const { data: ids } = await (service as any)
+      .from('project_members')
+      .select('project_id, workspace_members!inner(user_id)')
+      .eq('workspace_members.user_id', session.id)
+    allowedProjectIds = (ids || []).map((r: any) => r.project_id)
+  }
+
+  let sowQuery = (service as any)
     .from('sow_documents')
     .select(`id, version, document_number, status, sent_at, signed_at, created_at,
       projects(id, name, contract_value, currency, clients(name))`)
     .eq('workspace_id', session.workspaceId)
     .order('created_at', { ascending: false })
     .limit(limit)
+  if (allowedProjectIds !== null) sowQuery = sowQuery.in('project_id', allowedProjectIds)
+
+  const { data: sows = [], error: sowErr } = await sowQuery
 
   // C6: render empty state rather than crash if query fails
   if (sowErr) {
@@ -37,13 +58,18 @@ export default async function SowPage() {
   // was really "count of the first `limit` fetched" — silently wrong for
   // any workspace that ever exceeds that cap, with no disclaimer outside
   // the solo-tier banner. Use exact counts, unaffected by the row limit.
+  // Also scoped to allowedProjectIds now, same reasoning as the list above.
+  function countQuery(status?: string) {
+    let q = (service as any).from('sow_documents').select('id', { count: 'exact', head: true })
+      .eq('workspace_id', session.workspaceId)
+    if (allowedProjectIds !== null) q = q.in('project_id', allowedProjectIds)
+    if (status) q = q.eq('status', status)
+    return q
+  }
   const [{ count: totalCount }, { count: signedCount }, { count: pendingCount }] = await Promise.all([
-    (service as any).from('sow_documents').select('id', { count: 'exact', head: true })
-      .eq('workspace_id', session.workspaceId),
-    (service as any).from('sow_documents').select('id', { count: 'exact', head: true })
-      .eq('workspace_id', session.workspaceId).eq('status', 'signed'),
-    (service as any).from('sow_documents').select('id', { count: 'exact', head: true })
-      .eq('workspace_id', session.workspaceId).eq('status', 'awaiting_signature'),
+    countQuery(),
+    countQuery('signed'),
+    countQuery('awaiting_signature'),
   ])
 
   const stats = {

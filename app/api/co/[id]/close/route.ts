@@ -4,10 +4,22 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
 
-// Shared handler for terminal non-accepted CO states: close, withdraw, decline
-// Spec §6.2: ALL THREE revert linked flag to 'open'. NOT just decline.
+// FIX (section-10 audit): this was documented and typed as a "shared
+// handler for terminal non-accepted CO states: close, withdraw, decline"
+// but nothing has ever called it with 'withdrawn' or 'declined' — the
+// withdraw route (app/api/co/[id]/withdraw/route.ts) reimplements this
+// logic independently, and there is no internal 'decline' action (only
+// the client-facing portal route declines). The two implementations had
+// already drifted: withdraw's TERMINAL_FROM allowed
+// 'awaiting_countersignature' as a source status (added in migration 014
+// doc-completeness fix) but this dead copy never got that update. Rather
+// than leave an untested, silently-stale duplicate for a future dev to
+// mistakenly wire up or "fix" in the wrong copy, narrowed this to what's
+// actually used: 'closed' only. If withdraw/decline ever need to share
+// logic with this again, extract a real shared helper both routes call,
+// not a multi-status function only one status ever reaches.
 async function handleTerminalCoState(
-  id: string, newStatus: 'closed' | 'withdrawn' | 'declined',
+  id: string, newStatus: 'closed',
   session: any, service: any, body: any
 ) {
   const { data: co } = await (service as any)
@@ -25,26 +37,19 @@ async function handleTerminalCoState(
     // added alongside 'awaiting_response' for consistency — a CO stuck
     // waiting on either the client's initial response or their
     // countersignature should be closable the same way.
-    closed:    ['draft','awaiting_response','declined','countered','stalled','awaiting_countersignature'],
-    withdrawn: ['awaiting_response','draft'],
-    declined:  ['awaiting_response'],
+    closed: ['draft','awaiting_response','declined','countered','stalled','awaiting_countersignature'],
   }
   if (!TERMINAL_FROM[newStatus].includes(co.status))
     return NextResponse.json({ error: `Cannot ${newStatus} a CO with status ${co.status}` }, { status: 400 })
 
   const now = new Date().toISOString()
-  const updates: Record<string, unknown> = { status: newStatus, updated_at: now }
-
-  if (newStatus === 'closed')    updates.close_reason  = body.reason || null
-  if (newStatus === 'withdrawn') updates.token          = null
-  if (newStatus === 'declined') {
-    updates.declined_at     = now
-    updates.declined_reason = body.reason || null
-  }
+  const updates: Record<string, unknown> = { status: newStatus, updated_at: now, close_reason: body.reason || null }
 
   await (service as any).from('change_orders').update(updates).eq('id', id)
 
   // BUG-048, spec §6.2: flag reversion fires on decline, close, AND withdraw
+  // (decline/withdraw handle their own reversion independently — see
+  // app/api/co/[id]/withdraw/route.ts and app/api/portal/co/[token]/_actions.ts)
   // Does NOT fire on stalled or countered (not terminal)
   if (co.flag_id) {
     const { data: flag } = await (service as any)
@@ -65,16 +70,6 @@ async function handleTerminalCoState(
         metadata: { co_id: id, co_status: newStatus, reason: 'CO reached terminal non-accepted state' },
       })
     }
-  }
-
-  // Revoke token if present (withdrawn)
-  if (newStatus === 'withdrawn' && co.token) {
-    try {
-      await (service as any).from('revoked_tokens').insert({
-        token: co.token, token_type: 'co', reason: 'withdrawn',
-        revoked_by: session.id,
-      })
-    } catch (e) { console.error('Token revoke insert failed (non-fatal):', e) }
   }
 
   await logAudit(service, {

@@ -40,14 +40,29 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Remove or correct recorded payments before voiding this invoice' }, { status: 400 })
 
     const now = new Date().toISOString()
-    const { error } = await (service as any).from('invoices').update({
+    // FIX (section-12 audit, TOCTOU race): the read above blocks voiding
+    // if amount_paid > 0, but the write here had no compare-and-swap
+    // condition — it fired unconditionally on `id`. If a payment landed
+    // via the separate POST /api/invoices/[id]/payments route in the gap
+    // between that read and this write, this update still overwrote the
+    // trigger's correct 'partially_paid'/'paid' status back to 'void',
+    // leaving a "voided" invoice with a real, committed payment still on
+    // file — exactly the state this route's own guard exists to prevent.
+    // CAS on amount_paid = 0 (guaranteed by the check above at read time)
+    // closes the window the same way every other money-mutating route in
+    // this app already guards its writes.
+    const { data: voided, error } = await (service as any).from('invoices').update({
       status:      'void',
       voided_at:   now,
       void_reason: reason || null,
       updated_at:  now,
-    }).eq('id', id)
+    }).eq('id', id).eq('amount_paid', 0).select('id').maybeSingle()
 
     if (error) return NextResponse.json({ error: 'Failed to void invoice' }, { status: 500 })
+    if (!voided)
+      return NextResponse.json({
+        error: 'A payment was just recorded on this invoice — refresh and remove or correct it before voiding',
+      }, { status: 409 })
 
     // Revoke the portal token, same pattern as SOW/CO withdraw — the client
     // link should stop resolving once an invoice is voided.

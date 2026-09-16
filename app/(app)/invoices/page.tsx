@@ -23,13 +23,33 @@ export default async function InvoicesPage() {
     .from('workspaces').select('currency').eq('id', session.workspaceId).single()
   const wsCurrency = workspace?.currency || 'USD'
 
-  const { data: invoices = [], error: invErr } = await (service as any)
+  // FIX (section-12 audit): this page's own header comment says it
+  // "mirrors /sow's pattern" — and it did, bug included: no project-
+  // membership filtering at all, gated only on VIEW_FINANCIALS. Since
+  // VIEW_FINANCIALS doesn't imply VIEW_ALL_PROJECTS, any member with
+  // financial visibility on their own assigned projects could see every
+  // invoice — every client name and dollar figure — workspace-wide
+  // through this one page. Fixed the same way /sow/page.tsx was fixed.
+  const canViewAll = hasPermission(session, 'VIEW_ALL_PROJECTS')
+  let allowedProjectIds: string[] | null = null
+  if (!canViewAll) {
+    const { data: ids } = await (service as any)
+      .from('project_members')
+      .select('project_id, workspace_members!inner(user_id)')
+      .eq('workspace_members.user_id', session.id)
+    allowedProjectIds = (ids || []).map((r: any) => r.project_id)
+  }
+
+  let invoicesQuery = (service as any)
     .from('invoices')
     .select(`id, invoice_number, title, amount, amount_paid, currency, status, due_date, sent_at, paid_at, created_at,
       projects(id, name, clients(name))`)
     .eq('workspace_id', session.workspaceId)
     .order('created_at', { ascending: false })
     .limit(limit)
+  if (allowedProjectIds !== null) invoicesQuery = invoicesQuery.in('project_id', allowedProjectIds)
+
+  const { data: invoices = [], error: invErr } = await invoicesQuery
 
   if (invErr) console.error('Invoices registry error:', invErr)
   const safeInvoices = invoices || []

@@ -27,10 +27,26 @@ import { getMembersWithRole, filterByNotificationPreference } from '@/lib/utils/
 import { sendApprovalRequestedEmail, sendApprovalDecisionEmail } from '@/lib/email/templates'
 import { sendSowDocument } from '@/lib/documents/send-sow'
 import { sendCoDocument } from '@/lib/documents/send-co'
+import { acceptCoCounter } from '@/lib/documents/accept-co-counter'
 import { hasPermission } from '@/lib/auth/session'
 import type { SessionUser } from '@/lib/supabase/types'
 
-export type ApprovalDocumentType = 'sow' | 'co'
+// FIX (section-11 audit): 'co_counter' added so accept-counter can gate a
+// negotiated CO amount through the same threshold engine as an original
+// send, without needing its own separate admin-configured workflow — see
+// workflowLookupType() below, which maps it back to 'co' for matching
+// against a workspace's existing 'co' workflows. It's kept as its own
+// document_type on the approval_requests row itself (not silently merged
+// into 'co') so recordApprovalDecision() can auto-finalize it correctly
+// on final approval — accepting a counter-offer and sending a brand-new
+// CO are different actions with different auto-send targets.
+export type ApprovalDocumentType = 'sow' | 'co' | 'co_counter'
+
+// Which document_type an approval_workflows row is configured under, for
+// a given request's document_type. Only 'co_counter' differs from itself.
+function workflowLookupType(documentType: ApprovalDocumentType): 'sow' | 'co' {
+  return documentType === 'co_counter' ? 'co' : documentType
+}
 
 interface WorkflowStepRow {
   step_order: number
@@ -75,8 +91,17 @@ export async function evaluateApprovalGate(service: any, params: GateParams): Pr
     .from('approval_workflows')
     .select('id, threshold_amount, threshold_currency')
     .eq('workspace_id', workspaceId)
-    .eq('document_type', documentType)
+    .eq('document_type', workflowLookupType(documentType))
     .eq('is_active', true)
+    // FIX (section-11 audit, pass 2): no explicit order — two active
+    // workflows with the SAME threshold_amount resolved to whichever
+    // Postgres happened to return first, which SQL doesn't guarantee
+    // without an ORDER BY. Ordering by id gives a stable, at-least-
+    // deterministic tie-break (doesn't fix the underlying "which rule
+    // governs" ambiguity for an admin who's duplicated a threshold, but
+    // at least the same workflow wins every time rather than varying
+    // run to run).
+    .order('id', { ascending: true })
 
   // Best match = highest threshold the document's amount still clears.
   // A NULL threshold is a catch-all and sorts last, so a more specific
@@ -327,8 +352,17 @@ export async function recordApprovalDecision(service: any, params: DecisionParam
       actorId: requester.id, actorEmail: requester.email, actorName: requester.name,
       approvalRequestId: request.id,
     }
+    // FIX (section-11 audit): 'co_counter' needs its own auto-finalize —
+    // it's not a fresh send, it's accepting an already-negotiated
+    // counter-offer. Routing it through sendCoDocument (which CASes on
+    // status:'draft') would silently no-op, since a countered CO's
+    // status is 'countered', not 'draft' — the approval would record as
+    // 'approved' while the client never actually got a countersignature
+    // request, stranding the CO indefinitely.
     const result = request.document_type === 'sow'
       ? await sendSowDocument(service, { sowId: request.document_id, ...sendParams })
+      : request.document_type === 'co_counter'
+      ? await acceptCoCounter(service, { coId: request.document_id, ...sendParams })
       : await sendCoDocument(service, { coId: request.document_id, ...sendParams })
     autoSent = result.ok
     if (!result.ok) console.error('Auto-send after final approval failed:', result.error)

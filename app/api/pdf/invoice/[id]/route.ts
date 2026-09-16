@@ -2,7 +2,7 @@ export const runtime = 'nodejs'
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
-import { getSession } from '@/lib/auth/session'
+import { getSession, hasPermission } from '@/lib/auth/session'
 import { renderInvoicePdf } from '@/lib/pdf/renderer'
 import { canReadProject } from '@/lib/utils/project-access'
 
@@ -11,6 +11,16 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const { id }  = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    // FIX (section-12 audit): this route was missing the VIEW_FINANCIALS
+    // check that GET /api/invoices/[id] (serving the identical data as
+    // JSON) already requires — only canReadProject was checked here. The
+    // preset Designer role has VIEW_FINANCIALS: false but is routinely a
+    // project member, so a Designer could download the full invoice PDF
+    // (amount, tax breakdown, payment history, billing address) directly,
+    // despite being explicitly denied financial visibility everywhere
+    // else in the app.
+    if (!hasPermission(session, 'VIEW_FINANCIALS'))
+      return NextResponse.json({ error: 'Missing permission: VIEW_FINANCIALS' }, { status: 403 })
 
     const service = createServiceClient()
 

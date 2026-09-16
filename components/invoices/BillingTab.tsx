@@ -39,7 +39,13 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
 
   const signedSows = (project.sow_documents || []).filter((s: any) => s.status === 'signed')
   const acceptedCos = (project.change_orders || []).filter((c: any) => c.status === 'accepted')
-  const billableMilestones = milestones.filter((m: any) => m.status !== 'paid')
+  // FIX (section-12 audit): this only excluded 'paid' milestones from the
+  // "Bill against" picker — a milestone already 'invoiced' (a sent invoice
+  // already exists against it) was still offered right back to the
+  // agency, which is exactly how the double-invoicing bug happened in
+  // practice, not just via API tampering. Matches the API-level fix in
+  // POST /api/invoices.
+  const billableMilestones = milestones.filter((m: any) => m.status !== 'paid' && m.status !== 'invoiced')
 
   // Phase 4: latest reconciliation snapshot, falling back to a live
   // computation from the props already on hand if the daily rollup cron

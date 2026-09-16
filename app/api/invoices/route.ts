@@ -104,8 +104,23 @@ export async function POST(request: NextRequest) {
         .from('payment_milestones').select('id, project_id, amount, status')
         .eq('id', milestoneId).eq('project_id', projectId).single()
       if (!milestone) return NextResponse.json({ error: 'Milestone not found on this project' }, { status: 404 })
-      if (milestone.status === 'paid')
-        return NextResponse.json({ error: 'This milestone is already marked paid' }, { status: 400 })
+      // FIX (section-12 audit, real bug): this only blocked `status ===
+      // 'paid'` — a milestone already sitting at 'invoiced' (a sent
+      // invoice already exists against it, per sync_milestone_from_
+      // invoice()) sailed straight through, and the "Bill against" picker
+      // (components/invoices/BillingTab.tsx) offered that same milestone
+      // right back to the agency. No bypass needed: an agency user who
+      // forgot they'd already billed this milestone could pick it again
+      // from the normal dropdown and send the client a second, duplicate
+      // invoice for the same deliverable. 'pending'/'overdue' remain
+      // billable (a voided invoice reverts its milestone to 'pending' —
+      // see void/route.ts — so re-invoicing after a void still works).
+      if (milestone.status === 'paid' || milestone.status === 'invoiced')
+        return NextResponse.json({
+          error: milestone.status === 'paid'
+            ? 'This milestone is already marked paid'
+            : 'This milestone already has an invoice against it — void the existing one first if you need to re-invoice it',
+        }, { status: 400 })
     }
     if (sowId) {
       const { data: sow } = await (service as any)

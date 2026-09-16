@@ -38,7 +38,16 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
     const flagRequestText: string | null = co.guardian_flags?.guardian_checks?.content ?? null
-    const { guardian_flags, ...coRest } = co
+    // FIX (section-10 audit): `select('*')` above pulls every column,
+    // including `token` — the raw client-portal JWT used for accept/
+    // counter/decline/countersign — and this route returned it
+    // unconditionally to any project-assigned viewer regardless of
+    // SEND_CHANGE_ORDERS. No frontend consumer (CoEditor.tsx,
+    // ProjectDetail.tsx) ever reads co.token from this response, so it
+    // was pure over-exposure: a low-permission viewer could lift it and
+    // act as the client directly against /api/portal/co/[token]/*.
+    // Stripped the same way guardian_flags already is.
+    const { guardian_flags, token, ...coRest } = co
     return NextResponse.json({ co: { ...coRest, currency: co.projects?.currency, flagRequestText } })
   } catch {
     return NextResponse.json({ error: 'Error' }, { status: 500 })
@@ -87,7 +96,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     await (service as any).from('change_orders').update({
       title:               title?.trim(),
       note:                sanitizeRichTextOrNull(note),
-      line_items:          JSON.stringify(items),
+      // FIX (section-10 audit): see app/api/co/route.ts for the full
+      // explanation — line_items is jsonb; storing JSON.stringify(items)
+      // wrote a string, not a native array. accept-counter/route.ts
+      // already writes the array directly; matched that here.
+      line_items:          items,
       subtotal,
       tax_rate:            parseFloat(taxRate) || 0,
       tax_inclusive:       taxInclusive || false,

@@ -115,12 +115,21 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const service = createServiceClient()
     const { data: sow } = await (service as any)
       .from('sow_documents')
-      .select('id, version, status, sent_at, signed_at, sections, metadata, expires_at, token, project_id')
+      .select('id, version, status, sent_at, signed_at, sections, metadata, expires_at, project_id')
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!sow) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (!(await canReadProject(service, session, sow.project_id)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    // FIX (re-audit, section-9 pass): this select used to include `token`
+    // — the raw client-portal signing JWT — and returned it unconditionally
+    // to any project-assigned viewer regardless of EDIT_SOW/SEND_SOW. No
+    // frontend consumer ever read sow.token from this response (send/
+    // remind/withdraw all fetch it server-side from the DB directly), so
+    // it was pure over-exposure: a low-permission viewer who copied it
+    // could hit /api/portal/sow/[token]/sign directly and sign as the
+    // client, with the route hardcoding signer_email to the client's own
+    // address regardless of who actually submits. Dropped from the select.
     // FIX (re-audit): the editor page (app/(app)/projects/[id]/sow/[sowId]/page.tsx)
     // derived canEdit/canSend purely from isLocked, with no awareness of the
     // caller's actual permissions — it relied entirely on the entry-point

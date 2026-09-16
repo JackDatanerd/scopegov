@@ -75,7 +75,17 @@ export async function POST(request: NextRequest) {
         title:        title.trim(),
         note:         sanitizeRichTextOrNull(note),
         status:       'draft',
-        line_items:   JSON.stringify(items),
+        // FIX (section-10 audit): line_items is a jsonb column — writing
+        // JSON.stringify(items) stores a JSON-encoded STRING inside it,
+        // not a native array, forcing every reader in the codebase to
+        // defensively check `typeof === 'string'` before use. accept-
+        // counter/route.ts (a later fix) writes the array directly, which
+        // is the correct behavior for a jsonb column and proves this
+        // stringify call was always the bug, not an intentional
+        // convention. Every existing reader already handles a native
+        // array (the `else` branch of their typeof check), so this is
+        // safe with no reader-side change needed.
+        line_items:   items,
         subtotal,
         tax_rate:     parseFloat(taxRate) || 0,
         tax_inclusive: taxInclusive || false,

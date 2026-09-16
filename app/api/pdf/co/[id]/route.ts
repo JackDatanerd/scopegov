@@ -86,7 +86,15 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       // FIX (re-audit): CoDocument had no watermark support at all — a
       // draft CO previewed from CoEditor before ever being sent was
       // visually identical to a final, client-signed one.
-      isWatermarked: co.status === 'draft',
+      // FIX (section-10 audit): narrowing to only 'draft' meant a CO in
+      // 'awaiting_response', 'countered', 'stalled', or
+      // 'awaiting_countersignature' — none of them final — downloaded
+      // internally had NO watermark either, indistinguishable from a
+      // truly accepted CO if forwarded externally. The identical bug was
+      // already fixed on the SOW PDF route (`sow.status !== 'signed'`);
+      // this carries the same fix over: watermark anything that isn't
+      // yet accepted.
+      isWatermarked: co.status !== 'accepted',
       acceptedBy:  co.accepted_by || undefined,
       acceptedAt:  co.accepted_at || undefined,
       agencySignatureData: ws?.agency_signature_data || null,

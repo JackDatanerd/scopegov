@@ -351,6 +351,52 @@ async function createMilestones(
       milestones.push({ title: 'Full payment', amount: roundCurrency(contractValue), trigger: 'Final delivery approval', type: 'fixed', percentage: null })
     } else if (structure === 'monthly') {
       milestones.push({ title: 'Monthly retainer', amount: roundCurrency(contractValue), trigger: 'Monthly — first of month', type: 'retainer_monthly', percentage: null })
+    } else if (structure === 'milestones') {
+      // FIX (section-9 audit, real bug): 'milestones' is a selectable
+      // payment structure (the SOW boilerplate literally prints "Payable
+      // in milestones as defined below") but there has never been any
+      // table/UI in the app for an agency to actually define what those
+      // milestones are — deliverables/timeline/roles all have dedicated
+      // table sections, payment schedule never did. This branch used to
+      // fall into the generic `else` below and silently create ONE
+      // "Project payment" milestone for the FULL contract value with
+      // trigger 'As per agreement' — flatly contradicting the SOW's own
+      // printed text and the client's expectation of a staged schedule.
+      //
+      // Until a proper itemized payment-schedule table section exists
+      // (recommended follow-up — same pattern as SOW_TABLE_SCHEMAS'
+      // deliverables/timeline/roles), forward-compatibly honor a
+      // metadata.customMilestones array if one is ever populated by a
+      // future editor, validating it foots to the contract value the same
+      // way invoice/CO line items are validated against their totals.
+      // Otherwise, fall back to a single milestone but with an HONEST
+      // trigger label — not one implying specific terms were agreed that
+      // were never actually captured — and flag it in the audit log so
+      // it's operator-visible rather than a silent mismatch discovered
+      // only when the client asks where their milestone schedule is.
+      const custom = Array.isArray(metadata?.customMilestones) ? metadata.customMilestones : null
+      const customSum = custom ? custom.reduce((s: number, m: any) => s + (Number(m?.amount) || 0), 0) : 0
+      if (custom && custom.length > 0 && Math.abs(customSum - contractValue) < 0.01) {
+        for (const m of custom) {
+          milestones.push({
+            title:   String(m.title || 'Milestone').slice(0, 200),
+            amount:  roundCurrency(Number(m.amount) || 0),
+            trigger: String(m.trigger || 'As defined in the SOW').slice(0, 500),
+            type: 'fixed', percentage: null,
+          })
+        }
+      } else {
+        milestones.push({
+          title: 'Project payment', amount: roundCurrency(contractValue),
+          trigger: 'Full contract value — no itemized milestone schedule was defined in this SOW',
+          type: 'fixed', percentage: null,
+        })
+        await logAudit(service, {
+          workspaceId, actorId: '', actorEmail: 'system@scopegov.app', actorName: 'ScopeGov',
+          eventType: 'sow.milestone_schedule_undefined', entityType: 'sow', entityId: sowId,
+          metadata: { project_id: projectId, contract_value: contractValue },
+        }).catch(() => {})
+      }
     } else {
       milestones.push({ title: 'Project payment', amount: roundCurrency(contractValue), trigger: 'As per agreement', type: 'fixed', percentage: null })
     }

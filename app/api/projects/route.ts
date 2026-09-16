@@ -16,6 +16,20 @@ export async function POST(request: NextRequest) {
     if (!name?.trim() || !type)
       return NextResponse.json({ error: 'Name and type are required' }, { status: 400 })
 
+    // FIX (section-11 audit, pass 2): currency was taken straight from the
+    // request body with no normalization. The dropdown in the new-project
+    // UI only ever sends fixed uppercase codes, so this doesn't misfire
+    // through normal use — but evaluateApprovalGate() compares
+    // threshold_currency to this value with a case-sensitive `===`, and
+    // approval-workflow thresholds are stored uppercase (POST /api/
+    // approval-workflows already does `.toUpperCase()`). Any future
+    // integration/import path that writes projects.currency without going
+    // through that one dropdown (e.g. lowercase "usd") would silently
+    // never match a "USD" threshold — a fail-open gate miss with nothing
+    // surfaced anywhere. Normalizing at the one place currency is ever
+    // written closes that off regardless of what calls this route next.
+    const normalizedCurrency = currency ? String(currency).trim().toUpperCase() : null
+
     const service   = createServiceClient()
 
     // FIX (deep audit, section 7): PLAN_LIMITS.projects is defined and
@@ -129,7 +143,7 @@ export async function POST(request: NextRequest) {
         type,
         status:         'Draft',
         contract_value: roundCurrency(parseFloat(contractValue) || 0),
-        currency:       currency || 'USD',
+        currency:       normalizedCurrency || 'USD',
         start_date:     startDate || null,
         internal_ref:   internalRef?.trim() || null,
         created_by:     session.id,
