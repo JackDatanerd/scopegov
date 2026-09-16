@@ -37,6 +37,39 @@
 import { createServiceClient, createServerSupabaseClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 
+async function buildResumePayload(service: any, w: any) {
+  // FIX (round 3, Onboarding Finding 2 — severe): this response used to
+  // return only step-0 fields (agencyName/industry/currency/timezone).
+  // app/onboarding/page.tsx's resume handler always hardcodes step 1 on
+  // resume, so a user who'd already saved real branding or SOW defaults
+  // in an earlier session (then switched devices, or cleared
+  // localStorage) came back to the wizard's hardcoded step-1 defaults
+  // (#1A5C3A, 2 revision rounds, 50/50) with no idea their real settings
+  // weren't showing — and clicking Continue through steps 1-2 again
+  // silently overwrote the real saved values with those defaults, since
+  // submitBranding/submitDefaults always PATCH/POST whatever's currently
+  // in state. Fetch and return what's already saved so the wizard can
+  // rehydrate its fields instead of reintroducing the defaults.
+  const { data: defaultsRow } = await service
+    .from('workspace_defaults')
+    .select('revision_rounds, payment_structure')
+    .eq('workspace_id', w.id).is('project_type', null).maybeSingle()
+
+  return {
+    status: 'resume',
+    workspaceId: w.id,
+    agencyName: w.agency_name || w.name || '',
+    industry: w.industry || '',
+    currency: w.currency || 'USD',
+    timezone: w.timezone || 'America/New_York',
+    brandColour: w.brand_colour || null,
+    logoStoragePath: w.logo_storage_path || null,
+    governingLaw: w.governing_law || '',
+    revisionRounds: defaultsRow?.revision_rounds != null ? String(defaultsRow.revision_rounds) : '2',
+    paymentStructure: defaultsRow?.payment_structure || '50_50',
+  }
+}
+
 export async function GET() {
   try {
     const supabase = await createServerSupabaseClient()
@@ -49,7 +82,11 @@ export async function GET() {
       (service as any).from('users').select('active_workspace_id').eq('id', user.id).maybeSingle(),
       (service as any)
         .from('workspace_members')
-        .select('workspace_id, workspaces(id, created_by, onboarding_completed_at, name, agency_name, industry, currency, timezone, creator:users!workspaces_created_by_fkey(name, email))')
+        .select(`workspace_id, workspaces(
+          id, created_by, onboarding_completed_at, name, agency_name, industry, currency, timezone,
+          brand_colour, logo_storage_path, governing_law,
+          creator:users!workspaces_created_by_fkey(name, email)
+        )`)
         .eq('user_id', user.id).eq('status', 'active'),
     ])
 
@@ -59,27 +96,40 @@ export async function GET() {
     const ownedIncomplete   = active.filter((m: any) => m.workspaces.created_by === user.id && !m.workspaces.onboarding_completed_at)
     const memberIncomplete  = active.filter((m: any) => m.workspaces.created_by !== user.id && !m.workspaces.onboarding_completed_at)
 
-    // Prefer whichever incomplete workspace is currently active, else the
-    // first one found — mirrors lib/auth/session.ts's own
-    // active-with-fallback-to-oldest resolution order.
-    const pick = (list: any[]) => list.find((m: any) => m.workspace_id === activeWorkspaceId) || list[0]
+    // FIX (round 3, Workspace lifecycle Finding 6): this used to check
+    // ownedIncomplete unconditionally before ever looking at
+    // memberIncomplete, then only used `activeWorkspaceId` to pick WITHIN
+    // whichever list won — contradicting its own comment ("prefer
+    // whichever incomplete workspace is currently active"). A user whose
+    // ACTIVE workspace was one they're waiting on as an invited member,
+    // but who also has some unrelated abandoned workspace they once
+    // created, got forced into 'resume' mode for the wrong (irrelevant,
+    // not-currently-active) workspace instead of 'waiting' for the one
+    // they're actually trying to use. Check the active workspace's own
+    // incompleteness FIRST, across both lists, before falling back to
+    // "first owned, else first member" for the case where the active
+    // workspace itself is fully onboarded (or there is no active pick).
+    const activeIncomplete = active.find((m: any) => m.workspace_id === activeWorkspaceId && !m.workspaces.onboarding_completed_at)
 
-    if (ownedIncomplete.length > 0) {
-      const m = pick(ownedIncomplete)
-      const w = m.workspaces
+    if (activeIncomplete) {
+      const w = activeIncomplete.workspaces
+      if (w.created_by === user.id) {
+        return NextResponse.json(await buildResumePayload(service, w))
+      }
       return NextResponse.json({
-        status: 'resume',
-        workspaceId: w.id,
+        status: 'waiting',
         agencyName: w.agency_name || w.name || '',
-        industry: w.industry || '',
-        currency: w.currency || 'USD',
-        timezone: w.timezone || 'America/New_York',
+        creatorName: w.creator?.name || w.creator?.email || 'the person who created it',
       })
     }
 
+    if (ownedIncomplete.length > 0) {
+      const w = ownedIncomplete[0].workspaces
+      return NextResponse.json(await buildResumePayload(service, w))
+    }
+
     if (memberIncomplete.length > 0) {
-      const m = pick(memberIncomplete)
-      const w = m.workspaces
+      const w = memberIncomplete[0].workspaces
       return NextResponse.json({
         status: 'waiting',
         agencyName: w.agency_name || w.name || '',

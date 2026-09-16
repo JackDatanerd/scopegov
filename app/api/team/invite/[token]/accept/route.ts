@@ -54,13 +54,35 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }).eq('id', member.id)
 
     // Ensure user row exists (BUG-002: INSERT policy + service role)
-    await (service as any).from('users').upsert({
-      id:                   user.id,
-      email:                user.email,
-      name:                 user.user_metadata?.name || '',
-      active_workspace_id:  member.workspace_id,
-      email_verified_at:    user.email_confirmed_at || now, // invited = pre-verified (spec §16.0)
-    }, { onConflict: 'id' })
+    // FIX (round 3, Workspace lifecycle Finding 5): this used to be an
+    // unconditional .upsert() that overwrote `name` with
+    // user.user_metadata.name (the ORIGINAL signup-time value, which never
+    // changes) on every invite acceptance — not just the first. An
+    // existing user who renamed themselves via workspace/profile/route.ts
+    // and later accepted an invite to a SECOND workspace got their display
+    // name silently reverted. This is the exact same pattern
+    // workspace/create/route.ts's own Finding 5 already fixed for
+    // workspace creation — same bug, missed in this second location.
+    // Distinguish insert (brand-new user row, safe to seed a name) from
+    // update (existing row, whose name is the user's own to keep) instead
+    // of upserting blindly.
+    const { data: existingUserRow } = await (service as any)
+      .from('users').select('id').eq('id', user.id).maybeSingle()
+    if (existingUserRow) {
+      await (service as any).from('users').update({
+        email:                user.email,
+        active_workspace_id:  member.workspace_id,
+        email_verified_at:    user.email_confirmed_at || now, // invited = pre-verified (spec §16.0)
+      }).eq('id', user.id)
+    } else {
+      await (service as any).from('users').insert({
+        id:                   user.id,
+        email:                user.email,
+        name:                 user.user_metadata?.name || '',
+        active_workspace_id:  member.workspace_id,
+        email_verified_at:    user.email_confirmed_at || now,
+      })
+    }
 
     await logAudit(service, {
       workspaceId: member.workspace_id,

@@ -1,7 +1,7 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, Suspense } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 
 const STEPS = [
   { label: 'Your agency',   sub: 'Identity & locale' },
@@ -23,9 +23,33 @@ const TIMEZONES  = [
   'Asia/Dubai','Asia/Kolkata','Australia/Sydney',
 ]
 
+// FIX (round 3, Workspace lifecycle Finding 1): useSearchParams() (added
+// to read the ?new=1 flag below) requires a Suspense boundary around any
+// component that calls it, or Next.js fails/warns at build time. Keep the
+// actual page logic in an inner component and wrap it here.
 export default function OnboardingPage() {
-  const router   = useRouter()
-  const supabase = createClient()
+  return (
+    <Suspense fallback={<div className="ob-root"><div className="ob-card" /></div>}>
+      <OnboardingWizard />
+    </Suspense>
+  )
+}
+
+function OnboardingWizard() {
+  const router       = useRouter()
+  const searchParams = useSearchParams()
+  const supabase     = createClient()
+  // FIX (round 3, Workspace lifecycle Finding 1 — severe): set by the
+  // Sidebar's "Create new workspace" link. Without an explicit signal,
+  // this page had no way to distinguish "land here because you need to
+  // finish setup" from "land here because you deliberately want a NEW
+  // workspace" — it always deferred to onboarding-status, which returns
+  // 'complete' (redirect straight to /dashboard) the instant the user has
+  // any already-onboarded workspace, i.e. for virtually every existing
+  // user. That made "Create new workspace" a permanent dead end. explicitNew
+  // skips both the localStorage restore and the onboarding-status check
+  // below so an existing, fully-onboarded user can actually start one.
+  const explicitNew = searchParams.get('new') === '1'
 
   const [step,        setStep]        = useState(0)
   const [loading,     setLoading]     = useState(false)
@@ -74,6 +98,22 @@ export default function OnboardingPage() {
   useEffect(() => {
     supabase.auth.getUser().then(async ({ data: { user } }) => {
       if (!user) { router.push('/login'); return }
+
+      // FIX (round 3, Workspace lifecycle Finding 1): explicit intent to
+      // start a NEW workspace overrides both the localStorage restore and
+      // the onboarding-status check below — otherwise either one could
+      // silently resume/redirect away from the brand-new workspace this
+      // click was for. Clear any stale saved progress first so a leftover
+      // in-progress record for a DIFFERENT (already-abandoned) workspace
+      // doesn't get resumed instead.
+      if (explicitNew) {
+        try { localStorage.removeItem(STORAGE_KEY_PREFIX + user.id) } catch { /* ignore */ }
+        const userName = user.user_metadata?.name || ''
+        if (userName) setAgencyName(`${userName.split(' ')[0]}'s Agency`)
+        setRestored(true)
+        setGate('create')
+        return
+      }
 
       // FIX: restore in-progress onboarding after a refresh instead of
       // silently restarting. Scoped per-user so it can't leak across
@@ -124,6 +164,20 @@ export default function OnboardingPage() {
             if (json.industry)   setIndustry(json.industry)
             if (json.currency)   setCurrency(json.currency)
             if (json.timezone)   setTimezone(json.timezone)
+            // FIX (round 3, Onboarding Finding 2 — severe): previously
+            // nothing past step-0 fields was rehydrated here, so resuming
+            // on a new device (or after clearing localStorage) always
+            // reset branding/defaults to the wizard's hardcoded defaults —
+            // and clicking Continue through steps 1-2 again silently
+            // overwrote whatever the user had genuinely already saved.
+            // onboarding-status now returns what's actually on record;
+            // reflect it here instead of leaving these at their useState
+            // defaults.
+            if (json.brandColour)      setBrandColour(json.brandColour)
+            if (json.logoStoragePath)  setLogoPreview(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/logos/${json.logoStoragePath}`)
+            if (json.revisionRounds)   setRevisionRounds(json.revisionRounds)
+            if (json.paymentStructure) setPaymentStructure(json.paymentStructure)
+            if (json.governingLaw)     setGoverningLaw(json.governingLaw)
             setStep(1)
             setRestored(true)
             setGate('create')
@@ -137,7 +191,7 @@ export default function OnboardingPage() {
       setRestored(true)
       setGate('create')
     })
-  }, [])
+  }, [explicitNew])
 
   // Persist on every relevant change, once initial restore has happened
   // (avoids overwriting saved progress with blank initial state before
@@ -332,19 +386,57 @@ export default function OnboardingPage() {
   }
 
   /* ── Step 4: Complete ─────────────────────────────────────── */
-  async function complete() {
-    if (!workspaceId) return
-    setLoading(true)
+  // FIX (round 3, Onboarding Finding 1 — severe): this used to ignore the
+  // fetch response entirely — no res.ok check at all. That completely
+  // defeated complete-onboarding/route.ts's own Finding 4 fix (which made
+  // the backend correctly return a 404 on a workspaceId mismatch): no
+  // matter what the backend returned, this cleared all local progress and
+  // navigated to /dashboard. Middleware then immediately bounced back to
+  // /onboarding (onboarding_completed_at was never actually set) — but by
+  // then the saved progress was already gone, so the user landed back at
+  // step 0 of a blank wizard with everything they'd entered erased, in a
+  // loop that erased their work every time they clicked "Go to dashboard."
+  // Now returns whether it actually succeeded, and callers act on that.
+  async function complete(): Promise<boolean> {
+    if (!workspaceId) return false
+    setLoading(true); setError('')
     try {
-      await fetch('/api/workspace/complete-onboarding', {
+      const res  = await fetch('/api/workspace/complete-onboarding', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ workspaceId }),
       })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setError(json.error || 'Could not finish setting up your workspace — try again.')
+        return false
+      }
       clearSavedProgress()
       router.push('/dashboard')
+      return true
+    } catch {
+      setError('Could not finish setting up your workspace — try again.')
+      return false
     } finally { setLoading(false) }
   }
+
+  // FIX (round 3, Onboarding Finding 3 — minor): the 'waiting' screen's
+  // own copy promises "you'll get full access automatically — no need to
+  // do anything here," but nothing here ever re-checked status — an
+  // invited member watching this screen while the creator finishes setup
+  // would just sit there indefinitely unless they manually reloaded.
+  // Poll and move on once the creator completes onboarding.
+  useEffect(() => {
+    if (gate !== 'waiting') return
+    const interval = setInterval(async () => {
+      try {
+        const res  = await fetch('/api/workspace/onboarding-status')
+        const json = await res.json().catch(() => ({}))
+        if (res.ok && json.status === 'complete') router.push('/dashboard')
+      } catch { /* transient — try again next tick */ }
+    }, 15000)
+    return () => clearInterval(interval)
+  }, [gate])
 
   // FIX (deep audit, Workspace lifecycle + Onboarding sections): brief
   // blank beat while onboarding-status resolves, rather than flashing
@@ -578,13 +670,24 @@ export default function OnboardingPage() {
               generate a Statement of Work, send it to your client — and Guardian
               takes over from there, monitoring every communication for scope drift.
             </p>
+            {error && <div className="auth-error">{error}</div>}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 280, margin: '0 auto' }}>
               <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', padding: '11px' }}
                 onClick={complete} disabled={loading}>
                 {loading ? <span className="spin" /> : <>Go to dashboard <i className="ti ti-arrow-right" style={{ fontSize: 12 }} /></>}
               </button>
               <button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'center' }}
-                onClick={() => { complete().then(() => router.push('/projects/new')) }}>
+                disabled={loading}
+                onClick={async () => {
+                  // FIX (round 3, Onboarding Finding 1): previously chained
+                  // .then(() => router.push('/projects/new')) unconditionally
+                  // — since complete() never surfaced failure, this always
+                  // navigated onward even when onboarding was never actually
+                  // marked complete, straight back into middleware's
+                  // /onboarding redirect. Only navigate on confirmed success.
+                  const ok = await complete()
+                  if (ok) router.push('/projects/new')
+                }}>
                 Create first project
               </button>
             </div>

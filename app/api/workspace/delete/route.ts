@@ -74,7 +74,19 @@ export async function DELETE() {
       .select('paystack_subscription_code, paystack_email_token')
       .eq('workspace_id', session.workspaceId)
       .maybeSingle()
-    await cancelPaystackSubscription(billing)
+    // FIX (round 3, Workspace lifecycle Finding 2 — CRITICAL): the result
+    // of this call used to be discarded entirely, defeating the whole
+    // point of the comment above — a Paystack failure (unreachable API,
+    // declined cancellation) silently fell through to soft-deleting the
+    // workspace anyway, leaving a live, still-renewing subscription with
+    // no workspace left to manage it from. Now actually checked.
+    const cancelResult = await cancelPaystackSubscription(billing)
+    if (!cancelResult.ok) {
+      console.error('Workspace delete blocked — Paystack cancellation failed:', cancelResult.error)
+      return NextResponse.json({
+        error: cancelResult.error || 'Could not cancel this workspace\u2019s billing subscription. Try again, or contact support@scopegov.app.',
+      }, { status: 502 })
+    }
 
     const now = new Date().toISOString()
 
@@ -83,30 +95,80 @@ export async function DELETE() {
     // account-level event in this codebase (MFA changes, password
     // changes) emails the affected person; a team's entire workspace
     // disappearing under them got nothing at all.
-    const { data: otherMembers } = await (service as any)
+    // FIX (round 3, Workspace lifecycle Finding 4): also select user_id now
+    // (previously only the embedded user's email/name) and include the
+    // ACTOR too — needed below to reassign active_workspace_id for every
+    // affected member, not just to email the others.
+    const { data: allMembers } = await (service as any)
       .from('workspace_members')
-      .select('user:users(email, name)')
+      .select('user_id, user:users(email, name)')
       .eq('workspace_id', session.workspaceId)
       .eq('status', 'active')
-      .neq('user_id', session.id)
+    const otherMembers = (allMembers || []).filter((m: any) => m.user_id !== session.id)
 
     // Soft delete workspace
-    await (service as any)
+    // FIX (round 3, Workspace lifecycle Finding 3): this write's result was
+    // previously discarded — a failure here (RLS, transient DB error) left
+    // the route returning { ok: true } while nothing had actually changed.
+    const { error: wsDeleteError } = await (service as any)
       .from('workspaces')
       .update({ deleted_at: now })
       .eq('id', session.workspaceId)
+    if (wsDeleteError) {
+      console.error('Workspace soft-delete failed:', wsDeleteError)
+      return NextResponse.json({ error: 'Failed to delete workspace. Nothing was changed — try again.' }, { status: 500 })
+    }
 
     // FIX 6: Deactivate all memberships so getSession() finds no active row
     // on next login — prevents the deleted workspace from being accessible.
-    await (service as any)
+    // FIX (round 3, Workspace lifecycle Finding 3): same unchecked-write gap
+    // as above — a failure here previously left the workspace soft-deleted
+    // but every membership still 'active', silently, with the client told
+    // deletion succeeded.
+    const { error: deactivateError } = await (service as any)
       .from('workspace_members')
       .update({ status: 'deactivated' })
       .eq('workspace_id', session.workspaceId)
       .neq('status', 'deactivated')
+    if (deactivateError) {
+      console.error('Workspace member deactivation failed after soft-delete:', deactivateError)
+      return NextResponse.json({
+        error: 'Workspace was deleted but some memberships could not be deactivated. Contact support@scopegov.app.',
+      }, { status: 500 })
+    }
+
+    // FIX (round 3, Workspace lifecycle Finding 4): leave_workspace_atomic
+    // (migration 027) reassigns the leaver's active_workspace_id to a
+    // fallback workspace when their active workspace membership ends —
+    // delete had no equivalent for ANY of the members it just deactivated
+    // (including the actor). Their active_workspace_id kept pointing at the
+    // now-deleted workspace forever. getSession() tolerates this fine (it
+    // falls back to the oldest remaining active membership), but
+    // workspace/list.ts's `active` flag is a direct equality check with no
+    // such fallback, so the workspace switcher showed NO workspace as
+    // active at all for every affected member until they manually
+    // switched. Best-effort, sequential (this route is single-actor and
+    // admin-gated, so the same TOCTOU concern that justified an RPC for
+    // leave/route.ts doesn't apply here) — must never block the deletion
+    // itself, which has already succeeded by this point.
+    for (const m of (allMembers || [])) {
+      try {
+        const { data: u } = await (service as any)
+          .from('users').select('active_workspace_id').eq('id', m.user_id).maybeSingle()
+        if (u?.active_workspace_id !== session.workspaceId) continue
+        const { data: fallback } = await (service as any)
+          .from('workspace_members')
+          .select('workspace_id')
+          .eq('user_id', m.user_id).eq('status', 'active')
+          .order('created_at', { ascending: true }).limit(1).maybeSingle()
+        await (service as any)
+          .from('users').update({ active_workspace_id: fallback?.workspace_id ?? null }).eq('id', m.user_id)
+      } catch (e) { console.error('active_workspace_id reassignment failed (non-fatal):', m.user_id, e) }
+    }
 
     // Best-effort — must never block the deletion itself, which has
     // already succeeded by this point.
-    for (const m of (otherMembers || [])) {
+    for (const m of otherMembers) {
       const u = m?.user
       if (!u?.email) continue
       await sendWorkspaceDeletedEmail({

@@ -191,7 +191,20 @@ export default function Sidebar({ session }: { session: SessionUser }) {
                 </div>
               ))}
             </div>
-            <Link href="/onboarding" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', fontSize: 12.5, color: 'var(--text-2)', borderTop: '1px solid var(--border)' }}>
+            {/* FIX (round 3, Workspace lifecycle Finding 1 — severe): this
+                used to link straight to /onboarding with no signal of
+                intent. onboarding-status returns 'complete' the instant
+                the user has ANY already-onboarded active membership —
+                true for virtually every existing user — which immediately
+                bounces /onboarding to /dashboard. Since this is the ONLY
+                caller of this link in the entire app, and POST
+                /api/workspace/create is only ever invoked from
+                app/onboarding/page.tsx, there was literally no way for an
+                existing user to ever create a second workspace. The
+                ?new=1 flag tells the onboarding page to bypass the
+                status/resume check entirely and start a genuinely new
+                workspace. */}
+            <Link href="/onboarding?new=1" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', fontSize: 12.5, color: 'var(--text-2)', borderTop: '1px solid var(--border)' }}>
               <i className="ti ti-plus" style={{ fontSize: 12 }} /> Create new workspace
             </Link>
           </div>
