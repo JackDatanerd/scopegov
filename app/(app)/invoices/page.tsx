@@ -54,30 +54,54 @@ export default async function InvoicesPage() {
   if (invErr) console.error('Invoices registry error:', invErr)
   const safeInvoices = invoices || []
 
+  // FIX (section-12 audit): "Collected" used to sum amount_paid across
+  // every invoice workspace-wide and label the total with the
+  // workspace's single default currency, regardless of what currency
+  // each individual invoice was actually denominated in — for an agency
+  // running multi-currency projects (this app explicitly supports
+  // per-project currency; see e.g. the approval-workflow threshold
+  // currency fix), that's not a rounding error, it's adding unlike
+  // currencies together and mislabeling the sum. Group by currency
+  // instead; render one figure per currency in use rather than one
+  // meaningless blended number.
+  const paidByCurrency = new Map<string, number>()
+  for (const i of safeInvoices) {
+    if (i.status === 'draft' || i.status === 'void') continue
+    const cur = i.currency || wsCurrency
+    paidByCurrency.set(cur, (paidByCurrency.get(cur) || 0) + Number(i.amount_paid || 0))
+  }
+
   const stats = {
     total:      safeInvoices.length,
     outstanding: safeInvoices.filter((i: any) => ['sent', 'partially_paid', 'overdue'].includes(i.status)).length,
     overdue:    safeInvoices.filter((i: any) => i.status === 'overdue').length,
-    paidValue:  safeInvoices.filter((i: any) => i.status !== 'draft' && i.status !== 'void').reduce((s: number, i: any) => s + Number(i.amount_paid || 0), 0),
   }
 
   // Phase 4: portfolio reconciliation, only for members who can see the whole workspace.
-  let portfolio: { contractedValue: number; invoicedToDate: number; paidToDate: number; atRiskValue: number } | null = null
+  // FIX (section-12 audit): same cross-currency summation bug as
+  // stats.paidValue above — snapshots are per-project and each project
+  // carries its own currency, but this summed contracted/invoiced/paid/
+  // at-risk values across every project in the workspace and displayed
+  // the blended total under one currency label. Join each snapshot's
+  // project currency and group the rollup by it.
+  let portfolioByCurrency = new Map<string, { contractedValue: number; invoicedToDate: number; paidToDate: number; atRiskValue: number }>()
   if (hasPermission(session, 'VIEW_ALL_PROJECTS')) {
     const { data: rows } = await (service as any)
       .from('contract_reconciliation_snapshots')
-      .select('project_id, contracted_value, invoiced_to_date, paid_to_date, at_risk_value, snapshot_date')
+      .select('project_id, contracted_value, invoiced_to_date, paid_to_date, at_risk_value, snapshot_date, projects(currency)')
       .eq('workspace_id', session.workspaceId)
       .order('snapshot_date', { ascending: true })
     const latestByProject = new Map<string, any>()
     for (const r of (rows || [])) latestByProject.set(r.project_id, r)
-    if (latestByProject.size > 0) {
-      portfolio = Array.from(latestByProject.values()).reduce((acc, r) => ({
+    for (const r of Array.from(latestByProject.values())) {
+      const cur = r.projects?.currency || wsCurrency
+      const acc = portfolioByCurrency.get(cur) || { contractedValue: 0, invoicedToDate: 0, paidToDate: 0, atRiskValue: 0 }
+      portfolioByCurrency.set(cur, {
         contractedValue: acc.contractedValue + (r.contracted_value || 0),
         invoicedToDate:  acc.invoicedToDate + (r.invoiced_to_date || 0),
         paidToDate:      acc.paidToDate + (r.paid_to_date || 0),
         atRiskValue:     acc.atRiskValue + (r.at_risk_value || 0),
-      }), { contractedValue: 0, invoicedToDate: 0, paidToDate: 0, atRiskValue: 0 })
+      })
     }
   }
 
@@ -117,20 +141,45 @@ export default async function InvoicesPage() {
         </div>
         <div className="mc">
           <div className="mc-lbl">Collected</div>
-          <div className="mc-val green">{formatCurrency(stats.paidValue, wsCurrency, true)}</div>
+          {/* FIX (section-12 audit): one figure per currency actually in
+              use, rather than a single blended sum mislabeled with the
+              workspace's default currency. Most agencies only ever see
+              one line here — this only changes anything for a workspace
+              that genuinely has invoices in more than one currency. */}
+          {paidByCurrency.size === 0 ? (
+            <div className="mc-val green">{formatCurrency(0, wsCurrency, true)}</div>
+          ) : (
+            Array.from(paidByCurrency.entries()).map(([cur, amount], i) => (
+              <div key={cur} className="mc-val green" style={i > 0 ? { fontSize: '0.7em', marginTop: 2 } : undefined}>
+                {formatCurrency(amount, cur, true)}
+              </div>
+            ))
+          )}
           <div className="mc-sub">All-time</div>
         </div>
       </div>
 
-      {portfolio && portfolio.contractedValue > 0 && (
+      {portfolioByCurrency.size > 0 && (
         <div className="surface surface-p" style={{ marginBottom: 22 }}>
           <div className="sec-title" style={{ marginBottom: 10 }}>Portfolio reconciliation</div>
-          <div style={{ display: 'flex', gap: 28, flexWrap: 'wrap' }}>
-            <MetricBlock label="Contracted" value={formatCurrency(portfolio.contractedValue, wsCurrency)} />
-            <MetricBlock label="Invoiced" value={formatCurrency(portfolio.invoicedToDate, wsCurrency)} color="var(--blue)" />
-            <MetricBlock label="Paid" value={formatCurrency(portfolio.paidToDate, wsCurrency)} color="var(--green)" />
-            {portfolio.atRiskValue > 0 && <MetricBlock label="At risk" value={formatCurrency(portfolio.atRiskValue, wsCurrency)} color="var(--gold)" />}
-          </div>
+          {Array.from(portfolioByCurrency.entries())
+            .filter(([, p]) => p.contractedValue > 0)
+            .map(([cur, portfolio], i, arr) => (
+              <div key={cur} style={{ marginBottom: i < arr.length - 1 ? 16 : 0 }}>
+                {/* Currency sub-label only needed once there's more than
+                    one — keeps the common single-currency case looking
+                    exactly as it did before this fix. */}
+                {arr.length > 1 && (
+                  <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-3)', marginBottom: 6 }}>{cur}</div>
+                )}
+                <div style={{ display: 'flex', gap: 28, flexWrap: 'wrap' }}>
+                  <MetricBlock label="Contracted" value={formatCurrency(portfolio.contractedValue, cur)} />
+                  <MetricBlock label="Invoiced" value={formatCurrency(portfolio.invoicedToDate, cur)} color="var(--blue)" />
+                  <MetricBlock label="Paid" value={formatCurrency(portfolio.paidToDate, cur)} color="var(--green)" />
+                  {portfolio.atRiskValue > 0 && <MetricBlock label="At risk" value={formatCurrency(portfolio.atRiskValue, cur)} color="var(--gold)" />}
+                </div>
+              </div>
+            ))}
         </div>
       )}
 

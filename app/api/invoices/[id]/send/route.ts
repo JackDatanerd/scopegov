@@ -24,12 +24,21 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const service = createServiceClient()
 
+    // FIX (section-12 audit): sow_id/co_id/line_items were never selected
+    // here, so the PDF attached to the initial send email always rendered
+    // as a plain single-line invoice with no "under SOW No. X / as
+    // amended by CO No. Y" cross-reference — even for an itemized
+    // invoice, even though the exact same document downloaded later via
+    // /api/pdf/invoice/[id] renders the full breakdown correctly. The
+    // client's inbox copy and the app's canonical copy were two different
+    // documents.
     const { data: invoice, error: fetchErr } = await (service as any)
       .from('invoices')
       .select(`id, title, amount, currency, status, due_date, payment_instructions, invoice_number,
-        po_number, milestone_id, project_id, subtotal, tax_rate, tax_inclusive,
+        po_number, milestone_id, project_id, subtotal, tax_rate, tax_inclusive, line_items, sow_id, co_id,
         projects(id, name, client_id, clients(name, email, cc_emails, company_name, billing_address, vat_number),
-          workspaces(id, agency_name, brand_colour, logo_storage_path, legal_address, tax_id, phone, website))`)
+          workspaces(id, agency_name, brand_colour, logo_storage_path, legal_address, tax_id, phone, website)),
+        sow_documents(document_number), change_orders(document_number, title)`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!invoice) {
@@ -154,6 +163,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         dueDate:       invoice.due_date,
         sentAt:        now,
         paymentInstructions: invoice.payment_instructions,
+        // FIX (section-12 audit): these were omitted entirely, unlike the
+        // standalone /api/pdf/invoice/[id] download route — see the
+        // select() fix above for the full explanation.
+        sowNumber:  invoice.sow_documents?.document_number || null,
+        coNumber:   invoice.change_orders?.document_number || null,
+        coTitle:    invoice.change_orders?.title || null,
+        lineItems:  typeof invoice.line_items === 'string' ? JSON.parse(invoice.line_items) : (invoice.line_items || []),
         payments:      [],
         contractPosition: null,
       })

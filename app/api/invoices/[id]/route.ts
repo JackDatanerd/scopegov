@@ -52,7 +52,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     const service = createServiceClient()
     const { data: invoice } = await (service as any)
-      .from('invoices').select('id, status, title, amount, subtotal, tax_rate, tax_inclusive, project_id')
+      .from('invoices').select('id, status, title, amount, subtotal, tax_rate, tax_inclusive, project_id, line_items')
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
@@ -73,19 +73,48 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (body.paymentInstructions !== undefined) update.payment_instructions = sanitizeRichTextOrNull(body.paymentInstructions)
     if (body.notes !== undefined) update.notes = body.notes?.trim() || null
 
+    // Resolve the line items that will be in effect after this PATCH —
+    // freshly submitted ones if this call is touching them, otherwise
+    // whatever the invoice already has on file (defensively unwrapped in
+    // case an older row still has the pre-fix JSON-string encoding).
+    let cleanLineItems: Array<{ description: string; quantity: number; rate: number; total: number }> | undefined
+    if (body.lineItems !== undefined) {
+      cleanLineItems = Array.isArray(body.lineItems)
+        ? body.lineItems.map((l: any) => ({
+            description: String(l.description || '').trim().slice(0, 500),
+            quantity:    Number(l.quantity) || 0,
+            rate:        Number(l.rate) || 0,
+            total:       Number(l.total) || 0,
+          })).filter((l: any) => l.description)
+        : []
+    }
+    const existingLineItems = typeof invoice.line_items === 'string'
+      ? JSON.parse(invoice.line_items || '[]') : (invoice.line_items || [])
+    const isItemized = (cleanLineItems !== undefined ? cleanLineItems : existingLineItems).length > 0
+
     // FIX (re-audit): `amount` could be changed here with no recompute of
     // `subtotal`/`tax_rate` at all — editing a draft invoice's amount left
     // the stored tax breakdown referencing the OLD amount, so the
     // next-sent PDF's subtotal+tax could stop summing to the new total.
-    // Recompute the same way POST /api/invoices does whenever amount or
-    // either tax field changes, using whichever values are in effect
+    // Recompute the same way POST /api/invoices does whenever amount, tax,
+    // or line items change, using whichever values are in effect
     // (freshly patched, or the invoice's existing ones).
-    const touchesTax = body.amount !== undefined || body.taxRate !== undefined || body.taxInclusive !== undefined
+    const touchesTax = body.amount !== undefined || body.taxRate !== undefined
+      || body.taxInclusive !== undefined || cleanLineItems !== undefined
     let finalSubtotal = invoice.subtotal != null ? Number(invoice.subtotal) : Number(invoice.amount)
     if (touchesTax) {
-      const finalAmount      = update.amount !== undefined ? update.amount : Number(invoice.amount)
-      const finalTaxRate     = body.taxRate !== undefined ? (Number(body.taxRate) || 0) : Number(invoice.tax_rate || 0)
-      const finalTaxInclusive = body.taxInclusive !== undefined ? !!body.taxInclusive : !!invoice.tax_inclusive
+      const finalAmount  = update.amount !== undefined ? update.amount : Number(invoice.amount)
+      const finalTaxRate = body.taxRate !== undefined ? (Number(body.taxRate) || 0) : Number(invoice.tax_rate || 0)
+      // FIX (section-12 audit): same fix as POST /api/invoices — an
+      // itemized invoice's amount is derived from summing its line items
+      // (a pre-tax figure by construction, since no per-line tax is ever
+      // applied), so it can't simultaneously be treated as "tax-inclusive"
+      // without the footing check below permanently failing. Force
+      // exclusive whenever line items are (or remain) in effect, the same
+      // way creation now does.
+      const finalTaxInclusive = isItemized
+        ? false
+        : (body.taxInclusive !== undefined ? !!body.taxInclusive : !!invoice.tax_inclusive)
       finalSubtotal = finalTaxRate > 0
         ? (finalTaxInclusive ? finalAmount / (1 + finalTaxRate / 100) : finalAmount)
         : finalAmount
@@ -104,15 +133,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // `effectiveAmount` (the grand total) — see POST /api/invoices for the
     // full explanation of why that made itemized + tax-exclusive invoices
     // permanently unsaveable.
-    if (body.lineItems !== undefined) {
-      const cleanLineItems = Array.isArray(body.lineItems)
-        ? body.lineItems.map((l: any) => ({
-            description: String(l.description || '').trim().slice(0, 500),
-            quantity:    Number(l.quantity) || 0,
-            rate:        Number(l.rate) || 0,
-            total:       Number(l.total) || 0,
-          })).filter((l: any) => l.description)
-        : []
+    if (cleanLineItems !== undefined) {
       if (cleanLineItems.length > 0) {
         const itemSum = cleanLineItems.reduce((s: number, l: any) => s + l.total, 0)
         if (Math.abs(itemSum - finalSubtotal) > 0.01) {
@@ -121,7 +142,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           }, { status: 400 })
         }
       }
-      update.line_items = JSON.stringify(cleanLineItems)
+      // FIX (section-12 audit): same jsonb-vs-string bug as POST
+      // /api/invoices — see the comment there.
+      update.line_items = cleanLineItems
     }
 
     const { error } = await (service as any).from('invoices').update(update).eq('id', id)

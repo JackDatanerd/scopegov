@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
+import { cancelApprovalRequest } from '@/lib/approvals/engine'
 
 // FIX (section-10 audit, 10-G2 + 10-G3 + 10-G4):
 //
@@ -111,6 +112,19 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           updated_at: new Date().toISOString(),
         })
         .eq('id', co.id).eq('status', 'countered')
+
+      // FIX (section-11 audit): accepting a counter-offer on a gated
+      // workflow creates a pending 'co_counter' approval request while
+      // this CO stays 'countered' (see accept-counter/route.ts +
+      // lib/approvals/engine.ts) — superseding it here with a revision,
+      // same gap as close/route.ts, left that request orphaned: still
+      // pending, still in the approver's queue, referencing a CO that's
+      // now closed. Cancel it the same way withdraw() and close() do.
+      await cancelApprovalRequest(service, {
+        documentType: 'co_counter', documentId: co.id, workspaceId: session.workspaceId,
+        actorId: session.id, actorEmail: session.email, actorName: session.name,
+        reason: `Superseded by revision v${revision.version}`,
+      })
     }
 
     await logAudit(service, {

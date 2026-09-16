@@ -71,7 +71,28 @@ export async function GET(request: NextRequest) {
       .order('created_at', { ascending: true })
       .limit(500)
 
+    // FIX (section-11 audit): this only checked step assignment (name or
+    // role match) — nothing scoped the list to projects the viewer can
+    // actually see. lib/approvals/engine.ts's notifyStepApprovers already
+    // runs both the role and named-user branches through
+    // filterToProjectAccess for exactly this reason (a project-restricted
+    // VIEW_OWN_PROJECTS member isn't exempt just because they hold the
+    // assigned role, or are the named approver, on a document outside
+    // their project access) — this list endpoint, and the decision route
+    // it feeds, are the two places that principle was missing. Mirrors
+    // the same allowed-project-ids pattern used by /api/invoices and
+    // /api/sow's registry pages.
+    let allowedProjectIds: Set<string> | null = null
+    if (!hasPermission(session, 'VIEW_ALL_PROJECTS')) {
+      const { data: ids } = await (service as any)
+        .from('project_members')
+        .select('project_id, workspace_members!inner(user_id)')
+        .eq('workspace_members.user_id', session.id)
+      allowedProjectIds = new Set((ids || []).map((r: any) => r.project_id))
+    }
+
     const mine = (pending || []).filter((r: any) => {
+      if (allowedProjectIds && !allowedProjectIds.has(r.project_id)) return false
       const step = (r.approval_steps || []).find((s: any) => s.step_order === r.current_step)
       if (!step) return false
       if (step.approver_user_id) return step.approver_user_id === session.id

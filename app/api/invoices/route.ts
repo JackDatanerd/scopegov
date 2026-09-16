@@ -145,8 +145,38 @@ export async function POST(request: NextRequest) {
       if (taxRate === undefined) coTaxDefaults = { taxRate: co.tax_rate, taxInclusive: co.tax_inclusive, subtotal: co.subtotal }
     }
 
-    const finalTaxRate      = taxRate !== undefined ? Number(taxRate) || 0 : (coTaxDefaults?.taxRate || 0)
-    const finalTaxInclusive = taxInclusive !== undefined ? !!taxInclusive : !!coTaxDefaults?.taxInclusive
+    // Optional itemized breakdown (migration 017), computed before the
+    // tax math below since it now feeds into it — see the taxInclusive
+    // fix just underneath.
+    let cleanLineItems: Array<{ description: string; quantity: number; rate: number; total: number }> = []
+    if (Array.isArray(lineItems) && lineItems.length > 0) {
+      cleanLineItems = lineItems.map((l: any) => ({
+        description: String(l.description || '').trim().slice(0, 500),
+        quantity:    Number(l.quantity) || 0,
+        rate:        Number(l.rate) || 0,
+        total:       Number(l.total) || 0,
+      })).filter(l => l.description)
+    }
+    const isItemized = cleanLineItems.length > 0
+
+    const finalTaxRate = taxRate !== undefined ? Number(taxRate) || 0 : (coTaxDefaults?.taxRate || 0)
+    // FIX (section-12 audit): an itemized invoice's `amount` is DERIVED
+    // from summing the line items (see BillingTab.tsx) — a pre-tax figure
+    // by construction, since no per-line tax is ever applied. That's
+    // inherently "before tax", regardless of what the taxInclusive field
+    // says — but this used to trust taxInclusive verbatim even when
+    // itemized, and the UI's own default for that field is 'inclusive'.
+    // Fed a pre-tax sum under a tax-INCLUSIVE assumption, the math below
+    // divides it by (1 + rate) to back out a *smaller* subtotal that the
+    // line items can never foot to — making the (itemized + nonzero tax +
+    // default tax-inclusive) combination permanently uncreatable, the
+    // exact mirror of the itemized + tax-EXCLUSIVE bug already fixed
+    // right below. Force exclusive whenever line items are present; it's
+    // not a preference to trust from the client, it's a fact about how
+    // itemized amounts are computed.
+    const finalTaxInclusive = isItemized
+      ? false
+      : (taxInclusive !== undefined ? !!taxInclusive : !!coTaxDefaults?.taxInclusive)
     // `amount` in the DB is always the grand total the client owes.
     // The create form lets the agency enter either figure: if the entered
     // amount is tax-inclusive, it already *is* the grand total and we
@@ -165,20 +195,13 @@ export async function POST(request: NextRequest) {
       finalSubtotal = coTaxDefaults.subtotal ?? numAmount
     }
 
-    // Optional itemized breakdown (migration 017). Soft rule enforced in
-    // code, not a DB constraint (matches the column's documented contract):
-    // if the agency supplies line items, they must foot to the invoice
-    // total — otherwise the PDF would show an itemized table whose rows
-    // don't sum to the number the client is actually being asked to pay,
-    // which is worse than not itemizing at all.
-    let cleanLineItems: Array<{ description: string; quantity: number; rate: number; total: number }> = []
-    if (Array.isArray(lineItems) && lineItems.length > 0) {
-      cleanLineItems = lineItems.map((l: any) => ({
-        description: String(l.description || '').trim().slice(0, 500),
-        quantity:    Number(l.quantity) || 0,
-        rate:        Number(l.rate) || 0,
-        total:       Number(l.total) || 0,
-      })).filter(l => l.description)
+    // Soft rule enforced in code, not a DB constraint (matches the
+    // column's documented contract): if the agency supplies line items,
+    // they must foot to the invoice subtotal — otherwise the PDF would
+    // show an itemized table whose rows don't sum to the number the
+    // client is actually being asked to pay, which is worse than not
+    // itemizing at all.
+    if (isItemized) {
       const itemSum = cleanLineItems.reduce((s, l) => s + l.total, 0)
       // FIX (re-audit, critical finding): this compared against
       // `finalAmount` (the tax-inclusive grand total) instead of
@@ -189,7 +212,7 @@ export async function POST(request: NextRequest) {
       // fail this check by exactly the tax amount, making that combination
       // completely uncreatable. Tax-inclusive happened to work by
       // coincidence, since finalAmount === finalSubtotal in that case.
-      if (cleanLineItems.length > 0 && Math.abs(itemSum - finalSubtotal) > 0.01) {
+      if (Math.abs(itemSum - finalSubtotal) > 0.01) {
         return NextResponse.json({
           error: `Line items total ${itemSum.toFixed(2)} does not match invoice subtotal ${finalSubtotal.toFixed(2)}`,
         }, { status: 400 })
@@ -209,7 +232,17 @@ export async function POST(request: NextRequest) {
         subtotal:      finalSubtotal,
         tax_rate:      finalTaxRate,
         tax_inclusive: finalTaxInclusive,
-        line_items:    JSON.stringify(cleanLineItems),
+        // FIX (section-12 audit): line_items is jsonb (migration 017) —
+        // JSON.stringify(...) here wrote a JSON *string* into the column
+        // instead of a native array, the exact same bug already found and
+        // fixed once for change_orders.line_items (see app/api/co/route.ts).
+        // Masked today only because both PDF-render paths defensively
+        // unwrap `typeof === 'string' ? JSON.parse(...) : ...` — but the
+        // column stops matching its own documented contract, and any
+        // future direct consumer without that unwrap breaks. Write the
+        // array directly; PostgREST/Supabase serializes it as jsonb on
+        // its own.
+        line_items:    cleanLineItems,
         currency:      project.currency || 'USD',
         due_date:      dueDate || null,
         payment_instructions: sanitizeRichTextOrNull(paymentInstructions),

@@ -25,11 +25,16 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (req.requested_by !== session.id && !hasPermission(session, 'MANAGE_WORKSPACE_SETTINGS'))
       return NextResponse.json({ error: 'Only the requester or an admin can cancel this' }, { status: 403 })
 
+    // FIX (section-11 audit): this reason was hardcoded regardless of who
+    // actually cancelled it — an admin using the MANAGE_WORKSPACE_SETTINGS
+    // override above to cancel someone else's request got the exact same
+    // audit-log text as the requester cancelling their own, making the
+    // audit trail actively misleading about who acted.
     await cancelApprovalRequest(service, {
       documentType: req.document_type, documentId: req.document_id,
       workspaceId: session.workspaceId,
       actorId: session.id, actorEmail: session.email, actorName: session.name,
-      reason: 'Cancelled by requester',
+      reason: req.requested_by === session.id ? 'Cancelled by requester' : 'Cancelled by admin',
     })
 
     return NextResponse.json({ ok: true })

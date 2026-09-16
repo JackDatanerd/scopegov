@@ -29,6 +29,7 @@ import { sendSowDocument } from '@/lib/documents/send-sow'
 import { sendCoDocument } from '@/lib/documents/send-co'
 import { acceptCoCounter } from '@/lib/documents/accept-co-counter'
 import { hasPermission } from '@/lib/auth/session'
+import { canReadProject } from '@/lib/utils/project-access'
 import type { SessionUser } from '@/lib/supabase/types'
 
 // FIX (section-11 audit): 'co_counter' added so accept-counter can gate a
@@ -249,6 +250,24 @@ export async function recordApprovalDecision(service: any, params: DecisionParam
   }
   if (!eligible) return { ok: false, error: 'You are not an approver for this step', status: 403 }
 
+  // FIX (section-11 audit, flagship finding): everywhere else in this file
+  // that touches an approver — notifyStepApprovers' role branch (via
+  // getMembersWithRole's projectId param) and its direct-user branch (via
+  // filterToProjectAccess), both with explicit comments reasoning about
+  // exactly this — scopes the approver to whoever can actually SEE the
+  // project the document lives on. That principle was only ever wired
+  // into the notification layer (who gets emailed), never into this, the
+  // actual authorization boundary (who's allowed to click Approve). A
+  // member on VIEW_OWN_PROJECTS with no assignment to this project, but
+  // who happens to hold the assigned role (or is the named approver),
+  // could approve/reject — and thereby trigger a real send to the client
+  // — for a project they have no other visibility into. canReadProject
+  // is the same primitive every other document-mutating route in the app
+  // already gates writes on; the decision path was the one place that
+  // never got it.
+  if (!(await canReadProject(service, params.actor, request.project_id)))
+    return { ok: false, error: 'You do not have access to this project', status: 403 }
+
   const now = new Date().toISOString()
   const documentLabel = request.document_type === 'sow' ? 'SOW' : 'Change order'
   const docTitle       = request.context?.title || documentLabel
@@ -279,6 +298,17 @@ export async function recordApprovalDecision(service: any, params: DecisionParam
     await service.from('approval_requests').update({
       status: 'rejected', decided_at: now, updated_at: now,
     }).eq('id', request.id)
+
+    // FIX (section-11 audit): only the just-decided step was ever touched
+    // here — every step AFTER it (inserted 'pending' at request creation,
+    // same as the decided one was) stayed 'pending' forever, since the
+    // chain never advances past a rejection. cancelApprovalRequest()
+    // already does the equivalent cleanup for a cancelled request
+    // (marking every still-pending step 'skipped'); a rejected request
+    // needs the same so its own detail view doesn't render un-reached
+    // steps as "Awaiting decision" under a request that's already dead.
+    await service.from('approval_steps').update({ status: 'skipped' })
+      .eq('request_id', request.id).eq('status', 'pending')
 
     await logAudit(service, {
       workspaceId: params.actor.workspaceId,

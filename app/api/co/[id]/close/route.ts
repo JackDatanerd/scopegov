@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
+import { cancelApprovalRequest } from '@/lib/approvals/engine'
 
 // FIX (section-10 audit): this was documented and typed as a "shared
 // handler for terminal non-accepted CO states: close, withdraw, decline"
@@ -46,6 +47,28 @@ async function handleTerminalCoState(
   const updates: Record<string, unknown> = { status: newStatus, updated_at: now, close_reason: body.reason || null }
 
   await (service as any).from('change_orders').update(updates).eq('id', id)
+
+  // FIX (section-11 audit): a 'draft' CO can have a pending 'co' approval
+  // request in flight (gated send), and a 'countered' CO can have a
+  // pending 'co_counter' request (gated counter-acceptance) — see
+  // lib/approvals/engine.ts. withdraw() already cancels these; this route
+  // closed the CO out from under either one with no equivalent call,
+  // leaving the approval request orphaned: still 'pending' forever, still
+  // showing in the approver's queue, still getting reminded about by the
+  // stall cron every 2 days, referencing a CO that no longer exists in
+  // any open state. Both document_types share this CO's id, so both are
+  // checked — cancelApprovalRequest itself is a no-op if neither has a
+  // pending row.
+  await cancelApprovalRequest(service, {
+    documentType: 'co', documentId: id, workspaceId: session.workspaceId,
+    actorId: session.id, actorEmail: session.email, actorName: session.name,
+    reason: 'CO closed',
+  })
+  await cancelApprovalRequest(service, {
+    documentType: 'co_counter', documentId: id, workspaceId: session.workspaceId,
+    actorId: session.id, actorEmail: session.email, actorName: session.name,
+    reason: 'CO closed',
+  })
 
   // BUG-048, spec §6.2: flag reversion fires on decline, close, AND withdraw
   // (decline/withdraw handle their own reversion independently — see

@@ -27,6 +27,7 @@ interface Props {
 
 export default function BillingTab({ project, milestones, invoices, reconciliation, permissions, currency, router, defaultPaymentInstructions = '' }: Props) {
   const [creating, setCreating]   = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
   const [payingId, setPayingId]   = useState<string | null>(null)
   const [voidingId, setVoidingId] = useState<string | null>(null)
   const [paymentsOpenId, setPaymentsOpenId] = useState<string | null>(null)
@@ -59,9 +60,18 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
   // countersignature is still open money, same as awaiting_response/
   // countered — omitting it would understate at-risk value the moment
   // the agency accepts a counter, right up until the client re-signs.
-  const atRiskValue      = latestSnapshot ? latestSnapshot.at_risk_value : acceptedCos.length === 0
-    ? (project.change_orders || []).filter((c: any) => ['awaiting_response', 'countered', 'awaiting_countersignature'].includes(c.status)).reduce((s: number, c: any) => s + (c.total || 0), 0)
-    : 0
+  //
+  // FIX (section-12 audit): the live-computation fallback used to be
+  // gated behind `acceptedCos.length === 0` — the moment a project had
+  // ANY accepted CO, this whole branch short-circuited to 0, silently
+  // ignoring every OTHER, unrelated CO still open on the same project.
+  // There's no reason one accepted CO should zero out the at-risk value
+  // of a different CO still awaiting the client's response — that guard
+  // served no purpose the surrounding comment describes and just
+  // undercounted real open money to $0 for any project with more than
+  // one CO in flight, until the daily reconciliation snapshot next runs.
+  const atRiskValue      = latestSnapshot ? latestSnapshot.at_risk_value
+    : (project.change_orders || []).filter((c: any) => ['awaiting_response', 'countered', 'awaiting_countersignature'].includes(c.status)).reduce((s: number, c: any) => s + (c.total || 0), 0)
 
   async function refresh() { router.refresh() }
 
@@ -170,6 +180,15 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
                       <button className="btn btn-ghost btn-sm" disabled={busyId === inv.id} onClick={() => sendInvoice(inv.id)}>
                         {busyId === inv.id ? <span className="spin spin-dark" /> : <><i className="ti ti-send" style={{ fontSize: 11 }} /> Send</>}
                       </button>
+                      {/* FIX (section-12 audit, feature gap): PATCH
+                          /api/invoices/[id] has always fully supported
+                          editing a draft's title/amount/tax/line items/
+                          due date/payment instructions — this button was
+                          the only thing missing. Without it, fixing a typo
+                          on a draft meant deleting it and starting over. */}
+                      <button className="btn btn-ghost btn-sm" disabled={busyId === inv.id} onClick={() => setEditingId(inv.id)}>
+                        <i className="ti ti-pencil" style={{ fontSize: 11 }} /> Edit
+                      </button>
                       <button className="btn btn-ghost btn-sm" style={{ color: 'var(--red)' }} disabled={busyId === inv.id} onClick={() => deleteInvoice(inv.id)}>
                         <i className="ti ti-trash" style={{ fontSize: 11 }} /> Delete
                       </button>
@@ -231,6 +250,15 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
           defaultPaymentInstructions={defaultPaymentInstructions}
           onClose={() => setCreating(false)}
           onCreated={async () => { setCreating(false); await refresh() }}
+        />
+      )}
+
+      {editingId && (
+        <EditInvoiceModal
+          invoiceId={editingId}
+          projectCurrency={currency}
+          onClose={() => setEditingId(null)}
+          onSaved={async () => { setEditingId(null); await refresh() }}
         />
       )}
 
@@ -452,6 +480,16 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
   useEffect(() => {
     if (itemized) setAmount(itemsSubtotal ? String(itemsSubtotal) : '')
   }, [itemized, itemsSubtotal])
+  // FIX (section-12 audit): the tax-inclusive/exclusive selector is
+  // locked to "Before tax" in the UI while itemized (see the select
+  // below), but locking the *display* isn't enough — `taxInclusive`
+  // itself still defaulted to true and was what actually got sent to the
+  // server. Keep the real state in sync with what's shown, so toggling
+  // itemizing on doesn't submit `taxInclusive: true` behind a selector
+  // that visually says otherwise.
+  useEffect(() => {
+    if (itemized) setTaxInclusive(false)
+  }, [itemized])
 
   function pickSource(type: 'milestone' | 'sow' | 'co', id: string) {
     setSource({ type, id })
@@ -649,12 +687,28 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
               </div>
               <div>
                 <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 5 }}>Amount entered above is</label>
-                <select className="finp" value={taxInclusive ? 'inclusive' : 'exclusive'}
+                {/* FIX (section-12 audit): when itemized, `amount` is the
+                    raw sum of the line items below — a pre-tax figure by
+                    construction, since no per-line tax is ever applied.
+                    Leaving this selector live (defaulting to
+                    "Tax-inclusive") let the server treat that pre-tax sum
+                    as if it already included tax, which made itemizing +
+                    any nonzero tax rate permanently unsaveable (see
+                    POST /api/invoices). Line items are always "before
+                    tax" once itemizing — lock the selector to match
+                    what the server now enforces, instead of offering a
+                    choice that silently breaks. */}
+                <select className="finp" value={itemized ? 'exclusive' : (taxInclusive ? 'inclusive' : 'exclusive')}
                   onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setTaxInclusive(e.target.value === 'inclusive')}
-                  disabled={Number(taxRate) <= 0}>
+                  disabled={Number(taxRate) <= 0 || itemized}>
                   <option value="inclusive">Tax-inclusive</option>
                   <option value="exclusive">Before tax</option>
                 </select>
+                {itemized && Number(taxRate) > 0 && (
+                  <p style={{ fontSize: 10.5, color: 'var(--text-4)', marginTop: 4 }}>
+                    Line items are always entered before tax — tax is added on top of their total.
+                  </p>
+                )}
               </div>
             </div>
 
@@ -688,6 +742,244 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
   )
 }
 
+// ── EDIT DRAFT INVOICE ──────────────────────────────────────────
+// FIX (section-12 audit, feature gap): PATCH /api/invoices/[id] has
+// always fully supported editing a draft invoice's title, amount, tax
+// terms, itemized line items, due date, and payment instructions — this
+// modal was the missing piece that actually let an agency user reach it,
+// instead of deleting and recreating a draft from scratch over a typo.
+// Fetches the full invoice on open (the summary list BillingTab already
+// has doesn't carry subtotal/tax/line_items/payment_instructions), same
+// lazy-load pattern PaymentsPanel already uses below.
+function EditInvoiceModal({ invoiceId, projectCurrency, onClose, onSaved }: {
+  invoiceId: string; projectCurrency: string; onClose: () => void; onSaved: () => void
+}) {
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
+
+  const [title, setTitle] = useState('')
+  const [amount, setAmount] = useState('')
+  const [dueDate, setDueDate] = useState('')
+  const [paymentInstructions, setPaymentInstructions] = useState('')
+  const [taxRate, setTaxRate] = useState('0')
+  const [taxInclusive, setTaxInclusive] = useState(true)
+  const [itemized, setItemized] = useState(false)
+  const [lineItems, setLineItems] = useState<Array<{ id: string; description: string; quantity: number; rate: number; total: number }>>([])
+  const itemsSubtotal = lineItems.reduce((s, l) => s + l.total, 0)
+
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    async function load() {
+      setLoading(true); setLoadError('')
+      try {
+        const res  = await fetch(`/api/invoices/${invoiceId}`)
+        const json = await res.json()
+        if (!res.ok) throw new Error(json.error || 'Failed to load invoice')
+        if (cancelled) return
+        const inv = json.invoice
+        setTitle(inv.title || '')
+        setAmount(String(inv.amount ?? ''))
+        setDueDate(inv.due_date ? String(inv.due_date).slice(0, 10) : '')
+        setPaymentInstructions(inv.payment_instructions || '')
+        setTaxRate(inv.tax_rate != null ? String(inv.tax_rate) : '0')
+        setTaxInclusive(inv.tax_inclusive ?? true)
+        const items = typeof inv.line_items === 'string' ? JSON.parse(inv.line_items || '[]') : (inv.line_items || [])
+        if (items.length > 0) {
+          setItemized(true)
+          setLineItems(items.map((li: any) => ({ id: nanoid(), description: li.description, quantity: li.quantity, rate: li.rate, total: li.total })))
+        } else {
+          setLineItems([{ id: nanoid(), description: '', quantity: 1, rate: 0, total: 0 }])
+        }
+      } catch (err) {
+        if (!cancelled) setLoadError(err instanceof Error ? err.message : 'Failed to load invoice')
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [invoiceId])
+
+  // Same as CreateInvoiceModal: keeps `amount` mirroring the line-item
+  // sum while itemized, and keeps taxInclusive from silently defaulting
+  // to a state the itemized footing check can never satisfy — see the
+  // matching fix in CreateInvoiceModal for the full explanation.
+  useEffect(() => {
+    if (itemized) setAmount(itemsSubtotal ? String(itemsSubtotal) : '')
+  }, [itemized, itemsSubtotal])
+  useEffect(() => {
+    if (itemized) setTaxInclusive(false)
+  }, [itemized])
+
+  function updateLineItem(id: string, field: 'description' | 'quantity' | 'rate', value: string | number) {
+    setLineItems(prev => prev.map(l => {
+      if (l.id !== id) return l
+      const updated = { ...l, [field]: value }
+      updated.total = updated.quantity * updated.rate
+      return updated
+    }))
+  }
+  function addLine() { setLineItems(prev => [...prev, { id: nanoid(), description: '', quantity: 1, rate: 0, total: 0 }]) }
+  function removeLine(id: string) {
+    if (lineItems.length === 1) return
+    setLineItems(prev => prev.filter(l => l.id !== id))
+  }
+
+  async function submit() {
+    setError('')
+    if (!title.trim()) { setError('Title is required.'); return }
+    if (!amount || Number(amount) <= 0) { setError('Enter a valid amount.'); return }
+    const cleanItems = itemized ? lineItems.filter(l => l.description.trim()) : []
+    if (itemized && cleanItems.length === 0) { setError('Add at least one line item, or turn off itemizing.'); return }
+
+    setSubmitting(true)
+    try {
+      const res = await fetch(`/api/invoices/${invoiceId}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: title.trim(), amount: Number(amount),
+          dueDate: dueDate || null, paymentInstructions,
+          taxRate: Number(taxRate) || 0, taxInclusive,
+          lineItems: itemized ? cleanItems.map(({ id, ...rest }) => rest) : [],
+        }),
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error || 'Failed to save changes')
+      onSaved()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to save changes')
+    } finally { setSubmitting(false) }
+  }
+
+  return (
+    <>
+      <div className="modal-bg" onClick={onClose} />
+      <div className="modal" style={{ maxWidth: 520 }}>
+        <h2 className="modal-title">Edit draft invoice</h2>
+        <p className="modal-sub">What this bills against can&apos;t be changed — void and re-create if that needs to change.</p>
+
+        {loading ? (
+          <div className="empty-state" style={{ padding: '24px 0' }}><span className="spin spin-dark" /></div>
+        ) : loadError ? (
+          <p className="ferr">{loadError}</p>
+        ) : (
+          <>
+            {error && <p className="ferr" style={{ marginBottom: 10 }}>{error}</p>}
+
+            <div className="f2" style={{ marginBottom: 12 }}>
+              <div>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 5 }}>Title</label>
+                <input className="finp" value={title} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTitle(e.target.value)} />
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 5 }}>Amount ({projectCurrency})</label>
+                <input type="number" className="finp" value={amount} disabled={itemized}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAmount(e.target.value)} min={0} step="0.01" />
+                {itemized && <p style={{ fontSize: 10.5, color: 'var(--text-4)', marginTop: 4 }}>Set by line items below</p>}
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 12 }}>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => setItemized(v => !v)}>
+                <i className={`ti ${itemized ? 'ti-list-numbers' : 'ti-plus'}`} style={{ fontSize: 12 }} />
+                {itemized ? 'Itemizing this invoice' : 'Itemize this invoice'}
+              </button>
+            </div>
+
+            {itemized && (
+              <div className="surface surface-p" style={{ marginBottom: 14 }}>
+                <div style={{ display: 'flex', fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
+                  letterSpacing: '.07em', color: 'var(--text-3)', paddingBottom: 8,
+                  borderBottom: '1px solid var(--border)', marginBottom: 8 }}>
+                  <span style={{ flex: 1 }}>Description</span>
+                  <span style={{ width: 64, textAlign: 'center' }}>Qty</span>
+                  <span style={{ width: 100, textAlign: 'right' }}>Rate</span>
+                  <span style={{ width: 100, textAlign: 'right' }}>Total</span>
+                  <span style={{ width: 32 }} />
+                </div>
+                {lineItems.map((item, idx) => (
+                  <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                    <input className="finp" style={{ flex: 1, fontSize: 12 }} value={item.description}
+                      placeholder={`Item ${idx + 1}`}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateLineItem(item.id, 'description', e.target.value)} />
+                    <input type="number" className="finp" style={{ width: 64, fontSize: 12, textAlign: 'center' }}
+                      value={item.quantity} min={0} step="0.01"
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateLineItem(item.id, 'quantity', parseFloat(e.target.value) || 0)} />
+                    <input type="number" className="finp" style={{ width: 100, fontSize: 12, textAlign: 'right' }}
+                      value={item.rate} min={0} step="0.01"
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateLineItem(item.id, 'rate', parseFloat(e.target.value) || 0)} />
+                    <div style={{ width: 100, textAlign: 'right', fontSize: 13, fontFamily: 'IBM Plex Mono, monospace', color: 'var(--text-2)' }}>
+                      {formatCurrency(item.total, projectCurrency)}
+                    </div>
+                    <div style={{ width: 32, textAlign: 'right' }}>
+                      {lineItems.length > 1 && (
+                        <button className="btn-icon" onClick={() => removeLine(item.id)}>
+                          <i className="ti ti-x" style={{ fontSize: 12 }} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+                <button className="btn btn-ghost btn-sm" onClick={addLine} style={{ marginTop: 6 }}>
+                  <i className="ti ti-plus" style={{ fontSize: 12 }} /> Add line item
+                </button>
+                <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', fontSize: 13, fontWeight: 600 }}>
+                  <span>Total</span>
+                  <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{formatCurrency(itemsSubtotal, projectCurrency)}</span>
+                </div>
+              </div>
+            )}
+
+            <div className="f2" style={{ marginBottom: 12 }}>
+              <div>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 5 }}>Tax rate (%) <span style={{ fontWeight: 400, color: 'var(--text-4)' }}>— optional</span></label>
+                <input type="number" className="finp" value={taxRate} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTaxRate(e.target.value)} min={0} max={100} step="0.01" />
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 5 }}>Amount entered above is</label>
+                <select className="finp" value={itemized ? 'exclusive' : (taxInclusive ? 'inclusive' : 'exclusive')}
+                  onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setTaxInclusive(e.target.value === 'inclusive')}
+                  disabled={Number(taxRate) <= 0 || itemized}>
+                  <option value="inclusive">Tax-inclusive</option>
+                  <option value="exclusive">Before tax</option>
+                </select>
+                {itemized && Number(taxRate) > 0 && (
+                  <p style={{ fontSize: 10.5, color: 'var(--text-4)', marginTop: 4 }}>
+                    Line items are always entered before tax — tax is added on top of their total.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 5 }}>Due date <span style={{ fontWeight: 400, color: 'var(--text-4)' }}>— optional</span></label>
+              <input type="date" className="finp" value={dueDate} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDueDate(e.target.value)} />
+            </div>
+
+            <div style={{ marginBottom: 6 }}>
+              <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 5 }}>Payment instructions <span style={{ fontWeight: 400, color: 'var(--text-4)' }}>— shown to the client</span></label>
+              <RichTextField value={paymentInstructions} onChange={setPaymentInstructions} minHeight={70} placeholder='Bank details or "per contract terms"' />
+            </div>
+          </>
+        )}
+
+        <div className="modal-footer">
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          {!loading && !loadError && (
+            <button className="btn" onClick={submit} disabled={submitting}>
+              {submitting ? <span className="spin" /> : 'Save changes'}
+            </button>
+          )}
+        </div>
+      </div>
+    </>
+  )
+}
+
+// ── SOURCE PICKER ────────────────────────────────────────────
 function SourceRow({ active, label, sub, onClick }: { active: boolean; label: string; sub: string; onClick: () => void }) {
   return (
     <div onClick={onClick} style={{
