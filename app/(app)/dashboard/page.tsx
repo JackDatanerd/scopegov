@@ -67,6 +67,21 @@ export default async function DashboardPage() {
   // "highest version actually sent to the client" sort those functions do
   // degenerated to an arbitrary pick (all comparisons return 0). Bring the
   // select in line with the Projects list's so the two pages agree.
+  //
+  // FIX (deep audit, section 7 — pagination follow-up): this also carried
+  // a .limit(80), ordered by updated_at. That's fine for the *rendered*
+  // preview (active.slice(0,8), attention.slice(0,6), both already
+  // truncated below with "All projects →" links to the uncapped /projects
+  // list) — but it's not just a preview cap. isAttentionWorthy() below
+  // only ever runs against whatever this query returns, so in a workspace
+  // with more than 80 projects, an attention-worthy project that simply
+  // hasn't been touched recently (an open flag sitting untouched, a
+  // stalled SOW no one's revisited) could silently fall out of the top 80
+  // and never appear in the Attention register at all — no error, no
+  // count mismatch, it just disappears. /projects already fetches every
+  // project in the workspace uncapped with this same join shape, so
+  // there's no new cost model here — compute against the full set, keep
+  // the .slice() calls below for what's actually rendered.
   let projQuery = (service as any)
     .from('projects')
     .select(`id,name,disc,type,status,stall_reason,contract_value,currency,updated_at,
@@ -74,7 +89,6 @@ export default async function DashboardPage() {
     .eq('workspace_id', session.workspaceId)
     .is('deleted_at', null)
     .order('updated_at', { ascending: false })
-    .limit(80)
 
   let accessibleProjectIds: string[] | null = null
   if (!canViewAll) {

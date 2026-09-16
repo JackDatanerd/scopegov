@@ -1,12 +1,34 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, Suspense } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { formatCurrency, formatDate } from '@/lib/utils/format'
 
 type Mode   = 'scope' | 'financial'
 type Period = '30d' | '90d' | '6m' | '12m' | 'all'
 
+// FIX (deep audit, section 8 follow-up): this page never read `?mode=`
+// from the URL at all — `mode` always initialized to the hardcoded
+// default 'scope' regardless of what was in the address bar. The
+// Portfolio dashboard's "View exception log →" link
+// (components/portfolio/PortfolioDashboard.tsx) passes `?mode=scope`,
+// which happened to look like it worked only because the default already
+// agreed with it — the query param itself did nothing. Any other caller
+// linking here with `?mode=financial` would silently land on Scope
+// anyway. Wrapped in Suspense per Next's requirement for useSearchParams
+// (see app/(app)/projects/new/page.tsx for the same pattern already used
+// in this codebase).
 export default function ReportsPage() {
-  const [mode,    setMode]    = useState<Mode>('scope')
+  return (
+    <Suspense fallback={null}>
+      <ReportsPageInner />
+    </Suspense>
+  )
+}
+
+function ReportsPageInner() {
+  const searchParams = useSearchParams()
+  const initialMode: Mode = searchParams.get('mode') === 'financial' ? 'financial' : 'scope'
+  const [mode,    setMode]    = useState<Mode>(initialMode)
   const [period,  setPeriod]  = useState<Period>('90d')
   const [currency, setCurrency] = useState<string>('')
   const [data,    setData]    = useState<any>(null)
