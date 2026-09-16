@@ -42,6 +42,18 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const portalUrl = `${process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL}/portal/invoice/${invoice.token}`
     const balanceDue = Math.max(0, invoice.amount - invoice.amount_paid)
 
+    // FIX (re-audit, notifications section): same check-then-act race as
+    // co/[id]/remind and sow/[id]/remind — logging the reminder here,
+    // before the send, shrinks the window instead of leaving it open for
+    // the full email round-trip. See those routes for the full note.
+    await logAudit(service, {
+      workspaceId: session.workspaceId, actorId: session.id,
+      actorEmail: session.email, actorName: session.name,
+      eventType: 'reminder.sent', entityType: 'invoice',
+      entityId: id, entityName: invoice.title,
+      metadata: { type: 'invoice', client_email: client?.email, balance_due: balanceDue },
+    })
+
     try {
       await sendInvoiceReminderEmail({
         to:          client?.email,
@@ -60,14 +72,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         paymentInstructions: invoice.payment_instructions,
       })
     } catch (e) { console.error('Invoice reminder email failed:', e) }
-
-    await logAudit(service, {
-      workspaceId: session.workspaceId, actorId: session.id,
-      actorEmail: session.email, actorName: session.name,
-      eventType: 'reminder.sent', entityType: 'invoice',
-      entityId: id, entityName: invoice.title,
-      metadata: { type: 'invoice', client_email: client?.email, balance_due: balanceDue },
-    })
 
     return NextResponse.json({ ok: true })
   } catch (err) {

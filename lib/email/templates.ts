@@ -83,6 +83,15 @@ function baseTemplate({
     <!-- Header -->
     <div style="background:${headerColour};border-radius:8px 8px 0 0;padding:22px 28px;">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:3px;">
+        <!-- FIX (re-audit, notifications section): headerIcon was accepted
+             and typed as a param, and four security-email senders each
+             passed a distinct icon (🔐/🔓/🔑) specifically to visually
+             differentiate MFA-enabled vs MFA-disabled vs password-changed
+             at a glance — but it was never actually interpolated anywhere
+             in this template. Every email using baseTemplate rendered an
+             identical header regardless of what was passed; the
+             differentiation those four senders were built for never shipped. -->
+        <span style="font-size:15px;line-height:1;">${headerIcon}</span>
         <span style="font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:rgba(255,255,255,.6);">
           ${label}
         </span>

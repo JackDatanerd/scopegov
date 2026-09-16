@@ -6,6 +6,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
 import { checkReminderCooldown } from '@/lib/utils/reminder-cooldown'
+import { escapeHtml } from '@/lib/utils/sanitize'
 import { Resend } from 'resend'
 
 // FIX (re-audit — build-blocking): module-scope instantiation, same class
@@ -52,6 +53,35 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const portalUrl = `${process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL}/portal/sow/${sow.token}`
     const accent    = ws?.brand_colour || '#1A5C3A'
 
+    // FIX (re-audit, notifications section): checkReminderCooldown reads
+    // the audit log, then the caller acts — a check-then-act race, not an
+    // atomic claim. Two near-simultaneous requests (double-click, two
+    // tabs) could both pass the check above before either wrote the
+    // audit_log row the check relies on, producing two client-facing
+    // emails. Writing the audit row here, immediately after the check and
+    // before the network call to Resend, doesn't make this atomic (that
+    // would need a DB-level constraint), but shrinks the race window from
+    // "cooldown check + full email round-trip" down to "cooldown check +
+    // one local insert" — good enough given how narrow the trigger already
+    // is (rapid double-click on the same button).
+    await logAudit(service, {
+      workspaceId: session.workspaceId, actorId: session.id,
+      actorEmail: session.email, actorName: session.name,
+      eventType: 'reminder.sent', entityType: 'sow',
+      entityId: id, entityName: project?.name,
+      metadata: { type: 'sow', version: sow.version, client_email: client?.email },
+    })
+
+    // FIX (re-audit, notifications section): same gap as co/[id]/remind —
+    // this route's inline HTML wasn't covered by the escapeHtml pass
+    // applied to lib/email/templates.ts and every other ad-hoc portal
+    // email. client.name, project.name and agency_name went into the HTML
+    // body raw. Subject line intentionally keeps the raw value (plain
+    // text, not HTML — same convention as templates.ts).
+    const clientHtml  = escapeHtml(client?.name)
+    const projectHtml = escapeHtml(project?.name)
+    const agencyHtml  = escapeHtml(ws?.agency_name)
+
     // Event 2: SOW reminder — awaited (carry-forward §4.4)
     await resendClient().emails.send({
       from:    `${ws?.agency_name} via ScopeGov <${process.env.RESEND_FROM_EMAIL}>`,
@@ -67,10 +97,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           </div>
         </div>
         <div style="padding:28px;">
-          <p style="font-size:14px;color:#333;line-height:1.7;margin:0 0 16px;">Hi ${client?.name},</p>
+          <p style="font-size:14px;color:#333;line-height:1.7;margin:0 0 16px;">Hi ${clientHtml},</p>
           <p style="font-size:14px;color:#555;line-height:1.7;margin:0 0 20px;">
             This is a friendly reminder that your Statement of Work for
-            <strong>${project?.name}</strong> with <strong>${ws?.agency_name}</strong>
+            <strong>${projectHtml}</strong> with <strong>${agencyHtml}</strong>
             is still awaiting your signature.
           </p>
           <p style="font-size:12px;color:#909090;margin:0 0 20px;">
@@ -85,14 +115,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         Scope governance by <a href="https://scopegov.app" style="color:#1A5C3A;">ScopeGov</a>
       </p>
       </body></html>`,
-    })
-
-    await logAudit(service, {
-      workspaceId: session.workspaceId, actorId: session.id,
-      actorEmail: session.email, actorName: session.name,
-      eventType: 'reminder.sent', entityType: 'sow',
-      entityId: id, entityName: project?.name,
-      metadata: { type: 'sow', version: sow.version, client_email: client?.email },
     })
 
     return NextResponse.json({ ok: true })

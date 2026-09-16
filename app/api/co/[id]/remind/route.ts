@@ -6,6 +6,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
 import { checkReminderCooldown } from '@/lib/utils/reminder-cooldown'
+import { escapeHtml } from '@/lib/utils/sanitize'
 import { Resend } from 'resend'
 
 // FIX (re-audit — build-blocking): module-scope instantiation, same class
@@ -58,6 +59,31 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const isCountersign = co.status === 'awaiting_countersignature'
     const wasStalled     = co.status === 'stalled'
+    const project   = co.projects
+    const client    = project?.clients
+    const ws        = project?.workspaces
+    const accent    = ws?.brand_colour || '#1A5C3A'
+    const portalUrl = `${process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL}/portal/co/${co.token}`
+    const currency  = project?.currency || 'USD'
+
+    // FIX (re-audit, notifications section): checkReminderCooldown reads
+    // the audit log, then the caller acts — a check-then-act race, not an
+    // atomic claim. Two near-simultaneous requests (double-click, two
+    // tabs) could both pass the check above before either wrote the
+    // audit_log row the check relies on, producing two client-facing
+    // emails. Writing the audit row here, immediately after the check and
+    // before the network call to Resend, doesn't make this atomic (that
+    // would need a DB-level constraint), but shrinks the race window from
+    // "cooldown check + full email round-trip" down to "cooldown check +
+    // one local insert" — good enough given how narrow the trigger already
+    // is (rapid double-click on the same button).
+    await logAudit(service, {
+      workspaceId: session.workspaceId, actorId: session.id,
+      actorEmail: session.email, actorName: session.name,
+      eventType: 'reminder.sent', entityType: 'change_order',
+      entityId: id, entityName: co.title,
+      metadata: { type: 'co', client_email: client?.email, was_stalled: wasStalled },
+    })
 
     if (wasStalled) {
       await (service as any).from('change_orders').update({
@@ -65,12 +91,18 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       }).eq('id', id).eq('status', 'stalled')
     }
 
-    const project   = co.projects
-    const client    = project?.clients
-    const ws        = project?.workspaces
-    const accent    = ws?.brand_colour || '#1A5C3A'
-    const portalUrl = `${process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL}/portal/co/${co.token}`
-    const currency  = project?.currency || 'USD'
+    // FIX (re-audit, notifications section): this route built its own
+    // inline HTML instead of going through lib/email/templates.ts, and
+    // was missed by the escapeHtml pass applied everywhere else in that
+    // file (and in every other ad-hoc portal email) — co.title,
+    // client.name and project.name went into the HTML body raw. Any of
+    // those set to markup (no special privilege needed — just
+    // SEND_CHANGE_ORDERS / CO creation) would render live in a real
+    // client's inbox. Subject line intentionally stays on the raw values
+    // (plain text, not HTML — same convention as templates.ts).
+    const titleHtml   = escapeHtml(co.title)
+    const clientHtml  = escapeHtml(client?.name)
+    const projectHtml = escapeHtml(project?.name)
 
     await resendClient().emails.send({
       from:    `${ws?.agency_name} via ScopeGov <${process.env.RESEND_FROM_EMAIL}>`,
@@ -83,14 +115,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       <div style="max-width:580px;margin:0 auto;background:#FFF;border:1px solid #E5E1D8;border-radius:8px;overflow:hidden;">
         <div style="background:${accent};padding:22px 28px;">
           <div style="font-size:11px;color:rgba(255,255,255,.6);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;">Reminder — Change order</div>
-          <div style="font-family:Georgia,serif;font-size:20px;color:#FFF;">${co.title}</div>
+          <div style="font-family:Georgia,serif;font-size:20px;color:#FFF;">${titleHtml}</div>
         </div>
         <div style="padding:28px;">
-          <p style="font-size:14px;color:#333;line-height:1.7;margin:0 0 16px;">Hi ${client?.name},</p>
+          <p style="font-size:14px;color:#333;line-height:1.7;margin:0 0 16px;">Hi ${clientHtml},</p>
           <p style="font-size:14px;color:#555;line-height:1.7;margin:0 0 20px;">
             ${isCountersign
-              ? `The agency has accepted your proposed amount for <strong>${project?.name}</strong> and it's ready for you to confirm.`
-              : `A change order for <strong>${project?.name}</strong> is awaiting your response.`}
+              ? `The agency has accepted your proposed amount for <strong>${projectHtml}</strong> and it's ready for you to confirm.`
+              : `A change order for <strong>${projectHtml}</strong> is awaiting your response.`}
             Total: <strong>${currency} ${(co.total || 0).toLocaleString()}</strong>
           </p>
           <a href="${portalUrl}" style="display:inline-block;background:${accent};color:#FFF;padding:12px 24px;border-radius:5px;font-size:13px;font-weight:600;text-decoration:none;">
@@ -102,14 +134,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         <a href="https://scopegov.app" style="color:#1A5C3A;">ScopeGov</a>
       </p>
       </body></html>`,
-    })
-
-    await logAudit(service, {
-      workspaceId: session.workspaceId, actorId: session.id,
-      actorEmail: session.email, actorName: session.name,
-      eventType: 'reminder.sent', entityType: 'change_order',
-      entityId: id, entityName: co.title,
-      metadata: { type: 'co', client_email: client?.email, was_stalled: wasStalled },
     })
 
     return NextResponse.json({ ok: true })

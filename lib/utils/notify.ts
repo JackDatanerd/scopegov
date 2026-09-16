@@ -36,8 +36,16 @@ export async function notifyMembersWithPermission(service: any, params: NotifyPa
     // on that function. Filtering here, one layer up and after the slice
     // already happened, could silently under-notify a workspace with more
     // eligible members than the cap.
+    //
+    // FIX (re-audit, notifications section): this is the single choke
+    // point for creating in-app rows (see file header), so it must filter
+    // on `in_app_enabled`, not the default `email_enabled` — otherwise
+    // muting EMAIL for an event (the only toggle Settings exposes) also
+    // silently suppresses the bell notification for it. Email delivery for
+    // the same event is a separate call elsewhere (getMemberEmailsWithPermission,
+    // channel defaults to 'email') — the two are independent by design.
     let recipients = await getMembersWithPermission(
-      service, params.workspaceId, params.permission, 25, params.projectId, params.eventType
+      service, params.workspaceId, params.permission, 25, params.projectId, params.eventType, 'in_app'
     )
     if (params.excludeUserId) recipients = recipients.filter(r => r.id !== params.excludeUserId)
     if (recipients.length === 0) return
@@ -50,6 +58,11 @@ export async function notifyMembersWithPermission(service: any, params: NotifyPa
       body:         params.body,
       entity_type:  params.entityType || null,
       entity_id:    params.entityId || null,
+      // FIX (re-audit, notifications section): needed so entity_type
+      // values that aren't 'project' itself (flag/exception comments, most
+      // notably) can still be deep-linked from the bell — see migration
+      // 028 and NotificationBell.tsx's entityHref().
+      project_id:   params.projectId || null,
     }))
     await service.from('notifications').insert(rows)
   } catch {

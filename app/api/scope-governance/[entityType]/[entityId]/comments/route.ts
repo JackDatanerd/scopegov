@@ -177,6 +177,11 @@ async function notifyEntityOwner(
       body: `${session.name} left a comment.`,
       entity_type: entityType,
       entity_id: entityId,
+      // FIX (re-audit, notifications section): entity_type here is
+      // 'flag'/'exception', not 'project' — the bell has no href case for
+      // those and, even fixed, has nothing to build a project link from
+      // without this. See migration 028 and NotificationBell.tsx.
+      project_id: projectId,
     })
   } catch {
     // Never let a notification failure break comment creation.

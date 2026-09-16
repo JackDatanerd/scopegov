@@ -62,7 +62,19 @@ export async function getMembersWithPermission(
   // even though room existed once the opt-out was accounted for. Accepting
   // eventType here lets preference filtering happen before the slice,
   // same as project-access filtering already does.
-  eventType?: string
+  eventType?: string,
+  // FIX (re-audit, notifications section): this was hardcoded to check
+  // `email_enabled` regardless of which channel the caller actually cares
+  // about. notifyMembersWithPermission (lib/utils/notify.ts) — the single
+  // choke point for creating in-app bell rows — called this same function
+  // for its recipient list, so opting out of EMAIL for an event (the only
+  // toggle Settings exposes, literally labelled "Email notifications")
+  // silently also removed the recipient from the in-app notification for
+  // that same event, even though `in_app_enabled` is a distinct column
+  // that the preferences route always writes as `true`. Now threaded
+  // through so each caller filters on the column it's actually delivering
+  // through — see filterByNotificationPreference below.
+  channel: 'email' | 'in_app' = 'email'
 ): Promise<Array<{ id: string; name: string; email: string }>> {
   // FIX (re-audit, notifications section): `.limit(limit)` used to be
   // applied to the raw active-members query, BEFORE the permission filter
@@ -92,7 +104,7 @@ export async function getMembersWithPermission(
   let recipients = eligible.map((m: any) => ({ id: m.user_id, name: m.users.name, email: m.users.email }))
 
   if (projectId) recipients = await filterToProjectAccess(service, projectId, recipients, permissionMap)
-  if (eventType) recipients = await filterByNotificationPreference(service, workspaceId, eventType, recipients)
+  if (eventType) recipients = await filterByNotificationPreference(service, workspaceId, eventType, recipients, channel)
 
   return recipients.slice(0, limit)
 }
@@ -100,21 +112,31 @@ export async function getMembersWithPermission(
 // Notification preferences — defaults to enabled (true) when no row exists,
 // since notification_preferences only stores explicit opt-outs/overrides,
 // not a row per user per event type by default.
+//
+// FIX (re-audit, notifications section): `channel` used to be implicit —
+// this always read `email_enabled`, so any caller building an in-app
+// recipient list (notifyMembersWithPermission) was actually filtering on
+// the user's EMAIL preference. The two columns are independent by design
+// (see notification_preferences schema and the Settings UI, which only
+// ever writes/exposes email_enabled while in_app_enabled stays true) — an
+// event.the user muted by email should still show up in their bell.
 export async function filterByNotificationPreference<T extends { id: string }>(
   service: any,
   workspaceId: string,
   eventType: string,
-  recipients: T[]
+  recipients: T[],
+  channel: 'email' | 'in_app' = 'email'
 ): Promise<T[]> {
   if (recipients.length === 0) return recipients
+  const column = channel === 'in_app' ? 'in_app_enabled' : 'email_enabled'
   const { data: prefs } = await service
     .from('notification_preferences')
-    .select('user_id, email_enabled')
+    .select(`user_id, ${column}`)
     .eq('workspace_id', workspaceId)
     .eq('event_type', eventType)
     .in('user_id', recipients.map(r => r.id))
 
-  const disabled = new Set((prefs || []).filter((p: any) => p.email_enabled === false).map((p: any) => p.user_id))
+  const disabled = new Set((prefs || []).filter((p: any) => p[column] === false).map((p: any) => p.user_id))
   return recipients.filter(r => !disabled.has(r.id))
 }
 

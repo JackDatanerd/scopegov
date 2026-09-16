@@ -54,6 +54,19 @@ const NOTIF_ITEMS = [
   { key: 'co_stalled',            label: 'Change order stalled',    desc: "When a client hasn't responded to a change order in 5+ days" },
 ]
 
+// FIX (re-audit, notifications section): both of these are fully wired
+// server-side (notifyMembersWithPermission / notifyEntityOwner) and were
+// permanently on with no toggle — same "wire it, forget the toggle"
+// pattern as NOTIF_ITEMS above. They don't belong in that list: neither
+// event ever sends an email, so a toggle rendered under "Email
+// notifications" for them would do nothing visible. These control
+// in_app_enabled via the same PATCH endpoint instead — see
+// api/notifications/preferences/route.ts.
+const IN_APP_NOTIF_ITEMS = [
+  { key: 'flag_comment_added',            label: 'Comments on scope flags', desc: 'When someone comments on a flag or exception you can act on' },
+  { key: 'approval_no_reachable_approver', label: 'Approval stuck — no approver', desc: "When a pending approval's assigned role or user can't be reached (requires MANAGE_ROLES)" },
+]
+
 interface Props {
   workspace:   any
   billing:     any
@@ -890,6 +903,28 @@ function NotificationsTab() {
           </div>
         ))}
       </div>
+
+      {prefs && (
+        <div className="settings-section" style={{ marginTop: 20 }}>
+          <div className="settings-section-title">In-app notifications</div>
+          <p style={{ fontSize: 11.5, color: 'var(--text-3)', margin: '0 0 4px' }}>
+            These never go out by email — only to the bell.
+          </p>
+          {IN_APP_NOTIF_ITEMS.map(item => (
+            <div key={item.key} className="settings-row">
+              <div>
+                <div className="settings-row-key">{item.label}</div>
+                <div className="settings-row-desc">{item.desc}</div>
+              </div>
+              <button
+                className={`toggle ${prefs[item.key] ? 'on' : 'off'}`}
+                disabled={saving === item.key}
+                onClick={() => toggle(item.key)}
+              />
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

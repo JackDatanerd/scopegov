@@ -483,25 +483,36 @@ async function notifyStepApprovers(service: any, args: {
   } else if (args.step.approver_role_id) {
     recipients = await getMembersWithRole(service, args.workspaceId, args.step.approver_role_id)
   }
-  recipients = await filterByNotificationPreference(service, args.workspaceId, 'approval_requested', recipients)
-  if (recipients.length === 0) return 0
+  // FIX (re-audit, notifications section): a single filterByNotificationPreference
+  // call (defaulting to the `email_enabled` column) used to gate BOTH the
+  // in-app insert below AND the email send — so an approver who muted
+  // EMAIL for this event (the only toggle Settings exposes) never got a
+  // bell notification either, even though `in_app_enabled` is a separate,
+  // always-true-by-default column. Filter each channel against its own
+  // column instead.
+  const inAppRecipients = await filterByNotificationPreference(service, args.workspaceId, 'approval_requested', recipients, 'in_app')
+  const emailRecipients = await filterByNotificationPreference(service, args.workspaceId, 'approval_requested', recipients, 'email')
+  const notifiedIds = new Set([...inAppRecipients.map(r => r.id), ...emailRecipients.map(r => r.id)])
+  if (notifiedIds.size === 0) return 0
 
   const documentLabel = args.documentType === 'sow' ? 'SOW' : 'Change order'
 
-  try {
-    await service.from('notifications').insert(recipients.map(r => ({
-      workspace_id: args.workspaceId,
-      recipient_id: r.id,
-      type:         'approval_requested',
-      title:        `${documentLabel} awaiting your approval`,
-      body:         `${args.requestedBy.name} wants to send ${args.documentTitle} on ${args.projectName}.`,
-      entity_type:  'approval_request',
-      entity_id:    args.requestId,
-    })))
-  } catch { /* never let a notification failure break the approval flow */ }
+  if (inAppRecipients.length) {
+    try {
+      await service.from('notifications').insert(inAppRecipients.map(r => ({
+        workspace_id: args.workspaceId,
+        recipient_id: r.id,
+        type:         'approval_requested',
+        title:        `${documentLabel} awaiting your approval`,
+        body:         `${args.requestedBy.name} wants to send ${args.documentTitle} on ${args.projectName}.`,
+        entity_type:  'approval_request',
+        entity_id:    args.requestId,
+      })))
+    } catch { /* never let a notification failure break the approval flow */ }
+  }
 
   const appUrl = process.env.NEXT_PUBLIC_APP_URL || ''
-  await Promise.all(recipients.map(r =>
+  await Promise.all(emailRecipients.map(r =>
     sendApprovalRequestedEmail({
       to: r.email, approverName: r.name,
       documentLabel, documentTitle: args.documentTitle, projectName: args.projectName,
@@ -512,7 +523,7 @@ async function notifyStepApprovers(service: any, args: {
     }).catch(e => console.error('approval requested email failed:', e))
   ))
 
-  return recipients.length
+  return notifiedIds.size
 }
 
 async function notifyRequester(service: any, args: {

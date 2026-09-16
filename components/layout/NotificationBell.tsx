@@ -10,6 +10,10 @@ interface Notification {
   body: string
   entity_type: string | null
   entity_id: string | null
+  // FIX (re-audit, notifications section): needed to deep-link
+  // flag/exception-comment notifications, which point at the flag/exception
+  // itself (entity_type) rather than the project — see migration 028.
+  project_id: string | null
   read: boolean
   created_at: string
 }
@@ -37,6 +41,16 @@ function entityHref(n: Notification): string | null {
   if (n.entity_type === 'project' && n.entity_id) return `/projects/${n.entity_id}`
   if (n.entity_type === 'project_message' && n.entity_id) return `/projects/${n.entity_id}?tab=discussion`
   if (n.entity_type === 'approval_request' && n.entity_id) return `/approvals?highlight=${n.entity_id}`
+  // FIX (re-audit, notifications section): flag_comment_added notifications
+  // point at the flag/exception itself (entity_type='flag'|'exception',
+  // entity_id=<that row's id>), not at a project — every prior condition
+  // above needs entity_type === 'project' to match, so these fell through
+  // to the `return null` below and were a dead click: no case here, and
+  // (before migration 028) no project_id on the row to build a link from
+  // even if there had been one. There's no per-flag deep link on the
+  // Guardian tab yet, so this lands on the tab, same as guardian_* events.
+  if ((n.entity_type === 'flag' || n.entity_type === 'exception') && n.project_id)
+    return `/projects/${n.project_id}?tab=guardian`
   return null
 }
 
