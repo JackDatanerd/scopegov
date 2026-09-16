@@ -38,6 +38,7 @@
 
 import { escapeHtml, sanitizePlainText } from '@/lib/utils/sanitize'
 import { SOW_TABLE_SCHEMAS, type SowTableSectionId, type SowTableRow } from '@/lib/sow/table-schema'
+import { roundCurrency } from '@/lib/utils/format'
 
 export interface SowSectionDef { id: string; title: string; order: number }
 
@@ -52,18 +53,24 @@ export const SOW_SECTION_DEFS: SowSectionDef[] = [
   { id: 'roles',           title: 'Roles & Responsibilities',    order: 6 },
   { id: 'assumptions',     title: 'Assumptions & Dependencies',  order: 7 },
   { id: 'payment',         title: 'Payment Terms',               order: 8 },
-  { id: 'revisions',       title: 'Revision Policy',             order: 9 },
-  { id: 'ip',              title: 'Intellectual Property',       order: 10 },
-  { id: 'confidentiality', title: 'Confidentiality',             order: 11 },
-  { id: 'termination',     title: 'Termination',                 order: 12 },
-  { id: 'governing_law',   title: 'Governing Law',               order: 13 },
-  { id: 'dispute',         title: 'Dispute Resolution',          order: 14 },
-  { id: 'signature',       title: 'Signatures',                  order: 15 },
+  // FEATURE (section-9 audit follow-up): see lib/sow/table-schema.ts for
+  // the full history. Always created (like every other section) but only
+  // shown by default when paymentStructure === 'milestones' — see
+  // app/api/sow/generate/route.ts, which sets its initial `visible` flag.
+  { id: 'payment_schedule', title: 'Payment Schedule',          order: 9 },
+  { id: 'revisions',       title: 'Revision Policy',             order: 10 },
+  { id: 'ip',              title: 'Intellectual Property',       order: 11 },
+  { id: 'confidentiality', title: 'Confidentiality',             order: 12 },
+  { id: 'termination',     title: 'Termination',                 order: 13 },
+  { id: 'governing_law',   title: 'Governing Law',               order: 14 },
+  { id: 'dispute',         title: 'Dispute Resolution',          order: 15 },
+  { id: 'signature',       title: 'Signatures',                  order: 16 },
 ]
 
 // Table-driven sections (defined in lib/sow/table-schema.ts) — never
-// asked of the model as prose.
-const TABLE_IDS: SowTableSectionId[] = ['deliverables', 'timeline', 'roles']
+// asked of the model as prose. Keep in sync with SowTableSectionId /
+// TABLE_SECTION_IDS in lib/sow/table-schema.ts.
+const TABLE_IDS: SowTableSectionId[] = ['deliverables', 'timeline', 'roles', 'payment_schedule']
 
 // The prose subset that needs drafted content. parties/governing_law/
 // signature are pure boilerplate (see buildBoilerplateSections below);
@@ -85,6 +92,11 @@ export interface SowContentInput {
   outOfScope?: string
   timeline?: string
   paymentLabel: string
+  // FEATURE (section-9 audit follow-up): raw structure value (not just
+  // the human-readable label) so the prompt/fallback builders can decide
+  // whether to draft a payment-schedule table at all — only meaningful
+  // when the agency actually chose 'milestones'.
+  paymentStructure: string
   revisionRounds: number
   governingLaw: string
   // FIX (deep audit, section 5 re-pass): completes the SOW-language
@@ -170,6 +182,18 @@ export function buildSowContentPrompt(input: SowContentInput, opts?: { emphatic?
   const deliverableCols = SOW_TABLE_SCHEMAS.deliverables.columns.map(c => c.label).join(' | ')
   const timelineCols    = SOW_TABLE_SCHEMAS.timeline.columns.map(c => c.label).join(' | ')
   const rolesCols       = SOW_TABLE_SCHEMAS.roles.columns.map(c => c.label).join(' | ')
+  // FEATURE (section-9 audit follow-up): only meaningful when the agency
+  // chose the 'milestones' payment structure — every other structure
+  // (50/50, 100% upfront, monthly, on delivery) already fully describes
+  // its own schedule in the Payment Terms prose, and asking for an empty
+  // or redundant table there would just confuse the model and the doc.
+  const wantsPaymentSchedule = input.paymentStructure === 'milestones'
+  const paymentScheduleTableBlock = wantsPaymentSchedule ? `
+
+${TABLE_MARKER('payment_schedule')}
+(columns: Milestone | Amount | Trigger / Due — Amount: put exactly 0 for every row, the platform calculates and fills in the real dollar amount for each milestone automatically, so do not attempt any currency math here)
+row format: Milestone title | 0 | Trigger or due condition (e.g. "Upon signing", "Upon delivery of wireframes")
+${TABLE_END}` : ''
 
   // FIX (deep audit, section 5 re-pass): the only half of the
   // SOW-language feature the model itself needs to know about — the
@@ -210,7 +234,7 @@ For each of the following ${AI_SECTION_IDS.length} prose sections, write a marke
 
 ${markerList}
 
-Then produce THREE tables. For each, write the table marker line exactly as shown, then one row per line in the exact pipe-delimited column order given, then a line with exactly ${TABLE_END}. Do not include the column header row itself. 3-6 rows per table is typical; use your judgement based on the brief.
+Then produce ${wantsPaymentSchedule ? 'FOUR' : 'THREE'} tables. For each, write the table marker line exactly as shown, then one row per line in the exact pipe-delimited column order given, then a line with exactly ${TABLE_END}. Do not include the column header row itself. 3-6 rows per table is typical; use your judgement based on the brief.
 
 ${TABLE_MARKER('deliverables')}
 (columns: ${deliverableCols} — Owner must be exactly one of Provider, Client, or Joint)
@@ -225,7 +249,7 @@ ${TABLE_END}
 ${TABLE_MARKER('roles')}
 (columns: ${rolesCols} — Provider and Client must each be exactly ✓ or —, never both ✓ on the same row)
 row format: Responsibility | ✓ or — | ✓ or — | Optional short note
-${TABLE_END}
+${TABLE_END}${paymentScheduleTableBlock}
 
 Do not add any other commentary before, between, or after sections/tables.
 
@@ -237,7 +261,7 @@ Rules:
 - Deliverables table rows must cover every item in the deliverables brief above — one row per deliverable, not grouped.
 - Roles table must reflect that ${input.agencyName} is the Provider and ${input.clientName} is the Client.
 - Write with professional, authoritative language appropriate for a legal document.
-- Never add a "late fee rate" or "revision fee" unless explicitly provided.${languageInstruction}${reminder}`
+- Never add a "late fee rate" or "revision fee" unless explicitly provided.${wantsPaymentSchedule ? '\n- Payment Schedule table: propose sensible milestone titles and trigger conditions based on the deliverables/timeline above. Amount must be exactly 0 on every row — never write a dollar figure or percentage there.' : ''}${languageInstruction}${reminder}`
 }
 
 // ── 3. Parsers — tolerant of anything except the markers themselves ────
@@ -280,7 +304,7 @@ export function parseDelimitedSections(raw: string): Record<string, string> {
  * falling back to buildFallbackTables() for that section.
  */
 export function parseTableSections(raw: string): Record<SowTableSectionId, SowTableRow[]> {
-  const result: Record<SowTableSectionId, SowTableRow[]> = { deliverables: [], timeline: [], roles: [] }
+  const result: Record<SowTableSectionId, SowTableRow[]> = { deliverables: [], timeline: [], roles: [], payment_schedule: [] }
 
   for (const id of TABLE_IDS) {
     const re = new RegExp(`<<<TABLE:${id}>>>([\\s\\S]*?)<<<ENDTABLE>>>`)
@@ -374,5 +398,26 @@ export function buildFallbackTables(input: SowContentInput): Record<SowTableSect
       { responsibility: 'Provision of required materials and access', provider: '—', client: '✓', notes: '' },
       { responsibility: 'Payment per the schedule below', provider: '—', client: '✓', notes: '' },
     ],
+    // FEATURE (section-9 audit follow-up): only produced when the agency
+    // actually chose 'milestones' — a hidden, empty table for every other
+    // structure, same as the AI path. Amounts are computed here, never
+    // asked of the model or invented — a 30/40/30 split across three
+    // generic phases, rounded so the three amounts sum EXACTLY to the
+    // contract value (the last milestone absorbs any rounding remainder,
+    // same technique as the 50/50 split above and the CO counter-
+    // negotiation rescale). The agency can freely retitle, re-split, add,
+    // or remove rows in the editor afterward — this is just a sane,
+    // guaranteed-to-foot starting point, not a final answer.
+    payment_schedule: input.paymentStructure === 'milestones' ? (() => {
+      const cv = Number(input.contractValue) || 0
+      const m1 = roundCurrency(cv * 0.3)
+      const m2 = roundCurrency(cv * 0.4)
+      const m3 = roundCurrency(cv - m1 - m2)
+      return [
+        { milestone: 'Kickoff & Discovery',    amount: String(m1), trigger: 'Upon signing' },
+        { milestone: 'Mid-project delivery',   amount: String(m2), trigger: 'Upon delivery of key deliverables' },
+        { milestone: 'Final delivery & sign-off', amount: String(m3), trigger: 'Upon final acceptance' },
+      ]
+    })() : [],
   }
 }

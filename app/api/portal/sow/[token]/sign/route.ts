@@ -221,7 +221,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }
 
     // ── 6. Create payment milestones from SOW metadata ────────
-    await createMilestones(service, project.id, sow.id, sow.workspace_id, sow.metadata, project.contract_value, project.currency)
+    await createMilestones(service, project.id, sow.id, sow.workspace_id, sow.metadata, project.contract_value, project.currency, sow.sections || [])
 
     // ── 7. Audit log ──────────────────────────────────────────
     await logAudit(service, {
@@ -350,7 +350,7 @@ function extractDeliverables(html: string): Array<{ title: string }> {
 // server log line nobody will see.
 async function createMilestones(
   service: any, projectId: string, sowId: string, workspaceId: string,
-  metadata: any, contractValue: number, currency: string
+  metadata: any, contractValue: number, currency: string, sections: any[]
 ) {
   try {
     const structure = metadata?.paymentStructure || '50_50'
@@ -379,40 +379,53 @@ async function createMilestones(
     } else if (structure === 'monthly') {
       milestones.push({ title: 'Monthly retainer', amount: roundCurrency(contractValue), trigger: 'Monthly — first of month', type: 'retainer_monthly', percentage: null })
     } else if (structure === 'milestones') {
-      // FIX (section-9 audit, real bug): 'milestones' is a selectable
-      // payment structure (the SOW boilerplate literally prints "Payable
-      // in milestones as defined below") but there has never been any
-      // table/UI in the app for an agency to actually define what those
-      // milestones are — deliverables/timeline/roles all have dedicated
+      // FIX (section-9 audit, real bug — now genuinely fixed): 'milestones'
+      // is a selectable payment structure (the SOW boilerplate literally
+      // prints "Payable in milestones as defined below") but there was
+      // never any table/UI for an agency to actually define what those
+      // milestones are — deliverables/timeline/roles all had dedicated
       // table sections, payment schedule never did. This branch used to
       // fall into the generic `else` below and silently create ONE
-      // "Project payment" milestone for the FULL contract value with
-      // trigger 'As per agreement' — flatly contradicting the SOW's own
-      // printed text and the client's expectation of a staged schedule.
+      // "Project payment" milestone for the FULL contract value,
+      // contradicting the SOW's own printed text.
       //
-      // Until a proper itemized payment-schedule table section exists
-      // (recommended follow-up — same pattern as SOW_TABLE_SCHEMAS'
-      // deliverables/timeline/roles), forward-compatibly honor a
-      // metadata.customMilestones array if one is ever populated by a
-      // future editor, validating it foots to the contract value the same
-      // way invoice/CO line items are validated against their totals.
-      // Otherwise, fall back to a single milestone but with an HONEST
-      // trigger label — not one implying specific terms were agreed that
-      // were never actually captured — and flag it in the audit log so
-      // it's operator-visible rather than a silent mismatch discovered
-      // only when the client asks where their milestone schedule is.
-      const custom = Array.isArray(metadata?.customMilestones) ? metadata.customMilestones : null
-      const customSum = custom ? custom.reduce((s: number, m: any) => s + (Number(m?.amount) || 0), 0) : 0
-      if (custom && custom.length > 0 && Math.abs(customSum - contractValue) < 0.01) {
-        for (const m of custom) {
+      // FEATURE (built): lib/sow/table-schema.ts now defines a real
+      // payment_schedule table section, same architecture as deliverables/
+      // timeline/roles — the agency itemizes it in SowEditor, AI
+      // generation proposes a starting split (with amounts always
+      // server-computed, never AI money-math — see
+      // app/api/sow/generate/route.ts), and this reads those rows
+      // directly instead of guessing. The send route (see send/route.ts)
+      // now validates this foots to the contract value BEFORE the SOW
+      // ever reaches the client, so this sign-time check is a backstop,
+      // not the primary safety net — it should only ever trip if that
+      // send-time validation was somehow bypassed.
+      const scheduleSection = (sections || []).find((s: any) => s.id === 'payment_schedule')
+      const rows: any[] = Array.isArray(scheduleSection?.table) ? scheduleSection.table : []
+      const parsedRows = rows
+        .map((r: any) => ({
+          title: String(r?.milestone || '').trim(),
+          amount: Number(r?.amount) || 0,
+          trigger: String(r?.trigger || '').trim(),
+        }))
+        .filter(r => r.title && r.amount > 0)
+      const scheduleSum = parsedRows.reduce((s, r) => s + r.amount, 0)
+
+      if (parsedRows.length > 0 && Math.abs(scheduleSum - contractValue) < 0.01) {
+        for (const r of parsedRows) {
           milestones.push({
-            title:   String(m.title || 'Milestone').slice(0, 200),
-            amount:  roundCurrency(Number(m.amount) || 0),
-            trigger: String(m.trigger || 'As defined in the SOW').slice(0, 500),
+            title:   r.title.slice(0, 200),
+            amount:  roundCurrency(r.amount),
+            trigger: (r.trigger || 'As defined in the SOW').slice(0, 500),
             type: 'fixed', percentage: null,
           })
         }
       } else {
+        // Genuinely defensive at this point (send-time validation should
+        // have already blocked this) — an honest fallback rather than a
+        // silent one, and flagged in the audit log so it's discoverable
+        // if it ever does happen (e.g. a future edit path that bypasses
+        // the send-time check).
         milestones.push({
           title: 'Project payment', amount: roundCurrency(contractValue),
           trigger: 'Full contract value — no itemized milestone schedule was defined in this SOW',
@@ -421,7 +434,7 @@ async function createMilestones(
         await logAudit(service, {
           workspaceId, actorId: '', actorEmail: 'system@scopegov.app', actorName: 'ScopeGov',
           eventType: 'sow.milestone_schedule_undefined', entityType: 'sow', entityId: sowId,
-          metadata: { project_id: projectId, contract_value: contractValue },
+          metadata: { project_id: projectId, contract_value: contractValue, rows_found: rows.length, rows_valid: parsedRows.length, schedule_sum: scheduleSum },
         }).catch(() => {})
       }
     } else {

@@ -118,7 +118,7 @@ export async function POST(request: NextRequest) {
     const contentInput: SowContentInput = {
       agencyName, clientName, projectName: project.name, projectDisc: project.disc,
       projectType, contractValue, currency: curr, objective, deliverables,
-      outOfScope, timeline, paymentLabel, revisionRounds: revisionRounds || 2, governingLaw,
+      outOfScope, timeline, paymentLabel, paymentStructure, revisionRounds: revisionRounds || 2, governingLaw,
       // FIX (deep audit, section 5 re-pass): sow_language was already
       // being selected right above (line 76) and then dropped on the
       // floor — the workspace's language preference never actually
@@ -165,10 +165,31 @@ export async function POST(request: NextRequest) {
     // empty (model skipped it, or every row was malformed) without taking
     // the whole generation down. Fall back per-table, not per-document.
     const fallbackTables = buildFallbackTables(contentInput)
+    // FEATURE (section-9 audit follow-up): the AI is instructed to leave
+    // Amount at 0 on every payment_schedule row (see buildSowContentPrompt)
+    // — money math is never trusted to the model anywhere else in this
+    // file (see the "Metadata is entirely server-derived" comment below),
+    // and payment amounts are exactly the kind of number that needs to
+    // foot exactly, not approximately. This computes an equal split
+    // across whatever rows the AI proposed, rounded so it sums EXACTLY to
+    // the contract value — the last row absorbs any rounding remainder,
+    // same technique used everywhere else a total gets split (the 50/50
+    // structure below, buildFallbackTables' own 30/40/30 split, and the
+    // CO counter-negotiation rescale).
+    function withComputedAmounts(rows: SowTableRow[]): SowTableRow[] {
+      if (rows.length === 0) return rows
+      const base = roundCurrency(contractValue / rows.length)
+      const amounts = rows.map(() => base)
+      const drift = roundCurrency(contractValue - amounts.reduce((s, a) => s + a, 0))
+      amounts[amounts.length - 1] = roundCurrency(amounts[amounts.length - 1] + drift)
+      return rows.map((r, i) => ({ ...r, amount: String(amounts[i]) }))
+    }
     const tables: Record<SowTableSectionId, SowTableRow[]> = {
       deliverables: aiTables?.deliverables?.length ? aiTables.deliverables : fallbackTables.deliverables,
       timeline:     aiTables?.timeline?.length     ? aiTables.timeline     : fallbackTables.timeline,
       roles:        aiTables?.roles?.length        ? aiTables.roles        : fallbackTables.roles,
+      payment_schedule: paymentStructure !== 'milestones' ? [] :
+        aiTables?.payment_schedule?.length ? withComputedAmounts(aiTables.payment_schedule) : fallbackTables.payment_schedule,
     }
 
     const boilerplate = buildBoilerplateSections(contentInput)
@@ -180,7 +201,12 @@ export async function POST(request: NextRequest) {
         title: def.title,
         content: sanitizeRichText(allContent[def.id] || ''),
         ...(TABLE_SECTION_IDS.includes(def.id as SowTableSectionId) ? { table: tables[def.id as SowTableSectionId] } : {}),
-        visible: true,
+        // FEATURE (section-9 audit follow-up): every other section
+        // defaults to visible — payment_schedule is the one exception,
+        // shown by default only when it's actually relevant (the agency
+        // chose 'milestones'). Still toggleable by hand either way, same
+        // as any other non-required section.
+        visible: def.id === 'payment_schedule' ? paymentStructure === 'milestones' : true,
         order: def.order,
       })),
       // Metadata is entirely server-derived from the request — never

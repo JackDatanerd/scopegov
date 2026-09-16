@@ -26,7 +26,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // inside sendSowDocument (lib/documents/send-sow.ts).
     const { data: sow } = await (service as any)
       .from('sow_documents')
-      .select(`id, version, status, project_id, sections,
+      .select(`id, version, status, project_id, sections, metadata,
         projects(id, name, disc, contract_value, currency)`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
@@ -47,6 +47,29 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Add at least one visible section before sending this SOW.' }, { status: 400 })
     if (!project.contract_value || project.contract_value <= 0)
       return NextResponse.json({ error: 'Set a contract value greater than zero before sending this SOW.' }, { status: 400 })
+
+    // FEATURE (section-9 audit follow-up): the sign route's
+    // createMilestones() reads the payment_schedule table directly and
+    // will only use it if the rows foot exactly to the contract value —
+    // otherwise it falls back to a single lump-sum milestone and flags it
+    // in the audit log. That fallback exists purely as a backstop; the
+    // agency should never actually see it in practice. Catching a
+    // mis-totaled schedule HERE, before the SOW ever reaches the client,
+    // is far better than discovering it after signature — the client
+    // would have agreed to a document whose payment schedule doesn't
+    // match its own numbers.
+    if (sow.metadata?.paymentStructure === 'milestones') {
+      const scheduleSection = (sow.sections || []).find((s: any) => s.id === 'payment_schedule')
+      const rows: any[] = Array.isArray(scheduleSection?.table) ? scheduleSection.table : []
+      const validRows = rows.filter((r: any) => String(r?.milestone || '').trim() && Number(r?.amount) > 0)
+      if (validRows.length === 0)
+        return NextResponse.json({ error: 'Add at least one milestone to the Payment Schedule before sending this SOW.' }, { status: 400 })
+      const scheduleSum = validRows.reduce((s: number, r: any) => s + (Number(r.amount) || 0), 0)
+      if (Math.abs(scheduleSum - project.contract_value) >= 0.01)
+        return NextResponse.json({
+          error: `The Payment Schedule totals ${scheduleSum.toFixed(2)} but the contract value is ${Number(project.contract_value).toFixed(2)} — these must match before sending.`,
+        }, { status: 400 })
+    }
 
     // Phase 3 — Approval Chains: if a workflow matches this SOW's contract
     // value, halt here and wait on sign-off instead of sending. The

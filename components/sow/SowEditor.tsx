@@ -24,7 +24,7 @@ interface Props {
 }
 
 const REQUIRED_SECTIONS = ['parties', 'deliverables', 'payment', 'signature']
-const SECTION_ORDER = ['parties','overview','deliverables','oos','timeline','roles','assumptions','payment','revisions','ip','confidentiality','termination','governing_law','dispute','signature']
+const SECTION_ORDER = ['parties','overview','deliverables','oos','timeline','roles','assumptions','payment','payment_schedule','revisions','ip','confidentiality','termination','governing_law','dispute','signature']
 
 export default function SowEditor({ sowId, sections: initialSections, isLocked, onSend, canSend, canEdit }: Props) {
   const [sections,      setSections]      = useState<Section[]>(

@@ -11,9 +11,9 @@
 // page all import from here so they can never drift out of sync with each
 // other.
 
-export type SowTableSectionId = 'deliverables' | 'timeline' | 'roles'
+export type SowTableSectionId = 'deliverables' | 'timeline' | 'roles' | 'payment_schedule'
 
-export const TABLE_SECTION_IDS: SowTableSectionId[] = ['deliverables', 'timeline', 'roles']
+export const TABLE_SECTION_IDS: SowTableSectionId[] = ['deliverables', 'timeline', 'roles', 'payment_schedule']
 
 export function isTableSection(id: string): id is SowTableSectionId {
   return (TABLE_SECTION_IDS as string[]).includes(id)
@@ -61,6 +61,27 @@ export const SOW_TABLE_SCHEMAS: Record<SowTableSectionId, SowTableSchema> = {
       { key: 'notes', label: 'Notes', width: 2.4 },
     ],
     emptyRowLabel: 'No responsibilities added yet',
+  },
+  // FEATURE (section-9 audit follow-up): payment structure 'milestones'
+  // has been selectable since the project-creation form existed — the
+  // SOW boilerplate even prints "Payable in milestones as defined
+  // below" — but there was never anywhere to actually define them.
+  // createMilestones() (app/api/portal/sow/[token]/sign/route.ts) used
+  // to silently collapse this to one lump-sum milestone on signing,
+  // contradicting the SOW's own text. This table is the real fix: the
+  // agency itemizes the schedule here, and the sign route now reads
+  // these rows directly instead of guessing. `amount` is a plain
+  // editable string like every other table cell — server-side
+  // validation that it foots to the contract value lives at sign time
+  // (see createMilestones), not in the editor itself, so an
+  // in-progress edit is never blocked mid-typing.
+  payment_schedule: {
+    columns: [
+      { key: 'milestone', label: 'Milestone', width: 2.6 },
+      { key: 'amount', label: 'Amount', width: 1.2, align: 'right' },
+      { key: 'trigger', label: 'Trigger / Due', width: 2.2 },
+    ],
+    emptyRowLabel: 'No milestones added yet',
   },
 }
 
