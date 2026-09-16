@@ -87,7 +87,16 @@ export async function GET() {
           brand_colour, logo_storage_path, governing_law,
           creator:users!workspaces_created_by_fkey(name, email)
         )`)
-        .eq('user_id', user.id).eq('status', 'active'),
+        .eq('user_id', user.id).eq('status', 'active')
+        // FIX (Workspace lifecycle + Onboarding, round 4): ownedIncomplete[0]
+        // and memberIncomplete[0] below have no defined order without this —
+        // migration 019's own grandfather clause (trial_cap_exempt) proves a
+        // user CAN legitimately have more than one owned incomplete
+        // workspace at once, and Postgres gives no ordering guarantee absent
+        // an ORDER BY. Which abandoned workspace gets resumed could vary
+        // request to request. Oldest first, matching the same tie-break
+        // lib/auth/session.ts and leave_workspace_atomic already use.
+        .order('created_at', { ascending: true }),
     ])
 
     const active = (memberships || []).filter((m: any) => m.workspaces)

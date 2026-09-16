@@ -28,7 +28,14 @@ export async function POST(request: NextRequest) {
       .select('id')
       .maybeSingle()
 
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    // FIX (Workspace lifecycle, round 4): same info-disclosure pattern
+    // workspace/create's own Finding comment already flagged and fixed
+    // for itself — raw Postgres error.message was returned straight to
+    // the client here too. Log server-side only.
+    if (error) {
+      console.error('complete-onboarding update failed:', error)
+      return NextResponse.json({ error: 'Failed to complete onboarding' }, { status: 500 })
+    }
     if (!updated) return NextResponse.json({ error: 'Workspace not found, or you don\u2019t have permission to complete onboarding for it.' }, { status: 404 })
     return NextResponse.json({ ok: true })
   } catch {

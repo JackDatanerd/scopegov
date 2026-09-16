@@ -26,7 +26,15 @@ export async function PATCH(request: NextRequest) {
     const { error } = await (service as any).from('users')
       .update({ name, updated_at: new Date().toISOString() })
       .eq('id', session.id)
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    // FIX (Workspace lifecycle, round 4): raw Postgres error.message was
+    // returned straight to the client — the exact info-disclosure pattern
+    // workspace/create's own Finding comment already flagged and fixed
+    // for itself, missed here. Log server-side only, return a generic
+    // message like every other route in this section does.
+    if (error) {
+      console.error('Profile name update failed:', error)
+      return NextResponse.json({ error: 'Failed to update name' }, { status: 500 })
+    }
 
     return NextResponse.json({ ok: true })
   } catch (err) {

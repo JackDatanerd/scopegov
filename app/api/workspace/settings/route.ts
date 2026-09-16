@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { sanitizeDisplayName } from '@/lib/utils/sanitize'
+import { INDUSTRIES, CURRENCIES, TIMEZONES } from '@/lib/constants/workspace-options'
 
 export async function PATCH(request: NextRequest) {
   try {
@@ -51,6 +52,22 @@ export async function PATCH(request: NextRequest) {
       if (!SUPPORTED_SOW_LANGUAGES.includes(updates.sow_language)) {
         return NextResponse.json({ error: 'Unsupported SOW language' }, { status: 400 })
       }
+    }
+
+    // FIX (Workspace lifecycle + Onboarding, round 4): this route is what
+    // the onboarding wizard's own Step 0 "Back" edit path saves through
+    // (see submitIdentity in app/onboarding/page.tsx) — same
+    // unvalidated-industry/currency/timezone gap as workspace/create,
+    // reachable here too. Same curated-list validation, same pattern as
+    // sow_language just above.
+    if (typeof updates.industry === 'string' && !(INDUSTRIES as readonly string[]).includes(updates.industry)) {
+      return NextResponse.json({ error: 'Invalid industry' }, { status: 400 })
+    }
+    if (typeof updates.currency === 'string' && !(CURRENCIES as readonly string[]).includes(updates.currency)) {
+      return NextResponse.json({ error: 'Invalid currency' }, { status: 400 })
+    }
+    if (typeof updates.timezone === 'string' && !(TIMEZONES as readonly string[]).includes(updates.timezone)) {
+      return NextResponse.json({ error: 'Invalid timezone' }, { status: 400 })
     }
 
     // FIX (re-audit, notifications section): same gap as workspace/create

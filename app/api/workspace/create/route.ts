@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { nanoid } from 'nanoid'
 import crypto from 'crypto'
 import { sanitizeDisplayName } from '@/lib/utils/sanitize'
+import { INDUSTRIES, CURRENCIES, TIMEZONES } from '@/lib/constants/workspace-options'
 
 function generateSlug(name: string): string {
   return name.toLowerCase()
@@ -22,6 +23,22 @@ export async function POST(request: NextRequest) {
     const agencyName = sanitizeDisplayName(agencyNameRaw)
     if (!agencyName || !industry) {
       return NextResponse.json({ error: 'Agency name and industry are required' }, { status: 400 })
+    }
+    // FIX (Workspace lifecycle, round 4): industry was only truthy-checked
+    // (any string accepted), and currency/timezone were accepted verbatim
+    // with no validation at all — the UI presents fixed dropdowns for all
+    // three, but nothing stopped a direct API call from storing an
+    // unrecognized industry, an invalid currency code, or a bogus
+    // timezone. No DB constraint backs any of these either. Validate
+    // against the same curated lists the wizard offers.
+    if (!(INDUSTRIES as readonly string[]).includes(industry)) {
+      return NextResponse.json({ error: 'Invalid industry' }, { status: 400 })
+    }
+    if (currency !== undefined && currency !== null && !(CURRENCIES as readonly string[]).includes(currency)) {
+      return NextResponse.json({ error: 'Invalid currency' }, { status: 400 })
+    }
+    if (timezone !== undefined && timezone !== null && !(TIMEZONES as readonly string[]).includes(timezone)) {
+      return NextResponse.json({ error: 'Invalid timezone' }, { status: 400 })
     }
 
     // Use service client for workspace creation (bypasses RLS — BUG-002)

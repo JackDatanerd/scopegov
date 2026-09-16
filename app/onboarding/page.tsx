@@ -2,6 +2,12 @@
 import { useState, useEffect, Suspense } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter, useSearchParams } from 'next/navigation'
+// FIX (Workspace lifecycle + Onboarding, round 4): these were defined
+// locally and duplicated (not just similarly, but re-typed) in
+// api/workspace/create and api/workspace/settings, which never validated
+// against them — importing the one shared list means the dropdown and
+// the server-side validation literally cannot drift apart again.
+import { INDUSTRIES, CURRENCIES, TIMEZONES } from '@/lib/constants/workspace-options'
 
 const STEPS = [
   { label: 'Your agency',   sub: 'Identity & locale' },
@@ -9,18 +15,6 @@ const STEPS = [
   { label: 'Defaults',      sub: 'SOW preferences' },
   { label: 'Team',          sub: 'First invitation' },
   { label: 'Done',          sub: 'Start governing' },
-]
-
-const INDUSTRIES = [
-  'Creative & Design', 'Web & App Development', 'Marketing & Advertising',
-  'Branding & Identity', 'Video & Animation', 'Architecture & Interior',
-  'Consulting & Strategy', 'Photography', 'PR & Communications', 'Other',
-]
-const CURRENCIES = ['USD','KES','GBP','EUR','ZAR','NGN','GHS','AED','CAD','AUD']
-const TIMEZONES  = [
-  'Africa/Nairobi','Africa/Lagos','Africa/Accra','Africa/Johannesburg','Africa/Cairo',
-  'Europe/London','Europe/Paris','America/New_York','America/Los_Angeles',
-  'Asia/Dubai','Asia/Kolkata','Australia/Sydney',
 ]
 
 // FIX (round 3, Workspace lifecycle Finding 1): useSearchParams() (added
@@ -95,6 +89,22 @@ function OnboardingWizard() {
   const [gate, setGate] = useState<'loading' | 'create' | 'waiting'>('loading')
   const [waitingFor, setWaitingFor] = useState<{ agencyName: string; creatorName: string } | null>(null)
 
+  // FIX (Workspace lifecycle + Onboarding, round 4 — headline feature
+  // gap): middleware.ts only gates PAGE routes on onboarding completion,
+  // not /api/* — so once a workspace is created (and becomes active),
+  // every page except /onboarding is unreachable until this wizard is
+  // finished, including Settings, where "Delete workspace" lives. There
+  // was no sign-out, no "switch workspace," and no "discard this
+  // workspace" control anywhere in steps 0–4 (only the 'waiting' screen
+  // for invited members had an escape hatch at all). A creator who
+  // regrets clicking "Create new workspace," or gets interrupted and
+  // comes back not wanting to finish it, had no self-service way out —
+  // finish the wizard for a workspace they don't want, or email support.
+  // otherWorkspaces powers a small exit panel (see below) offering
+  // "switch to an existing workspace" and "discard this one."
+  const [otherWorkspaces, setOtherWorkspaces] = useState<Array<{ id: string; agencyName: string; name: string }>>([])
+  const [showExit, setShowExit] = useState(false)
+
   useEffect(() => {
     supabase.auth.getUser().then(async ({ data: { user } }) => {
       if (!user) { router.push('/login'); return }
@@ -115,77 +125,131 @@ function OnboardingWizard() {
         return
       }
 
-      // FIX: restore in-progress onboarding after a refresh instead of
-      // silently restarting. Scoped per-user so it can't leak across
-      // accounts on a shared browser. Deliberately skips restoring if step
-      // 0 was never completed (no workspaceId saved) — nothing meaningful
-      // to restore in that case, and it avoids ever re-submitting step 0.
-      try {
-        const saved = localStorage.getItem(STORAGE_KEY_PREFIX + user.id)
-        if (saved) {
-          const s = JSON.parse(saved)
-          if (s.workspaceId) {
-            setWorkspaceId(s.workspaceId)
-            setStep(s.step || 1)
-            if (s.agencyName)       setAgencyName(s.agencyName)
-            if (s.industry)         setIndustry(s.industry)
-            if (s.currency)         setCurrency(s.currency)
-            if (s.timezone)         setTimezone(s.timezone)
-            if (s.brandColour)      setBrandColour(s.brandColour)
-            if (s.revisionRounds)   setRevisionRounds(s.revisionRounds)
-            if (s.paymentStructure) setPaymentStructure(s.paymentStructure)
-            if (s.governingLaw)     setGoverningLaw(s.governingLaw)
-            setRestored(true)
-            setGate('create')
-            return
-          }
-        }
-      } catch { /* corrupt/unavailable storage — just start fresh */ }
-
-      // No local progress found — ask the server whether this user should
-      // actually be starting a NEW workspace at all, before assuming so.
+      // FIX (Workspace lifecycle + Onboarding, round 4 — headline): this
+      // used to trust localStorage FIRST and return early on any saved
+      // workspaceId, entirely skipping the onboarding-status check below —
+      // the exact "which workspace is really active/incomplete" logic
+      // onboarding-status/route.ts's Finding 6 was hardened for. If
+      // active_workspace_id had changed since the last local save
+      // (switched devices, a different workspace was created/abandoned in
+      // the meantime, support intervened), the wizard silently resumed
+      // progress for the WRONG, stale workspace while whatever's actually
+      // active stayed incomplete forever — a redirect loop with no
+      // explanation, using the identical failure mode Finding 6 exists to
+      // prevent, just via this early-return path instead. Always ask the
+      // server first now; localStorage only ever supplements the server's
+      // answer (for the SAME workspace), never overrides it.
+      let status: any = null
+      let statusFetchFailed = false
       try {
         const res  = await fetch('/api/workspace/onboarding-status')
         const json = await res.json().catch(() => ({}))
-        if (res.ok) {
-          if (json.status === 'complete') { router.push('/dashboard'); return }
-          if (json.status === 'waiting') {
-            setWaitingFor({ agencyName: json.agencyName, creatorName: json.creatorName })
-            setGate('waiting')
-            setRestored(true)
-            return
-          }
-          if (json.status === 'resume' && json.workspaceId) {
-            // Creator of an incomplete workspace, but with no local
-            // progress (new device, cleared storage) — resume it server-
-            // side instead of creating a duplicate.
-            setWorkspaceId(json.workspaceId)
-            if (json.agencyName) setAgencyName(json.agencyName)
-            if (json.industry)   setIndustry(json.industry)
-            if (json.currency)   setCurrency(json.currency)
-            if (json.timezone)   setTimezone(json.timezone)
-            // FIX (round 3, Onboarding Finding 2 — severe): previously
-            // nothing past step-0 fields was rehydrated here, so resuming
-            // on a new device (or after clearing localStorage) always
-            // reset branding/defaults to the wizard's hardcoded defaults —
-            // and clicking Continue through steps 1-2 again silently
-            // overwrote whatever the user had genuinely already saved.
-            // onboarding-status now returns what's actually on record;
-            // reflect it here instead of leaving these at their useState
-            // defaults.
-            if (json.brandColour)      setBrandColour(json.brandColour)
-            if (json.logoStoragePath)  setLogoPreview(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/logos/${json.logoStoragePath}`)
-            if (json.revisionRounds)   setRevisionRounds(json.revisionRounds)
-            if (json.paymentStructure) setPaymentStructure(json.paymentStructure)
-            if (json.governingLaw)     setGoverningLaw(json.governingLaw)
-            setStep(1)
-            setRestored(true)
-            setGate('create')
-            return
-          }
-        }
-      } catch { /* status check failed — fall through to normal new-workspace flow */ }
+        if (res.ok) status = json
+        else statusFetchFailed = true
+      } catch { statusFetchFailed = true }
 
+      if (status?.status === 'complete') {
+        try { localStorage.removeItem(STORAGE_KEY_PREFIX + user.id) } catch { /* ignore */ }
+        router.push('/dashboard')
+        return
+      }
+
+      if (status?.status === 'waiting') {
+        try { localStorage.removeItem(STORAGE_KEY_PREFIX + user.id) } catch { /* ignore */ }
+        setWaitingFor({ agencyName: status.agencyName, creatorName: status.creatorName })
+        setGate('waiting')
+        setRestored(true)
+        return
+      }
+
+      if (status?.status === 'resume' && status.workspaceId) {
+        // FIX (Workspace lifecycle, round 4): onboarding-status can
+        // legitimately resolve to an owned incomplete workspace that ISN'T
+        // the user's currently active one (e.g. an older abandoned
+        // workspace, picked because the real active workspace is already
+        // fully onboarded or there is no active pick at all). Nothing
+        // used to make the resumed workspace active — complete() would
+        // finish onboarding for it and redirect to /dashboard, landing
+        // the user in whatever workspace WAS active instead of the one
+        // they just set up. Explicitly switch into it first. Best-effort:
+        // if this fails, onboarding still completes correctly for this
+        // workspace, it just may not be what greets them on /dashboard.
+        try {
+          await fetch('/api/workspace/switch', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ workspaceId: status.workspaceId }),
+          })
+        } catch { /* best-effort */ }
+
+        setWorkspaceId(status.workspaceId)
+        if (status.agencyName) setAgencyName(status.agencyName)
+        if (status.industry)   setIndustry(status.industry)
+        if (status.currency)   setCurrency(status.currency)
+        if (status.timezone)   setTimezone(status.timezone)
+        if (status.brandColour)      setBrandColour(status.brandColour)
+        if (status.logoStoragePath)  setLogoPreview(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/logos/${status.logoStoragePath}`)
+        if (status.revisionRounds)   setRevisionRounds(status.revisionRounds)
+        if (status.paymentStructure) setPaymentStructure(status.paymentStructure)
+        if (status.governingLaw)     setGoverningLaw(status.governingLaw)
+
+        // Local progress only ever supplements the server's pick — and
+        // only the in-progress `step` position, since every field above
+        // now comes from the server. Only trust it when it's for the
+        // SAME workspace the server just resolved; otherwise it's a
+        // stale record for a workspace that's no longer the relevant
+        // one, and clinging to it is exactly the bug this fix closes.
+        let resumeStep = 1
+        try {
+          const saved = localStorage.getItem(STORAGE_KEY_PREFIX + user.id)
+          if (saved) {
+            const s = JSON.parse(saved)
+            if (s.workspaceId === status.workspaceId && s.step) {
+              resumeStep = s.step
+            } else {
+              localStorage.removeItem(STORAGE_KEY_PREFIX + user.id)
+            }
+          }
+        } catch { /* corrupt storage — ignore, server-derived state stands */ }
+
+        setStep(resumeStep)
+        setRestored(true)
+        setGate('create')
+        return
+      }
+
+      // status is 'create', or the status check itself failed — degrade
+      // to trusting local progress ONLY on an actual fetch failure (e.g.
+      // offline), since that's the one case there's no server answer to
+      // validate against at all. Every write from here on (settings,
+      // branding, defaults, complete-onboarding) still independently
+      // verifies the workspace belongs to this user, so a stale/wrong
+      // resume here can't corrupt another workspace's data — it can only
+      // mis-resume, same residual risk any offline-first restore has.
+      if (statusFetchFailed) {
+        try {
+          const saved = localStorage.getItem(STORAGE_KEY_PREFIX + user.id)
+          if (saved) {
+            const s = JSON.parse(saved)
+            if (s.workspaceId) {
+              setWorkspaceId(s.workspaceId)
+              setStep(s.step || 1)
+              if (s.agencyName)       setAgencyName(s.agencyName)
+              if (s.industry)         setIndustry(s.industry)
+              if (s.currency)         setCurrency(s.currency)
+              if (s.timezone)         setTimezone(s.timezone)
+              if (s.brandColour)      setBrandColour(s.brandColour)
+              if (s.revisionRounds)   setRevisionRounds(s.revisionRounds)
+              if (s.paymentStructure) setPaymentStructure(s.paymentStructure)
+              if (s.governingLaw)     setGoverningLaw(s.governingLaw)
+              setRestored(true)
+              setGate('create')
+              return
+            }
+          }
+        } catch { /* corrupt/unavailable storage too — just start fresh below */ }
+      }
+
+      try { localStorage.removeItem(STORAGE_KEY_PREFIX + user.id) } catch { /* ignore */ }
       const userName = user.user_metadata?.name || ''
       if (userName) setAgencyName(`${userName.split(' ')[0]}'s Agency`)
       setRestored(true)
@@ -211,6 +275,64 @@ function OnboardingWizard() {
     supabase.auth.getUser().then(({ data: { user } }) => {
       if (user) localStorage.removeItem(STORAGE_KEY_PREFIX + user.id)
     })
+  }
+
+  // Powers the exit panel below — only meaningful once a workspace
+  // actually exists (steps 1-4, or a resumed step 0) and the user is a
+  // creator working through the wizard (the 'waiting' gate never sets
+  // workspaceId, so this never runs for invited members).
+  useEffect(() => {
+    if (gate !== 'create' || !workspaceId) return
+    fetch('/api/workspace/list')
+      .then(r => r.json())
+      .then(json => {
+        if (Array.isArray(json.workspaces)) {
+          setOtherWorkspaces(json.workspaces.filter((w: any) => w.id !== workspaceId))
+        }
+      })
+      .catch(() => { /* non-critical — exit panel just won't offer a switch target */ })
+  }, [gate, workspaceId])
+
+  async function switchToWorkspace(id: string) {
+    setLoading(true); setError('')
+    try {
+      const res  = await fetch('/api/workspace/switch', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId: id }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) { setError(json.error || 'Could not switch workspaces — try again.'); return }
+      clearSavedProgress()
+      router.push('/dashboard')
+    } catch { setError('Could not switch workspaces — try again.') }
+    finally { setLoading(false) }
+  }
+
+  async function discardWorkspace() {
+    if (!workspaceId) return
+    if (typeof window !== 'undefined' && !window.confirm(
+      'Discard this workspace? Everything entered so far will be permanently deleted. This can\u2019t be undone.'
+    )) return
+    setLoading(true); setError('')
+    try {
+      const res  = await fetch('/api/workspace/delete', { method: 'DELETE' })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setError(json.error || 'Could not discard this workspace — try again, or contact support@scopegov.app.')
+        return
+      }
+      clearSavedProgress()
+      if (otherWorkspaces.length > 0) {
+        await switchToWorkspace(otherWorkspaces[0].id)
+      } else {
+        setWorkspaceId(null)
+        setOtherWorkspaces([])
+        setStep(0)
+        router.replace('/onboarding?new=1')
+      }
+    } catch {
+      setError('Could not discard this workspace — try again, or contact support@scopegov.app.')
+    } finally { setLoading(false) }
   }
 
   /* ── Step 0: Identity ─────────────────────────────────────── */
@@ -481,9 +603,46 @@ function OnboardingWizard() {
         </div>
 
         {/* Step label */}
-        <div className="ob-step-lbl">
-          Step {step + 1} of {STEPS.length} — {STEPS[step].label}
+        <div className="ob-step-lbl" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+          <span>Step {step + 1} of {STEPS.length} — {STEPS[step].label}</span>
+          {/* FIX (Workspace lifecycle + Onboarding, round 4 — headline
+              feature gap): the only self-service way out of an in-progress
+              or abandoned workspace used to be finishing the wizard —
+              Settings (where "Delete workspace" lives) is unreachable
+              until onboarding_completed_at is set, and nothing here ever
+              offered switching to a workspace the user already has. */}
+          {workspaceId && (
+            <button type="button" className="ob-skip" style={{ fontSize: 11, whiteSpace: 'nowrap' }}
+              onClick={() => setShowExit(v => !v)}>
+              Not this workspace?
+            </button>
+          )}
         </div>
+
+        {workspaceId && showExit && (
+          <div style={{ marginBottom: 16, padding: 12, border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', background: 'var(--surface-2)' }}>
+            {otherWorkspaces.length > 0 && (
+              <div style={{ marginBottom: 8 }}>
+                <p style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 6 }}>Switch to a workspace you already set up:</p>
+                {otherWorkspaces.map(w => (
+                  <button key={w.id} type="button" className="btn btn-ghost btn-sm"
+                    style={{ display: 'block', width: '100%', textAlign: 'left', marginBottom: 4 }}
+                    disabled={loading} onClick={() => switchToWorkspace(w.id)}>
+                    {w.agencyName || w.name}
+                  </button>
+                ))}
+              </div>
+            )}
+            <button type="button" className="btn btn-ghost btn-sm" style={{ display: 'block', width: '100%', textAlign: 'left' }}
+              disabled={loading} onClick={discardWorkspace}>
+              Discard this workspace
+            </button>
+            <button type="button" className="ob-skip" style={{ display: 'block', marginTop: 8, fontSize: 11 }}
+              disabled={loading} onClick={() => supabase.auth.signOut().then(() => router.push('/login'))}>
+              Sign out instead
+            </button>
+          </div>
+        )}
 
         {/* ── STEP 0 ──────────────────────────────────────── */}
         {step === 0 && (
