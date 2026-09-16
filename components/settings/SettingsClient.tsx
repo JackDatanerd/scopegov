@@ -91,6 +91,9 @@ const NOTIF_ITEMS = [
   // same "wire it server-side, add the toggle" pattern as the three above.
   { key: 'sow_stalled',           label: 'SOW stalled',             desc: "When a client hasn't signed a SOW in 7+ days" },
   { key: 'co_stalled',            label: 'Change order stalled',    desc: "When a client hasn't responded to a change order in 5+ days" },
+  // FIX (section-9 audit, 9-G3): SOW signing links expire after 30 days
+  // and nothing ever told anyone — see app/api/cron/sow-expiry.
+  { key: 'sow_expired',           label: 'SOW link expired',        desc: 'When a SOW signing link expires before the client signs' },
 ]
 
 // FIX (re-audit, notifications section): both of these are fully wired

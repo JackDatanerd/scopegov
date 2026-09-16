@@ -128,6 +128,15 @@ export default function SowEditorPage() {
           isLocked={isLocked}
           canSend={!isLocked && perms.canSend}
           canEdit={!isLocked && perms.canEdit}
+          // FIX (section-9 audit, 9-G6 / 9-G7 / 9-G8): the Payment
+          // Schedule editor needs the contract value to show a running
+          // total against it, table headers need the drafting language,
+          // and a draft spawned by a client change request needs to show
+          // what they actually asked for.
+          contractValue={sow.contractValue ?? undefined}
+          currency={sow.currency || undefined}
+          language={sow.metadata?.language}
+          changeRequest={sow.metadata?.changeRequest || null}
         />
       </div>
     </div>

@@ -43,8 +43,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       })
     }
 
+    // FIX (section-9 audit, 9-G2 follow-on): clear the token on the row
+    // too, matching app/api/co/[id]/withdraw/route.ts. The revoked_tokens
+    // insert above is what actually invalidates it, but leaving the raw
+    // JWT sitting on a dead row is needless exposure — and every read
+    // path that checks `if (sow.token)` was making decisions off a token
+    // that no longer works.
     await (service as any).from('sow_documents')
-      .update({ status: 'withdrawn', updated_at: now }).eq('id', id)
+      .update({ status: 'withdrawn', token: null, updated_at: now }).eq('id', id)
 
     // Revert project to Intake
     await (service as any).from('projects')

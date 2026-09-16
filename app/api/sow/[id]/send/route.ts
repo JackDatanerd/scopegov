@@ -6,6 +6,8 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { sendSowDocument } from '@/lib/documents/send-sow'
 import { evaluateApprovalGate } from '@/lib/approvals/engine'
 import { canReadProject } from '@/lib/utils/project-access'
+import { parseTableAmount } from '@/lib/sow/table-schema'
+import { roundCurrency } from '@/lib/utils/format'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -61,10 +63,39 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (sow.metadata?.paymentStructure === 'milestones') {
       const scheduleSection = (sow.sections || []).find((s: any) => s.id === 'payment_schedule')
       const rows: any[] = Array.isArray(scheduleSection?.table) ? scheduleSection.table : []
-      const validRows = rows.filter((r: any) => String(r?.milestone || '').trim() && Number(r?.amount) > 0)
+
+      // FIX (section-9 audit, 9-G6): `Number(r.amount)` on a free-text
+      // cell treats "1,500" as NaN, so a valid-looking schedule failed
+      // this check for reasons the agency could not see on screen. See
+      // parseTableAmount in lib/sow/table-schema.ts.
+      const parsed = rows.map((r: any) => ({
+        milestone: String(r?.milestone || '').trim(),
+        amount:    parseTableAmount(r?.amount),
+      }))
+
+      const unreadable = parsed.filter(r => r.milestone && r.amount === null)
+      if (unreadable.length > 0)
+        return NextResponse.json({
+          error: `Couldn't read the amount on the Payment Schedule milestone "${unreadable[0].milestone}". Enter a plain number.`,
+        }, { status: 400 })
+
+      const validRows = parsed.filter(r => r.milestone && (r.amount ?? 0) > 0)
       if (validRows.length === 0)
         return NextResponse.json({ error: 'Add at least one milestone to the Payment Schedule before sending this SOW.' }, { status: 400 })
-      const scheduleSum = validRows.reduce((s: number, r: any) => s + (Number(r.amount) || 0), 0)
+
+      // FIX (section-9 audit, 9-G6 follow-on): this validated the
+      // schedule even when the section was hidden — so a client could be
+      // sent a SOW whose Payment Terms says "Payable in milestones as
+      // defined below" with no schedule anywhere in the document, while
+      // the agency was still forced to make the invisible table foot to
+      // the cent. If the structure is milestones, the schedule is part of
+      // the agreement and has to be on the page.
+      if (scheduleSection?.visible === false)
+        return NextResponse.json({
+          error: 'This SOW uses a milestone payment structure — un-hide the Payment Schedule section before sending it.',
+        }, { status: 400 })
+
+      const scheduleSum = roundCurrency(validRows.reduce((s: number, r) => s + (r.amount as number), 0))
       if (Math.abs(scheduleSum - project.contract_value) >= 0.01)
         return NextResponse.json({
           error: `The Payment Schedule totals ${scheduleSum.toFixed(2)} but the contract value is ${Number(project.contract_value).toFixed(2)} — these must match before sending.`,

@@ -1,0 +1,147 @@
+ScopeGov — Section 9 (SOW lifecycle) + Section 10 (CO logic) deep audit
+Fix delivery: 40 files (37 modified, 6 new)
+
+APPLY WITH:
+  cd "C:\Users\jackk\Desktop\MyWebApps\scopegov\scopegov"
+  tar -xzf ~/Downloads/scopegov-sow-co-fixes.tar.gz --strip-components=1 -C .
+  git add -A
+  git commit -m "fix(sow,co): section 9 + 10 deep audit — lifecycle dead-ends, PDF content loss, CO tax/counter-offer correctness"
+  git push
+
+AFTER PUSH — two things need applying that a git push alone won't do:
+  1. supabase/migrations/031_sow_version_uniqueness.sql — dedupes any
+     existing (project_id, version) collisions, then adds the unique
+     index. Run it through your normal migration path.
+  2. vercel.json gained a new cron entry (/api/cron/sow-expiry, daily
+     07:15). Vercel picks this up on the next deploy automatically —
+     no separate action, just don't strip it if you hand-merge vercel.json.
+
+Both `npx tsc --noEmit` and `npx next build` pass clean on the full tree
+with these applied (two pre-existing build blockers unrelated to this
+audit were also fixed along the way — see NEW FILES / notable fixes below
+under app/onboarding/page.tsx and app/(app)/sow/page.tsx).
+
+──────────────────────────────────────────────────────────────────────
+NEW FILES (6)
+──────────────────────────────────────────────────────────────────────
+app/api/sow/[id]/reopen/route.ts     Reopens a withdrawn/declined/expired
+                                      SOW as a fresh draft (9-G1/9-G2).
+app/api/co/[id]/revise/route.ts      Same pattern for declined/withdrawn/
+                                      closed/countered COs (10-G2/G3/G4).
+app/api/cron/sow-expiry/route.ts     Writes the 'expired' status nothing
+                                      ever wrote before (9-G3).
+lib/documents/sow-version.ts         Race-safe SOW version allocation
+                                      (9-B12).
+lib/documents/co-totals.ts           One validated, shared CO tax/total
+                                      calculation (10-B3, 10-B9).
+lib/sow/sections.ts                  Server-owned section shaping,
+                                      extracted out of the SOW [id] route
+                                      (a route module can only export
+                                      handlers — this failed `next build`,
+                                      not `tsc`, until extracted).
+
+──────────────────────────────────────────────────────────────────────
+SECTION 9 — SOW lifecycle: findings closed
+──────────────────────────────────────────────────────────────────────
+9-G1  Terminal SOW states (withdrawn/declined/expired) had zero actions.
+      -> reopen route + "Start new version" button.
+9-G2  "Withdraw to edit" was circular — withdrawing didn't unlock editing.
+      -> honest error message pointing at reopen; withdraw also clears token.
+9-G3  No expiry sweep ever existed; 'expired' was dead status.
+      -> new cron + notification type + remind-route expiry guard.
+9-G4  msaReference fully wired but never passed by any route. Dead feature.
+      -> wired to metadata.msaReference on all three PDF/portal callers.
+9-G5  Contract value editable while a SOW was out for signature.
+      -> locked in that window too, not just post-signature. (Partial —
+         see note below on the immutable-artifact gap.)
+9-G6  Payment Schedule editor had no total/variance; amounts parsed with
+      bare Number(), so "1,500" silently dropped rows.
+      -> parseTableAmount everywhere amounts are read; live running total
+         + variance indicator in the editor.
+9-G7  Localization half-built (3 boilerplate sections only).
+      -> full section titles, table headers, and fallback content/tables
+         translated across es/fr/pt/de/sw; language persisted on metadata.
+9-G8  Client's change-request note never reached the new draft.
+      -> carried on metadata.changeRequest, shown as a banner in the editor.
+9-G9  SOWs predating a section (e.g. payment_schedule) had no way to gain
+      it — permanently unsendable under milestones.
+      -> hydrateSections backfills the full current shape on every read.
+9-G10 governing_law and oos were hideable despite generate hard-blocking
+      on missing governing law.
+      -> both added to the required-section list, enforced server-side.
+
+9-B1  GenerateSowModal read the wrong parse-brief response shape — AI
+      brief extraction was dead for existing-project SOWs.
+9-B2  Signed milestone SOWs printed Payment Schedule twice.
+9-B3  RichText dropped every hyperlink's href.
+9-B4  RichText dropped text outside block tags.
+9-B5  RichText truncated nested lists at the inner </ul>.
+9-B6  RichText collapsed inter-tag spaces ("Alpha Beta" -> "AlphaBeta").
+9-B7  Model could overwrite server-owned boilerplate sections by name.
+9-B8  Enum normalizer matched first-letter only — "Yes"/"Agency" broken.
+9-B9  signed_by never selected — editor printed "Signed ... by undefined".
+9-B10 toggleVisibility was fire-and-forget; failures left stale UI state.
+9-B11 No caps/validation on generate's free-text and enum inputs.
+9-B12 No uniqueness on (project_id, version) — concurrent generates raced.
+9-B13 Bulk-sections PATCH had no schema validation at all.
+9-B14 Dead "Send to client" button behind a prop never passed.
+9-B15 regenerate-section had no pending-approval gate (its siblings do).
+
+──────────────────────────────────────────────────────────────────────
+SECTION 10 — CO logic: findings closed
+──────────────────────────────────────────────────────────────────────
+10-G1 Counter-offer amount/note invisible to the agency — "Accept counter"
+      sat next to the ORIGINAL total. Headline finding.
+      -> fetched, permission-gated, and rendered as a panel before accept.
+10-G2 No counter-the-counter / revise-and-resend path.
+10-G3 "Negotiate" on a declined CO opened a read-only editor. Dead button.
+10-G4 Withdrawn COs hit the same false "Withdraw it to edit" banner.
+      -> /api/co/[id]/revise + "Revise & resend" / "Counter back" actions;
+         banner now tells the truth.
+10-G5 Escalation was a single overwritable slot with no status guard.
+      -> guarded against terminal states; prior holder recorded in audit.
+10-G6 CoEditor had no unsaved-work guard (SowEditor got one, this didn't).
+      -> beforeunload handler + unmount cleanup + failed-save indicator.
+
+10-B1 getContractValueBefore returned the wrong (understated) value for
+      every CO without its own amendment row yet — i.e. every CO the
+      client is currently reading. Wrong on the client-facing Impact
+      Analysis of every 2nd+ CO.
+10-B2 accept-co-counter.ts read co.total without selecting it.
+10-B3 Tax-inclusive COs stored gross as "subtotal" — printed a VAT rate
+      with no VAT amount. Shared, validated lib/documents/co-totals.ts
+      now used by both write paths and mirrored in the editor's live math.
+10-B4 Impact Analysis hardcoded a '+' sign — negative COs printed "+-5,000".
+10-B5 CoCard.doAction never checked res.ok — failures looked like no-ops.
+10-B6 accept-counter's pendingApproval response only alerted for 'send'.
+10-B7 CO remind had no token guard (SOW remind does) — built /portal/co/null.
+10-B8 CO remind email used bare toLocaleString(), and quoted the ORIGINAL
+      total on a countersignature reminder instead of the negotiated one.
+10-B9 No server-side line-item validation — type coercion, NaN, negative
+      quantity/rate, no item-count or description-length cap.
+10-B10 POST /api/co didn't accept isRetainerRenewal (PATCH did).
+
+──────────────────────────────────────────────────────────────────────
+KNOWN REMAINING GAP (not fixed — flagged, not silently dropped)
+──────────────────────────────────────────────────────────────────────
+9-G5 is only half closed. Contract value is now locked while a SOW is
+out for signature, which was the concretely reachable hole. But there is
+still no immutable signed artifact: sow_documents.pdf_path is never
+written, so a signed SOW's PDF re-renders live from mutable client/
+agency/project fields even after signature. That's an archival
+subsystem, not a patch — recommend its own pass rather than a rushed
+half-build inside this round.
+
+──────────────────────────────────────────────────────────────────────
+BUILD BLOCKERS FIXED ALONG THE WAY (pre-existing, not introduced here)
+──────────────────────────────────────────────────────────────────────
+- app/(app)/sow/page.tsx: TS18047 null-narrowing across a closure.
+- app/api/sow/generate/route.ts: TS1252, hoisted function in strict-mode block.
+- app/portal/sow/[token]/page.tsx: SowPortalTable's prop type had drifted
+  from SowTableSectionId (missing 'payment_schedule') since that variant
+  was added.
+- app/onboarding/page.tsx: react/no-unescaped-entities — this one only
+  surfaced under `next build`'s lint pass, not `tsc --noEmit`, so it was
+  invisible to a typecheck-only verification step.
+All four were failing `tsc --noEmit` and/or `next build` before this
+round touched anything.

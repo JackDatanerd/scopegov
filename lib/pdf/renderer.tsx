@@ -43,6 +43,11 @@ export interface SowPdfData {
   contractValue: number
   currency:      string
   sections:      Array<{ id: string; title: string; content: string; table?: SowTableRow[]; visible: boolean; order: number }>
+  // FIX (section-9 audit, 9-G7): the SOW's drafting language, from
+  // sow_documents.metadata.language. Section titles are already stored
+  // localized; the table column headers are schema-driven and need this
+  // to resolve. Absent/'en' renders exactly as before.
+  language?:     string
   paymentSchedule?: Array<{ title: string; amount: number; percentage: number | null; trigger: string; dueDate: string | null; status: string }>
   signedBy?:     string
   signedAt?:     string
@@ -216,6 +221,17 @@ function fmtMoney(n: number) {
 
 // ── SOW PDF ──────────────────────────────────────────────────
 
+function SowSection({ sec, num, s, language }: { sec: SowPdfData['sections'][number]; num: number; s: any; language?: string }) {
+  return (
+    <View style={s.section} wrap={isTableSection(sec.id) ? undefined : false}>
+      <Text style={s.secTitle}><Text style={s.secNum}>{num}. </Text>{sec.title}</Text>
+      {isTableSection(sec.id)
+        ? <SowTable sectionId={sec.id} rows={sec.table || []} language={language} />
+        : <RichText html={sec.content} style={s.body} />}
+    </View>
+  )
+}
+
 function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) {
   const c = data.brandColour || '#1A5C3A'
 
@@ -265,9 +281,35 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
     secNum:       { color: '#C0C0C0' },
   })
 
+  // FIX (section-9 audit, 9-B2): a signed milestone SOW printed its
+  // Payment Schedule TWICE — once as the `payment_schedule` section's own
+  // table (which this filter never excluded), and again immediately below
+  // as the `data.paymentSchedule` block sourced from payment_milestones.
+  // Two separately-numbered "Payment Schedule" sections with different
+  // formatting on the same signed contract. The two are the same
+  // information at different lifecycle stages: the section table is what
+  // the agency authored and the client agreed to; payment_milestones is
+  // the tracked instantiation of it, which only exists after signing. Show
+  // the milestone block when it exists (it carries real due dates and
+  // statuses), and suppress the now-redundant section table in that case —
+  // otherwise show the section table, so an unsigned SOW still presents
+  // its schedule to the client.
+  const hasMilestoneBlock = !!(data.paymentSchedule && data.paymentSchedule.length > 0)
   const sections = data.sections
     .filter(sec => sec.visible && !['parties','signature'].includes(sec.id))
+    .filter(sec => !(hasMilestoneBlock && sec.id === 'payment_schedule'))
     .sort((a, b) => a.order - b.order)
+
+  // The milestone block takes over the suppressed section's place in the
+  // numbering rather than being appended after everything else, so the
+  // schedule stays where the document's own ordering puts it.
+  const scheduleOrder = data.sections.find(sec => sec.id === 'payment_schedule')?.order ?? Infinity
+  const scheduleIndex = sections.filter(sec => sec.order < scheduleOrder).length
+  // FIX (section-9 audit, 9-G7): this heading was the one section title
+  // hardcoded in English rather than read off the stored (already
+  // localized) section list.
+  const paymentScheduleTitle =
+    data.sections.find(sec => sec.id === 'payment_schedule')?.title || 'Payment Schedule'
 
   return (
     <Document>
@@ -329,36 +371,36 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
         {/* Sections — numbered in document order, same convention as a
             traditional firm-issued SOW (1. Project Overview, 2.
             Deliverables, …). Deliverables/Timeline/Roles render as
-            tables; everything else renders as formatted rich text
-            (bold/italic/numbered lists now survive into the PDF instead
-            of being flattened by the old stripHtml() path). */}
-        {sections.map((sec, i) => (
-          <View key={sec.id} style={s.section} wrap={isTableSection(sec.id) ? undefined : false}>
-            <Text style={s.secTitle}><Text style={s.secNum}>{i + 1}. </Text>{sec.title}</Text>
-            {isTableSection(sec.id)
-              ? <SowTable sectionId={sec.id} rows={sec.table || []} />
-              : <RichText html={sec.content} style={s.body} />}
-          </View>
+            tables; everything else renders as formatted rich text.
+
+            FIX (section-9 audit, 9-B2): the Payment Schedule used to be
+            appended after every section, hard-numbered `sections.length + 1`,
+            WHILE the payment_schedule section's own table also rendered
+            inside the loop — the same schedule printed twice on a signed
+            contract, under two different numbers and two different
+            layouts. The milestone block is now spliced in at the
+            suppressed section's own position instead of tacked onto the
+            end, so numbering and reading order agree. */}
+        {sections.slice(0, hasMilestoneBlock ? scheduleIndex : sections.length).map((sec, i) => (
+          <SowSection key={sec.id} sec={sec} num={i + 1} s={s} language={data.language} />
         ))}
 
-        {/* Payment schedule — sourced from payment_milestones, already
-            captured at SOW-build time but never shown on the SOW PDF
-            itself before now (it only ever surfaced inside the app).
-            FIX (doc-quality audit round 3): this rendered with no section
-            number, breaking the 1./2./3. numbering convention every other
-            section follows — an unlabeled section reads as an afterthought
-            on a document a client is about to sign. Numbered as the next
-            section after whatever's in `sections`, same convention as the
-            loop above. */}
-        {data.paymentSchedule && data.paymentSchedule.length > 0 && (
+        {/* Payment schedule — sourced from payment_milestones, which only
+            exist once the SOW is signed. Before signing there is nothing
+            here and the authored payment_schedule section table renders
+            in the loop above instead, so the client always sees exactly
+            one schedule at every stage. */}
+        {hasMilestoneBlock && (
           <View style={s.section} wrap={false}>
-            <Text style={s.secTitle}><Text style={s.secNum}>{sections.length + 1}. </Text>Payment Schedule</Text>
+            <Text style={s.secTitle}>
+              <Text style={s.secNum}>{scheduleIndex + 1}. </Text>{paymentScheduleTitle}
+            </Text>
             <View style={s.schedHdr}>
               <Text style={[s.th, { flex: 1 }]}>Milestone</Text>
               <Text style={[s.th, { width: 90, textAlign: 'right' }]}>Amount</Text>
               <Text style={[s.th, { width: 90, textAlign: 'right' }]}>Due</Text>
             </View>
-            {data.paymentSchedule.map((m, i) => (
+            {data.paymentSchedule!.map((m, i) => (
               <View key={i} style={s.schedRow}>
                 <View style={{ flex: 1 }}>
                   <Text style={s.td}>{m.title}</Text>
@@ -372,6 +414,10 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
             ))}
           </View>
         )}
+
+        {hasMilestoneBlock && sections.slice(scheduleIndex).map((sec, i) => (
+          <SowSection key={sec.id} sec={sec} num={scheduleIndex + i + 2} s={s} language={data.language} />
+        ))}
 
         {/* Signature block. FIX (doc-quality audit round 3): had no
             wrap={false}, so when this landed near a page boundary
@@ -499,8 +545,14 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
     pageNum:   { position: 'absolute', bottom: 18, right: 48, fontSize: 8, color: '#C0C0C0' },
   })
 
-  const tax = data.taxRate > 0 && !data.taxInclusive
-    ? data.subtotal * data.taxRate / 100
+  // FIX (section-10 audit, 10-B3): a tax-inclusive CO printed no tax
+  // amount at all — just "Subtotal X / Tax included (16%) / Total X",
+  // where Subtotal and Total were the same number, on a document that
+  // prints the client's VAT registration number. `subtotal` is stored net
+  // of tax on both paths now (see lib/documents/co-totals.ts), so the tax
+  // component is simply total − subtotal and can be stated either way.
+  const tax = data.taxRate > 0
+    ? Math.round((data.total - data.subtotal + Number.EPSILON) * 100) / 100
     : 0
 
   // Section numbering — computed from which optional sections are
@@ -600,13 +652,8 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
             </View>
             {tax > 0 && (
               <View style={s.totalRow}>
-                <Text>Tax ({data.taxRate}%)</Text>
+                <Text>Tax ({data.taxRate}%){data.taxInclusive ? ' — included' : ''}</Text>
                 <Text style={s.mono}>{data.currency} {fmtMoney(tax)}</Text>
-              </View>
-            )}
-            {data.taxInclusive && data.taxRate > 0 && (
-              <View style={s.totalRow}>
-                <Text style={{ color: '#909090' }}>Tax included ({data.taxRate}%)</Text>
               </View>
             )}
             <View style={s.grandRow}>
@@ -648,7 +695,16 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
                   </View>
                   <View style={s.impactRow}>
                     <Text style={{ color: '#909090' }}>This Change Order</Text>
-                    <Text style={s.mono}>+{data.currency} {fmtMoney(data.total)}</Text>
+                    {/* FIX (section-10 audit, 10-B4): the '+' was
+                        hardcoded, so a CO with a negative total printed
+                        "+USD -5,000". Negative line items are refused at
+                        the API now (see lib/documents/co-totals.ts), but
+                        rescale-line-items can still append a negative
+                        "Negotiated discount" line, so the sign has to be
+                        derived rather than assumed. */}
+                    <Text style={s.mono}>
+                      {data.total < 0 ? '−' : '+'}{data.currency} {fmtMoney(Math.abs(data.total))}
+                    </Text>
                   </View>
                   <View style={s.impactGrand}>
                     <Text>Revised Contract Value</Text>

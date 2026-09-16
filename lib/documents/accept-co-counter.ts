@@ -35,7 +35,7 @@ export async function acceptCoCounter(service: any, params: {
 
   const { data: co } = await (service as any)
     .from('change_orders')
-    .select(`id,title,status,flag_id,counter_amount,counter_note,line_items,subtotal,tax_rate,tax_inclusive,project_id,workspace_id,token,
+    .select(`id,title,status,flag_id,counter_amount,counter_note,line_items,subtotal,tax_rate,tax_inclusive,total,project_id,workspace_id,token,
       projects(id,name,currency,clients(name,email,cc_emails),workspaces(id,agency_name,brand_colour))`)
     .eq('id', coId).eq('workspace_id', workspaceId).single()
 
@@ -62,7 +62,19 @@ export async function acceptCoCounter(service: any, params: {
 
   const now = new Date().toISOString()
 
-  const negotiatedTotal = co.counter_amount || co.total
+  // FIX (section-10 audit, 10-B2): `co.total` was read here but never
+  // selected above, so the fallback evaluated to `undefined` and flowed
+  // straight into rescaleLineItemsToTotal. Masked today only because the
+  // portal validates counter_amount > 0 before a CO can reach
+  // 'countered' — but it also diverged from
+  // app/api/co/[id]/accept-counter/route.ts, which DOES select `total`
+  // and uses it to evaluate the approval gate, so the gate and the write
+  // could reason over different values. Select it, and use a null-ish
+  // check rather than `||` so a legitimate 0 can't silently fall through
+  // to the original amount.
+  const negotiatedTotal = co.counter_amount ?? co.total
+  if (!Number.isFinite(Number(negotiatedTotal)))
+    return { ok: false, error: 'This counter-offer has no amount to accept', status: 400 }
   const existingLineItems = typeof co.line_items === 'string'
     ? JSON.parse(co.line_items) : (co.line_items || [])
   const { lineItems: rescaledLineItems, subtotal: rescaledSubtotal, total: rescaledTotal } =

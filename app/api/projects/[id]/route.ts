@@ -86,6 +86,24 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
             error: 'This project has a signed SOW — use a change order to adjust the contract value.',
           }, { status: 409 })
         }
+        // FIX (section-9 audit, 9-G5): locking only AFTER signature left
+        // the worst window wide open. Both the client portal page and the
+        // portal PDF read projects.contract_value live, and the SOW PDF
+        // header prints it — so while a SOW is sitting with the client
+        // awaiting signature, this endpoint could change the number under
+        // them. The client opens a link quoting one contract value, and
+        // signs a document quoting another, while the AI-drafted Payment
+        // Terms prose inside the SOW still states the original figure. On
+        // a governance product that's the exact failure mode the product
+        // exists to prevent. Withdraw or reopen the SOW to change the
+        // value, then send the client the corrected document.
+        const outForSignature = (project.sow_documents || []).some((s: any) =>
+          ['awaiting_signature', 'changes_requested'].includes(s.status))
+        if (outForSignature) {
+          return NextResponse.json({
+            error: 'A SOW is currently out for signature at the existing contract value — withdraw it before changing the value, then send the client the revised SOW.',
+          }, { status: 409 })
+        }
         changes.contractValue = { from: project.contract_value, to: newValue }
         updates.contract_value = newValue
       }

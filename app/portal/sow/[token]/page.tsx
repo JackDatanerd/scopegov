@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import SignaturePad, { type SignaturePadHandle } from '@/components/ui/SignaturePad'
-import { isTableSection, SOW_TABLE_SCHEMAS, type SowTableRow } from '@/lib/sow/table-schema'
+import { isTableSection, SOW_TABLE_SCHEMAS, columnLabel, type SowTableSectionId, type SowTableRow } from '@/lib/sow/table-schema'
 
 type PortalState =
   | 'loading' | 'invalid' | 'revoked' | 'expired' | 'declined'
@@ -31,6 +31,8 @@ interface SowData {
   agencySignatureData: string | null
   contractValue: number
   currency:    string
+  // Drafting language, for localized table headers (9-G7).
+  language?:   string
   clientName:  string
   clientEmail: string
   clientCompany: string | null
@@ -318,7 +320,7 @@ export default function SowPortalPage() {
               <div key={section.id} className="portal-section" style={{ marginBottom: 24 }}>
                 <div className="portal-section-title">{section.title}</div>
                 {isTableSection(section.id) ? (
-                  <SowPortalTable sectionId={section.id} rows={section.table || []} currency={sow.currency} />
+                  <SowPortalTable sectionId={section.id} rows={section.table || []} currency={sow.currency} language={sow.language} />
                 ) : (
                   <div
                     className="portal-section-body"
@@ -534,7 +536,13 @@ function PortalShell({ children, accent, agencyName, logoUrl }: {
 }
 
 /** Deliverables/Timeline/Roles table for the client-facing portal page — mirrors SowTable in lib/pdf/sow-table.tsx so the signer sees the same structure they'll get on the downloaded PDF. */
-function SowPortalTable({ sectionId, rows }: { sectionId: 'deliverables' | 'timeline' | 'roles'; rows: SowTableRow[]; currency?: string }) {
+// FIX (section-9 audit, build-blocking): the prop type was a hand-written
+// union of three ids that was never updated when 'payment_schedule' was
+// added to SowTableSectionId. `isTableSection()` (the caller's guard)
+// narrows to the full SowTableSectionId, so this failed `tsc --noEmit`
+// outright — the type union and the schema it indexes into had drifted
+// apart. Use the schema's own type so they can't drift again.
+function SowPortalTable({ sectionId, rows, language }: { sectionId: SowTableSectionId; rows: SowTableRow[]; currency?: string; language?: string }) {
   const schema = SOW_TABLE_SCHEMAS[sectionId]
   if (!rows || rows.length === 0) return null
   return (
@@ -547,7 +555,7 @@ function SowPortalTable({ sectionId, rows }: { sectionId: 'deliverables' | 'time
               color: '#909090', textTransform: 'uppercase', letterSpacing: '.04em',
               background: '#F9F8F5', borderBottom: '1px solid #E5E1D8',
             }}>
-              {col.label}
+              {columnLabel(col, language)}
             </th>
           ))}
         </tr>

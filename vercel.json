@@ -47,6 +47,10 @@
     {
       "path": "/api/cron/sow-stall",
       "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/sow-expiry",
+      "schedule": "15 7 * * *"
     }
   ]
 }

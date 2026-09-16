@@ -38,12 +38,28 @@ export async function getContractValueBefore(
     .eq('change_order_id', coId)
     .maybeSingle()
 
-  // No amendment row for this CO — either it isn't accepted yet, or the
-  // amendment insert in finalize-co.ts failed (that failure path already
-  // logs its own audit entry). Either way, nothing to subtract-history for
-  // yet: the value "before" this (still-pending, or unrecorded) CO is just
-  // the current base.
-  if (!ownAmendment) return baseContractValue
+  // FIX (section-10 audit, 10-B1): this returned the bare base value for
+  // any CO without an amendment row — which is EVERY CO the client is
+  // currently reading, since the amendment is only written at acceptance.
+  // That is wrong for exactly the reason this whole file exists: nothing
+  // ever increments projects.contract_value, so the base is the value at
+  // SOW signing, not the current one. The second CO an agency ever sends
+  // printed "Original Contract Value: 50,000 / Revised: 55,000" in the
+  // client-facing Impact Analysis block when the true current value was
+  // 60,000 — understated by every previously-accepted CO. A pending CO's
+  // "before" is the base plus every amendment accepted to date.
+  if (!ownAmendment) {
+    const { data: allAmendments } = await service
+      .from('amendments')
+      .select('financial_impact')
+      .eq('project_id', projectId)
+      .neq('change_order_id', coId)
+
+    const acceptedTotal = (allAmendments || []).reduce(
+      (sum: number, a: any) => sum + (a.financial_impact || 0), 0
+    )
+    return baseContractValue + acceptedTotal
+  }
 
   const { data: priorAmendments } = await service
     .from('amendments')

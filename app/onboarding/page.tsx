@@ -455,9 +455,9 @@ function OnboardingWizard() {
           </div>
           <h2 className="ob-title" style={{ textAlign: 'center' }}>Almost there</h2>
           <p className="ob-sub" style={{ textAlign: 'center', marginBottom: 28 }}>
-            You've joined <strong style={{ color: 'var(--text)' }}>{waitingFor?.agencyName}</strong> on ScopeGov,
-            but {waitingFor?.creatorName} hasn't finished setting up the workspace yet. Once they do, you'll
-            get full access automatically — no need to do anything here.
+            You&rsquo;ve joined <strong style={{ color: 'var(--text)' }}>{waitingFor?.agencyName}</strong> on ScopeGov,
+            but {waitingFor?.creatorName} hasn&rsquo;t finished setting up the workspace yet. Once they do,
+            you&rsquo;ll get full access automatically — no need to do anything here.
           </p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 280, margin: '0 auto' }}>
             <button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'center' }}

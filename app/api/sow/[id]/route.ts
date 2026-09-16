@@ -1,25 +1,14 @@
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
-import { sanitizeRichText, sanitizePlainText } from '@/lib/utils/sanitize'
+import { sanitizeRichText } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
-import { isTableSection, SOW_TABLE_SCHEMAS, type SowTableSectionId } from '@/lib/sow/table-schema'
+// NOTE: helpers live in lib/sow/sections.ts, not here — a Next.js route
+// module may only export route handlers, so exporting them from this file
+// failed the production build ("hydrateSections is not a valid Route
+// export field") even though `tsc --noEmit` was perfectly happy.
+import { REQUIRED_SECTION_IDS, hydrateSections, sanitizeSectionList, sanitizeTableRows } from '@/lib/sow/sections'
 import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
-
-// Table rows are plain-text cells (rendered on the public portal page same
-// as prose content) — sanitizePlainText, not sanitizeRichText, since a
-// table cell was never meant to carry markup, only sanitized against
-// injection. Unknown keys are dropped rather than passed through so a
-// tampered PATCH body can't smuggle arbitrary fields into stored rows.
-function sanitizeTableRows(sectionId: string, rows: unknown): Array<Record<string, string>> {
-  if (!isTableSection(sectionId) || !Array.isArray(rows)) return []
-  const schema = SOW_TABLE_SCHEMAS[sectionId as SowTableSectionId]
-  return rows.map((row: any) => {
-    const clean: Record<string, string> = {}
-    for (const col of schema.columns) clean[col.key] = sanitizePlainText(row?.[col.key] ?? '')
-    return clean
-  })
-}
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -32,7 +21,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const service = createServiceClient()
     const { data: sow } = await (service as any)
       .from('sow_documents')
-      .select('id, status, sent_at, sections, project_id')
+      .select('id, status, sent_at, sections, metadata, project_id')
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!sow) return NextResponse.json({ error: 'SOW not found' }, { status: 404 })
@@ -44,8 +33,18 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
     // Lock check — sentAt makes document permanently read-only (spec §0.6)
+    // FIX (section-9 audit, 9-G2): the old message read "Withdraw to
+    // edit." — but withdraw only sets status, it never clears sent_at, so
+    // withdrawing landed the user right back on this identical 409. The
+    // instruction was circular and there was no working escape at all.
+    // There is now: POST /api/sow/[id]/reopen clones a withdrawn/declined/
+    // expired SOW forward into a fresh editable draft. Point at that.
     if (sow.sent_at)
-      return NextResponse.json({ error: 'SOW is locked after sending. Withdraw to edit.' }, { status: 409 })
+      return NextResponse.json({
+        error: sow.status === 'draft'
+          ? 'This SOW has already been sent and can no longer be edited.'
+          : 'This SOW has already been sent. Start a new version to make changes.',
+      }, { status: 409 })
 
     // FIX (re-audit, critical finding): a SOW gated by an approval workflow
     // never leaves status:'draft' until the chain clears — the gate
@@ -70,13 +69,27 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // sanitize here (not just trust the TipTap editor's own constraints,
     // which this API route bypasses entirely) so stored XSS can't reach
     // storage in the first place. See lib/utils/sanitize.ts.
-    let newSections = sow.sections || []
+    // Hydrate first (9-G9) so a per-section PATCH against a section this
+    // SOW predates actually lands instead of silently no-op'ing through
+    // the .map() calls below.
+    let newSections = hydrateSections(sow.sections || [], sow.metadata)
     if (body.sections) {
-      newSections = (body.sections as any[]).map(s => ({
-        ...s,
-        content: sanitizeRichText(s.content),
-        ...(isTableSection(s.id) ? { table: sanitizeTableRows(s.id, s.table) } : {}),
-      }))
+      // FIX (section-9 audit, 9-B13): this used to spread `...s` wholesale
+      // from the request body. Only `content` was sanitized — `id`,
+      // `title`, `order` and `visible` were taken verbatim, so a caller
+      // could rename "Governing Law" to anything, reorder the document,
+      // inject sections that don't exist in SOW_SECTION_DEFS, or drop the
+      // mandatory ones entirely. Send's only structural check is "at
+      // least one visible section with content", so a SOW with no
+      // Signatures and no Governing Law section would sail straight
+      // through to a client for signature.
+      //
+      // The section list is server-owned (that's the whole design of
+      // lib/ai/sow-content.ts — "The server owns the section structure
+      // and JSON shape completely"). Enforce it here too: keep the
+      // canonical id/title/order, take only content/visible/table from
+      // the client, and ignore unknown ids.
+      newSections = sanitizeSectionList(body.sections, sow.sections || [], sow.metadata)
     } else if (body.sectionId && body.table !== undefined) {
       const safeTable = sanitizeTableRows(body.sectionId, body.table)
       newSections = newSections.map((s: any) =>
@@ -88,9 +101,24 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         s.id === body.sectionId ? { ...s, content: safeContent } : s
       )
     } else if (body.sectionId && body.visible !== undefined) {
+      // FIX (section-9 audit, 9-G10 + 9-B10): the server never enforced
+      // REQUIRED_SECTIONS at all — that list only existed in the editor
+      // component, so a direct PATCH could hide Signatures or Governing
+      // Law. Refuse explicitly rather than silently ignoring it, so the
+      // client gets a real error to surface instead of a false "Saved".
+      if (REQUIRED_SECTION_IDS.includes(body.sectionId))
+        return NextResponse.json(
+          { error: 'This section is required and can\'t be hidden.' },
+          { status: 400 }
+        )
       newSections = newSections.map((s: any) =>
         s.id === body.sectionId ? { ...s, visible: body.visible } : s
       )
+    } else {
+      // FIX (section-9 audit, 9-B10 follow-on): an unrecognized body shape
+      // used to fall through to the update below and return { ok: true },
+      // so a malformed save reported success having changed nothing.
+      return NextResponse.json({ error: 'Nothing to update' }, { status: 400 })
     }
 
     const { error } = await (service as any)
@@ -115,7 +143,11 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const service = createServiceClient()
     const { data: sow } = await (service as any)
       .from('sow_documents')
-      .select('id, version, status, sent_at, signed_at, sections, metadata, expires_at, project_id')
+      // FIX (section-9 audit, 9-B9): signed_by was never selected, but
+      // app/(app)/projects/[id]/sow/[sowId]/page.tsx renders
+      // `Signed {date} by {sow.signed_by}` — which printed "by undefined"
+      // on every signed SOW.
+      .select('id, version, status, sent_at, signed_at, signed_by, sections, metadata, expires_at, project_id, projects(contract_value, currency)')
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!sow) return NextResponse.json({ error: 'Not found' }, { status: 404 })
@@ -139,7 +171,16 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     // surfacing as a confusing generic "Save failed". Return the real
     // permission flags so the page can gate itself too.
     return NextResponse.json({
-      sow,
+      // FIX (section-9 audit, 9-G9): backfill any section this SOW
+      // predates, so an older document can still be completed and sent.
+      sow: {
+        ...sow,
+        sections: hydrateSections(sow.sections || [], sow.metadata),
+        // Flattened for the editor — it needs these to show the Payment
+        // Schedule running total (9-G6).
+        contractValue: sow.projects?.contract_value ?? null,
+        currency:      sow.projects?.currency ?? null,
+      },
       permissions: {
         canEdit: hasPermission(session, 'EDIT_SOW'),
         canSend: hasPermission(session, 'SEND_SOW'),

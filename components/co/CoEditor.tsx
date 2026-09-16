@@ -19,7 +19,7 @@ export default function CoEditor({ projId, coId }: Props) {
   const [saving,       setSaving]       = useState(false)
   const [sending,      setSending]      = useState(false)
   const [error,        setError]        = useState('')
-  const [saveStatus,   setSaveStatus]   = useState<'idle'|'saving'|'saved'>('idle')
+  const [saveStatus,   setSaveStatus]   = useState<'idle'|'saving'|'saved'|'error'>('idle')
   const [title,        setTitle]        = useState('')
   const [note,         setNote]         = useState('')
   const [lineItems,    setLineItems]    = useState<LineItem[]>([{ id: nanoid(), description: '', quantity: 1, rate: 0, total: 0 }])
@@ -49,9 +49,17 @@ export default function CoEditor({ projId, coId }: Props) {
   const [flagRequestText, setFlagRequestText] = useState<string | null>(null)
 
   // Derived totals
-  const subtotal = lineItems.reduce((s, l) => s + (l.quantity * l.rate), 0)
-  const taxAmt   = taxInclusive ? 0 : subtotal * (parseFloat(taxRate) || 0) / 100
-  const total    = subtotal + taxAmt
+  // FIX (section-10 audit, 10-B3): the editor mirrored the server's old,
+  // wrong tax-inclusive arithmetic — taxAmt forced to 0 and subtotal left
+  // as the gross, so the summary showed a VAT rate with no VAT amount and
+  // Subtotal identical to Total. Back-solve the net the same way
+  // lib/documents/co-totals.ts now does, so what the agency sees here is
+  // exactly what gets stored and printed.
+  const lineSum  = lineItems.reduce((s, l) => s + (l.quantity * l.rate), 0)
+  const rate     = parseFloat(taxRate) || 0
+  const subtotal = taxInclusive && rate > 0 ? lineSum / (1 + rate / 100) : lineSum
+  const total    = taxInclusive ? lineSum : lineSum * (1 + rate / 100)
+  const taxAmt   = total - subtotal
 
   useEffect(() => {
     if (!coId) {
@@ -111,10 +119,28 @@ export default function CoEditor({ projId, coId }: Props) {
     setLineItems(prev => prev.filter(l => l.id !== id))
   }
 
+  // FIX (section-10 audit, 10-G6): SowEditor got a beforeunload guard for
+  // exactly this 1.5s-debounce data-loss window; CoEditor runs the
+  // identical autosave pattern and never had one, so typing and then
+  // closing the tab silently discarded the last edit. Same fix, plus the
+  // unmount cleanup that was also missing.
+  const pendingSave = useRef(false)
+  useEffect(() => {
+    function handleBeforeUnload(e: BeforeUnloadEvent) {
+      if (pendingSave.current) { e.preventDefault(); e.returnValue = '' }
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload)
+      if (saveTimer.current) clearTimeout(saveTimer.current)
+    }
+  }, [])
+
   // Autosave triggered by field changes when editing an existing draft
   useEffect(() => {
     if (!savedCoId.current || status !== 'draft') return
     if (saveTimer.current) clearTimeout(saveTimer.current)
+    pendingSave.current = true
     setSaveStatus('saving')
     saveTimer.current = setTimeout(async () => {
       try {
@@ -122,7 +148,12 @@ export default function CoEditor({ projId, coId }: Props) {
         setSaveStatus('saved')
         setTimeout(() => setSaveStatus('idle'), 2000)
       } catch {
-        setSaveStatus('idle')
+        // FIX (section-10 audit, 10-G6): a failed autosave reset the
+        // indicator to 'idle', which reads as "nothing to save" — the
+        // same silent-failure shape as 9-B10. Surface it.
+        setSaveStatus('error')
+      } finally {
+        pendingSave.current = false
       }
     }, 1500)
   }, [title, note, lineItems, taxRate, taxInclusive, isRetainerRenewal, timelineImpactDays, scopeImpactNote])
@@ -242,13 +273,24 @@ export default function CoEditor({ projId, coId }: Props) {
           <span className={`save-status ${saveStatus}`} style={{ fontSize: 11 }}>
             {saveStatus === 'saving' && <><span className="spin spin-dark" style={{ width: 10, height: 10 }} /> Saving</>}
             {saveStatus === 'saved' && <><i className="ti ti-check" style={{ fontSize: 11, color: 'var(--green)' }} /> Saved</>}
+            {saveStatus === 'error' && <><i className="ti ti-alert-circle" style={{ fontSize: 11, color: 'var(--red)' }} /> Save failed</>}
           </span>
         </div>
 
         {error && <div className="auth-error" style={{ marginBottom: 14 }}>{error}</div>}
+        {/* FIX (section-10 audit, 10-G3 + 10-G4): this said "Withdraw it
+            to edit." — but PATCH /api/co/[id] requires status 'draft', and
+            withdrawing sets it to 'withdrawn', which is not draft. So
+            following the instruction made the CO strictly LESS editable,
+            permanently. And for a declined CO (which CoCard sent here via
+            its "Negotiate" button) withdraw isn't even a permitted
+            transition. Tell the truth, and point at the action that
+            actually works: Revise & resend, on the project's CO tab. */}
         {isLocked && (
           <div className="banner banner-info" style={{ marginBottom: 14 }}>
-            This change order has been sent and is locked. Withdraw it to edit.
+            {['declined', 'withdrawn', 'closed', 'countered'].includes(status)
+              ? <>This change order is {status} and can no longer be edited. Use <strong>Revise &amp; resend</strong> on the project&rsquo;s Change orders tab to continue from it in a new draft.</>
+              : <>This change order has been sent to the client and is locked while you wait on their response.</>}
           </div>
         )}
 
@@ -338,10 +380,15 @@ export default function CoEditor({ projId, coId }: Props) {
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateLineItem(item.id, 'description', e.target.value)} />
               <input type="number" className="finp" style={{ width: 64, fontSize: 12, textAlign: 'center' }}
                 value={item.quantity} min={1} disabled={isLocked}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateLineItem(item.id, 'quantity', parseFloat(e.target.value) || 1)} />
+                // FIX (section-10 audit, 10-B9): `min` is a browser hint
+                // only and `parseFloat(v) || 1` let a typed negative
+                // straight through to a negative line total. The API
+                // rejects these now; clamp here too so the user sees it
+                // immediately rather than at save time.
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateLineItem(item.id, 'quantity', Math.max(0, parseFloat(e.target.value) || 0))} />
               <input type="number" className="finp" style={{ width: 100, fontSize: 12, textAlign: 'right' }}
                 value={item.rate} min={0} step="0.01" disabled={isLocked}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateLineItem(item.id, 'rate', parseFloat(e.target.value) || 0)} />
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateLineItem(item.id, 'rate', Math.max(0, parseFloat(e.target.value) || 0))} />
               <div style={{ width: 100, textAlign: 'right', fontSize: 13, fontFamily: 'IBM Plex Mono, monospace', color: 'var(--text-2)' }}>
                 {formatCurrency(item.total, currency)}
               </div>
@@ -379,9 +426,9 @@ export default function CoEditor({ projId, coId }: Props) {
                 Tax inclusive
               </label>
             </div>
-            {parseFloat(taxRate) > 0 && !taxInclusive && (
+            {rate > 0 && (
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '4px 0', color: 'var(--text-2)' }}>
-                <span>Tax ({taxRate}%)</span>
+                <span>Tax ({taxRate}%){taxInclusive ? ' — included' : ''}</span>
                 <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{formatCurrency(taxAmt, currency)}</span>
               </div>
             )}

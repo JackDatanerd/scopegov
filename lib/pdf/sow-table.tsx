@@ -11,9 +11,14 @@
 
 import React from 'react'
 import { View, Text } from '@react-pdf/renderer'
-import { SOW_TABLE_SCHEMAS, type SowTableSectionId, type SowTableRow } from '@/lib/sow/table-schema'
+import { SOW_TABLE_SCHEMAS, columnLabel, type SowTableSectionId, type SowTableRow } from '@/lib/sow/table-schema'
 
-export function SowTable({ sectionId, rows }: { sectionId: SowTableSectionId; rows: SowTableRow[] }) {
+// FIX (section-9 audit, 9-G7): column headers were hardcoded English and
+// printed straight onto the client-facing document, so a Spanish or
+// Swahili SOW rendered "Deliverable / Acceptance Criteria / Owner /
+// Target Date" above translated rows. See columnLabel in
+// lib/sow/table-schema.ts.
+export function SowTable({ sectionId, rows, language }: { sectionId: SowTableSectionId; rows: SowTableRow[]; language?: string }) {
   const schema = SOW_TABLE_SCHEMAS[sectionId]
 
   // FIX (bug — numbered section heading printed over completely blank
@@ -60,7 +65,7 @@ export function SowTable({ sectionId, rows }: { sectionId: SowTableSectionId; ro
       <View style={s.hdrRow}>
         {schema.columns.map(col => (
           <Text key={col.key} style={[s.th, { flex: flexOf(col.width), textAlign: col.align || 'left' }]}>
-            {col.label}
+            {columnLabel(col, language)}
           </Text>
         ))}
       </View>

@@ -41,6 +41,17 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Can only remind on SOWs awaiting signature' }, { status: 400 })
     if (!sow.token)
       return NextResponse.json({ error: 'No portal link found — resend the SOW' }, { status: 400 })
+    // FIX (section-9 audit, 9-G3): nothing here ever looked at expires_at.
+    // The signing JWT is issued with a 30-day expiry and the portal
+    // rejects it after that, but no cron ever flipped the SOW's own
+    // status to 'expired' (see app/api/cron/sow-expiry), so a long-stale
+    // SOW sat at 'awaiting_signature' indefinitely and this route would
+    // cheerfully email the client a dead link — with the body text
+    // helpfully announcing an expiry date already in the past.
+    if (sow.expires_at && new Date(sow.expires_at) <= new Date())
+      return NextResponse.json({
+        error: 'This signing link has expired. Start a new version to send the client a fresh link.',
+      }, { status: 400 })
 
     // FIX (re-audit): no cooldown existed at all — an agency user could
     // spam this button and spam the client's inbox with no rate limit.

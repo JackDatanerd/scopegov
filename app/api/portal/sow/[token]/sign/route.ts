@@ -6,6 +6,7 @@ import { SignJWT } from 'jose'
 import { nanoid } from 'nanoid'
 import { logAudit } from '@/lib/utils/audit'
 import { sendSowSignedAgencyEmail, sendSowSignedClientEmail } from '@/lib/email/templates'
+import { parseTableAmount } from '@/lib/sow/table-schema'
 import { roundCurrency } from '@/lib/utils/format'
 import { renderSowPdf } from '@/lib/pdf/renderer'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
@@ -263,6 +264,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         contractValue: project.contract_value || 0,
         currency:      project.currency || 'USD',
         sections:      sow.sections || [],
+        // FIX (section-9 audit, 9-G7 / 9-G4): drafting language (so
+        // schema-driven table headers localize) and the MSA
+        // cross-reference, which SowPdfData has declared and rendered all
+        // along while no route ever passed it.
+        language:      sow.metadata?.language || 'en',
+        msaReference:  sow.metadata?.msaReference || null,
         paymentSchedule: (milestones || []).map((m: any) => ({
           title: m.title, amount: m.amount, percentage: m.percentage,
           trigger: m.trigger, dueDate: m.due_date, status: m.status,
@@ -405,7 +412,11 @@ async function createMilestones(
       const parsedRows = rows
         .map((r: any) => ({
           title: String(r?.milestone || '').trim(),
-          amount: Number(r?.amount) || 0,
+          // FIX (section-9 audit, 9-G6): bare Number() on a free-text
+          // cell makes "1,500" NaN, which dropped the row and silently
+          // collapsed the whole negotiated schedule to a single lump-sum
+          // milestone. Same parser the send-time validation uses.
+          amount: parseTableAmount(r?.amount) ?? 0,
           trigger: String(r?.trigger || '').trim(),
         }))
         .filter(r => r.title && r.amount > 0)

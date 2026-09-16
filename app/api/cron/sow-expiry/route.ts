@@ -1,0 +1,92 @@
+export const runtime = 'nodejs'
+
+import { createServiceClient } from '@/lib/supabase/server'
+import { NextResponse, type NextRequest } from 'next/server'
+import { verifyCronSecret } from '@/lib/utils/verify-cron'
+import { notifyMembersWithPermission } from '@/lib/utils/notify'
+
+// FIX (section-9 audit, 9-G3): 'expired' has been a valid sow_documents
+// status since migration 001 — it's in the CHECK constraint, in the
+// registry's pill-colour map (app/(app)/sow/page.tsx), and the client
+// portal has a whole handler for `sow.status === 'expired'`. Nothing in
+// the codebase ever wrote it.
+//
+// The practical effect: the signing JWT is issued with a 30-day expiry
+// and the portal correctly rejects it afterwards, but the agency side
+// never learned. An expired SOW sat at 'awaiting_signature' forever,
+// kept counting toward the "Awaiting signature" figure on the SOW
+// registry, and api/sow/[id]/remind would happily email the client a
+// dead link. sow-stall only ever flipped the *project* to Stalled at 7
+// days; it never touched the SOW itself and has nothing to say about
+// the 30-day cliff.
+//
+// This closes the loop: flip genuinely expired SOWs to 'expired', tell
+// the team, and leave them recoverable through the reopen route
+// (app/api/sow/[id]/reopen) — which is exactly why 'expired' is in that
+// route's REOPENABLE list.
+export async function POST(request: NextRequest) {
+  if (!verifyCronSecret(request))
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  try {
+    const service = createServiceClient()
+    const now     = new Date().toISOString()
+
+    // Only SOWs actually out with the client can expire. A draft has no
+    // token and no meaningful expires_at; a signed/declined/withdrawn one
+    // has already reached a terminal state.
+    const { data: expiring } = await (service as any)
+      .from('sow_documents')
+      .select('id, version, workspace_id, project_id, expires_at, projects(id, name, status)')
+      .in('status', ['awaiting_signature', 'changes_requested'])
+      .not('expires_at', 'is', null)
+      .lt('expires_at', now)
+
+    let expired = 0
+    for (const sow of (expiring || [])) {
+      try {
+        // CAS on the status we read — a client signing in the same
+        // instant must win over this sweep.
+        const { data: updated } = await (service as any)
+          .from('sow_documents')
+          .update({ status: 'expired', token: null, updated_at: now })
+          .eq('id', sow.id)
+          .in('status', ['awaiting_signature', 'changes_requested'])
+          .select('id')
+
+        if (!updated?.length) continue
+
+        await (service as any).from('audit_log').insert({
+          workspace_id: sow.workspace_id,
+          actor_id:     null,
+          actor_email:  'cron@scopegov.app',
+          actor_name:   'ScopeGov',
+          event_type:   'sow.expired',
+          entity_type:  'sow',
+          entity_id:    sow.id,
+          entity_name:  sow.projects?.name,
+          metadata:     { version: sow.version, expired_at: sow.expires_at },
+        })
+
+        const projectName = sow.projects?.name || 'Untitled project'
+        await notifyMembersWithPermission(service, {
+          workspaceId: sow.workspace_id, permission: 'SEND_SOW', eventType: 'sow_expired',
+          type: 'sow_expired', title: `SOW signing link expired — ${projectName}`,
+          body: `The signing link for the ${projectName} SOW (v${sow.version}) has expired. Start a new version to send a fresh link.`,
+          entityType: 'project', entityId: sow.project_id, projectId: sow.project_id,
+        })
+
+        expired++
+      } catch (e) { console.error('SOW expiry error:', e) }
+    }
+
+    return NextResponse.json({ ok: true, expired })
+  } catch (err) {
+    console.error('SOW expiry cron error:', err)
+    return NextResponse.json({ error: 'Cron failed' }, { status: 500 })
+  }
+}
+
+// Vercel Cron invokes the configured path with GET — same aliasing as
+// every other cron route here.
+export const GET = POST

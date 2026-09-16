@@ -22,10 +22,24 @@ import {
   SOW_SECTION_DEFS, buildBoilerplateSections,
   buildSowContentPrompt, parseDelimitedSections, parseTableSections,
   buildFallbackSections, buildFallbackTables,
-  SowContentParseError, type SowContentInput,
+  SowContentParseError, sectionTitle, type SowContentInput,
 } from '@/lib/ai/sow-content'
 import { TABLE_SECTION_IDS, type SowTableSectionId, type SowTableRow } from '@/lib/sow/table-schema'
 import { roundCurrency } from '@/lib/utils/format'
+import { insertNextSowVersion } from '@/lib/documents/sow-version'
+
+// FIX (section-9 audit, 9-B11): none of the free-text brief fields were
+// length-capped before going into the prompt. api/sow/parse-brief caps
+// its input at 8000 chars; this route — which takes the same text after
+// the user has edited it — capped nothing at all, so a single request
+// could push an arbitrary amount of text through the model (cost/latency)
+// and crowd out the actual drafting instructions. Generous enough that no
+// real brief is ever truncated.
+const FIELD_LIMITS = { objective: 4000, deliverables: 8000, outOfScope: 4000, timeline: 2000, projectType: 120 }
+
+function capped(value: unknown, max: number): string {
+  return typeof value === 'string' ? value.slice(0, max) : ''
+}
 
 // FIX (re-audit — build-blocking): was constructed at module scope, so an
 // unset ANTHROPIC_API_KEY turns importing this route into a hard build
@@ -53,13 +67,38 @@ export async function POST(request: NextRequest) {
     if (!hasPermission(session, 'EDIT_SOW'))
       return NextResponse.json({ error: 'Missing permission: EDIT_SOW' }, { status: 403 })
 
+    const body = await request.json()
     const {
-      projectId, projectType, objective, deliverables,
-      outOfScope, timeline, paymentStructure, revisionRounds,
-      contractValue: rawContractValue, currency,
-    } = await request.json()
+      projectId, contractValue: rawContractValue, currency,
+    } = body
 
     if (!projectId) return NextResponse.json({ error: 'projectId required' }, { status: 400 })
+
+    // FIX (section-9 audit, 9-B11): every one of these went into the AI
+    // prompt — and, for paymentStructure, straight into the drafted
+    // contract text — completely unvalidated.
+    const projectType   = capped(body.projectType,   FIELD_LIMITS.projectType)
+    const objective     = capped(body.objective,     FIELD_LIMITS.objective)
+    const deliverables  = capped(body.deliverables,  FIELD_LIMITS.deliverables)
+    const outOfScope    = capped(body.outOfScope,    FIELD_LIMITS.outOfScope)
+    const timeline      = capped(body.timeline,      FIELD_LIMITS.timeline)
+
+    // `PAYMENT_STRUCTURE_LABELS[x] || x` used to echo any arbitrary
+    // client-supplied string into the Payment Terms section of a legal
+    // document as though it were a real payment structure. It's a closed
+    // set — treat it as one.
+    const paymentStructure = String(body.paymentStructure || '')
+    if (!Object.prototype.hasOwnProperty.call(PAYMENT_STRUCTURE_LABELS, paymentStructure))
+      return NextResponse.json({ error: 'Invalid payment structure' }, { status: 400 })
+
+    // The prompt has always told the model "an integer between 1 and 5";
+    // nothing enforced it, so `revisionRounds || 2` happily carried a
+    // negative, a float, or 1e9 into both the prompt and the stored
+    // metadata that the Revision Policy section is written against.
+    const parsedRounds   = Math.trunc(Number(body.revisionRounds))
+    const revisionRounds = Number.isFinite(parsedRounds) && parsedRounds >= 1 && parsedRounds <= 10
+      ? parsedRounds
+      : 2
 
     // FIX (bug — one-cent mismatch between PDF header and AI-drafted body
     // text): see lib/utils/format.ts's roundCurrency doc comment. Rounding
@@ -101,7 +140,7 @@ export async function POST(request: NextRequest) {
         error: 'Set your workspace\'s governing law in Settings → Workspace before generating a SOW.',
       }, { status: 400 })
     }
-    const paymentLabel  = PAYMENT_STRUCTURE_LABELS[paymentStructure] || paymentStructure
+    const paymentLabel  = PAYMENT_STRUCTURE_LABELS[paymentStructure]
     const curr          = currency || project.currency || 'USD'
 
     // ── AI content generation, with silent retries and a guaranteed
@@ -118,7 +157,7 @@ export async function POST(request: NextRequest) {
     const contentInput: SowContentInput = {
       agencyName, clientName, projectName: project.name, projectDisc: project.disc,
       projectType, contractValue, currency: curr, objective, deliverables,
-      outOfScope, timeline, paymentLabel, paymentStructure, revisionRounds: revisionRounds || 2, governingLaw,
+      outOfScope, timeline, paymentLabel, paymentStructure, revisionRounds, governingLaw,
       // FIX (deep audit, section 5 re-pass): sow_language was already
       // being selected right above (line 76) and then dropped on the
       // floor — the workspace's language preference never actually
@@ -176,7 +215,10 @@ export async function POST(request: NextRequest) {
     // same technique used everywhere else a total gets split (the 50/50
     // structure below, buildFallbackTables' own 30/40/30 split, and the
     // CO counter-negotiation rescale).
-    function withComputedAmounts(rows: SowTableRow[]): SowTableRow[] {
+    // FIX (section-9 audit, build-blocking): declared as a hoisted
+    // `function` inside a block, which ES5-targeted strict mode rejects
+    // (TS1252) — this failed `tsc --noEmit`. Function expression instead.
+    const withComputedAmounts = (rows: SowTableRow[]): SowTableRow[] => {
       if (rows.length === 0) return rows
       const base = roundCurrency(contractValue / rows.length)
       const amounts = rows.map(() => base)
@@ -198,7 +240,10 @@ export async function POST(request: NextRequest) {
     const parsed: { sections: any[]; metadata: any } = {
       sections: SOW_SECTION_DEFS.map(def => ({
         id: def.id,
-        title: def.title,
+        // FIX (section-9 audit, 9-G7): section headings are part of the
+        // document the client reads, so they follow the workspace's SOW
+        // language like the body content does.
+        title: sectionTitle(def.id, contentInput.language),
         content: sanitizeRichText(allContent[def.id] || ''),
         ...(TABLE_SECTION_IDS.includes(def.id as SowTableSectionId) ? { table: tables[def.id as SowTableSectionId] } : {}),
         // FEATURE (section-9 audit follow-up): every other section
@@ -213,8 +258,13 @@ export async function POST(request: NextRequest) {
       // asked of the model, so it can never be malformed or missing.
       metadata: {
         paymentStructure: paymentStructure,
-        revisionRounds: revisionRounds || 2,
+        revisionRounds,
         governingLaw: governingLaw,
+        // FIX (section-9 audit, 9-G7): persist the language the document
+        // was drafted in. Without it, every later read path (the PATCH
+        // section-schema normalizer, the PDF renderer, the portal page)
+        // had no way to know and silently reverted headings to English.
+        language: contentInput.language,
         aiGenerated: !usedFallback,
       },
     }
@@ -250,29 +300,18 @@ export async function POST(request: NextRequest) {
         .eq('id', existingSow.id)
       sowId = existingSow.id
     } else {
-      // Get latest version number
-      const { data: latestSow } = await (service as any)
-        .from('sow_documents')
-        .select('version')
-        .eq('project_id', projectId)
-        .order('version', { ascending: false })
-        .limit(1)
-        .single()
-      const nextVersion = (latestSow?.version || 0) + 1
-
-      const { data: newSow, error: sowErr } = await (service as any)
-        .from('sow_documents')
-        .insert({
-          project_id:   projectId,
-          workspace_id: session.workspaceId,
-          version:      nextVersion,
-          status:       'draft',
-          sections:     parsed.sections,
-          metadata:     parsed.metadata,
-        })
-        .select('id').single()
-      if (sowErr) throw new Error(sowErr.message)
-      sowId = newSow.id
+      // FIX (section-9 audit, 9-B12): the old read-max-then-insert had no
+      // uniqueness backstop, so two concurrent generates both allocated
+      // the same version. Migration 031 adds UNIQUE(project_id, version)
+      // and this helper retries against it. See lib/documents/sow-version.ts.
+      const created = await insertNextSowVersion(service, projectId, {
+        workspace_id: session.workspaceId,
+        status:       'draft',
+        sections:     parsed.sections,
+        metadata:     parsed.metadata,
+      })
+      if (!created.ok) throw new Error(created.error || 'Could not create SOW')
+      sowId = created.id!
     }
 
     // Update project status to Intake if still Draft

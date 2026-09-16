@@ -100,6 +100,16 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       contractValue: project?.contract_value || 0,
       currency:      project?.currency || 'USD',
       sections:      sow.sections || [],
+      // FIX (section-9 audit, 9-G7): the document's drafting language,
+      // so schema-driven table headers render in it (section titles are
+      // already stored localized).
+      language:      sow.metadata?.language || 'en',
+      // FIX (section-9 audit, 9-G4): `msaReference` has been declared on
+      // SowPdfData, rendered under the masthead, and documented as
+      // "Sourced from sow_documents.metadata.msaReference" since it was
+      // added — while no route ever passed it. A fully dead feature.
+      // Wire it to the field its own doc comment names.
+      msaReference:  sow.metadata?.msaReference || null,
       paymentSchedule: (milestones || []).map((m: any) => ({
         title: m.title, amount: m.amount, percentage: m.percentage,
         trigger: m.trigger, dueDate: m.due_date, status: m.status,

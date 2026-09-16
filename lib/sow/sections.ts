@@ -1,0 +1,88 @@
+// lib/sow/sections.ts
+//
+// Server-owned SOW section shaping, extracted out of
+// app/api/sow/[id]/route.ts: a Next.js route module may only export route
+// handlers, so these helpers could not live there.
+
+import { sanitizeRichText, sanitizePlainText } from '@/lib/utils/sanitize'
+import { isTableSection, SOW_TABLE_SCHEMAS, type SowTableSectionId } from '@/lib/sow/table-schema'
+import { SOW_SECTION_DEFS, sectionTitle } from '@/lib/ai/sow-content'
+
+// Table rows are plain-text cells (rendered on the public portal page same
+// as prose content) — sanitizePlainText, not sanitizeRichText, since a
+// table cell was never meant to carry markup, only sanitized against
+// injection. Unknown keys are dropped rather than passed through so a
+// tampered PATCH body can't smuggle arbitrary fields into stored rows.
+export function sanitizeTableRows(sectionId: string, rows: unknown): Array<Record<string, string>> {
+  if (!isTableSection(sectionId) || !Array.isArray(rows)) return []
+  const schema = SOW_TABLE_SCHEMAS[sectionId as SowTableSectionId]
+  return rows.map((row: any) => {
+    const clean: Record<string, string> = {}
+    for (const col of schema.columns) clean[col.key] = sanitizePlainText(row?.[col.key] ?? '')
+    return clean
+  })
+}
+
+// FIX (section-9 audit, 9-G10): 'parties', 'deliverables', 'payment' and
+// 'signature' were the only sections the editor refused to let you hide.
+// api/sow/generate hard-blocks generation outright when the workspace has
+// no governing law set, on the explicit grounds that it is "a real,
+// material legal term of the contract" — and then the agency could hide
+// the entire Governing Law section from the document anyway. Out of Scope
+// is the load-bearing section of a scope-governance product and was
+// likewise optional. Both are required now. Kept in sync with
+// REQUIRED_SECTIONS in components/sow/SowEditor.tsx.
+export const REQUIRED_SECTION_IDS = ['parties', 'deliverables', 'oos', 'payment', 'governing_law', 'signature']
+
+/**
+ * FIX (section-9 audit, 9-G9): SOWs created before a section existed in
+ * SOW_SECTION_DEFS simply don't have a row for it. That was a hard
+ * dead-end for `payment_schedule`: api/sow/[id]/send refuses to send a
+ * 'milestones' SOW without a footing payment schedule, SowEditor's nav
+ * only renders ids present in the stored sections, and there is no
+ * add-section action anywhere — so those SOWs were permanently
+ * unsendable with no in-app way out. Fill any missing section in on read
+ * so the editor can always show the full, current document shape.
+ */
+export function hydrateSections(stored: any[], metadata: any): any[] {
+  const byId = new Map((stored || []).map((s: any) => [s.id, s]))
+  const lang = metadata?.language
+  return SOW_SECTION_DEFS.map(def => {
+    const existing = byId.get(def.id)
+    if (existing) return { ...existing, title: sectionTitle(def.id, lang), order: def.order }
+    return {
+      id: def.id,
+      title: sectionTitle(def.id, lang),
+      order: def.order,
+      content: '',
+      // Match the initial-visibility rule api/sow/generate applies.
+      visible: def.id === 'payment_schedule' ? metadata?.paymentStructure === 'milestones' : true,
+      ...(isTableSection(def.id) ? { table: [] } : {}),
+    }
+  })
+}
+
+export function sanitizeSectionList(incoming: unknown, stored: any[], metadata?: any): any[] {
+  const submitted = new Map(
+    (Array.isArray(incoming) ? incoming : [])
+      .filter((s: any) => s && typeof s.id === 'string')
+      .map((s: any) => [s.id, s])
+  )
+  const previous = new Map((stored || []).map((s: any) => [s.id, s]))
+
+  return SOW_SECTION_DEFS.map(def => {
+    const from = submitted.get(def.id) ?? previous.get(def.id) ?? {}
+    const visible = REQUIRED_SECTION_IDS.includes(def.id)
+      ? true
+      : typeof from.visible === 'boolean' ? from.visible : true
+    return {
+      id:      def.id,
+      title:   sectionTitle(def.id, metadata?.language),
+      order:   def.order,
+      content: sanitizeRichText(from.content),
+      visible,
+      ...(isTableSection(def.id) ? { table: sanitizeTableRows(def.id, from.table) } : {}),
+    }
+  })
+}
+

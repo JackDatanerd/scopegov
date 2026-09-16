@@ -25,13 +25,26 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const service = createServiceClient()
     const { data: co } = await (service as any)
       .from('change_orders')
-      .select('id,title,status,project_id,projects(name)')
+      .select('id,title,status,project_id,escalated_to,escalation_note,projects(name)')
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!co) return NextResponse.json({ error: 'CO not found' }, { status: 404 })
     // FIX (audit round 3): see lib/utils/project-access.ts.
     if (!(await canReadProject(service, session, co.project_id)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
+    // FIX (section-10 audit, 10-G5): escalation had no status guard at
+    // all, so an accepted, closed or withdrawn CO could still be
+    // escalated — pinging a colleague to go chase something that is
+    // already finished. Escalation is an overlay on an OPEN negotiation
+    // (spec §6.3: it never changes status), so it only makes sense while
+    // one is open. Mirrors the states CoCard already shows the escalate
+    // control for.
+    if (['accepted', 'closed', 'withdrawn', 'exception_granted'].includes(co.status))
+      return NextResponse.json(
+        { error: `This change order is ${co.status.replace(/_/g, ' ')} — there's nothing open to escalate.` },
+        { status: 400 }
+      )
 
     // FIX (audit round 2, item #5): escalateTo was never checked against
     // workspace membership — any authenticated session could escalate to
@@ -59,6 +72,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const now = new Date().toISOString()
     const safeNote = sanitizePlainText(escalationNote.trim())
+
+    // FIX (section-10 audit, 10-G5): escalated_to/escalation_note are a
+    // single overwritable slot — a second escalation silently replaced
+    // the first with no history and no way to see that it had happened.
+    // The audit log is the history (it always recorded every escalation;
+    // nothing ever read it back), so record the previous holder on the
+    // new audit row to make the chain reconstructable.
+    const previousEscalation = { to: (co as any).escalated_to ?? null, note: (co as any).escalation_note ?? null }
 
     // Spec §6.3: escalation NEVER changes status — it is an overlay
     await (service as any).from('change_orders').update({
@@ -114,7 +135,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       actorEmail: session.email, actorName: session.name,
       eventType: 'co.escalated', entityType: 'change_order',
       entityId: id, entityName: co.title,
-      metadata: { escalated_to: resolvedEscalateTo, note: safeNote, co_status: co.status },
+      metadata: {
+        escalated_to: resolvedEscalateTo, note: safeNote, co_status: co.status,
+        ...(previousEscalation.to || previousEscalation.note ? { superseded: previousEscalation } : {}),
+      },
     })
 
     return NextResponse.json({ ok: true })

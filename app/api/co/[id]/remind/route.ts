@@ -7,6 +7,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
 import { checkReminderCooldown } from '@/lib/utils/reminder-cooldown'
 import { escapeHtml } from '@/lib/utils/sanitize'
+import { formatCurrency } from '@/lib/utils/format'
 import { Resend } from 'resend'
 
 // FIX (re-audit — build-blocking): module-scope instantiation, same class
@@ -28,7 +29,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const service = createServiceClient()
     const { data: co } = await (service as any)
       .from('change_orders')
-      .select(`id, title, status, token, total, project_id,
+      .select(`id, title, status, token, total, counter_amount, expires_at, project_id,
         projects(id, name, currency,
           clients(name, email, cc_emails),
           workspaces(agency_name, brand_colour))`)
@@ -51,6 +52,16 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // instead of a dead end.
     if (!['awaiting_response', 'awaiting_countersignature', 'stalled'].includes(co.status))
       return NextResponse.json({ error: 'Can only remind on COs awaiting a client response' }, { status: 400 })
+    // FIX (section-10 audit, 10-B7): api/sow/[id]/remind explicitly
+    // guards `if (!sow.token)`; this never did, so a CO whose send failed
+    // part-way would build a portal URL ending in "/null" and email it.
+    if (!co.token)
+      return NextResponse.json({ error: 'No portal link found — resend the change order' }, { status: 400 })
+    // Same expiry gap the SOW reminder had (9-G3): don't email a dead link.
+    if (co.expires_at && new Date(co.expires_at) <= new Date())
+      return NextResponse.json({
+        error: 'This change order\'s link has expired. Revise and resend it to give the client a fresh link.',
+      }, { status: 400 })
 
     // FIX (re-audit): no cooldown existed at all — an agency user could
     // spam this button and spam the client's inbox with no rate limit.
@@ -100,6 +111,17 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // SEND_CHANGE_ORDERS / CO creation) would render live in a real
     // client's inbox. Subject line intentionally stays on the raw values
     // (plain text, not HTML — same convention as templates.ts).
+    // FIX (section-10 audit, 10-B8): this used a bare `toLocaleString()`
+    // with no decimal control, unlike formatCurrency everywhere else — and
+    // for an awaiting_countersignature CO it quoted the ORIGINAL total
+    // rather than the negotiated one the client is being asked to confirm.
+    // (acceptCoCounter rewrites `total` to the negotiated figure, so
+    // `total` is right there — but fall back to counter_amount defensively
+    // for any row written before that rescale landed.)
+    const reminderTotal = isCountersign
+      ? (co.total ?? co.counter_amount ?? 0)
+      : (co.total ?? 0)
+
     const titleHtml   = escapeHtml(co.title)
     const clientHtml  = escapeHtml(client?.name)
     const projectHtml = escapeHtml(project?.name)
@@ -123,7 +145,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
             ${isCountersign
               ? `The agency has accepted your proposed amount for <strong>${projectHtml}</strong> and it's ready for you to confirm.`
               : `A change order for <strong>${projectHtml}</strong> is awaiting your response.`}
-            Total: <strong>${currency} ${(co.total || 0).toLocaleString()}</strong>
+            Total: <strong>${escapeHtml(formatCurrency(reminderTotal, currency))}</strong>
           </p>
           <a href="${portalUrl}" style="display:inline-block;background:${accent};color:#FFF;padding:12px 24px;border-radius:5px;font-size:13px;font-weight:600;text-decoration:none;">
             ${isCountersign ? 'Review &amp; Confirm →' : 'Review &amp; Respond →'}

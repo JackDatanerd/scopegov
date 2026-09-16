@@ -14,6 +14,10 @@ const EVENT_TYPES = [
   // FIX (build, cron section): co-stall/sow-stall now actually notify (see
   // cron/co-stall and cron/sow-stall) — same whitelist requirement as above.
   'co_stalled', 'sow_stalled',
+  // FIX (section-9 audit, 9-G3): the new sow-expiry cron notifies on this
+  // — same whitelist requirement as every entry above, otherwise PATCH
+  // 400s on it and the toggle can never be saved.
+  'sow_expired',
 ]
 
 // FIX (re-audit, notifications section): `approval_no_reachable_approver`

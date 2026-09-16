@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { logAudit } from '@/lib/utils/audit'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
+import { insertNextSowVersion } from '@/lib/documents/sow-version'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { escapeHtml } from '@/lib/utils/sanitize'
 import { checkRevokedToken, verifySowJwt } from '../_shared'
@@ -72,18 +73,34 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // agency with no way back into editing short of the generic
     // /api/sow/generate fallback. Roll the status change back and tell the
     // client to retry instead of silently stranding the project.
-    const { data: newSow, error: newSowErr } = await (service as any).from('sow_documents').insert({
-      project_id:          project.id,
+    // FIX (section-9 audit, 9-B12): version was computed as
+    // `sow.version + 1` with no uniqueness backstop — see
+    // lib/documents/sow-version.ts and migration 031.
+    //
+    // FIX (section-9 audit, 9-G8): the client's feedback only ever
+    // reached an email, a notification body and the audit log. Whoever
+    // opened the new draft to act on it had no record inside the document
+    // of what was actually asked for. Carry it on the new version's
+    // metadata so the editor can show it (see components/sow/SowEditor.tsx).
+    const created = await insertNextSowVersion(service, project.id, {
       workspace_id:        sow.workspace_id,
-      version:             sow.version + 1,
       status:              'draft',
       sections:            sow.sections,
-      metadata:            sow.metadata,
+      metadata:            {
+        ...(sow.metadata || {}),
+        changeRequest: {
+          note,
+          fromVersion: sow.version,
+          requestedBy: client.name || client.email,
+          requestedAt: now,
+        },
+      },
       previous_version_id: sow.id,
-    }).select('id').single()
+    })
+    const newSow = created.ok ? { id: created.id } : null
 
-    if (newSowErr || !newSow) {
-      console.error('request-changes: new draft version insert failed', newSowErr)
+    if (!newSow) {
+      console.error('request-changes: new draft version insert failed', created.error)
       await (service as any).from('sow_documents')
         .update({ status: 'awaiting_signature', updated_at: new Date().toISOString() })
         .eq('id', sow.id).eq('status', 'changes_requested')

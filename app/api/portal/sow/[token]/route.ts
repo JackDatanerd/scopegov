@@ -134,6 +134,10 @@ async function buildSowResponse(sow: any, service: any) {
       agencySignatureData: workspace.agency_signature_data || null,
       contractValue: project.contract_value || 0,
       currency:      project.currency || 'USD',
+      // FIX (section-9 audit, 9-G7): the portal renders the same
+      // schema-driven tables the PDF does, so it needs the drafting
+      // language to localize their column headers.
+      language:      sow.metadata?.language || 'en',
       clientName:    client?.name || '',
       clientEmail:   client?.email || '',
       clientCompany: client?.company_name || null,

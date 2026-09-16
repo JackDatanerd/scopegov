@@ -33,7 +33,15 @@ export default async function ProjectPage({ params, searchParams }: Props) {
       client_id, created_by, workspace_id, guardian_email,
       clients(id, name, company_name, email, cc_emails, phone, notes),
       guardian_flags(id, status, severity, description, sow_reference, type, created_at, change_order_id, escalated_to),
-      change_orders(id, title, status, total, sent_at, accepted_at, version, document_number),
+      // FIX (section-10 audit, 10-G1): counter_amount/counter_note were
+      // written by the client portal and read by the accept-counter
+      // route — but appeared in NO component anywhere. The CO card
+      // rendered a primary "Accept counter" button next to the ORIGINAL
+      // total, so the agency was accepting a negotiated figure it had
+      // never been shown, and the client's reasoning was nowhere in the
+      // product. Fetch them so the card can show what's being accepted.
+      change_orders(id, title, status, total, sent_at, accepted_at, version, document_number,
+        counter_amount, counter_note, declined_reason, close_reason),
       sow_documents(id, version, status, sent_at, signed_at, created_at, document_number),
       project_scope_snapshot(id, deliverables, out_of_scope, last_updated_at)
     `)
@@ -65,7 +73,9 @@ export default async function ProjectPage({ params, searchParams }: Props) {
   if (!viewFinancials) {
     project.contract_value = null
     if (Array.isArray(project.change_orders)) {
-      project.change_orders = project.change_orders.map((co: any) => ({ ...co, total: null }))
+      // counter_amount is financial data on the same footing as total —
+      // withhold it from the same people (10-G1).
+      project.change_orders = project.change_orders.map((co: any) => ({ ...co, total: null, counter_amount: null }))
     }
   }
   if (!viewClientData && project.clients) {

@@ -7,6 +7,7 @@ import { stripAndParse, stripHtml, countWords } from '@/lib/utils/format'
 import { sanitizeRichText } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
 import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
+import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
 import Anthropic from '@anthropic-ai/sdk'
 
 // FIX (re-audit — build-blocking): was constructed at module scope, so an
@@ -37,6 +38,20 @@ export async function POST(request: NextRequest) {
     if (!(await canReadProject(service, session, sow.project_id)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     if (sow.sent_at) return NextResponse.json({ error: 'SOW is locked' }, { status: 409 })
+
+    // FIX (section-9 audit, 9-B15): PATCH /api/sow/[id] and
+    // /api/sow/generate both refuse to touch a draft with an approval
+    // decision outstanding; this route didn't. It doesn't write, so it was
+    // never a gate bypass — but it would happily spend the workspace's AI
+    // budget rewriting a document that is frozen, and hand back content
+    // the subsequent save is guaranteed to reject with a confusing
+    // "Save failed". Fail fast with the real reason instead.
+    if (await getPendingApprovalForDocument(service, 'sow', sowId)) {
+      return NextResponse.json(
+        { error: 'This SOW has a pending approval request — cancel it before editing.' },
+        { status: 409 }
+      )
+    }
 
     // FIX (audit round 3): no rate limiting existed on this route.
     const limited = await checkAiRateLimit(service, session.id, 'sow.regenerateSection')

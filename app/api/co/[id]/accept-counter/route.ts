@@ -46,7 +46,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'CO is not in countered status' }, { status: 400 })
 
     const project = co.projects
-    const negotiatedTotal = co.counter_amount || co.total
+    // FIX (section-10 audit, 10-B2): `||` sent a legitimate 0 counter
+    // through to the original total. Matches lib/documents/accept-co-counter.ts.
+    const negotiatedTotal = co.counter_amount ?? co.total
 
     // FIX (section-11 audit): gate on the NEGOTIATED amount, using the
     // same 'co' workflows an admin already configured — a counter-offer

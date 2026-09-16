@@ -358,6 +358,10 @@ function OverviewTab({ project, milestones, amendments, permissions, currency, r
   const SOW_STATUS_LABEL: Record<string, string> = {
     draft: 'Draft — not yet sent', sent: 'Sent to client', awaiting_signature: 'Awaiting signature',
     signed: 'Signed', changes_requested: 'Client requested changes', declined: 'Declined by client', withdrawn: 'Withdrawn',
+    // FIX (section-9 audit, 9-G3): 'expired' is a real status now that
+    // cron/sow-expiry actually writes it; this map had no entry, so the
+    // Overview tab fell through to printing the raw value.
+    expired: 'Signing link expired',
   }
 
   return (
@@ -561,6 +565,26 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
   // handling, no refresh — unlike its siblings handleSendSow/handleWithdraw
   // right above it. A failed reminder (e.g. cooldown, or the SOW no longer
   // being awaiting_signature) gave the user no signal either way.
+  // FIX (section-9 audit, 9-G1): a withdrawn, declined or expired SOW
+  // used to render with ZERO actions — Edit/Send gate on 'draft',
+  // Remind/Withdraw on 'awaiting_signature', and the "Generate SOW"
+  // button only shows when the project has no SOWs at all. A client
+  // declining a SOW simply halted the product. /api/sow/[id]/reopen
+  // clones it forward into a fresh editable draft.
+  const [reopening, setReopening] = useState(false)
+  async function handleReopen() {
+    setReopening(true); setError('')
+    try {
+      const res  = await fetch(`/api/sow/${currentSow.id}/reopen`, { method: 'POST' })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error || 'Could not start a new version')
+      router.push(`/projects/${project.id}/sow/${json.sowId}`)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not start a new version')
+      setReopening(false)
+    }
+  }
+
   const [reminding, setReminding] = useState(false)
   async function handleRemind() {
     setReminding(true); setError('')
@@ -644,6 +668,13 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
                       <button className="btn btn-ghost btn-sm" onClick={handleWithdraw}><i className="ti ti-x" style={{ fontSize: 12 }} /> Withdraw</button>
                     </>
                   )}
+                  {['withdrawn', 'declined', 'expired'].includes(currentSow.status) && permissions.editSow && (
+                    <button className="btn btn-primary btn-sm" onClick={handleReopen} disabled={reopening}>
+                      {reopening
+                        ? <span className="spin" />
+                        : <><i className="ti ti-refresh" style={{ fontSize: 12 }} /> Start new version</>}
+                    </button>
+                  )}
                   {currentSow.signed_at && (
                     <a href={`/api/pdf/sow/${currentSow.id}`} target="_blank" className="btn btn-ghost btn-sm">
                       <i className="ti ti-download" style={{ fontSize: 12 }} /> Download PDF
@@ -718,12 +749,21 @@ function GenerateSowModal({ project, onClose, onDone }: any) {
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error)
-      setObjective(json.objective || '')
-      setDeliverables(json.deliverables || '')
-      setOutOfScope(json.outOfScope || '')
-      setTimeline(json.timeline || '')
-      if (json.paymentStructure) setPaymentStructure(json.paymentStructure)
-      if (json.revisionRounds)   setRevisionRounds(String(json.revisionRounds))
+      // FIX (section-9 audit, 9-B1): /api/sow/parse-brief returns
+      // `{ brief: {...} }` — this read the fields off the top level, so
+      // every one of them was undefined. The AI call ran, the rate-limit
+      // budget was spent, and the user got a blank review form with no
+      // error to explain it. app/(app)/projects/new/page.tsx has always
+      // read `json.brief` correctly; this copy of the same flow never did,
+      // so brief extraction was dead for every SOW generated from an
+      // existing project.
+      const brief = json.brief || {}
+      setObjective(brief.objective || '')
+      setDeliverables(brief.deliverables || '')
+      setOutOfScope(brief.outOfScope || '')
+      setTimeline(brief.timeline || '')
+      if (brief.paymentStructure) setPaymentStructure(brief.paymentStructure)
+      if (brief.revisionRounds)   setRevisionRounds(String(brief.revisionRounds))
       setReviewing(true)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Could not read that brief — you can still fill the fields in manually below.')
@@ -1156,23 +1196,57 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
   const [reminded, setReminded] = useState(false)
   const [escalating, setEscalating] = useState(false)
 
+  // FIX (section-10 audit, 10-B5): `res.ok` was never checked. Withdraw,
+  // close and accept-counter all fell through to router.refresh()
+  // regardless of outcome — a 403, 400 or 409 produced a page refresh
+  // showing nothing had changed and no error anywhere on screen.
+  //
+  // FIX (section-10 audit, 10-B6): the pendingApproval branch only fired
+  // for 'send', so accepting a counter that trips a co_counter workflow
+  // looked identical to one that went straight to the client.
+  const [actionError, setActionError] = useState('')
   async function doAction(action: string) {
-    setActing(true)
+    setActing(true); setActionError('')
     try {
       const res  = await fetch(`/api/co/${co.id}/${action}`, { method: 'POST' })
       const json = await res.json().catch(() => ({}))
-      if (action === 'send' && json?.pendingApproval) {
-        alert('Sent for approval — this CO will go to the client automatically once it\u2019s signed off.')
+      if (!res.ok) { setActionError(json?.error || 'That action failed. Please try again.'); return }
+      if (json?.pendingApproval) {
+        alert(action === 'accept-counter'
+          ? 'Sent for approval — the client will be asked to countersign the negotiated amount once it\u2019s signed off.'
+          : 'Sent for approval — this CO will go to the client automatically once it\u2019s signed off.')
       }
       router.refresh()
+    } catch {
+      setActionError('That action failed. Please try again.')
+    } finally { setActing(false) }
+  }
+
+  // Revise creates a NEW draft CO and we want to land the user in it, so
+  // it gets its own handler rather than going through doAction's refresh.
+  async function revise() {
+    setActing(true); setActionError('')
+    try {
+      const res  = await fetch(`/api/co/${co.id}/revise`, { method: 'POST' })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) { setActionError(json?.error || 'Could not create a revision.'); return }
+      router.push(`/projects/${projectId}/co/${json.coId}`)
+    } catch {
+      setActionError('Could not create a revision.')
     } finally { setActing(false) }
   }
 
   async function remind() {
-    setActing(true)
+    setActing(true); setActionError('')
     try {
-      const res = await fetch(`/api/co/${co.id}/remind`, { method: 'POST' })
-      if (res.ok) { setReminded(true); setTimeout(() => setReminded(false), 3000) }
+      const res  = await fetch(`/api/co/${co.id}/remind`, { method: 'POST' })
+      const json = await res.json().catch(() => ({}))
+      // FIX (section-10 audit, 10-B5): a failed reminder (cooldown, wrong
+      // status, expired link) showed nothing at all.
+      if (!res.ok) { setActionError(json?.error || 'Could not send that reminder.'); return }
+      setReminded(true); setTimeout(() => setReminded(false), 3000)
+    } catch {
+      setActionError('Could not send that reminder.')
     } finally { setActing(false) }
   }
 
@@ -1214,11 +1288,25 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
           {co.status === 'awaiting_countersignature' && (
             <button className="btn btn-ghost btn-xs" onClick={() => doAction('withdraw')} disabled={acting}>Withdraw</button>
           )}
-          {co.status === 'declined' && (
-            <Link href={`/projects/${projectId}/co/${co.id}`}><button className="btn btn-ghost btn-xs">Negotiate</button></Link>
+          {/* FIX (section-10 audit, 10-G3): "Negotiate" linked straight to
+              CoEditor, which sets isLocked = status !== 'draft' — so a
+              declined CO opened fully read-only, under a banner telling
+              the user to "Withdraw it to edit" when withdraw isn't even
+              permitted from 'declined'. The one labelled recovery path
+              from a client decline was a dead button. Revise clones the
+              CO into a fresh editable draft instead. */}
+          {['declined', 'withdrawn', 'closed'].includes(co.status) && permissions.createCo && (
+            <button className="btn btn-ghost btn-xs" onClick={revise} disabled={acting}>
+              Revise &amp; resend
+            </button>
           )}
           {co.status === 'countered' && permissions.sendCo && (
             <button className="btn btn-primary btn-xs" onClick={() => doAction('accept-counter')} disabled={acting}>Accept counter</button>
+          )}
+          {co.status === 'countered' && permissions.createCo && (
+            <button className="btn btn-ghost btn-xs" onClick={revise} disabled={acting}>
+              Counter back
+            </button>
           )}
           {/* FIX (re-audit, cron/portal section): 'stalled' now allowed —
               a CO auto-stalled by the co-stall cron used to have no way
@@ -1242,6 +1330,50 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
           </Link>
         </div>
       </div>
+      {/* FIX (section-10 audit, 10-G1): the counter-offer the agency is
+          being asked to accept was invisible. counter_amount and
+          counter_note lived in the database and were read by the
+          accept-counter route, but appeared in no component — the card
+          showed the ORIGINAL total right next to a primary "Accept
+          counter" button. Show the number and the client's reasoning
+          before anyone commits to it. */}
+      {co.status === 'countered' && (
+        <div style={{
+          marginTop: 10, padding: '10px 12px', borderRadius: 6,
+          background: 'var(--surface-2)', borderLeft: '3px solid var(--amber)',
+        }}>
+          <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.07em', color: 'var(--text-3)', marginBottom: 6 }}>
+            Client counter-offer
+          </div>
+          {permissions.viewFinancials && co.counter_amount != null && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
+              <span style={{ color: 'var(--text-3)' }}>Proposed total</span>
+              <span style={{ fontFamily: 'IBM Plex Mono, monospace', fontWeight: 600 }}>
+                {formatCurrency(co.counter_amount, currency)}
+                {co.total != null && (
+                  <span style={{ color: 'var(--text-3)', fontWeight: 400, marginLeft: 8 }}>
+                    (was {formatCurrency(co.total, currency)})
+                  </span>
+                )}
+              </span>
+            </div>
+          )}
+          {co.counter_note && (
+            <div style={{ fontSize: 12.5, color: 'var(--text-2)', lineHeight: 1.6, marginTop: 4 }}>
+              &ldquo;{co.counter_note}&rdquo;
+            </div>
+          )}
+        </div>
+      )}
+      {(co.declined_reason || co.close_reason) && ['declined', 'closed'].includes(co.status) && (
+        <div style={{ marginTop: 10, fontSize: 12.5, color: 'var(--text-3)', lineHeight: 1.6 }}>
+          {co.status === 'declined' ? 'Client declined: ' : 'Closed: '}
+          <span style={{ color: 'var(--text-2)' }}>{co.declined_reason || co.close_reason}</span>
+        </div>
+      )}
+      {actionError && (
+        <div style={{ marginTop: 10, fontSize: 12.5, color: 'var(--red)' }}>{actionError}</div>
+      )}
       {escalating && (
         <EscalateCoModal co={co} team={team} onClose={() => setEscalating(false)}
           onDone={() => { setEscalating(false); router.refresh() }} />

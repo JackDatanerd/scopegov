@@ -4,6 +4,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
+import { computeCoTotals } from '@/lib/documents/co-totals'
 
 export async function POST(request: NextRequest) {
   try {
@@ -13,7 +14,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
 
     const body    = await request.json()
-    const { projectId, title, note, lineItems, taxRate, taxInclusive, flagId, timelineImpactDays, scopeImpactNote } = body
+    const { projectId, title, note, lineItems, taxRate, taxInclusive, flagId, timelineImpactDays, scopeImpactNote, isRetainerRenewal } = body
     if (!projectId || !title)
       return NextResponse.json({ error: 'projectId and title required' }, { status: 400 })
 
@@ -60,11 +61,12 @@ export async function POST(request: NextRequest) {
       validatedFlagId = flag.id
     }
 
-    const items   = lineItems || []
-    const subtotal = items.reduce((s: number, l: any) => s + (l.quantity * l.rate), 0)
-    const total    = taxInclusive
-      ? subtotal
-      : subtotal * (1 + (parseFloat(taxRate) || 0) / 100)
+    // FIX (section-10 audit, 10-B3 + 10-B9): unvalidated arithmetic over
+    // raw request JSON, with a tax-inclusive branch that stored the gross
+    // as `subtotal`. See lib/documents/co-totals.ts.
+    const totals = computeCoTotals(lineItems || [], taxRate ?? 0, taxInclusive)
+    if (!totals.ok) return NextResponse.json({ error: totals.error }, { status: 400 })
+    const { lineItems: items, subtotal, total } = totals.totals
 
     const { data: co, error: coErr } = await (service as any)
       .from('change_orders')
@@ -87,9 +89,13 @@ export async function POST(request: NextRequest) {
         // safe with no reader-side change needed.
         line_items:   items,
         subtotal,
-        tax_rate:     parseFloat(taxRate) || 0,
-        tax_inclusive: taxInclusive || false,
+        tax_rate:      totals.totals.taxRate,
+        tax_inclusive: totals.totals.taxInclusive,
         total,
+        // FIX (section-10 audit, 10-B10): PATCH accepted
+        // isRetainerRenewal but POST didn't, so a CO could never be
+        // created as one — it could only become one on a later save.
+        is_retainer_renewal: isRetainerRenewal === true,
         // FIX (doc-quality audit round 3, migration 018): captured
         // alongside the rest of the CO at creation, same as note/line
         // items — see the PDF renderer's Impact Analysis section for

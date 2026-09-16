@@ -4,6 +4,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
 import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
+import { computeCoTotals } from '@/lib/documents/co-totals'
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -88,10 +89,12 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const body = await request.json()
     const { title, note, lineItems, taxRate, taxInclusive, isRetainerRenewal, timelineImpactDays, scopeImpactNote } = body
 
-    const items    = lineItems || []
-    const subtotal = items.reduce((s: number, l: any) => s + (l.quantity * l.rate), 0)
-    const tax      = taxInclusive ? 0 : subtotal * (parseFloat(taxRate) || 0) / 100
-    const total    = subtotal + tax
+    // FIX (section-10 audit, 10-B3 + 10-B9): same unvalidated arithmetic
+    // and same wrong tax-inclusive subtotal as POST /api/co — both now go
+    // through the one shared implementation. See lib/documents/co-totals.ts.
+    const totals = computeCoTotals(lineItems || [], taxRate ?? 0, taxInclusive)
+    if (!totals.ok) return NextResponse.json({ error: totals.error }, { status: 400 })
+    const { lineItems: items, subtotal, total } = totals.totals
 
     await (service as any).from('change_orders').update({
       title:               title?.trim(),
@@ -102,8 +105,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       // already writes the array directly; matched that here.
       line_items:          items,
       subtotal,
-      tax_rate:            parseFloat(taxRate) || 0,
-      tax_inclusive:       taxInclusive || false,
+      tax_rate:            totals.totals.taxRate,
+      tax_inclusive:       totals.totals.taxInclusive,
       total,
       is_retainer_renewal: isRetainerRenewal || false,
       timeline_impact_days: timelineImpactDays != null && timelineImpactDays !== '' ? parseInt(timelineImpactDays, 10) : null,

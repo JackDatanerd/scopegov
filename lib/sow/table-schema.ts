@@ -85,7 +85,77 @@ export const SOW_TABLE_SCHEMAS: Record<SowTableSectionId, SowTableSchema> = {
   },
 }
 
+// FIX (section-9 audit, 9-G7): column labels were hardcoded English and
+// rendered straight onto the client-facing PDF and portal page, so a
+// Spanish or Swahili SOW printed "Deliverable / Acceptance Criteria /
+// Owner / Target Date" over translated rows. Same policy as
+// SOW_SECTION_TITLES in lib/ai/sow-content.ts: unknown language falls
+// back to the English label rather than emitting a blank header.
+const TABLE_COLUMN_LABELS: Record<string, Record<string, string>> = {
+  es: {
+    deliverable: 'Entregable', acceptanceCriteria: 'Criterios de Aceptación', owner: 'Responsable', targetDate: 'Fecha Objetivo',
+    phase: 'Fase', description: 'Descripción', duration: 'Duración',
+    responsibility: 'Responsabilidad', provider: 'Agencia', client: 'Cliente', notes: 'Notas',
+    milestone: 'Hito', amount: 'Importe', trigger: 'Condición / Vencimiento',
+  },
+  fr: {
+    deliverable: 'Livrable', acceptanceCriteria: 'Critères d\'Acceptation', owner: 'Responsable', targetDate: 'Date Cible',
+    phase: 'Phase', description: 'Description', duration: 'Durée',
+    responsibility: 'Responsabilité', provider: 'Agence', client: 'Client', notes: 'Notes',
+    milestone: 'Jalon', amount: 'Montant', trigger: 'Déclencheur / Échéance',
+  },
+  pt: {
+    deliverable: 'Entregável', acceptanceCriteria: 'Critérios de Aceitação', owner: 'Responsável', targetDate: 'Data Prevista',
+    phase: 'Fase', description: 'Descrição', duration: 'Duração',
+    responsibility: 'Responsabilidade', provider: 'Agência', client: 'Cliente', notes: 'Notas',
+    milestone: 'Marco', amount: 'Valor', trigger: 'Gatilho / Vencimento',
+  },
+  de: {
+    deliverable: 'Leistung', acceptanceCriteria: 'Abnahmekriterien', owner: 'Verantwortlich', targetDate: 'Zieltermin',
+    phase: 'Phase', description: 'Beschreibung', duration: 'Dauer',
+    responsibility: 'Verantwortung', provider: 'Agentur', client: 'Kunde', notes: 'Anmerkungen',
+    milestone: 'Meilenstein', amount: 'Betrag', trigger: 'Auslöser / Fällig',
+  },
+  sw: {
+    deliverable: 'Kinachotolewa', acceptanceCriteria: 'Vigezo vya Kukubalika', owner: 'Mhusika', targetDate: 'Tarehe Lengwa',
+    phase: 'Awamu', description: 'Maelezo', duration: 'Muda',
+    responsibility: 'Jukumu', provider: 'Wakala', client: 'Mteja', notes: 'Maelezo',
+    milestone: 'Hatua', amount: 'Kiasi', trigger: 'Kichocheo / Tarehe',
+  },
+}
+
+/** Column label in the document's language, falling back to the English default. */
+export function columnLabel(col: SowTableColumn, language?: string): string {
+  if (!language || language === 'en') return col.label
+  return TABLE_COLUMN_LABELS[language]?.[col.key] || col.label
+}
+
 export type SowTableRow = Record<string, string>
+
+/**
+ * FIX (section-9 audit, 9-G6): the payment_schedule `amount` cell is a
+ * free-text input, and every consumer read it with a bare `Number(...)`.
+ * A perfectly ordinary entry like "1,500" or "$1,500.00" — which is what
+ * anyone typing an amount into a text box actually writes — is NaN to
+ * `Number`, so the row silently dropped out of the send-time validation
+ * set and the agency got "Add at least one milestone to the Payment
+ * Schedule" on a table that visibly had three. Worse, a schedule that
+ * looked correct could fail the foot-to-contract-value check for reasons
+ * invisible on screen.
+ *
+ * Parse the way a human means it: strip currency symbols, spaces and
+ * thousands separators, keep the sign and decimal point. Returns null for
+ * anything that still isn't a finite number, so callers can distinguish
+ * "blank/unparseable" from "zero".
+ */
+export function parseTableAmount(raw: unknown): number | null {
+  if (typeof raw === 'number') return Number.isFinite(raw) ? raw : null
+  if (typeof raw !== 'string') return null
+  const cleaned = raw.replace(/[^0-9.\-]/g, '')
+  if (!cleaned || cleaned === '-' || cleaned === '.') return null
+  const n = Number(cleaned)
+  return Number.isFinite(n) ? n : null
+}
 
 /** A blank row matching a section's schema, for the "+ Add row" editor action. */
 export function blankRow(sectionId: SowTableSectionId): SowTableRow {

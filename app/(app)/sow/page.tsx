@@ -59,9 +59,14 @@ export default async function SowPage() {
   // any workspace that ever exceeds that cap, with no disclaimer outside
   // the solo-tier banner. Use exact counts, unaffected by the row limit.
   // Also scoped to allowedProjectIds now, same reasoning as the list above.
+  // FIX (section-9 audit, build-blocking): `session` is typed
+  // `SessionUser | null` and TypeScript can't carry the early
+  // `if (!session) redirect(...)` narrowing into this closure, so this
+  // failed `tsc --noEmit`. Capture the narrowed value.
+  const workspaceId = session.workspaceId
   function countQuery(status?: string) {
     let q = (service as any).from('sow_documents').select('id', { count: 'exact', head: true })
-      .eq('workspace_id', session.workspaceId)
+      .eq('workspace_id', workspaceId)
     if (allowedProjectIds !== null) q = q.in('project_id', allowedProjectIds)
     if (status) q = q.eq('status', status)
     return q
