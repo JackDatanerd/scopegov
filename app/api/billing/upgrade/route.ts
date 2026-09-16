@@ -1,6 +1,7 @@
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
+import { PLAN_LIMITS } from '@/lib/utils/format'
 
 export async function POST(request: NextRequest) {
   try {
@@ -19,6 +20,30 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: `Plan code not configured: ${envKey}` }, { status: 422 })
 
     const service = createServiceClient()
+
+    // FIX (deep audit, Settings re-pass): PLAN_LIMITS' seat counts were
+    // only ever used to render labels in this tab — nothing checked a
+    // workspace's actual active-member count against the target plan's
+    // seat limit before opening checkout, so a workspace could switch to
+    // a tier with fewer seats than it currently has members, with no
+    // warning about what happens to the members who no longer fit.
+    // Checked here (not just client-side) since this is the one place
+    // that's actually authoritative before money changes hands.
+    const targetSeats = PLAN_LIMITS[planKey]?.seats
+    if (targetSeats != null) {
+      const { count: activeMembers } = await (service as any)
+        .from('workspace_members')
+        .select('id', { count: 'exact', head: true })
+        .eq('workspace_id', session.workspaceId)
+        .eq('status', 'active')
+      if ((activeMembers || 0) > targetSeats) {
+        return NextResponse.json({
+          error: `This workspace has ${activeMembers} active member${activeMembers === 1 ? '' : 's'}, more than the ${targetSeats}-seat limit on ${PLAN_LIMITS[planKey]?.name || planKey}. Deactivate members down to the new limit first, then switch plans.`,
+          seatLimitExceeded: true,
+        }, { status: 409 })
+      }
+    }
+
     const { data: user } = await (service as any)
       .from('users').select('email').eq('id', session.id).single()
 

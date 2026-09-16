@@ -18,9 +18,15 @@ interface Props {
   canInvite:          boolean
   canManageRoles:     boolean
   workspaceId:        string
+  // FIX (deep audit, Team & Invites re-pass): true when the workspace is
+  // on Solo (1 seat) but has more than one active member — only reachable
+  // if it was downgraded without its seat count being checked first (see
+  // /api/billing/upgrade). Lets the page still render instead of locking
+  // the workspace out of managing its own over-limit team.
+  overSeatLimit?:     boolean
 }
 
-export default function TeamClient({ members, pendingInvites, deactivatedMembers = [], roles, session, canInvite, canManageRoles, workspaceId }: Props) {
+export default function TeamClient({ members, pendingInvites, deactivatedMembers = [], roles, session, canInvite, canManageRoles, workspaceId, overSeatLimit }: Props) {
   const router  = useRouter()
   const searchParams = useSearchParams()
   // FIX (deep audit, section 5 re-pass): Settings computed a `manageRoles`
@@ -53,6 +59,13 @@ export default function TeamClient({ members, pendingInvites, deactivatedMembers
       const json = await res.json()
       if (!res.ok) throw new Error(json.error)
       setModal(null); setInviteEmail(''); setInviteRoleId('')
+      // FIX (deep audit, Team & Invites re-pass): the invite row is
+      // created even when the email fails to send — surface that instead
+      // of a plain success message, since otherwise this looks identical
+      // to a working invite until the invitee asks why nothing arrived.
+      if (json.emailFailed) {
+        setNotice('Invite created, but the email couldn\u2019t be sent. Use Resend below to try again.')
+      }
       router.refresh()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to send invite')
@@ -92,6 +105,9 @@ export default function TeamClient({ members, pendingInvites, deactivatedMembers
     })
     const json = await res.json().catch(() => ({}))
     if (!res.ok) { setError(json.error || 'Could not resend invite'); return }
+    if (json.emailFailed) {
+      setNotice('Invite recreated, but the email couldn\u2019t be sent. Try Resend again shortly.')
+    }
     router.refresh()
   }
 
@@ -176,6 +192,12 @@ export default function TeamClient({ members, pendingInvites, deactivatedMembers
         </div>
       </div>
 
+      {overSeatLimit && (
+        <div className="auth-error" style={{ marginBottom: 16 }}>
+          This workspace is on the Solo plan (1 seat) but has {members.length} active members.
+          Deactivate members down to 1, or upgrade in Settings &rarr; Billing.
+        </div>
+      )}
       {error && <div className="auth-error" style={{ marginBottom: 16 }}>{error}</div>}
       {notice && <div className="auth-success" style={{ marginBottom: 16 }}>{notice}</div>}
 

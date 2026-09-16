@@ -21,6 +21,16 @@ export async function PATCH(
 
     const service = createServiceClient()
 
+    // FIX (deep audit, Team & Invites re-pass): fetched unconditionally
+    // now (previously only when `permissions` was in the body) so a
+    // name/description-only edit also 404s on a nonexistent-or-other-
+    // workspace role instead of silently updating zero rows and reporting
+    // ok:true, and so the role's name is available below for the audit
+    // log regardless of which fields changed.
+    const { data: existingRole } = await (service as any)
+      .from('roles').select('name, permissions').eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
+    if (!existingRole) return NextResponse.json({ error: 'Role not found' }, { status: 404 })
+
     // FIX (section-by-section re-audit, RLS+permissions Finding 2 —
     // CRITICAL): the ceiling check below only ever blocked granting a
     // NEW true permission beyond the actor's own — it never checked what
@@ -33,10 +43,6 @@ export async function PATCH(
     // don't hold yourself, full stop, regardless of what you're changing
     // it to.
     if (permissions !== undefined) {
-      const { data: existingRole } = await (service as any)
-        .from('roles').select('permissions').eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
-      if (!existingRole) return NextResponse.json({ error: 'Role not found' }, { status: 404 })
-
       const outOfReach = permissionsBeyondActorForTarget(session, existingRole.permissions)
       if (outOfReach.length > 0)
         return NextResponse.json({
@@ -72,6 +78,21 @@ export async function PATCH(
       .eq('workspace_id', session.workspaceId) // scope to workspace — never cross-tenant
 
     if (error) throw new Error(error.message)
+
+    // FIX (deep audit, Team & Invites re-pass): POST (role_created) and
+    // DELETE (role.deleted) right next to this both log to the audit
+    // trail — this edit path never did, despite being the most
+    // consequential of the three: trg_role_permissions_propagate
+    // (migration 001) recomputes effective_permissions for every member
+    // currently holding this role the instant it's saved.
+    await logAudit(service, {
+      workspaceId: session.workspaceId, actorId: session.id,
+      actorEmail: session.email, actorName: session.name,
+      eventType: 'role.updated', entityType: 'role',
+      entityId: id, entityName: (name as string) || existingRole.name,
+      metadata: { fields: Object.keys(updates).filter(k => k !== 'updated_at') },
+    })
+
     return NextResponse.json({ ok: true })
   } catch (err) {
     return NextResponse.json(

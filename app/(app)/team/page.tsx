@@ -14,10 +14,6 @@ export default async function TeamPage() {
   const session = await getSession()
   if (!session) redirect('/login')
 
-  if (session.planTier === 'solo') {
-    return <SoloUpsell />
-  }
-
   const service = createServiceClient()
 
   const [membersRes, rolesRes, deactivatedRes] = await Promise.all([
@@ -58,6 +54,20 @@ export default async function TeamPage() {
   const pending = members.filter((m: any) => m.status === 'invited')
   const deactivated = deactivatedRes.data || []
 
+  // FIX (deep audit, Team & Invites re-pass): this used to hide the whole
+  // page behind a Solo-plan upsell whenever planTier === 'solo', no
+  // exception. Since plan downgrades were never checked against a
+  // workspace's actual seat count (see the /api/billing/upgrade fix), a
+  // workspace could already be sitting on Solo with several active
+  // members — and this page was the one place that would have let them
+  // see and fix that. Only show the upsell for a genuinely single-member
+  // workspace; otherwise render the real page (with a banner) so an
+  // over-limit workspace can actually deactivate down to what it's paying
+  // for instead of being locked out of managing its own team.
+  if (session.planTier === 'solo' && active.length <= 1) {
+    return <SoloUpsell />
+  }
+
   return (
     <TeamClient
       members={active}
@@ -68,6 +78,7 @@ export default async function TeamPage() {
       canInvite={hasPermission(session, 'INVITE_MEMBERS')}
       canManageRoles={hasPermission(session, 'MANAGE_ROLES')}
       workspaceId={session.workspaceId}
+      overSeatLimit={session.planTier === 'solo' && active.length > 1}
     />
   )
 }

@@ -3,7 +3,31 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { sanitizeDisplayName } from '@/lib/utils/sanitize'
-import { INDUSTRIES, CURRENCIES, TIMEZONES } from '@/lib/constants/workspace-options'
+import { CURRENCIES } from '@/lib/constants/workspace-options'
+
+// FIX (deep audit, Settings re-pass): a real IANA zone check, not the
+// small curated TIMEZONES list in lib/constants/workspace-options.ts.
+// That list was built for onboarding's own quick-pick dropdown (12
+// zones); this route also serves Settings' Workspace tab, whose own
+// timezone <select> is intentionally the FULL IANA list
+// (Intl.supportedValuesOf('timeZone') client-side — see
+// components/settings/SettingsClient.tsx's IANA_TIMEZONES). Validating a
+// save from that full-range picker against the narrow onboarding list
+// rejected the vast majority of real, correctly-selected timezones
+// (anything outside the original 12, e.g. "UTC" or "America/Chicago" or
+// "Asia/Tokyo") with a false "Invalid timezone" — a regression introduced
+// the moment the onboarding-round-4 fix reused this constant here.
+function isValidIanaTimezone(tz: string): boolean {
+  try {
+    if (typeof (Intl as any).supportedValuesOf === 'function') {
+      return ((Intl as any).supportedValuesOf('timeZone') as string[]).includes(tz)
+    }
+  } catch { /* fall through to the format-based check below */ }
+  try {
+    Intl.DateTimeFormat(undefined, { timeZone: tz })
+    return true
+  } catch { return false }
+}
 
 export async function PATCH(request: NextRequest) {
   try {
@@ -54,19 +78,27 @@ export async function PATCH(request: NextRequest) {
       }
     }
 
-    // FIX (Workspace lifecycle + Onboarding, round 4): this route is what
-    // the onboarding wizard's own Step 0 "Back" edit path saves through
-    // (see submitIdentity in app/onboarding/page.tsx) — same
-    // unvalidated-industry/currency/timezone gap as workspace/create,
-    // reachable here too. Same curated-list validation, same pattern as
-    // sow_language just above.
-    if (typeof updates.industry === 'string' && !(INDUSTRIES as readonly string[]).includes(updates.industry)) {
-      return NextResponse.json({ error: 'Invalid industry' }, { status: 400 })
+    // FIX (Workspace lifecycle + Onboarding, round 4) — corrected in the
+    // Settings re-pass: the round-4 fix validated industry/timezone here
+    // against onboarding's own curated lists, but this route also serves
+    // Settings' Workspace tab, whose Industry field is (by design) free
+    // text and whose Timezone <select> is (by design) the full IANA list
+    // — both deliberately broader than onboarding's quick-pick UI. Keep
+    // currency's check (Settings' own currency <select> is already a
+    // strict subset of CURRENCIES, so that one doesn't regress), but
+    // validate industry as ordinary free text and timezone against real
+    // IANA validity instead of onboarding's narrower curated set.
+    if (typeof updates.industry === 'string') {
+      const trimmed = updates.industry.trim()
+      if (trimmed.length > 100) {
+        return NextResponse.json({ error: 'Industry must be under 100 characters' }, { status: 400 })
+      }
+      updates.industry = trimmed
     }
     if (typeof updates.currency === 'string' && !(CURRENCIES as readonly string[]).includes(updates.currency)) {
       return NextResponse.json({ error: 'Invalid currency' }, { status: 400 })
     }
-    if (typeof updates.timezone === 'string' && !(TIMEZONES as readonly string[]).includes(updates.timezone)) {
+    if (typeof updates.timezone === 'string' && updates.timezone !== '' && !isValidIanaTimezone(updates.timezone)) {
       return NextResponse.json({ error: 'Invalid timezone' }, { status: 400 })
     }
 

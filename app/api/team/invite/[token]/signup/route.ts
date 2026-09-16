@@ -1,6 +1,7 @@
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { logAudit } from '@/lib/utils/audit'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
@@ -15,7 +16,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const { data: member } = await (service as any)
       .from('workspace_members')
-      .select('id, status, invite_token_expires_at, invited_email, workspace_id, role_id')
+      .select('id, status, invite_token_expires_at, invited_email, workspace_id, role_id, workspaces(name)')
       .eq('invite_token', token)
       .single()
 
@@ -95,6 +96,20 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .eq('id', member.id)
 
     if (activateErr) throw new Error(`Membership activation failed: ${activateErr.message}`)
+
+    // FIX (deep audit, Team & Invites re-pass): accept/route.ts (an
+    // already-registered user accepting an invite) logs 'member.joined' —
+    // this path, a brand-new user accepting one, never did. Since most
+    // invitees are new to the platform, this was the more common of the
+    // two invite-acceptance flows, and it was the one missing from the
+    // "immutable record."
+    await logAudit(service, {
+      workspaceId: member.workspace_id,
+      actorId: userId, actorEmail: email, actorName: name.trim(),
+      eventType: 'member.joined', entityType: 'workspace_member',
+      entityId: member.id, entityName: email,
+      metadata: { workspace_name: member.workspaces?.name },
+    })
 
     return NextResponse.json({ ok: true, email })
   } catch (err) {

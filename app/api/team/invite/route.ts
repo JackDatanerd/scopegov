@@ -126,6 +126,13 @@ export async function POST(request: NextRequest) {
       .from('workspaces').select('name,agency_name').eq('id', wsId).single()
 
     const inviteUrl = `${process.env.NEXT_PUBLIC_APP_URL}/invite/${inviteToken}`
+    // FIX (deep audit, Team & Invites re-pass): a failed send used to be
+    // swallowed here with only a console.error — the invite row was
+    // already created, so the caller got back `ok: true` with no signal
+    // that the email never went out. It would sit as "Pending" forever,
+    // discoverable only if the invitee eventually asked about it. Track
+    // the outcome and report it.
+    let emailSent = true
     try {
       await sendInviteEmail({
         to:            normalizedEmail,
@@ -135,17 +142,28 @@ export async function POST(request: NextRequest) {
         inviteUrl,
         expiresAt:     expiresAt.toISOString(),
       })
-    } catch (e) { console.error('Invite email failed:', e) }
+    } catch (e) { console.error('Invite email failed:', e); emailSent = false }
 
+    // FIX (deep audit, Team & Invites re-pass): this used to log the raw
+    // invite token/URL verbatim — a live, unexpired credential sitting in
+    // a log that's exportable to CSV/PDF and readable by anyone holding
+    // VIEW_AUDIT_LOG alone (independent of INVITE_MEMBERS under the
+    // custom-role model). Same principle already applied to the agency
+    // signature elsewhere in Settings: a bearer credential isn't
+    // something an audit row should carry. The invited email address
+    // (already the entityName) is enough context for the trail.
     await logAudit(service, {
       workspaceId: wsId, actorId: session.id,
       actorEmail: session.email, actorName: session.name,
       eventType: 'member.invited', entityType: 'workspace_member',
       entityId: member.id, entityName: normalizedEmail,
-      metadata: { invite_url: inviteUrl },
+      metadata: emailSent ? {} : { email_send_failed: true },
     })
 
-    return NextResponse.json({ ok: true, memberId: member.id })
+    return NextResponse.json({
+      ok: true, memberId: member.id,
+      ...(emailSent ? {} : { emailFailed: true }),
+    })
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
   }

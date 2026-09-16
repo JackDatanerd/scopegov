@@ -1057,7 +1057,17 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
                     disabled={!!upgrading}
                     onClick={() => handleUpgrade(plan.key)}>
                     {isLoading ? <span className="spin spin-dark" /> : (
-                      (PLAN_LIMITS[planTier]?.seats || 0) > (PLAN_LIMITS[plan.key]?.seats || 0) ? 'Downgrade' : 'Upgrade'
+                      // FIX (deep audit, Settings re-pass): trial's 10-seat
+                      // allowance is more generous than every paid tier
+                      // except Agency, so comparing raw seat counts labelled
+                      // every plan pick except Agency "Downgrade" during the
+                      // trial period — exactly the moment a workspace is
+                      // converting from trial to paid, the most common
+                      // conversion in this whole flow. Trial isn't a real
+                      // tier to downgrade from; picking any paid plan while
+                      // on trial is always an upgrade (a first purchase).
+                      planTier === 'trial' || (PLAN_LIMITS[planTier]?.seats || 0) <= (PLAN_LIMITS[plan.key]?.seats || 0)
+                        ? 'Upgrade' : 'Downgrade'
                     )}
                   </button>
                 )}

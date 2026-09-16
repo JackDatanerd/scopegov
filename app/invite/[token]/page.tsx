@@ -55,14 +55,25 @@ export default function InvitePage() {
       const json = await res.json()
       if (!res.ok) throw new Error(json.error)
 
-      // Wait for Supabase to propagate the newly admin-created user
-      await new Promise(resolve => setTimeout(resolve, 800))
-
-      const { error: signInErr } = await supabase.auth.signInWithPassword({
-        email: invite!.email,
-        password,
-      })
-      if (signInErr) throw new Error(signInErr.message)
+      // FIX (deep audit, Team & Invites re-pass): a single fixed 800ms
+      // sleep before signing in assumed the newly admin-created Supabase
+      // user always propagates within that window. Under any lag past
+      // it, the account and workspace membership were already fully
+      // created — but signInWithPassword still failed, and the person
+      // saw a generic "Something went wrong" with no hint that retrying
+      // signup would now correctly reject as "already used" and that
+      // they should just sign in instead. Retry the sign-in itself a few
+      // times with a short backoff rather than guessing one delay.
+      let signInErr: { message: string } | null = null
+      for (let attempt = 0; attempt < 4; attempt++) {
+        if (attempt > 0) await new Promise(resolve => setTimeout(resolve, 500 * attempt))
+        const result = await supabase.auth.signInWithPassword({ email: invite!.email, password })
+        signInErr = result.error
+        if (!signInErr) break
+      }
+      if (signInErr) {
+        throw new Error('Your account was created — sign in with the password you just set to continue.')
+      }
 
       setMode('done')
       setTimeout(() => router.push('/dashboard'), 1500)

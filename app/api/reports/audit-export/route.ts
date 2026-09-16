@@ -137,8 +137,17 @@ export async function GET(request: Request) {
     // the next time it's copied somewhere without that compensating
     // filter. Escape PostgREST's own special characters before building
     // the filter string, same idea as escaping a LIKE pattern.
+    //
+    // FIX (deep audit, Settings re-pass): the escape set didn't include
+    // `%` or `_` — ILIKE's own wildcard characters — so typing either into
+    // the search box let it match more broadly than the literal text
+    // typed (e.g. "50%" matching any digits-then-anything). No cross-
+    // tenant exposure (workspace_id stays independently scoped) but still
+    // the wrong result for a literal search. Backslash is ILIKE's default
+    // escape character, same as it already is for PostgREST's filter
+    // syntax, so folding these into the same escape pass is correct.
     if (q) {
-      const escaped = q.replace(/[,()."'\\]/g, '\\$&')
+      const escaped = q.replace(/[,()."'\\%_]/g, '\\$&')
       query = query.or(`event_type.ilike.%${escaped}%,entity_name.ilike.%${escaped}%`)
     }
 
@@ -257,7 +266,15 @@ function csvCell(value: unknown): string {
 // rather than the whole metadata blob, so non-financial context (reasons,
 // escalation notes, from/to plan tiers) is still preserved for a reader who
 // genuinely can't see amounts.
-const FINANCIAL_METADATA_KEYS = ['amount', 'balance_due', 'estimated_value', 'counter_amount', 'total', 'subtotal']
+// FIX (deep audit, Settings re-pass): this list was missing contract_value
+// and schedule_sum — both carry real dollar figures and are logged
+// verbatim: project contract-value edits (api/projects/[id]/route.ts) log
+// `contractValue: { from, to }`, and SOW payment-schedule mismatches
+// (portal/sow/[token]/sign/route.ts) log `schedule_sum`. Without these, a
+// role with VIEW_AUDIT_LOG but not VIEW_FINANCIALS could still pull exact
+// contract values straight out of a CSV export — the same leak class this
+// list was built to close.
+const FINANCIAL_METADATA_KEYS = ['amount', 'balance_due', 'estimated_value', 'counter_amount', 'total', 'subtotal', 'contract_value', 'contractValue', 'schedule_sum']
 function redactMetadata(metadata: Record<string, unknown> | null | undefined, canViewFinancials: boolean) {
   if (!metadata || !Object.keys(metadata).length) return metadata
   if (canViewFinancials) return metadata

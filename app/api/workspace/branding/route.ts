@@ -21,7 +21,20 @@ export async function PATCH(request: NextRequest) {
     const service = createServiceClient()
 
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
-    if (brandColour) updates.brand_colour = brandColour
+    // FIX (deep audit, Settings re-pass): brand_colour was accepted as an
+    // arbitrary string with no format check, then interpolated raw into
+    // HTML email templates as `style="background:${headerColour}"` (see
+    // lib/email/templates.ts baseTemplate) — used on every outbound
+    // SOW/CO/invoice/reminder email. A value containing a `"` could break
+    // out of the style attribute and inject markup into every subsequent
+    // client-facing email sent from this workspace. Constrain to an
+    // actual hex colour before it ever reaches storage.
+    if (brandColour !== undefined) {
+      if (typeof brandColour !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(brandColour)) {
+        return NextResponse.json({ error: 'Brand colour must be a hex colour, e.g. #1A5C3A' }, { status: 400 })
+      }
+      updates.brand_colour = brandColour
+    }
     if (logoStoragePath && typeof logoStoragePath === 'string') {
       // FIX (deep audit, section 5): this validated against
       // `${session.id}/...` — the user's own auth id — on the theory that

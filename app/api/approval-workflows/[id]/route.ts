@@ -27,8 +27,19 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (typeof body?.isActive === 'boolean') patch.is_active = body.isActive
     if (typeof body?.name === 'string' && body.name.trim()) patch.name = body.name.trim()
     if (body?.thresholdAmount !== undefined) {
-      patch.threshold_amount = body.thresholdAmount === '' || body.thresholdAmount == null
-        ? null : Number(body.thresholdAmount)
+      // FIX (deep audit, Settings re-pass): POST /api/approval-workflows
+      // requires thresholdAmount to be finite and non-negative — this edit
+      // path had no equivalent check, so a negative or non-numeric value
+      // could be saved by editing an existing workflow even though
+      // creating one that way was already blocked.
+      if (body.thresholdAmount !== '' && body.thresholdAmount != null) {
+        const n = Number(body.thresholdAmount)
+        if (!Number.isFinite(n) || n < 0)
+          return NextResponse.json({ error: 'Threshold must be a positive number' }, { status: 400 })
+        patch.threshold_amount = n
+      } else {
+        patch.threshold_amount = null
+      }
     }
     // FIX (re-audit): see migration 023 / api/approval-workflows/route.ts —
     // threshold_currency must travel with threshold_amount. Resolve the
