@@ -1,7 +1,9 @@
 // app/api/auth/callback/route.ts
-// FIX 1: Password reset now works via redirectTo → callback?next=/reset-password
-// After exchangeCodeForSession, if next=/reset-password, return early with valid session.
-// token_hash path kept for email confirmation links.
+// token_hash path handles email confirmation links; `code` handles OAuth
+// (PKCE). Password reset does NOT come through here — see
+// forgot-password/page.tsx / reset-password/page.tsx, which resolve the
+// recovery link client-side via detectSessionInUrl directly on
+// /reset-password.
 
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
@@ -35,13 +37,6 @@ export async function GET(request: NextRequest) {
     const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code)
 
     if (!exchangeError) {
-      // FIX 1: Password reset flow — forgot-password page sends
-      // redirectTo: origin + '/api/auth/callback?next=/reset-password'
-      // Session is now established; send straight to the reset form.
-      if (next === '/reset-password') {
-        return NextResponse.redirect(`${origin}/reset-password`)
-      }
-
       const { data: { user } } = await supabase.auth.getUser()
 
       if (user) {

@@ -90,7 +90,24 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith('/mfa-challenge') ||
     pathname.startsWith('/mfa-setup') ||
     pathname.startsWith('/api/auth/mfa/') ||
-    pathname.startsWith('/api/auth/signout')
+    pathname.startsWith('/api/auth/signout') ||
+    // FIX (deep audit, Auth+MFA re-pass): a password-recovery-link session
+    // is aal1 with nextLevel 'aal2' for any account with a verified TOTP
+    // factor — the recovery link only proves email access, never runs the
+    // user through a TOTP challenge. reset-password/page.tsx fires this
+    // route (fire-and-forget, before signOut()) purely to log the
+    // security.password_changed audit_log entry and send the "your
+    // password was changed" email — by the time it's called,
+    // supabase.auth.updateUser() has already succeeded directly against
+    // Supabase (that call bypasses this middleware entirely, so gating it
+    // here changes nothing about whether the password change itself
+    // requires MFA). Without this, the pending-aal2 block below returned a
+    // 401 here every time, and because the caller's fetch(...).catch(() =>
+    // {}) only catches network failures (never a resolved non-2xx
+    // response, which it never even inspects), the failure was completely
+    // silent — no audit trail and no security email for the exact accounts
+    // (MFA-enrolled ones) where a password-reset notification matters most.
+    pathname.startsWith('/api/auth/password-changed')
 
   // ── Not authenticated → redirect to login ─────────────────────────────────
   if (!user && !isAuthRoute && !isPublicRoute && !isOnboarding) {

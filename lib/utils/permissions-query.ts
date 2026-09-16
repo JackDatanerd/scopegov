@@ -25,7 +25,7 @@
 
 import type { Permission } from '@/lib/supabase/types'
 
-async function filterToProjectAccess<T extends { id: string }>(
+export async function filterToProjectAccess<T extends { id: string }>(
   service: any, projectId: string, recipients: T[], permissionMap: Map<string, Record<string, boolean>>
 ): Promise<T[]> {
   if (recipients.length === 0) return recipients
@@ -144,23 +144,46 @@ export async function filterByNotificationPreference<T extends { id: string }>(
 // active member holding that role is a valid approver for the step (any one
 // of them can act on it). Same ambiguous-FK and JS-side-filter caveats as
 // getMembersWithPermission above apply here.
+//
+// FIX (deep audit, RLS+permissions re-pass): this never got the project-
+// visibility filter getMembersWithPermission received in "audit round 4,
+// finding #8" above, despite the same rule applying — a role-based
+// approval step (e.g. "whoever holds Finance Reviewer") assigned to a
+// role that carries VIEW_OWN_PROJECTS (not VIEW_ALL_PROJECTS) notified
+// EVERY active member holding that role, including ones never assigned
+// to the specific project the document belongs to, with its title/
+// project name/amount in the email and in-app notification body — for a
+// document those members would get a 403 trying to actually open.
+// `projectId` is optional and behaves exactly like the sibling function:
+// pass it whenever the event being notified about belongs to a specific
+// project. Needs each recipient's effective_permissions to check
+// VIEW_ALL_PROJECTS the same way filterToProjectAccess already does for
+// getMembersWithPermission — fetched here for that purpose only, not
+// otherwise used or returned.
 export async function getMembersWithRole(
   service: any,
   workspaceId: string,
   roleId: string,
-  limit = 25
+  limit = 25,
+  projectId?: string
 ): Promise<Array<{ id: string; name: string; email: string }>> {
   const { data: members } = await service
     .from('workspace_members')
-    .select('role_id, users!workspace_members_user_id_fkey(id, name, email)')
+    .select('user_id, effective_permissions, users!workspace_members_user_id_fkey(id, name, email)')
     .eq('workspace_id', workspaceId)
     .eq('role_id', roleId)
     .eq('status', 'active')
     .limit(limit)
 
-  return (members || [])
-    .filter((m: any) => m.users?.email)
-    .map((m: any) => ({ id: m.users.id, name: m.users.name, email: m.users.email }))
+  const eligible = (members || []).filter((m: any) => m.users?.email)
+  const permissionMap = new Map<string, Record<string, boolean>>(
+    eligible.map((m: any) => [m.user_id, m.effective_permissions || {}])
+  )
+  let recipients = eligible.map((m: any) => ({ id: m.users.id, name: m.users.name, email: m.users.email }))
+
+  if (projectId) recipients = await filterToProjectAccess(service, projectId, recipients, permissionMap)
+
+  return recipients
 }
 
 export async function getMemberEmailsWithPermission(

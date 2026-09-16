@@ -33,6 +33,27 @@ export const MFA_REQUIRED_PERMISSIONS: Permission[] = [
   // as the APPROVE_DOCUMENTS miss above, just never swept to these two.
   'GRANT_EXCEPTIONS',
   'APPROVE_FLAGS',
+  // FIX (deep audit, RLS+permissions re-pass): VIEW_FINANCIALS and
+  // VIEW_CLIENT_DATA read the same class of sensitive data
+  // VIEW_ALL_PROJECTS was already flagged for (contract values, invoice
+  // totals, payment milestones, client PII/contact/billing info — see
+  // e.g. app/api/invoices/route.ts, app/api/clients/route.ts,
+  // app/api/reports/*.ts) but sat outside this list despite being tiered
+  // the same way. Confirmed both genuinely gate real reads across ~20
+  // call sites each before adding — this file's own EXPORT_DATA removal
+  // above is exactly the mistake to avoid making in reverse (listing a
+  // permission that doesn't actually protect anything).
+  'VIEW_FINANCIALS',
+  'VIEW_CLIENT_DATA',
+  // FIX (deep audit, RLS+permissions re-pass): the two are ordinary business
+  // rather than governance-bypass actions — the tier at which this file
+  // draws its line (VIEW_ALL_PROJECTS/VIEW_FINANCIALS/VIEW_CLIENT_DATA read;
+  // MANAGE_*/DELETE_PROJECTS/APPROVE_*/GRANT_EXCEPTIONS act). Consciously
+  // left out this round: INVITE_MEMBERS is close to that line (a compromised
+  // account with it could invite an accomplice) and SEND_INVOICES touches
+  // payment details, but neither reads or performs the governance-bypass/
+  // sensitive-read actions above — flagged for a deliberate future call,
+  // not silently missed.
   // FIX (deep audit, section 5 re-pass): the 'EXPORT_DATA' entry that used
   // to sit here has been removed, not just its comment. The permission it
   // pointed at never gated anything — see lib/supabase/types.ts for the

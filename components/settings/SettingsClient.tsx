@@ -17,7 +17,6 @@ import type { SessionUser } from '@/lib/supabase/types'
 import { PLAN_LABELS, PLAN_LIMITS, PROJECT_TYPE_LABELS, formatDate } from '@/lib/utils/format'
 import SignaturePad, { type SignaturePadHandle } from '@/components/ui/SignaturePad'
 import MfaSection from '@/components/settings/MfaSection'
-import { permissionsRequireMfa } from '@/lib/auth/mfa-policy'
 
 type SettingsTab = 'account' | 'workspace' | 'branding' | 'defaults' | 'guardian' | 'billing' | 'notifications' | 'integrations' | 'danger'
 
@@ -116,9 +115,10 @@ interface Props {
   logoUrl:     string | null
   session:     SessionUser
   permissions: { manageWorkspace: boolean; manageBilling: boolean; viewAuditLog: boolean; manageRoles: boolean }
+  mfaMandatory: boolean
 }
 
-export default function SettingsClient({ workspace, billing, defaults, logoUrl, session, permissions }: Props) {
+export default function SettingsClient({ workspace, billing, defaults, logoUrl, session, permissions, mfaMandatory }: Props) {
   const searchParams = useSearchParams()
   const router       = useRouter()
   const supabase     = createClient()
@@ -233,7 +233,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
         {error && <div className="auth-error" style={{ marginBottom: 14 }}>{error}</div>}
         {saved && <div className="auth-success" style={{ marginBottom: 14 }}>Changes saved.</div>}
 
-        {tab === 'account' && <AccountTab session={session} supabase={supabase} router={router} />}
+        {tab === 'account' && <AccountTab session={session} supabase={supabase} router={router} mfaMandatory={mfaMandatory} />}
 
         {tab === 'workspace' && (
           <WorkspaceTab form={wsForm} setForm={setWsForm} permissions={permissions} onSave={patch} saving={saving} slugLocked={slugLocked} />
@@ -270,7 +270,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
 }
 
 // ── ACCOUNT ──────────────────────────────────────────────────
-function AccountTab({ session, supabase, router }: any) {
+function AccountTab({ session, supabase, router, mfaMandatory }: any) {
   const [name,        setName]        = useState(session.name)
   const [newPw,       setNewPw]       = useState('')
   const [confirmPw,   setConfirmPw]   = useState('')
@@ -359,7 +359,19 @@ function AccountTab({ session, supabase, router }: any) {
           </button>
         </form>
       </div>
-      <MfaSection mandatory={permissionsRequireMfa(session.permissions)} />
+      {/* FIX (deep audit, Auth+MFA re-pass): was permissionsRequireMfa(
+          session.permissions) — checks only the ACTIVE workspace's
+          permissions, the same narrow check userHasAnyMfaMandatoryMembership
+          (lib/auth/session.ts) was written to replace at mfa-setup's badge,
+          DELETE /api/auth/mfa/factors' guard, and change-password's aal2
+          gate. This was the fifth call site that fix missed: a member whose
+          mandatory-MFA role lives in a non-active workspace saw an enabled
+          "Disable two-factor" button that the server (correctly, via
+          userHasAnyMfaMandatoryMembership) would still 403 — and never saw
+          the "Required, not set up" badge. Now computed server-side in
+          app/(app)/settings/page.tsx via the same shared function every
+          other site uses, and passed down as a prop. */}
+      <MfaSection mandatory={mfaMandatory} />
     </div>
   )
 }

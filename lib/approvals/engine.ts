@@ -23,7 +23,7 @@
 // to change it — everything downstream just checks the return value.
 
 import { logAudit } from '@/lib/utils/audit'
-import { getMembersWithRole, filterByNotificationPreference } from '@/lib/utils/permissions-query'
+import { getMembersWithRole, filterByNotificationPreference, filterToProjectAccess } from '@/lib/utils/permissions-query'
 import { sendApprovalRequestedEmail, sendApprovalDecisionEmail } from '@/lib/email/templates'
 import { sendSowDocument } from '@/lib/documents/send-sow'
 import { sendCoDocument } from '@/lib/documents/send-co'
@@ -186,7 +186,8 @@ export async function evaluateApprovalGate(service: any, params: GateParams): Pr
   await notifyStepApprovers(service, {
     workspaceId, requestId: request.id, step: steps[0],
     documentType, documentTitle: params.documentTitle,
-    projectName: params.projectName, amount: params.amount, currency: params.currency,
+    projectId: params.projectId, projectName: params.projectName,
+    amount: params.amount, currency: params.currency,
     requestedBy: params.requestedBy, totalSteps: steps.length,
   })
 
@@ -324,7 +325,8 @@ export async function recordApprovalDecision(service: any, params: DecisionParam
       await notifyStepApprovers(service, {
         workspaceId: params.actor.workspaceId, requestId: request.id, step: nextStep,
         documentType: request.document_type, documentTitle: docTitle,
-        projectName, amount: request.context?.amount || 0, currency: request.context?.currency || 'USD',
+        projectId: request.project_id, projectName,
+        amount: request.context?.amount || 0, currency: request.context?.currency || 'USD',
         requestedBy: { id: requester.id, name: requester.name, email: requester.email },
         totalSteps: request.total_steps,
       })
@@ -449,7 +451,7 @@ export async function sendApprovalReminder(
 ): Promise<'sent' | 'no_recipients' | 'not_found'> {
   const { data: request } = await service
     .from('approval_requests')
-    .select('id, workspace_id, document_type, current_step, total_steps, context, requested_by')
+    .select('id, workspace_id, document_type, current_step, total_steps, context, requested_by, project_id')
     .eq('id', requestId).eq('status', 'pending').single()
   if (!request) return 'not_found'
 
@@ -466,7 +468,7 @@ export async function sendApprovalReminder(
   const notifiedCount = await notifyStepApprovers(service, {
     workspaceId: request.workspace_id, requestId: request.id, step,
     documentType: request.document_type, documentTitle: request.context?.title || '',
-    projectName: request.context?.project_name || '', amount: request.context?.amount || 0,
+    projectId: request.project_id, projectName: request.context?.project_name || '', amount: request.context?.amount || 0,
     currency: request.context?.currency || 'USD',
     requestedBy: { id: requester.id, name: requester.name, email: requester.email },
     totalSteps: request.total_steps,
@@ -492,7 +494,7 @@ export async function getPendingApprovalForDocument(
 async function notifyStepApprovers(service: any, args: {
   workspaceId: string; requestId: string; step: WorkflowStepRow
   documentType: ApprovalDocumentType; documentTitle: string
-  projectName: string; amount: number; currency: string
+  projectId: string; projectName: string; amount: number; currency: string
   requestedBy: { id: string; name: string; email: string }
   totalSteps: number
 }): Promise<number> {
@@ -508,14 +510,27 @@ async function notifyStepApprovers(service: any, args: {
     // needs the same check.
     const { data: m } = await service
       .from('workspace_members')
-      .select('user_id, users!workspace_members_user_id_fkey(id, name, email)')
+      .select('user_id, effective_permissions, users!workspace_members_user_id_fkey(id, name, email)')
       .eq('workspace_id', args.workspaceId)
       .eq('user_id', args.step.approver_user_id)
       .eq('status', 'active')
       .maybeSingle()
-    if (m?.users) recipients = [{ id: m.users.id, name: m.users.name, email: m.users.email }]
+    if (m?.users) {
+      recipients = [{ id: m.users.id, name: m.users.name, email: m.users.email }]
+      // FIX (deep audit, RLS+permissions re-pass): same project-visibility
+      // rule as the role-based branch below and as getMembersWithPermission
+      // (audit round 4, finding #8) — a specifically-named approver isn't
+      // exempt just because the assignment is individual rather than
+      // role-based; if they hold VIEW_OWN_PROJECTS with no assignment to
+      // THIS project, they'd get a 403 opening the document the
+      // notification just emailed them the title/amount for.
+      recipients = await filterToProjectAccess(
+        service, args.projectId, recipients,
+        new Map([[m.user_id, m.effective_permissions || {}]])
+      )
+    }
   } else if (args.step.approver_role_id) {
-    recipients = await getMembersWithRole(service, args.workspaceId, args.step.approver_role_id)
+    recipients = await getMembersWithRole(service, args.workspaceId, args.step.approver_role_id, 25, args.projectId)
   }
   // FIX (re-audit, notifications section): a single filterByNotificationPreference
   // call (defaulting to the `email_enabled` column) used to gate BOTH the

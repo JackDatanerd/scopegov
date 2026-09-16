@@ -4,7 +4,7 @@
 // making the UI show hardcoded defaults even after a successful save.
 // .maybeSingle() returns null gracefully when no row exists, never 406.
 
-import { getSession, hasPermission } from '@/lib/auth/session'
+import { getSession, hasPermission, userHasAnyMfaMandatoryMembership } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import SettingsClient from '@/components/settings/SettingsClient'
@@ -51,15 +51,49 @@ export default async function SettingsPage() {
     logoUrl = u?.publicUrl || null
   }
 
+  // FIX (deep audit, RLS+permissions re-pass): agency_signature_data,
+  // tax_id, legal_address, and default_payment_instructions were fetched
+  // unconditionally into `workspace` and passed straight down as a prop
+  // to SettingsClient — a Client Component. Even though WorkspaceTab
+  // (the only tab that renders these) already bails out early for anyone
+  // without MANAGE_WORKSPACE_SETTINGS, the *prop itself* is still
+  // serialized into the page's RSC payload and reaches the browser of
+  // every visitor to Settings, viewable via dev tools regardless of
+  // whether that tab ever renders. Migration 032 closes the equivalent
+  // direct-PostgREST vector for these same columns; this closes the
+  // app's own over-fetch into an unprivileged user's browser, matching
+  // the redaction pattern already used elsewhere in the app.
+  const canManageWorkspace = hasPermission(session, 'MANAGE_WORKSPACE_SETTINGS')
+  const workspace = wsRes.data && !canManageWorkspace
+    ? {
+        ...wsRes.data,
+        agency_signature_data: null,
+        tax_id: null,
+        legal_address: null,
+        default_payment_instructions: null,
+      }
+    : wsRes.data
+
+  // FIX (deep audit, Auth+MFA re-pass): SettingsClient's AccountTab used to
+  // compute this itself via permissionsRequireMfa(session.permissions) —
+  // the active-workspace-only check userHasAnyMfaMandatoryMembership was
+  // written to replace everywhere else (mfa-setup's badge, DELETE
+  // /api/auth/mfa/factors' guard, change-password's aal2 gate). Computed
+  // here now, the same way, so Settings' "MFA mandatory" badge and its
+  // Disable-button gating agree with what the server will actually
+  // enforce for a mandatory-MFA role held in a non-active workspace.
+  const mfaMandatory = await userHasAnyMfaMandatoryMembership(session.id)
+
   return (
     <SettingsClient
-      workspace={wsRes.data}
+      workspace={workspace}
       billing={billingRes.data}
       defaults={defaultsRes.data}
       logoUrl={logoUrl}
       session={session}
+      mfaMandatory={mfaMandatory}
       permissions={{
-        manageWorkspace: hasPermission(session, 'MANAGE_WORKSPACE_SETTINGS'),
+        manageWorkspace: canManageWorkspace,
         manageBilling:   hasPermission(session, 'MANAGE_BILLING'),
         viewAuditLog:    hasPermission(session, 'VIEW_AUDIT_LOG'),
         // FIX (deep audit, section 5 re-pass): EXPORT_DATA removed — see

@@ -28,9 +28,22 @@ export default function SignupPage() {
         },
       })
       if (err) {
-        setError(err.message.toLowerCase().includes('already registered')
-          ? 'An account with this email already exists. Sign in instead.'
-          : err.message)
+        // FIX (deep audit, Auth+MFA re-pass): this used to surface a
+        // distinct "An account with this email already exists" message —
+        // account-enumeration via signup, while forgot-password ("Spec
+        // §16.2") deliberately returns the identical response regardless
+        // of whether the email exists, specifically to prevent this. Same
+        // principle now applied here: an "already registered" error is
+        // treated exactly like a successful signup from the outside (the
+        // real account holder isn't sent a spurious confirmation email —
+        // Supabase itself doesn't re-send one to an already-confirmed
+        // address — they just see nothing happen), so probing an email
+        // address via signup no longer confirms whether it's in use.
+        if (err.message.toLowerCase().includes('already registered')) {
+          setEmailSent(true)
+          return
+        }
+        setError(err.message)
         return
       }
       if (data.session) { router.push('/onboarding') }

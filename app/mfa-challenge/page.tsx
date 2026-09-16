@@ -70,7 +70,18 @@ function MfaChallengeInner() {
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error || 'Recovery failed')
-      router.push('/mfa-setup?recovered=1')
+      // FIX (deep audit, Auth+MFA re-pass): this used to hardcode the
+      // redirect with no `next`, unlike handleVerify above — mfa-setup's
+      // own "Continue" button (MfaSetupClient.tsx) reads `next` from its
+      // query string and falls back to safeRedirectPath(undefined), i.e.
+      // '/dashboard', when it's missing. Someone recovering via backup
+      // code mid password-reset (arrived here as /mfa-challenge?next=
+      // /reset-password) would re-enroll MFA and land on the dashboard,
+      // silently abandoning the password reset they started — a page
+      // reload could still reach /reset-password manually since the
+      // recovery session itself is unaffected, but nothing in the flow
+      // told them that. Forward `next` exactly like handleVerify does.
+      router.push(`/mfa-setup?recovered=1&next=${encodeURIComponent(next)}`)
       router.refresh()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Recovery failed')

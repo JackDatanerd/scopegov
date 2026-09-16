@@ -46,4 +46,17 @@ describe('permissionsRequireMfa', () => {
     expect(permissionsRequireMfa({ GRANT_EXCEPTIONS: true })).toBe(true)
     expect(permissionsRequireMfa({ APPROVE_FLAGS: true })).toBe(true)
   })
+
+  // FIX (deep audit, RLS+permissions re-pass) regression: VIEW_FINANCIALS
+  // and VIEW_CLIENT_DATA read the same sensitivity tier as VIEW_ALL_PROJECTS
+  // (contract/invoice amounts, client PII) but sat outside this list. Pin
+  // them the same way the entries above are pinned.
+  it('VIEW_FINANCIALS and VIEW_CLIENT_DATA are in the required list and trigger MFA', () => {
+    expect(MFA_REQUIRED_PERMISSIONS).toContain('VIEW_FINANCIALS')
+    expect(MFA_REQUIRED_PERMISSIONS).toContain('VIEW_CLIENT_DATA')
+    expect(permissionsRequireMfa(['VIEW_FINANCIALS'])).toBe(true)
+    expect(permissionsRequireMfa(['VIEW_CLIENT_DATA'])).toBe(true)
+    expect(permissionsRequireMfa({ VIEW_FINANCIALS: true })).toBe(true)
+    expect(permissionsRequireMfa({ VIEW_CLIENT_DATA: true })).toBe(true)
+  })
 })
