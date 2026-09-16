@@ -12,10 +12,20 @@ import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
 import { checkRevokedToken, verifySowJwt } from '../_shared'
+import { checkPortalRateLimit, recordPortalAction } from '@/lib/utils/portal-rate-limit'
+import { getClientIp } from '@/lib/utils/request-ip'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
     const { token }      = await params
+    const service        = createServiceClient()
+    // FEATURE (portal audit, section 18): see migration 030 — this route
+    // had no rate limiting at all before this.
+    const clientIp = getClientIp(request)
+    const rl = await checkPortalRateLimit(service, clientIp, 'sow.sign')
+    if (!rl.allowed) return NextResponse.json({ error: rl.message }, { status: 429 })
+    await recordPortalAction(service, clientIp, 'sow.sign')
+
     const { signerName, signatureData } = await request.json()
     const ip             = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown'
 
@@ -27,8 +37,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // see that file for the full note.
     if (signatureData.length > 500_000)
       return NextResponse.json({ error: 'Signature data is too large' }, { status: 400 })
-
-    const service = createServiceClient()
 
     // Check revoked
     const { revoked } = await checkRevokedToken(service, token)
@@ -123,6 +131,25 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           token: newToken, expires_at: newExpiresAt.toISOString(),
         }).eq('id', sow.id)
         clientToken = newToken
+
+        // FIX (portal audit, section 18 — flagship finding): the ORIGINAL
+        // signing-link email (sent at send-sow.ts time) is never patched
+        // to point at the new token above — it can't be, it's already
+        // delivered. Without this, a client who revisits that first email
+        // after signing gets "this link is no longer active" instead of
+        // their own executed document, because the token column no
+        // longer matches what that email contains. Recording the OLD
+        // token as superseded, with document_id, lets the GET/PDF routes
+        // resolve it back to this SOW — same mechanism CO's accept flow
+        // already relies on (see finalize-co.ts), which this SOW flow was
+        // missing entirely. Non-fatal: on failure the client just falls
+        // back to the same "invalid" experience that existed before this
+        // fix, not a broken signing flow.
+        try {
+          await (service as any).from('revoked_tokens').insert({
+            token, token_type: 'sow', reason: 'superseded', document_id: sow.id,
+          })
+        } catch (e) { console.error('SOW original-token supersede record failed (non-fatal):', e) }
       }
     } catch (e) { console.error('SOW post-signature token reissue failed (original link stays in effect):', e) }
 

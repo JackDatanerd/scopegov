@@ -8,6 +8,8 @@ import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { escapeHtml } from '@/lib/utils/sanitize'
 import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
+import { checkPortalRateLimit, recordPortalAction } from '@/lib/utils/portal-rate-limit'
+import { getClientIp } from '@/lib/utils/request-ip'
 
 async function resolveCoAndToken(token: string, service: any) {
   const { data: revoked } = await (service as any)
@@ -58,8 +60,14 @@ async function revertFlagIfLinked(service: any, co: any, reason: string, session
 
 // ── DECLINE ──────────────────────────────────────────────────
 export async function POST_DECLINE(request: NextRequest, token: string) {
-  const { reason } = await request.json().catch(() => ({ reason: null }))
   const service    = createServiceClient()
+  // FEATURE (portal audit, section 18): see migration 030.
+  const clientIp = getClientIp(request)
+  const rl = await checkPortalRateLimit(service, clientIp, 'co.decline')
+  if (!rl.allowed) return NextResponse.json({ error: rl.message }, { status: 429 })
+  await recordPortalAction(service, clientIp, 'co.decline')
+
+  const { reason } = await request.json().catch(() => ({ reason: null }))
   const result     = await resolveCoAndToken(token, service)
   if ('error' in result) return NextResponse.json({ error: result.error }, { status: result.status })
 
@@ -122,7 +130,7 @@ export async function POST_DECLINE(request: NextRequest, token: string) {
       await resend.emails.send({
         from: `ScopeGov <${process.env.RESEND_FROM_EMAIL}>`,
         to: emails,
-        subject: `${client?.name} declined the change order — ${co.title}`,
+        subject: `${escapeHtml(client?.name)} declined the change order — ${escapeHtml(co.title)}`,
         html: `<p><strong>${escapeHtml(client?.name)}</strong> has declined the change order <strong>${escapeHtml(co.title)}</strong> on <strong>${escapeHtml(co.projects?.name)}</strong>.</p>
         ${reason ? `<p><strong>Reason:</strong> ${escapeHtml(reason)}</p>` : ''}
         <p><a href="${process.env.NEXT_PUBLIC_APP_URL}/projects/${co.project_id}?tab=co">View in ScopeGov →</a></p>`,
@@ -144,6 +152,13 @@ export async function POST_DECLINE(request: NextRequest, token: string) {
 
 // ── COUNTER ──────────────────────────────────────────────────
 export async function POST_COUNTER(request: NextRequest, token: string) {
+  const service = createServiceClient()
+  // FEATURE (portal audit, section 18): see migration 030.
+  const clientIp = getClientIp(request)
+  const rl = await checkPortalRateLimit(service, clientIp, 'co.counter')
+  if (!rl.allowed) return NextResponse.json({ error: rl.message }, { status: 429 })
+  await recordPortalAction(service, clientIp, 'co.counter')
+
   const { counterAmount, counterNote } = await request.json()
   // FIX (audit round 3): `!counterAmount` is false for any non-empty
   // string, and a NaN comparison (`NaN <= 0`) is always false too — so a
@@ -155,7 +170,6 @@ export async function POST_COUNTER(request: NextRequest, token: string) {
   if (!counterAmount || !Number.isFinite(parsedAmount) || parsedAmount <= 0)
     return NextResponse.json({ error: 'Counter amount must be greater than zero' }, { status: 400 })
 
-  const service = createServiceClient()
   const result  = await resolveCoAndToken(token, service)
   if ('error' in result) return NextResponse.json({ error: result.error }, { status: result.status })
 
@@ -197,7 +211,12 @@ export async function POST_COUNTER(request: NextRequest, token: string) {
 
   // Notify agency (Event 14)
   try {
-    const emails = await getMemberEmailsWithPermission(service, co.workspace_id, 'SEND_CHANGE_ORDERS', 25, undefined, co.project_id)
+    // FIX (portal audit, section 18): this used to pass `undefined` for
+    // eventType — unlike the decline path just above, which correctly
+    // passes 'co_declined' — so counter-offer emails ignored notification
+    // preferences entirely. Members who'd opted out of 'co_countered'
+    // still got these.
+    const emails = await getMemberEmailsWithPermission(service, co.workspace_id, 'SEND_CHANGE_ORDERS', 25, 'co_countered', co.project_id)
     if (emails.length) {
       const { Resend } = await import('resend')
       const resend = new Resend(process.env.RESEND_API_KEY)
@@ -205,7 +224,13 @@ export async function POST_COUNTER(request: NextRequest, token: string) {
       await resend.emails.send({
         from: `ScopeGov <${process.env.RESEND_FROM_EMAIL}>`,
         to: emails,
-        subject: `Counter offer received — ${co.title}`,
+        // FIX (portal audit, section 18): client.name/co.title were
+        // interpolated raw into the subject line while the HTML body
+        // right below correctly escapeHtml()s the same values — harmless
+        // in practice today (both are agency-set, not attacker-reachable
+        // through this public form) but inconsistent with the deliberate
+        // treatment one line down.
+        subject: `Counter offer received — ${escapeHtml(co.title)}`,
         html: `<p><strong>${escapeHtml(client?.name)}</strong> has proposed a counter offer of <strong>${escapeHtml(co.projects?.currency || 'USD')} ${parsedAmount.toLocaleString()}</strong> on <strong>${escapeHtml(co.title)}</strong>.</p>
         ${counterNote ? `<p><strong>Note:</strong> ${escapeHtml(counterNote)}</p>` : ''}
         <p><a href="${process.env.NEXT_PUBLIC_APP_URL}/projects/${co.project_id}?tab=co">Review counter in ScopeGov →</a></p>`,

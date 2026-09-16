@@ -5,10 +5,19 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { jwtVerify } from 'jose'
 import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
 import { finalizeCoAcceptance } from '@/lib/documents/finalize-co'
+import { checkPortalRateLimit, recordPortalAction } from '@/lib/utils/portal-rate-limit'
+import { getClientIp } from '@/lib/utils/request-ip'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
     const { token }      = await params
+    const service        = createServiceClient()
+    // FEATURE (portal audit, section 18): see migration 030.
+    const clientIp = getClientIp(request)
+    const rl = await checkPortalRateLimit(service, clientIp, 'co.accept')
+    if (!rl.allowed) return NextResponse.json({ error: rl.message }, { status: 429 })
+    await recordPortalAction(service, clientIp, 'co.accept')
+
     const { signerName, signatureData } = await request.json()
     // FIX (doc-completeness audit, finding #2): same capture pattern as
     // app/api/portal/sow/[token]/sign/route.ts — see migration 015.
@@ -26,8 +35,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // signature drawing produces.
     if (signatureData.length > 500_000)
       return NextResponse.json({ error: 'Signature data is too large' }, { status: 400 })
-
-    const service = createServiceClient()
 
     const { data: revoked } = await (service as any)
       .from('revoked_tokens').select('id').eq('token', token).single()
@@ -83,9 +90,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status })
 
     // Revoke token — superseded
+    // FIX (portal audit, section 18): document_id added so a client who
+    // revisits the ORIGINAL (pre-acceptance) email link can still be
+    // routed to their now-accepted CO — see migration 029.
     try {
       await (service as any).from('revoked_tokens').insert({
-        token, token_type: 'co', reason: 'superseded',
+        token, token_type: 'co', reason: 'superseded', document_id: co.id,
       })
     } catch (e) { console.error('Token revoke insert failed (non-fatal):', e) }
 

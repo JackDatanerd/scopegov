@@ -3,14 +3,18 @@ export const runtime = 'nodejs'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { jwtVerify } from 'jose'
-import { logAudit } from '@/lib/utils/audit'
-import { sendCoAcceptedEmail } from '@/lib/email/templates'
 import { formatAddress } from '@/lib/utils/format'
 import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
 
+const CO_COLUMNS = `id,title,note,status,version,line_items,subtotal,tax_rate,tax_inclusive,
+  total,expires_at,flag_id,workspace_id,accepted_by,accepted_at,client_signature_data,
+  projects(id,name,currency,clients(name,email,cc_emails,company_name,billing_address,vat_number),
+    workspaces(id,agency_name,brand_colour,logo_storage_path,agency_signature_data,
+      legal_address,tax_id,phone,website))`
+
 async function getCoByToken(token: string, service: any) {
   const { data: revoked } = await (service as any)
-    .from('revoked_tokens').select('reason').eq('token', token).single()
+    .from('revoked_tokens').select('reason, document_id').eq('token', token).single()
 
   // FIX (re-audit, critical finding): this used to map ANY non-'declined'
   // revoked reason — including 'superseded', which accept/route.ts and
@@ -24,10 +28,10 @@ async function getCoByToken(token: string, service: any) {
   // original send-out email never was), saw "This link is no longer
   // active" instead of their own accepted document.
   //
-  // 'declined' and 'superseded' never touch change_orders.token, so the
-  // CO is still resolvable by token below — let co.status (which already
-  // handles every terminal state correctly, including 'accepted') drive
-  // the response instead of guessing from the revocation reason. Only
+  // 'declined' never touches change_orders.token, so the CO is still
+  // resolvable by token below — let co.status (which already handles
+  // every terminal state correctly, including 'accepted') drive the
+  // response instead of guessing from the revocation reason. Only
   // 'withdrawn' (api/co/[id]/withdraw) actually nulls the token, making
   // the CO unresolvable by token afterward — that's the one reason that
   // must be trusted directly, and it now maps to the dedicated 'withdrawn'
@@ -38,27 +42,48 @@ async function getCoByToken(token: string, service: any) {
   // and billing fields were never selected here, so the client accepted a
   // CO without ever seeing the agency/client addresses or tax IDs that
   // appear on the CO PDF.
-  const { data: co } = await (service as any)
-    .from('change_orders')
-    .select(`id,title,note,status,version,line_items,subtotal,tax_rate,tax_inclusive,
-      total,expires_at,flag_id,workspace_id,accepted_by,accepted_at,client_signature_data,
-      projects(id,name,currency,clients(name,email,cc_emails,company_name,billing_address,vat_number),
-        workspaces(id,agency_name,brand_colour,logo_storage_path,agency_signature_data,
-          legal_address,tax_id,phone,website))`)
-    .eq('token', token).single()
+  let { data: co } = await (service as any)
+    .from('change_orders').select(CO_COLUMNS).eq('token', token).single()
+
+  // FIX (portal audit, section 18 — flagship finding): the "critical
+  // finding" comment above turned out to rest on a false premise —
+  // accept/route.ts and countersign/route.ts BOTH rotate
+  // change_orders.token to a fresh value the instant a client completes
+  // one of those actions (see finalize-co.ts), specifically so the
+  // long-term access link can outlive the short signing-window expiry.
+  // That means the ORIGINAL token — the one actually sitting in the
+  // client's very first "please review" email — stops matching this row
+  // at all, and the "co.status already handles every terminal state"
+  // reasoning above never gets a chance to run, because `co` comes back
+  // null before it does. This is the exact revisit-the-original-email
+  // scenario the comment above describes, still broken by a second
+  // mechanism it didn't account for. document_id (migration 029) lets a
+  // 'superseded'-revoked token resolve to the live row by id instead. No
+  // separate JWT check is needed for this path: an exact match against
+  // revoked_tokens.token — a random signed value nobody could have
+  // without having received the original email — is equivalent proof of
+  // possession to matching change_orders.token directly.
+  let skipJwtVerify = false
+  if (!co && revoked?.reason === 'superseded' && revoked.document_id) {
+    const { data: byId } = await (service as any)
+      .from('change_orders').select(CO_COLUMNS).eq('id', revoked.document_id).single()
+    if (byId) { co = byId; skipJwtVerify = true }
+  }
 
   if (!co) return { state: revoked ? 'revoked' : 'invalid' }
 
-  // jwt_secret lives in workspace_secrets now, not on workspaces itself —
-  // see migration 013.
-  try {
-    const jwtSecret = await getWorkspaceJwtSecret(service, co.workspace_id)
-    if (!jwtSecret) throw new Error('no secret')
-    const secret = new TextEncoder().encode(jwtSecret)
-    await jwtVerify(token, secret)
-  } catch {
-    if (co.expires_at && new Date(co.expires_at) < new Date()) return { state: 'expired' }
-    return { state: 'invalid' }
+  if (!skipJwtVerify) {
+    // jwt_secret lives in workspace_secrets now, not on workspaces itself —
+    // see migration 013.
+    try {
+      const jwtSecret = await getWorkspaceJwtSecret(service, co.workspace_id)
+      if (!jwtSecret) throw new Error('no secret')
+      const secret = new TextEncoder().encode(jwtSecret)
+      await jwtVerify(token, secret)
+    } catch {
+      if (co.expires_at && new Date(co.expires_at) < new Date()) return { state: 'expired' }
+      return { state: 'invalid' }
+    }
   }
 
   // BUG: 'closed', 'stalled', and 'countered' were never included here, so

@@ -7,12 +7,20 @@ import { sendSowDeclinedEmail } from '@/lib/email/templates'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { checkRevokedToken, verifySowJwt } from '../_shared'
+import { checkPortalRateLimit, recordPortalAction } from '@/lib/utils/portal-rate-limit'
+import { getClientIp } from '@/lib/utils/request-ip'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
     const { token }  = await params
-    const { reason } = await request.json().catch(() => ({ reason: null }))
     const service    = createServiceClient()
+    // FEATURE (portal audit, section 18): see migration 030.
+    const clientIp = getClientIp(request)
+    const rl = await checkPortalRateLimit(service, clientIp, 'sow.decline')
+    if (!rl.allowed) return NextResponse.json({ error: rl.message }, { status: 429 })
+    await recordPortalAction(service, clientIp, 'sow.decline')
+
+    const { reason } = await request.json().catch(() => ({ reason: null }))
 
     const { revoked } = await checkRevokedToken(service, token)
     if (revoked) return NextResponse.json({ error: 'Link no longer active' }, { status: 410 })

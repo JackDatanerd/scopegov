@@ -6,6 +6,13 @@ import { jwtVerify } from 'jose'
 import { renderSowPdf } from '@/lib/pdf/renderer'
 import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
 
+const SOW_PDF_COLUMNS = `id, version, document_number, sections, metadata, status, signed_at, signed_by,
+  client_signature_data, workspace_id,
+  projects(id, name, disc, contract_value, currency,
+    clients(name, company_name, billing_address, vat_number),
+    workspaces(agency_name, brand_colour, logo_storage_path, agency_signature_data,
+      legal_address, tax_id, phone, website))`
+
 // FIX (audit): no portal-scoped PDF route existed for SOWs at all. The only
 // SOW PDF route (/api/pdf/sow/[id]) requires an authenticated internal
 // session, so a client on this token-based portal — who is never logged in
@@ -21,30 +28,44 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const service = createServiceClient()
 
     const { data: revoked } = await (service as any)
-      .from('revoked_tokens').select('id').eq('token', token).single()
-    if (revoked) return NextResponse.json({ error: 'Link no longer active' }, { status: 410 })
+      .from('revoked_tokens').select('reason, document_id').eq('token', token).single()
+    // 'declined'/'withdrawn' still 410 as normal — only a superseded
+    // (rotated-on-signature) token gets the id-based fallback below, since
+    // that's the only reason that means "this document is fine, just this
+    // particular token isn't the current one anymore."
+    if (revoked && revoked.reason !== 'superseded')
+      return NextResponse.json({ error: 'Link no longer active' }, { status: 410 })
 
-    const { data: sow } = await (service as any)
-      .from('sow_documents')
-      .select(`id, version, document_number, sections, metadata, status, signed_at, signed_by,
-        client_signature_data, workspace_id,
-        projects(id, name, disc, contract_value, currency,
-          clients(name, company_name, billing_address, vat_number),
-          workspaces(agency_name, brand_colour, logo_storage_path, agency_signature_data,
-            legal_address, tax_id, phone, website))`)
-      .eq('token', token).single()
+    let { data: sow } = await (service as any)
+      .from('sow_documents').select(SOW_PDF_COLUMNS).eq('token', token).single()
+
+    // FIX (portal audit, section 18 — flagship finding): the sign route
+    // rotates sow_documents.token to a fresh value the instant signing
+    // completes (step 1b), so the ORIGINAL token — the one in the client's
+    // very first "please sign" email, which is also the only token they'd
+    // ever use to reach this /pdf route before a rotated one exists — goes
+    // dead the moment they actually sign. document_id (migration 029)
+    // resolves it back to the live row.
+    let skipJwtVerify = false
+    if (!sow && revoked?.reason === 'superseded' && revoked.document_id) {
+      const { data: byId } = await (service as any)
+        .from('sow_documents').select(SOW_PDF_COLUMNS).eq('id', revoked.document_id).single()
+      if (byId) { sow = byId; skipJwtVerify = true }
+    }
 
     if (!sow) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (sow.status !== 'signed')
       return NextResponse.json({ error: 'This SOW has not been signed yet' }, { status: 409 })
 
-    try {
-      const jwtSecret = await getWorkspaceJwtSecret(service, sow.workspace_id)
-      if (!jwtSecret) throw new Error('no secret')
-      const secret = new TextEncoder().encode(jwtSecret)
-      await jwtVerify(token, secret)
-    } catch {
-      return NextResponse.json({ error: 'Invalid or expired link' }, { status: 401 })
+    if (!skipJwtVerify) {
+      try {
+        const jwtSecret = await getWorkspaceJwtSecret(service, sow.workspace_id)
+        if (!jwtSecret) throw new Error('no secret')
+        const secret = new TextEncoder().encode(jwtSecret)
+        await jwtVerify(token, secret)
+      } catch {
+        return NextResponse.json({ error: 'Invalid or expired link' }, { status: 401 })
+      }
     }
 
     const project = sow.projects

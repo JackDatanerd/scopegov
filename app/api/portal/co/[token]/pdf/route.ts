@@ -5,6 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { jwtVerify } from 'jose'
 import { renderCoPdf } from '@/lib/pdf/renderer'
 import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
+import { getContractValueBefore } from '@/lib/documents/co-contract-value'
 
 // FIX (doc-completeness audit, finding #9): no portal-scoped PDF route
 // existed for change orders at all — a client who accepted a CO had no
@@ -25,17 +26,30 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const service = createServiceClient()
 
     const { data: revoked } = await (service as any)
-      .from('revoked_tokens').select('reason').eq('token', token).single()
+      .from('revoked_tokens').select('reason, document_id').eq('token', token).single()
 
-    const { data: co } = await (service as any)
-      .from('change_orders')
-      .select(`id,title,note,status,line_items,subtotal,tax_rate,tax_inclusive,total,
+    const CO_PDF_COLUMNS = `id,title,note,status,line_items,subtotal,tax_rate,tax_inclusive,total,
         timeline_impact_days,scope_impact_note,
         document_number,accepted_by,accepted_at,client_signature_data,workspace_id,project_id,
         projects(id,name,currency,contract_value,clients(name,email,company_name,billing_address,vat_number),
           workspaces(id,agency_name,brand_colour,logo_storage_path,agency_signature_data,
-            legal_address,tax_id,phone,website))`)
-      .eq('token', token).single()
+            legal_address,tax_id,phone,website))`
+
+    let { data: co } = await (service as any)
+      .from('change_orders').select(CO_PDF_COLUMNS).eq('token', token).single()
+
+    // FIX (portal audit, section 18): same root cause as
+    // app/api/portal/co/[token]/route.ts — accept/countersign rotate
+    // change_orders.token on completion, which orphans this exact token
+    // (the one that WAS used to accept, per the comment above) the moment
+    // acceptance finishes. document_id (migration 029) resolves it back
+    // to the live row.
+    let skipJwtVerify = false
+    if (!co && revoked?.reason === 'superseded' && revoked.document_id) {
+      const { data: byId } = await (service as any)
+        .from('change_orders').select(CO_PDF_COLUMNS).eq('id', revoked.document_id).single()
+      if (byId) { co = byId; skipJwtVerify = true }
+    }
 
     if (!co) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
@@ -44,13 +58,15 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     if (co.status !== 'accepted')
       return NextResponse.json({ error: 'This change order has not been accepted yet' }, { status: 409 })
 
-    try {
-      const jwtSecret = await getWorkspaceJwtSecret(service, co.workspace_id)
-      if (!jwtSecret) throw new Error('no secret')
-      const secret = new TextEncoder().encode(jwtSecret)
-      await jwtVerify(token, secret)
-    } catch {
-      return NextResponse.json({ error: 'Invalid or expired link' }, { status: 401 })
+    if (!skipJwtVerify) {
+      try {
+        const jwtSecret = await getWorkspaceJwtSecret(service, co.workspace_id)
+        if (!jwtSecret) throw new Error('no secret')
+        const secret = new TextEncoder().encode(jwtSecret)
+        await jwtVerify(token, secret)
+      } catch {
+        return NextResponse.json({ error: 'Invalid or expired link' }, { status: 401 })
+      }
     }
 
     const project = co.projects
@@ -74,9 +90,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       .limit(1)
       .maybeSingle()
 
-    const contractValueBefore = project?.contract_value != null
-      ? project.contract_value - (co.status === 'accepted' ? (co.total || 0) : 0)
-      : null
+    const contractValueBefore = await getContractValueBefore(
+      service, co.project_id, co.id, project?.contract_value ?? null
+    )
 
     const pdfBuffer = await renderCoPdf({
       agencyName:    ws?.agency_name || 'Agency',

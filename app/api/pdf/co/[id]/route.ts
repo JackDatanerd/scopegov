@@ -5,6 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession } from '@/lib/auth/session'
 import { renderCoPdf } from '@/lib/pdf/renderer'
 import { canReadProject } from '@/lib/utils/project-access'
+import { getContractValueBefore } from '@/lib/documents/co-contract-value'
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -54,12 +55,14 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       .limit(1)
       .maybeSingle()
 
-    // contractValueBefore: see the CoPdfData doc comment in
-    // lib/pdf/renderer.tsx for the known limitation with out-of-order
-    // historical change orders.
-    const contractValueBefore = co.projects?.contract_value != null
-      ? co.projects.contract_value - (co.status === 'accepted' ? (co.total || 0) : 0)
-      : null
+    // FIX (portal audit, section 18): see lib/documents/co-contract-value.ts
+    // — the old inline computation here assumed contract_value already
+    // included this (and every prior) accepted CO's amount. It never did;
+    // this understated both the before AND revised value on every accepted
+    // CO's PDF, not just the multi-CO case the old comment disclosed.
+    const contractValueBefore = await getContractValueBefore(
+      service, co.project_id, co.id, co.projects?.contract_value ?? null
+    )
 
     const pdfBuffer = await renderCoPdf({
       agencyName:  ws?.agency_name || session.agencyName,

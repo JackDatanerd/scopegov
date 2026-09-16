@@ -102,16 +102,12 @@ export interface CoPdfData {
   // and simply omitted if the project has no signed SOW on file.
   sowNumber?:   string | null
   // Original/Revised contract value block (Meridian's "Impact Analysis"
-  // equivalent). contractValueBefore is the project's contract_value
-  // before this CO's amount is applied. Known limitation, disclosed
-  // rather than silently wrong: for a CO that was accepted in the past
-  // and has since been followed by OTHER accepted COs on the same
-  // project, this is computed as (current contract_value − this CO's
-  // total), which is only exact when this is the most recently accepted
-  // CO. Getting this exactly right for arbitrary historical reordering
-  // would need a value snapshot captured at accept-time — not built in
-  // this pass. Correct for the common case: reviewing a pending CO, or
-  // the most recent accepted one.
+  // equivalent). contractValueBefore is the project's base contract value
+  // plus every OTHER previously-accepted CO's amount — see
+  // lib/documents/co-contract-value.ts, which both PDF routes now compute
+  // this from (FIX, portal audit section 18: the old inline version here
+  // assumed contract_value itself already accumulated prior COs, which it
+  // never has — that's tracked in the separate `amendments` table instead).
   contractValueBefore?: number | null
   // Scope/Timeline impact rows (doc-quality audit round 3, migration
   // 018) — Meridian's Impact Analysis shows Scope / Timeline / Value as

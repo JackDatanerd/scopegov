@@ -7,16 +7,23 @@ import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { escapeHtml } from '@/lib/utils/sanitize'
 import { checkRevokedToken, verifySowJwt } from '../_shared'
+import { checkPortalRateLimit, recordPortalAction } from '@/lib/utils/portal-rate-limit'
+import { getClientIp } from '@/lib/utils/request-ip'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
     const { token } = await params
+    const service = createServiceClient()
+    // FEATURE (portal audit, section 18): see migration 030.
+    const clientIp = getClientIp(request)
+    const rl = await checkPortalRateLimit(service, clientIp, 'sow.requestChanges')
+    if (!rl.allowed) return NextResponse.json({ error: rl.message }, { status: 429 })
+    await recordPortalAction(service, clientIp, 'sow.requestChanges')
+
     const { note }  = await request.json()
 
     if (!note || note.trim().length < 20)
       return NextResponse.json({ error: 'Please describe the changes needed (minimum 20 characters)' }, { status: 400 })
-
-    const service = createServiceClient()
 
     const { revoked } = await checkRevokedToken(service, token)
     if (revoked) return NextResponse.json({ error: 'Link no longer active' }, { status: 410 })
@@ -116,7 +123,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         await resend.emails.send({
           from: `${escapeHtml(project.workspaces.agency_name)} via ScopeGov <${process.env.RESEND_FROM_EMAIL}>`,
           to: emails,
-          subject: `${client.name} requested changes on the ${project.name} SOW`,
+          subject: `${escapeHtml(client.name)} requested changes on the ${escapeHtml(project.name)} SOW`,
           html: `<p><strong>${escapeHtml(client.name)}</strong> has requested changes on the <strong>${escapeHtml(project.name)}</strong> SOW (v${sow.version}).</p>
           <p><strong>Feedback:</strong> ${escapeHtml(note)}</p>
           <p>A new draft (v${sow.version + 1}) has been created in ScopeGov for you to edit and resend.</p>

@@ -21,13 +21,17 @@
 import { jwtVerify } from 'jose'
 import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
 
-export async function checkRevokedToken(service: any, token: string): Promise<{ revoked: boolean; reason?: string }> {
+export async function checkRevokedToken(
+  service: any, token: string
+): Promise<{ revoked: boolean; reason?: string; documentId?: string }> {
   const { data: revoked } = await service
     .from('revoked_tokens')
-    .select('reason')
+    .select('reason, document_id')
     .eq('token', token)
     .single()
-  return revoked ? { revoked: true, reason: revoked.reason } : { revoked: false }
+  return revoked
+    ? { revoked: true, reason: revoked.reason, documentId: revoked.document_id || undefined }
+    : { revoked: false }
 }
 
 export async function verifySowJwt(service: any, token: string, workspaceId: string): Promise<boolean> {
