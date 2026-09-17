@@ -125,6 +125,11 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ logoStoragePath: path })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): outer
+    // catch-all returned a raw exception message — same info-disclosure
+    // pattern already fixed elsewhere in this section, missed here even
+    // though this is onboarding step 1's logo upload path.
+    console.error('Logo upload route error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

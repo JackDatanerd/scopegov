@@ -171,7 +171,16 @@ export async function PATCH(request: NextRequest) {
       if ((error as any).code === '23505') {
         return NextResponse.json({ error: 'That URL is already taken. Please choose another.' }, { status: 409 })
       }
-      throw new Error(error.message)
+      // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): this
+      // used to `throw new Error(error.message)`, which the catch-all
+      // below returned to the client verbatim — a raw Postgres error,
+      // the exact info-disclosure pattern already fixed for every one of
+      // the seven named workspace-lifecycle routes but missed here, even
+      // though this route is what onboarding step 0's "go back and
+      // re-edit" path calls. Log server-side and return a generic
+      // message directly instead.
+      console.error('Workspace settings update failed:', error)
+      return NextResponse.json({ error: 'Failed to update workspace settings' }, { status: 500 })
     }
 
     await logAudit(service, {
@@ -184,6 +193,12 @@ export async function PATCH(request: NextRequest) {
 
     return NextResponse.json({ ok: true })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): the
+    // write-error branch above is now hardened against this exact leak —
+    // the outer catch-all was missed, so an unexpected exception (a
+    // malformed body, a network-level Supabase client error) still
+    // returned raw internals to the client.
+    console.error('Workspace settings error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

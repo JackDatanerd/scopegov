@@ -1557,9 +1557,20 @@ function TeamTab({ project, team, permissions }: any) {
             const u = t.workspace_members?.users
             return u ? (
               <div key={t.id} className="surface surface-p" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <div style={{ width: 32, height: 32, borderRadius: '50%', background: 'var(--green)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#FFF', fontSize: 12, fontWeight: 600 }}>
-                  {u.name?.split(' ').map((p: string) => p[0]).join('').toUpperCase().slice(0, 2)}
-                </div>
+                {/* FIX (deep audit, Workspace lifecycle + Onboarding
+                    re-pass — feature gap): u.avatar_url was already
+                    selected all the way from page.tsx's query but never
+                    rendered here — see
+                    api/workspace/profile/avatar/route.ts for where it now
+                    comes from. */}
+                {u.avatar_url ? (
+                  <img src={u.avatar_url} alt="" width={32} height={32}
+                    style={{ borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
+                ) : (
+                  <div style={{ width: 32, height: 32, borderRadius: '50%', background: 'var(--green)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#FFF', fontSize: 12, fontWeight: 600, flexShrink: 0 }}>
+                    {u.name?.split(' ').map((p: string) => p[0]).join('').toUpperCase().slice(0, 2)}
+                  </div>
+                )}
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: 13, fontWeight: 500 }}>{u.name}</div>
                   <div style={{ fontSize: 12, color: 'var(--text-3)' }}>{u.email}</div>

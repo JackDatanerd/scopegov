@@ -234,7 +234,18 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
               return (
                 <div key={m.id} className="member-card">
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-                    <div className="member-av" style={{ background: colour }}>{initials(name)}</div>
+                    {/* FIX (deep audit, Workspace lifecycle + Onboarding
+                        re-pass — feature gap): u.avatar_url has been
+                        selected in this query all along but was never
+                        actually rendered — every member showed colored
+                        initials regardless of whether they'd set a photo,
+                        because there was nowhere in the app to set one
+                        until now (see api/workspace/profile/avatar/route.ts). */}
+                    {u?.avatar_url ? (
+                      <img src={u.avatar_url} alt="" className="member-av" style={{ objectFit: 'cover' }} />
+                    ) : (
+                      <div className="member-av" style={{ background: colour }}>{initials(name)}</div>
+                    )}
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div className="member-name">{name} {isMe && <span style={{ fontSize: 10, color: 'var(--green)' }}>you</span>}</div>
                       <div className="member-role">{m.roles?.name || 'No role'}</div>

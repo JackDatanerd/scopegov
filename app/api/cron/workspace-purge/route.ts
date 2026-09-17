@@ -22,9 +22,13 @@ export async function POST(request: NextRequest) {
     const service  = createServiceClient()
     const cutoff7yr = new Date(Date.now() - 7 * 365 * 86400000).toISOString()
 
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — traced
+    // through from onboarding's logo-upload path): fetch logo_storage_path
+    // now, while the row still exists — purge_workspace hard-deletes the
+    // `workspaces` row itself, so this is the last point this is readable.
     const { data: candidates, error: findErr } = await (service as any)
       .from('workspaces')
-      .select('id')
+      .select('id, logo_storage_path')
       .not('deleted_at', 'is', null)
       .lt('deleted_at', cutoff7yr)
 
@@ -50,9 +54,36 @@ export async function POST(request: NextRequest) {
       if (purgeErr) {
         console.error(`Workspace purge failed for ${w.id}:`, purgeErr)
         failures.push({ id: w.id, error: purgeErr.message })
-      } else {
-        purgedCount++
+        continue
       }
+      purgedCount++
+      // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): the DB
+      // row is gone at this point, but purge_workspace() never touched
+      // Storage — the logo object this workspace uploaded (see
+      // workspace/branding/logo/route.ts) was left behind in the public
+      // `logos` bucket forever, unreferenced by anything. Best-effort,
+      // same pattern the logo-upload route itself already uses for its
+      // own stale-object cleanup: must never fail the purge, which has
+      // already succeeded by this point.
+      if (w.logo_storage_path) {
+        const { error: removeErr } = await (service as any).storage.from('logos').remove([w.logo_storage_path])
+        if (removeErr) console.error(`Logo cleanup failed for purged workspace ${w.id} (non-fatal):`, removeErr)
+      }
+      // FIX (deep audit, Workspace lifecycle + Onboarding re-pass):
+      // users.active_workspace_id carries no FK to workspaces (checked —
+      // there isn't one across any migration), so it can't be relied on to
+      // cascade or null itself out here. workspace/delete's own
+      // reassignment loop already runs at soft-delete time for every
+      // member, so this only ever matters for the rare case that
+      // best-effort step failed for someone 7 years ago and they never
+      // switched since. Harmless today — getSession() already falls back
+      // to the oldest remaining active membership regardless of this
+      // column's value — but there's no reason to leave a reference to a
+      // row that no longer exists lying around. Best-effort, must never
+      // fail the purge.
+      const { error: staleActiveErr } = await (service as any)
+        .from('users').update({ active_workspace_id: null }).eq('active_workspace_id', w.id)
+      if (staleActiveErr) console.error(`Stale active_workspace_id cleanup failed for purged workspace ${w.id} (non-fatal):`, staleActiveErr)
     }
 
     console.log(`[WORKSPACE PURGE] Hard-deleted ${purgedCount}/${(candidates || []).length} workspaces older than 7 years`)

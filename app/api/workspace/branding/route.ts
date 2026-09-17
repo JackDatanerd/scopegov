@@ -81,7 +81,16 @@ export async function PATCH(request: NextRequest) {
       .update(updates)
       .eq('id', session.workspaceId)  // ← from session, not body
 
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): raw
+    // Postgres error.message was returned straight to the client — the
+    // same info-disclosure pattern already fixed for every one of the
+    // seven named workspace-lifecycle routes, missed here even though
+    // this is what onboarding step 1's branding save calls. Log
+    // server-side only.
+    if (error) {
+      console.error('Workspace branding update failed:', error)
+      return NextResponse.json({ error: 'Failed to update branding' }, { status: 500 })
+    }
 
     // FIX (deep audit, section 5 re-pass): this route changes the agency's
     // brand colour, logo, and — most materially — agency_signature_data,

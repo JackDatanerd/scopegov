@@ -33,6 +33,20 @@ function normalizeProjectType(value: unknown): ProjectType | null | undefined {
   return PROJECT_TYPES.includes(value as ProjectType) ? (value as ProjectType) : undefined
 }
 
+// FIX (deep audit, Workspace lifecycle + Onboarding re-pass): saveDefaults
+// used to throw new Error(error.message) / new Error(wsError.message) for
+// real DB failures, indistinguishable from its own deliberate, safe
+// validation message (invalid project type) — every catch block below
+// then returned whichever kind it got straight to the client, the same
+// info-disclosure pattern already fixed for every one of the seven named
+// workspace-lifecycle routes. Tag validation errors so callers can tell
+// the two apart: a DefaultsValidationError's message is always safe to
+// show (and belongs on a 400); anything else is logged server-side and
+// answered with a generic message on a 500 — including a bonus fix along
+// the way, since an invalid project type previously fell through to the
+// generic 500 catch instead of the 400 its own message implied.
+class DefaultsValidationError extends Error {}
+
 // FIX (doc-completeness audit, finding #1): governingLaw used to be
 // stored ONLY on workspace_defaults, a table nothing in SOW generation
 // ever reads — app/api/sow/generate/route.ts always read
@@ -51,7 +65,7 @@ async function saveDefaults(workspaceId: string, body: any) {
   const { revisionRounds, paymentStructure, governingLaw } = body
   const projectType = normalizeProjectType(body.projectType)
   if (projectType === undefined && body.projectType !== undefined) {
-    throw new Error(`Invalid project type. Must be one of: ${PROJECT_TYPES.join(', ')}`)
+    throw new DefaultsValidationError(`Invalid project type. Must be one of: ${PROJECT_TYPES.join(', ')}`)
   }
   const service = createServiceClient()
 
@@ -82,12 +96,18 @@ async function saveDefaults(workspaceId: string, body: any) {
       .from('workspace_defaults')
       .update(payload)
       .eq('id', existing.id)
-    if (error) throw new Error(error.message)
+    if (error) {
+      console.error('workspace_defaults update failed:', error)
+      throw new Error('Could not save your defaults. Try again.')
+    }
   } else {
     const { error } = await (service as any)
       .from('workspace_defaults')
       .insert(payload)
-    if (error) throw new Error(error.message)
+    if (error) {
+      console.error('workspace_defaults insert failed:', error)
+      throw new Error('Could not save your defaults. Try again.')
+    }
   }
 
   // The write-through: this is the field SOW generation actually reads.
@@ -96,7 +116,10 @@ async function saveDefaults(workspaceId: string, body: any) {
       .from('workspaces')
       .update({ governing_law: String(governingLaw).trim() })
       .eq('id', workspaceId)
-    if (wsError) throw new Error(wsError.message)
+    if (wsError) {
+      console.error('workspaces.governing_law write-through failed:', wsError)
+      throw new Error('Could not save your governing law. Try again.')
+    }
   }
 }
 
@@ -118,7 +141,15 @@ export async function POST(request: NextRequest) {
     await saveDefaults(session.workspaceId, body)
     return NextResponse.json({ ok: true })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): raw
+    // exception messages (including raw Postgres errors passed straight
+    // through by saveDefaults) used to reach the client here — see
+    // DefaultsValidationError's own comment above for the full story.
+    if (err instanceof DefaultsValidationError) {
+      return NextResponse.json({ error: err.message }, { status: 400 })
+    }
+    console.error('Workspace defaults POST error:', err)
+    return NextResponse.json({ error: 'Could not save your defaults. Try again.' }, { status: 500 })
   }
 }
 
@@ -133,7 +164,13 @@ export async function PATCH(request: NextRequest) {
     await saveDefaults(session.workspaceId, body)
     return NextResponse.json({ ok: true })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): same
+    // leak, same fix, as POST above.
+    if (err instanceof DefaultsValidationError) {
+      return NextResponse.json({ error: err.message }, { status: 400 })
+    }
+    console.error('Workspace defaults PATCH error:', err)
+    return NextResponse.json({ error: 'Could not save your defaults. Try again.' }, { status: 500 })
   }
 }
 
@@ -160,10 +197,17 @@ export async function DELETE(request: NextRequest) {
       .delete()
       .eq('workspace_id', session.workspaceId)
       .eq('project_type', projectType)
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): raw
+    // Postgres error.message was returned straight to the client — same
+    // pattern already fixed for every other write in this route.
+    if (error) {
+      console.error('Workspace defaults delete failed:', error)
+      return NextResponse.json({ error: 'Could not remove that override. Try again.' }, { status: 500 })
+    }
     return NextResponse.json({ ok: true })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('Workspace defaults DELETE error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
 
@@ -227,6 +271,9 @@ export async function GET(request: NextRequest) {
       projectType:      requestedType || null,
     })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): same
+    // leak, same fix, as the write handlers above.
+    console.error('Workspace defaults GET error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

@@ -133,6 +133,13 @@ export async function GET() {
       }
       return NextResponse.json({
         status: 'waiting',
+        // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): the
+        // 'waiting' screen had no self-service way out of this specific
+        // membership — only "Sign out" — because it never even knew the
+        // workspace's id to call workspace/leave with. Include it so the
+        // page can offer "Leave this workspace" the same way the 'create'
+        // gate's exit panel already offers "Discard this workspace."
+        workspaceId: w.id,
         agencyName: w.agency_name || w.name || '',
         creatorName: w.creator?.name || w.creator?.email || 'the person who created it',
       })
@@ -147,6 +154,7 @@ export async function GET() {
       const w = memberIncomplete[0].workspaces
       return NextResponse.json({
         status: 'waiting',
+        workspaceId: w.id,
         agencyName: w.agency_name || w.name || '',
         creatorName: w.creator?.name || w.creator?.email || 'the person who created it',
       })
@@ -156,6 +164,13 @@ export async function GET() {
 
     return NextResponse.json({ status: 'create' })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): this is
+    // the headline route this whole re-pass exists to support, yet its
+    // own outer catch was the one spot in the section that still
+    // returned a raw exception message straight to the client — the
+    // exact info-disclosure pattern every sibling route's catch-all was
+    // already hardened against. Log server-side only.
+    console.error('onboarding-status error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

@@ -14,7 +14,7 @@ import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { SessionUser } from '@/lib/supabase/types'
-import { PLAN_LABELS, PLAN_LIMITS, PROJECT_TYPE_LABELS, formatDate } from '@/lib/utils/format'
+import { PLAN_LABELS, PLAN_LIMITS, PROJECT_TYPE_LABELS, formatDate, initials, avatarColour } from '@/lib/utils/format'
 import SignaturePad, { type SignaturePadHandle } from '@/components/ui/SignaturePad'
 import MfaSection from '@/components/settings/MfaSection'
 // FIX (deep audit, Settings re-pass): WorkspaceTab's currency <select> used
@@ -298,6 +298,42 @@ function AccountTab({ session, supabase, router, mfaMandatory }: any) {
   const [sessionsMsg,     setSessionsMsg]     = useState('')
   const [msg,         setMsg]         = useState('')
   const [err,         setErr]         = useState('')
+  // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — feature
+  // gap): avatar_url has been readable and rendered elsewhere (Team,
+  // project members, discussion) for as long as those features have
+  // existed, but there was never anywhere in the app to actually set it —
+  // see api/workspace/profile/avatar/route.ts's own comment for the full
+  // story. This is that control.
+  const [avatarUrl,     setAvatarUrl]     = useState<string | null>(session.avatarUrl)
+  const [avatarLoading, setAvatarLoading] = useState(false)
+  const [avatarErr,     setAvatarErr]     = useState('')
+
+  async function uploadAvatar(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    e.target.value = '' // allow re-selecting the same file later
+    if (!file) return
+    setAvatarLoading(true); setAvatarErr('')
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const res = await fetch('/api/workspace/profile/avatar', { method: 'POST', body: formData })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) { setAvatarErr(json.error || 'Failed to upload photo'); return }
+      setAvatarUrl(json.avatarUrl)
+      router.refresh()
+    } catch { setAvatarErr('Failed to upload photo') } finally { setAvatarLoading(false) }
+  }
+
+  async function removeAvatar() {
+    setAvatarLoading(true); setAvatarErr('')
+    try {
+      const res = await fetch('/api/workspace/profile/avatar', { method: 'DELETE' })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) { setAvatarErr(json.error || 'Failed to remove photo'); return }
+      setAvatarUrl(null)
+      router.refresh()
+    } catch { setAvatarErr('Failed to remove photo') } finally { setAvatarLoading(false) }
+  }
 
   async function saveName(e: React.FormEvent) {
     e.preventDefault()
@@ -366,6 +402,37 @@ function AccountTab({ session, supabase, router, mfaMandatory }: any) {
       {err && <div className="auth-error"  style={{ marginBottom: 14 }}>{err}</div>}
       <div className="settings-section">
         <div className="settings-section-title">Profile</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 18 }}>
+          {avatarUrl ? (
+            <img src={avatarUrl} alt="" width={56} height={56}
+              style={{ borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
+          ) : (
+            <div style={{
+              width: 56, height: 56, borderRadius: '50%', flexShrink: 0,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              background: avatarColour(session.name), color: '#fff',
+              fontSize: 18, fontWeight: 600,
+            }}>
+              {initials(session.name)}
+            </div>
+          )}
+          <div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <label className="btn btn-secondary btn-sm" style={{ cursor: avatarLoading ? 'default' : 'pointer' }}>
+                {avatarLoading ? <span className="spin" /> : (avatarUrl ? 'Change photo' : 'Upload photo')}
+                <input type="file" accept="image/png,image/jpeg" onChange={uploadAvatar}
+                  disabled={avatarLoading} style={{ display: 'none' }} />
+              </label>
+              {avatarUrl && (
+                <button type="button" className="btn btn-ghost btn-sm" disabled={avatarLoading} onClick={removeAvatar}>
+                  Remove
+                </button>
+              )}
+            </div>
+            <p className="fhint" style={{ marginTop: 6 }}>PNG or JPG, up to 2MB.</p>
+            {avatarErr && <p className="ferr">{avatarErr}</p>}
+          </div>
+        </div>
         <form onSubmit={saveName}>
           <div className="f2" style={{ marginBottom: 14 }}>
             <div className="fgrp">

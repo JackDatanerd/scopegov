@@ -87,7 +87,12 @@ function OnboardingWizard() {
   // reaching the steps below, which would otherwise spin up a second,
   // unrelated workspace for them.
   const [gate, setGate] = useState<'loading' | 'create' | 'waiting'>('loading')
-  const [waitingFor, setWaitingFor] = useState<{ agencyName: string; creatorName: string } | null>(null)
+  // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): workspaceId
+  // added so the 'waiting' screen can offer a self-service "Leave this
+  // workspace" — see the button below and onboarding-status/route.ts's own
+  // comment on why 'waiting' now returns it.
+  const [waitingFor, setWaitingFor] = useState<{ workspaceId: string; agencyName: string; creatorName: string } | null>(null)
+  const [leavingWait, setLeavingWait] = useState(false)
 
   // FIX (Workspace lifecycle + Onboarding, round 4 — headline feature
   // gap): middleware.ts only gates PAGE routes on onboarding completion,
@@ -156,7 +161,7 @@ function OnboardingWizard() {
 
       if (status?.status === 'waiting') {
         try { localStorage.removeItem(STORAGE_KEY_PREFIX + user.id) } catch { /* ignore */ }
-        setWaitingFor({ agencyName: status.agencyName, creatorName: status.creatorName })
+        setWaitingFor({ workspaceId: status.workspaceId, agencyName: status.agencyName, creatorName: status.creatorName })
         setGate('waiting')
         setRestored(true)
         return
@@ -572,17 +577,68 @@ function OnboardingWizard() {
   // invited member watching this screen while the creator finishes setup
   // would just sit there indefinitely unless they manually reloaded.
   // Poll and move on once the creator completes onboarding.
+  //
+  // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): this only
+  // ever handled status === 'complete'. If the creator discards/deletes
+  // the workspace while a member is sitting on this screen (the 'create'
+  // gate's own exit panel explicitly offers "Discard this workspace"),
+  // that member's only active membership disappears and onboarding-status
+  // flips to 'create' — but nothing here checked for that, so they stayed
+  // stuck on "Almost there" indefinitely, for a workspace that no longer
+  // exists, with the screen giving no indication anything had changed.
+  // Any transition away from 'waiting' means what's on screen is stale;
+  // reload rather than duplicate this page's own create/resume/waiting/
+  // complete routing here a second time.
   useEffect(() => {
     if (gate !== 'waiting') return
     const interval = setInterval(async () => {
       try {
         const res  = await fetch('/api/workspace/onboarding-status')
         const json = await res.json().catch(() => ({}))
-        if (res.ok && json.status === 'complete') router.push('/dashboard')
+        if (!res.ok) return
+        if (json.status === 'complete') { router.push('/dashboard'); return }
+        if (json.status && json.status !== 'waiting') window.location.reload()
       } catch { /* transient — try again next tick */ }
     }, 15000)
     return () => clearInterval(interval)
   }, [gate])
+
+  // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — feature
+  // gap): the 'create' gate got a whole exit panel ("switch to a
+  // workspace you already set up" / "discard this one") built specifically
+  // because there was no self-service way out of an in-progress workspace.
+  // The symmetric problem on the invited-member side — stuck waiting on a
+  // slow or absent creator, with no other workspace to fall back to — was
+  // never solved: Team's per-workspace "Leave" and the Sidebar switcher's
+  // "Leave" both live inside the (app) layout, which itself redirects back
+  // to /onboarding while incomplete, so they're structurally unreachable
+  // from this screen. This lets a waiting member leave THIS specific
+  // pending membership directly, the same self-service the 'create' side
+  // already has.
+  async function leaveWaitingWorkspace() {
+    if (!waitingFor?.workspaceId) return
+    if (typeof window !== 'undefined' && !window.confirm(
+      `Leave "${waitingFor.agencyName}"? You'll need a new invite to rejoin.`
+    )) return
+    setLeavingWait(true); setError('')
+    try {
+      const res  = await fetch('/api/workspace/leave', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId: waitingFor.workspaceId }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setError(json.error || 'Could not leave that workspace. Try again.')
+        return
+      }
+      // Whatever comes next (another workspace to fall back into, or
+      // none at all) is exactly what this page's own mount-time logic
+      // already knows how to route — reload rather than re-derive it here.
+      window.location.reload()
+    } catch {
+      setError('Could not leave that workspace. Try again.')
+    } finally { setLeavingWait(false) }
+  }
 
   // FIX (deep audit, Workspace lifecycle + Onboarding sections): brief
   // blank beat while onboarding-status resolves, rather than flashing
@@ -605,12 +661,23 @@ function OnboardingWizard() {
             but {waitingFor?.creatorName} hasn&rsquo;t finished setting up the workspace yet. Once they do,
             you&rsquo;ll get full access automatically — no need to do anything here.
           </p>
+          {error && <div className="auth-error" style={{ marginBottom: 12 }}>{error}</div>}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 280, margin: '0 auto' }}>
+            {/* FIX (deep audit, Workspace lifecycle + Onboarding re-pass —
+                feature gap): see leaveWaitingWorkspace()'s own comment —
+                previously "Sign out" was the only option on this screen. */}
+            {waitingFor?.workspaceId && (
+              <button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'center' }}
+                disabled={leavingWait} onClick={leaveWaitingWorkspace}>
+                {leavingWait ? <span className="spin spin-dark" /> : 'Leave this workspace'}
+              </button>
+            )}
             {/* FIX (deep audit, Auth+MFA section): default signOut() scope
                 is 'global' (every session everywhere), not just this one —
                 see Sidebar.tsx's signOut for the full writeup. An ordinary
                 "sign out" click here has no reason to be that aggressive. */}
-            <button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'center' }}
+            <button className="ob-skip" style={{ width: '100%', justifyContent: 'center', display: 'flex' }}
+              disabled={leavingWait}
               onClick={() => supabase.auth.signOut({ scope: 'local' }).then(() => router.push('/login'))}>
               Sign out
             </button>

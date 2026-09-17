@@ -33,7 +33,20 @@ function initials(name: string): string {
   return name.split(' ').map(p => p[0]).filter(Boolean).slice(0, 2).join('').toUpperCase() || '?'
 }
 
-function Avatar({ name, size = 26 }: { name: string; size?: number }) {
+function Avatar({ name, avatarUrl, size = 26 }: { name: string; avatarUrl?: string | null; size?: number }) {
+  // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — feature
+  // gap): both call sites already had a real avatarUrl in hand
+  // (authorAvatarUrl / TeamMember.avatarUrl, both correctly sourced
+  // server-side in app/api/projects/[id]/messages/route.ts) but never
+  // passed it in — this component only ever rendered initials. See
+  // api/workspace/profile/avatar/route.ts for where that value now
+  // actually comes from.
+  if (avatarUrl) {
+    return (
+      <img src={avatarUrl} alt="" width={size} height={size}
+        style={{ borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
+    )
+  }
   return (
     <div style={{
       width: size, height: size, borderRadius: '50%', background: 'var(--surface-2)',
@@ -211,7 +224,7 @@ export default function ProjectDiscussion({
         ) : (
           messages.map(m => (
             <div key={m.id} className="pm-row" style={{ display: 'flex', gap: 10, marginBottom: 14, position: 'relative' }}>
-              <Avatar name={m.authorName} />
+              <Avatar name={m.authorName} avatarUrl={m.authorAvatarUrl} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 12, display: 'flex', alignItems: 'baseline', gap: 6 }}>
                   <strong style={{ color: 'var(--text-1)' }}>{m.authorName}</strong>
@@ -280,7 +293,7 @@ export default function ProjectDiscussion({
                   borderBottom: '1px solid var(--surface-2)',
                 }}
               >
-                <Avatar name={m.name} size={20} />
+                <Avatar name={m.name} avatarUrl={m.avatarUrl} size={20} />
                 <span style={{ fontSize: 12.5, color: 'var(--text-1)' }}>{m.name}</span>
               </button>
             ))}

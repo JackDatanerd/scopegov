@@ -21,12 +21,22 @@ export async function POST(request: NextRequest) {
     const service = createServiceClient()
 
     // Must actually be an active member of the target workspace.
+    //
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass —
+    // defense in depth): session.ts, middleware.ts, onboarding-status,
+    // and workspace/list were all explicitly hardened against a stray
+    // active `workspace_members` row pointing at a soft-deleted
+    // workspace — this route, the one place that actually WRITES
+    // active_workspace_id off a client-supplied id, was the one missed
+    // in that sweep. Join deleted_at and refuse it here too, same as
+    // everywhere else.
     const { data: member } = await (service as any)
       .from('workspace_members')
-      .select('id')
+      .select('id, workspaces!inner(deleted_at)')
       .eq('user_id', user.id)
       .eq('workspace_id', workspaceId)
       .eq('status', 'active')
+      .is('workspaces.deleted_at', null)
       .maybeSingle()
 
     if (!member) return NextResponse.json({ error: 'Not a member of that workspace' }, { status: 403 })

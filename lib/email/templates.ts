@@ -1398,3 +1398,39 @@ export async function sendWorkspaceDeletedEmail(params: { to: string; name: stri
   })
   return resendClient().emails.send({ from: `ScopeGov <${FROM}>`, to, subject: `${agencyNameRaw} has been deleted`, html })
 }
+
+// ── Workspace created ────────────────────────────────────────
+// FIX (deep audit, Workspace lifecycle + Onboarding re-pass — feature
+// gap): sendWorkspaceDeletedEmail above exists specifically because a
+// workspace-ending event got no email at all — but the symmetric,
+// arguably more emotionally significant event, a brand-new user's very
+// first workspace being created, sent nothing either. Every other
+// consequential event in this file (SOW sent, SOW signed, SOW declined,
+// password changed, MFA changed, workspace deleted) confirms itself by
+// email; workspace creation was the one gap left. Sent once, to the
+// creator, right after workspace/create succeeds.
+export async function sendWorkspaceCreatedEmail(params: { to: string; name: string; agencyName: string }) {
+  const { to, name: nameRaw, agencyName: agencyNameRaw } = params
+  const name = escapeHtml(nameRaw)
+  const agencyName = escapeHtml(agencyNameRaw)
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.green,
+    headerIcon: '🎉',
+    label: 'Workspace',
+    headline: `Welcome to ${agencyName}`,
+    body: `
+      <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${name},</p>
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        Your <strong>${agencyName}</strong> workspace on ScopeGov is ready. Finish setting it up — branding,
+        defaults, and inviting your team — and you'll be ready to send your first Statement of Work.
+      </p>
+      <p style="font-size:13px;color:${C.text2};">
+        Didn't create this? You can safely ignore this email.
+      </p>
+    `,
+    cta: 'Finish setting up →',
+    ctaUrl: `${process.env.NEXT_PUBLIC_APP_URL}/onboarding`,
+  })
+  return resendClient().emails.send({ from: `ScopeGov <${FROM}>`, to, subject: `Welcome to ${agencyNameRaw} on ScopeGov`, html })
+}

@@ -4,6 +4,7 @@ import { nanoid } from 'nanoid'
 import crypto from 'crypto'
 import { sanitizeDisplayName } from '@/lib/utils/sanitize'
 import { INDUSTRIES, CURRENCIES, TIMEZONES } from '@/lib/constants/workspace-options'
+import { sendWorkspaceCreatedEmail } from '@/lib/email/templates'
 
 function generateSlug(name: string): string {
   return name.toLowerCase()
@@ -96,10 +97,16 @@ export async function POST(request: NextRequest) {
     // reverted. handle_new_user() (migration 001) already guarantees a
     // users row exists by the time an authenticated request reaches
     // here, so this only ever needs to set active_workspace_id.
-    const { error: activeWsError } = await (service as any)
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): also
+    // read back the canonical `name` here (one round trip) rather than
+    // falling back to user.user_metadata?.name below — see the
+    // audit-log insert's own comment for why that fallback is stale.
+    const { data: userRow, error: activeWsError } = await (service as any)
       .from('users')
       .update({ active_workspace_id: workspaceId })
       .eq('id', user.id)
+      .select('name')
+      .maybeSingle()
     if (activeWsError) console.error('Failed to set active_workspace_id after create (non-fatal):', activeWsError)
 
     // FIX (section-by-section re-audit, Workspace lifecycle Finding 3):
@@ -112,12 +119,22 @@ export async function POST(request: NextRequest) {
     // client retrying on that spurious 500 would create a second,
     // fully duplicate, orphaned trial workspace. Non-fatal now, matching
     // every other audit-log call in this codebase.
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): this
+    // used user.user_metadata?.name — the ORIGINAL signup-time value,
+    // set once and never updated by workspace/profile's rename (that
+    // route only ever writes public.users.name, never Auth metadata) —
+    // falling all the way back to the full email address instead of
+    // handle_new_user()'s own canonical fallback (the email's local
+    // part, migration 019). Every other audit_log call in this codebase
+    // sources actorName from the current users.name/session.name; this
+    // was the one place in workspace/create that didn't, even though
+    // it's the very first line in a new workspace's trail.
     try {
       const { error: auditError } = await (service as any).from('audit_log').insert({
         workspace_id: workspaceId,
         actor_id: user.id,
         actor_email: user.email,
-        actor_name: user.user_metadata?.name || user.email,
+        actor_name: userRow?.name || user.user_metadata?.name || user.email,
         event_type: 'workspace.created',
         entity_type: 'workspace',
         entity_id: workspaceId,
@@ -126,6 +143,17 @@ export async function POST(request: NextRequest) {
       })
       if (auditError) console.error('workspace.created audit log insert failed (non-fatal):', auditError)
     } catch (e) { console.error('workspace.created audit log insert threw (non-fatal):', e) }
+
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — feature
+    // gap): see sendWorkspaceCreatedEmail's own comment in
+    // lib/email/templates.ts. Best-effort, same as the audit-log insert
+    // above and sendWorkspaceDeletedEmail's own call site — must never
+    // fail an already-successful workspace creation.
+    if (user.email) {
+      await sendWorkspaceCreatedEmail({
+        to: user.email, name: userRow?.name || user.email, agencyName,
+      }).catch(e => console.error('Workspace created email failed (non-fatal):', e))
+    }
 
     return NextResponse.json({ workspaceId, slug })
   } catch (err) {

@@ -302,9 +302,20 @@ export default function Sidebar({ session }: { session: SessionUser }) {
 
         {/* User row */}
         <div className="sb-user">
-          <div className="sb-av" style={{ background: avatarColour(session.name) }}>
-            {initials(session.name)}
-          </div>
+          {/* FIX (deep audit, Workspace lifecycle + Onboarding re-pass —
+              feature gap): session.avatarUrl was already threaded all the
+              way into SessionUser but never rendered here — the sidebar's
+              own user row, arguably the single most-visible avatar spot in
+              the app, showed initials for every account regardless of
+              whether they'd set a photo, because there was nowhere in the
+              app to set one. See api/workspace/profile/avatar/route.ts. */}
+          {session.avatarUrl ? (
+            <img src={session.avatarUrl} alt="" className="sb-av" style={{ objectFit: 'cover' }} />
+          ) : (
+            <div className="sb-av" style={{ background: avatarColour(session.name) }}>
+              {initials(session.name)}
+            </div>
+          )}
           <div className="sb-user-info">
             <div className="sb-user-name">{session.name}</div>
             <div className="sb-user-email">{session.email}</div>
