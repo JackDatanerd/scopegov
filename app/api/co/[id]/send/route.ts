@@ -48,9 +48,36 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Add at least one line item before sending this change order.' }, { status: 400 })
     if (!co.total || co.total <= 0)
       return NextResponse.json({ error: 'This change order has no value — add line item amounts before sending.' }, { status: 400 })
+    // FIX (CO-logic fix round): this pair of checks confirmed the CO had
+    // *some* value but never confirmed any individual line item said what
+    // that value was for. computeCoTotals validates quantity/rate/length
+    // but never required description — a line item with a real rate and a
+    // blank description passed both checks above and reached the client
+    // (and the PDF) as a billed amount with nothing describing it. Kept
+    // here rather than in computeCoTotals so a draft can still be saved
+    // mid-edit with an item that has a rate but no description yet — this
+    // only blocks it from being sent to the client in that state.
+    if (lineItems.some((li: any) => (li.total || 0) > 0 && !String(li.description || '').trim()))
+      return NextResponse.json({ error: 'Every line item with a value needs a description.' }, { status: 400 })
 
     const project = co.projects
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
+
+    // FIX (CO-logic fix round): backstop for the same check now applied at
+    // creation time in POST /api/co — kept here too since this route has
+    // no way to know whether a given CO predates that check, or the
+    // project's signed SOW was somehow withdrawn/reopened after this CO
+    // was drafted. Cheaper to catch here than to let the client discover
+    // it at finalize-co.ts's own hard block after signing.
+    const { data: signedSow } = await (service as any)
+      .from('sow_documents').select('id')
+      .eq('project_id', co.project_id).eq('status', 'signed')
+      .limit(1).maybeSingle()
+    if (!signedSow) {
+      return NextResponse.json({
+        error: 'This project has no signed SOW yet — a change order can only be sent once the original scope of work is signed.',
+      }, { status: 409 })
+    }
 
     // Phase 3 — Approval Chains: gate on the CO's own total, not the
     // project's overall contract value — a $500 CO on a $200k retainer

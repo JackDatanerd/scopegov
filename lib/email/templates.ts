@@ -231,12 +231,19 @@ export async function sendSowSignedAgencyEmail(params: {
 }
 
 // ── Event 4: SOW signed (client confirmation) ─────────────────
+// FIX (SOW-lifecycle fix round): this was the one client-facing email in
+// the whole SOW lifecycle with no `cc` support at all — the initial send
+// (sendSowEmail), the reminder, and the cancellation notice all thread
+// client.cc_emails through, but whoever was CC'd throughout the deal (a
+// client's finance contact, manager, etc.) was silently dropped from the
+// one email confirming the agreement is actually signed. Matches
+// sendCoAcceptedClientEmail's shape on the CO side, which already had this.
 export async function sendSowSignedClientEmail(params: {
-  to: string; clientName: string; agencyName: string
+  to: string; cc?: string[]; clientName: string; agencyName: string
   projectName: string; portalUrl: string
   attachments?: Array<{ filename: string; content: string }>
 }) {
-  const { to, clientName: clientNameRaw, agencyName: agencyNameRaw, projectName: projectNameRaw, portalUrl, attachments } = params
+  const { to, cc, clientName: clientNameRaw, agencyName: agencyNameRaw, projectName: projectNameRaw, portalUrl, attachments } = params
   const clientName  = escapeHtml(clientNameRaw)
   const agencyName  = escapeHtml(agencyNameRaw)
   const projectName = escapeHtml(projectNameRaw)
@@ -263,6 +270,7 @@ export async function sendSowSignedClientEmail(params: {
   return resendClient().emails.send({
     from:    `${BRAND_FROM(agencyNameRaw)} <${FROM}>`,
     to,
+    cc:      cc?.filter(Boolean) || [],
     subject: `Your ${projectNameRaw} agreement is confirmed`,
     html,
     ...(attachments?.length ? { attachments } : {}),
@@ -933,7 +941,13 @@ export async function sendSubscriptionEndedEmail(params: {
 export async function sendDocumentCancelledEmail(params: {
   to: string; cc?: string[]; clientName: string; agencyName: string
   projectName: string; documentLabel: string; documentTitle: string
-  action: 'voided' | 'withdrawn'; reason?: string | null; brandColour?: string
+  // FIX (CO-logic fix round): added 'closed' — see the call site in
+  // api/co/[id]/close/route.ts for why. Before this, the only two options
+  // both collapsed to 'withdrawn' wording (see the old verb ternary),
+  // which would have told the client the agency "withdrew" a change order
+  // it had actually closed out after a counter-offer, misstating what
+  // happened.
+  action: 'voided' | 'withdrawn' | 'closed'; reason?: string | null; brandColour?: string
 }) {
   const { to, cc, clientName: clientNameRaw, agencyName: agencyNameRaw, projectName: projectNameRaw,
     documentLabel, documentTitle: documentTitleRaw, action, reason: reasonRaw, brandColour } = params
@@ -942,7 +956,7 @@ export async function sendDocumentCancelledEmail(params: {
   const projectName   = escapeHtml(projectNameRaw)
   const documentTitle = escapeHtml(documentTitleRaw)
   const reason        = reasonRaw ? escapeHtml(reasonRaw) : null
-  const verb = action === 'voided' ? 'voided' : 'withdrawn'
+  const verb = action === 'voided' ? 'voided' : action === 'closed' ? 'closed' : 'withdrawn'
 
   const html = baseTemplate({
     agencyName,

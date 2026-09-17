@@ -553,7 +553,23 @@ function PortalShell({ children, accent, agencyName, logoUrl }: {
 // apart. Use the schema's own type so they can't drift again.
 function SowPortalTable({ sectionId, rows, language }: { sectionId: SowTableSectionId; rows: SowTableRow[]; currency?: string; language?: string }) {
   const schema = SOW_TABLE_SCHEMAS[sectionId]
-  if (!rows || rows.length === 0) return null
+  // FIX (section-9/10 fix round): this used to return null on an empty
+  // table, leaving the section's heading (rendered by the caller) sitting
+  // over completely blank space — the exact bug lib/pdf/sow-table.tsx
+  // already fixed for the PDF ("a numbered section heading printed over
+  // completely blank space"). This is the client's actual signing page —
+  // more consequential than the PDF, not less — and could still hit this
+  // whenever an agency deletes every row of a table section in the editor
+  // before sending. Match the PDF's placeholder instead of hiding it.
+  if (!rows || rows.length === 0) {
+    return (
+      <div style={{
+        border: '1px dashed #D8D4C8', borderRadius: 4, padding: '10px 12px', marginTop: 8,
+      }}>
+        <span style={{ fontSize: 13, color: '#B0B0B0', fontStyle: 'italic' }}>To be defined</span>
+      </div>
+    )
+  }
   return (
     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, marginTop: 8, border: '1px solid #E5E1D8', borderRadius: 4 }}>
       <thead>

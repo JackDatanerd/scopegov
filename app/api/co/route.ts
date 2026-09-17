@@ -38,6 +38,31 @@ export async function POST(request: NextRequest) {
     if (!(await canReadProject(service, session, projectId)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
+    // FIX (CO-logic fix round — headline finding): nothing here, or in
+    // send/route.ts, ever checked that the project actually has a signed
+    // SOW. A CO is an amendment to that signed agreement — and
+    // lib/documents/finalize-co.ts's acceptance path hard-blocks with
+    // "No signed SOW found for this project — cannot record this
+    // amendment" if one doesn't exist at accept time. Nothing stopped a CO
+    // from being created and sent before that point (project.status can be
+    // set to 'Active' directly via PATCH /api/projects/[id] with no
+    // signed-SOW check of its own), so a client could review a change
+    // order, type their name, draw a signature, and submit — only to hit
+    // that 422 after already completing the whole signing ritual, with no
+    // path forward except contacting the agency. Block it at the earliest
+    // point instead, same pattern as the SOW side's own hard-blocks
+    // (governing law, footing) — cheaper for everyone than discovering it
+    // at the client's expense.
+    const { data: signedSow } = await (service as any)
+      .from('sow_documents').select('id')
+      .eq('project_id', projectId).eq('status', 'signed')
+      .limit(1).maybeSingle()
+    if (!signedSow) {
+      return NextResponse.json({
+        error: 'This project has no signed SOW yet — a change order can only be created once the original scope of work is signed.',
+      }, { status: 409 })
+    }
+
     // FIX (re-audit): flagId came straight from the request body with no
     // check that it actually belongs to this project/workspace. Every
     // downstream CO lifecycle action that touches a linked flag — close,

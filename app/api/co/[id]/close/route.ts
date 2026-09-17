@@ -4,6 +4,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
 import { cancelApprovalRequest } from '@/lib/approvals/engine'
+import { sendDocumentCancelledEmail } from '@/lib/email/templates'
 
 // FIX (section-10 audit): this was documented and typed as a "shared
 // handler for terminal non-accepted CO states: close, withdraw, decline"
@@ -23,9 +24,13 @@ async function handleTerminalCoState(
   id: string, newStatus: 'closed',
   session: any, service: any, body: any
 ) {
+  // FIX (CO-logic fix round): expanded the select (client/workspace) so we
+  // can notify the client below if this CO had already reached them —
+  // same fields withdraw/route.ts already selects for the same reason.
   const { data: co } = await (service as any)
     .from('change_orders')
-    .select('id,title,status,flag_id,token,project_id,projects(id,name)')
+    .select(`id,title,status,flag_id,token,project_id,
+      projects(id,name,clients(name,email,cc_emails),workspaces(agency_name,brand_colour))`)
     .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
   if (!co) return NextResponse.json({ error: 'CO not found' }, { status: 404 })
@@ -42,6 +47,30 @@ async function handleTerminalCoState(
   }
   if (!TERMINAL_FROM[newStatus].includes(co.status))
     return NextResponse.json({ error: `Cannot ${newStatus} a CO with status ${co.status}` }, { status: 400 })
+
+  // FIX (CO-logic fix round): a CO can be closed out of 'countered' —
+  // the client made a counter-offer and is waiting on the agency's
+  // response. Closing it here previously sent no notification at all,
+  // unlike every other terminal transition in this lifecycle (withdraw
+  // notifies the client; decline/accept are client-initiated). A client
+  // who countered and then got silently closed out has no way to know
+  // their offer was rejected rather than still pending. 'draft' never had
+  // a client-facing state, so nothing to notify there.
+  //
+  // Deliberately NOT touching co.token/revoked_tokens the way withdraw
+  // does: getCoByToken (api/portal/co/[token]/route.ts) already has a
+  // dedicated, correctly-working 'closed' state for a client revisiting
+  // their original link (see its own "BUG: 'closed', 'stalled', and
+  // 'countered' were never included here" fix), which depends on the CO
+  // still being resolvable by token so co.status can drive the response.
+  // Nulling the token here would route that same revisit through the
+  // revoked-token branch instead, which only special-cases 'withdrawn' and
+  // would downgrade the client's page from the specific 'closed' state to
+  // a generic 'revoked' one — trading a working, more informative path for
+  // a token-hygiene win that isn't actually reachable by anyone else
+  // (every mutating portal route already gates on co.status, same as the
+  // SOW side's equivalent request-changes case).
+  const wasSentToClient = co.status !== 'draft'
 
   const now = new Date().toISOString()
   const updates: Record<string, unknown> = { status: newStatus, updated_at: now, close_reason: body.reason || null }
@@ -102,6 +131,19 @@ async function handleTerminalCoState(
     entityId: id, entityName: co.title,
     metadata: { reason: body.reason, from_status: co.status },
   })
+
+  const client = co.projects?.clients
+  if (wasSentToClient && client?.email) {
+    try {
+      await sendDocumentCancelledEmail({
+        to: client.email, cc: client.cc_emails || [],
+        clientName: client.name, agencyName: co.projects?.workspaces?.agency_name,
+        projectName: co.projects?.name, documentLabel: 'Change Order',
+        documentTitle: co.title, action: 'closed', reason: body.reason || null,
+        brandColour: co.projects?.workspaces?.brand_colour,
+      })
+    } catch (e) { console.error('CO closed client email failed:', e) }
+  }
 
   return NextResponse.json({ ok: true })
 }

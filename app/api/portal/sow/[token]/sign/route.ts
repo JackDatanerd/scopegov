@@ -309,6 +309,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     try {
       await sendSowSignedClientEmail({
         to:          client.email,
+        cc:          client.cc_emails || [],
         clientName:  client.name,
         agencyName:  ws.agency_name,
         projectName: project.name,

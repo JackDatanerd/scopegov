@@ -585,10 +585,26 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
     } finally { setSending(false) }
   }
 
+  // FIX (SOW-lifecycle fix round): this was the one action on this tab
+  // with no res.ok check — handleSendSow and handleRemind right below it
+  // both surface a failure, but this called router.refresh() unconditionally
+  // regardless of outcome, exactly the bug already described and fixed for
+  // the standalone SOW editor page's own withdraw handler (see
+  // app/(app)/projects/[id]/sow/[sowId]/page.tsx). A failed withdraw here —
+  // permission lapsed, already signed, network error — looked identical to
+  // a successful one, with no error shown and the client possibly still
+  // holding a live signing link.
   async function handleWithdraw() {
     if (!confirm('Withdraw this SOW? The client link will be deactivated.')) return
-    await fetch(`/api/sow/${currentSow.id}/withdraw`, { method: 'POST' })
-    router.refresh()
+    setError('')
+    try {
+      const res  = await fetch(`/api/sow/${currentSow.id}/withdraw`, { method: 'POST' })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) { setError(json.error || 'Failed to withdraw'); return }
+      router.refresh()
+    } catch {
+      setError('Failed to withdraw')
+    }
   }
 
   // FIX (re-audit): this had zero feedback — no loading state, no error

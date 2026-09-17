@@ -89,6 +89,16 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const body = await request.json()
     const { title, note, lineItems, taxRate, taxInclusive, isRetainerRenewal, timelineImpactDays, scopeImpactNote } = body
 
+    // FIX (CO-logic fix round): POST /api/co requires a non-empty title;
+    // this route never did — `title?.trim()` happily wrote an empty string
+    // over an existing one. CoEditor's Save/Send buttons are disabled while
+    // `!title.trim()`, so this was unreachable through the normal UI, but
+    // a direct call could blank out a CO's title with no error, same class
+    // of gap as everywhere else in this codebase that validates
+    // server-side even though the client already does.
+    if (!title || !title.trim())
+      return NextResponse.json({ error: 'Title required' }, { status: 400 })
+
     // FIX (section-10 audit, 10-B3 + 10-B9): same unvalidated arithmetic
     // and same wrong tax-inclusive subtotal as POST /api/co — both now go
     // through the one shared implementation. See lib/documents/co-totals.ts.
@@ -97,7 +107,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const { lineItems: items, subtotal, total } = totals.totals
 
     await (service as any).from('change_orders').update({
-      title:               title?.trim(),
+      title:               title.trim(),
       note:                sanitizeRichTextOrNull(note),
       // FIX (section-10 audit): see app/api/co/route.ts for the full
       // explanation — line_items is jsonb; storing JSON.stringify(items)

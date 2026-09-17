@@ -208,6 +208,12 @@ export default function CoEditor({ projId, coId }: Props) {
   async function handleSend() {
     if (!title.trim()) { setError('Title is required'); return }
     if (lineItems.every(l => l.total === 0)) { setError('Add at least one line item with a value'); return }
+    // FIX (CO-logic fix round): matches the server-side check in
+    // api/co/[id]/send/route.ts — a line item can have a nonzero rate with
+    // a blank description (total !== 0 doesn't imply description !== ''),
+    // which would otherwise bill the client for something unnamed. Catch
+    // it here too so it's not a round-trip-only error.
+    if (lineItems.some(l => l.total > 0 && !l.description.trim())) { setError('Every line item with a value needs a description'); return }
     setSending(true); setError('')
     try {
       const id = await doSave(false, false)

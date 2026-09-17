@@ -7,7 +7,7 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
-import { sowSectionLabel, countWords, formatCurrency } from '@/lib/utils/format'
+import { countWords, formatCurrency } from '@/lib/utils/format'
 import { isTableSection, SOW_TABLE_SCHEMAS, blankRow, columnLabel, parseTableAmount, type SowTableRow, type SowTableSectionId } from '@/lib/sow/table-schema'
 import { SOW_SECTION_DEFS } from '@/lib/ai/sow-content'
 

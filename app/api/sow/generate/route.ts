@@ -68,9 +68,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Missing permission: EDIT_SOW' }, { status: 403 })
 
     const body = await request.json()
-    const {
-      projectId, contractValue: rawContractValue, currency,
-    } = body
+    const { projectId } = body
 
     if (!projectId) return NextResponse.json({ error: 'projectId required' }, { status: 400 })
 
@@ -100,20 +98,12 @@ export async function POST(request: NextRequest) {
       ? parsedRounds
       : 2
 
-    // FIX (bug — one-cent mismatch between PDF header and AI-drafted body
-    // text): see lib/utils/format.ts's roundCurrency doc comment. Rounding
-    // here means the AI is never shown a value with more than 2 decimal
-    // digits, so it can't independently round a raw 3-decimal figure to a
-    // different penny than the numeric display path does elsewhere in the
-    // document.
-    const contractValue = roundCurrency(Number(rawContractValue) || 0)
-
     const service = createServiceClient()
 
     // Fetch project + client + workspace for context
     const { data: project } = await (service as any)
       .from('projects')
-      .select('id,name,disc,currency,clients(name,email,company_name),workspaces(agency_name,governing_law,sow_language)')
+      .select('id,name,disc,contract_value,currency,clients(name,email,company_name),workspaces(agency_name,governing_law,sow_language)')
       .eq('id', projectId).eq('workspace_id', session.workspaceId).single()
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
     if (!(await canReadProject(service, session, projectId)))
@@ -125,6 +115,22 @@ export async function POST(request: NextRequest) {
 
     const agencyName    = project.workspaces?.agency_name || session.agencyName
     const clientName    = project.clients?.company_name || project.clients?.name || 'Client'
+    // FIX (SOW-lifecycle fix round — headline finding): contractValue and
+    // currency used to come straight from the request body — every other
+    // legally-material field in this route is validated against a closed
+    // set or hard-blocked (paymentStructure, revisionRounds, governingLaw),
+    // but these two, arguably the most consequential for a monetary
+    // contract, were trusted from the client with no cross-check against
+    // this project's own record, and this route didn't even select
+    // contract_value to check against. The AI-drafted Payment Terms prose
+    // (and the deterministic fallback) is built from whatever value was
+    // posted, while the PDF header, the portal display, the send-time
+    // footing check, and the approval-gate amount all separately read
+    // projects.contract_value/currency — so a stale or mismatched request
+    // body could produce a signed contract stating two different totals on
+    // the same document. Read both authoritatively off the project record
+    // instead of trusting the request.
+    const contractValue = roundCurrency(project.contract_value || 0)
     // FIX (doc-completeness audit, finding #1): this used to silently
     // fall back to a hardcoded country ('Republic of Kenya') whenever
     // workspaces.governing_law was unset — which, before the write-through
@@ -141,7 +147,7 @@ export async function POST(request: NextRequest) {
       }, { status: 400 })
     }
     const paymentLabel  = PAYMENT_STRUCTURE_LABELS[paymentStructure]
-    const curr          = currency || project.currency || 'USD'
+    const curr          = project.currency || 'USD'
 
     // ── AI content generation, with silent retries and a guaranteed
     // deterministic fallback ────────────────────────────────────────
