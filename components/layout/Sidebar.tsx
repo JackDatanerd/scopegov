@@ -64,8 +64,19 @@ export default function Sidebar({ session }: { session: SessionUser }) {
     return pathname.startsWith(href)
   }
 
+  // FIX (deep audit, Auth+MFA section): supabase-js defaults signOut() to
+  // `scope: 'global'`, which revokes EVERY session for this user, not just
+  // this browser — so the everyday "Sign out" button was silently logging
+  // people out of their phone app / other browser / other tab too. That
+  // directly undercut the dedicated "sign out of other sessions" feature
+  // (see SettingsClient.tsx's /api/auth/signout-others), which exists
+  // specifically so a normal logout doesn't have to be that aggressive.
+  // reset-password and change-password intentionally rely on the global
+  // default for a real security reason (invalidate everywhere after a
+  // password change) — this action never had that rationale; it's just
+  // "I'm done for now," and should only end the current session.
   async function signOut() {
-    await supabase.auth.signOut()
+    await supabase.auth.signOut({ scope: 'local' })
     router.push('/login')
     router.refresh()
   }

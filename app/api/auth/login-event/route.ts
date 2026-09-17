@@ -3,6 +3,7 @@ export const runtime = 'nodejs'
 import { NextResponse, type NextRequest } from 'next/server'
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
 import { logAudit } from '@/lib/utils/audit'
+import { resolveActiveWorkspaceId } from '@/lib/auth/session'
 
 // FEATURE (deep audit, Auth+MFA section — feature gap): every other
 // security-sensitive account action in this app writes to audit_log
@@ -38,21 +39,11 @@ export async function POST(request: NextRequest) {
     const method = body?.method === 'google' ? 'google' : 'password'
 
     const service = createServiceClient()
-    const { data: userRow } = await (service as any)
-      .from('users').select('active_workspace_id').eq('id', user.id).maybeSingle()
 
-    // Mirrors resolveActiveWorkspaceId in mfa/verify/route.ts: fall back to
-    // the oldest active membership when active_workspace_id is unset —
-    // covers the very first login right after signup, before onboarding
-    // has run and active_workspace_id has ever been set.
-    let workspaceId: string | null = userRow?.active_workspace_id || null
-    if (!workspaceId) {
-      const { data: member } = await (service as any)
-        .from('workspace_members')
-        .select('workspace_id').eq('user_id', user.id).eq('status', 'active')
-        .order('created_at', { ascending: true }).limit(1).maybeSingle()
-      workspaceId = member?.workspace_id || null
-    }
+    // Falls back to the oldest active membership when active_workspace_id
+    // is unset — covers the very first login right after signup, before
+    // onboarding has run and active_workspace_id has ever been set.
+    const workspaceId = await resolveActiveWorkspaceId(service, user.id)
 
     // No workspace yet (e.g. mid-signup, before onboarding creates one) —
     // audit_log is a per-workspace record with a NOT NULL workspace_id,

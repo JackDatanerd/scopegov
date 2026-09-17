@@ -123,6 +123,31 @@ export async function userHasAnyMfaMandatoryMembership(userId: string): Promise<
   return (memberships || []).some((m: any) => permissionsRequireMfa(m.effective_permissions))
 }
 
+// FIX (deep audit, RLS+permissions section — audit-log workspace-fallback
+// gap): mfa/verify/route.ts and login-event/route.ts each independently
+// defined this exact "prefer active_workspace_id, fall back to the oldest
+// active membership" lookup for attributing a per-workspace audit_log row
+// to a user-level security action — but change-password, DELETE
+// /api/auth/mfa/factors, mfa/backup-codes, and password-changed all used
+// only the bare `userRow?.active_workspace_id || ''` half of that logic,
+// with no fallback. audit_log.workspace_id is NOT NULL, so passing '' for
+// a user whose active_workspace_id is unset (e.g. right after a workspace
+// they were in got deleted and nothing reassigned it) makes the insert
+// fail — silently, since logAudit swallows its own errors — dropping
+// password-changed, MFA-disabled, backup-codes-regenerated, and MFA-
+// recovery events from the audit trail specifically in the case where
+// having a trustworthy trail matters most. Centralizing the one already-
+// correct version here so every caller gets the fallback instead of
+// reimplementing (or omitting) it.
+export async function resolveActiveWorkspaceId(service: any, userId: string): Promise<string | null> {
+  const { data } = await service.from('users').select('active_workspace_id').eq('id', userId).maybeSingle()
+  if (data?.active_workspace_id) return data.active_workspace_id
+  const { data: member } = await service.from('workspace_members')
+    .select('workspace_id').eq('user_id', userId).eq('status', 'active')
+    .order('created_at', { ascending: true }).limit(1).maybeSingle()
+  return member?.workspace_id || null
+}
+
 export function hasPermission(session: SessionUser, permission: Permission): boolean {
   return session.permissions.includes(permission)
 }

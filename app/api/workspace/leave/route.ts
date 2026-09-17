@@ -56,6 +56,16 @@ export async function POST(request: NextRequest) {
           error: 'You\u2019re the only member who can manage workspace settings. Assign that ability to someone else first (Team > Roles), or delete the workspace instead if no one else should keep it.',
         }, { status: 400 })
       }
+      // FIX (deep audit, RLS+permissions section): leave_workspace_atomic
+      // (migration 034) now also refuses to let the sole MANAGE_ROLES
+      // holder leave — same reasoning as sole_admin above, but for
+      // permission/role management specifically, which can be held
+      // independently of MANAGE_WORKSPACE_SETTINGS on a custom role.
+      if (leaveErr.message?.includes('sole_roles_admin')) {
+        return NextResponse.json({
+          error: 'You\u2019re the only member who can manage roles and permissions. Assign that ability to someone else first (Team > Roles), or delete the workspace instead if no one else should keep it.',
+        }, { status: 400 })
+      }
       if (leaveErr.message?.includes('not_a_member')) {
         return NextResponse.json({ error: 'Not a member of that workspace' }, { status: 404 })
       }

@@ -5,6 +5,7 @@ import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/
 import { logAudit } from '@/lib/utils/audit'
 import { generateBackupCodes } from '@/lib/utils/backup-codes'
 import { sendMfaEnabledEmail } from '@/lib/email/templates'
+import { resolveActiveWorkspaceId } from '@/lib/auth/session'
 
 // Single endpoint for both flows:
 //  - Enrollment confirmation: no backup codes exist for this user yet →
@@ -112,11 +113,8 @@ export async function POST(request: Request) {
 // that's the workspace context they were in when they made the change —
 // without requiring workspace_id to be nullable and weakening every other
 // query against a table whose whole job is being trustworthy.
-async function resolveActiveWorkspaceId(service: any, userId: string): Promise<string | null> {
-  const { data } = await service.from('users').select('active_workspace_id').eq('id', userId).maybeSingle()
-  if (data?.active_workspace_id) return data.active_workspace_id
-  const { data: member } = await service.from('workspace_members')
-    .select('workspace_id').eq('user_id', userId).eq('status', 'active')
-    .order('created_at', { ascending: true }).limit(1).maybeSingle()
-  return member?.workspace_id || null
-}
+//
+// FIX (deep audit, RLS+permissions section): moved to lib/auth/session.ts
+// and exported so change-password, DELETE /api/auth/mfa/factors,
+// mfa/backup-codes, and password-changed can share the same fallback
+// instead of each reimplementing (or, as it turned out, omitting) it.

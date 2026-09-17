@@ -2,7 +2,7 @@ export const runtime = 'nodejs'
 
 import { NextResponse, type NextRequest } from 'next/server'
 import { createServerSupabaseClient, createServiceClient, createStatelessAuthClient } from '@/lib/supabase/server'
-import { userHasAnyMfaMandatoryMembership } from '@/lib/auth/session'
+import { userHasAnyMfaMandatoryMembership, resolveActiveWorkspaceId } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { sendPasswordChangedEmail } from '@/lib/email/templates'
 
@@ -52,8 +52,6 @@ export async function POST(request: NextRequest) {
     }
 
     const service = createServiceClient()
-    const { data: userRow } = await (service as any)
-      .from('users').select('active_workspace_id').eq('id', user.id).maybeSingle()
 
     // FIX (deep audit, Auth+MFA re-pass): was scoped to only the active
     // workspace's permissions (same gap as DELETE /api/auth/mfa/factors and
@@ -81,8 +79,16 @@ export async function POST(request: NextRequest) {
     // enroll/disable/recover/regenerate) writes to audit_log and emails
     // the user; password change, the classic account-takeover action, did
     // neither. Both non-fatal / best-effort, matching house style.
+    //
+    // FIX (deep audit, RLS+permissions section): was a bare
+    // `userRow?.active_workspace_id || ''` with no fallback to the oldest
+    // active membership — unlike the sibling MFA routes' equivalent audit
+    // calls. audit_log.workspace_id is NOT NULL, so a user whose
+    // active_workspace_id is unset (e.g. a stale reference left over from
+    // a deleted workspace) silently lost this event from the trail rather
+    // than having it attributed to their actual remaining membership.
     await logAudit(service, {
-      workspaceId: userRow?.active_workspace_id || '',
+      workspaceId: await resolveActiveWorkspaceId(service, user.id) || '',
       actorId: user.id, actorEmail: user.email!, actorName: user.user_metadata?.name || user.email!,
       eventType: 'security.password_changed', entityType: 'user', entityId: user.id, entityName: user.email!,
       metadata: { via: 'settings' },

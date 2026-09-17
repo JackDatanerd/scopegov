@@ -582,8 +582,12 @@ function OnboardingWizard() {
             you&rsquo;ll get full access automatically — no need to do anything here.
           </p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 280, margin: '0 auto' }}>
+            {/* FIX (deep audit, Auth+MFA section): default signOut() scope
+                is 'global' (every session everywhere), not just this one —
+                see Sidebar.tsx's signOut for the full writeup. An ordinary
+                "sign out" click here has no reason to be that aggressive. */}
             <button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'center' }}
-              onClick={() => supabase.auth.signOut().then(() => router.push('/login'))}>
+              onClick={() => supabase.auth.signOut({ scope: 'local' }).then(() => router.push('/login'))}>
               Sign out
             </button>
           </div>
@@ -637,8 +641,11 @@ function OnboardingWizard() {
               disabled={loading} onClick={discardWorkspace}>
               Discard this workspace
             </button>
+            {/* FIX (deep audit, Auth+MFA section): same global-scope-by-
+                default issue as the "Sign out" button above — see
+                Sidebar.tsx's signOut for the full writeup. */}
             <button type="button" className="ob-skip" style={{ display: 'block', marginTop: 8, fontSize: 11 }}
-              disabled={loading} onClick={() => supabase.auth.signOut().then(() => router.push('/login'))}>
+              disabled={loading} onClick={() => supabase.auth.signOut({ scope: 'local' }).then(() => router.push('/login'))}>
               Sign out instead
             </button>
           </div>

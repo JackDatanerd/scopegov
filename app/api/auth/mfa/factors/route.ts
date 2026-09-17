@@ -4,7 +4,7 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
 import { logAudit } from '@/lib/utils/audit'
 import { sendMfaDisabledEmail } from '@/lib/email/templates'
-import { userHasAnyMfaMandatoryMembership } from '@/lib/auth/session'
+import { userHasAnyMfaMandatoryMembership, resolveActiveWorkspaceId } from '@/lib/auth/session'
 
 export async function GET() {
   try {
@@ -68,8 +68,15 @@ export async function DELETE(request: Request) {
     // middleware uses so this endpoint actually refuses it outright, as
     // the comment above always intended.
     const service = createServiceClient()
-    const { data: preCheckUser } = await (service as any)
-      .from('users').select('active_workspace_id').eq('id', user.id).maybeSingle()
+    // FIX (deep audit, RLS+permissions section): previously a bare
+    // `.select('active_workspace_id')` with no fallback to the oldest
+    // active membership (see resolveActiveWorkspaceId's own comment) — an
+    // unset active_workspace_id meant both the audit_log row below AND
+    // this notifications insert silently failed (workspace_id is NOT NULL
+    // on both tables), dropping the MFA-disabled event from the trail
+    // entirely instead of attributing it to the user's remaining
+    // membership.
+    const activeWorkspaceId = await resolveActiveWorkspaceId(service, user.id)
     if (await userHasAnyMfaMandatoryMembership(user.id)) {
       return NextResponse.json({
         error: 'Your role requires two-factor authentication to stay enabled. Ask an admin to change your permissions first.',
@@ -92,7 +99,7 @@ export async function DELETE(request: Request) {
 
     try {
       await logAudit(service, {
-        workspaceId: preCheckUser?.active_workspace_id || '',
+        workspaceId: activeWorkspaceId || '',
         actorId: user.id, actorEmail: user.email!, actorName: user.user_metadata?.name || user.email!,
         eventType: 'security.mfa_disabled', entityType: 'user', entityId: user.id, entityName: user.email!,
         metadata: { via: 'user' },
@@ -100,7 +107,7 @@ export async function DELETE(request: Request) {
     } catch (e) { console.error('MFA disable audit log failed (non-fatal):', e) }
     try {
       await (service as any).from('notifications').insert({
-        workspace_id: preCheckUser?.active_workspace_id, recipient_id: user.id,
+        workspace_id: activeWorkspaceId, recipient_id: user.id,
         type: 'security', title: 'Two-factor authentication disabled',
         body: 'Your account no longer requires an authenticator code to sign in.',
       })

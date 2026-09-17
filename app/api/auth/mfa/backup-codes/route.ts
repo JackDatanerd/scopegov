@@ -5,6 +5,7 @@ import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/
 import { logAudit } from '@/lib/utils/audit'
 import { generateBackupCodes } from '@/lib/utils/backup-codes'
 import { sendMfaBackupCodesRegeneratedEmail } from '@/lib/email/templates'
+import { resolveActiveWorkspaceId } from '@/lib/auth/session'
 
 // Regenerates backup codes — invalidates every previous code. Requires
 // aal2 for the same reason DELETE /factors does: this is a sensitive
@@ -39,9 +40,13 @@ export async function POST() {
     )
     if (insertErr) throw insertErr
 
-    const { data: userRow } = await (service as any).from('users').select('active_workspace_id').eq('id', user.id).maybeSingle()
+    // FIX (deep audit, RLS+permissions section): was a bare
+    // `.select('active_workspace_id')` with no fallback to the oldest
+    // active membership — see resolveActiveWorkspaceId's comment for why
+    // that silently dropped this event from the audit trail whenever
+    // active_workspace_id was unset.
     await logAudit(service, {
-      workspaceId: userRow?.active_workspace_id || '',
+      workspaceId: await resolveActiveWorkspaceId(service, user.id) || '',
       actorId: user.id, actorEmail: user.email!, actorName: user.user_metadata?.name || user.email!,
       eventType: 'security.mfa_backup_codes_regenerated', entityType: 'user', entityId: user.id, entityName: user.email!,
       metadata: {},

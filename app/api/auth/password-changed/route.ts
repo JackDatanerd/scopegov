@@ -4,6 +4,7 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
 import { logAudit } from '@/lib/utils/audit'
 import { sendPasswordChangedEmail } from '@/lib/email/templates'
+import { resolveActiveWorkspaceId } from '@/lib/auth/session'
 
 // FIX (deep audit, Auth+MFA section): /reset-password calls
 // supabase.auth.updateUser({ password }) directly from the browser SDK —
@@ -21,11 +22,14 @@ export async function POST() {
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
     const service = createServiceClient()
-    const { data: userRow } = await (service as any)
-      .from('users').select('active_workspace_id').eq('id', user.id).maybeSingle()
 
+    // FIX (deep audit, RLS+permissions section): was a bare
+    // `.select('active_workspace_id')` with no fallback to the oldest
+    // active membership — see resolveActiveWorkspaceId's comment for why
+    // that silently dropped this event from the audit trail whenever
+    // active_workspace_id was unset.
     await logAudit(service, {
-      workspaceId: userRow?.active_workspace_id || '',
+      workspaceId: await resolveActiveWorkspaceId(service, user.id) || '',
       actorId: user.id, actorEmail: user.email!, actorName: user.user_metadata?.name || user.email!,
       eventType: 'security.password_changed', entityType: 'user', entityId: user.id, entityName: user.email!,
       metadata: { via: 'reset_link' },
