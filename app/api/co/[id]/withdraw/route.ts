@@ -37,14 +37,30 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // FIX (doc-completeness audit, migration 014): the agency should be
     // able to cancel a CO that's waiting on the client to countersign the
     // negotiated amount, same as any other open state.
-    if (!['awaiting_response','draft','awaiting_countersignature'].includes(co.status))
+    const WITHDRAWABLE_FROM = ['awaiting_response', 'draft', 'awaiting_countersignature']
+    if (!WITHDRAWABLE_FROM.includes(co.status))
       return NextResponse.json({ error: 'Cannot withdraw CO in current status' }, { status: 400 })
 
     const wasSentToClient = co.status !== 'draft'
 
     const now = new Date().toISOString()
-    await (service as any).from('change_orders')
-      .update({ status: 'withdrawn', token: null, updated_at: now }).eq('id', id)
+    // FIX (section-10 audit, cross-cutting with app/api/sow/[id]/withdraw
+    // — same missing CAS, same fix): this wrote unconditionally on
+    // `.eq('id', id)` alone, unlike every real signing-path transition in
+    // this lifecycle (accept/decline/counter/countersign/accept-counter
+    // all CAS on the status they read). A withdraw racing a client's
+    // simultaneous Accept/Counter/Countersign could stomp an
+    // already-finalized CO back to 'withdrawn' with the token nulled, and
+    // even a plain double-click of Withdraw itself duplicated the
+    // client-facing cancellation email and audit-log entry below.
+    const { data: withdrawnCo } = await (service as any).from('change_orders')
+      .update({ status: 'withdrawn', token: null, updated_at: now })
+      .eq('id', id)
+      .in('status', WITHDRAWABLE_FROM)
+      .select('id')
+
+    if (!withdrawnCo || withdrawnCo.length === 0)
+      return NextResponse.json({ error: 'This change order was already acted on by another action' }, { status: 409 })
 
     // Phase 3: a draft CO can have an approval chain in flight (that's the
     // whole point of gating send, not create) — don't leave it dangling

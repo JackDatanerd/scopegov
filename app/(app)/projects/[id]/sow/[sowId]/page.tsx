@@ -153,6 +153,7 @@ export default function SowEditorPage() {
           currency={sow.currency || undefined}
           language={sow.metadata?.language}
           changeRequest={sow.metadata?.changeRequest || null}
+          msaReference={sow.metadata?.msaReference || null}
         />
       </div>
     </div>

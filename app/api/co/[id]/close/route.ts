@@ -43,7 +43,12 @@ async function handleTerminalCoState(
     // added alongside 'awaiting_response' for consistency — a CO stuck
     // waiting on either the client's initial response or their
     // countersignature should be closable the same way.
-    closed: ['draft','awaiting_response','declined','countered','stalled','awaiting_countersignature'],
+    // FIX (section-10 audit, feature gap — CO expiry): 'expired' added —
+    // migration 044 + cron/co-expiry give a CO a genuine 'expired'
+    // terminal state now; an agency that doesn't want to revise a dead
+    // one should still be able to close it out like any other non-live
+    // status, same as 'declined'/'withdrawn' already are.
+    closed: ['draft','awaiting_response','declined','countered','stalled','awaiting_countersignature','expired'],
   }
   if (!TERMINAL_FROM[newStatus].includes(co.status))
     return NextResponse.json({ error: `Cannot ${newStatus} a CO with status ${co.status}` }, { status: 400 })
@@ -75,7 +80,25 @@ async function handleTerminalCoState(
   const now = new Date().toISOString()
   const updates: Record<string, unknown> = { status: newStatus, updated_at: now, close_reason: body.reason || null }
 
-  await (service as any).from('change_orders').update(updates).eq('id', id)
+  // FIX (section-10 audit, cross-cutting with withdraw): same missing CAS
+  // — this wrote unconditionally on `.eq('id', id)` after only reading
+  // co.status above (a read-then-write gap), while TERMINAL_FROM.closed
+  // explicitly includes 'countered' — a live, open negotiation state. A
+  // client submitting a counter-offer (CAS-protected: only succeeds while
+  // status is still 'awaiting_response') at the same moment the agency
+  // clicks Close (previously unprotected) could have their genuine
+  // counter-offer silently overwritten back to 'closed' with no error to
+  // either side — real negotiation data loss, not just a theoretical
+  // race. Guard the write the same way every real signing-path transition
+  // already does.
+  const { data: closedCo } = await (service as any).from('change_orders')
+    .update(updates)
+    .eq('id', id)
+    .eq('status', co.status)
+    .select('id')
+
+  if (!closedCo || closedCo.length === 0)
+    return NextResponse.json({ error: 'This change order was already acted on by another action' }, { status: 409 })
 
   // FIX (section-11 audit): a 'draft' CO can have a pending 'co' approval
   // request in flight (gated send), and a 'countered' CO can have a

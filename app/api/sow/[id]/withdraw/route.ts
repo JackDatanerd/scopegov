@@ -30,27 +30,47 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!sow) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (!(await canReadProject(service, session, sow.project_id)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-    if (!['awaiting_signature','changes_requested'].includes(sow.status))
+    const WITHDRAWABLE_FROM = ['awaiting_signature', 'changes_requested']
+    if (!WITHDRAWABLE_FROM.includes(sow.status))
       return NextResponse.json({ error: 'SOW cannot be withdrawn in current status' }, { status: 400 })
 
     const now = new Date().toISOString()
 
-    // Revoke token
-    if (sow.token) {
-      await (service as any).from('revoked_tokens').insert({
-        token: sow.token, token_type: 'sow', reason: 'withdrawn',
-        revoked_by: session.id,
-      })
-    }
+    // FIX (re-audit, race-condition finding): this used to write
+    // unconditionally on `.eq('id', id)` alone — a read-then-write gap,
+    // unlike every actual signing-path transition in this lifecycle
+    // (sign/decline/request-changes all CAS on the status they read).
+    // Worst case: a withdraw racing a client's simultaneous Sign could let
+    // the client's CAS-protected write land first (status -> 'signed',
+    // fully executed with a real signature), then have this unconditional
+    // write blindly flip it back to 'withdrawn' with the token nulled —
+    // silently corrupting an already-completed legal document with no
+    // error surfaced to anyone. Even without any client race, a plain
+    // double-click of the Withdraw button duplicated the client-facing
+    // cancellation email and the audit-log entry below, since nothing
+    // stopped a second request from also matching. Guard the write the
+    // same way every sibling transition already does: only the request
+    // that actually wins the race continues past this point.
+    const { data: withdrawn } = await (service as any).from('sow_documents')
+      .update({ status: 'withdrawn', token: null, updated_at: now })
+      .eq('id', id)
+      .in('status', WITHDRAWABLE_FROM)
+      .select('id')
 
-    // FIX (section-9 audit, 9-G2 follow-on): clear the token on the row
-    // too, matching app/api/co/[id]/withdraw/route.ts. The revoked_tokens
-    // insert above is what actually invalidates it, but leaving the raw
-    // JWT sitting on a dead row is needless exposure — and every read
-    // path that checks `if (sow.token)` was making decisions off a token
-    // that no longer works.
-    await (service as any).from('sow_documents')
-      .update({ status: 'withdrawn', token: null, updated_at: now }).eq('id', id)
+    if (!withdrawn || withdrawn.length === 0)
+      return NextResponse.json({ error: 'This SOW was already acted on by another action' }, { status: 409 })
+
+    // Revoke token — after the CAS succeeds, so a losing double-click (or
+    // a losing race against a client action) never revokes a token that's
+    // still legitimately in play.
+    if (sow.token) {
+      try {
+        await (service as any).from('revoked_tokens').insert({
+          token: sow.token, token_type: 'sow', reason: 'withdrawn',
+          revoked_by: session.id,
+        })
+      } catch (e) { console.error('Token revoke insert failed (non-fatal):', e) }
+    }
 
     // Revert project to Intake
     await (service as any).from('projects')

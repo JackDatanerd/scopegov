@@ -27,7 +27,11 @@ export function isAttentionWorthy({ project, workspace }: AttentionContext): boo
   if (project.guardianFlags?.some(f => f.status === 'open')) return true
 
   // 3. Any actionable change orders
-  const actionableCoStatuses = ['declined', 'countered', 'stalled']
+  // FIX (section-10 audit, feature gap — CO expiry): 'expired' added,
+  // same reasoning as 'expired' in actionableSowStatuses below — a CO
+  // whose signing link has died needs the agency's attention (revise and
+  // resend) exactly as much as a declined or stalled one does.
+  const actionableCoStatuses = ['declined', 'countered', 'stalled', 'expired']
   if (project.changeOrders?.some(co => actionableCoStatuses.includes(co.status))) return true
 
   // 4. Any SOW requiring attention
@@ -41,7 +45,16 @@ export function isAttentionWorthy({ project, workspace }: AttentionContext): boo
   // reflects whether the ball is in the client's court (changes_requested /
   // declined, needs attention) or the agency's (awaiting_signature / signed,
   // already handled).
-  const actionableSowStatuses = ['declined', 'changes_requested']
+  // FIX (section-9 audit): 'expired' was missing here — an expired SOW is
+  // exactly as actionable as a declined or changes-requested one (the
+  // client's link is dead; only the agency, via reopen + resend, can move
+  // it forward), but in practice this rarely surfaced because sow-stall's
+  // cron already flags the project 'Stalled' well before a SOW's 30-day
+  // expiry (day 7 vs. day 30), which check #1 above already catches. Left
+  // as a latent gap otherwise — e.g. if the stall cron ever silently
+  // failed to run — this closes it properly rather than relying on a
+  // second cron's side effect.
+  const actionableSowStatuses = ['declined', 'changes_requested', 'expired']
   const sentSowVersions = (project.sowDocuments || []).filter((s: any) => s.status !== 'draft')
   const currentSow = sentSowVersions.length
     ? [...sentSowVersions].sort((a: any, b: any) => (b.version ?? 0) - (a.version ?? 0))[0]
@@ -86,11 +99,13 @@ export function attentionReason({ project }: AttentionContext): string | null {
   if (project.changeOrders?.some(co => co.status === 'declined')) return 'Change order declined'
   if (project.changeOrders?.some(co => co.status === 'countered')) return 'Counter offer received'
   if (project.changeOrders?.some(co => co.status === 'stalled')) return 'Change order stalled'
+  if (project.changeOrders?.some(co => co.status === 'expired')) return 'Change order link expired — revise and resend'
   const sentSowVersions = (project.sowDocuments || []).filter((s: any) => s.status !== 'draft')
   const currentSow = sentSowVersions.length
     ? [...sentSowVersions].sort((a: any, b: any) => (b.version ?? 0) - (a.version ?? 0))[0]
     : null
   if (currentSow?.status === 'changes_requested') return 'Client requested SOW changes'
   if (currentSow?.status === 'declined') return 'Client declined SOW'
+  if (currentSow?.status === 'expired') return 'SOW link expired — reopen and resend'
   return 'High-value project — no signed SOW'
 }

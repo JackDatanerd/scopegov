@@ -8,6 +8,21 @@ import { sanitizeRichText, sanitizePlainText } from '@/lib/utils/sanitize'
 import { isTableSection, SOW_TABLE_SCHEMAS, type SowTableSectionId } from '@/lib/sow/table-schema'
 import { SOW_SECTION_DEFS, sectionTitle } from '@/lib/ai/sow-content'
 
+// FIX (section-9 audit): PATCH /api/sow/[id] sanitized section content and
+// table cells against XSS (see lib/utils/sanitize.ts) but never capped
+// their LENGTH — unlike api/sow/generate, which explicitly caps brief
+// input fields "for cost/latency reasons" (and, just as much, storage).
+// An EDIT_SOW member calling this route directly (bypassing the editor's
+// own UI, same class of gap this codebase treats seriously everywhere
+// else) could store an arbitrarily large section — up to whatever the
+// hosting platform's own request-body ceiling allows — bloating storage
+// and risking slow PDF renders and portal page loads for every future
+// viewer of that document, client included. Bounds are generous (well
+// beyond any real SOW section or table cell) rather than tight, since the
+// goal is a sane ceiling, not a workflow constraint.
+export const MAX_SECTION_CONTENT_LENGTH = 50_000 // raw HTML chars, pre-sanitize
+export const MAX_TABLE_CELL_LENGTH      = 2_000  // raw chars, pre-sanitize
+
 // Table rows are plain-text cells (rendered on the public portal page same
 // as prose content) — sanitizePlainText, not sanitizeRichText, since a
 // table cell was never meant to carry markup, only sanitized against
@@ -18,7 +33,8 @@ export function sanitizeTableRows(sectionId: string, rows: unknown): Array<Recor
   const schema = SOW_TABLE_SCHEMAS[sectionId as SowTableSectionId]
   return rows.map((row: any) => {
     const clean: Record<string, string> = {}
-    for (const col of schema.columns) clean[col.key] = sanitizePlainText(row?.[col.key] ?? '')
+    for (const col of schema.columns)
+      clean[col.key] = sanitizePlainText(String(row?.[col.key] ?? '').slice(0, MAX_TABLE_CELL_LENGTH))
     return clean
   })
 }
@@ -79,7 +95,7 @@ export function sanitizeSectionList(incoming: unknown, stored: any[], metadata?:
       id:      def.id,
       title:   sectionTitle(def.id, metadata?.language),
       order:   def.order,
-      content: sanitizeRichText(from.content),
+      content: sanitizeRichText(String(from.content ?? '').slice(0, MAX_SECTION_CONTENT_LENGTH)),
       visible,
       ...(isTableSection(def.id) ? { table: sanitizeTableRows(def.id, from.table) } : {}),
     }

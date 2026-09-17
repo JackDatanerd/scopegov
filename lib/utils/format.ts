@@ -197,11 +197,17 @@ const CO_STATUS_LABELS: Record<string, string> = {
   draft: 'Draft', awaiting_response: 'Sent', accepted: 'Accepted',
   declined: 'Declined', countered: 'Countered', closed: 'Closed',
   stalled: 'Stalled', withdrawn: 'Withdrawn', exception_granted: 'Exception',
+  // FIX (section-10 audit, feature gap — CO expiry): 'expired' is a real
+  // status now (migration 044 + cron/co-expiry) — without an entry here
+  // it fell through to the raw '.replace(/_/g, " ")' fallback, same as
+  // SOW's own 'expired' before it got one (see SOW_STATUS_LABELS above).
+  expired: 'Expired',
 }
 const CO_STATUS_COLOURS: Record<string, string> = {
   draft: 'badge-slate', awaiting_response: 'badge-amber', accepted: 'badge-green',
   declined: 'badge-red', countered: 'badge-purple', closed: 'badge-slate',
   stalled: 'badge-red', withdrawn: 'badge-slate', exception_granted: 'badge-blue',
+  expired: 'badge-red',
 }
 export function coStatusLabel(status: string) {
   return CO_STATUS_LABELS[status] ?? status.replace(/_/g, ' ')

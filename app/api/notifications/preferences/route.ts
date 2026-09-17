@@ -35,6 +35,10 @@ const EVENT_TYPES = [
   // internal team. See sendInvoiceSentInternalEmail and its call site in
   // app/api/invoices/[id]/send/route.ts.
   'invoice_sent',
+  // FIX (section-10 audit, feature gap — CO expiry): mirrors 'sow_expired'
+  // above — cron/co-expiry (migration 042) now notifies on this, same
+  // whitelist requirement as every entry in this list.
+  'co_expired',
 ]
 
 // FIX (re-audit, notifications section): `approval_no_reachable_approver`

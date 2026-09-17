@@ -26,7 +26,12 @@ import { insertNextCoVersion } from '@/lib/documents/co-version'
 // original intact and auditable as the thing the client actually saw.
 // parent_co_id (which has existed on change_orders since migration 001
 // and was never used) records the lineage.
-const REVISABLE = ['declined', 'withdrawn', 'closed', 'countered']
+//
+// FIX (section-10 audit, feature gap — CO expiry): 'expired' added
+// alongside the four above. Migration 044 + cron/co-expiry give a CO the
+// same 'expired' terminal state SOW has had since early on — same
+// recovery path SOW's own reopen route already offers for it.
+const REVISABLE = ['declined', 'withdrawn', 'closed', 'countered', 'expired']
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {

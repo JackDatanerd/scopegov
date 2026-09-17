@@ -278,7 +278,7 @@ export async function POST(request: NextRequest) {
     // Check for existing draft SOW on this project
     const { data: existingSow } = await (service as any)
       .from('sow_documents')
-      .select('id,version')
+      .select('id,version,metadata')
       .eq('project_id', projectId)
       .eq('status', 'draft')
       .order('version', { ascending: false })
@@ -301,8 +301,23 @@ export async function POST(request: NextRequest) {
         )
       }
       // Update existing draft
+      // FIX (section-9 audit, 9-G4 — feature gap follow-on): parsed.metadata
+      // is entirely server-derived from THIS request's brief inputs and
+      // knows nothing about fields the agency may have set by hand on the
+      // existing draft since it was last generated — msaReference (see
+      // components/sow/SowEditor.tsx) and metadata.changeRequest (9-G8)
+      // are both like this. Overwriting metadata wholesale silently
+      // discarded them on every regenerate. Carry them forward.
       await (service as any).from('sow_documents')
-        .update({ sections: parsed.sections, metadata: parsed.metadata, updated_at: new Date().toISOString() })
+        .update({
+          sections: parsed.sections,
+          metadata: {
+            ...parsed.metadata,
+            ...(existingSow.metadata?.msaReference ? { msaReference: existingSow.metadata.msaReference } : {}),
+            ...(existingSow.metadata?.changeRequest ? { changeRequest: existingSow.metadata.changeRequest } : {}),
+          },
+          updated_at: new Date().toISOString(),
+        })
         .eq('id', existingSow.id)
       sowId = existingSow.id
     } else {

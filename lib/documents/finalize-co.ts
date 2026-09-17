@@ -139,14 +139,23 @@ export async function finalizeCoAcceptance(service: any, params: {
   } catch (e) { console.error('CO post-acceptance token reissue failed (original link stays in effect):', e) }
 
   try {
-    const { data: snap } = await (service as any)
-      .from('project_scope_snapshot').select('id,deliverables').eq('project_id', co.project_id).single()
-    if (snap && deliverables.length) {
-      await (service as any).from('project_scope_snapshot').update({
-        deliverables:    [...(snap.deliverables || []), ...deliverables.map((d: string) => ({ title: d }))],
-        last_updated_at: now,
-        last_updated_by: 'amendment',
-      }).eq('project_id', co.project_id)
+    // FIX (section-10 audit, race-condition finding): this used to be a
+    // plain read-then-write — select deliverables, spread them locally,
+    // write the concatenated array back. Two COs on the same project
+    // accepted close together (two open portal tabs, an accept-counter
+    // landing seconds after a direct accept elsewhere) raced: both read
+    // the same starting array, and whichever write landed second silently
+    // discarded the first's newly-added deliverables from the snapshot,
+    // with no error anywhere. Migration 043's append_scope_deliverables
+    // does the concatenation as a single atomic UPDATE under Postgres's
+    // own row lock instead, so a concurrent acceptance always appends to
+    // whatever the other one just wrote rather than to a stale local copy.
+    if (deliverables.length) {
+      await (service as any).rpc('append_scope_deliverables', {
+        p_project_id: co.project_id,
+        p_added:      deliverables.map((d: string) => ({ title: d })),
+        p_now:        now,
+      })
     }
   } catch (e) { console.error('Snapshot update failed:', e) }
 

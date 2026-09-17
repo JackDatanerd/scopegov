@@ -398,6 +398,48 @@ export async function sendSowExpiredEmail(params: {
   })
 }
 
+// FIX (section-10 audit, feature gap — CO expiry): change_orders had no
+// 'expired' status at all (unlike sow_documents, which has had one since
+// migration 001) and no equivalent cron — a CO's signing JWT still dies
+// cryptographically at 30 days regardless, but the DB status just sat at
+// 'stalled' (or whatever co-stall last set it to) forever, with a dead,
+// never-revoked token and no signal to the agency short of a blocked
+// Remind attempt. Migration 044 + cron/co-expiry close that gap; this is
+// the email counterpart, mirroring sendSowExpiredEmail exactly.
+export async function sendCoExpiredEmail(params: {
+  to: string[]; clientName: string; projectName: string; projectUrl: string
+}) {
+  const { to, clientName: clientNameRaw, projectName: projectNameRaw, projectUrl } = params
+  if (to.length === 0) return
+  const clientName  = escapeHtml(clientNameRaw)
+  const projectName = escapeHtml(projectNameRaw)
+
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.amber,
+    label: 'Change order link expired',
+    headline: `Signing link expired — ${projectName}`,
+    body: `
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        The change order signing link for <strong>${projectName}</strong>, sent to
+        <strong>${clientName}</strong>, expired before it was resolved.
+      </p>
+      <p style="font-size:13px;color:${C.text2};margin:0;">
+        You'll need to revise and resend it from the project page to give ${clientName} a new link.
+      </p>
+    `,
+    cta: 'Open project →',
+    ctaUrl: projectUrl,
+  })
+
+  return resendClient().emails.send({
+    from:    `ScopeGov <${FROM}>`,
+    to,
+    subject: `Change order link expired — ${projectNameRaw}`,
+    html,
+  })
+}
+
 // ── Event 18: Guardian flag raised ────────────────────────────
 export async function sendGuardianFlagEmail(params: {
   to: string[]; projectName: string

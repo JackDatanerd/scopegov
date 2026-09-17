@@ -30,6 +30,13 @@ interface Props {
   // The client's feedback when this draft was spawned by a
   // request-changes (9-G8).
   changeRequest?: { note: string; fromVersion: number; requestedBy?: string } | null
+  // FIX (section-9 audit, 9-G4 — feature gap): metadata.msaReference has
+  // been read and rendered on the PDF masthead (renderer.tsx,
+  // api/pdf/sow/[id], api/portal/sow/[token]/pdf, .../sign) since a prior
+  // pass, but nothing anywhere ever let an agency actually SET it — the
+  // field was permanently unreachable. This is the write side: an
+  // optional free-text field, autosaved the same way section content is.
+  msaReference?: string | null
 }
 
 // FIX (section-9 audit, 9-G10): 'governing_law' and 'oos' added. Generate
@@ -52,10 +59,14 @@ const REQUIRED_SECTIONS = ['parties', 'deliverables', 'oos', 'payment', 'governi
 // it from the single source of truth so the two can't drift again.
 const SECTION_ORDER = [...SOW_SECTION_DEFS].sort((a, b) => a.order - b.order).map(d => d.id)
 
-export default function SowEditor({ sowId, sections: initialSections, isLocked, canSend, canEdit, contractValue, currency, language, changeRequest }: Props) {
+export default function SowEditor({ sowId, sections: initialSections, isLocked, canSend, canEdit, contractValue, currency, language, changeRequest, msaReference }: Props) {
   const [sections,      setSections]      = useState<Section[]>(
     [...initialSections].sort((a, b) => a.order - b.order)
   )
+  // FIX (section-9 audit, 9-G4 — feature gap): see the Props comment above.
+  const [msaRef,        setMsaRef]        = useState(msaReference || '')
+  const [msaSaveStatus, setMsaSaveStatus] = useState<'idle'|'saving'|'saved'|'error'>('idle')
+  const msaSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [activeSection,    setActiveSection]    = useState<string>(sections[0]?.id || 'overview')
   const [saveStatus,       setSaveStatus]       = useState<'idle'|'saving'|'saved'|'error'>('idle')
   const [regenLoading,     setRegenLoading]     = useState<string | null>(null)
@@ -114,13 +125,40 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
     saveTimers.current.set(sectionId, timer)
   }
 
+  // FIX (section-9 audit, 9-G4 — feature gap): same debounced-save shape
+  // as scheduleAutosave above, but this is a single document-level field
+  // (not per-section content), so it gets its own timer rather than
+  // sharing the Map keyed by section id.
+  function scheduleMsaAutosave(value: string) {
+    if (msaSaveTimer.current) clearTimeout(msaSaveTimer.current)
+    setMsaSaveStatus('saving')
+    msaSaveTimer.current = setTimeout(async () => {
+      msaSaveTimer.current = null
+      try {
+        const res = await fetch(`/api/sow/${sowId}`, {
+          method:  'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ msaReference: value }),
+        })
+        setMsaSaveStatus(res.ok ? 'saved' : 'error')
+        if (res.ok) setTimeout(() => setMsaSaveStatus('idle'), 2000)
+      } catch {
+        setMsaSaveStatus('error')
+      }
+    }, 800)
+  }
+
+  useEffect(() => {
+    return () => { if (msaSaveTimer.current) clearTimeout(msaSaveTimer.current) }
+  }, [])
+
   // FIX (re-audit, data-loss finding): warn before the tab closes/navigates
   // away while a section's edit hasn't been persisted yet — previously a
   // user could type, leave within the 1.5s debounce window, and lose the
   // edit with zero indication anything went wrong.
   useEffect(() => {
     function handleBeforeUnload(e: BeforeUnloadEvent) {
-      if (saveTimers.current.size > 0) {
+      if (saveTimers.current.size > 0 || msaSaveTimer.current) {
         e.preventDefault()
         e.returnValue = ''
       }
@@ -238,7 +276,41 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
   const rowCount   = current?.table?.length || 0
 
   return (
-    <div style={{ display: 'flex', height: '100%', minHeight: 500 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 500 }}>
+      {/* FIX (section-9 audit, 9-G4 — feature gap): metadata.msaReference
+          write path. Shown above the section nav/editor split so it's
+          visible regardless of which section is active — it's masthead
+          metadata, not part of any one section's content. */}
+      {(canEdit && !isLocked) ? (
+        <div style={{
+          padding: '8px 16px', borderBottom: '1px solid var(--border)',
+          display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0,
+        }}>
+          <label style={{ fontSize: 11, color: 'var(--text-3)', whiteSpace: 'nowrap' }}>
+            MSA reference <span style={{ color: 'var(--text-4)' }}>— optional, printed on the PDF masthead</span>
+          </label>
+          <input
+            className="finp"
+            style={{ flex: 1, maxWidth: 340, fontSize: 12, padding: '4px 8px' }}
+            value={msaRef}
+            placeholder='e.g. "Per Master Services Agreement dated March 3, 2026"'
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+              setMsaRef(e.target.value)
+              scheduleMsaAutosave(e.target.value)
+            }}
+          />
+          <span className={`save-status ${msaSaveStatus}`} style={{ fontSize: 11 }}>
+            {msaSaveStatus === 'saving' && <span className="spin spin-dark" style={{ width: 10, height: 10 }} />}
+            {msaSaveStatus === 'saved'  && <i className="ti ti-check" style={{ fontSize: 11, color: 'var(--green)' }} />}
+            {msaSaveStatus === 'error'  && <i className="ti ti-alert-circle" style={{ fontSize: 11, color: 'var(--red)' }} />}
+          </span>
+        </div>
+      ) : msaRef ? (
+        <div style={{ padding: '8px 16px', borderBottom: '1px solid var(--border)', fontSize: 11, color: 'var(--text-3)', flexShrink: 0 }}>
+          MSA reference: {msaRef}
+        </div>
+      ) : null}
+    <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
       {/* Section nav */}
       <div style={{ width: 200, minWidth: 200, borderRight: '1px solid var(--border)', padding: '12px 0', overflowY: 'auto' }}>
         {SECTION_ORDER
@@ -367,6 +439,7 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
           </div>
         )}
       </div>
+    </div>
     </div>
   )
 }

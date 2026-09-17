@@ -105,6 +105,10 @@ const NOTIF_ITEMS = [
   // FIX (section-9 audit, 9-G3): SOW signing links expire after 30 days
   // and nothing ever told anyone — see app/api/cron/sow-expiry.
   { key: 'sow_expired',           label: 'SOW link expired',        desc: 'When a SOW signing link expires before the client signs' },
+  // FIX (section-10 audit, feature gap — CO expiry): change_orders never
+  // had an 'expired' status or a cron to set it (unlike SOW, just above)
+  // — see app/api/cron/co-expiry and migration 042.
+  { key: 'co_expired',            label: 'Change order link expired', desc: 'When a change order signing link expires before the client responds' },
   // FIX (deep audit, notifications section): approval decisions on your
   // own requests (see 'approval_requested' above, which is the other
   // side of this — for the approver) were fully wired server-side but

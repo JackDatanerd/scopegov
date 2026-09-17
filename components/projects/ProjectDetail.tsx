@@ -144,8 +144,13 @@ export default function ProjectDetail({
   ).length
 
   async function handleMarkComplete() {
+    // FIX (section-10 audit, feature gap — CO expiry): 'expired' added —
+    // an expired CO is just as unresolved as a stalled or awaiting one
+    // (neither accepted nor closed out), so it should block "mark
+    // complete" the same way, not silently let a project close out with
+    // a dead, unresolved change order sitting on it.
     const blockingCos = (project.change_orders || []).filter((co: any) =>
-      ['awaiting_response','countered','stalled','awaiting_countersignature'].includes(co.status)
+      ['awaiting_response','countered','stalled','awaiting_countersignature','expired'].includes(co.status)
     )
     if (blockingCos.length > 0) {
       setError(`${blockingCos.length} change order${blockingCos.length !== 1 ? 's' : ''} must be resolved before marking complete.`)
@@ -1352,8 +1357,10 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
               the user to "Withdraw it to edit" when withdraw isn't even
               permitted from 'declined'. The one labelled recovery path
               from a client decline was a dead button. Revise clones the
-              CO into a fresh editable draft instead. */}
-          {['declined', 'withdrawn', 'closed'].includes(co.status) && permissions.createCo && (
+              CO into a fresh editable draft instead.
+              FIX (section-10 audit, feature gap — CO expiry): 'expired'
+              added — same recovery path as declined/withdrawn/closed. */}
+          {['declined', 'withdrawn', 'closed', 'expired'].includes(co.status) && permissions.createCo && (
             <button className="btn btn-ghost btn-xs" onClick={revise} disabled={acting}>
               Revise &amp; resend
             </button>
@@ -1386,10 +1393,19 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
               {reminded ? <><i className="ti ti-check" style={{ fontSize: 12 }} /> Sent</> : (co.status === 'stalled' ? 'Try again' : 'Remind')}
             </button>
           )}
-          {['countered','stalled','declined'].includes(co.status) && (
+          {/* FIX (section-10 audit, feature gap — CO expiry): 'expired'
+              added — same as 'declined'/'stalled', an agency should be
+              able to close out a dead CO instead of only being able to
+              revise it. */}
+          {['countered','stalled','declined','expired'].includes(co.status) && (
             <button className="btn btn-ghost btn-xs" onClick={() => doAction('close')} disabled={acting}>Close</button>
           )}
-          {permissions.sendCo && !['closed', 'accepted', 'withdrawn'].includes(co.status) && (
+          {/* FIX (section-10 audit, feature gap — CO expiry): 'expired'
+              excluded — there's nothing left to escalate on a dead,
+              already-terminal link; escalation is for an open
+              negotiation, same reasoning the escalate route's own status
+              guard already applies. */}
+          {permissions.sendCo && !['closed', 'accepted', 'withdrawn', 'expired'].includes(co.status) && (
             <button className="btn-icon" title="Escalate" onClick={() => setEscalating(true)}>
               <i className="ti ti-alert-triangle" style={{ fontSize: 13 }} />
             </button>

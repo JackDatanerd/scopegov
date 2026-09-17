@@ -157,6 +157,30 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       case 'draft_co': {
         if (!hasPermission(session, 'CREATE_CHANGE_ORDERS'))
           return NextResponse.json({ error: 'Missing permission: CREATE_CHANGE_ORDERS' }, { status: 403 })
+
+        // FIX (section-10 audit, cross-cutting): app/api/co/route.ts hard-
+        // blocks CO creation on a project with no signed SOW ("a change
+        // order can only be created once the original scope of work is
+        // signed" — the section-10 headline fix, since finalize-co.ts
+        // hard-blocks the client's acceptance on this same condition, and
+        // discovering that AFTER a client has already reviewed, typed
+        // their name and drawn a signature is strictly worse for
+        // everyone). This second, independent change_orders write path —
+        // drafting a CO straight from a Guardian flag — never got that
+        // same check, so it was still fully reachable on a project with
+        // no signed SOW. Same guard, same place in the flow: before the
+        // flag claim below, so a blocked draft doesn't even consume the
+        // flag's one-shot conversion.
+        const { data: signedSow } = await (service as any)
+          .from('sow_documents').select('id')
+          .eq('project_id', flag.project_id).eq('status', 'signed')
+          .limit(1).maybeSingle()
+        if (!signedSow) {
+          return NextResponse.json({
+            error: 'This project has no signed SOW yet — a change order can only be created once the original scope of work is signed.',
+          }, { status: 409 })
+        }
+
         // FIX (audit round 6): this action had no precondition check at
         // all — clicking it twice (or a slow-network double-submit, or two
         // concurrent requests) created two separate change_orders rows
@@ -192,13 +216,23 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           flag_id:      id,
           title:        `Change Order — ${flag.sow_reference}`,
           status:       'draft',
-          line_items:   JSON.stringify([{
+          // FIX (section-10 audit, cross-cutting): line_items is a jsonb
+          // column — JSON.stringify(...) here stores a JSON-encoded
+          // STRING inside it, not a native array. app/api/co/route.ts's
+          // own comment already flagged this exact anti-pattern as fixed
+          // system-wide ("always the bug, not an intentional
+          // convention"), but this second, independent write path into
+          // the same column was missed. Every reader already defensively
+          // handles the string case, so this never crashed — but it's the
+          // same debt the other fix claimed to have eliminated. Write the
+          // native array directly, matching every other CO-creating path.
+          line_items:   [{
             id:          crypto.randomUUID(),
             description: flag.description,
             quantity:    1,
             rate:        0,
             total:       0,
-          }]),
+          }],
           subtotal:     0,
           total:        0,
           created_by:   session.id,

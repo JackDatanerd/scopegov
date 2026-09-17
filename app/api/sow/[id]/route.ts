@@ -1,13 +1,13 @@
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
-import { sanitizeRichText } from '@/lib/utils/sanitize'
+import { sanitizeRichText, sanitizePlainText } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
 // NOTE: helpers live in lib/sow/sections.ts, not here — a Next.js route
 // module may only export route handlers, so exporting them from this file
 // failed the production build ("hydrateSections is not a valid Route
 // export field") even though `tsc --noEmit` was perfectly happy.
-import { REQUIRED_SECTION_IDS, hydrateSections, sanitizeSectionList, sanitizeTableRows } from '@/lib/sow/sections'
+import { REQUIRED_SECTION_IDS, hydrateSections, sanitizeSectionList, sanitizeTableRows, MAX_SECTION_CONTENT_LENGTH, MAX_TABLE_CELL_LENGTH } from '@/lib/sow/sections'
 import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -64,6 +64,29 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     const body = await request.json()
 
+    // FIX (section-9 audit, 9-G4 — feature gap): metadata.msaReference has
+    // been declared, read, and rendered on the PDF masthead across three
+    // call sites (this route's own GET/PDF sibling, api/pdf/sow/[id],
+    // api/portal/sow/[token]/pdf, .../sign) since a prior pass — but that
+    // pass only wired the READ side. Nothing anywhere ever wrote it: no
+    // field in SowEditor, no API branch here accepted it. A fully
+    // unreachable feature. This is the write side, handled as its own
+    // independent update (no section content involved) — sanitized as
+    // plain text (it's rendered as a bare masthead line, not rich text)
+    // and length-capped the same way other free-text SOW fields are.
+    if (body.msaReference !== undefined) {
+      const safeMsaReference = sanitizePlainText(body.msaReference).slice(0, 200) || null
+      const { error: metaErr } = await (service as any)
+        .from('sow_documents')
+        .update({
+          metadata:   { ...(sow.metadata || {}), msaReference: safeMsaReference },
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', id)
+      if (metaErr) throw new Error(metaErr.message)
+      return NextResponse.json({ ok: true })
+    }
+
     // FIX (audit round 1, item #2): section content is rendered raw via
     // dangerouslySetInnerHTML on the public, unauthenticated portal page —
     // sanitize here (not just trust the TipTap editor's own constraints,
@@ -91,11 +114,32 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       // the client, and ignore unknown ids.
       newSections = sanitizeSectionList(body.sections, sow.sections || [], sow.metadata)
     } else if (body.sectionId && body.table !== undefined) {
+      // FIX (section-9 audit, no-length-cap finding): reject rather than
+      // silently truncate here — this is the live autosave path
+      // (components/sow/SowEditor.tsx), so the user should see an error
+      // for something that big rather than have it quietly cut short
+      // with no indication anything was lost. See lib/sow/sections.ts.
+      if (Array.isArray(body.table) && body.table.some((row: any) =>
+        row && Object.values(row).some((v: any) => typeof v === 'string' && v.length > MAX_TABLE_CELL_LENGTH)
+      )) {
+        return NextResponse.json(
+          { error: `A table cell is too long (max ${MAX_TABLE_CELL_LENGTH.toLocaleString()} characters).` },
+          { status: 400 }
+        )
+      }
       const safeTable = sanitizeTableRows(body.sectionId, body.table)
       newSections = newSections.map((s: any) =>
         s.id === body.sectionId ? { ...s, table: safeTable } : s
       )
     } else if (body.sectionId && body.content !== undefined) {
+      // FIX (section-9 audit, no-length-cap finding): same reasoning as
+      // the table branch above.
+      if (typeof body.content === 'string' && body.content.length > MAX_SECTION_CONTENT_LENGTH) {
+        return NextResponse.json(
+          { error: `Section content is too long (max ${MAX_SECTION_CONTENT_LENGTH.toLocaleString()} characters).` },
+          { status: 400 }
+        )
+      }
       const safeContent = sanitizeRichText(body.content)
       newSections = newSections.map((s: any) =>
         s.id === body.sectionId ? { ...s, content: safeContent } : s

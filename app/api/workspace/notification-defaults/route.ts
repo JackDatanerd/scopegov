@@ -27,6 +27,9 @@ const EMAIL_EVENT_TYPES = [
   // addition in app/api/notifications/preferences/route.ts — see that
   // file's comment for why 'invoice_sent' belongs here now.
   'invoice_sent',
+  // FIX (section-10 audit, feature gap — CO expiry): kept in sync with
+  // the same addition in app/api/notifications/preferences/route.ts.
+  'co_expired',
 ]
 // FIX (deep audit, notifications section): kept in sync with the same
 // addition in app/api/notifications/preferences/route.ts.

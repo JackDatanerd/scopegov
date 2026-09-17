@@ -40,7 +40,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // (spec §6.3: it never changes status), so it only makes sense while
     // one is open. Mirrors the states CoCard already shows the escalate
     // control for.
-    if (['accepted', 'closed', 'withdrawn', 'exception_granted'].includes(co.status))
+    // FIX (section-10 audit, feature gap — CO expiry): 'expired' added —
+    // a dead signing link is exactly as terminal as accepted/closed/
+    // withdrawn for this purpose; nothing left to escalate.
+    if (['accepted', 'closed', 'withdrawn', 'exception_granted', 'expired'].includes(co.status))
       return NextResponse.json(
         { error: `This change order is ${co.status.replace(/_/g, ' ')} — there's nothing open to escalate.` },
         { status: 400 }
