@@ -1,6 +1,5 @@
 'use client'
 import { useState, useEffect, Suspense } from 'react'
-import { createClient } from '@/lib/supabase/client'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { PROJECT_TYPE_ICONS } from '@/lib/utils/format'
 import type { ProjectType, Client } from '@/lib/supabase/types'
@@ -36,7 +35,6 @@ export default function NewProjectPage() {
 function NewProjectPageInner() {
   const router   = useRouter()
   const searchParams = useSearchParams()
-  const supabase = createClient()
   const [step,    setStep]    = useState(0)
   const [loading, setLoading] = useState(false)
   const [error,   setError]   = useState('')

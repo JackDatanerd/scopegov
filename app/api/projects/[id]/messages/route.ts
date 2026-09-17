@@ -12,7 +12,10 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
-import { extractMentions, mentionsToPlainText, MESSAGE_MAX_LENGTH } from '@/lib/utils/project-messages'
+import {
+  extractMentions, MESSAGE_MAX_LENGTH,
+  filterMentionsToProjectMembers, notifyMentionedUsers,
+} from '@/lib/utils/project-messages'
 
 // Recent-history cap for the feed. This is a live discussion thread, not
 // an archive — a "load older" affordance can be added later if agencies
@@ -142,7 +145,7 @@ export async function POST(
       metadata: { project_id: projectId, mention_count: validMentions.length },
     })
 
-    await notifyMentioned(service, session, projectId, project.name, text, validMentions)
+    await notifyMentionedUsers(service, session, projectId, project.name, text, validMentions)
 
     return NextResponse.json({
       message: {
@@ -156,68 +159,6 @@ export async function POST(
   }
 }
 
-async function filterMentionsToProjectMembers(
-  service: any,
-  workspaceId: string,
-  projectId: string,
-  mentions: { userId: string; displayName: string }[]
-) {
-  const { data: members } = await (service as any)
-    .from('project_members')
-    .select('workspace_members!inner(user_id)')
-    .eq('project_id', projectId)
-    .eq('workspace_members.workspace_id', workspaceId)
-
-  const memberIds = new Set(
-    (members || []).map((m: any) => m.workspace_members?.user_id).filter(Boolean)
-  )
-  return mentions.filter(m => memberIds.has(m.userId))
-}
-
-async function notifyMentioned(
-  service: any,
-  session: import('@/lib/supabase/types').SessionUser,
-  projectId: string,
-  projectName: string,
-  rawBody: string,
-  mentions: { userId: string; displayName: string }[]
-) {
-  const recipients = mentions.filter(m => m.userId !== session.id)
-  if (!recipients.length) return
-
-  try {
-    const { data: prefs } = await (service as any)
-      .from('notification_preferences')
-      .select('user_id, in_app_enabled')
-      .eq('workspace_id', session.workspaceId)
-      .eq('event_type', 'project_message_mention')
-      .in('user_id', recipients.map(r => r.userId))
-
-    const suppressed = new Set(
-      (prefs || []).filter((p: any) => p.in_app_enabled === false).map((p: any) => p.user_id)
-    )
-
-    const plain = mentionsToPlainText(rawBody)
-    const snippet = plain.length > 120 ? `${plain.slice(0, 117)}…` : plain
-
-    // entity_id points at the project (not the message) — NotificationBell
-    // only has entity_type/entity_id to build a link from (no metadata
-    // column on notifications), and "open the project's Discussion tab"
-    // is a perfectly good destination for a mention notification.
-    const rows = recipients
-      .filter(r => !suppressed.has(r.userId))
-      .map(r => ({
-        workspace_id: session.workspaceId,
-        recipient_id: r.userId,
-        type: 'project_message_mention',
-        title: `${session.name} mentioned you in ${projectName}`,
-        body: snippet,
-        entity_type: 'project_message',
-        entity_id: projectId,
-      }))
-
-    if (rows.length) await (service as any).from('notifications').insert(rows)
-  } catch {
-    // Never let a notification failure break message creation.
-  }
-}
+// filterMentionsToProjectMembers and notifyMentionedUsers now live in
+// lib/utils/project-messages.ts, shared with the PATCH (edit) route below —
+// see the FIX note there for why this was pulled out of just this file.

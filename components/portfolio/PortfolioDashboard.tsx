@@ -60,6 +60,11 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName }: { 
   const [data, setData] = useState<PortfolioData | null>(null)
   const [loading, setLoading] = useState(true)
   const [flagFilter, setFlagFilter] = useState<'all' | 'high' | 'medium' | 'low'>('all')
+  // FEATURE (deep audit, section 8): the dashboard had no export at all —
+  // see api/reports/portfolio/export/route.ts. Same download-via-blob
+  // pattern already used by AuditLogClient's CSV/PDF export.
+  const [exporting, setExporting] = useState<'csv' | 'pdf' | null>(null)
+  const [exportError, setExportError] = useState('')
 
   useEffect(() => {
     // FIX (deep audit, section 8): no cancellation guard — switching
@@ -83,6 +88,25 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName }: { 
     return flagFilter === 'all' ? data.openFlags : data.openFlags.filter(f => f.severity === flagFilter)
   }, [data, flagFilter])
 
+  async function handleExport(format: 'csv' | 'pdf') {
+    setExporting(format); setExportError('')
+    try {
+      const res = await fetch(`/api/reports/portfolio/export?format=${format}&period=${period}`)
+      if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || 'Export failed') }
+      const blob = await res.blob()
+      const disposition = res.headers.get('Content-Disposition') || ''
+      const match = disposition.match(/filename="([^"]+)"/)
+      const filename = match?.[1] || `portfolio.${format}`
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url; a.download = filename
+      document.body.appendChild(a); a.click(); a.remove()
+      URL.revokeObjectURL(url)
+    } catch (err: unknown) {
+      setExportError(err instanceof Error ? err.message : 'Export failed')
+    } finally { setExporting(null) }
+  }
+
   return (
     <div className="page" style={{ maxWidth: 1080 }}>
       <div className="page-hd">
@@ -92,11 +116,23 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName }: { 
             Scope-governance rollup across every project · {agencyName}
           </p>
         </div>
-        <select className="finp" style={{ width: 'auto' }} value={period}
-          onChange={e => setPeriod(e.target.value as Period)}>
-          {PERIODS.map(p => <option key={p.key} value={p.key}>{p.label}</option>)}
-        </select>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <select className="finp" style={{ width: 'auto' }} value={period}
+            onChange={e => setPeriod(e.target.value as Period)}>
+            {PERIODS.map(p => <option key={p.key} value={p.key}>{p.label}</option>)}
+          </select>
+          <button className="btn btn-ghost btn-sm" disabled={exporting !== null || loading || !data?.hasSnapshots}
+            onClick={() => handleExport('csv')} title="Export CSV">
+            {exporting === 'csv' ? <span className="spin" /> : <><i className="ti ti-file-spreadsheet" style={{ marginRight: 6 }} />CSV</>}
+          </button>
+          <button className="btn btn-ghost btn-sm" disabled={exporting !== null || loading || !data?.hasSnapshots}
+            onClick={() => handleExport('pdf')} title="Export PDF">
+            {exporting === 'pdf' ? <span className="spin" /> : <><i className="ti ti-file-type-pdf" style={{ marginRight: 6 }} />PDF</>}
+          </button>
+        </div>
       </div>
+
+      {exportError && <p style={{ fontSize: 12, color: 'var(--red)', marginTop: -8, marginBottom: 12 }}>{exportError}</p>}
 
       {loading ? (
         <div style={{ display: 'flex', justifyContent: 'center', padding: 60 }}>
@@ -359,7 +395,18 @@ function SeverityBreakdown({ breakdown }: { breakdown: { high: number; medium: n
 }
 
 // ── STALLED DOCUMENTS ────────────────────────────────────────────
+// FIX (deep audit, section 8 — feature gap): this used to hard-truncate
+// to the first 8 items with no way to see the rest — a portfolio with
+// more than 8 stalled documents combined lost the remainder with no
+// count, no "view all", nothing. Neither the API route nor the query
+// behind it actually caps the list (only this component's own .slice()
+// did), so the data was already there; only the affordance to see past
+// it was missing. Show 8 by default and let the person expand to the
+// full list, same shape as the "show all" pattern elsewhere in the UI.
+const STALLED_PREVIEW_COUNT = 8
+
 function StalledPanel({ sows, cos, canViewFinancials }: { sows: StalledSow[]; cos: StalledCo[]; canViewFinancials: boolean }) {
+  const [expanded, setExpanded] = useState(false)
   const items = [
     ...sows.map(s => ({ kind: 'SOW' as const, id: s.projectId, title: s.projectName, sub: s.clientName, since: s.since, projectId: s.projectId, amount: null as number | null, currency: null as string | null })),
     // FIX (deep audit, section 8): each CO now carries its own project's
@@ -367,6 +414,9 @@ function StalledPanel({ sows, cos, canViewFinancials }: { sows: StalledSow[]; co
     // one — see the fix note on StalledCo / the API route.
     ...cos.map(c => ({ kind: 'CO' as const, id: c.id, title: c.title, sub: c.projectName, since: c.since, projectId: c.projectId, amount: c.total, currency: c.currency })),
   ].sort((a, b) => new Date(a.since).getTime() - new Date(b.since).getTime())
+
+  const visible = expanded ? items : items.slice(0, STALLED_PREVIEW_COUNT)
+  const hiddenCount = items.length - visible.length
 
   return (
     <div className="surface surface-p">
@@ -376,24 +426,35 @@ function StalledPanel({ sows, cos, canViewFinancials }: { sows: StalledSow[]; co
       {items.length === 0 ? (
         <p style={{ fontSize: 12.5, color: 'var(--text-3)' }}>Nothing stalled across the portfolio.</p>
       ) : (
-        items.slice(0, 8).map(item => (
-          <Link key={`${item.kind}-${item.id}`} href={`/projects/${item.projectId}`}
-            style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--surface-2)', textDecoration: 'none' }}>
-            <div style={{ minWidth: 0 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span className="pill pill-red pill-sm">{item.kind}</span>
-                <span style={{ fontSize: 13, color: 'var(--text-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.title}</span>
+        <>
+          {visible.map(item => (
+            <Link key={`${item.kind}-${item.id}`} href={`/projects/${item.projectId}`}
+              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--surface-2)', textDecoration: 'none' }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span className="pill pill-red pill-sm">{item.kind}</span>
+                  <span style={{ fontSize: 13, color: 'var(--text-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.title}</span>
+                </div>
+                {item.sub && <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>{item.sub}</div>}
               </div>
-              {item.sub && <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>{item.sub}</div>}
-            </div>
-            <div style={{ textAlign: 'right', flexShrink: 0, marginLeft: 12 }}>
-              {canViewFinancials && item.amount ? (
-                <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{formatCurrency(item.amount, item.currency || 'USD')}</div>
-              ) : null}
-              <div style={{ fontSize: 10.5, color: 'var(--text-4)' }}>since {formatRelative(item.since)}</div>
-            </div>
-          </Link>
-        ))
+              <div style={{ textAlign: 'right', flexShrink: 0, marginLeft: 12 }}>
+                {canViewFinancials && item.amount ? (
+                  <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{formatCurrency(item.amount, item.currency || 'USD')}</div>
+                ) : null}
+                <div style={{ fontSize: 10.5, color: 'var(--text-4)' }}>since {formatRelative(item.since)}</div>
+              </div>
+            </Link>
+          ))}
+          {(hiddenCount > 0 || expanded) && items.length > STALLED_PREVIEW_COUNT && (
+            <button
+              className="btn btn-ghost btn-xs"
+              style={{ marginTop: 10 }}
+              onClick={() => setExpanded(v => !v)}
+            >
+              {expanded ? 'Show less' : `Show ${hiddenCount} more`}
+            </button>
+          )}
+        </>
       )}
     </div>
   )

@@ -110,8 +110,24 @@ export default function SowEditorPage() {
               className="btn btn-ghost btn-sm"
               onClick={async () => {
                 if (!confirm('Withdraw this SOW? The client link will be deactivated.')) return
-                await fetch(`/api/sow/${sowId}/withdraw`, { method: 'POST' })
-                router.push(`/projects/${projId}?tab=sow`)
+                setError('')
+                try {
+                  const res = await fetch(`/api/sow/${sowId}/withdraw`, { method: 'POST' })
+                  // FIX (deep audit, section 7): this navigated away
+                  // unconditionally, regardless of whether the withdraw
+                  // actually succeeded — a failed withdraw (permission
+                  // lapsed, already signed, network error) looked
+                  // identical to a successful one, with no error shown
+                  // and the SOW still silently live with the client.
+                  if (!res.ok) {
+                    const json = await res.json().catch(() => ({}))
+                    setError(json.error || 'Failed to withdraw')
+                    return
+                  }
+                  router.push(`/projects/${projId}?tab=sow`)
+                } catch {
+                  setError('Failed to withdraw')
+                }
               }}
             >
               <i className="ti ti-x" style={{ fontSize: 12 }} /> Withdraw

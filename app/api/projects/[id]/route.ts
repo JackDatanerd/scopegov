@@ -5,6 +5,22 @@ import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
 import { roundCurrency } from '@/lib/utils/format'
 
+// FIX (deep audit, section 7): body.status was written straight through
+// with no validation against the actual project_status enum — a malformed
+// or malicious direct request could set a project to any string at all.
+// Worse, 'Complete' and 'Archived' were both reachable through here even
+// though each has its own dedicated route (POST .../complete,
+// .../archive) that enforces real lifecycle rules this one never checked:
+// completing blocks on open/awaiting change orders and auto-closes open
+// guardian flags; archiving requires the project to already be Complete.
+// A direct PATCH with a valid MARK_PROJECT_COMPLETE grant could jump
+// straight to 'Complete' with unresolved change orders still open, or
+// straight to 'Archived' from any status, silently skipping both. Only
+// the statuses this route is actually meant to set are allowed here —
+// the two lifecycle-gated ones are rejected with a pointer to the route
+// that does it safely.
+const PATCHABLE_STATUSES = ['Draft', 'Intake', 'Awaiting Signature', 'Changes Requested', 'Active', 'Stalled']
+
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id }   = await params
@@ -48,8 +64,16 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const changes: Record<string, { from: unknown; to: unknown }> = {}
 
     if (body.status) {
-      if (!hasPermission(session, 'MARK_PROJECT_COMPLETE') && body.status === 'Complete')
-        return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
+      if (body.status === 'Complete')
+        return NextResponse.json({
+          error: 'Use POST /api/projects/[id]/complete to mark a project complete — it checks for unresolved change orders and closes open flags first.',
+        }, { status: 400 })
+      if (body.status === 'Archived')
+        return NextResponse.json({
+          error: 'Use POST /api/projects/[id]/archive to archive a project — it can only be reached from Complete.',
+        }, { status: 400 })
+      if (!PATCHABLE_STATUSES.includes(body.status))
+        return NextResponse.json({ error: `Invalid status: ${body.status}` }, { status: 400 })
 
       updates.status = body.status
       eventType = 'project.status_changed'

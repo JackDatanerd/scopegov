@@ -1,11 +1,17 @@
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
+import { getPortfolioData } from '@/lib/reports/portfolio-data'
 
 // Portfolio dashboard is workspace-wide by definition — it has no
 // per-project scoping, so it requires VIEW_ALL_PROJECTS outright rather
 // than falling back to a VIEW_OWN_PROJECTS-filtered view (BUG-058's
 // distinction doesn't apply here; there's no "own" portfolio).
+//
+// The actual data assembly (snapshot history + drill-down queries) now
+// lives in lib/reports/portfolio-data.ts, shared with
+// api/reports/portfolio/export/route.ts (CSV/PDF) — see the FIX note
+// there for why.
 export async function GET(request: NextRequest) {
   try {
     const session = await getSession()
@@ -16,131 +22,11 @@ export async function GET(request: NextRequest) {
     const canViewFinancials = hasPermission(session, 'VIEW_FINANCIALS')
     const { searchParams } = new URL(request.url)
     const period = searchParams.get('period') || '90d'
-    const periodDays: Record<string, number> = { '30d': 30, '90d': 90, '6m': 180, '12m': 365 }
-    const days = periodDays[period] ?? 90
 
     const service = createServiceClient()
-    const wsId = session.workspaceId
+    const data = await getPortfolioData(service, session.workspaceId, period, canViewFinancials)
 
-    const since = new Date(Date.now() - days * 86400000).toISOString().split('T')[0]
-
-    const { data: snapshots } = await (service as any)
-      .from('scope_health_snapshots')
-      .select('snapshot_date, open_flags_count, open_flags_by_severity, exceptions_count, exceptions_value_total, contract_value_at_risk, stalled_sow_count, stalled_co_count, active_project_count, currency')
-      .eq('workspace_id', wsId)
-      .gte('snapshot_date', since)
-      .order('snapshot_date', { ascending: true })
-
-    const history = snapshots || []
-    const latest = history.length ? history[history.length - 1] : null
-    const earliest = history.length ? history[0] : null
-
-    // FIX (deep audit, section 8): scope_health_rollup deliberately scopes
-    // open_flags_count / stalled_co_count to the workspace's single
-    // dominant currency for that snapshot (see app/api/cron/scope-health-
-    // rollup/route.ts) — the same discipline exceptions_count and
-    // stalled_sow_count follow. The drill-down queries below had no such
-    // filter, so in a multi-currency workspace the metric strip's "Open
-    // scope flags" count and the "Stalled documents" count could disagree
-    // outright with the length of the very list rendered underneath them
-    // (data.openFlags.length / items.length in PortfolioDashboard.tsx) —
-    // scope both to the same dominant currency the snapshot used.
-    const dominantCurrency = latest?.currency || 'USD'
-
-    // Drill-down: current open flags across the whole portfolio, newest first.
-    const { data: openFlags } = await (service as any)
-      .from('guardian_flags')
-      .select('id, severity, description, sow_reference, created_at, project_id, projects!inner(id, name, contract_value, currency, clients(name))')
-      .eq('workspace_id', wsId)
-      .eq('status', 'open')
-      .eq('projects.currency', dominantCurrency)
-      .order('created_at', { ascending: false })
-      .limit(100)
-
-    // Drill-down: stalled documents.
-    const [stalledSowsRes, stalledCosRes] = await Promise.all([
-      (service as any).from('projects')
-        .select('id, name, updated_at, clients(name)')
-        .eq('workspace_id', wsId).eq('status', 'Stalled').eq('stall_reason', 'sow_unsigned')
-        .order('updated_at', { ascending: true }),
-      (service as any).from('change_orders')
-        // FIX (deep audit, section 8): this never selected the CO's own
-        // project currency — the frontend then rendered every stalled
-        // CO's amount using the single workspace-wide dominant currency
-        // (see `currency` in the response, used in StalledPanel). For a
-        // stalled CO belonging to a minority-currency project, that's not
-        // a rounding artifact like the count/value mismatches above — it
-        // prints the wrong currency symbol on a real figure outright (a
-        // KES 200,000 change order rendered as "$200,000").
-        //
-        // FIX (deep audit, section 8): also scoped to dominantCurrency —
-        // see the openFlags note above. stalled_co_count in the snapshot
-        // is dominant-currency-scoped; this drill-down wasn't, so the two
-        // could disagree the same way.
-        .select('id, title, total, project_id, updated_at, projects!inner(id, name, currency)')
-        .eq('workspace_id', wsId).eq('status', 'stalled')
-        .eq('projects.currency', dominantCurrency)
-        .order('updated_at', { ascending: true }),
-    ])
-
-    // Movement vs the start of the selected period, so the dashboard can
-    // show a trend arrow, not just a static count.
-    // FIX (deep audit, section 8): atRiskDelta is a dollar figure derived
-    // from contract_value_at_risk, exactly like current.contractValueAtRisk
-    // and history[].contractValueAtRisk right below — both of those are
-    // correctly redacted behind canViewFinancials, this wasn't. A
-    // VIEW_ALL_PROJECTS holder without VIEW_FINANCIALS could read the raw
-    // at-risk delta straight out of the response even though the UI never
-    // renders it for them and every other financial figure here is null.
-    const trend = earliest && latest ? {
-      openFlagsDelta: latest.open_flags_count - earliest.open_flags_count,
-      atRiskDelta: canViewFinancials
-        ? Math.round((latest.contract_value_at_risk - earliest.contract_value_at_risk) * 100) / 100
-        : null,
-    } : null
-
-    return NextResponse.json({
-      currency: latest?.currency || 'USD',
-      current: latest ? {
-        openFlagsCount: latest.open_flags_count,
-        openFlagsBySeverity: latest.open_flags_by_severity,
-        exceptionsCount: latest.exceptions_count,
-        exceptionsValueTotal: canViewFinancials ? latest.exceptions_value_total : null,
-        contractValueAtRisk: canViewFinancials ? latest.contract_value_at_risk : null,
-        stalledSowCount: latest.stalled_sow_count,
-        stalledCoCount: latest.stalled_co_count,
-        activeProjectCount: latest.active_project_count,
-        snapshotDate: latest.snapshot_date,
-      } : null,
-      history: history.map((h: any) => ({
-        date: h.snapshot_date,
-        openFlagsCount: h.open_flags_count,
-        contractValueAtRisk: canViewFinancials ? h.contract_value_at_risk : null,
-        exceptionsCount: h.exceptions_count,
-      })),
-      trend,
-      openFlags: (openFlags || []).map((f: any) => ({
-        id: f.id,
-        severity: f.severity,
-        description: f.description,
-        sowReference: f.sow_reference,
-        createdAt: f.created_at,
-        projectId: f.project_id,
-        projectName: f.projects?.name || 'Unknown project',
-        clientName: f.projects?.clients?.name || null,
-        contractValue: canViewFinancials ? f.projects?.contract_value : null,
-        currency: f.projects?.currency || 'USD',
-      })),
-      stalledSows: (stalledSowsRes.data || []).map((p: any) => ({
-        projectId: p.id, projectName: p.name, clientName: p.clients?.name || null, since: p.updated_at,
-      })),
-      stalledCos: (stalledCosRes.data || []).map((c: any) => ({
-        id: c.id, title: c.title, total: canViewFinancials ? c.total : null,
-        currency: c.projects?.currency || 'USD',
-        projectId: c.project_id, projectName: c.projects?.name || 'Unknown project', since: c.updated_at,
-      })),
-      hasSnapshots: history.length > 0,
-    })
+    return NextResponse.json(data)
   } catch (err) {
     console.error('Portfolio report error:', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

@@ -11,7 +11,10 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
-import { extractMentions, MESSAGE_MAX_LENGTH } from '@/lib/utils/project-messages'
+import {
+  extractMentions, MESSAGE_MAX_LENGTH,
+  filterMentionsToProjectMembers, notifyMentionedUsers,
+} from '@/lib/utils/project-messages'
 
 async function loadMessage(service: any, workspaceId: string, projectId: string, messageId: string) {
   const { data } = await service
@@ -22,6 +25,12 @@ async function loadMessage(service: any, workspaceId: string, projectId: string,
     .eq('workspace_id', workspaceId)
     .single()
   return data
+}
+
+async function loadProjectName(service: any, workspaceId: string, projectId: string): Promise<string> {
+  const { data } = await service
+    .from('projects').select('name').eq('id', projectId).eq('workspace_id', workspaceId).maybeSingle()
+  return data?.name || 'a project'
 }
 
 export async function PATCH(
@@ -63,14 +72,10 @@ export async function PATCH(
       .eq('message_id', messageId)
     const existingIds = new Set<string>((existing || []).map((r: any) => r.user_id))
 
-    const { data: members } = await (service as any)
-      .from('project_members')
-      .select('workspace_members!inner(user_id)')
-      .eq('project_id', projectId)
-      .eq('workspace_members.workspace_id', session.workspaceId)
-    const memberIds = new Set((members || []).map((m: any) => m.workspace_members?.user_id).filter(Boolean))
-
-    const newMentions = extractMentions(text).filter(m => memberIds.has(m.userId))
+    const rawMentions = extractMentions(text)
+    const newMentions = rawMentions.length
+      ? await filterMentionsToProjectMembers(service, session.workspaceId, projectId, rawMentions)
+      : []
     const newIds = new Set(newMentions.map(m => m.userId))
 
     const toRemove = Array.from(existingIds).filter(id => !newIds.has(id))
@@ -83,6 +88,13 @@ export async function PATCH(
     if (toAdd.length) {
       await (service as any).from('project_message_mentions')
         .insert(toAdd.map(m => ({ message_id: messageId, user_id: m.userId })))
+      // FIX (deep audit, section 7): this comment always said net-new
+      // mentions on an edit should notify — but nothing ever called the
+      // notifier here, so someone freshly @mentioned by an edit (not the
+      // original post) was silently never told. notifyMentionedUsers
+      // already no-ops safely on failure and skips the editor themselves.
+      const projectName = await loadProjectName(service, session.workspaceId, projectId)
+      await notifyMentionedUsers(service, session, projectId, projectName, text, toAdd)
     }
 
     await logAudit(service, {

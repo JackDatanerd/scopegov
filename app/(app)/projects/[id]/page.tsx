@@ -33,6 +33,24 @@ export default async function ProjectPage({ params, searchParams }: Props) {
   const service = createServiceClient()
 
   // ── Fetch project ─────────────────────────────────────────────────────
+  // FIX (deep audit, section 7 — flagship finding): this select's inline
+  // documentation had been pasted *inside* the template literal instead of
+  // above it, so the "// FIX (section-10 audit, 10-G1): ..." comment lines
+  // were sent to PostgREST as literal characters of the select= query
+  // string, not stripped as a JS comment. That string isn't valid select
+  // syntax, so the query failed on every single request, `project` came
+  // back null, and `if (!project) notFound()` below fired unconditionally
+  // — every project's detail page 404'd for every user. Moved the comment
+  // back above the query (kept verbatim below) and confirmed the select
+  // string is now a single clean template literal with no embedded prose.
+  //
+  // The original 10-G1 finding this was documenting: counter_amount/
+  // counter_note were written by the client portal and read by the
+  // accept-counter route — but appeared in NO component anywhere. The CO
+  // card rendered a primary "Accept counter" button next to the ORIGINAL
+  // total, so the agency was accepting a negotiated figure it had never
+  // been shown, and the client's reasoning was nowhere in the product.
+  // Fetch them so the card can show what's being accepted.
   const { data: project } = await (service as any)
     .from('projects')
     .select(`
@@ -41,13 +59,6 @@ export default async function ProjectPage({ params, searchParams }: Props) {
       client_id, created_by, workspace_id, guardian_email,
       clients(id, name, company_name, email, cc_emails, phone, notes),
       guardian_flags(id, status, severity, description, sow_reference, type, created_at, change_order_id, escalated_to),
-      // FIX (section-10 audit, 10-G1): counter_amount/counter_note were
-      // written by the client portal and read by the accept-counter
-      // route — but appeared in NO component anywhere. The CO card
-      // rendered a primary "Accept counter" button next to the ORIGINAL
-      // total, so the agency was accepting a negotiated figure it had
-      // never been shown, and the client's reasoning was nowhere in the
-      // product. Fetch them so the card can show what's being accepted.
       change_orders(id, title, status, total, sent_at, accepted_at, version, document_number,
         counter_amount, counter_note, declined_reason, close_reason),
       sow_documents(id, version, status, sent_at, signed_at, created_at, document_number),

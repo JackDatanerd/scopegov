@@ -58,3 +58,80 @@ export function splitBodySegments(body: string): BodySegment[] {
   if (lastIndex < body.length) segments.push({ type: 'text', value: body.slice(lastIndex) })
   return segments
 }
+
+// Shared by both the create (POST) and edit (PATCH) message routes —
+// mentioning someone outside the project shouldn't silently notify a
+// stranger, and shouldn't error the whole request either (the token was
+// probably stale — e.g. the person was removed from the project between
+// typing and sending/editing).
+export async function filterMentionsToProjectMembers(
+  service: any,
+  workspaceId: string,
+  projectId: string,
+  mentions: ParsedMention[]
+): Promise<ParsedMention[]> {
+  const { data: members } = await service
+    .from('project_members')
+    .select('workspace_members!inner(user_id)')
+    .eq('project_id', projectId)
+    .eq('workspace_members.workspace_id', workspaceId)
+
+  const memberIds = new Set(
+    (members || []).map((m: any) => m.workspace_members?.user_id).filter(Boolean)
+  )
+  return mentions.filter(m => memberIds.has(m.userId))
+}
+
+// FIX (deep audit, section 7): previously only ever called from the POST
+// (create) route. The PATCH (edit) route computed which mentions were
+// newly added on an edit but never notified them — despite its own
+// comment claiming "a mention added on edit still notifies (the person
+// genuinely wasn't told before)". Extracted here so both routes share one
+// implementation and can't drift out of sync again.
+export async function notifyMentionedUsers(
+  service: any,
+  session: { id: string; workspaceId: string; name: string },
+  projectId: string,
+  projectName: string,
+  rawBody: string,
+  mentions: ParsedMention[]
+) {
+  const recipients = mentions.filter(m => m.userId !== session.id)
+  if (!recipients.length) return
+
+  try {
+    const { data: prefs } = await service
+      .from('notification_preferences')
+      .select('user_id, in_app_enabled')
+      .eq('workspace_id', session.workspaceId)
+      .eq('event_type', 'project_message_mention')
+      .in('user_id', recipients.map(r => r.userId))
+
+    const suppressed = new Set(
+      (prefs || []).filter((p: any) => p.in_app_enabled === false).map((p: any) => p.user_id)
+    )
+
+    const plain = mentionsToPlainText(rawBody)
+    const snippet = plain.length > 120 ? `${plain.slice(0, 117)}…` : plain
+
+    // entity_id points at the project (not the message) — NotificationBell
+    // only has entity_type/entity_id to build a link from (no metadata
+    // column on notifications), and "open the project's Discussion tab"
+    // is a perfectly good destination for a mention notification.
+    const rows = recipients
+      .filter(r => !suppressed.has(r.userId))
+      .map(r => ({
+        workspace_id: session.workspaceId,
+        recipient_id: r.userId,
+        type: 'project_message_mention',
+        title: `${session.name} mentioned you in ${projectName}`,
+        body: snippet,
+        entity_type: 'project_message',
+        entity_id: projectId,
+      }))
+
+    if (rows.length) await service.from('notifications').insert(rows)
+  } catch {
+    // Never let a notification failure break message creation/editing.
+  }
+}
