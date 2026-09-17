@@ -110,6 +110,11 @@ const NOTIF_ITEMS = [
   // side of this — for the approver) were fully wired server-side but
   // had no toggle here at all, unlike everything else in this list.
   { key: 'approval_decision',     label: 'Your request approved/rejected', desc: 'When someone approves or rejects a document you sent for approval' },
+  // FIX (deep audit, notifications section): invoice sending itself never
+  // had a toggle — only the payment/overdue events that follow it did, even
+  // though all three are seeded together in workspace_notification_defaults
+  // (migration 004). See sendInvoiceSentInternalEmail.
+  { key: 'invoice_sent',          label: 'Invoice sent',            desc: 'When a teammate sends an invoice to a client' },
 ]
 
 // FIX (re-audit, notifications section): both of these are fully wired
@@ -123,6 +128,11 @@ const NOTIF_ITEMS = [
 const IN_APP_NOTIF_ITEMS = [
   { key: 'flag_comment_added',            label: 'Comments on scope flags', desc: 'When someone comments on a flag or exception you can act on' },
   { key: 'approval_no_reachable_approver', label: 'Approval stuck — no approver', desc: "When a pending approval's assigned role or user can't be reached (requires MANAGE_ROLES)" },
+  // FIX (deep audit, notifications section): same "wired server-side,
+  // never got a toggle" gap as the two above — see
+  // lib/utils/project-messages.ts. No email counterpart exists for
+  // mentions, so this belongs here rather than in NOTIF_ITEMS.
+  { key: 'project_message_mention',       label: '@-mentions in project discussion', desc: 'When someone @-mentions you in a project message' },
 ]
 
 interface Props {

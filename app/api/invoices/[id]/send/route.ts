@@ -5,7 +5,9 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { assignDocumentNumber } from '@/lib/utils/document-number'
-import { sendInvoiceEmail } from '@/lib/email/templates'
+import { sendInvoiceEmail, sendInvoiceSentInternalEmail } from '@/lib/email/templates'
+import { notifyMembersWithPermission } from '@/lib/utils/notify'
+import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { renderInvoicePdf } from '@/lib/pdf/renderer'
 import { SignJWT } from 'jose'
 import { nanoid } from 'nanoid'
@@ -230,6 +232,30 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       entityId: id, entityName: invoice.title,
       metadata: { amount: invoice.amount, client_email: client.email, invoice_number: invoiceNumber },
     })
+
+    // FIX (deep audit, notifications section): 'invoice_sent' was seeded
+    // as a notifiable event (migration 004) but never actually notified
+    // anyone — see sendInvoiceSentInternalEmail. Same pattern as
+    // invoice_payment_received in payments/route.ts: in-app to
+    // VIEW_FINANCIALS holders, excluding whoever just sent it themselves.
+    await notifyMembersWithPermission(service, {
+      workspaceId: session.workspaceId, permission: 'VIEW_FINANCIALS',
+      eventType: 'invoice_sent',
+      type: 'invoice_sent',
+      title: `Invoice sent — ${project.name}`,
+      body: `${client.name} was sent an invoice for ${invoice.currency} ${invoice.amount.toLocaleString()} on "${invoice.title}".`,
+      entityType: 'project', entityId: project.id, excludeUserId: session.id, projectId: project.id,
+    })
+    try {
+      const emails = await getMemberEmailsWithPermission(service, session.workspaceId, 'VIEW_FINANCIALS', 10, 'invoice_sent', project.id)
+      if (emails.length) {
+        await sendInvoiceSentInternalEmail({
+          to: emails, clientName: client.name, projectName: project.name,
+          invoiceNumber, amount: invoice.amount, currency: invoice.currency,
+          projectUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects/${project.id}?tab=billing`,
+        })
+      }
+    } catch (e) { console.error('Invoice sent internal email failed:', e) }
 
     return NextResponse.json({ ok: true, token, portalUrl, invoiceNumber })
   } catch (err) {

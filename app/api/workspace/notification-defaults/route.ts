@@ -23,8 +23,14 @@ const EMAIL_EVENT_TYPES = [
   'guardian_flag', 'escalation', 'trial_ending',
   'invoice_payment_received', 'invoice_overdue', 'approval_requested',
   'co_stalled', 'sow_stalled', 'sow_expired', 'approval_decision',
+  // FIX (deep audit, notifications section): kept in sync with the same
+  // addition in app/api/notifications/preferences/route.ts — see that
+  // file's comment for why 'invoice_sent' belongs here now.
+  'invoice_sent',
 ]
-const IN_APP_ONLY_EVENT_TYPES = ['approval_no_reachable_approver', 'flag_comment_added']
+// FIX (deep audit, notifications section): kept in sync with the same
+// addition in app/api/notifications/preferences/route.ts.
+const IN_APP_ONLY_EVENT_TYPES = ['approval_no_reachable_approver', 'flag_comment_added', 'project_message_mention']
 const ALL_EVENT_TYPES = [...EMAIL_EVENT_TYPES, ...IN_APP_ONLY_EVENT_TYPES]
 
 export async function GET() {

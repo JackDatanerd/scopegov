@@ -1,4 +1,6 @@
 // lib/utils/project-messages.ts
+import { filterByNotificationPreference } from './permissions-query'
+
 //
 // Mentions are stored inline in the message body as tokens of the form
 // @[Display Name](user-uuid) — the same "link-shaped" convention used by
@@ -96,20 +98,23 @@ export async function notifyMentionedUsers(
   rawBody: string,
   mentions: ParsedMention[]
 ) {
-  const recipients = mentions.filter(m => m.userId !== session.id)
-  if (!recipients.length) return
+  const candidates = mentions.filter(m => m.userId !== session.id)
+  if (!candidates.length) return
 
   try {
-    const { data: prefs } = await service
-      .from('notification_preferences')
-      .select('user_id, in_app_enabled')
-      .eq('workspace_id', session.workspaceId)
-      .eq('event_type', 'project_message_mention')
-      .in('user_id', recipients.map(r => r.userId))
-
-    const suppressed = new Set(
-      (prefs || []).filter((p: any) => p.in_app_enabled === false).map((p: any) => p.user_id)
+    // FIX (deep audit, notifications section): this used to check
+    // notification_preferences directly and treat a missing row as
+    // "notify" — skipping workspace_notification_defaults entirely, so an
+    // admin's org-wide default/lock for 'project_message_mention' (seeded
+    // since migration 009, but that migration's own comment says outright
+    // it was never actually read) had zero effect on mentions. Route
+    // through the same choke point every other event type uses.
+    const allowed = await filterByNotificationPreference(
+      service, session.workspaceId, 'project_message_mention',
+      candidates.map(m => ({ id: m.userId })), 'in_app'
     )
+    const allowedIds = new Set(allowed.map(r => r.id))
+    const recipients = candidates.filter(m => allowedIds.has(m.userId))
 
     const plain = mentionsToPlainText(rawBody)
     const snippet = plain.length > 120 ? `${plain.slice(0, 117)}…` : plain
@@ -119,7 +124,6 @@ export async function notifyMentionedUsers(
     // column on notifications), and "open the project's Discussion tab"
     // is a perfectly good destination for a mention notification.
     const rows = recipients
-      .filter(r => !suppressed.has(r.userId))
       .map(r => ({
         workspace_id: session.workspaceId,
         recipient_id: r.userId,

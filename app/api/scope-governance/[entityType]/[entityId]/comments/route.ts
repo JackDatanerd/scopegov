@@ -5,6 +5,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { resolveEntity, canReadProject, canWriteGovernance, isValidEntityType } from '@/lib/utils/flag-governance'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
+import { filterByNotificationPreference } from '@/lib/utils/permissions-query'
 
 export async function GET(
   request: NextRequest,
@@ -160,14 +161,18 @@ async function notifyEntityOwner(
 
     if (!ownerId || ownerId === session.id) return
 
-    // Respect the workspace's notification default / user override for
-    // this event type, same as email recipients do elsewhere.
-    const { data: pref } = await service
-      .from('notification_preferences')
-      .select('in_app_enabled')
-      .eq('user_id', ownerId).eq('workspace_id', session.workspaceId)
-      .eq('event_type', 'flag_comment_added').maybeSingle()
-    if (pref && pref.in_app_enabled === false) return
+    // FIX (deep audit, notifications section): this used to check
+    // notification_preferences directly and only ever look at the user's
+    // own override — never workspace_notification_defaults, so an admin's
+    // org-wide default or lock for 'flag_comment_added' had no effect on
+    // this specific-owner path, even though the sibling no-owner/broadcast
+    // branch above (via notifyMembersWithPermission) went through the real
+    // choke point. Route through the same one so both branches resolve
+    // identically.
+    const [recipient] = await filterByNotificationPreference(
+      service, session.workspaceId, 'flag_comment_added', [{ id: ownerId }], 'in_app'
+    )
+    if (!recipient) return
 
     await service.from('notifications').insert({
       workspace_id: session.workspaceId,

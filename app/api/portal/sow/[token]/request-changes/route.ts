@@ -125,7 +125,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     // Notify agency members with SEND_SOW permission (Event 6)
     try {
-      const emails = await getMemberEmailsWithPermission(service, sow.workspace_id, 'SEND_SOW', 25, undefined, project.id)
+      // FIX (deep audit, notifications section): this passed `undefined`
+      // for eventType, unlike every sibling portal notification (SOW
+      // sign/decline, CO decline/counter) which pass their real event
+      // type — see the identical bug already caught and fixed for CO
+      // counter-offers in app/api/portal/co/[token]/_actions.ts. Skipping
+      // eventType here skipped preference filtering entirely, so muting
+      // 'sow_changes_requested' email had no effect on this one path.
+      const emails = await getMemberEmailsWithPermission(service, sow.workspace_id, 'SEND_SOW', 25, 'sow_changes_requested', project.id)
       if (emails.length) {
         const { Resend } = await import('resend')
         const resend = new Resend(process.env.RESEND_API_KEY)

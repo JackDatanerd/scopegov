@@ -358,6 +358,46 @@ export async function sendSowStalledEmail(params: {
   })
 }
 
+// FIX (deep audit, notifications section): 'sow_expired' has been in
+// EVENT_TYPES since the 9-G3 fix above — rendered in Settings under
+// "Email notifications," lockable by workspace admins via
+// workspace_notification_defaults — but no email ever backed it. Only an
+// in-app row was ever created (see cron/sow-expiry), so the toggle did
+// nothing. This is that missing counterpart, mirroring sendSowStalledEmail.
+export async function sendSowExpiredEmail(params: {
+  to: string[]; clientName: string; projectName: string; projectUrl: string
+}) {
+  const { to, clientName: clientNameRaw, projectName: projectNameRaw, projectUrl } = params
+  if (to.length === 0) return
+  const clientName  = escapeHtml(clientNameRaw)
+  const projectName = escapeHtml(projectNameRaw)
+
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.amber,
+    label: 'SOW link expired',
+    headline: `Signing link expired — ${projectName}`,
+    body: `
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        The Statement of Work signing link for <strong>${projectName}</strong>, sent to
+        <strong>${clientName}</strong>, expired before it was signed.
+      </p>
+      <p style="font-size:13px;color:${C.text2};margin:0;">
+        You'll need to resend the SOW from the project page to give ${clientName} a new link.
+      </p>
+    `,
+    cta: 'Open project →',
+    ctaUrl: projectUrl,
+  })
+
+  return resendClient().emails.send({
+    from:    `ScopeGov <${FROM}>`,
+    to,
+    subject: `SOW signing link expired — ${projectNameRaw}`,
+    html,
+  })
+}
+
 // ── Event 18: Guardian flag raised ────────────────────────────
 export async function sendGuardianFlagEmail(params: {
   to: string[]; projectName: string
@@ -809,12 +849,17 @@ export async function sendCoCounteredEmail(params: {
 
 // ── Event 11: CO accepted (agency) ───────────────────────────
 export async function sendCoAcceptedEmail(params: {
-  to: string[]; agencyName: string; clientName: string
+  // FIX (deep audit, notifications section): `agencyName` was accepted
+  // here and dutifully passed by the caller (finalize-co.ts) but never
+  // once referenced below — this email is unconditionally branded
+  // "ScopeGov" (same reasoning as sendGuardianFlagEmail's identical dead
+  // param, already dropped there). Dropped here too and at the call site.
+  to: string[]; clientName: string
   projectName: string; coTitle: string; total: number
   currency: string; acceptedBy: string; projectUrl: string
   attachments?: Array<{ filename: string; content: string }>
 }) {
-  const { to, agencyName, clientName: clientNameRaw, projectName: projectNameRaw, coTitle: coTitleRaw, total, currency, acceptedBy: acceptedByRaw, projectUrl, attachments } = params
+  const { to, clientName: clientNameRaw, projectName: projectNameRaw, coTitle: coTitleRaw, total, currency, acceptedBy: acceptedByRaw, projectUrl, attachments } = params
   const clientName  = escapeHtml(clientNameRaw)
   const projectName = escapeHtml(projectNameRaw)
   const coTitle     = escapeHtml(coTitleRaw)
@@ -1217,6 +1262,45 @@ export async function sendInvoicePaymentRecordedEmail(params: {
     subject: isFullyPaid
       ? `✓ Invoice paid in full — ${projectNameRaw} (${currency} ${amount.toLocaleString()})`
       : `Payment received — ${projectNameRaw} (${currency} ${amount.toLocaleString()})`,
+    html,
+  })
+}
+
+// FIX (deep audit, notifications section): migration 004 seeded
+// 'invoice_sent' into workspace_notification_defaults alongside
+// 'invoice_payment_received' and 'invoice_overdue' as one family of three —
+// those two got a notify call, this template, a Settings toggle, and an
+// admin lock; 'invoice_sent' got none of it. Sending an invoice notified
+// the client only. This is the missing internal counterpart, mirroring
+// sendInvoicePaymentRecordedEmail immediately below.
+export async function sendInvoiceSentInternalEmail(params: {
+  to: string[]; clientName: string; projectName: string
+  invoiceNumber?: string | null; amount: number; currency: string; projectUrl: string
+}) {
+  const { to, clientName: clientNameRaw, projectName: projectNameRaw, invoiceNumber, amount, currency, projectUrl } = params
+  if (to.length === 0) return
+  const clientName  = escapeHtml(clientNameRaw)
+  const projectName = escapeHtml(projectNameRaw)
+
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.green,
+    label: 'Invoice sent',
+    headline: `Invoice${invoiceNumber ? ` ${invoiceNumber}` : ''} sent to ${clientName}`,
+    body: `
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        An invoice for <strong>${currency} ${amount.toLocaleString()}</strong> was sent to
+        <strong>${clientName}</strong> on <strong>${projectName}</strong>.
+      </p>
+    `,
+    cta: 'View project →',
+    ctaUrl: projectUrl,
+  })
+
+  return resendClient().emails.send({
+    from:    `ScopeGov <${FROM}>`,
+    to,
+    subject: `Invoice sent — ${projectNameRaw} (${currency} ${amount.toLocaleString()})`,
     html,
   })
 }

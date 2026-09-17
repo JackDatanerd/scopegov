@@ -27,6 +27,14 @@ const EVENT_TYPES = [
   // tell the same person (the requester) about the outcome of their own
   // request.
   'approval_decision',
+  // FIX (deep audit, notifications section): migration 004 seeded
+  // workspace_notification_defaults with 'invoice_sent' as a third sibling
+  // alongside 'invoice_payment_received' and 'invoice_overdue' — those two
+  // got full wiring (notify call, email template, this whitelist); this one
+  // never did, so an invoice going out told the client and nobody on the
+  // internal team. See sendInvoiceSentInternalEmail and its call site in
+  // app/api/invoices/[id]/send/route.ts.
+  'invoice_sent',
 ]
 
 // FIX (re-audit, notifications section): `approval_no_reachable_approver`
@@ -44,7 +52,18 @@ const EVENT_TYPES = [
 // otherwise hardcoded true everywhere in this file. Kept as a separate list
 // so GET/PATCH can read and write the correct column per event type instead
 // of assuming every mutable event is an email event.
-const IN_APP_ONLY_EVENT_TYPES = ['approval_no_reachable_approver', 'flag_comment_added']
+// FIX (deep audit, notifications section): 'project_message_mention' had
+// the identical "seeded in a migration, never added to this whitelist"
+// gap as flag_comment_added above — see migration 009's own comment,
+// which describes this exact bug and says it's "harmless today" because
+// nothing reads workspace_notification_defaults for it. That stopped
+// being true the moment filterByNotificationPreference became the real
+// choke point (see lib/utils/permissions-query.ts and
+// lib/utils/project-messages.ts), so mentions need the same whitelist
+// entry flag_comment_added already has, for the same reason: no email
+// counterpart exists for either, so both belong here rather than in
+// EVENT_TYPES.
+const IN_APP_ONLY_EVENT_TYPES = ['approval_no_reachable_approver', 'flag_comment_added', 'project_message_mention']
 
 const ALL_EVENT_TYPES = [...EVENT_TYPES, ...IN_APP_ONLY_EVENT_TYPES]
 

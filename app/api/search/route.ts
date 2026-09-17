@@ -134,30 +134,51 @@ export async function GET(request: NextRequest) {
       })
     }
 
-    // ── Change Orders (title match) ───────────────────────────
-    let coQuery = (service as any)
-      .from('change_orders')
-      .select('id, title, status, project_id, projects(name)')
-      .eq('workspace_id', wsId)
-      .ilike('title', `%${likeTerm}%`)
-      .limit(4)
+    // ── Change Orders (title or document number match) ─────────
+    // FIX (deep audit, search section): change_orders has had a
+    // document_number column since migration 003 (same sequential-numbering
+    // system invoice_number uses below), but this only ever matched title —
+    // typing "CO-0042" found nothing, unlike "INV-0042" for invoices.
+    // Same two-query merge pattern as the invoices block, for the same
+    // filter-injection reasons (see that block's comment).
+    {
+      const seenCoIds = new Set<string>()
+      const coRows: any[] = []
 
-    if (restrictedProjectIds) {
-      coQuery = restrictedProjectIds.length
-        ? coQuery.in('project_id', restrictedProjectIds)
-        : coQuery.in('project_id', ['00000000-0000-0000-0000-000000000000'])
-    }
+      const runCoQuery = async (column: 'title' | 'document_number') => {
+        let cq = (service as any)
+          .from('change_orders')
+          .select('id, title, document_number, status, project_id, projects(name)')
+          .eq('workspace_id', wsId)
+          .ilike(column, `%${likeTerm}%`)
+          .limit(4)
 
-    const { data: cos } = await coQuery
+        if (restrictedProjectIds) {
+          cq = restrictedProjectIds.length
+            ? cq.in('project_id', restrictedProjectIds)
+            : cq.in('project_id', ['00000000-0000-0000-0000-000000000000'])
+        }
 
-    for (const co of (cos || [])) {
-      results.push({
-        type:  'change_order',
-        id:    co.id,
-        title: co.title,
-        sub:   `${co.projects?.name || ''} · CO · ${co.status}`,
-        href:  `/projects/${co.project_id}?tab=co`,
-      })
+        const { data } = await cq
+        for (const co of (data || [])) {
+          if (seenCoIds.has(co.id)) continue
+          seenCoIds.add(co.id)
+          coRows.push(co)
+        }
+      }
+
+      await runCoQuery('title')
+      await runCoQuery('document_number')
+
+      for (const co of coRows.slice(0, 4)) {
+        results.push({
+          type:  'change_order',
+          id:    co.id,
+          title: co.document_number ? `${co.document_number} — ${co.title}` : co.title,
+          sub:   `${co.projects?.name || ''} · CO · ${co.status}`,
+          href:  `/projects/${co.project_id}?tab=co`,
+        })
+      }
     }
 
     // FIX (build, search section): SOW documents were entirely unsearchable
@@ -171,30 +192,62 @@ export async function GET(request: NextRequest) {
     // (same pattern already used in cron/sow-stall — a non-matching
     // project comes back as a null embed, not a filtered-out row, hence
     // the `if (!s.projects) continue` guard).
-    let sowQuery = (service as any)
-      .from('sow_documents')
-      .select('id, status, version, project_id, projects(name)')
-      .eq('workspace_id', wsId)
-      .neq('status', 'draft')
-      .ilike('projects.name', `%${likeTerm}%`)
-      .limit(4)
+    // FIX (deep audit, search section): sow_documents has had a
+    // document_number column since migration 003 too, but this only ever
+    // matched the *project's* name — the same gap as change_orders above,
+    // typing "SOW-0017" found nothing. Merge in a second query matching
+    // document_number directly, same dedup pattern as the CO block.
+    {
+      const seenSowIds = new Set<string>()
+      const sowRows: any[] = []
 
-    if (restrictedProjectIds) {
-      sowQuery = restrictedProjectIds.length
-        ? sowQuery.in('project_id', restrictedProjectIds)
-        : sowQuery.in('project_id', ['00000000-0000-0000-0000-000000000000'])
-    }
+      let sowByProject = (service as any)
+        .from('sow_documents')
+        .select('id, status, version, document_number, project_id, projects(name)')
+        .eq('workspace_id', wsId)
+        .neq('status', 'draft')
+        .ilike('projects.name', `%${likeTerm}%`)
+        .limit(4)
+      if (restrictedProjectIds) {
+        sowByProject = restrictedProjectIds.length
+          ? sowByProject.in('project_id', restrictedProjectIds)
+          : sowByProject.in('project_id', ['00000000-0000-0000-0000-000000000000'])
+      }
+      const { data: sowsByProject } = await sowByProject
+      for (const s of (sowsByProject || [])) {
+        if (!s.projects || seenSowIds.has(s.id)) continue
+        seenSowIds.add(s.id)
+        sowRows.push(s)
+      }
 
-    const { data: sows } = await sowQuery
-    for (const s of (sows || [])) {
-      if (!s.projects) continue
-      results.push({
-        type:  'sow',
-        id:    s.id,
-        title: `SOW — ${s.projects.name}`,
-        sub:   `v${s.version} · ${s.status}`,
-        href:  `/projects/${s.project_id}?tab=sow`,
-      })
+      let sowByNumber = (service as any)
+        .from('sow_documents')
+        .select('id, status, version, document_number, project_id, projects(name)')
+        .eq('workspace_id', wsId)
+        .neq('status', 'draft')
+        .ilike('document_number', `%${likeTerm}%`)
+        .limit(4)
+      if (restrictedProjectIds) {
+        sowByNumber = restrictedProjectIds.length
+          ? sowByNumber.in('project_id', restrictedProjectIds)
+          : sowByNumber.in('project_id', ['00000000-0000-0000-0000-000000000000'])
+      }
+      const { data: sowsByNumber } = await sowByNumber
+      for (const s of (sowsByNumber || [])) {
+        if (!s.projects || seenSowIds.has(s.id)) continue
+        seenSowIds.add(s.id)
+        sowRows.push(s)
+      }
+
+      for (const s of sowRows.slice(0, 4)) {
+        results.push({
+          type:  'sow',
+          id:    s.id,
+          title: s.document_number ? `${s.document_number} — ${s.projects.name}` : `SOW — ${s.projects.name}`,
+          sub:   `v${s.version} · ${s.status}`,
+          href:  `/projects/${s.project_id}?tab=sow`,
+        })
+      }
     }
 
     // FIX (build, search section): invoices were entirely unsearchable too

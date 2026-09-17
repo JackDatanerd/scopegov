@@ -4,6 +4,8 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
+import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
+import { sendSowExpiredEmail } from '@/lib/email/templates'
 
 // FIX (section-9 audit, 9-G3): 'expired' has been a valid sow_documents
 // status since migration 001 — it's in the CHECK constraint, in the
@@ -37,7 +39,7 @@ export async function POST(request: NextRequest) {
     // has already reached a terminal state.
     const { data: expiring } = await (service as any)
       .from('sow_documents')
-      .select('id, version, workspace_id, project_id, expires_at, projects(id, name, status)')
+      .select('id, version, workspace_id, project_id, expires_at, projects(id, name, status, clients(name))')
       .in('status', ['awaiting_signature', 'changes_requested'])
       .not('expires_at', 'is', null)
       .lt('expires_at', now)
@@ -75,6 +77,23 @@ export async function POST(request: NextRequest) {
           body: `The signing link for the ${projectName} SOW (v${sow.version}) has expired. Start a new version to send a fresh link.`,
           entityType: 'project', entityId: sow.project_id, projectId: sow.project_id,
         })
+
+        // FIX (deep audit, notifications section): 'sow_expired' has been
+        // an EVENT_TYPES entry (rendered under "Email notifications,"
+        // lockable by admins) since 9-G3, but no email ever backed the
+        // toggle — only the in-app row above ever fired. See
+        // sendSowExpiredEmail.
+        try {
+          const emails = await getMemberEmailsWithPermission(service, sow.workspace_id, 'SEND_SOW', 25, 'sow_expired', sow.project_id)
+          if (emails.length) {
+            await sendSowExpiredEmail({
+              to: emails,
+              clientName: sow.projects?.clients?.name || 'Client',
+              projectName,
+              projectUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects/${sow.project_id}?tab=sow`,
+            })
+          }
+        } catch (e) { console.error('SOW expired email failed:', e) }
 
         expired++
       } catch (e) { console.error('SOW expiry error:', e) }

@@ -215,7 +215,7 @@ export async function finalizeCoAcceptance(service: any, params: {
       // change order, the agency team that just closed the deal didn't,
       // and had to go find it in the app separately.
       await sendCoAcceptedEmail({
-        to: emails, agencyName: ws.agency_name,
+        to: emails,
         clientName: client.name, projectName: project.name,
         coTitle: co.title, total: co.total, currency: project.currency || 'USD',
         acceptedBy: signerName.trim(),
