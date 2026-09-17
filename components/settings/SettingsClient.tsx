@@ -105,6 +105,11 @@ const NOTIF_ITEMS = [
   // FIX (section-9 audit, 9-G3): SOW signing links expire after 30 days
   // and nothing ever told anyone — see app/api/cron/sow-expiry.
   { key: 'sow_expired',           label: 'SOW link expired',        desc: 'When a SOW signing link expires before the client signs' },
+  // FIX (deep audit, notifications section): approval decisions on your
+  // own requests (see 'approval_requested' above, which is the other
+  // side of this — for the approver) were fully wired server-side but
+  // had no toggle here at all, unlike everything else in this list.
+  { key: 'approval_decision',     label: 'Your request approved/rejected', desc: 'When someone approves or rejects a document you sent for approval' },
 ]
 
 // FIX (re-audit, notifications section): both of these are fully wired
@@ -271,7 +276,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
 
         {tab === 'billing' && <BillingTab workspace={workspace} billing={billing} session={session} permissions={permissions} />}
 
-        {tab === 'notifications' && <NotificationsTab />}
+        {tab === 'notifications' && <NotificationsTab permissions={permissions} />}
 
         {tab === 'integrations' && <IntegrationsTab session={session} />}
 
@@ -1126,8 +1131,9 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
 }
 
 // ── NOTIFICATIONS ─────────────────────────────────────────────
-function NotificationsTab() {
+function NotificationsTab({ permissions }: { permissions: { manageWorkspace: boolean } }) {
   const [prefs,   setPrefs]   = useState<Record<string, boolean> | null>(null)
+  const [locked,  setLocked]  = useState<Record<string, boolean>>({})
   const [saving,  setSaving]  = useState<string | null>(null)
   const [loadErr, setLoadErr] = useState('')
 
@@ -1137,12 +1143,13 @@ function NotificationsTab() {
       .then(json => {
         if (json.error) throw new Error(json.error)
         setPrefs(json.prefs)
+        setLocked(json.locked || {})
       })
       .catch(() => setLoadErr('Could not load notification preferences.'))
   }, [])
 
   async function toggle(key: string) {
-    if (!prefs) return
+    if (!prefs || locked[key]) return
     const next = !prefs[key]
     setPrefs(p => ({ ...(p || {}), [key]: next })) // optimistic
     setSaving(key)
@@ -1168,11 +1175,20 @@ function NotificationsTab() {
           <div key={item.key} className="settings-row">
             <div>
               <div className="settings-row-key">{item.label}</div>
-              <div className="settings-row-desc">{item.desc}</div>
+              <div className="settings-row-desc">
+                {item.desc}
+                {/* FIX (deep audit, notifications section — flagship finding): a
+                    workspace admin can now lock an event's default (see
+                    app/api/workspace/notification-defaults) so an individual
+                    can't silently suppress something mandatory — the toggle
+                    needs to say why it's stuck rather than just not moving. */}
+                {locked[item.key] && <span style={{ color: 'var(--text-3)' }}> — required by your workspace admin</span>}
+              </div>
             </div>
             <button
               className={`toggle ${prefs[item.key] ? 'on' : 'off'}`}
-              disabled={saving === item.key}
+              disabled={saving === item.key || locked[item.key]}
+              style={locked[item.key] ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
               onClick={() => toggle(item.key)}
             />
           </div>
@@ -1189,17 +1205,108 @@ function NotificationsTab() {
             <div key={item.key} className="settings-row">
               <div>
                 <div className="settings-row-key">{item.label}</div>
-                <div className="settings-row-desc">{item.desc}</div>
+                <div className="settings-row-desc">
+                  {item.desc}
+                  {locked[item.key] && <span style={{ color: 'var(--text-3)' }}> — required by your workspace admin</span>}
+                </div>
               </div>
               <button
                 className={`toggle ${prefs[item.key] ? 'on' : 'off'}`}
-                disabled={saving === item.key}
+                disabled={saving === item.key || locked[item.key]}
+                style={locked[item.key] ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
                 onClick={() => toggle(item.key)}
               />
             </div>
           ))}
         </div>
       )}
+
+      {permissions.manageWorkspace && <WorkspaceNotificationDefaultsSection />}
+    </div>
+  )
+}
+
+// FIX (deep audit, notifications section — flagship finding): the
+// admin-facing half of workspace_notification_defaults — see
+// app/api/workspace/notification-defaults and filterByNotificationPreference
+// (lib/utils/permissions-query.ts) for the schema this reads/writes and the
+// read-side logic that makes it take effect. Reuses the same NOTIF_ITEMS/
+// IN_APP_NOTIF_ITEMS label lists as the personal section above rather than
+// a third copy.
+function WorkspaceNotificationDefaultsSection() {
+  const [defaults, setDefaults] = useState<Record<string, { emailEnabled: boolean; inAppEnabled: boolean; locked: boolean }> | null>(null)
+  const [saving,   setSaving]   = useState<string | null>(null)
+  const [loadErr,  setLoadErr]  = useState('')
+
+  useEffect(() => {
+    fetch('/api/workspace/notification-defaults')
+      .then(r => r.json())
+      .then(json => {
+        if (json.error) throw new Error(json.error)
+        setDefaults(json.defaults)
+      })
+      .catch(() => setLoadErr('Could not load workspace notification defaults.'))
+  }, [])
+
+  async function save(key: string, isInAppOnly: boolean, patch: { enabled?: boolean; locked?: boolean }) {
+    if (!defaults) return
+    const current = defaults[key] || { emailEnabled: true, inAppEnabled: true, locked: false }
+    const enabled = patch.enabled !== undefined ? patch.enabled : (isInAppOnly ? current.inAppEnabled : current.emailEnabled)
+    const locked  = patch.locked !== undefined ? patch.locked : current.locked
+    const next = { ...current, locked, ...(isInAppOnly ? { inAppEnabled: enabled } : { emailEnabled: enabled }) }
+    setDefaults(d => ({ ...(d || {}), [key]: next })) // optimistic
+    setSaving(key)
+    try {
+      const res = await fetch('/api/workspace/notification-defaults', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ eventType: key, enabled, locked }),
+      })
+      if (!res.ok) throw new Error()
+    } catch {
+      setDefaults(d => ({ ...(d || {}), [key]: current })) // revert on failure
+    } finally { setSaving(null) }
+  }
+
+  const allItems = [
+    ...NOTIF_ITEMS.map(item => ({ ...item, inAppOnly: false })),
+    ...IN_APP_NOTIF_ITEMS.map(item => ({ ...item, inAppOnly: true })),
+  ]
+
+  return (
+    <div className="settings-section" style={{ marginTop: 20 }}>
+      <div className="settings-section-title">Workspace defaults</div>
+      <p style={{ fontSize: 11.5, color: 'var(--text-3)', margin: '0 0 12px', lineHeight: 1.6 }}>
+        Set the default for new and existing members, and optionally lock an event so it can&rsquo;t be
+        turned off individually. Locking overrides any personal choice already made.
+      </p>
+      {loadErr && <p className="ferr">{loadErr}</p>}
+      {!defaults && !loadErr && <p style={{ fontSize: 12, color: 'var(--text-3)' }}>Loading…</p>}
+      {defaults && allItems.map(item => {
+        const d = defaults[item.key] || { emailEnabled: true, inAppEnabled: true, locked: false }
+        const enabled = item.inAppOnly ? d.inAppEnabled : d.emailEnabled
+        return (
+          <div key={item.key} className="settings-row" style={{ alignItems: 'center' }}>
+            <div>
+              <div className="settings-row-key">{item.label}</div>
+              <div className="settings-row-desc">{item.desc}</div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: 'var(--text-2)' }}>
+                <input
+                  type="checkbox" checked={d.locked} disabled={saving === item.key}
+                  onChange={e => save(item.key, item.inAppOnly, { locked: e.target.checked })}
+                />
+                Lock
+              </label>
+              <button
+                className={`toggle ${enabled ? 'on' : 'off'}`}
+                disabled={saving === item.key}
+                onClick={() => save(item.key, item.inAppOnly, { enabled: !enabled })}
+              />
+            </div>
+          </div>
+        )
+      })}
     </div>
   )
 }

@@ -109,9 +109,10 @@ export async function getMembersWithPermission(
   return recipients.slice(0, limit)
 }
 
-// Notification preferences — defaults to enabled (true) when no row exists,
-// since notification_preferences only stores explicit opt-outs/overrides,
-// not a row per user per event type by default.
+// Notification preferences — defaults to enabled (true) when no row exists
+// and no workspace default overrides it, since notification_preferences
+// only stores explicit opt-outs/overrides, not a row per user per event
+// type by default.
 //
 // FIX (re-audit, notifications section): `channel` used to be implicit —
 // this always read `email_enabled`, so any caller building an in-app
@@ -120,6 +121,21 @@ export async function getMembersWithPermission(
 // (see notification_preferences schema and the Settings UI, which only
 // ever writes/exposes email_enabled while in_app_enabled stays true) — an
 // event.the user muted by email should still show up in their bell.
+//
+// FIX (deep audit, notifications section — flagship finding): this is the
+// single choke point every notification path routes through, so it's the
+// one place that needed to start reading `workspace_notification_defaults`
+// — a table with a full schema (including a `locked` column), RLS
+// policies, and rows seeded across three separate migrations every time a
+// new event type shipped (004, 007, 009), but never once read by any
+// application code; migration 007's own comment says so outright. Two
+// things a workspace admin had no way to do as a result: set a sane
+// opt-in/opt-out default for new members on a given event, or make a
+// notification mandatory (e.g. guardian_flag, invoice_payment_received)
+// so an individual member's preference can't silently suppress it. Both
+// now work: an unlocked default changes what "no row exists" resolves to
+// for that event/channel; a locked default is authoritative and skips the
+// per-user lookup entirely — nothing after this point can override it.
 export async function filterByNotificationPreference<T extends { id: string }>(
   service: any,
   workspaceId: string,
@@ -129,6 +145,22 @@ export async function filterByNotificationPreference<T extends { id: string }>(
 ): Promise<T[]> {
   if (recipients.length === 0) return recipients
   const column = channel === 'in_app' ? 'in_app_enabled' : 'email_enabled'
+
+  const { data: workspaceDefault } = await service
+    .from('workspace_notification_defaults')
+    .select(`${column}, locked`)
+    .eq('workspace_id', workspaceId)
+    .eq('event_type', eventType)
+    .maybeSingle()
+
+  // A locked default is mandatory workspace-wide — no member can override
+  // it, so there's no need to even look at notification_preferences.
+  if (workspaceDefault?.locked) {
+    return workspaceDefault[column] ? recipients : []
+  }
+
+  const orgDefault = workspaceDefault ? workspaceDefault[column] : true
+
   const { data: prefs } = await service
     .from('notification_preferences')
     .select(`user_id, ${column}`)
@@ -136,8 +168,8 @@ export async function filterByNotificationPreference<T extends { id: string }>(
     .eq('event_type', eventType)
     .in('user_id', recipients.map(r => r.id))
 
-  const disabled = new Set((prefs || []).filter((p: any) => p[column] === false).map((p: any) => p.user_id))
-  return recipients.filter(r => !disabled.has(r.id))
+  const overrides = new Map<string, boolean>((prefs || []).map((p: any) => [p.user_id, p[column]]))
+  return recipients.filter(r => (overrides.has(r.id) ? overrides.get(r.id) : orgDefault) !== false)
 }
 
 // Approval steps can name a specific role rather than a permission — every
@@ -165,7 +197,21 @@ export async function getMembersWithRole(
   workspaceId: string,
   roleId: string,
   limit = 25,
-  projectId?: string
+  projectId?: string,
+  // FIX (deep audit, notifications+search section): this function never
+  // got the other half of the fix its own comment above describes for
+  // project-visibility ("deep audit, RLS+permissions re-pass") — it still
+  // sliced to `limit` on its own, before the caller (notifyStepApprovers)
+  // applied filterByNotificationPreference to the result. Exactly the
+  // "cap applied before the final filter" bug already fixed twice for the
+  // sibling getMembersWithPermission (audit round 4 #8, cron audit #17):
+  // in a workspace with more than `limit` active members holding an
+  // approver role, an opted-out member could still consume a slot in the
+  // pre-filter batch, silently excluding a legitimately opted-in approver
+  // past the cutoff. Threading eventType/channel through, same as the
+  // sibling function, so preference filtering happens before the slice.
+  eventType?: string,
+  channel: 'email' | 'in_app' = 'email'
 ): Promise<Array<{ id: string; name: string; email: string }>> {
   // FIX (deep audit, RLS+permissions re-pass): this reintroduced the exact
   // "cap applied before the final filter" bug already fixed for the
@@ -197,6 +243,7 @@ export async function getMembersWithRole(
   let recipients = eligible.map((m: any) => ({ id: m.users.id, name: m.users.name, email: m.users.email }))
 
   if (projectId) recipients = await filterToProjectAccess(service, projectId, recipients, permissionMap)
+  if (eventType) recipients = await filterByNotificationPreference(service, workspaceId, eventType, recipients, channel)
 
   return recipients.slice(0, limit)
 }

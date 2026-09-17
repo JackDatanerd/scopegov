@@ -716,6 +716,97 @@ export async function sendCoStalledEmail(params: {
   })
 }
 
+// FIX (deep audit, notifications section): CO decline/counter agency
+// notifications used to be hand-rolled Resend calls in
+// app/api/portal/co/[token]/_actions.ts, bypassing baseTemplate entirely —
+// the only two "notify the agency something happened on a CO" emails in
+// the whole app that did this (SOW declined, SOW/CO stalled, CO accepted
+// all go through the shared template above/below). Escaping was already
+// correct there so there was no security issue, just an architectural and
+// branding inconsistency — these two now match every sibling email.
+export async function sendCoDeclinedEmail(params: {
+  to: string[]; clientName: string; projectName: string
+  coTitle: string; reason?: string | null; projectUrl: string
+}) {
+  const { to, clientName: clientNameRaw, projectName: projectNameRaw, coTitle: coTitleRaw, reason: reasonRaw, projectUrl } = params
+  const clientName  = escapeHtml(clientNameRaw)
+  const projectName = escapeHtml(projectNameRaw)
+  const coTitle     = escapeHtml(coTitleRaw)
+  const reason      = reasonRaw ? escapeHtml(reasonRaw) : ''
+
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.red,
+    label: 'Change order declined',
+    headline: `${clientName} declined — ${coTitle}`,
+    body: `
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        <strong>${clientName}</strong> has declined the change order <strong>${coTitle}</strong> on <strong>${projectName}</strong>.
+      </p>
+      ${reason ? `
+      <div style="background:${C.redLt};border:1px solid #FECACA;border-radius:6px;padding:14px 16px;margin:16px 0;">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:${C.red};margin-bottom:6px;">Reason given</div>
+        <p style="font-size:13px;color:${C.text};margin:0;">${reason}</p>
+      </div>
+      ` : ''}
+    `,
+    cta: 'View in ScopeGov',
+    ctaUrl: projectUrl,
+  })
+
+  return resendClient().emails.send({
+    from:    `ScopeGov <${FROM}>`,
+    to,
+    subject: `${clientNameRaw} declined the change order — ${coTitleRaw}`,
+    html,
+  })
+}
+
+export async function sendCoCounteredEmail(params: {
+  to: string[]; clientName: string; coTitle: string
+  counterAmount: number; currency: string; counterNote?: string | null
+  projectUrl: string
+}) {
+  const {
+    to, clientName: clientNameRaw, coTitle: coTitleRaw,
+    counterAmount, currency, counterNote: counterNoteRaw, projectUrl,
+  } = params
+  const clientName  = escapeHtml(clientNameRaw)
+  const coTitle     = escapeHtml(coTitleRaw)
+  const counterNote = counterNoteRaw ? escapeHtml(counterNoteRaw) : ''
+
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.amber,
+    label: 'Counter offer received',
+    headline: `${clientName} proposed a counter offer`,
+    body: `
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        <strong>${clientName}</strong> has proposed a counter offer of
+        <strong>${escapeHtml(currency || 'USD')} ${counterAmount.toLocaleString()}</strong> on <strong>${coTitle}</strong>.
+      </p>
+      ${counterNote ? `
+      <div style="background:${C.amberLt};border:1px solid #FDE68A;border-radius:6px;padding:14px 16px;margin:16px 0;">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:${C.amber};margin-bottom:6px;">Note from client</div>
+        <p style="font-size:13px;color:${C.text};margin:0;">${counterNote}</p>
+      </div>
+      ` : ''}
+      <p style="font-size:13px;color:${C.text2};margin:0;">
+        Review the counter offer and respond in ScopeGov.
+      </p>
+    `,
+    cta: 'Review counter in ScopeGov',
+    ctaUrl: projectUrl,
+  })
+
+  return resendClient().emails.send({
+    from:    `ScopeGov <${FROM}>`,
+    to,
+    subject: `Counter offer received — ${coTitleRaw}`,
+    html,
+  })
+}
+
 // ── Event 11: CO accepted (agency) ───────────────────────────
 export async function sendCoAcceptedEmail(params: {
   to: string[]; agencyName: string; clientName: string

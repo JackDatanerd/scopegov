@@ -6,7 +6,7 @@ import { jwtVerify } from 'jose'
 import { logAudit } from '@/lib/utils/audit'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
-import { escapeHtml } from '@/lib/utils/sanitize'
+import { sendCoDeclinedEmail, sendCoCounteredEmail } from '@/lib/email/templates'
 import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
 import { checkPortalRateLimit, recordPortalAction } from '@/lib/utils/portal-rate-limit'
 import { getClientIp } from '@/lib/utils/request-ip'
@@ -121,19 +121,20 @@ export async function POST_DECLINE(request: NextRequest, token: string) {
   })
 
   // Notify agency
+  // FIX (deep audit, notifications section): this was a hand-rolled Resend
+  // call with no shared branding/footer, unlike every comparable
+  // agency-notify email — see sendCoDeclinedEmail in lib/email/templates.ts.
   try {
     const emails = await getMemberEmailsWithPermission(service, co.workspace_id, 'SEND_CHANGE_ORDERS', 25, 'co_declined', co.project_id)
     if (emails.length) {
-      const { Resend } = await import('resend')
-      const resend = new Resend(process.env.RESEND_API_KEY)
       const client = co.projects?.clients
-      await resend.emails.send({
-        from: `ScopeGov <${process.env.RESEND_FROM_EMAIL}>`,
+      await sendCoDeclinedEmail({
         to: emails,
-        subject: `${escapeHtml(client?.name)} declined the change order — ${escapeHtml(co.title)}`,
-        html: `<p><strong>${escapeHtml(client?.name)}</strong> has declined the change order <strong>${escapeHtml(co.title)}</strong> on <strong>${escapeHtml(co.projects?.name)}</strong>.</p>
-        ${reason ? `<p><strong>Reason:</strong> ${escapeHtml(reason)}</p>` : ''}
-        <p><a href="${process.env.NEXT_PUBLIC_APP_URL}/projects/${co.project_id}?tab=co">View in ScopeGov →</a></p>`,
+        clientName: client?.name || 'Client',
+        projectName: co.projects?.name || '',
+        coTitle: co.title,
+        reason,
+        projectUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects/${co.project_id}?tab=co`,
       })
     }
   } catch (e) { console.error('CO declined email failed:', e) }
@@ -216,24 +217,19 @@ export async function POST_COUNTER(request: NextRequest, token: string) {
     // passes 'co_declined' — so counter-offer emails ignored notification
     // preferences entirely. Members who'd opted out of 'co_countered'
     // still got these.
+    // FIX (deep audit, notifications section): hand-rolled Resend call
+    // with no shared branding/footer — see sendCoCounteredEmail.
     const emails = await getMemberEmailsWithPermission(service, co.workspace_id, 'SEND_CHANGE_ORDERS', 25, 'co_countered', co.project_id)
     if (emails.length) {
-      const { Resend } = await import('resend')
-      const resend = new Resend(process.env.RESEND_API_KEY)
       const client = co.projects?.clients
-      await resend.emails.send({
-        from: `ScopeGov <${process.env.RESEND_FROM_EMAIL}>`,
+      await sendCoCounteredEmail({
         to: emails,
-        // FIX (portal audit, section 18): client.name/co.title were
-        // interpolated raw into the subject line while the HTML body
-        // right below correctly escapeHtml()s the same values — harmless
-        // in practice today (both are agency-set, not attacker-reachable
-        // through this public form) but inconsistent with the deliberate
-        // treatment one line down.
-        subject: `Counter offer received — ${escapeHtml(co.title)}`,
-        html: `<p><strong>${escapeHtml(client?.name)}</strong> has proposed a counter offer of <strong>${escapeHtml(co.projects?.currency || 'USD')} ${parsedAmount.toLocaleString()}</strong> on <strong>${escapeHtml(co.title)}</strong>.</p>
-        ${counterNote ? `<p><strong>Note:</strong> ${escapeHtml(counterNote)}</p>` : ''}
-        <p><a href="${process.env.NEXT_PUBLIC_APP_URL}/projects/${co.project_id}?tab=co">Review counter in ScopeGov →</a></p>`,
+        clientName: client?.name || 'Client',
+        coTitle: co.title,
+        counterAmount: parsedAmount,
+        currency: co.projects?.currency || 'USD',
+        counterNote,
+        projectUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects/${co.project_id}?tab=co`,
       })
     }
   } catch (e) { console.error('CO counter email failed:', e) }

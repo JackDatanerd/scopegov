@@ -428,7 +428,7 @@ export async function cancelApprovalRequest(service: any, params: {
 }) {
   const { data: request } = await service
     .from('approval_requests')
-    .select('id')
+    .select('id, project_id, current_step, context')
     .eq('document_type', params.documentType)
     .eq('document_id', params.documentId)
     .eq('status', 'pending')
@@ -445,8 +445,70 @@ export async function cancelApprovalRequest(service: any, params: {
     status: 'cancelled', decided_at: now, updated_at: now,
   }).eq('id', request.id).eq('status', 'pending').select('id').maybeSingle()
   if (!cancelled) return
+
+  // FIX (deep audit, notifications section — feature gap): whoever was
+  // already notified "awaiting your approval" for the currently-pending
+  // step got no follow-up at all when the request died underneath them —
+  // their bell/email said it was still pending, and clicking through led
+  // to a request that no longer exists. Fetch that step's approver(s)
+  // BEFORE marking steps skipped below, same recipient-resolution as
+  // notifyStepApprovers, and gated under the same 'approval_requested'
+  // preference (a user who's muted approval-request notifications
+  // shouldn't be re-notified about one going away either). In-app only —
+  // this is a lower-urgency, no-action-needed heads-up, not worth a new
+  // email template in its own right.
+  const { data: pendingStep } = await service
+    .from('approval_steps')
+    .select('approver_role_id, approver_user_id')
+    .eq('request_id', request.id).eq('step_order', request.current_step).eq('status', 'pending')
+    .maybeSingle()
+
   await service.from('approval_steps').update({ status: 'skipped' })
     .eq('request_id', request.id).eq('status', 'pending')
+
+  if (pendingStep) {
+    try {
+      let stepRecipients: Array<{ id: string; name: string; email: string }> = []
+      if (pendingStep.approver_user_id) {
+        const { data: m } = await service
+          .from('workspace_members')
+          .select('user_id, effective_permissions, users!workspace_members_user_id_fkey(id, name, email)')
+          .eq('workspace_id', params.workspaceId)
+          .eq('user_id', pendingStep.approver_user_id)
+          .eq('status', 'active')
+          .maybeSingle()
+        if (m?.users) {
+          stepRecipients = await filterToProjectAccess(
+            service, request.project_id, [{ id: m.users.id, name: m.users.name, email: m.users.email }],
+            new Map([[m.user_id, m.effective_permissions || {}]])
+          )
+        }
+      } else if (pendingStep.approver_role_id) {
+        stepRecipients = await getMembersWithRole(
+          service, params.workspaceId, pendingStep.approver_role_id, 25, request.project_id,
+          'approval_requested', 'in_app'
+        )
+      }
+      if (pendingStep.approver_user_id && stepRecipients.length) {
+        stepRecipients = await filterByNotificationPreference(
+          service, params.workspaceId, 'approval_requested', stepRecipients, 'in_app'
+        )
+      }
+      if (stepRecipients.length) {
+        const docTitle    = request.context?.title || (params.documentType === 'sow' ? 'SOW' : 'Change order')
+        const projectName = request.context?.project_name || ''
+        await service.from('notifications').insert(stepRecipients.map(r => ({
+          workspace_id: params.workspaceId,
+          recipient_id: r.id,
+          type:         'approval_cancelled',
+          title:        'Approval request cancelled',
+          body:         `${params.actorName} cancelled the request for ${docTitle}${projectName ? ` on ${projectName}` : ''} — no action needed.`,
+          entity_type:  'project',
+          entity_id:    request.project_id,
+        })))
+      }
+    } catch { /* never let a notification failure break cancellation */ }
+  }
 
   await logAudit(service, {
     workspaceId: params.workspaceId,
@@ -528,7 +590,16 @@ async function notifyStepApprovers(service: any, args: {
   requestedBy: { id: string; name: string; email: string }
   totalSteps: number
 }): Promise<number> {
+  // FIX (deep audit, notifications+search section): the role branch used
+  // to build one shared `recipients` list via getMembersWithRole (capped
+  // to 25 BEFORE preference filtering — see that function's fix comment),
+  // then filter it per-channel afterward. Now getMembersWithRole applies
+  // preference filtering before its own cap, so it's called once per
+  // channel directly; the direct-user branch (at most one person, so the
+  // cap never bites) still goes through the shared post-hoc filter below.
   let recipients: Array<{ id: string; name: string; email: string }> = []
+  let inAppRecipients: Array<{ id: string; name: string; email: string }> = []
+  let emailRecipients: Array<{ id: string; name: string; email: string }> = []
   if (args.step.approver_user_id) {
     // FIX (cron audit, section 17): this used to look the user up directly
     // in `users`, with no check that they're still an active member of
@@ -560,17 +631,21 @@ async function notifyStepApprovers(service: any, args: {
       )
     }
   } else if (args.step.approver_role_id) {
-    recipients = await getMembersWithRole(service, args.workspaceId, args.step.approver_role_id, 25, args.projectId)
+    inAppRecipients = await getMembersWithRole(service, args.workspaceId, args.step.approver_role_id, 25, args.projectId, 'approval_requested', 'in_app')
+    emailRecipients = await getMembersWithRole(service, args.workspaceId, args.step.approver_role_id, 25, args.projectId, 'approval_requested', 'email')
   }
-  // FIX (re-audit, notifications section): a single filterByNotificationPreference
-  // call (defaulting to the `email_enabled` column) used to gate BOTH the
-  // in-app insert below AND the email send — so an approver who muted
-  // EMAIL for this event (the only toggle Settings exposes) never got a
-  // bell notification either, even though `in_app_enabled` is a separate,
-  // always-true-by-default column. Filter each channel against its own
-  // column instead.
-  const inAppRecipients = await filterByNotificationPreference(service, args.workspaceId, 'approval_requested', recipients, 'in_app')
-  const emailRecipients = await filterByNotificationPreference(service, args.workspaceId, 'approval_requested', recipients, 'email')
+  if (args.step.approver_user_id) {
+    // FIX (re-audit, notifications section): a single filterByNotificationPreference
+    // call (defaulting to the `email_enabled` column) used to gate BOTH the
+    // in-app insert below AND the email send — so an approver who muted
+    // EMAIL for this event (the only toggle Settings exposes) never got a
+    // bell notification either, even though `in_app_enabled` is a separate,
+    // always-true-by-default column. Filter each channel against its own
+    // column instead. (Role-branch recipients are already filtered per
+    // channel above, before their own 25-cap — see getMembersWithRole.)
+    inAppRecipients = await filterByNotificationPreference(service, args.workspaceId, 'approval_requested', recipients, 'in_app')
+    emailRecipients = await filterByNotificationPreference(service, args.workspaceId, 'approval_requested', recipients, 'email')
+  }
   const notifiedIds = new Set([...inAppRecipients.map(r => r.id), ...emailRecipients.map(r => r.id)])
   if (notifiedIds.size === 0) return 0
 
@@ -612,25 +687,46 @@ async function notifyRequester(service: any, args: {
   documentLabel: string; docTitle: string; projectId: string; projectName: string
   decidedByName: string; note?: string; autoSent?: boolean
 }) {
-  try {
-    await service.from('notifications').insert({
-      workspace_id: args.workspaceId,
-      recipient_id: args.requester.id,
-      type:         `approval_${args.decision}`,
-      title:        `${args.documentLabel} ${args.decision}`,
-      body:         `${args.decidedByName} ${args.decision} ${args.docTitle}${args.autoSent ? ' — sent to client' : ''}.`,
-      entity_type:  'project',
-      entity_id:    args.projectId,
-    })
-  } catch { /* non-fatal */ }
+  // FIX (deep audit, notifications section): this was the one notification
+  // in the whole approval pipeline that bypassed the preference system
+  // entirely — no filterByNotificationPreference call on either channel,
+  // and 'approval_approved'/'approval_rejected' weren't in EVENT_TYPES or
+  // IN_APP_ONLY_EVENT_TYPES (app/api/notifications/preferences/route.ts),
+  // so there was no toggle for it and PATCH would 400 if a client tried.
+  // Both decisions notify the same person (the requester) about the same
+  // kind of event — the outcome of their own request — so they share one
+  // preference key ('approval_decision') rather than doubling the Settings
+  // list with two near-identical rows.
+  const [inAppOn] = await filterByNotificationPreference(
+    service, args.workspaceId, 'approval_decision', [args.requester], 'in_app'
+  )
+  const [emailOn] = await filterByNotificationPreference(
+    service, args.workspaceId, 'approval_decision', [args.requester], 'email'
+  )
 
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL || ''
-  try {
-    await sendApprovalDecisionEmail({
-      to: args.requester.email, requesterName: args.requester.name,
-      decision: args.decision, documentLabel: args.documentLabel, documentTitle: args.docTitle,
-      projectName: args.projectName, decidedByName: args.decidedByName, note: args.note,
-      url: `${appUrl}/projects/${args.projectId}`, autoSent: args.autoSent,
-    })
-  } catch (e) { console.error('approval decision email failed:', e) }
+  if (inAppOn) {
+    try {
+      await service.from('notifications').insert({
+        workspace_id: args.workspaceId,
+        recipient_id: args.requester.id,
+        type:         `approval_${args.decision}`,
+        title:        `${args.documentLabel} ${args.decision}`,
+        body:         `${args.decidedByName} ${args.decision} ${args.docTitle}${args.autoSent ? ' — sent to client' : ''}.`,
+        entity_type:  'project',
+        entity_id:    args.projectId,
+      })
+    } catch { /* non-fatal */ }
+  }
+
+  if (emailOn) {
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL || ''
+    try {
+      await sendApprovalDecisionEmail({
+        to: args.requester.email, requesterName: args.requester.name,
+        decision: args.decision, documentLabel: args.documentLabel, documentTitle: args.docTitle,
+        projectName: args.projectName, decidedByName: args.decidedByName, note: args.note,
+        url: `${appUrl}/projects/${args.projectId}`, autoSent: args.autoSent,
+      })
+    } catch (e) { console.error('approval decision email failed:', e) }
+  }
 }

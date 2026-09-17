@@ -18,6 +18,9 @@ const TYPE_ICONS: Record<string, string> = {
   // FIX (build, search section): invoice results now come back from
   // /api/search (see that route) — needed an icon to match.
   invoice:       'ti-receipt-2',
+  // FIX (deep audit, search section — feature gap): guardian flags are
+  // now searchable too — see that route's fix comment.
+  guardian_flag: 'ti-shield-bolt',
 }
 
 interface Props {
@@ -124,7 +127,7 @@ export default function CommandPalette({ permissions = [] }: Props) {
             value={query}
             onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Search projects, clients, SOWs, change orders, invoices…"
+            placeholder="Search projects, clients, SOWs, change orders, invoices, flags…"
             style={{ flex: 1, border: 'none', outline: 'none', fontSize: 14, background: 'transparent', color: 'var(--text)' }}
           />
           {loading && <span className="spin spin-dark" style={{ width: 14, height: 14 }} />}

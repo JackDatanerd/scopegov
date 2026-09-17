@@ -41,13 +41,24 @@ export async function PATCH(request: NextRequest) {
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const { ids, all } = await request.json()
+    // FIX (deep audit, notifications section): `all` falsy/omitted AND
+    // `ids` empty/omitted used to fall through with no id filter applied
+    // at all — the update then ran unqualified by workspace_id+recipient_id
+    // alone, marking EVERY notification of this user's read, the opposite
+    // of what an empty/malformed body should do. `all` must now be exactly
+    // `true` to run the unscoped update; anything else requires a non-empty
+    // `ids` array, or the request is rejected outright rather than silently
+    // doing the most destructive thing it could.
+    if (all !== true && !(Array.isArray(ids) && ids.length > 0)) {
+      return NextResponse.json({ error: 'Provide ids to mark, or all: true' }, { status: 400 })
+    }
     const service = createServiceClient()
     const now     = new Date().toISOString()
     let q = (service as any).from('notifications')
       .update({ read: true, read_at: now })
       .eq('workspace_id', session.workspaceId)
       .eq('recipient_id', session.id)
-    if (!all && ids?.length) q = q.in('id', ids)
+    if (all !== true) q = q.in('id', ids)
     await q
     return NextResponse.json({ ok: true })
   } catch {

@@ -255,6 +255,42 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    // FIX (deep audit, search section — feature gap): guardian_flags —
+    // the product's namesake entity, with its own free-text `description`
+    // and its own escalation/exception/comment workflow — was entirely
+    // absent from search. Unlike projects/clients it has no tsvector
+    // column (only projects and clients get one — see migration 001), so
+    // this matches the same way change_orders/sow_documents do here:
+    // ilike against the one text field that actually carries meaning.
+    // Gated the same way every other project-scoped block in this file
+    // is — canReadProject's rule (restrictedProjectIds), no extra
+    // permission beyond project access, matching guardian/flags/[id]'s
+    // own gate.
+    let flagQuery = (service as any)
+      .from('guardian_flags')
+      .select('id, description, severity, status, project_id, projects(name)')
+      .eq('workspace_id', wsId)
+      .ilike('description', `%${likeTerm}%`)
+      .order('created_at', { ascending: false })
+      .limit(4)
+
+    if (restrictedProjectIds) {
+      flagQuery = restrictedProjectIds.length
+        ? flagQuery.in('project_id', restrictedProjectIds)
+        : flagQuery.in('project_id', ['00000000-0000-0000-0000-000000000000'])
+    }
+
+    const { data: flags } = await flagQuery
+    for (const f of (flags || [])) {
+      results.push({
+        type:  'guardian_flag',
+        id:    f.id,
+        title: f.description.length > 80 ? `${f.description.slice(0, 80)}…` : f.description,
+        sub:   `${f.projects?.name || ''} · ${f.severity} severity · ${f.status.replace(/_/g, ' ')}`,
+        href:  `/projects/${f.project_id}?tab=guardian`,
+      })
+    }
+
     return NextResponse.json({ results, query: q })
   } catch (err) {
     console.error('Search error:', err)

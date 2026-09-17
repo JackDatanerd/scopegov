@@ -18,6 +18,15 @@ const EVENT_TYPES = [
   // — same whitelist requirement as every entry above, otherwise PATCH
   // 400s on it and the toggle can never be saved.
   'sow_expired',
+  // FIX (deep audit, notifications section): notifyRequester (approval
+  // engine) sends this on every approve/reject decision but had no
+  // whitelist entry at all — same "permanently un-mutable" bug as every
+  // entry above, except this one wasn't even gated in code (see that
+  // function's fix comment). Covers both 'approval_approved' and
+  // 'approval_rejected' notification types under one toggle, since both
+  // tell the same person (the requester) about the outcome of their own
+  // request.
+  'approval_decision',
 ]
 
 // FIX (re-audit, notifications section): `approval_no_reachable_approver`
@@ -45,21 +54,48 @@ export async function GET() {
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const service = createServiceClient()
 
-    const { data: rows } = await (service as any)
-      .from('notification_preferences')
-      .select('event_type, email_enabled, in_app_enabled')
-      .eq('user_id', session.id)
-      .eq('workspace_id', session.workspaceId)
+    // FIX (deep audit, notifications section — flagship finding): a
+    // workspace admin can now set an org-wide default per event
+    // (app/api/workspace/notification-defaults) and optionally lock it so
+    // members can't override it — see filterByNotificationPreference.
+    // This route needs to reflect both: what actually resolves to (the
+    // org default, when the member has no override) and whether the
+    // toggle is even editable (locked).
+    const [{ data: rows }, { data: defaultRows }] = await Promise.all([
+      (service as any)
+        .from('notification_preferences')
+        .select('event_type, email_enabled, in_app_enabled')
+        .eq('user_id', session.id)
+        .eq('workspace_id', session.workspaceId),
+      (service as any)
+        .from('workspace_notification_defaults')
+        .select('event_type, email_enabled, in_app_enabled, locked')
+        .eq('workspace_id', session.workspaceId),
+    ])
 
-    // Absence of a row means "enabled" (see filterByNotificationPreference) —
-    // mirror that default here so the UI matches what actually happens.
-    const prefs: Record<string, boolean> = Object.fromEntries(ALL_EVENT_TYPES.map(k => [k, true]))
     const inAppOnly = new Set(IN_APP_ONLY_EVENT_TYPES)
+    const defaultsByType = new Map((defaultRows || []).map((d: any) => [d.event_type, d]))
+
+    // Absence of a row means "enabled" unless a workspace default says
+    // otherwise — mirror filterByNotificationPreference's resolution here
+    // so the UI matches what actually happens.
+    const prefs: Record<string, boolean> = {}
+    const locked: Record<string, boolean> = {}
+    for (const key of ALL_EVENT_TYPES) {
+      const column = inAppOnly.has(key) ? 'in_app_enabled' : 'email_enabled'
+      const def = defaultsByType.get(key) as any
+      prefs[key] = def ? def[column] : true
+      locked[key] = !!def?.locked
+    }
     for (const row of rows || []) {
+      // A locked default is authoritative — an individual's stored row
+      // (even a stale one from before an admin locked this event) never
+      // takes effect once locked, matching the read side exactly.
+      if (locked[row.event_type]) continue
       prefs[row.event_type] = inAppOnly.has(row.event_type) ? row.in_app_enabled : row.email_enabled
     }
 
-    return NextResponse.json({ prefs, inAppOnlyEventTypes: IN_APP_ONLY_EVENT_TYPES })
+    return NextResponse.json({ prefs, locked, inAppOnlyEventTypes: IN_APP_ONLY_EVENT_TYPES })
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
   }
@@ -73,6 +109,22 @@ export async function PATCH(request: NextRequest) {
     if (!ALL_EVENT_TYPES.includes(eventType)) return NextResponse.json({ error: 'Unknown event type' }, { status: 400 })
 
     const service = createServiceClient()
+
+    // FIX (deep audit, notifications section — flagship finding): a
+    // member could otherwise write a preference row for an event an
+    // admin has locked — the row would simply never take effect (see
+    // filterByNotificationPreference), but the toggle would look saved,
+    // silently lying to whoever clicked it.
+    const { data: lockedRow } = await (service as any)
+      .from('workspace_notification_defaults')
+      .select('locked')
+      .eq('workspace_id', session.workspaceId)
+      .eq('event_type', eventType)
+      .maybeSingle()
+    if (lockedRow?.locked) {
+      return NextResponse.json({ error: 'This notification is required by your workspace administrator' }, { status: 403 })
+    }
+
     // In-app-only event types toggle `in_app_enabled`; every other event type
     // keeps the existing behaviour of toggling `email_enabled` while
     // `in_app_enabled` stays pinned true. Both columns are NOT NULL, so a
