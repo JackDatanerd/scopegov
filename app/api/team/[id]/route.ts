@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { permissionsBeyondCeiling, permissionsBeyondActorForTarget, roleWithinCeiling } from '@/lib/utils/permission-ceiling'
+import { mergePermissions, wouldOrphanManageRoles } from '@/lib/utils/admin-floor'
 
 export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -207,13 +208,19 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // a time. Floor check first, independent of direction: you cannot
     // touch a member who currently, effectively holds anything you don't
     // hold yourself.
+    // FIX (deep audit, RLS+permissions independent re-pass — CRITICAL):
+    // fetch role_id/permission_overrides too, not just effective_permissions
+    // — the admin-floor simulation below needs them to compute what this
+    // member's effective_permissions would become post-change.
+    let targetMember: { role_id: string | null; permission_overrides: Record<string, unknown> | null; effective_permissions: Record<string, unknown> | null } | null = null
     if (body.permissionOverrides !== undefined || body.roleId !== undefined) {
-      const { data: targetMember } = await (service as any)
-        .from('workspace_members').select('effective_permissions')
+      const { data } = await (service as any)
+        .from('workspace_members').select('role_id,permission_overrides,effective_permissions')
         .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
-      if (!targetMember) return NextResponse.json({ error: 'Member not found' }, { status: 404 })
+      if (!data) return NextResponse.json({ error: 'Member not found' }, { status: 404 })
+      targetMember = data
 
-      const outOfReach = permissionsBeyondActorForTarget(session, targetMember.effective_permissions)
+      const outOfReach = permissionsBeyondActorForTarget(session, targetMember!.effective_permissions)
       if (outOfReach.length > 0)
         return NextResponse.json({
           error: `Cannot modify a member who holds permissions you don't hold yourself: ${outOfReach.join(', ')}`,
@@ -242,6 +249,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // with no workspace check either, so an unscoped roleId here could
     // pull in a completely different workspace's role permissions. Same
     // fix shape as app/api/team/invite/route.ts already applies.
+    let newRolePermissions: Record<string, unknown> | null | undefined = undefined // undefined = role_id not changing
     if (body.roleId !== undefined) {
       if (body.roleId) {
         const { data: role } = await (service as any)
@@ -249,8 +257,49 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         if (!role) return NextResponse.json({ error: 'Invalid role for this workspace' }, { status: 400 })
         if (!roleWithinCeiling(session, role))
           return NextResponse.json({ error: 'Cannot assign a role with permissions you don\u2019t hold yourself' }, { status: 403 })
+        newRolePermissions = role.permissions
+      } else {
+        newRolePermissions = null
       }
       updates.role_id = body.roleId || null
+    }
+
+    // FIX (deep audit, RLS+permissions independent re-pass — CRITICAL):
+    // leave_workspace_atomic() (027/034/038) refuses to let the sole
+    // MANAGE_ROLES holder leave, specifically to prevent "a one-way
+    // lockout of the permission system itself, with no self-service
+    // recovery" (034's own words) — but that guard only fires on leave.
+    // This route reaches the exact same end state (a member losing
+    // MANAGE_ROLES via permission_overrides or a role reassignment) with
+    // no equivalent check — and since the ceiling/floor checks above only
+    // ever compare the actor to the target, they pass trivially when an
+    // admin edits their OWN permissions, letting the sole holder strip
+    // themselves with nothing to stop it. Simulate the target's
+    // post-change effective_permissions and refuse if it would leave the
+    // workspace with zero active MANAGE_ROLES holders.
+    if (targetMember) {
+      const hasManageRolesNow = targetMember.effective_permissions?.['MANAGE_ROLES'] === true
+      if (hasManageRolesNow) {
+        const finalOverrides = body.permissionOverrides !== undefined ? body.permissionOverrides : targetMember.permission_overrides
+        const finalRolePermissions = newRolePermissions !== undefined
+          ? newRolePermissions
+          : (targetMember.role_id
+              ? (await (service as any).from('roles').select('permissions').eq('id', targetMember.role_id).maybeSingle()).data?.permissions
+              : null)
+        const simulatedPerms = mergePermissions(finalRolePermissions, finalOverrides)
+        if (simulatedPerms['MANAGE_ROLES'] !== true) {
+          const { data: activeMembers } = await (service as any)
+            .from('workspace_members').select('id,effective_permissions')
+            .eq('workspace_id', session.workspaceId).eq('status', 'active')
+          const snapshot = (activeMembers || []).map((m: any) => ({ id: m.id, effectivePermissions: m.effective_permissions }))
+          const simulated = new Map([[id, simulatedPerms]])
+          if (wouldOrphanManageRoles(snapshot, simulated)) {
+            return NextResponse.json({
+              error: 'This would leave the workspace with no one who can manage roles. Assign MANAGE_ROLES to another member first.',
+            }, { status: 409 })
+          }
+        }
+      }
     }
 
     const { error } = await (service as any)

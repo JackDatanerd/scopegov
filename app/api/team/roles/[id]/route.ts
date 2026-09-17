@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { permissionsBeyondCeiling, permissionsBeyondActorForTarget } from '@/lib/utils/permission-ceiling'
+import { mergePermissions, wouldOrphanManageRoles } from '@/lib/utils/admin-floor'
 import { logAudit } from '@/lib/utils/audit'
 
 export async function PATCH(
@@ -64,6 +65,38 @@ export async function PATCH(
         return NextResponse.json({
           error: `Cannot grant permissions you don't hold yourself: ${beyond.join(', ')}`,
         }, { status: 403 })
+    }
+
+    // FIX (deep audit, RLS+permissions independent re-pass — CRITICAL):
+    // leave_workspace_atomic() (027/034/038) exists specifically so the
+    // sole MANAGE_ROLES holder can never leave and orphan the permission
+    // system — "a one-way lockout of the permission system itself, with
+    // no self-service recovery" (034's own words). Editing a role's
+    // permissions in place reaches the exact same end state:
+    // trg_role_permissions_propagate (migration 001) recomputes
+    // effective_permissions for every member currently holding this role
+    // the instant it's saved, and the ceiling/floor checks above pass
+    // trivially when the editor already holds (and therefore already IS
+    // one of the members losing) MANAGE_ROLES. If this role is currently
+    // the only source of MANAGE_ROLES workspace-wide, stripping it here
+    // zeroes out MANAGE_ROLES for the entire workspace in one save.
+    if (permissions !== undefined && existingRole.permissions?.['MANAGE_ROLES'] === true && permissions['MANAGE_ROLES'] !== true) {
+      const { data: activeMembers } = await (service as any)
+        .from('workspace_members').select('id,role_id,permission_overrides,effective_permissions')
+        .eq('workspace_id', session.workspaceId).eq('status', 'active')
+
+      const snapshot = (activeMembers || []).map((m: any) => ({ id: m.id, effectivePermissions: m.effective_permissions }))
+      const simulated = new Map<string, Record<string, unknown> | null>(
+        (activeMembers || [])
+          .filter((m: any) => m.role_id === id)
+          .map((m: any): [string, Record<string, unknown> | null] => [m.id, mergePermissions(permissions, m.permission_overrides)])
+      )
+
+      if (wouldOrphanManageRoles(snapshot, simulated)) {
+        return NextResponse.json({
+          error: 'This would leave the workspace with no one who can manage roles. Grant MANAGE_ROLES to another member or role first.',
+        }, { status: 409 })
+      }
     }
 
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }

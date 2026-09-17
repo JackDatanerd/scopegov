@@ -3,6 +3,7 @@ export const runtime = 'nodejs'
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
 import { logAudit } from '@/lib/utils/audit'
+import { resolveActiveWorkspaceId } from '@/lib/auth/session'
 
 // FEATURE (deep audit, Auth+MFA section — feature gap): there was no way
 // for a user to see or revoke sessions on other devices/browsers at all.
@@ -24,14 +25,23 @@ export async function POST() {
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
     const service = createServiceClient()
-    const { data: userRow } = await (service as any)
-      .from('users').select('active_workspace_id').eq('id', user.id).maybeSingle()
+
+    // FIX (deep audit, Auth+MFA independent re-pass): this used to read
+    // the bare `users.active_workspace_id` with no fallback — the exact
+    // gap resolveActiveWorkspaceId() (lib/auth/session.ts) was built to
+    // close for change-password, mfa/factors, mfa/backup-codes, and
+    // password-changed, just never extended here. A user whose
+    // active_workspace_id is unset (e.g. right after leaving/losing their
+    // active workspace) would silently lose this audit entry even though
+    // they have another active membership resolveActiveWorkspaceId's
+    // fallback would find.
+    const workspaceId = await resolveActiveWorkspaceId(service, user.id)
 
     // Best-effort audit entry — a missing workspace shouldn't fail the
     // actual sign-out, which has already happened by this point.
-    if (userRow?.active_workspace_id) {
+    if (workspaceId) {
       await logAudit(service, {
-        workspaceId: userRow.active_workspace_id, actorId: user.id,
+        workspaceId, actorId: user.id,
         actorEmail: user.email!, actorName: user.user_metadata?.name || user.email!,
         eventType: 'security.other_sessions_revoked', entityType: 'user', entityId: user.id, entityName: user.email!,
         metadata: {},

@@ -1,6 +1,6 @@
 import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
-import { sharedCookieOptions } from './lib/supabase/cookie-options'
+import { sharedCookieOptions, domainScopedCookieOptions } from './lib/supabase/cookie-options'
 import { permissionsRequireMfa } from './lib/auth/mfa-policy'
 
 export async function middleware(request: NextRequest) {
@@ -38,7 +38,12 @@ export async function middleware(request: NextRequest) {
         setAll(cookiesToSet: Array<{ name: string; value: string; options?: CookieOptions }>) {
           cookiesToSet.forEach(({ name, value, options }) => {
             request.cookies.set(name, value)
-            response.cookies.set(name, value, options)
+            // FIX (deep audit, Auth+MFA independent re-pass): see
+            // domainScopedCookieOptions()'s own comment — only the PKCE
+            // code_verifier cookie needs the cross-subdomain scope; the
+            // session cookie middleware refreshes on every request should
+            // stay host-only.
+            response.cookies.set(name, value, domainScopedCookieOptions(name, options) as CookieOptions)
           })
         },
       },

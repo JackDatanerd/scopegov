@@ -23,3 +23,33 @@ export function sharedCookieOptions() {
   const domain = process.env.NEXT_PUBLIC_COOKIE_DOMAIN
   return domain ? { domain, sameSite: 'lax' as const, secure: true, path: '/' } : undefined
 }
+
+// FIX (deep audit, Auth+MFA independent re-pass): sharedCookieOptions()
+// above is passed as one global `cookieOptions` object to both the server
+// and browser Supabase clients, so the wide Domain=.scopegov.app it sets
+// was applying to EVERY cookie those clients write — not just the PKCE
+// code_verifier cookie this file's own header comment says it exists to
+// fix, but the long-lived session/refresh-token cookie too. Combined with
+// @supabase/ssr defaulting httpOnly to false (needed so the browser
+// client can read its own session), that meant an XSS on ANY subdomain of
+// scopegov.app (marketing site, docs, status page — anything sharing the
+// registrable domain) could read and exfiltrate the main app's session
+// cookie, not just whatever page was actually vulnerable.
+//
+// Only the code_verifier cookie needs to survive an apex<->www hop — it's
+// the one read back mid-redirect, during exchangeCodeForSession(), before
+// the app "knows" which host it's really on. The session cookie is set
+// and read on whichever single host the user is actually on each time;
+// it never needs to cross a subdomain boundary itself. Narrow the domain
+// to just that one cookie (@supabase/ssr always names it with a
+// `-code-verifier` suffix — see createStorageFromOptions in
+// @supabase/ssr's cookies.js) and fall back to a host-only cookie
+// (`domain` omitted) for everything else, including the session cookie.
+export function domainScopedCookieOptions(name: string, options: CookieOptionsLike): CookieOptionsLike {
+  if (name.endsWith('-code-verifier')) return options
+  if (!options || !('domain' in options)) return options
+  const { domain, ...rest } = options
+  return rest
+}
+
+type CookieOptionsLike = Record<string, unknown> | undefined

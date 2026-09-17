@@ -1,7 +1,7 @@
 import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 import { createClient as createSupabaseClient } from '@supabase/supabase-js'
-import { sharedCookieOptions } from './cookie-options'
+import { sharedCookieOptions, domainScopedCookieOptions } from './cookie-options'
 
 // ── Server component / Route Handler client (respects RLS via session) ────
 export async function createServerSupabaseClient() {
@@ -18,7 +18,12 @@ export async function createServerSupabaseClient() {
         setAll(cookiesToSet: Array<{ name: string; value: string; options?: CookieOptions }>) {
           try {
             cookiesToSet.forEach(({ name, value, options }) =>
-              cookieStore.set(name, value, options)
+              // FIX (deep audit, Auth+MFA independent re-pass): only the
+              // code_verifier cookie needs the wide domain — see
+              // domainScopedCookieOptions()'s own comment. Every other
+              // cookie (the session/refresh token included) gets set
+              // host-only.
+              cookieStore.set(name, value, domainScopedCookieOptions(name, options) as CookieOptions)
             )
           } catch {
             // setAll called from a Server Component — cookies are read-only
