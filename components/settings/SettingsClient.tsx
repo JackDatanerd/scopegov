@@ -275,7 +275,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
 
         {tab === 'integrations' && <IntegrationsTab session={session} />}
 
-        {tab === 'danger' && <DangerTab workspace={workspace} permissions={permissions} />}
+        {tab === 'danger' && <DangerTab workspace={workspace} permissions={permissions} session={session} />}
       </div>
     </div>
   )
@@ -1237,7 +1237,7 @@ function IntegrationsTab({ session }: { session: SessionUser }) {
 }
 
 // ── DANGER ZONE ───────────────────────────────────────────────
-function DangerTab({ workspace, permissions }: any) {
+function DangerTab({ workspace, permissions, session }: any) {
   const router   = useRouter()
   const supabase = createClient()
   const [confirm,  setConfirm]  = useState('')
@@ -1260,10 +1260,19 @@ function DangerTab({ workspace, permissions }: any) {
     } finally { setDeleting(false) }
   }
 
+  // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — feature
+  // gap): there was previously no UI for this at all, because the
+  // capability didn't exist — see migration 039 for why it needed to.
+  // Only rendered for the actual current owner (workspace.created_by),
+  // not just anyone with MANAGE_WORKSPACE_SETTINGS — same reasoning
+  // complete-onboarding already uses to scope itself to the creator.
+  const isOwner = !!session?.id && workspace?.created_by === session.id
+
   return (
     <div>
       <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, color: 'var(--red)', marginBottom: 20 }}>Danger zone</h2>
       {err && <div className="auth-error" style={{ marginBottom: 14 }}>{err}</div>}
+      {isOwner && <TransferOwnershipSection />}
       <div className="settings-section" style={{ border: '1px solid #FECACA' }}>
         <div className="settings-section-title" style={{ color: 'var(--red)' }}>Delete workspace</div>
         <p style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.6, marginBottom: 16 }}>
@@ -1286,6 +1295,89 @@ function DangerTab({ workspace, permissions }: any) {
     </div>
   )
 }
+
+function TransferOwnershipSection() {
+  const [loading,  setLoading]  = useState(true)
+  const [members,  setMembers]  = useState<Array<{ id: string; name: string; email: string }>>([])
+  const [selected, setSelected] = useState('')
+  const [confirm,  setConfirm]  = useState(false)
+  const [busy,     setBusy]     = useState(false)
+  const [err,      setErr]      = useState('')
+  const [done,     setDone]     = useState(false)
+
+  useEffect(() => {
+    fetch('/api/workspace/transfer-ownership')
+      .then(r => r.json())
+      .then(json => setMembers(Array.isArray(json.eligibleMembers) ? json.eligibleMembers : []))
+      .catch(() => setErr('Could not load eligible members.'))
+      .finally(() => setLoading(false))
+  }, [])
+
+  async function handleTransfer() {
+    if (!selected || !confirm) return
+    setBusy(true); setErr('')
+    try {
+      const res  = await fetch('/api/workspace/transfer-ownership', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ newOwnerUserId: selected }),
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error || 'Could not transfer ownership')
+      setDone(true)
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : 'Could not transfer ownership')
+    } finally { setBusy(false) }
+  }
+
+  if (done) {
+    return (
+      <div className="settings-section" style={{ marginBottom: 20 }}>
+        <div className="settings-section-title">Transfer ownership</div>
+        <p style={{ fontSize: 13, color: 'var(--text-2)' }}>Ownership has been transferred. Refresh to see the change reflected.</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="settings-section" style={{ marginBottom: 20 }}>
+      <div className="settings-section-title">Transfer ownership</div>
+      <p style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.6, marginBottom: 16 }}>
+        Hand this workspace off to another team member permanently. They must already hold the
+        &ldquo;Manage workspace settings&rdquo; permission (Team &gt; Roles). You&rsquo;ll remain a member,
+        but they become the workspace&rsquo;s owner of record.
+      </p>
+      {err && <div className="auth-error" style={{ marginBottom: 14 }}>{err}</div>}
+      {loading ? (
+        <p style={{ fontSize: 13, color: 'var(--text-3)' }}>Loading eligible members&hellip;</p>
+      ) : members.length === 0 ? (
+        <p style={{ fontSize: 13, color: 'var(--text-3)' }}>
+          No other active member currently holds &ldquo;Manage workspace settings&rdquo;. Grant it to someone
+          under Team &gt; Roles first.
+        </p>
+      ) : (
+        <>
+          <div className="fgrp">
+            <label className="flbl">New owner</label>
+            <select className="finp" value={selected} onChange={e => setSelected(e.target.value)}>
+              <option value="">Select a member&hellip;</option>
+              {members.map(m => (
+                <option key={m.id} value={m.id}>{m.name || m.email} ({m.email})</option>
+              ))}
+            </select>
+          </div>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-2)', margin: '10px 0 16px' }}>
+            <input type="checkbox" checked={confirm} onChange={e => setConfirm(e.target.checked)} />
+            I understand this cannot be undone from here &mdash; the new owner would need to transfer it back.
+          </label>
+          <button className="btn btn-secondary btn-sm" disabled={!selected || !confirm || busy} onClick={handleTransfer}>
+            {busy ? <span className="spin" /> : 'Transfer ownership'}
+          </button>
+        </>
+      )}
+    </div>
+  )
+}
+
 
 function Restricted() {
   return (
