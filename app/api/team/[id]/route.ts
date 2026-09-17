@@ -14,9 +14,15 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
 
     const service = createServiceClient()
 
+    // FIX (deep audit, Team & Invites re-pass): invited_email wasn't
+    // selected here, so revoking a pending invite always logged
+    // 'member.invite_revoked' with a blank entityName — the one piece of
+    // context (which email the invite was for) that actually matters for
+    // this event, since there's often no `users` row to join for an
+    // invite that was never accepted.
     const { data: member } = await (service as any)
       .from('workspace_members')
-      .select('id,user_id,status,effective_permissions,users!workspace_members_user_id_fkey(name,email)')
+      .select('id,user_id,status,invited_email,effective_permissions,users!workspace_members_user_id_fkey(name,email)')
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!member) return NextResponse.json({ error: 'Member not found' }, { status: 404 })
@@ -46,22 +52,49 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
 
     const now = new Date().toISOString()
 
-    // Deactivate membership
-    await (service as any).from('workspace_members').update({
-      status: 'deactivated', deactivated_at: now,
-    }).eq('id', id)
+    // FIX (deep audit, Team & Invites re-pass — CRITICAL): revoking a
+    // pending invite (status='invited', never accepted) used to run the
+    // exact same soft `status: 'deactivated'` update as deactivating a
+    // real member. That put a row with no attached user_id into the
+    // "Deactivated" list next to actual former members — rendered as a
+    // blank "Unknown" entry with no email — with the same "Reactivate"
+    // button offered on it. Clicking Reactivate flipped it straight to
+    // status: 'active' with user_id still null: a phantom "active member"
+    // with no account, permanently visible in the roster, and (worse)
+    // counted against the seat limit in team/invite/route.ts's
+    // `.in('status', ['active','invited'])` check — silently eating a
+    // paid seat that no real person occupies. The invite-cleanup cron's
+    // 30-day purge only targets status IN ('invited','expired'), so once
+    // soft-deactivated this row would never be swept either.
+    //
+    // A row that was never accepted was never really "a member" who could
+    // later be brought back — there's nothing to reactivate. Revoking it
+    // should remove it outright, the same way it's already gone the
+    // moment `handleResendInvite` needs a clean slot to create a fresh
+    // invite. Only a genuinely-active member (who really did once have
+    // access) gets the soft, reactivable deactivation.
+    //
+    // FIX (deep audit, Team & Invites re-pass): 'expired' (cron/invite-
+    // cleanup/route.ts's own status once a token's 7-day window closes)
+    // is exactly the same "never became a member" case as 'invited' —
+    // it's just a pending invite whose token died before anyone acted on
+    // it. It needs the same hard-delete, not the soft-deactivate branch.
+    const wasInvite = member.status === 'invited' || member.status === 'expired'
 
-    // Remove from all project_members
-    await (service as any).from('project_members').delete().eq('member_id', id)
+    if (wasInvite) {
+      await (service as any).from('workspace_members').delete().eq('id', id)
+    } else {
+      // Deactivate membership
+      await (service as any).from('workspace_members').update({
+        status: 'deactivated', deactivated_at: now,
+      }).eq('id', id)
 
-    // Invalidate sessions by deleting auth session — via Supabase Admin
-    // (service role can't directly invalidate sessions; member will be blocked on next request via middleware)
+      // Remove from all project_members
+      await (service as any).from('project_members').delete().eq('member_id', id)
 
-    // FIX (deep audit, section 6): revoking a pending invite and
-    // deactivating a real, active team member are very different events
-    // for a compliance audit trail — this used to log both as
-    // 'member.deactivated' with no way to tell them apart after the fact.
-    const wasInvite = member.status === 'invited'
+      // Invalidate sessions by deleting auth session — via Supabase Admin
+      // (service role can't directly invalidate sessions; member will be blocked on next request via middleware)
+    }
 
     // FIX (deep audit, section 5/6 tie-in): if the member being removed is
     // named as a specific-person approver on an active workflow, that step
@@ -82,7 +115,7 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
       actorEmail: session.email, actorName: session.name,
       eventType: wasInvite ? 'member.invite_revoked' : 'member.deactivated',
       entityType: 'workspace_member',
-      entityId: id, entityName: member.users?.email || '',
+      entityId: id, entityName: member.invited_email || member.users?.email || '',
       metadata: affectedWorkflowNames.length ? { orphaned_approval_workflows: affectedWorkflowNames } : {},
     })
 
@@ -121,11 +154,21 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
       const { data: member } = await (service as any)
         .from('workspace_members')
-        .select('id,status,effective_permissions,users!workspace_members_user_id_fkey(email)')
+        .select('id,status,user_id,effective_permissions,users!workspace_members_user_id_fkey(email)')
         .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
       if (!member) return NextResponse.json({ error: 'Member not found' }, { status: 404 })
       if (member.status !== 'deactivated')
         return NextResponse.json({ error: 'Member is not deactivated' }, { status: 400 })
+      // FIX (deep audit, Team & Invites re-pass — CRITICAL, belt-and-
+      // suspenders): a revoked, never-accepted invite is now hard-deleted
+      // above rather than soft-deactivated (see DELETE), so this should
+      // be unreachable in normal operation — but if a userless
+      // 'deactivated' row ever exists regardless, reactivating it would
+      // create a phantom "active member" with no account that still
+      // counts against the seat limit. Refuse outright rather than
+      // silently doing it.
+      if (!member.user_id)
+        return NextResponse.json({ error: 'This invite was never accepted and has no account to reactivate — send a new invite instead.' }, { status: 400 })
 
       const beyond = permissionsBeyondActorForTarget(session, member.effective_permissions)
       if (beyond.length > 0) {

@@ -53,7 +53,28 @@ export default function InvitePage() {
         body:    JSON.stringify({ name, password }),
       })
       const json = await res.json()
-      if (!res.ok) throw new Error(json.error)
+      if (!res.ok) {
+        // FIX (deep audit, Team & Invites re-pass — dead-end form): the
+        // backend (api/team/invite/[token]/signup) already distinguishes
+        // three edge cases with dedicated flags — existingAccount (someone
+        // signed up independently with this email after the invite was
+        // sent but before it was accepted), alreadyMember (a double-submit
+        // race with another accept already succeeding), and alreadyUsed
+        // (the row is gone). Previously none of these were read here: the
+        // error text was shown on this exact same "Create your account"
+        // form, which would fail identically forever on retry, with no
+        // way to actually get to the sign-in screen it was telling the
+        // person to use. Route to the screen that can actually succeed.
+        if (json.alreadyUsed) { setMode('already_used'); return }
+        if (json.existingAccount || json.alreadyMember) {
+          setInvite(prev => prev ? { ...prev, email: json.email || prev.email } : prev)
+          setPassword('')
+          setError(json.error)
+          setMode('existing-user')
+          return
+        }
+        throw new Error(json.error)
+      }
 
       // FIX (deep audit, Team & Invites re-pass): a single fixed 800ms
       // sleep before signing in assumed the newly admin-created Supabase

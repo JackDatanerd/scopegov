@@ -36,7 +36,18 @@ export async function POST(request: NextRequest) {
     const service = createServiceClient()
 
     // Fetch project + snapshot + workspace settings
-    const { data: project } = await (service as any)
+    // FIX (deep audit, Settings section — missing-column bug): the error
+    // from this query was never checked. When guardian_sensitivity_tier
+    // didn't exist as a column (035_guardian_sensitivity_tier_column.sql),
+    // this whole query errored (unknown column in the joined select),
+    // `project` came back null, and every Guardian check in every
+    // workspace failed with a generic "Project not found" — with nothing
+    // to distinguish a genuinely-missing project from a broken query.
+    // Logging the real error here doesn't change the 404 the caller sees
+    // (a broken query and a missing project both mean "can't proceed"),
+    // but it means this class of failure shows up in server logs instead
+    // of looking identical to a bad projectId.
+    const { data: project, error: projectErr } = await (service as any)
       .from('projects')
       .select(`id, name, status, workspace_id,
         workspaces(id, guardian_sensitivity_tier),
@@ -45,6 +56,7 @@ export async function POST(request: NextRequest) {
       .eq('workspace_id', session.workspaceId)
       .single()
 
+    if (projectErr) console.error('Guardian check: project fetch failed', projectErr)
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
     if (!(await canReadProject(service, session, projectId)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })

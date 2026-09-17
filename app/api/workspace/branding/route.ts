@@ -50,6 +50,27 @@ export async function PATCH(request: NextRequest) {
       }
       updates.logo_storage_path = logoStoragePath
     }
+    // FIX (deep audit, Settings re-pass): agencySignatureData was accepted
+    // as an arbitrary string with zero validation before being stored and
+    // later handed straight to react-pdf's <Image src={...}> in
+    // lib/pdf/renderer.tsx for every auto-signed SOW/CO. react-pdf's
+    // Image component fetches whatever URL it's given at render time —
+    // a non-data: value here (an internal/cloud-metadata URL, or simply
+    // an attacker-controlled remote host) would make the PDF-generation
+    // server issue that fetch itself, an SSRF vector, on top of an
+    // unbounded string being persisted with no size limit. Only a real
+    // signature.toDataURL('image/png')-shaped value (see
+    // components/ui/SignaturePad.tsx) — or an explicit null to clear it —
+    // is ever legitimate here.
+    if (agencySignatureData !== undefined && agencySignatureData !== null) {
+      const isValidSignatureDataUrl =
+        typeof agencySignatureData === 'string' &&
+        agencySignatureData.length <= 2_000_000 &&
+        /^data:image\/(png|jpe?g);base64,[A-Za-z0-9+/]+=*$/.test(agencySignatureData)
+      if (!isValidSignatureDataUrl) {
+        return NextResponse.json({ error: 'Invalid signature image' }, { status: 400 })
+      }
+    }
     // agencySignatureData: a base64 PNG data URL, or explicitly null to clear it
     if (agencySignatureData !== undefined) {
       updates.agency_signature_data = agencySignatureData

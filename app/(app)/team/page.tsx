@@ -52,6 +52,14 @@ export default async function TeamPage() {
   const roles   = rolesRes.data  || []
   const active  = members.filter((m: any) => m.status === 'active')
   const pending = members.filter((m: any) => m.status === 'invited')
+  // FIX (deep audit, Team & Invites re-pass): the main query already
+  // fetches 'expired' rows too (it only excludes 'deactivated'), but they
+  // were dropped on the floor here — neither `active` nor `pending`
+  // matches status='expired', so cron/invite-cleanup/route.ts flipping a
+  // dead invite's status made it vanish from the Team UI entirely, with
+  // no "Expired" state ever shown and no way to manually clear it before
+  // the 30-day auto-purge. Surface them the same way pending invites are.
+  const expired = members.filter((m: any) => m.status === 'expired')
   const deactivated = deactivatedRes.data || []
 
   // FIX (deep audit, Team & Invites re-pass): this used to hide the whole
@@ -72,6 +80,7 @@ export default async function TeamPage() {
     <TeamClient
       members={active}
       pendingInvites={pending}
+      expiredInvites={expired}
       deactivatedMembers={deactivated}
       roles={roles}
       session={session}

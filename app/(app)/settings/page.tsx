@@ -43,6 +43,20 @@ export default async function SettingsPage() {
       .maybeSingle(), // FIX 2: was .single() — returns null gracefully, never 406
   ])
 
+  // FIX (deep audit, Settings section — missing-column bug): this query's
+  // error was never checked. When guardian_sensitivity_tier didn't exist
+  // as a column (035_guardian_sensitivity_tier_column.sql), PostgREST
+  // errored on the unknown column, wsRes.data came back null, and the
+  // entire page silently rendered as if the workspace had no saved
+  // settings at all — with nothing in the logs to explain why. Surfacing
+  // this doesn't change the render path (workspace still degrades to
+  // null exactly as before, since every consumer already handles that),
+  // but it means a future schema/query mismatch shows up immediately in
+  // server logs instead of masquerading as "the workspace has no data."
+  if (wsRes.error) {
+    console.error('Settings: failed to load workspace', wsRes.error)
+  }
+
   let logoUrl: string | null = null
   if (wsRes.data?.logo_storage_path) {
     const { data: u } = await (service as any).storage

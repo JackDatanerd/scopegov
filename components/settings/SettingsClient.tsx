@@ -17,6 +17,18 @@ import type { SessionUser } from '@/lib/supabase/types'
 import { PLAN_LABELS, PLAN_LIMITS, PROJECT_TYPE_LABELS, formatDate } from '@/lib/utils/format'
 import SignaturePad, { type SignaturePadHandle } from '@/components/ui/SignaturePad'
 import MfaSection from '@/components/settings/MfaSection'
+// FIX (deep audit, Settings re-pass): WorkspaceTab's currency <select> used
+// to hardcode its own 8-currency list, missing CAD/AUD — both of which
+// onboarding's own currency picker (and server-side validation in
+// workspace/settings/route.ts) already allow via this exact constant. A
+// workspace onboarded with CAD or AUD landed on a Settings page whose
+// dropdown couldn't represent its own saved value: with no matching
+// <option>, the browser renders the first option (USD) as selected even
+// though the underlying state was still correctly "CAD"/"AUD" — visually
+// showing the wrong currency until the person happened to touch the
+// field. Import the single source of truth instead of a second,
+// drifting copy of the list.
+import { CURRENCIES } from '@/lib/constants/workspace-options'
 
 type SettingsTab = 'account' | 'workspace' | 'branding' | 'defaults' | 'guardian' | 'billing' | 'notifications' | 'integrations' | 'danger'
 
@@ -288,7 +300,16 @@ function AccountTab({ session, supabase, router, mfaMandatory }: any) {
     try {
       await supabase.auth.updateUser({ data: { name } })
       const res = await fetch('/api/workspace/profile', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) })
+      // FIX (deep audit, Settings re-pass): a non-OK response fell through
+      // this `if` doing nothing — no success message, no error message.
+      // The Supabase auth-side name update could have already succeeded
+      // while the app's own profile record silently failed to sync, and
+      // the person had no way to know anything had gone wrong.
       if (res.ok) { setMsg('Name updated.'); router.refresh() }
+      else {
+        const json = await res.json().catch(() => ({}))
+        setErr(json.error || 'Failed to update name')
+      }
     } catch { setErr('Failed to update name') } finally { setNameLoading(false) }
   }
 
@@ -462,7 +483,7 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugLocked }
           <div className="fgrp">
             <label className="flbl">Default currency</label>
             <select className="finp" value={form.currency} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => set('currency', e.target.value)}>
-              {['USD','KES','GBP','EUR','ZAR','NGN','GHS','AED'].map(c => <option key={c} value={c}>{c}</option>)}
+              {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
         </div>

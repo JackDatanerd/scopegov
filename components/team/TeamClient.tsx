@@ -12,6 +12,11 @@ import { initials, avatarColour, formatDate, ALL_PERMISSIONS } from '@/lib/utils
 interface Props {
   members:            any[]
   pendingInvites:     any[]
+  // FIX (deep audit, Team & Invites re-pass): previously dropped by
+  // app/(app)/team/page.tsx the moment cron/invite-cleanup/route.ts
+  // flipped a dead invite's status to 'expired' — invisible in this UI
+  // with no way to see or clear it before the 30-day auto-purge.
+  expiredInvites?:    any[]
   deactivatedMembers?: any[]
   roles:              any[]
   session:            SessionUser
@@ -26,7 +31,7 @@ interface Props {
   overSeatLimit?:     boolean
 }
 
-export default function TeamClient({ members, pendingInvites, deactivatedMembers = [], roles, session, canInvite, canManageRoles, workspaceId, overSeatLimit }: Props) {
+export default function TeamClient({ members, pendingInvites, expiredInvites = [], deactivatedMembers = [], roles, session, canInvite, canManageRoles, workspaceId, overSeatLimit }: Props) {
   const router  = useRouter()
   const searchParams = useSearchParams()
   // FIX (deep audit, section 5 re-pass): Settings computed a `manageRoles`
@@ -44,6 +49,12 @@ export default function TeamClient({ members, pendingInvites, deactivatedMembers
   const [rolePerms, setRolePerms] = useState<Record<string, boolean>>({})
   const [editRole,  setEditRole]  = useState<any | null>(null)
   const [editPerms, setEditPerms] = useState<Record<string, boolean>>({})
+  // FIX (deep audit, Team & Invites re-pass): PATCH /api/team/roles/[id]
+  // has always supported editing name/description alongside permissions
+  // (and audits which fields changed) — this modal just never had inputs
+  // for them, so a role could be named at creation but never renamed.
+  const [editName,  setEditName]  = useState('')
+  const [editDesc,  setEditDesc]  = useState('')
   const [loading, setLoading] = useState(false)
   const [error,   setError]   = useState('')
   const [notice,  setNotice]  = useState('')
@@ -152,11 +163,12 @@ export default function TeamClient({ members, pendingInvites, deactivatedMembers
 
   async function handleEditRole() {
     if (!editRole) return
+    if (!editName.trim()) { setError('Role name required'); return }
     setLoading(true); setError('')
     try {
       const res = await fetch(`/api/team/roles/${editRole.id}`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ permissions: editPerms }),
+        body: JSON.stringify({ permissions: editPerms, name: editName.trim(), description: editDesc.trim() }),
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error)
@@ -291,6 +303,51 @@ export default function TeamClient({ members, pendingInvites, deactivatedMembers
             </div>
           )}
 
+          {/* FIX (deep audit, Team & Invites re-pass): expired invites —
+             previously invisible entirely once cron/invite-cleanup marked
+             them 'expired'. Same shape as Pending, but Resend is the only
+             action that makes sense to lead with since the token is dead;
+             Revoke is still offered to clear it immediately rather than
+             waiting on the 30-day auto-purge. */}
+          {expiredInvites.length > 0 && (
+            <div style={{ marginTop: 24 }}>
+              <div className="sec-hd"><div className="sec-title">Expired invitations ({expiredInvites.length})</div></div>
+              <div className="surface" style={{ overflow: 'hidden' }}>
+                <table className="gov-table" style={{ width: '100%' }}>
+                  <thead>
+                    <tr>
+                      <th>Email</th><th>Role</th><th>Invited</th><th>Expired</th><th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {expiredInvites.map((m: any) => (
+                      <tr key={m.id}>
+                        <td className="td-primary">{m.invited_email || m.users?.email || '—'}</td>
+                        <td style={{ color: 'var(--text-2)', fontSize: 12 }}>{m.roles?.name || 'Default'}</td>
+                        <td style={{ color: 'var(--text-3)', fontSize: 12 }}>{formatDate(m.invited_at)}</td>
+                        <td style={{ color: 'var(--text-3)', fontSize: 12 }}>
+                          {m.invite_token_expires_at ? formatDate(m.invite_token_expires_at) : '—'}
+                        </td>
+                        <td>
+                          <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                            <span className="pill pill-slate pill-sm">Expired</span>
+                            <button className="btn btn-ghost btn-xs" onClick={() => handleResendInvite(m)}>
+                              Resend
+                            </button>
+                            <button className="btn btn-ghost btn-xs" style={{ color: 'var(--red)' }}
+                              onClick={() => handleRevokeInvite(m.id)}>
+                              Revoke
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
           {/* FIX (deep audit, section 6): deactivated members were
              previously invisible in this UI entirely, with no way to undo
              a deactivation. */}
@@ -365,12 +422,16 @@ export default function TeamClient({ members, pendingInvites, deactivatedMembers
                       <td style={{ color: 'var(--text-2)', fontSize: 12 }}>{r.description || '—'}</td>
                       <td style={{ textAlign: 'center', fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 18 }}>{memberCount}</td>
                       <td style={{ textAlign: 'center' }}>
-                        <span className="pill pill-green pill-sm">{permCount} / 24</span>
+                        {/* FIX (deep audit, Team & Invites re-pass): hardcoded "/ 24"
+                           went stale the moment a 25th permission (APPROVE_DOCUMENTS)
+                           was added — derive the denominator from ALL_PERMISSIONS
+                           itself so it can't drift out of sync again. */}
+                        <span className="pill pill-green pill-sm">{permCount} / {ALL_PERMISSIONS.length}</span>
                       </td>
                       <td>
                         {!r.is_default && canManageRoles && (
                           <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
-                            <button className="btn-icon" onClick={() => { setEditRole(r); setEditPerms(r.permissions || {}) }}>
+                            <button className="btn-icon" onClick={() => { setEditRole(r); setEditPerms(r.permissions || {}); setEditName(r.name || ''); setEditDesc(r.description || '') }}>
                               <i className="ti ti-pencil" style={{ fontSize: 13 }} />
                             </button>
                             <button className="btn-icon" style={{ color: 'var(--red)' }}
@@ -477,6 +538,21 @@ export default function TeamClient({ members, pendingInvites, deactivatedMembers
           <div className="modal modal-lg">
             <h2 className="modal-title">Edit role — {editRole.name}</h2>
             {error && <div className="auth-error">{error}</div>}
+            {/* FIX (deep audit, Team & Invites re-pass): name/description
+               were editable server-side but had no inputs here — this
+               modal only ever touched permissions. */}
+            <div className="f2">
+              <div className="fgrp">
+                <label className="flbl">Role name</label>
+                <input className="finp" value={editName} autoFocus
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditName(e.target.value)} />
+              </div>
+              <div className="fgrp">
+                <label className="flbl">Description <span className="fhint">— optional</span></label>
+                <input className="finp" value={editDesc}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditDesc(e.target.value)} />
+              </div>
+            </div>
             <div style={{ maxHeight: 320, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: 14, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 16 }}>
               {ALL_PERMISSIONS.map(perm => (
                 <label key={perm} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 12 }}>
@@ -489,7 +565,7 @@ export default function TeamClient({ members, pendingInvites, deactivatedMembers
             </div>
             <div className="modal-footer">
               <button className="btn btn-ghost" onClick={() => setEditRole(null)}>Cancel</button>
-              <button className="btn btn-primary" onClick={handleEditRole} disabled={loading}>
+              <button className="btn btn-primary" onClick={handleEditRole} disabled={loading || !editName.trim()}>
                 {loading ? <span className="spin" /> : 'Save changes'}
               </button>
             </div>

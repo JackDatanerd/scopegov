@@ -78,6 +78,19 @@ export async function PATCH(request: NextRequest) {
       }
     }
 
+    // FIX (deep audit, Settings section — missing-column bug): validate
+    // against the same three tiers the DB CHECK constraint enforces
+    // (035_guardian_sensitivity_tier_column.sql) and GuardianTab's own
+    // <select> offers, so a bad value 400s here with a clear message
+    // instead of surfacing as an opaque Postgres constraint-violation
+    // error from the update below.
+    if (typeof updates.guardian_sensitivity_tier === 'string') {
+      const SENSITIVITY_TIERS = ['conservative', 'medium', 'aggressive']
+      if (!SENSITIVITY_TIERS.includes(updates.guardian_sensitivity_tier)) {
+        return NextResponse.json({ error: 'Invalid Guardian sensitivity tier' }, { status: 400 })
+      }
+    }
+
     // FIX (Workspace lifecycle + Onboarding, round 4) — corrected in the
     // Settings re-pass: the round-4 fix validated industry/timezone here
     // against onboarding's own curated lists, but this route also serves

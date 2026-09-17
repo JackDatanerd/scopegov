@@ -71,7 +71,11 @@ export async function POST(request: NextRequest) {
     const service        = createServiceClient()
 
     // Find project by guardian_email
-    const { data: project } = await (service as any)
+    // FIX (deep audit, Settings section — missing-column bug): same
+    // unchecked-error pattern as /api/guardian/check — see that route's
+    // comment. Distinguish "query errored" from "genuinely no matching
+    // project" in the logs rather than lumping both under one warning.
+    const { data: project, error: projectErr } = await (service as any)
       .from('projects')
       .select(`id, name, status, workspace_id,
         workspaces(id, agency_name, guardian_sensitivity_tier),
@@ -80,7 +84,8 @@ export async function POST(request: NextRequest) {
       .single()
 
     if (!project) {
-      console.warn(`No project found for guardian email prefix: ${guardianPrefix}`)
+      if (projectErr) console.error('Guardian inbound: project fetch failed', projectErr)
+      else console.warn(`No project found for guardian email prefix: ${guardianPrefix}`)
       return NextResponse.json({ ok: true, message: 'No matching project' })
     }
 
