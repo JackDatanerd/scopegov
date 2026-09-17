@@ -84,7 +84,7 @@ export async function GET() {
         .from('workspace_members')
         .select(`workspace_id, workspaces(
           id, created_by, onboarding_completed_at, name, agency_name, industry, currency, timezone,
-          brand_colour, logo_storage_path, governing_law,
+          brand_colour, logo_storage_path, governing_law, deleted_at,
           creator:users!workspaces_created_by_fkey(name, email)
         )`)
         .eq('user_id', user.id).eq('status', 'active')
@@ -99,7 +99,13 @@ export async function GET() {
         .order('created_at', { ascending: true }),
     ])
 
-    const active = (memberships || []).filter((m: any) => m.workspaces)
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — defense
+    // in depth): also exclude a soft-deleted workspace here, same gap as
+    // lib/auth/session.ts and middleware.ts (see the former's comment for
+    // the full story) — this route decides between 'create'/'resume'/
+    // 'waiting'/'complete', and a stray active-status row pointing at a
+    // dead workspace should never factor into that decision.
+    const active = (memberships || []).filter((m: any) => m.workspaces && !m.workspaces.deleted_at)
     const activeWorkspaceId = userRow?.active_workspace_id
 
     const ownedIncomplete   = active.filter((m: any) => m.workspaces.created_by === user.id && !m.workspaces.onboarding_completed_at)

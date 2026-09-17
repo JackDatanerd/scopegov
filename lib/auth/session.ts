@@ -24,6 +24,14 @@ export async function getSession(): Promise<SessionUser | null> {
     const { data: userRow } = await (service as any)
       .from('users').select('active_workspace_id').eq('id', user.id).maybeSingle()
 
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — defense
+    // in depth): neither query below used to select workspaces.deleted_at
+    // at all, so nothing here would notice if a membership row somehow
+    // pointed at a soft-deleted workspace — normally impossible (delete
+    // deactivates every member), but the invite-acceptance routes had a
+    // gap (now fixed) that could reactivate exactly such a row. Belt-and-
+    // braces: never resolve a session onto a deleted workspace, no matter
+    // how a stray active-status row pointing at one came to exist.
     let memberRow: any = null
     if (userRow?.active_workspace_id) {
       const { data } = await (service as any)
@@ -34,7 +42,7 @@ export async function getSession(): Promise<SessionUser | null> {
           workspace_id,
           workspaces (
             id, name, agency_name, plan_tier, trial_ends_at, onboarding_completed_at,
-            brand_colour, logo_storage_path
+            brand_colour, logo_storage_path, deleted_at
           ),
           users!workspace_members_user_id_fkey (
             id, name, email, avatar_url, email_verified_at, active_workspace_id
@@ -44,10 +52,14 @@ export async function getSession(): Promise<SessionUser | null> {
         .eq('workspace_id', userRow.active_workspace_id)
         .eq('status', 'active')
         .maybeSingle()
-      memberRow = data
+      memberRow = data?.workspaces?.deleted_at ? null : data
     }
 
     if (!memberRow) {
+      // Fetch a few candidates rather than just the single oldest one, so
+      // a deleted workspace occupying that slot doesn't fully defeat the
+      // fallback — pick the oldest active membership whose workspace is
+      // actually still there.
       const { data } = await (service as any)
         .from('workspace_members')
         .select(`
@@ -56,7 +68,7 @@ export async function getSession(): Promise<SessionUser | null> {
           workspace_id,
           workspaces (
             id, name, agency_name, plan_tier, trial_ends_at, onboarding_completed_at,
-            brand_colour, logo_storage_path
+            brand_colour, logo_storage_path, deleted_at
           ),
           users!workspace_members_user_id_fkey (
             id, name, email, avatar_url, email_verified_at, active_workspace_id
@@ -65,9 +77,8 @@ export async function getSession(): Promise<SessionUser | null> {
         .eq('user_id', user.id)
         .eq('status', 'active')
         .order('created_at', { ascending: true })
-        .limit(1)
-        .single()
-      memberRow = data
+        .limit(5)
+      memberRow = (data || []).find((m: any) => m.workspaces && !m.workspaces.deleted_at) || null
     }
 
     if (!memberRow) return null

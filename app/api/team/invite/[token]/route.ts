@@ -15,7 +15,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       .select(`
         id, status, invite_token_expires_at, invited_email, user_id,
         workspace_id,
-        workspaces (id, name, agency_name),
+        workspaces (id, name, agency_name, deleted_at),
         invited_by_user:users!workspace_members_invited_by_fkey (name)
       `)
       .eq('invite_token', token)
@@ -30,7 +30,15 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     if (member.status === 'active') {
       return NextResponse.json({ error: 'Invite already accepted', expired: true, alreadyAccepted: true })
     }
-    if (member.status === 'deactivated') {
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): this
+    // already correctly blocked a 'deactivated' row, but not one still
+    // sitting at 'invited' whose WORKSPACE has since been soft-deleted —
+    // workspace/delete/route.ts does deactivate pending invite rows too,
+    // but only ones that existed at the moment of deletion; belt-and-
+    // braces against any other path that could leave an invite pointed at
+    // a gone workspace. Matches the same check just added to accept/route.ts
+    // and signup/route.ts, which actually process acceptance.
+    if (member.status === 'deactivated' || member.workspaces?.deleted_at) {
       return NextResponse.json({ error: 'Invite no longer valid', expired: true })
     }
 

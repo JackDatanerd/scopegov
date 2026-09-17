@@ -21,7 +21,7 @@ export async function GET() {
         .from('workspace_members')
         .select(`
           workspace_id,
-          workspaces (id, name, agency_name, logo_storage_path, plan_tier, deleted_at)
+          workspaces (id, name, agency_name, logo_storage_path, plan_tier, deleted_at, onboarding_completed_at)
         `)
         .eq('user_id', user.id)
         .eq('status', 'active'),
@@ -41,10 +41,23 @@ export async function GET() {
           : null,
         planTier:   w.plan_tier,
         active:     w.id === userRow?.active_workspace_id,
+        // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): this
+        // list is also used by the onboarding wizard's exit panel to offer
+        // "switch to a workspace you already set up" — without this flag
+        // it couldn't tell that promise apart from another of the user's
+        // own INCOMPLETE workspaces (migration 019's grandfather clause
+        // proves having more than one at once is a real, if rare,
+        // possibility), silently sending them into a switch-then-bounce-
+        // back-to-/onboarding loop for the wrong workspace instead.
+        onboardingComplete: !!w.onboarding_completed_at,
       }))
 
     return NextResponse.json({ workspaces })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): raw
+    // exception message was returned straight to the client — same
+    // info-disclosure pattern already fixed elsewhere in this section.
+    console.error('Workspace list error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

@@ -102,7 +102,7 @@ function OnboardingWizard() {
   // finish the wizard for a workspace they don't want, or email support.
   // otherWorkspaces powers a small exit panel (see below) offering
   // "switch to an existing workspace" and "discard this one."
-  const [otherWorkspaces, setOtherWorkspaces] = useState<Array<{ id: string; agencyName: string; name: string }>>([])
+  const [otherWorkspaces, setOtherWorkspaces] = useState<Array<{ id: string; agencyName: string; name: string; onboardingComplete?: boolean }>>([])
   const [showExit, setShowExit] = useState(false)
 
   useEffect(() => {
@@ -287,7 +287,14 @@ function OnboardingWizard() {
       .then(r => r.json())
       .then(json => {
         if (Array.isArray(json.workspaces)) {
-          setOtherWorkspaces(json.workspaces.filter((w: any) => w.id !== workspaceId))
+          // FIX (deep audit, Workspace lifecycle + Onboarding re-pass):
+          // this used to offer every other workspace the user belongs to,
+          // regardless of whether IT had finished onboarding — the panel's
+          // own copy ("a workspace you already set up") promised a
+          // working destination, but a still-incomplete one just bounces
+          // the user right back into /onboarding for THAT workspace with
+          // no explanation. Only offer ones that are actually done.
+          setOtherWorkspaces(json.workspaces.filter((w: any) => w.id !== workspaceId && w.onboardingComplete))
         }
       })
       .catch(() => { /* non-critical — exit panel just won't offer a switch target */ })
@@ -405,12 +412,29 @@ function OnboardingWizard() {
   // server-side endpoint Settings already uses (FormData POST, PNG/JPG
   // only, magic-byte verified, service-role write) instead of
   // reimplementing upload logic here.
+  // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): the
+  // validation below only ever accepted PNG/JPEG (the comment above this
+  // function already explains why — dropping SVG closed a stored-XSS
+  // vector), but the file input's own `accept` attribute and the caption
+  // right next to it, a few lines down, still said "PNG, JPEG, or SVG" —
+  // leftover copy from before that fix that let the browser's file picker
+  // show SVGs and told the user they were supported, only for this
+  // handler to immediately reject the exact file type it had just
+  // advertised. Also added the file-size check the caption's "Max 2 MB"
+  // claim never actually enforced — a large file previously sailed
+  // through here and only failed after a full upload attempt, server-side
+  // in workspace/branding/logo/route.ts.
+  const MAX_LOGO_BYTES = 2 * 1024 * 1024
   function handleLogoChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file) return
     if (!['image/png','image/jpeg'].includes(file.type)) {
       setError('Logo must be PNG or JPG.'); return
     }
+    if (file.size > MAX_LOGO_BYTES) {
+      setError('Logo must be 2MB or smaller.'); return
+    }
+    setError('')
     setLogoFile(file)
     const reader = new FileReader()
     reader.onload = ev => setLogoPreview(ev.target?.result as string)
@@ -716,10 +740,10 @@ function OnboardingWizard() {
                   <label className="btn btn-ghost btn-sm" style={{ cursor: 'pointer' }}>
                     <i className="ti ti-upload" style={{ fontSize: 12 }} />
                     {uploading ? 'Uploading…' : logoFile ? 'Change logo' : 'Upload logo'}
-                    <input type="file" accept="image/png,image/jpeg,image/svg+xml" style={{ display: 'none' }}
+                    <input type="file" accept="image/png,image/jpeg" style={{ display: 'none' }}
                       onChange={handleLogoChange} />
                   </label>
-                  <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 6 }}>PNG, JPEG, or SVG · Max 2 MB</p>
+                  <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 6 }}>PNG or JPEG · Max 2 MB</p>
                 </div>
               </div>
             </div>

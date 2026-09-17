@@ -189,9 +189,15 @@ export async function DELETE() {
 
     return NextResponse.json({ ok: true })
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Error' },
-      { status: 500 }
-    )
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): the
+    // outer catch-all here still returned a raw exception message
+    // verbatim — every specific, expected failure branch above this
+    // point was already hardened against exactly this (Paystack errors,
+    // the soft-delete write, the deactivation write all log server-side
+    // and return a generic message), but an unexpected exception (a
+    // network-level Supabase client error, a malformed request) fell
+    // through this fallback and leaked internals anyway.
+    console.error('Workspace delete error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

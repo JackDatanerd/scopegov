@@ -13,13 +13,38 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const { data: member } = await (service as any)
       .from('workspace_members')
-      .select('id,status,workspace_id,invite_token_expires_at,invited_email,role_id,workspaces(name)')
+      .select('id,status,workspace_id,invite_token_expires_at,invited_email,role_id,workspaces(name,deleted_at)')
       .eq('invite_token', token)
       .single()
 
     if (!member) return NextResponse.json({ error: 'Invalid invite token' }, { status: 404 })
     if (member.status === 'active')
       return NextResponse.json({ error: 'Invite already accepted' }, { status: 409 })
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass —
+    // CRITICAL): this only ever checked for status === 'active' (already
+    // used). A 'deactivated' invite — produced either by an admin
+    // explicitly revoking it (app/api/team/[id]'s DELETE handler now
+    // hard-deletes a never-accepted invite instead, but that fix landed
+    // AFTER this route and doesn't retroactively cover invites revoked
+    // before it shipped) or by workspace/delete/route.ts mass-deactivating
+    // every member row — including still-pending invites — when a
+    // workspace is deleted, fell through this check exactly like a
+    // still-valid 'invited' row and was silently reactivated to 'active'.
+    // Migration 036's own comment argues this is safe for the deleted-
+    // workspace case specifically because the row is "never reachable"
+    // once its workspace is gone — but that's only true of the Team page's
+    // Reactivate button. This route is reachable directly via the token
+    // link with no workspace-visibility check at all, regardless of
+    // whether the workspace still shows up anywhere in the UI.
+    if (member.status === 'deactivated')
+      return NextResponse.json({ error: 'This invite is no longer valid.' }, { status: 410 })
+    // FIX (same finding): belt-and-braces even if a 'deactivated' row is
+    // somehow missed above (workspace deletion deactivates members but
+    // leaves the workspace's OWN row otherwise untouched apart from
+    // deleted_at) — never let ANY invite reactivate access to a workspace
+    // that's been soft-deleted.
+    if (member.workspaces?.deleted_at)
+      return NextResponse.json({ error: 'This invite is no longer valid.' }, { status: 410 })
 
     const expires = new Date(member.invite_token_expires_at)
     if (expires < new Date())

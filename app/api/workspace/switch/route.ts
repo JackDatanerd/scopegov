@@ -36,10 +36,20 @@ export async function POST(request: NextRequest) {
       .update({ active_workspace_id: workspaceId })
       .eq('id', user.id)
 
-    if (error) throw new Error(error.message)
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): this
+    // used to `throw new Error(error.message)`, which the catch-all below
+    // then returned to the client verbatim — actively funneling a raw
+    // Postgres error message straight through, the exact info-disclosure
+    // pattern already fixed for every other write in this section. Log
+    // server-side and return a generic message directly instead.
+    if (error) {
+      console.error('Workspace switch update failed:', error)
+      return NextResponse.json({ error: 'Could not switch workspaces. Try again.' }, { status: 500 })
+    }
 
     return NextResponse.json({ ok: true })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('Workspace switch error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

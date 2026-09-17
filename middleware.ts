@@ -191,27 +191,31 @@ export async function middleware(request: NextRequest) {
       const { data: userRow } = await (supabase as any)
         .from('users').select('active_workspace_id').eq('id', user.id).maybeSingle()
 
+      // FIX (deep audit, Workspace lifecycle + Onboarding re-pass —
+      // defense in depth): neither query here checked workspaces.deleted_at
+      // — same gap as lib/auth/session.ts (see its own comment for the
+      // full story). A membership row pointing at a soft-deleted workspace
+      // should never be treated as a valid gate here either.
       let member: any = null
       if (userRow?.active_workspace_id) {
         const { data } = await (supabase as any)
           .from('workspace_members')
-          .select('workspace:workspaces(onboarding_completed_at)')
+          .select('workspace:workspaces(onboarding_completed_at, deleted_at)')
           .eq('user_id', user.id)
           .eq('workspace_id', userRow.active_workspace_id)
           .eq('status', 'active')
           .maybeSingle()
-        member = data
+        member = data?.workspace?.deleted_at ? null : data
       }
       if (!member) {
         const { data } = await (supabase as any)
           .from('workspace_members')
-          .select('workspace:workspaces(onboarding_completed_at)')
+          .select('workspace:workspaces(onboarding_completed_at, deleted_at)')
           .eq('user_id', user.id)
           .eq('status', 'active')
           .order('created_at', { ascending: true })
-          .limit(1)
-          .maybeSingle()
-        member = data
+          .limit(5)
+        member = (data || []).find((m: any) => m.workspace && !m.workspace.deleted_at) || null
       }
 
       // No workspace_members row at all → user signed up but never completed

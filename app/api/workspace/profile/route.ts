@@ -38,6 +38,11 @@ export async function PATCH(request: NextRequest) {
 
     return NextResponse.json({ ok: true })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): the
+    // write-error branch above was already hardened against this exact
+    // leak (round 4) — the outer catch-all was missed, so an unexpected
+    // exception still returned raw internals to the client.
+    console.error('Profile update error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

@@ -66,10 +66,29 @@ export async function POST(request: NextRequest) {
           error: 'You\u2019re the only member who can manage roles and permissions. Assign that ability to someone else first (Team > Roles), or delete the workspace instead if no one else should keep it.',
         }, { status: 400 })
       }
+      // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — see
+      // migration 038): leaving a trial workspace you created would
+      // otherwise permanently occupy your one-trial slot with no way back
+      // in to delete it yourself afterward (workspace/delete requires an
+      // active membership you'd no longer have). Point at the two real
+      // ways out instead of letting it happen silently.
+      if (leaveErr.message?.includes('trial_creator')) {
+        return NextResponse.json({
+          error: 'You created this trial workspace, so leaving it would lock you out of starting another trial with no way back in to delete it. Delete it instead (Settings > Danger Zone) if you want to abandon it, or upgrade it off the trial plan first if you\u2019d rather hand it off.',
+        }, { status: 400 })
+      }
       if (leaveErr.message?.includes('not_a_member')) {
         return NextResponse.json({ error: 'Not a member of that workspace' }, { status: 404 })
       }
-      return NextResponse.json({ error: leaveErr.message }, { status: 500 })
+      // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): this
+      // was the one guard branch here that still returned the raw RPC
+      // error message straight to the client — the exact info-disclosure
+      // pattern already fixed for every OTHER route in this section
+      // (workspace/create, complete-onboarding, profile), just missed
+      // here because it lived in the fallback branch rather than an
+      // obvious write-error check. Log server-side only.
+      console.error('leave_workspace_atomic failed:', leaveErr)
+      return NextResponse.json({ error: 'Could not leave that workspace. Try again.' }, { status: 500 })
     }
 
     await logAudit(service, {
@@ -80,6 +99,12 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ ok: true })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): same
+    // leak, in the outer catch-all this time — an unexpected exception
+    // (malformed body, a network-level Supabase client error) returned
+    // its raw message straight to the client instead of the generic
+    // message every other route in this section already gives here.
+    console.error('Workspace leave error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

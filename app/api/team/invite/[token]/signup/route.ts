@@ -16,7 +16,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const { data: member } = await (service as any)
       .from('workspace_members')
-      .select('id, status, invite_token_expires_at, invited_email, workspace_id, role_id, workspaces(name)')
+      .select('id, status, invite_token_expires_at, invited_email, workspace_id, role_id, workspaces(name,deleted_at)')
       .eq('invite_token', token)
       .single()
 
@@ -33,6 +33,17 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         alreadyMember: true,
         email: member.invited_email,
       }, { status: 409 })
+    }
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass —
+    // CRITICAL): same gap as accept/route.ts (see its own comment for the
+    // full story) — this only ever checked for 'active' (already used),
+    // never 'deactivated' (a revoked invite, or one orphaned by
+    // workspace/delete/route.ts mass-deactivating every member row —
+    // including pending invites — when the workspace is soft-deleted).
+    // A brand-new account could be created and immediately activated into
+    // a dead workspace via this exact path.
+    if (member.status === 'deactivated' || member.workspaces?.deleted_at) {
+      return NextResponse.json({ error: 'This invite is no longer valid.' }, { status: 410 })
     }
 
     if (new Date(member.invite_token_expires_at) < new Date())
