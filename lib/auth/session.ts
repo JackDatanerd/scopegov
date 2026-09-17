@@ -150,13 +150,31 @@ export async function userHasAnyMfaMandatoryMembership(userId: string): Promise<
 // having a trustworthy trail matters most. Centralizing the one already-
 // correct version here so every caller gets the fallback instead of
 // reimplementing (or omitting) it.
+// FIX (deep audit, Auth+MFA section, standalone pass): unlike its sibling
+// lookups in getSession() above (which explicitly select and check
+// workspaces.deleted_at, precisely because the invite-acceptance routes
+// once had a gap that could reactivate a membership row pointing at a
+// deleted workspace — see that fix's own comment), neither branch here
+// checked deleted_at at all. This function only feeds audit-log
+// attribution (login-event/route.ts, callback/route.ts), never
+// authorization, so the impact is cosmetic — but a stray active-status
+// row pointing at a deleted workspace could still resolve a login-event
+// entry onto a workspace_id whose row no longer really exists for
+// anything else the app does. Same belt-and-braces fix, same shape.
 export async function resolveActiveWorkspaceId(service: any, userId: string): Promise<string | null> {
   const { data } = await service.from('users').select('active_workspace_id').eq('id', userId).maybeSingle()
-  if (data?.active_workspace_id) return data.active_workspace_id
-  const { data: member } = await service.from('workspace_members')
-    .select('workspace_id').eq('user_id', userId).eq('status', 'active')
-    .order('created_at', { ascending: true }).limit(1).maybeSingle()
-  return member?.workspace_id || null
+  if (data?.active_workspace_id) {
+    const { data: member } = await service.from('workspace_members')
+      .select('workspace_id, workspaces(deleted_at)')
+      .eq('user_id', userId).eq('workspace_id', data.active_workspace_id).eq('status', 'active')
+      .maybeSingle()
+    if (member?.workspace_id && !member.workspaces?.deleted_at) return member.workspace_id
+  }
+  const { data: candidates } = await service.from('workspace_members')
+    .select('workspace_id, workspaces(deleted_at)').eq('user_id', userId).eq('status', 'active')
+    .order('created_at', { ascending: true }).limit(5)
+  const fallback = (candidates || []).find((m: any) => m.workspaces && !m.workspaces.deleted_at)
+  return fallback?.workspace_id || null
 }
 
 export function hasPermission(session: SessionUser, permission: Permission): boolean {

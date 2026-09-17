@@ -20,10 +20,20 @@ export default function SignupPage() {
     if (password.length < 8) { setError('Password must be at least 8 characters.'); return }
     setLoading(true); setError('')
     try {
+      // FIX (deep audit, Auth+MFA section, standalone pass): `name` was
+      // forwarded as-is with no length cap — unlike every structurally
+      // comparable field in this codebase (agency_name, workspace name),
+      // capped at 120 chars via sanitizeDisplayName(). This route has no
+      // server-side step of its own (signUp() talks to Supabase directly),
+      // so handle_new_user() (migration 042) is the actual enforcement
+      // boundary; this trim+cap is client-side UX so the name a user sees
+      // reflected back matches what's actually stored, not silently
+      // truncated server-side with no explanation.
+      const trimmedName = name.trim().slice(0, 120)
       const { data, error: err } = await supabase.auth.signUp({
         email, password,
         options: {
-          data: { name },
+          data: { name: trimmedName },
           emailRedirectTo: `${window.location.origin}/api/auth/callback?next=/onboarding`,
         },
       })
@@ -146,7 +156,7 @@ export default function SignupPage() {
           <form onSubmit={handleSignup}>
             <div className="fgrp">
               <label className="flbl">Your name</label>
-              <input className="finp" placeholder="Jane Mwangi" value={name} autoFocus autoComplete="name"
+              <input className="finp" placeholder="Jane Mwangi" value={name} autoFocus autoComplete="name" maxLength={120}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)} required />
             </div>
             <div className="fgrp">

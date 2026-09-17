@@ -2,13 +2,25 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { logAudit } from '@/lib/utils/audit'
+import { sanitizeDisplayName } from '@/lib/utils/sanitize'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
-    const { token }          = await params
-    const { name, password } = await request.json()
+    const { token }             = await params
+    const { name: rawName, password } = await request.json()
 
-    if (!name?.trim())         return NextResponse.json({ error: 'Name is required' }, { status: 400 })
+    // FIX (deep audit, Auth+MFA section, standalone pass): `name` used to
+    // be forwarded as `name.trim()` with no length cap, unlike every
+    // structurally comparable field in this codebase (agency_name,
+    // workspace name), which goes through sanitizeDisplayName() (120-char
+    // cap, strips CR/LF/control chars). Applying it here at the one place
+    // this route sets the name — both the new auth user's metadata and
+    // the immediately-following public.users upsert, which overwrites
+    // whatever handle_new_user()'s own trigger-level cap (042) just wrote,
+    // so the trigger fix alone doesn't cover this call site.
+    const name = sanitizeDisplayName(rawName)
+
+    if (!name)         return NextResponse.json({ error: 'Name is required' }, { status: 400 })
     if (!password || password.length < 8)
       return NextResponse.json({ error: 'Password must be at least 8 characters' }, { status: 400 })
 
@@ -63,7 +75,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       email,
       password,
       email_confirm: true,
-      user_metadata: { name: name.trim() },
+      user_metadata: { name },
     })
 
     if (createErr) {
@@ -81,7 +93,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const now = new Date().toISOString()
 
     await (service as any).from('users').upsert({
-      id: userId, email, name: name.trim(),
+      id: userId, email, name,
       email_verified_at: now,
       active_workspace_id: member.workspace_id,
     }, { onConflict: 'id' })
@@ -116,7 +128,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // "immutable record."
     await logAudit(service, {
       workspaceId: member.workspace_id,
-      actorId: userId, actorEmail: email, actorName: name.trim(),
+      actorId: userId, actorEmail: email, actorName: name,
       eventType: 'member.joined', entityType: 'workspace_member',
       entityId: member.id, entityName: email,
       metadata: { workspace_name: member.workspaces?.name },

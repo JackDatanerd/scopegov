@@ -35,8 +35,19 @@ export async function POST(request: NextRequest) {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-    const body = await request.json().catch(() => ({}))
-    const method = body?.method === 'google' ? 'google' : 'password'
+    // FIX (deep audit, Auth+MFA section, standalone pass): `method` used
+    // to be read from the request body (`body?.method === 'google' ?
+    // 'google' : 'password'`) — but this route's only real caller,
+    // LoginForm.tsx, is the password sign-in form; OAuth logins are
+    // logged directly by api/auth/callback/route.ts's own logLoginEvent()
+    // with a trustworthy, code-determined method string, never through
+    // this HTTP endpoint. That left a client-attested field with no
+    // legitimate reason to ever be anything but 'password' — any
+    // authenticated user could call this route directly with
+    // `{method:'google'}` and forge their own audit trail's login-method
+    // field. Since this route's only legitimate caller never varies the
+    // method, there's nothing to trust from the client here at all.
+    const method = 'password' as const
 
     const service = createServiceClient()
 
