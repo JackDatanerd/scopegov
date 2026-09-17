@@ -103,8 +103,22 @@ export async function acceptCoCounter(service: any, params: {
 
   if (co.token) {
     try {
+      // FIX (section-10 re-pass): app/api/portal/co/[token]/accept/route.ts
+      // and countersign/route.ts both include document_id on this exact
+      // insert — that's what lets the portal GET route resolve a
+      // 'superseded' token back to the live CO by id instead of showing
+      // a dead "link no longer active" page (see the comment in
+      // app/api/portal/co/[token]/route.ts). This was the one token
+      // rotation in the CO lifecycle that left it out: the client's very
+      // first "please respond to this change order" email (token T1)
+      // stays live and un-rotated all the way through the 'countered'
+      // stage (counter/route.ts never touches the token), so it's this
+      // rotation — accepting their counter — that retires it. Without
+      // document_id, a client who goes back to that original email after
+      // their counter is accepted hits a dead end instead of being
+      // routed to their now-almost-finalized CO.
       await (service as any).from('revoked_tokens').insert({
-        token: co.token, token_type: 'co', reason: 'superseded',
+        token: co.token, token_type: 'co', reason: 'superseded', document_id: coId,
       })
     } catch (e) { console.error('revoked_tokens insert for superseded counter token failed:', e) }
   }

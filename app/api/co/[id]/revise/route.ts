@@ -4,6 +4,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
 import { cancelApprovalRequest } from '@/lib/approvals/engine'
+import { insertNextCoVersion } from '@/lib/documents/co-version'
 
 // FIX (section-10 audit, 10-G2 + 10-G3 + 10-G4):
 //
@@ -38,7 +39,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const service = createServiceClient()
     const { data: co } = await (service as any)
       .from('change_orders')
-      .select(`id, title, note, status, version, project_id, flag_id,
+      .select(`id, title, note, status, version, project_id, flag_id, root_co_id,
         line_items, subtotal, tax_rate, tax_inclusive, total,
         counter_amount, counter_note, is_retainer_renewal,
         timeline_impact_days, scope_impact_note`)
@@ -60,44 +61,43 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       ? JSON.parse(co.line_items)
       : (co.line_items || [])
 
-    const { data: latest } = await (service as any)
-      .from('change_orders')
-      .select('version')
-      .eq('project_id', co.project_id)
-      .order('version', { ascending: false })
-      .limit(1)
-      .maybeSingle()
+    // FIX (section-10 re-pass): this used to read `MAX(version) WHERE
+    // project_id = X` — project-wide, unguarded, and the wrong scope. A
+    // project can have several independent CO lineages living side by
+    // side (every new top-level CO starts at v1 via the column default),
+    // so a project-wide max both races under concurrent revises AND can
+    // jump this CO's version number to whatever an unrelated CO in the
+    // same project happens to be at. insertNextCoVersion scopes the
+    // query and the uniqueness constraint (migration 037) to this CO's
+    // own lineage, and retries on a version collision instead of racing.
+    const rootCoId = co.root_co_id || co.id
+    const result = await insertNextCoVersion(service, rootCoId, {
+      project_id:   co.project_id,
+      workspace_id: session.workspaceId,
+      parent_co_id: co.id,
+      status:       'draft',
+      title:        co.title,
+      note:         co.note,
+      flag_id:      co.flag_id,
+      line_items:   lineItems,
+      subtotal:     co.subtotal,
+      tax_rate:     co.tax_rate,
+      tax_inclusive: co.tax_inclusive,
+      total:        co.total,
+      is_retainer_renewal:  co.is_retainer_renewal,
+      timeline_impact_days: co.timeline_impact_days,
+      scope_impact_note:    co.scope_impact_note,
+      created_by:   session.id,
+      // Deliberately NOT copied: token, sent_at, expires_at,
+      // document_number, counter/accept/decline/close fields. The
+      // revision has to earn all of those through a real send.
+    })
 
-    const { data: revision, error: insertErr } = await (service as any)
-      .from('change_orders')
-      .insert({
-        project_id:   co.project_id,
-        workspace_id: session.workspaceId,
-        parent_co_id: co.id,
-        version:      (latest?.version || co.version || 0) + 1,
-        status:       'draft',
-        title:        co.title,
-        note:         co.note,
-        flag_id:      co.flag_id,
-        line_items:   lineItems,
-        subtotal:     co.subtotal,
-        tax_rate:     co.tax_rate,
-        tax_inclusive: co.tax_inclusive,
-        total:        co.total,
-        is_retainer_renewal:  co.is_retainer_renewal,
-        timeline_impact_days: co.timeline_impact_days,
-        scope_impact_note:    co.scope_impact_note,
-        created_by:   session.id,
-        // Deliberately NOT copied: token, sent_at, expires_at,
-        // document_number, counter/accept/decline/close fields. The
-        // revision has to earn all of those through a real send.
-      })
-      .select('id, version').single()
-
-    if (insertErr || !revision) {
-      console.error('CO revise: insert failed', insertErr)
+    if (!result.ok) {
+      console.error('CO revise: insert failed', result.error)
       return NextResponse.json({ error: 'Could not create a revision' }, { status: 500 })
     }
+    const revision = { id: result.id!, version: result.version! }
 
     // A 'countered' CO is still live from the client's point of view —
     // superseding it with a revision means closing out the old one so it

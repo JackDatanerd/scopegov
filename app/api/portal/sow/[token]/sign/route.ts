@@ -384,7 +384,18 @@ async function createMilestones(
     } else if (structure === 'on_delivery') {
       milestones.push({ title: 'Full payment', amount: roundCurrency(contractValue), trigger: 'Final delivery approval', type: 'fixed', percentage: null })
     } else if (structure === 'monthly') {
-      milestones.push({ title: 'Monthly retainer', amount: roundCurrency(contractValue), trigger: 'Monthly — first of month', type: 'retainer_monthly', percentage: null })
+      // FIX (section-9 re-pass): this created the milestone with no
+      // due_date. app/api/cron/retainer-milestones de-dupes each month's
+      // row strictly by matching due_date to the 1st of the target
+      // month, so a NULL due_date here could never match — the cron's
+      // first run after signing couldn't tell this row apart from "no
+      // milestone yet for this month" and inserted a second full-amount
+      // "Monthly retainer" row for the same month. Setting due_date to
+      // the 1st of the signing month gives the cron the same key it
+      // computes for itself, closing that gap.
+      const signedOn = new Date()
+      const firstOfSigningMonth = `${signedOn.getFullYear()}-${String(signedOn.getMonth() + 1).padStart(2, '0')}-01`
+      milestones.push({ title: 'Monthly retainer', amount: roundCurrency(contractValue), trigger: 'Monthly — first of month', type: 'retainer_monthly', percentage: null, dueDate: firstOfSigningMonth })
     } else if (structure === 'milestones') {
       // FIX (section-9 audit, real bug — now genuinely fixed): 'milestones'
       // is a selectable payment structure (the SOW boilerplate literally
@@ -461,6 +472,7 @@ async function createMilestones(
         amount:       m.amount,
         percentage:   m.percentage,
         trigger:      m.trigger,
+        due_date:     (m as any).dueDate ?? null,
         tax_rate:     0,
         tax_inclusive: false,
         status:       'pending',

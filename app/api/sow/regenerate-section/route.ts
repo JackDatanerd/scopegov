@@ -8,6 +8,7 @@ import { sanitizeRichText } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
 import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
 import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
+import { AI_SECTION_IDS } from '@/lib/ai/sow-content'
 import Anthropic from '@anthropic-ai/sdk'
 
 // FIX (re-audit — build-blocking): was constructed at module scope, so an
@@ -28,6 +29,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Missing permission: EDIT_SOW' }, { status: 403 })
 
     const { sowId, sectionId, sectionTitle, currentContent, instruction, projectContext } = await request.json()
+
+    // FIX (section-9 re-pass): sectionId was never checked against
+    // anything — a request for a table-only section id (deliverables,
+    // timeline, roles, payment_schedule) would still spend a model call
+    // and return prose, even though that section's `content` field is
+    // never rendered anywhere (the PDF and portal both only read its
+    // `table`). Harmless today, but silently wastes a call for no
+    // visible effect and masks what should be a client-side bug.
+    if (!AI_SECTION_IDS.includes(sectionId)) {
+      return NextResponse.json({ error: 'That section cannot be regenerated with AI' }, { status: 400 })
+    }
 
     const service = createServiceClient()
     const { data: sow } = await (service as any)

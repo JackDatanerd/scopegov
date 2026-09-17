@@ -149,8 +149,17 @@ export default function SowPortalPage() {
   }
 
   const accent = sow?.brandColour || '#1A5C3A'
+  // FIX (section-9 re-pass): lib/pdf/renderer.tsx deliberately excludes
+  // 'parties' and 'signature' from its generic section loop because both
+  // are already shown via dedicated blocks (the PDF's own Parties box
+  // and signature lines). This page built the equivalent Agency/Client
+  // info box (below) and has its own interactive "Sign this agreement"
+  // action card, for the same reason — but never applied the matching
+  // exclusion, so the 'parties' section's boilerplate text ("This SOW is
+  // entered into between Agency and Client") printed a second time,
+  // restating the info box directly above it.
   const visibleSections = sow?.sections
-    .filter(s => s.visible)
+    .filter(s => s.visible && !['parties', 'signature'].includes(s.id))
     .sort((a, b) => a.order - b.order) || []
 
   // ── Static states ─────────────────────────────────────────

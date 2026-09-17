@@ -114,7 +114,17 @@ interface Block { tag: string; inner: string; depth?: number }
 //
 // Replaced with a small scanner that tracks nesting depth for list tags
 // and emits loose text between blocks as its own paragraph.
-const BLOCK_OPEN_RE = /<(p|h1|h2|h3|h4|blockquote|ul|ol)(?:\s[^>]*)?>/i
+// FIX (section-9 re-pass): 'pre' was missing here even though
+// lib/utils/sanitize.ts's allowlist (which this file's own comment
+// elsewhere claims to be exhaustive against) includes both 'pre' and
+// 'code' — and Tiptap's StarterKit (used unconfigured in
+// components/sow/SowEditor.tsx) reaches its CodeBlock extension via a
+// markdown input rule even with no toolbar button for it. Without 'pre'
+// recognized as a block tag, a code block's raw
+// `<pre><code>...</code></pre>` fell into the loose-text fallback below
+// and downgraded to plain inline monospace text merged into whichever
+// paragraph it landed next to, losing the block entirely.
+const BLOCK_OPEN_RE = /<(p|h1|h2|h3|h4|blockquote|ul|ol|pre)(?:\s[^>]*)?>/i
 const LIST_TAGS = new Set(['ul', 'ol'])
 
 function findBlockEnd(html: string, from: number, tag: string): number {
@@ -291,6 +301,27 @@ export function RichText({ html, style }: { html: string | null | undefined; sty
       {blocks.map((b, i) => {
         if (b.tag === 'ul' || b.tag === 'ol') {
           return <ListBlock key={i} tag={b.tag} inner={b.inner} style={style} depth={0} />
+        }
+        if (b.tag === 'pre') {
+          // Literal/verbatim content — strip a wrapping <code> tag if
+          // present (StarterKit emits <pre><code>...</code></pre>) and
+          // render one line per literal newline, rather than running it
+          // through collectInlineRuns (which would also happily apply
+          // bold/italic marks inside a code block, which isn't the
+          // intent here).
+          const codeText = decodeEntities(
+            b.inner.replace(/^<code(?:\s[^>]*)?>/i, '').replace(/<\/code>\s*$/i, '')
+          )
+          return (
+            <View key={i} style={{
+              backgroundColor: '#F9F8F5', border: '1 solid #E5E1D8', borderRadius: 4,
+              paddingTop: 8, paddingBottom: 8, paddingLeft: 10, paddingRight: 10, marginBottom: 6,
+            }}>
+              {codeText.split('\n').map((line, j) => (
+                <Text key={j} style={[style, { fontFamily: 'Courier', fontSize: 9 }]}>{line || ' '}</Text>
+              ))}
+            </View>
+          )
         }
         const headingSize: Record<string, number> = { h1: 14, h2: 13, h3: 12, h4: 11 }
         const blockStyle = headingSize[b.tag]

@@ -96,12 +96,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       metadata: { type: 'co', client_email: client?.email, was_stalled: wasStalled },
     })
 
-    if (wasStalled) {
-      await (service as any).from('change_orders').update({
-        status: 'awaiting_response', sent_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-      }).eq('id', id).eq('status', 'stalled')
-    }
-
     // FIX (re-audit, notifications section): this route built its own
     // inline HTML instead of going through lib/email/templates.ts, and
     // was missed by the escapeHtml pass applied everywhere else in that
@@ -157,6 +151,24 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       </p>
       </body></html>`,
     })
+
+    // FIX (section-10 re-pass): this un-stall used to run BEFORE the
+    // Resend call above, alongside the cooldown-protecting audit log
+    // write. That log write is a deliberate, documented trade-off
+    // (narrows a double-click race) — but the status flip isn't the same
+    // kind of thing: if the send throws (network blip, provider hiccup),
+    // the outer catch below returns a 500, yet the CO had already been
+    // moved out of 'stalled' into 'awaiting_response' with a fresh
+    // sent_at, looking actively followed-up-on even though the client
+    // got nothing. Worse, the cooldown this same request just logged
+    // blocks an immediate retry of the actual send. Doing this only once
+    // the send has actually gone out keeps 'stalled' an honest signal
+    // that no reminder is currently in flight.
+    if (wasStalled) {
+      await (service as any).from('change_orders').update({
+        status: 'awaiting_response', sent_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      }).eq('id', id).eq('status', 'stalled')
+    }
 
     return NextResponse.json({ ok: true })
   } catch (err) {

@@ -54,6 +54,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .from('sow_documents')
       .update({
         status: 'declined', declined_at: now, declined_reason: reason || null, updated_at: now,
+        // FIX (section-9 re-pass): withdraw() already nulls the token
+        // here for the same reason — the revoked_tokens insert below is
+        // what actually enforces the block, but leaving the raw JWT
+        // sitting on a dead row is needless exposure. decline() never
+        // matched that hygiene.
+        token: null,
       })
       .eq('id', sow.id)
       .eq('status', 'awaiting_signature')
