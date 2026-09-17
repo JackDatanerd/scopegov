@@ -43,17 +43,43 @@ export default function Sidebar({ session }: { session: SessionUser }) {
   // Only members who can actually act on a step (or oversee all of them)
   // need the badge — everyone else would just see a permanently-zero
   // number that means nothing to them.
-  const canSeeApprovalCount = session.permissions.includes('APPROVE_DOCUMENTS')
-    || session.permissions.includes('VIEW_ALL_PROJECTS')
+  const canApprove   = session.permissions.includes('APPROVE_DOCUMENTS')
+  const canOverseeAll = session.permissions.includes('VIEW_ALL_PROJECTS')
     || session.permissions.includes('MANAGE_WORKSPACE_SETTINGS')
+  const canSeeApprovalCount = canApprove || canOverseeAll
 
-  useEffect(() => {
+  // FIX (section-11 audit, flagship finding): this always queried
+  // scope=mine — which only ever returns steps assigned TO the signed-in
+  // member, by name or by role. An oversight-only member (VIEW_ALL_
+  // PROJECTS or MANAGE_WORKSPACE_SETTINGS, but not personally an
+  // assigned approver on anything) would query 'mine', get back an empty
+  // list, and permanently see 0 — contradicting this very comment's "or
+  // oversee all of them" rationale for showing them the badge at all.
+  // Give an approver their own actionable count; give an oversight-only
+  // member the workspace-wide pending total instead, as an FYI rather
+  // than an action item.
+  const approvalScope = canApprove ? 'mine' : 'all'
+
+  function refetchPendingApprovals() {
     if (!canSeeApprovalCount) return
-    fetch('/api/approvals?scope=mine')
+    fetch(`/api/approvals?scope=${approvalScope}`)
       .then(r => r.json())
       .then(json => setPendingApprovals((json.requests || []).filter((r: any) => r.status === 'pending').length))
       .catch(() => {})
-  }, [canSeeApprovalCount, pathname])
+  }
+
+  useEffect(() => {
+    refetchPendingApprovals()
+    // FIX (section-11 audit, flagship finding): this only ever re-ran on
+    // a `pathname` change — approving/rejecting/cancelling a request from
+    // the Approvals page itself doesn't navigate anywhere, so the badge
+    // sat stale (still showing the pre-action count) for the rest of
+    // that visit. ApprovalsClient now dispatches this event right after
+    // any successful decision; listen for it as a second trigger
+    // alongside the existing pathname-change refetch.
+    window.addEventListener('scopegov:approvals-changed', refetchPendingApprovals)
+    return () => window.removeEventListener('scopegov:approvals-changed', refetchPendingApprovals)
+  }, [canSeeApprovalCount, approvalScope, pathname])
 
   const daysLeft = session.trialEndsAt
     ? Math.max(0, Math.ceil((new Date(session.trialEndsAt).getTime() - Date.now()) / 86400000))

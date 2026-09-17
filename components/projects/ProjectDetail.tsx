@@ -1178,8 +1178,20 @@ function CoTab({ project, cos, permissions, currency, pendingApprovals, team }: 
         </div>
       ) : (
         cos.map((co: any) => (
+          // FIX (section-11 audit, flagship finding): pendingApprovals is
+          // keyed by `${document_type}:${document_id}` (see
+          // app/(app)/projects/[id]/page.tsx), and a CO's negotiated-
+          // counter approval is filed under document_type 'co_counter' —
+          // a DIFFERENT key from the CO's own 'co:<id>' send-approval.
+          // Only checking 'co:' meant a CO sitting in 'countered' status
+          // with a pending co_counter approval showed no "Awaiting
+          // approval" badge at all, and CoCard's "Accept counter" button
+          // (below) stayed fully live with no indication anything was
+          // already in flight. The two keys are never populated at the
+          // same time for one CO (only one document_type can be pending
+          // per document at once), so checking both is safe.
           <CoCard key={co.id} co={co} currency={currency} permissions={permissions} projectId={project.id}
-            pendingApproval={pendingApprovals?.[`co:${co.id}`]} team={team} />
+            pendingApproval={pendingApprovals?.[`co:${co.id}`] || pendingApprovals?.[`co_counter:${co.id}`]} team={team} />
         ))
       )}
     </div>
@@ -1346,8 +1358,19 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
               Revise &amp; resend
             </button>
           )}
-          {co.status === 'countered' && permissions.sendCo && (
+          {/* FIX (section-11 audit, flagship finding): this button used to
+              render regardless of pendingApproval, so a countered CO whose
+              negotiated amount had already tripped an approval workflow
+              still showed a fully-live "Accept counter" button with zero
+              indication a decision was already in flight — clicking it
+              again just silently re-confirmed the existing pending
+              request. Mirrors the co.status === 'draft' pattern above:
+              swap to a disabled "Awaiting approval" link once pending. */}
+          {co.status === 'countered' && permissions.sendCo && !pendingApproval && (
             <button className="btn btn-primary btn-xs" onClick={() => doAction('accept-counter')} disabled={acting}>Accept counter</button>
+          )}
+          {co.status === 'countered' && pendingApproval && (
+            <Link href="/approvals"><button className="btn btn-ghost btn-xs">Awaiting approval</button></Link>
           )}
           {co.status === 'countered' && permissions.createCo && (
             <button className="btn btn-ghost btn-xs" onClick={revise} disabled={acting}>

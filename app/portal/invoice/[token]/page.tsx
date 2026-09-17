@@ -22,6 +22,14 @@ interface InvoiceData {
   poNumber: string | null
   milestoneTrigger: string | null
   contractPosition: { contractedValue: number; invoicedToDate: number; paidToDate: number } | null
+  // FIX (section-12 audit, flagship finding): the API now sends these
+  // (see the matching route fix) — added here so the page can render
+  // the itemized breakdown and SOW/CO cross-reference the PDF already
+  // shows.
+  sowNumber: string | null
+  coNumber: string | null
+  coTitle: string | null
+  lineItems: Array<{ description: string; quantity: number; rate: number; total: number }>
   projectName: string
   clientName: string
   clientCompany: string | null
@@ -114,6 +122,17 @@ export default function InvoicePortalPage() {
                 <div style={{ fontSize: 13, color: '#555' }}>
                   <strong>{invoice.agencyName}</strong> → <strong>{invoice.clientCompany || invoice.clientName}</strong> · {invoice.projectName}
                 </div>
+                {/* FIX (section-12 audit, flagship finding): mirrors the PDF's
+                    header cross-reference — previously only the amount/title
+                    were shown here, with no way to tell which SOW/CO this
+                    invoice was billed against. */}
+                {(invoice.sowNumber || invoice.coNumber) && (
+                  <div style={{ fontSize: 12, color: '#909090', marginTop: 4 }}>
+                    {invoice.sowNumber ? `For services under SOW No. ${invoice.sowNumber}` : ''}
+                    {invoice.sowNumber && invoice.coNumber ? ', ' : ''}
+                    {invoice.coNumber ? `as amended by Change Order No. ${invoice.coNumber}` : ''}
+                  </div>
+                )}
                 <span style={{ display: 'inline-block', marginTop: 10, fontSize: 11, fontWeight: 600, padding: '4px 10px', borderRadius: 20, background: statusMeta.bg, color: statusMeta.fg }}>
                   {statusMeta.label}
                 </span>
@@ -168,6 +187,29 @@ export default function InvoicePortalPage() {
           </div>
 
           <div className="portal-doc-body">
+            {/* FIX (section-12 audit, flagship finding): the itemized
+                breakdown (fixed fee + hourly + reimbursable, etc.) was
+                only ever visible on the downloadable PDF — this on-screen
+                view collapsed straight to a single total, mirroring the
+                PDF's own line-items table for parity. */}
+            {invoice.lineItems && invoice.lineItems.length > 0 && (
+              <div style={{ border: '1px solid #E5E1D8', borderRadius: 6, marginBottom: 20, overflow: 'hidden' }}>
+                <div style={{ display: 'flex', background: '#FAFAF6', padding: '8px 14px', fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: '#909090' }}>
+                  <span style={{ flex: 1 }}>Description</span>
+                  <span style={{ width: 50, textAlign: 'center' }}>Qty</span>
+                  <span style={{ width: 100, textAlign: 'right' }}>Rate</span>
+                  <span style={{ width: 100, textAlign: 'right' }}>Amount</span>
+                </div>
+                {invoice.lineItems.map((item, i) => (
+                  <div key={i} style={{ display: 'flex', padding: '10px 14px', fontSize: 13, borderTop: i > 0 ? '1px solid #F0F0EA' : 'none' }}>
+                    <span style={{ flex: 1, color: '#333' }}>{item.description}</span>
+                    <span style={{ width: 50, textAlign: 'center', fontFamily: 'IBM Plex Mono, monospace', color: '#555' }}>{item.quantity}</span>
+                    <span style={{ width: 100, textAlign: 'right', fontFamily: 'IBM Plex Mono, monospace', color: '#555' }}>{item.rate ? `${invoice.currency} ${item.rate.toLocaleString()}` : '—'}</span>
+                    <span style={{ width: 100, textAlign: 'right', fontFamily: 'IBM Plex Mono, monospace', fontWeight: 600 }}>{invoice.currency} {item.total.toLocaleString()}</span>
+                  </div>
+                ))}
+              </div>
+            )}
             <div style={{ background: '#FAFAF6', border: '1px solid #F0F0EA', borderRadius: 6, padding: '14px 16px', marginBottom: 20 }}>
               {/* FIX (doc-completeness audit, finding #2): tax breakdown,
                   previously invisible everywhere including here. */}

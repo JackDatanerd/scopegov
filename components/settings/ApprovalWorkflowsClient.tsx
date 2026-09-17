@@ -3,9 +3,15 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { formatCurrency } from '@/lib/utils/format'
+// FIX (section-11 audit): this file hardcoded its own 8-currency list,
+// missing CAD/AUD — both valid per this single source of truth (already
+// used by onboarding and, since a separate fix, Settings' own workspace
+// currency picker). A CAD/AUD workspace could never configure a value-
+// threshold workflow that actually matches its own documents' currency.
+import { CURRENCIES } from '@/lib/constants/workspace-options'
 
-interface Role { id: string; name: string }
-interface Member { id: string; name: string; email: string }
+interface Role { id: string; name: string; canApprove: boolean }
+interface Member { id: string; name: string; email: string; canApprove: boolean }
 interface WorkflowStep {
   id: string
   step_order: number
@@ -240,7 +246,7 @@ function WorkflowEditorModal({ workflow, defaultType, roles, members, onClose, o
           {hasThreshold && (
             <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
               <select className="finp" value={thresholdCurrency} onChange={e => setThresholdCurrency(e.target.value)} style={{ maxWidth: 90 }}>
-                {['USD','KES','GBP','EUR','ZAR','NGN','GHS','AED'].map(c => <option key={c} value={c}>{c}</option>)}
+                {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
               </select>
               <input className="finp" type="number" min="0" value={threshold}
                 onChange={e => setThreshold(e.target.value)} placeholder="25000" style={{ maxWidth: 200 }} />
@@ -274,13 +280,28 @@ function WorkflowEditorModal({ workflow, defaultType, roles, members, onClose, o
               {s.kind === 'role' && (
                 <select className="finp" value={s.id} onChange={e => updateStep(s.key, { id: e.target.value })}>
                   <option value="">Select role…</option>
-                  {roles.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+                  {/* FIX (section-11 audit, flagship finding): roles that
+                      don't hold APPROVE_DOCUMENTS are still listed — hiding
+                      them would make an already-broken step's current
+                      selection disappear from its own dropdown — but
+                      flagged and disabled so a NEW pick can't recreate the
+                      same dead-end, while an existing broken one stays
+                      visible for the admin to notice and fix. */}
+                  {roles.map(r => (
+                    <option key={r.id} value={r.id} disabled={!r.canApprove && r.id !== s.id}>
+                      {r.name}{!r.canApprove ? ' (can\u2019t approve — missing permission)' : ''}
+                    </option>
+                  ))}
                 </select>
               )}
               {s.kind === 'user' && (
                 <select className="finp" value={s.id} onChange={e => updateStep(s.key, { id: e.target.value })}>
                   <option value="">Select person…</option>
-                  {members.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                  {members.map(m => (
+                    <option key={m.id} value={m.id} disabled={!m.canApprove && m.id !== s.id}>
+                      {m.name}{!m.canApprove ? ' (can\u2019t approve — missing permission)' : ''}
+                    </option>
+                  ))}
                 </select>
               )}
               <div style={{ display: 'flex', gap: 2, marginLeft: 'auto', flexShrink: 0 }}>

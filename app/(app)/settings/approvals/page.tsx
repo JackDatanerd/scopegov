@@ -44,23 +44,40 @@ export default async function ApprovalWorkflowsPage() {
       `)
       .eq('workspace_id', session.workspaceId)
       .order('document_type', { ascending: true }),
+    // FIX (section-11 audit, flagship finding): this used to list every
+    // role in the workspace with no permission filter — including ones
+    // that don't carry APPROVE_DOCUMENTS at all (e.g. "Designer"), which
+    // is how a dead-end step could get assigned in the first place. Keep
+    // fetching `permissions` so the client can flag ineligible roles —
+    // deliberately NOT filtering the query itself: an existing, already-
+    // broken step (assigned before this fix, or made ineligible after
+    // its role's permissions changed) still needs to render its real
+    // selected value in the edit form. Filtering it out of the options
+    // list here would reproduce the exact "selected value disappears
+    // from its own dropdown" bug already found and fixed for the
+    // currency picker elsewhere — the admin opening this editor
+    // specifically to FIX a broken step must see what it's currently set
+    // to, not a blank "Select role…".
     (service as any)
       .from('roles')
-      .select('id, name')
+      .select('id, name, permissions')
       .eq('workspace_id', session.workspaceId)
       .order('name'),
+    // FIX (section-11 audit, flagship finding): same reasoning for the
+    // named-person picker.
     (service as any)
       .from('workspace_members')
-      .select('id, users!workspace_members_user_id_fkey(id, name, email)')
+      .select('id, effective_permissions, users!workspace_members_user_id_fkey(id, name, email)')
       .eq('workspace_id', session.workspaceId)
       .eq('status', 'active'),
   ])
 
   const workflows = workflowsRes.data || []
-  const roles     = rolesRes.data || []
+  const roles     = (rolesRes.data || [])
+    .map((r: any) => ({ id: r.id, name: r.name, canApprove: r.permissions?.APPROVE_DOCUMENTS === true }))
   const members   = (membersRes.data || [])
     .filter((m: any) => m.users)
-    .map((m: any) => ({ id: m.users.id, name: m.users.name, email: m.users.email }))
+    .map((m: any) => ({ id: m.users.id, name: m.users.name, email: m.users.email, canApprove: m.effective_permissions?.APPROVE_DOCUMENTS === true }))
 
   return (
     <div className="page" style={{ maxWidth: 900 }}>

@@ -106,18 +106,44 @@ export async function POST(request: NextRequest) {
     const roleIds = steps.map(s => s.approverRoleId).filter(Boolean) as string[]
     const userIds = steps.map(s => s.approverUserId).filter(Boolean) as string[]
     if (roleIds.length) {
-      const { count } = await (service as any)
-        .from('roles').select('id', { count: 'exact', head: true })
+      // FIX (section-11 audit, flagship finding): only ownership was
+      // checked here — nothing verified the role actually grants
+      // APPROVE_DOCUMENTS. Assigning a step to a role that doesn't (e.g.
+      // "Designer") builds an approval chain no one holding that role can
+      // ever act on: they'd be notified and show up correctly in "My
+      // queue" (that lookup only matches role_id, not the permission),
+      // but every Approve/Reject attempt 403s. Worse, this failure mode
+      // is invisible to the stall-cron's escalation — it only detects
+      // zero *reachable* recipients, not zero *authorized* ones — so a
+      // chain like this stalls forever with no automatic alert.
+      const { data: roleRows } = await (service as any)
+        .from('roles').select('id, name, permissions')
         .eq('workspace_id', session.workspaceId).in('id', roleIds)
-      if ((count || 0) !== new Set(roleIds).size)
+      if ((roleRows?.length || 0) !== new Set(roleIds).size)
         return NextResponse.json({ error: 'One or more selected roles are not part of this workspace' }, { status: 400 })
+      const roleCantApprove = (roleRows || []).find((r: any) => r.permissions?.APPROVE_DOCUMENTS !== true)
+      if (roleCantApprove)
+        return NextResponse.json({
+          error: `The "${roleCantApprove.name}" role doesn't have the Approve documents permission — grant it first, or pick a different role.`,
+        }, { status: 400 })
     }
     if (userIds.length) {
-      const { count } = await (service as any)
-        .from('workspace_members').select('id', { count: 'exact', head: true })
+      const { data: memberRows } = await (service as any)
+        .from('workspace_members').select('user_id, effective_permissions, users!workspace_members_user_id_fkey(name)')
         .eq('workspace_id', session.workspaceId).eq('status', 'active').in('user_id', userIds)
-      if ((count || 0) !== new Set(userIds).size)
+      if ((memberRows?.length || 0) !== new Set(userIds).size)
         return NextResponse.json({ error: 'One or more selected approvers are not active members of this workspace' }, { status: 400 })
+      // FIX (section-11 audit, flagship finding): same gap as the role
+      // branch above, for a named-person step — the person picker in
+      // Settings (app/(app)/settings/approvals/page.tsx) lists every
+      // active member with no permission filter at all, so it was
+      // entirely possible to hand-pick someone with no ability to ever
+      // approve anything.
+      const memberCantApprove = (memberRows || []).find((m: any) => m.effective_permissions?.APPROVE_DOCUMENTS !== true)
+      if (memberCantApprove)
+        return NextResponse.json({
+          error: `${memberCantApprove.users?.name || 'That member'} doesn't have the Approve documents permission — grant it first, or pick a different approver.`,
+        }, { status: 400 })
     }
 
     const { data: workflow, error: insertErr } = await (service as any)

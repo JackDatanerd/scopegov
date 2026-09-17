@@ -71,7 +71,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       // payments on projects they have no access to. Every other invoice
       // route already selects project_id directly for exactly this reason
       // — this one just missed it.
-      .select(`id, title, amount, amount_paid, currency, status, project_id,
+      // FIX (section-12 audit): invoice_number wasn't selected either, so
+      // the payment-recorded email below always passed
+      // `invoiceNumber: undefined` — the template degrades gracefully
+      // (falls back to generic "Payment received" copy) rather than
+      // rendering literally "undefined", so this wasn't broken, just less
+      // useful than it could be for a project with more than one
+      // invoice.
+      .select(`id, title, amount, amount_paid, currency, status, project_id, invoice_number,
         projects(id, name, clients(name), workspaces(agency_name))`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
@@ -151,7 +158,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           agencyName: invoice.projects?.workspaces?.agency_name,
           clientName: invoice.projects?.clients?.name || 'Client',
           projectName: invoice.projects?.name,
-          invoiceNumber: undefined,
+          invoiceNumber: invoice.invoice_number || undefined,
           amount, currency: invoice.currency, isFullyPaid, balanceRemaining,
           projectUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects/${invoice.projects?.id}?tab=billing`,
         })

@@ -86,21 +86,38 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       }
       // FIX (deep audit, section 5): same ownership check added to POST —
       // see the comment there for why.
+      //
+      // FIX (section-11 audit, flagship finding): same APPROVE_DOCUMENTS
+      // check added to POST /api/approval-workflows — an edit could
+      // otherwise reassign a step to a role/person who can't act on it,
+      // exactly the same silent-dead-end failure mode, invisible to the
+      // stall-cron's escalation. See the comment on POST for the full
+      // explanation.
       const roleIds = steps.map(s => s.approverRoleId).filter(Boolean) as string[]
       const userIds = steps.map(s => s.approverUserId).filter(Boolean) as string[]
       if (roleIds.length) {
-        const { count: roleCount } = await (service as any)
-          .from('roles').select('id', { count: 'exact', head: true })
+        const { data: roleRows } = await (service as any)
+          .from('roles').select('id, name, permissions')
           .eq('workspace_id', session.workspaceId).in('id', roleIds)
-        if ((roleCount || 0) !== new Set(roleIds).size)
+        if ((roleRows?.length || 0) !== new Set(roleIds).size)
           return NextResponse.json({ error: 'One or more selected roles are not part of this workspace' }, { status: 400 })
+        const roleCantApprove = (roleRows || []).find((r: any) => r.permissions?.APPROVE_DOCUMENTS !== true)
+        if (roleCantApprove)
+          return NextResponse.json({
+            error: `The "${roleCantApprove.name}" role doesn't have the Approve documents permission — grant it first, or pick a different role.`,
+          }, { status: 400 })
       }
       if (userIds.length) {
-        const { count: userCount } = await (service as any)
-          .from('workspace_members').select('id', { count: 'exact', head: true })
+        const { data: memberRows } = await (service as any)
+          .from('workspace_members').select('user_id, effective_permissions, users!workspace_members_user_id_fkey(name)')
           .eq('workspace_id', session.workspaceId).eq('status', 'active').in('user_id', userIds)
-        if ((userCount || 0) !== new Set(userIds).size)
+        if ((memberRows?.length || 0) !== new Set(userIds).size)
           return NextResponse.json({ error: 'One or more selected approvers are not active members of this workspace' }, { status: 400 })
+        const memberCantApprove = (memberRows || []).find((m: any) => m.effective_permissions?.APPROVE_DOCUMENTS !== true)
+        if (memberCantApprove)
+          return NextResponse.json({
+            error: `${memberCantApprove.users?.name || 'That member'} doesn't have the Approve documents permission — grant it first, or pick a different approver.`,
+          }, { status: 400 })
       }
       await (service as any).from('approval_workflow_steps').delete().eq('workflow_id', id)
       if (steps.length > 0) {

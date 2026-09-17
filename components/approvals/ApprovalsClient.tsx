@@ -21,7 +21,9 @@ interface Step {
 
 interface ApprovalRequest {
   id: string
-  document_type: 'sow' | 'co'
+  // FIX (section-11 audit): runtime values include 'co_counter' (accepting
+  // a negotiated counter-offer) — this type omitted it entirely.
+  document_type: 'sow' | 'co' | 'co_counter'
   document_id: string
   project_id: string
   status: 'pending' | 'approved' | 'rejected' | 'cancelled'
@@ -92,6 +94,14 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
   async function refreshAfterAction() {
     setSelected(null)
     await load(tab)
+    // FIX (section-11 audit, flagship finding): Sidebar's pending-count
+    // badge only ever refetched on a `pathname` change — approving/
+    // rejecting/cancelling from this page doesn't navigate anywhere, so
+    // the badge sat stale (still showing the pre-action count) for the
+    // rest of the visit. Dispatch a plain DOM event Sidebar listens for,
+    // rather than reaching for a heavier shared-state solution for what
+    // is, in the whole app, a single cross-component refresh signal.
+    window.dispatchEvent(new Event('scopegov:approvals-changed'))
   }
 
   const pendingMineCount = tab === 'mine' ? items.filter(r => r.status === 'pending').length : null
@@ -156,8 +166,12 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
                 <tr key={r.id} onClick={() => setSelected(r)}>
                   <td>
                     <span style={{ fontWeight: 500 }}>{r.context?.title || (r.document_type === 'sow' ? 'SOW' : 'Change order')}</span>
+                    {/* FIX (section-11 audit, flagship finding): a 'co_counter'
+                        request (accepting a client's negotiated counter-offer)
+                        rendered an identical "CO" pill to an ordinary CO send —
+                        no way to tell the two apart from this list. */}
                     <span className="pill pill-slate pill-sm" style={{ marginLeft: 8 }}>
-                      {r.document_type === 'sow' ? 'SOW' : 'CO'}
+                      {r.document_type === 'sow' ? 'SOW' : r.document_type === 'co_counter' ? 'CO counter' : 'CO'}
                     </span>
                   </td>
                   <td>{r.projects?.name || r.context?.project_name || '—'}</td>
@@ -201,8 +215,24 @@ function ApprovalDetailModal({ request, session, eligibleStep, onClose, onDone }
   const [error, setError]     = useState('')
 
   const isRequester = request.requested_by === session.id
-  const documentLabel = request.document_type === 'sow' ? 'SOW' : 'Change order'
+  // FIX (section-11 audit, flagship finding): document_type can also be
+  // 'co_counter' (approving acceptance of a client's negotiated
+  // counter-offer) — collapsing it into plain "Change order" made that
+  // decision indistinguishable from an ordinary CO send approval. Mirrors
+  // the same fix in lib/approvals/engine.ts.
+  const documentLabel = request.document_type === 'sow' ? 'SOW'
+    : request.document_type === 'co_counter' ? 'Change order counter-offer'
+    : 'Change order'
   const canCancel = isRequester && request.status === 'pending'
+  // FIX (section-11 audit, flagship finding): eligibleStep only ever
+  // checked whether the signed-in member is the assigned approver
+  // (named user or role) for the current step — never whether they're
+  // also the person who requested this send. The server now rejects a
+  // self-decision (see recordApprovalDecision), but the button was still
+  // shown, live, to the requester whenever they also happened to hold
+  // the approving role — clicking it just produced a confusing 403.
+  // Suppress it client-side and say why.
+  const selfApprovalBlocked = isRequester && !!eligibleStep
 
   async function act(action: 'approve' | 'reject' | 'cancel', body?: Record<string, unknown>) {
     setActing(action); setError('')
@@ -287,6 +317,12 @@ function ApprovalDetailModal({ request, session, eligibleStep, onClose, onDone }
           </div>
         )}
 
+        {selfApprovalBlocked && (
+          <p style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 4 }}>
+            You requested this — it needs to be decided by someone else.
+          </p>
+        )}
+
         <div className="modal-footer" style={{ justifyContent: 'space-between' }}>
           <div>
             {canCancel && (
@@ -297,7 +333,7 @@ function ApprovalDetailModal({ request, session, eligibleStep, onClose, onDone }
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="btn btn-ghost" onClick={onClose}>Close</button>
-            {eligibleStep && !showReject && (
+            {eligibleStep && !selfApprovalBlocked && !showReject && (
               <>
                 <button className="btn btn-ghost" onClick={() => setShowReject(true)} disabled={!!acting}>
                   Reject
@@ -307,7 +343,7 @@ function ApprovalDetailModal({ request, session, eligibleStep, onClose, onDone }
                 </button>
               </>
             )}
-            {eligibleStep && showReject && (
+            {eligibleStep && !selfApprovalBlocked && showReject && (
               <button className="btn btn-primary" onClick={() => act('reject', { note })} disabled={!!acting || !note.trim()}>
                 {acting === 'reject' ? <span className="spin" /> : 'Submit rejection'}
               </button>

@@ -24,14 +24,23 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     // missing details the PDF (generated from a separate, more complete
     // query in app/api/pdf/invoice/[id]/route.ts) already had. Mirrors the
     // fix already applied to the SOW and CO portal routes.
+    // FIX (section-12 audit, flagship finding): sow_id/co_id/line_items
+    // weren't selected here either — this is the page a client actually
+    // lands on when they open their invoice link (before ever reaching
+    // the PDF), and it never showed the itemized breakdown for an
+    // itemized invoice, nor which SOW/CO the invoice was billed against.
+    // Both /api/pdf/invoice/[id] and /api/portal/invoice/[token]/pdf
+    // already select and render all three; this on-screen view was the
+    // one place that document was less complete than its own PDF.
     const { data: invoice } = await (service as any)
       .from('invoices')
       .select(`id, title, amount, amount_paid, currency, status, due_date, sent_at,
         payment_instructions, invoice_number, po_number, project_id, milestone_id, workspace_id,
-        subtotal, tax_rate, tax_inclusive,
+        subtotal, tax_rate, tax_inclusive, line_items, sow_id, co_id,
         projects(id, name, clients(name, company_name, billing_address, vat_number),
           workspaces(agency_name, brand_colour, logo_storage_path,
-            legal_address, tax_id, phone, website))`)
+            legal_address, tax_id, phone, website)),
+        sow_documents(document_number), change_orders(document_number, title)`)
       .eq('token', token).single()
 
     if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
@@ -108,6 +117,13 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         poNumber: invoice.po_number || null,
         milestoneTrigger,
         contractPosition,
+        // FIX (section-12 audit, flagship finding): see the select() fix
+        // above — the page component now renders these the same way the
+        // PDF does.
+        sowNumber: invoice.sow_documents?.document_number || null,
+        coNumber:  invoice.change_orders?.document_number || null,
+        coTitle:   invoice.change_orders?.title || null,
+        lineItems: typeof invoice.line_items === 'string' ? JSON.parse(invoice.line_items) : (invoice.line_items || []),
         projectName: invoice.projects?.name,
         clientName: invoice.projects?.clients?.name,
         clientCompany: invoice.projects?.clients?.company_name,

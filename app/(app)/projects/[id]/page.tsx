@@ -51,6 +51,11 @@ export default async function ProjectPage({ params, searchParams }: Props) {
   // total, so the agency was accepting a negotiated figure it had never
   // been shown, and the client's reasoning was nowhere in the product.
   // Fetch them so the card can show what's being accepted.
+  // FIX (section-12 audit, flagship finding): tax_rate/tax_inclusive
+  // weren't selected on change_orders here at all, so BillingTab's "bill
+  // against this CO" picker had no way to carry an accepted CO's own tax
+  // terms onto the invoice, even if it wanted to — see the matching fix
+  // in components/invoices/BillingTab.tsx's pickSource().
   const { data: project } = await (service as any)
     .from('projects')
     .select(`
@@ -60,7 +65,7 @@ export default async function ProjectPage({ params, searchParams }: Props) {
       clients(id, name, company_name, email, cc_emails, phone, notes),
       guardian_flags(id, status, severity, description, sow_reference, type, created_at, change_order_id, escalated_to),
       change_orders(id, title, status, total, sent_at, accepted_at, version, document_number,
-        counter_amount, counter_note, declined_reason, close_reason),
+        counter_amount, counter_note, declined_reason, close_reason, tax_rate, tax_inclusive),
       sow_documents(id, version, status, sent_at, signed_at, created_at, document_number),
       project_scope_snapshot(id, deliverables, out_of_scope, last_updated_at)
     `)

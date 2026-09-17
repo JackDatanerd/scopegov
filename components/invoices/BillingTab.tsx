@@ -506,14 +506,41 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
         // payment-instructions field before that got wired to Settings.
         setDueDate(m.due_date || '')
         setTaxRate(m.tax_rate != null ? String(m.tax_rate) : '0')
-        setTaxInclusive(m.tax_inclusive ?? true)
+        // FIX (section-12 audit): this unconditionally copied the
+        // milestone's own tax_inclusive, but the effect above that forces
+        // exclusive-tax while itemized only re-runs on `itemized`
+        // changing, not on this. Picking a tax-inclusive milestone while
+        // already itemizing would silently re-enable "tax inclusive"
+        // behind the selector, which stays visually locked to "Before
+        // tax" — the same display-vs-state mismatch that effect exists
+        // to prevent. Respect the same invariant here.
+        setTaxInclusive(itemized ? false : (m.tax_inclusive ?? true))
       }
     } else if (type === 'sow') {
       const s = sows.find((x: any) => x.id === id)
       if (s) setTitle(`SOW v${s.version}${s.document_number ? ` (${s.document_number})` : ''}`)
     } else if (type === 'co') {
       const c = cos.find((x: any) => x.id === id)
-      if (c) { setTitle(c.title); if (!itemized) setAmount(String(c.total)) }
+      // FIX (section-12 audit, flagship finding): unlike the milestone
+      // branch above — which explicitly copies tax_rate/tax_inclusive,
+      // with a comment about exactly this failure pattern — this branch
+      // only ever copied title/amount. The server (POST /api/invoices)
+      // has a coTaxDefaults fallback that carries an accepted CO's own
+      // tax terms onto the invoice specifically so "an accepted CO that
+      // had 8% tax on it shouldn't turn into a plain untaxed invoice
+      // line" — but that fallback only fires when `taxRate` is omitted
+      // from the request body, and submit() below always sends a
+      // concrete taxRate (defaulting to '0'), so it could never actually
+      // trigger from this UI. Copy the CO's tax terms here too, the same
+      // way the milestone branch already does (and under the same
+      // itemized-forces-exclusive guard), so invoicing a taxed CO doesn't
+      // silently drop the tax.
+      if (c) {
+        setTitle(c.title)
+        if (!itemized) setAmount(String(c.total))
+        setTaxRate(c.tax_rate != null ? String(c.tax_rate) : '0')
+        setTaxInclusive(itemized ? false : (c.tax_inclusive ?? true))
+      }
     }
   }
 

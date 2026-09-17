@@ -3,6 +3,13 @@ import { useState, useEffect, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { PROJECT_TYPE_ICONS } from '@/lib/utils/format'
 import type { ProjectType, Client } from '@/lib/supabase/types'
+// FIX (section-11 audit, traced from the approval-workflow currency
+// finding): this form's own per-project currency picker had the same
+// stale, hardcoded 8-currency list — missing CAD/AUD — as the workflow
+// threshold picker and (already fixed separately) Settings' workspace
+// default currency. A project could never be created in CAD/AUD from
+// this form even though the workspace itself can be set to either.
+import { CURRENCIES } from '@/lib/constants/workspace-options'
 
 const STEPS = ['Basics', 'Brief', 'Review & Send']
 const PROJECT_TYPES: Array<{ key: ProjectType; label: string; sub: string }> = [
@@ -347,7 +354,7 @@ function NewProjectPageInner() {
               <div className="fgrp">
                 <label className="flbl">Currency</label>
                 <select className="finp" value={currency} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => { setCurrencyTouched(true); setCurrency(e.target.value) }}>
-                  {['USD','KES','GBP','EUR','ZAR','NGN','GHS','AED'].map(c => <option key={c} value={c}>{c}</option>)}
+                  {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
               </div>
             </div>

@@ -113,6 +113,34 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const portalUrl = `${process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL}/portal/invoice/${token}`
 
+    // FIX (section-12 audit, flagship finding): contractPosition was
+    // hardcoded to null here — the one field the earlier sowNumber/
+    // coNumber/coTitle/lineItems fix (above) didn't also cover. Both
+    // /api/pdf/invoice/[id] (internal re-download) and
+    // /api/portal/invoice/[token]/pdf (the client's own portal
+    // re-download of this exact invoice) fetch the latest contract-
+    // reconciliation snapshot and render a contract-position summary
+    // from it; the client's very first copy — the one attached to this
+    // email — permanently lacked that section. Same query, verbatim,
+    // as the other two routes use.
+    let contractPosition: { contractedValue: number; invoicedToDate: number; paidToDate: number } | null = null
+    if (invoice.project_id) {
+      const { data: snapshot } = await (service as any)
+        .from('contract_reconciliation_snapshots')
+        .select('contracted_value, invoiced_to_date, paid_to_date')
+        .eq('project_id', invoice.project_id)
+        .order('snapshot_date', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      if (snapshot) {
+        contractPosition = {
+          contractedValue: snapshot.contracted_value || 0,
+          invoicedToDate:  snapshot.invoiced_to_date || 0,
+          paidToDate:      snapshot.paid_to_date || 0,
+        }
+      }
+    }
+
     // FIX (doc-completeness audit, finding #4): the initial invoice email
     // was link-only, unlike the SOW/CO signed-confirmation emails which
     // attach the PDF. For SOW/CO the client has to visit the portal
@@ -171,7 +199,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         coTitle:    invoice.change_orders?.title || null,
         lineItems:  typeof invoice.line_items === 'string' ? JSON.parse(invoice.line_items) : (invoice.line_items || []),
         payments:      [],
-        contractPosition: null,
+        contractPosition,
       })
       pdfAttachment = { filename: `${invoiceNumber || 'Invoice'}-${project.name.replace(/[^a-z0-9]/gi, '-')}.pdf`, content: pdfBuffer.toString('base64') }
     } catch (e) { console.error('Invoice PDF generation for email failed (email will send without attachment):', e) }

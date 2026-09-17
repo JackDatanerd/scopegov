@@ -54,27 +54,61 @@ export default async function InvoicesPage() {
   if (invErr) console.error('Invoices registry error:', invErr)
   const safeInvoices = invoices || []
 
-  // FIX (section-12 audit): "Collected" used to sum amount_paid across
-  // every invoice workspace-wide and label the total with the
-  // workspace's single default currency, regardless of what currency
-  // each individual invoice was actually denominated in — for an agency
-  // running multi-currency projects (this app explicitly supports
-  // per-project currency; see e.g. the approval-workflow threshold
-  // currency fix), that's not a rounding error, it's adding unlike
-  // currencies together and mislabeling the sum. Group by currency
-  // instead; render one figure per currency in use rather than one
-  // meaningless blended number.
+  // FIX (section-12 audit, flagship finding): this page's own header
+  // comment says it "mirrors /sow's pattern" — and it did, right down to
+  // the bug /sow/page.tsx already found and fixed in itself: "Total
+  // invoices"/"Outstanding"/"Overdue" were computed from `safeInvoices`,
+  // which is capped by `limit` (10 for solo tier). For any solo-tier
+  // workspace with more than 10 invoices ever created, every number in
+  // this summary strip silently undercounted — with nothing but the
+  // generic "showing the 10 most recent" banner (which reads as being
+  // about the table, not these figures) to suggest anything was missing.
+  // Use exact counts instead, same as /sow's fix, scoped to the same
+  // allowedProjectIds filter as the list query above.
+  const workspaceId = session.workspaceId
+  function countQuery(statuses?: string[]) {
+    let q = (service as any).from('invoices').select('id', { count: 'exact', head: true })
+      .eq('workspace_id', workspaceId)
+    if (allowedProjectIds !== null) q = q.in('project_id', allowedProjectIds)
+    if (statuses) q = q.in('status', statuses)
+    return q
+  }
+  const [{ count: totalCount }, { count: outstandingCount }, { count: overdueCount }] = await Promise.all([
+    countQuery(),
+    countQuery(['sent', 'partially_paid', 'overdue']),
+    countQuery(['overdue']),
+  ])
+
+  // Same row-cap problem applies to "Collected" — it needs the true
+  // all-time sum per currency, not just the sum over the first `limit`
+  // rows. A second, unlimited query for just the three columns this
+  // needs (never rendered as a table, so no cap-related UX concern the
+  // way the row list has) rather than trying to aggregate in SQL through
+  // the query builder.
+  //
+  // Grouped by currency rather than summed into one blended figure under
+  // the workspace's default currency — this app explicitly supports
+  // per-project currency (see e.g. the approval-workflow threshold
+  // currency fix), so a single sum across invoices in different
+  // currencies would be adding unlike units together, not a rounding
+  // error.
+  let paidRowsQuery = (service as any)
+    .from('invoices').select('currency, amount_paid, status')
+    .eq('workspace_id', workspaceId)
+  if (allowedProjectIds !== null) paidRowsQuery = paidRowsQuery.in('project_id', allowedProjectIds)
+  const { data: paidRows } = await paidRowsQuery
+
   const paidByCurrency = new Map<string, number>()
-  for (const i of safeInvoices) {
+  for (const i of (paidRows || [])) {
     if (i.status === 'draft' || i.status === 'void') continue
     const cur = i.currency || wsCurrency
     paidByCurrency.set(cur, (paidByCurrency.get(cur) || 0) + Number(i.amount_paid || 0))
   }
 
   const stats = {
-    total:      safeInvoices.length,
-    outstanding: safeInvoices.filter((i: any) => ['sent', 'partially_paid', 'overdue'].includes(i.status)).length,
-    overdue:    safeInvoices.filter((i: any) => i.status === 'overdue').length,
+    total:       totalCount       ?? safeInvoices.length,
+    outstanding: outstandingCount ?? safeInvoices.filter((i: any) => ['sent', 'partially_paid', 'overdue'].includes(i.status)).length,
+    overdue:     overdueCount     ?? safeInvoices.filter((i: any) => i.status === 'overdue').length,
   }
 
   // Phase 4: portfolio reconciliation, only for members who can see the whole workspace.

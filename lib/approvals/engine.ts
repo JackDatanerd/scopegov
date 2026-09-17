@@ -250,6 +250,21 @@ export async function recordApprovalDecision(service: any, params: DecisionParam
   }
   if (!eligible) return { ok: false, error: 'You are not an approver for this step', status: 403 }
 
+  // FIX (section-11 audit, flagship finding): nothing anywhere in this
+  // gate/decision path ever checked whether the person deciding is the
+  // same person who requested the send in the first place. Send
+  // permission (SEND_SOW/SEND_CHANGE_ORDERS/SEND_INVOICES) and approval
+  // permission (APPROVE_DOCUMENTS) are both commonly held by the same
+  // role (an agency owner/admin), so if that role is also the workflow's
+  // configured approver, the requester could send their own document for
+  // approval and then approve it themselves — defeating the entire point
+  // of a governance/approval product. This blocks a decision (either
+  // direction) by the same user who triggered the request that created
+  // it, regardless of how they qualify as an eligible approver for the
+  // step (named or via role).
+  if (request.requested_by === params.actor.id)
+    return { ok: false, error: 'You requested this — it needs to be decided by someone else', status: 403 }
+
   // FIX (section-11 audit, flagship finding): everywhere else in this file
   // that touches an approver — notifyStepApprovers' role branch (via
   // getMembersWithRole's projectId param) and its direct-user branch (via
@@ -269,7 +284,15 @@ export async function recordApprovalDecision(service: any, params: DecisionParam
     return { ok: false, error: 'You do not have access to this project', status: 403 }
 
   const now = new Date().toISOString()
-  const documentLabel = request.document_type === 'sow' ? 'SOW' : 'Change order'
+  // FIX (section-11 audit): same collapsing fix as notifyStepApprovers
+  // below — a decided 'co_counter' request (approving/rejecting
+  // acceptance of a client's negotiated counter-offer) used to read as a
+  // plain "Change order" decision, indistinguishable from an ordinary CO
+  // send decision, in both the requester's notification and the audit
+  // trail's implicit framing.
+  const documentLabel = request.document_type === 'sow' ? 'SOW'
+    : request.document_type === 'co_counter' ? 'Change order counter-offer'
+    : 'Change order'
   const docTitle       = request.context?.title || documentLabel
   const projectName    = request.context?.project_name || ''
 
@@ -649,7 +672,17 @@ async function notifyStepApprovers(service: any, args: {
   const notifiedIds = new Set([...inAppRecipients.map(r => r.id), ...emailRecipients.map(r => r.id)])
   if (notifiedIds.size === 0) return 0
 
-  const documentLabel = args.documentType === 'sow' ? 'SOW' : 'Change order'
+  // FIX (section-11 audit): document_type can be 'sow', 'co', or
+  // 'co_counter' (see evaluateApprovalGate) — this used to collapse
+  // anything that wasn't 'sow' straight to "Change order", so a step
+  // approving acceptance of a client's negotiated counter-offer read
+  // identically to one approving an ordinary first-time CO send. An
+  // approver had no way to tell, from either the bell notification or
+  // the email, which action they were actually being asked to authorize.
+  const documentLabel = args.documentType === 'sow' ? 'SOW'
+    : args.documentType === 'co_counter' ? 'Change order counter-offer'
+    : 'Change order'
+  const actionVerb = args.documentType === 'co_counter' ? 'accept the client\'s counter on' : 'send'
 
   if (inAppRecipients.length) {
     try {
@@ -658,7 +691,7 @@ async function notifyStepApprovers(service: any, args: {
         recipient_id: r.id,
         type:         'approval_requested',
         title:        `${documentLabel} awaiting your approval`,
-        body:         `${args.requestedBy.name} wants to send ${args.documentTitle} on ${args.projectName}.`,
+        body:         `${args.requestedBy.name} wants to ${actionVerb} ${args.documentTitle} on ${args.projectName}.`,
         entity_type:  'approval_request',
         entity_id:    args.requestId,
       })))
