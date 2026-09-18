@@ -159,8 +159,16 @@ async function rollupWorkspace(service: any, workspaceId: string, snapshotDate: 
   // stall a project — see PATCH /api/projects/[id]), which meant the
   // metric-strip count and the drill-down list it labels could disagree.
   // Match the drill-down's own definition of "stalled SOW".
+  //
+  // FIX (cron audit, section 17 — closing pass): this comment block (and
+  // the one below, on activeProjectCount) claimed every other count in
+  // this snapshot was already scoped to the dominant currency — false as
+  // written. Neither line actually filtered on `currency` at all, so in a
+  // multi-currency workspace both disagreed with openFlagsCount/
+  // exceptionsCount/stalledCoCount, which are all correctly scoped. Same
+  // fix, applied here too.
   const stalledSowCount = projects.filter(
-    (p: any) => p.status === 'Stalled' && p.stall_reason === 'sow_unsigned'
+    (p: any) => p.status === 'Stalled' && p.stall_reason === 'sow_unsigned' && (p.currency || 'USD') === currency
   ).length
 
   // FIX (cron audit, section 17): this used to be stalledCOs.length —
@@ -176,6 +184,7 @@ async function rollupWorkspace(service: any, workspaceId: string, snapshotDate: 
   }).length
   const activeProjectCount = projects.filter((p: any) =>
     ['Active', 'Awaiting Signature', 'Intake', 'Changes Requested', 'Stalled'].includes(p.status)
+    && (p.currency || 'USD') === currency
   ).length
 
   await service.from('scope_health_snapshots').upsert(

@@ -5,7 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { formatAddress } from '@/lib/utils/format'
 import { checkRevokedToken, verifySowJwt } from './_shared'
 
-const SOW_COLUMNS = `id, version, status, sections, metadata, expires_at, signed_at, signed_by, client_signature_data,
+const SOW_COLUMNS = `id, version, status, sections, metadata, expires_at, signed_at, signed_by, client_signature_data, first_viewed_at,
   projects(id, name, disc, contract_value, currency, client_id,
     clients(name, email, company_name, billing_address, vat_number),
     workspaces(id, agency_name, brand_colour, logo_storage_path, agency_signature_data,
@@ -87,6 +87,20 @@ async function buildSowResponse(sow: any, service: any) {
   // after requesting changes fell through to the default case below and
   // re-served the full signing form as if nothing had happened.
   if (sow.status === 'changes_requested') return { state: 'changes_requested' }
+
+  // FEATURE (portal audit, section 18): first time this document is
+  // actually opened while still awaiting a response — the one signal this
+  // portal never captured. Guarded with .is('first_viewed_at', null) so a
+  // second near-simultaneous request doesn't matter (last-write-wins on
+  // the same timestamp value is harmless), and failure here must never
+  // block the client from actually seeing the document.
+  if (!sow.first_viewed_at) {
+    try {
+      await (service as any).from('sow_documents')
+        .update({ first_viewed_at: new Date().toISOString() })
+        .eq('id', sow.id).is('first_viewed_at', null)
+    } catch (e) { console.error('SOW first-view tracking failed (non-fatal):', e) }
+  }
 
   // Build logo URL if exists
   const workspace = sow.projects?.workspaces

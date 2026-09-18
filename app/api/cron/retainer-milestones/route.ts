@@ -3,6 +3,9 @@ export const runtime = 'nodejs'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
+import { notifyMembersWithPermission } from '@/lib/utils/notify'
+import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
+import { sendRetainerEndingEmail } from '@/lib/email/templates'
 
 // FIX (audit round 3): local copy replaced with the shared,
 // null-safe helper — see lib/utils/verify-cron.ts.
@@ -20,12 +23,13 @@ export async function POST(request: NextRequest) {
     // Active retainer projects within their duration
     const { data: retainers } = await (service as any)
       .from('projects')
-      .select('id, workspace_id, contract_value, currency, retainer_duration_months, created_at, sow_documents(id, status, signed_at)')
+      .select('id, workspace_id, name, contract_value, currency, retainer_duration_months, created_at, sow_documents(id, status, signed_at), clients(name)')
       .eq('type', 'retainer')
       .eq('status', 'Active')
       .not('retainer_duration_months', 'is', null)
 
     let generated = 0
+    let endedNotified = 0
     for (const p of (retainers || [])) {
       try {
         const signedSow = (p.sow_documents || []).find((s: any) => s.status === 'signed')
@@ -35,7 +39,53 @@ export async function POST(request: NextRequest) {
         const monthsSigned = (year - signedDate.getFullYear()) * 12 + (month - (signedDate.getMonth() + 1))
 
         // Stop generating past retainer duration
-        if (monthsSigned >= (p.retainer_duration_months || 12)) continue
+        if (monthsSigned >= (p.retainer_duration_months || 12)) {
+          // FEATURE (cron audit, section 17): this used to just stop
+          // generating milestones with zero signal to the team — the exact
+          // "let something go silently stale" gap this product's other
+          // stall crons (approval/co/sow) all exist to prevent, just
+          // applied to its own billing engine instead of a client
+          // interaction. Notify once, the moment the retainer's final
+          // milestone month has passed, so the team knows to renew or
+          // wind the contract down rather than discovering it later from
+          // an invoice that never got generated.
+          const { data: alreadyNotified } = await (service as any)
+            .from('audit_log').select('id')
+            .eq('workspace_id', p.workspace_id).eq('event_type', 'retainer.ended')
+            .eq('entity_id', p.id).limit(1).maybeSingle()
+          if (alreadyNotified) continue
+
+          await (service as any).from('audit_log').insert({
+            workspace_id: p.workspace_id, actor_id: null,
+            actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
+            event_type: 'retainer.ended', entity_type: 'project',
+            entity_id: p.id, entity_name: p.name,
+            metadata: { duration_months: p.retainer_duration_months, months_completed: monthsSigned },
+          })
+
+          await notifyMembersWithPermission(service, {
+            workspaceId: p.workspace_id, permission: 'VIEW_FINANCIALS', eventType: 'retainer_ending',
+            type: 'retainer_ending', title: `Retainer term ended — ${p.name}`,
+            body: `The ${p.retainer_duration_months}-month retainer for ${p.clients?.name || 'this client'} on ${p.name} has run its course. No further monthly milestones will be generated.`,
+            entityType: 'project', entityId: p.id, projectId: p.id,
+          })
+
+          try {
+            const emails = await getMemberEmailsWithPermission(service, p.workspace_id, 'VIEW_FINANCIALS', 10, 'retainer_ending', p.id)
+            if (emails.length) {
+              await sendRetainerEndingEmail({
+                to: emails,
+                clientName: p.clients?.name || 'Client',
+                projectName: p.name,
+                durationMonths: p.retainer_duration_months,
+                projectUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects/${p.id}?tab=billing`,
+              })
+            }
+          } catch (e) { console.error('Retainer ending email failed:', e) }
+
+          endedNotified++
+          continue
+        }
 
         const monthKey   = `${year}-${String(month).padStart(2, '0')}`
         const dueDate    = `${year}-${String(month).padStart(2, '0')}-01`
@@ -94,7 +144,7 @@ export async function POST(request: NextRequest) {
       } catch (e) { console.error('Retainer milestone error for project:', p.id, e) }
     }
 
-    return NextResponse.json({ ok: true, generated })
+    return NextResponse.json({ ok: true, generated, endedNotified })
   } catch (err) {
     console.error('Retainer milestone cron error:', err)
     return NextResponse.json({ error: 'Cron failed' }, { status: 500 })

@@ -52,12 +52,34 @@ export async function POST(request: NextRequest) {
       .lt('revoked_at', d60ago)
     if (revokedErr) console.error('revoked_tokens cleanup failed:', revokedErr)
 
+    // FEATURE (portal audit, section 18 — traced into section 17): migration
+    // 030 added portal_action_log with an index on created_at clearly meant
+    // for exactly this kind of housekeeping, but nothing ever purged it —
+    // every portal sign/decline/accept/counter attempt (successful or not)
+    // accumulated forever. Same 60-day window as revoked_tokens just above;
+    // the rate limiter itself only ever looks back 10 minutes, so nothing
+    // past a couple of days old still matters for its own purpose.
+    const { error: portalLogErr } = await (service as any).from('portal_action_log')
+      .delete()
+      .lt('created_at', d60ago)
+    if (portalLogErr) console.error('portal_action_log cleanup failed:', portalLogErr)
+
     // User anonymization (deletedAt < now - 30 days)
+    // FIX (cron audit, section 17 — closing pass): this had no exclusion for
+    // users already anonymized — every run re-selected and re-wrote every
+    // deleted-30-days-plus user forever, since deleted_at is never cleared
+    // and nothing marked a row as already processed. Idempotent (the same
+    // values get written again), so harmless in effect, but the query and
+    // update set grow without bound for as long as the product exists, for
+    // zero benefit. Excluding rows whose email already matches the
+    // anonymized pattern this same function writes stops the re-processing
+    // without needing a new column.
     const { data: toAnonymize } = await (service as any)
       .from('users')
       .select('id')
       .not('deleted_at', 'is', null)
       .lt('deleted_at', d30ago)
+      .not('email', 'like', 'deleted-%@deleted.scopegov.app')
 
     let anonymized = 0
     for (const u of (toAnonymize || [])) {
@@ -76,7 +98,7 @@ export async function POST(request: NextRequest) {
       ok: true,
       purgedInvites: purged?.length || 0,
       anonymizedUsers: anonymized,
-    }, { status: (expireErr || purgeErr || revokedErr) ? 207 : 200 })
+    }, { status: (expireErr || purgeErr || revokedErr || portalLogErr) ? 207 : 200 })
   } catch (err) {
     console.error('Cleanup cron error:', err)
     return NextResponse.json({ error: 'Cron failed' }, { status: 500 })

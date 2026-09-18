@@ -23,9 +23,18 @@ function resendClient(): Resend {
   return _resend
 }
 
-async function alertOps(subject: string, lines: string[]) {
+// FIX (cron audit, section 17 — closing pass): returns whether the send
+// actually succeeded. `shouldAlert` below used to mark the cooldown as
+// "sent" the instant it decided to alert — before this function even
+// attempted delivery — so a Resend failure (bad API key, an outage) still
+// consumed the full cooldown window as if the page had gone out. The
+// entire point of this route (per the FIX above it) is that someone
+// actually gets paged; silently eating the next 1-6 hours of alerts on a
+// delivery failure defeats that just as thoroughly as never emailing at
+// all did before this route existed.
+async function alertOps(subject: string, lines: string[]): Promise<boolean> {
   const to = process.env.OPS_ALERT_EMAIL
-  if (!to) return
+  if (!to) return false
   try {
     await resendClient().emails.send({
       from:    `ScopeGov Ops <${process.env.RESEND_FROM_EMAIL}>`,
@@ -33,7 +42,8 @@ async function alertOps(subject: string, lines: string[]) {
       subject: `[Guardian Health] ${subject}`,
       html: `<div style="font-family:monospace;white-space:pre-wrap;">${lines.map(l => l.replace(/</g, '&lt;')).join('\n')}</div>`,
     })
-  } catch (e) { console.error('Guardian health ops alert email failed:', e) }
+    return true
+  } catch (e) { console.error('Guardian health ops alert email failed:', e); return false }
 }
 
 // FIX (cron audit, section 17): this route runs every 15 minutes and had
@@ -44,11 +54,19 @@ async function alertOps(subject: string, lines: string[]) {
 // caps how often that specific alert can actually fire an email, while the
 // console.error above it still logs every run either way, so nothing about
 // server-side visibility is lost — only the inbox spam is.
-async function shouldAlert(service: any, key: string, cooldownMs: number): Promise<boolean> {
+//
+// FIX (cron audit, section 17 — closing pass): split into a read-only
+// cooldown check and a separate `markAlerted` write, called only after
+// alertOps() reports success — see that function's comment. A failed send
+// now leaves the cooldown state untouched, so the very next run (15
+// minutes later) tries again instead of going quiet for up to 6 hours.
+async function isOnCooldown(service: any, key: string, cooldownMs: number): Promise<boolean> {
   const { data } = await service.from('ops_alert_state').select('last_sent_at').eq('key', key).maybeSingle()
-  if (data && Date.now() - new Date(data.last_sent_at).getTime() < cooldownMs) return false
+  return !!(data && Date.now() - new Date(data.last_sent_at).getTime() < cooldownMs)
+}
+
+async function markAlerted(service: any, key: string): Promise<void> {
   await service.from('ops_alert_state').upsert({ key, last_sent_at: new Date().toISOString() })
-  return true
 }
 
 export async function POST(request: NextRequest) {
@@ -72,8 +90,9 @@ export async function POST(request: NextRequest) {
     if (rate > 0.01 && total >= 5) {
       const msg = `Classification failure rate: ${(rate * 100).toFixed(1)}% (${failed}/${total} in last 15 min)`
       console.error(`[GUARDIAN ALERT] ${msg}`)
-      if (await shouldAlert(service, 'guardian_health:elevated_failure_rate', 60 * 60000)) {
-        await alertOps('Elevated classification failure rate', [msg])
+      if (!(await isOnCooldown(service, 'guardian_health:elevated_failure_rate', 60 * 60000))) {
+        if (await alertOps('Elevated classification failure rate', [msg]))
+          await markAlerted(service, 'guardian_health:elevated_failure_rate')
       }
     }
 
@@ -89,8 +108,9 @@ export async function POST(request: NextRequest) {
     if ((unresolvedCount || 0) > 0) {
       const msg = `${unresolvedCount} unresolved classification failures older than 24h`
       console.error(`[GUARDIAN ALERT] ${msg}`)
-      if (await shouldAlert(service, 'guardian_health:unresolved_failures', 6 * 3600000)) {
-        await alertOps('Unresolved classification failures', [msg])
+      if (!(await isOnCooldown(service, 'guardian_health:unresolved_failures', 6 * 3600000))) {
+        if (await alertOps('Unresolved classification failures', [msg]))
+          await markAlerted(service, 'guardian_health:unresolved_failures')
       }
     }
 

@@ -39,6 +39,15 @@ const EVENT_TYPES = [
   // above — cron/co-expiry (migration 042) now notifies on this, same
   // whitelist requirement as every entry in this list.
   'co_expired',
+  // FIX (cron audit, section 17 — closing pass): all four of these are
+  // newly wired (cron/payment-overdue's milestone-overdue step,
+  // cron/retainer-milestones' end-of-term notice, the new
+  // cron/guardian-flag-stall, and the new portal invoice-dispute action)
+  // and each has a real email counterpart — same "wire it server-side,
+  // add the toggle in the same change" requirement as every entry above,
+  // so none of these become permanently-on-and-unmutable the way so many
+  // entries in this list already had to be retroactively fixed.
+  'payment_milestone_overdue', 'retainer_ending', 'guardian_flag_stalled', 'invoice_disputed',
 ]
 
 // FIX (re-audit, notifications section): `approval_no_reachable_approver`

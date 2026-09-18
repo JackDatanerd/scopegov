@@ -7,7 +7,7 @@ import { formatAddress } from '@/lib/utils/format'
 import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
 
 const CO_COLUMNS = `id,title,note,status,version,line_items,subtotal,tax_rate,tax_inclusive,
-  total,expires_at,flag_id,workspace_id,accepted_by,accepted_at,client_signature_data,
+  total,expires_at,flag_id,workspace_id,accepted_by,accepted_at,client_signature_data,first_viewed_at,
   projects(id,name,currency,clients(name,email,cc_emails,company_name,billing_address,vat_number),
     workspaces(id,agency_name,brand_colour,logo_storage_path,agency_signature_data,
       legal_address,tax_id,phone,website))`
@@ -93,6 +93,18 @@ async function getCoByToken(token: string, service: any) {
     return { state: 'accepted', acceptedBy: co.accepted_by, clientSignatureData: co.client_signature_data || null }
   }
   if (['declined','withdrawn','closed','stalled','countered'].includes(co.status)) return { state: co.status }
+
+  // FEATURE (portal audit, section 18): first time this document is
+  // actually opened while still awaiting a client response — mirrors the
+  // identical fix in the SOW portal route. Must never block the response
+  // below if the write fails.
+  if (!co.first_viewed_at) {
+    try {
+      await (service as any).from('change_orders')
+        .update({ first_viewed_at: new Date().toISOString() })
+        .eq('id', co.id).is('first_viewed_at', null)
+    } catch (e) { console.error('CO first-view tracking failed (non-fatal):', e) }
+  }
 
   // FIX (doc-completeness audit, migration 014): a CO the agency has
   // accepted at the client's counter amount now needs the client to

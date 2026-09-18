@@ -1380,6 +1380,171 @@ export async function sendInvoiceOverdueInternalEmail(params: {
   })
 }
 
+// FEATURE (cron audit, section 17): payment_milestones going overdue had
+// no email counterpart at all — invoices going overdue (immediately
+// above) get one; a milestone (the earlier stage, before it's even been
+// invoiced) silently flipped status with nothing but a passive dashboard
+// change. Mirrors sendInvoiceOverdueInternalEmail's shape.
+export async function sendPaymentMilestoneOverdueEmail(params: {
+  to: string[]; clientName: string; projectName: string
+  milestoneTitle: string; amount: number; currency: string; projectUrl: string
+}) {
+  const { to, clientName: clientNameRaw, projectName: projectNameRaw, milestoneTitle: milestoneTitleRaw, amount, currency, projectUrl } = params
+  if (to.length === 0) return
+  const clientName     = escapeHtml(clientNameRaw)
+  const projectName    = escapeHtml(projectNameRaw)
+  const milestoneTitle = escapeHtml(milestoneTitleRaw)
+
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.amber,
+    label: 'Milestone overdue',
+    headline: `Payment milestone overdue — ${projectName}`,
+    body: `
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        <strong>${milestoneTitle}</strong> on <strong>${projectName}</strong> (${clientName}) passed its due date
+        with <strong>${currency} ${Number(amount).toLocaleString()}</strong> still pending.
+      </p>
+      <p style="font-size:13px;color:${C.text2};margin:0;">
+        You may want to invoice it now, or follow up with the client directly.
+      </p>
+    `,
+    cta: 'View project →',
+    ctaUrl: projectUrl,
+  })
+
+  return resendClient().emails.send({
+    from:    `ScopeGov <${FROM}>`,
+    to,
+    subject: `Milestone overdue — ${milestoneTitleRaw} (${projectNameRaw})`,
+    html,
+  })
+}
+
+// FEATURE (cron audit, section 17): a retainer's monthly milestones just
+// stopped generating once its term ran out, with nothing telling the team
+// the contract had ended — the same "let something go silently stale" gap
+// this product's own stall crons exist to close elsewhere.
+export async function sendRetainerEndingEmail(params: {
+  to: string[]; clientName: string; projectName: string
+  durationMonths: number; projectUrl: string
+}) {
+  const { to, clientName: clientNameRaw, projectName: projectNameRaw, durationMonths, projectUrl } = params
+  if (to.length === 0) return
+  const clientName  = escapeHtml(clientNameRaw)
+  const projectName = escapeHtml(projectNameRaw)
+
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.amber,
+    label: 'Retainer ended',
+    headline: `Retainer term ended — ${projectName}`,
+    body: `
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        The ${durationMonths}-month retainer for <strong>${clientName}</strong> on
+        <strong>${projectName}</strong> has run its course. No further monthly billing
+        milestones will be generated automatically.
+      </p>
+      <p style="font-size:13px;color:${C.text2};margin:0;">
+        If the engagement is continuing, set up a renewal or a new SOW from the project page.
+      </p>
+    `,
+    cta: 'Open project →',
+    ctaUrl: projectUrl,
+  })
+
+  return resendClient().emails.send({
+    from:    `ScopeGov <${FROM}>`,
+    to,
+    subject: `Retainer ended — ${projectNameRaw}`,
+    html,
+  })
+}
+
+// FEATURE (cron audit, section 17 — flagship finding): guardian_flags had
+// no stall reminder at all, unlike approval/co/sow, despite being the
+// product's own core primitive. This is that reminder's email
+// counterpart, mirroring sendCoStalledEmail/sendSowStalledEmail.
+export async function sendGuardianFlagStalledEmail(params: {
+  to: string[]; projectName: string; clientName: string
+  severity: string; description: string; daysOpen: number; projectUrl: string
+}) {
+  const { to, projectName: projectNameRaw, clientName: clientNameRaw, severity, description: descriptionRaw, daysOpen, projectUrl } = params
+  if (to.length === 0) return
+  const projectName = escapeHtml(projectNameRaw)
+  const clientName  = escapeHtml(clientNameRaw)
+  const description = escapeHtml(descriptionRaw)
+
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.amber,
+    label: 'Scope flag stalled',
+    headline: `Open flag needs attention — ${projectName}`,
+    body: `
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        A <strong>${severity}</strong>-severity scope flag on <strong>${projectName}</strong>
+        (${clientName}) has been open for ${daysOpen}+ days with no action.
+      </p>
+      <div style="background:${C.bg};border:1px solid ${C.border};border-radius:6px;padding:14px 16px;margin:16px 0;">
+        <p style="font-size:13px;color:${C.text2};margin:0;line-height:1.6;">${description}</p>
+      </div>
+      <p style="font-size:13px;color:${C.text2};margin:0;">
+        Resolve it, convert it to a change order, or log an exception from the project's Guardian tab.
+      </p>
+    `,
+    cta: 'Review flag →',
+    ctaUrl: projectUrl,
+  })
+
+  return resendClient().emails.send({
+    from:    `ScopeGov <${FROM}>`,
+    to,
+    subject: `Scope flag stalled ${daysOpen}+ days — ${projectNameRaw}`,
+    html,
+  })
+}
+
+// FEATURE (portal audit, section 18): the invoice portal had no way for a
+// client to push back on an invoice at all — SOW gets decline +
+// request-changes, CO gets decline + counter, invoice got nothing. This
+// is the internal notification for the new client-facing dispute action
+// (see app/api/portal/invoice/[token]/dispute).
+export async function sendInvoiceDisputedEmail(params: {
+  to: string[]; clientName: string; projectName: string
+  invoiceNumber?: string | null; note: string; projectUrl: string
+}) {
+  const { to, clientName: clientNameRaw, projectName: projectNameRaw, invoiceNumber, note: noteRaw, projectUrl } = params
+  if (to.length === 0) return
+  const clientName  = escapeHtml(clientNameRaw)
+  const projectName = escapeHtml(projectNameRaw)
+  const note        = escapeHtml(noteRaw)
+
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.red,
+    label: 'Invoice disputed',
+    headline: `${clientName} has a question about an invoice`,
+    body: `
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        <strong>${clientName}</strong> flagged invoice${invoiceNumber ? ` ${invoiceNumber}` : ''} on
+        <strong>${projectName}</strong> from the client portal.
+      </p>
+      <div style="background:${C.bg};border:1px solid ${C.border};border-radius:6px;padding:14px 16px;margin:16px 0;">
+        <p style="font-size:13px;color:${C.text2};margin:0;line-height:1.6;">${note}</p>
+      </div>
+    `,
+    cta: 'View invoice →',
+    ctaUrl: projectUrl,
+  })
+
+  return resendClient().emails.send({
+    from:    `ScopeGov <${FROM}>`,
+    to,
+    subject: `Invoice question from ${clientNameRaw} — ${projectNameRaw}`,
+    html,
+  })
+}
+
 // ── Security: MFA enabled ────────────────────────────────────
 // (audit round 6: this file previously also gained a sendOpsAlertEmail
 // here for the guardian-health cron's alerting gap — a parallel session

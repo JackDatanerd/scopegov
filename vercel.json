@@ -55,6 +55,10 @@
     {
       "path": "/api/cron/co-expiry",
       "schedule": "15 7 * * *"
+    },
+    {
+      "path": "/api/cron/guardian-flag-stall",
+      "schedule": "0 11 * * *"
     }
   ]
 }

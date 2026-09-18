@@ -42,6 +42,10 @@ interface InvoiceData {
   agencyWebsite: string | null
   brandColour: string
   logoUrl: string | null
+  // FEATURE (portal audit, section 18): lets the page show "you already
+  // flagged this" instead of re-offering the dispute form.
+  disputedAt: string | null
+  disputeNote: string | null
 }
 
 interface Payment {
@@ -74,6 +78,14 @@ export default function InvoicePortalPage() {
   const [payments, setPayments] = useState<Payment[]>([])
   const [errorMsg, setErrorMsg] = useState('')
 
+  // FEATURE (portal audit, section 18): the one client-facing action this
+  // portal never had — flag a question/concern about the invoice, mirroring
+  // the shape of SOW's request-changes and CO's decline forms.
+  const [disputeOpen, setDisputeOpen] = useState(false)
+  const [disputeNote, setDisputeNote] = useState('')
+  const [disputeSubmitting, setDisputeSubmitting] = useState(false)
+  const [disputeError, setDisputeError] = useState('')
+
   useEffect(() => {
     fetch(`/api/portal/invoice/${token}`)
       .then(async r => {
@@ -83,6 +95,30 @@ export default function InvoicePortalPage() {
       })
       .catch(() => { setErrorMsg('Something went wrong'); setState('error') })
   }, [token])
+
+  async function submitDispute() {
+    if (disputeNote.trim().length < 10) {
+      setDisputeError('Please add a bit more detail (at least 10 characters).')
+      return
+    }
+    setDisputeSubmitting(true)
+    setDisputeError('')
+    try {
+      const res = await fetch(`/api/portal/invoice/${token}/dispute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note: disputeNote.trim() }),
+      })
+      const json = await res.json()
+      if (!res.ok) { setDisputeError(json.error || 'Something went wrong'); return }
+      setInvoice(inv => inv ? { ...inv, disputedAt: new Date().toISOString(), disputeNote: disputeNote.trim() } : inv)
+      setDisputeOpen(false)
+    } catch {
+      setDisputeError('Something went wrong — please try again.')
+    } finally {
+      setDisputeSubmitting(false)
+    }
+  }
 
   const accent = invoice?.brandColour || '#1A5C3A'
   const balanceDue = invoice ? Math.max(0, invoice.amount - invoice.amountPaid) : 0
@@ -303,13 +339,50 @@ export default function InvoicePortalPage() {
             This is a document, not a payment portal — pay per the instructions above, then the agency will
             mark it received. ScopeGov does not process this payment.
           </p>
-          <a
-            href={`/api/portal/invoice/${token}/pdf`}
-            className="btn btn-ghost"
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
-          >
-            <i className="ti ti-download" style={{ fontSize: 13 }} /> Download PDF
-          </a>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+            <a
+              href={`/api/portal/invoice/${token}/pdf`}
+              className="btn btn-ghost"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            >
+              <i className="ti ti-download" style={{ fontSize: 13 }} /> Download PDF
+            </a>
+
+            {/* FEATURE (portal audit, section 18): the invoice portal's only
+                client-facing action. Shows "already flagged" once disputed
+                rather than re-offering the form. */}
+            {invoice.disputedAt ? (
+              <span style={{ fontSize: 12.5, color: '#B45309', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <i className="ti ti-flag" style={{ fontSize: 13 }} /> You flagged this on {fmtDate(invoice.disputedAt)}
+              </span>
+            ) : !disputeOpen ? (
+              <button type="button" className="btn btn-ghost" onClick={() => setDisputeOpen(true)}>
+                <i className="ti ti-flag" style={{ fontSize: 13 }} /> Question about this invoice?
+              </button>
+            ) : null}
+          </div>
+
+          {disputeOpen && !invoice.disputedAt && (
+            <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid #F0F0EA' }}>
+              <div className="portal-section-title">What's the issue?</div>
+              <textarea
+                value={disputeNote}
+                onChange={e => setDisputeNote(e.target.value)}
+                placeholder="e.g. this amount doesn't match what we discussed, or we already paid this via..."
+                rows={4}
+                style={{ width: '100%', boxSizing: 'border-box', border: '1px solid #E5E1D8', borderRadius: 6, padding: '10px 12px', fontSize: 13.5, fontFamily: 'inherit', resize: 'vertical' }}
+              />
+              {disputeError && <div style={{ fontSize: 12.5, color: '#B91C1C', marginTop: 6 }}>{disputeError}</div>}
+              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                <button type="button" className="btn" style={{ background: accent, color: '#FFF', padding: '10px 22px' }} disabled={disputeSubmitting} onClick={submitDispute}>
+                  {disputeSubmitting ? <span className="spin" style={{ width: 14, height: 14 }} /> : 'Send to agency'}
+                </button>
+                <button type="button" className="btn btn-ghost" onClick={() => { setDisputeOpen(false); setDisputeError('') }}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </PortalShell>

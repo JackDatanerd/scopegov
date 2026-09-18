@@ -119,6 +119,14 @@ const NOTIF_ITEMS = [
   // though all three are seeded together in workspace_notification_defaults
   // (migration 004). See sendInvoiceSentInternalEmail.
   { key: 'invoice_sent',          label: 'Invoice sent',            desc: 'When a teammate sends an invoice to a client' },
+  // FIX (cron audit, section 17 — closing pass): four newly-wired events
+  // (milestone overdue, retainer ended, guardian flag stalled, invoice
+  // disputed) — added in the same change as their notify/email wiring so
+  // none of them repeat the "permanently on, no toggle" bug fixed above.
+  { key: 'payment_milestone_overdue', label: 'Payment milestone overdue', desc: 'When a payment milestone passes its due date unpaid' },
+  { key: 'retainer_ending',       label: 'Retainer term ended',     desc: "When a retainer's contracted duration runs out and billing stops" },
+  { key: 'guardian_flag_stalled', label: 'Scope flag stalled',      desc: "When an open scope flag hasn't been actioned in 5+ days" },
+  { key: 'invoice_disputed',      label: 'Invoice disputed',        desc: 'When a client flags a question or concern about an invoice from the portal' },
 ]
 
 // FIX (re-audit, notifications section): both of these are fully wired

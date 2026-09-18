@@ -31,6 +31,9 @@ const LIMITS: Record<string, { max: number; windowMinutes: number }> = {
   'co.counter':          { max: 10, windowMinutes: 10 },
   'co.countersign':      { max: 10, windowMinutes: 10 },
   'co.decline':          { max: 10, windowMinutes: 10 },
+  // FEATURE (portal audit, section 18): new client-facing mutating action —
+  // same coverage requirement as every entry above it.
+  'invoice.dispute':     { max: 10, windowMinutes: 10 },
 }
 const DEFAULT_LIMIT = { max: 10, windowMinutes: 10 }
 
