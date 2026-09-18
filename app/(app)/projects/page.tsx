@@ -47,6 +47,32 @@ export default async function ProjectsPage() {
 
   const { data: projects = [] } = await query
 
+  // FIX (section-11/12 audit — flagship feature gap): see lib/utils/attention.ts
+  // — mirrors the same pending-approvals fetch the Dashboard now does, so
+  // both screens agree on which projects are stuck in an approval chain.
+  // A separate query (not an embedded approval_requests(...) above) to
+  // keep the pending-only filter from inner-joining out projects with zero
+  // pending requests.
+  let pendingApprovalsQuery = (service as any)
+    .from('approval_requests')
+    .select('project_id, created_at')
+    .eq('workspace_id', session.workspaceId)
+    .eq('status', 'pending')
+  if (!canViewAll) {
+    const ids = (projects || []).map((p: any) => p.id)
+    pendingApprovalsQuery = pendingApprovalsQuery.in('project_id', ids)
+  }
+  const { data: pendingApprovalRows = [] } = await pendingApprovalsQuery
+  const pendingApprovalsByProject = new Map<string, Array<{ created_at: string }>>()
+  for (const r of (pendingApprovalRows || [])) {
+    const list = pendingApprovalsByProject.get(r.project_id) || []
+    list.push({ created_at: r.created_at })
+    pendingApprovalsByProject.set(r.project_id, list)
+  }
+  const projectsWithApprovals = (projects || []).map((p: any) => ({
+    ...p, pending_approvals: pendingApprovalsByProject.get(p.id),
+  }))
+
   // FIX (deep audit, section 7): fetch the workspace's actual Guardian
   // settings so "needs attention" here matches the Dashboard instead of
   // silently falling back to isAttentionWorthy's hardcoded defaults.
@@ -58,7 +84,7 @@ export default async function ProjectsPage() {
 
   return (
     <ProjectsClient
-      projects={projects || []}
+      projects={projectsWithApprovals}
       canCreate={canCreate}
       canViewFinancials={hasPermission(session, 'VIEW_FINANCIALS')}
       session={session}

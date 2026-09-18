@@ -40,6 +40,7 @@ function formatEvent(a: any): string {
     'co.accepted': `Change order accepted — ${n}`,
     'co.declined': `Change order declined — ${n}`,
     'co.countered': `Counter offer received on ${n}`,
+    'project.retainer_renewed': `Retainer renewed — ${n} now ${a.metadata?.currency || ''} ${a.metadata?.new_monthly_amount ?? ''}/mo`,
     'flag.raised': `Scope flag raised on ${n}`,
     'flag.resolved': `Scope flag resolved on ${n}`,
     'member.invited': `${actor} invited a team member`,
@@ -138,12 +139,34 @@ export default async function DashboardPage() {
 
   const { data: activity = [] } = await activityQuery
 
+  // FIX (section-11/12 audit — flagship feature gap): see lib/utils/attention.ts
+  // — isAttentionWorthy() had no clause for a document stuck in an approval
+  // chain at all. Fetched as its own query (rather than an embedded
+  // approval_requests(...) on the projects select above) to keep the
+  // pending-only filter simple and unambiguous — an embedded-resource
+  // filter here would need care not to inner-join projects with zero
+  // pending requests out of the result entirely.
+  let pendingApprovalsQuery = (service as any)
+    .from('approval_requests')
+    .select('project_id, created_at')
+    .eq('workspace_id', session.workspaceId)
+    .eq('status', 'pending')
+  if (!canViewAll) pendingApprovalsQuery = pendingApprovalsQuery.in('project_id', accessibleProjectIds || [])
+  const { data: pendingApprovalRows = [] } = await pendingApprovalsQuery
+  const pendingApprovalsByProject = new Map<string, Array<{ createdAt: string }>>()
+  for (const r of (pendingApprovalRows || [])) {
+    const list = pendingApprovalsByProject.get(r.project_id) || []
+    list.push({ createdAt: r.created_at })
+    pendingApprovalsByProject.set(r.project_id, list)
+  }
+
   const active = (projects || []).filter((p: any) =>
     ['Active', 'Awaiting Signature', 'Intake', 'Changes Requested'].includes(p.status))
   const attention = (projects || []).filter((p: any) =>
     isAttentionWorthy({
       project: { ...p, contractValue: p.contract_value, stallReason: p.stall_reason,
-        guardianFlags: p.guardian_flags, changeOrders: p.change_orders, sowDocuments: p.sow_documents },
+        guardianFlags: p.guardian_flags, changeOrders: p.change_orders, sowDocuments: p.sow_documents,
+        pendingApprovals: pendingApprovalsByProject.get(p.id) },
       workspace: { proactiveRiskAlertsEnabled: ws?.proactive_risk_alerts_enabled, proactiveRiskThreshold: ws?.proactive_risk_threshold, currency: ws?.currency },
     })
   )
@@ -243,7 +266,8 @@ export default async function DashboardPage() {
                     {attention.slice(0, 6).map((p: any) => {
                       const reason = attentionReason({
                         project: { ...p, contractValue: p.contract_value, stallReason: p.stall_reason,
-                          guardianFlags: p.guardian_flags, changeOrders: p.change_orders, sowDocuments: p.sow_documents }
+                          guardianFlags: p.guardian_flags, changeOrders: p.change_orders, sowDocuments: p.sow_documents,
+                          pendingApprovals: pendingApprovalsByProject.get(p.id) }
                       })
                       return (
                         <tr key={p.id}>

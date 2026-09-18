@@ -22,13 +22,24 @@ interface WorkflowStep {
 }
 interface Workflow {
   id: string
-  document_type: 'sow' | 'co'
+  document_type: 'sow' | 'co' | 'invoice'
   name: string
   threshold_amount: number | null
   threshold_currency: string | null
   is_active: boolean
   created_at: string
   approval_workflow_steps: WorkflowStep[]
+}
+
+// FIX (section-12 audit — flagship feature gap): 'invoice' added as a
+// third gateable document type alongside 'sow'/'co' — see
+// lib/approvals/engine.ts for the full context. Centralized here since
+// this component previously spelled out "SOW"/"change order" labels
+// inline in half a dozen places via a two-way ternary.
+const TYPE_LABEL: Record<'sow' | 'co' | 'invoice', { singular: string; plural: string }> = {
+  sow:     { singular: 'SOW', plural: 'SOWs' },
+  co:      { singular: 'change order', plural: 'change orders' },
+  invoice: { singular: 'invoice', plural: 'invoices' },
 }
 
 type StepDraft = { key: string; kind: 'role' | 'user' | ''; id: string }
@@ -80,16 +91,16 @@ export default function ApprovalWorkflowsClient({ initialWorkflows, roles, membe
     } finally { setBusyId(null) }
   }
 
-  const byType = { sow: workflows.filter(w => w.document_type === 'sow'), co: workflows.filter(w => w.document_type === 'co') }
+  const byType = { sow: workflows.filter(w => w.document_type === 'sow'), co: workflows.filter(w => w.document_type === 'co'), invoice: workflows.filter(w => w.document_type === 'invoice') }
 
   return (
     <div>
       {error && <div className="auth-error" style={{ marginBottom: 14 }}>{error}</div>}
 
-      {(['sow', 'co'] as const).map(type => (
+      {(['sow', 'co', 'invoice'] as const).map(type => (
         <div key={type} style={{ marginBottom: 28 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-            <h3 className="sec-title" style={{ margin: 0 }}>{type === 'sow' ? 'SOW workflows' : 'Change order workflows'}</h3>
+            <h3 className="sec-title" style={{ margin: 0 }}>{TYPE_LABEL[type].singular === 'SOW' ? 'SOW workflows' : `${TYPE_LABEL[type].singular[0].toUpperCase()}${TYPE_LABEL[type].singular.slice(1)} workflows`}</h3>
             <button className="btn btn-ghost btn-sm" onClick={() => setEditing('new-' + type as any)}>
               <i className="ti ti-plus" style={{ fontSize: 12 }} /> New workflow
             </button>
@@ -99,7 +110,7 @@ export default function ApprovalWorkflowsClient({ initialWorkflows, roles, membe
             <div className="surface">
               <div className="empty-state" style={{ padding: '28px 20px' }}>
                 <p className="empty-state-sub" style={{ margin: 0 }}>
-                  No approval rules for {type === 'sow' ? 'SOWs' : 'change orders'} yet — they send immediately once a client-facing draft is ready.
+                  No approval rules for {TYPE_LABEL[type].plural} yet — they send immediately once a client-facing draft is ready.
                 </p>
               </div>
             </div>
@@ -143,7 +154,7 @@ export default function ApprovalWorkflowsClient({ initialWorkflows, roles, membe
       {editing && (
         <WorkflowEditorModal
           workflow={typeof editing === 'string' ? null : editing}
-          defaultType={typeof editing === 'string' && editing.startsWith('new-co') ? 'co' : 'sow'}
+          defaultType={typeof editing === 'string' && editing.startsWith('new-co') ? 'co' : typeof editing === 'string' && editing.startsWith('new-invoice') ? 'invoice' : 'sow'}
           roles={roles}
           members={members}
           onClose={() => setEditing(null)}
@@ -156,12 +167,12 @@ export default function ApprovalWorkflowsClient({ initialWorkflows, roles, membe
 
 function WorkflowEditorModal({ workflow, defaultType, roles, members, onClose, onSaved }: {
   workflow: Workflow | null
-  defaultType: 'sow' | 'co'
+  defaultType: 'sow' | 'co' | 'invoice'
   roles: Role[]; members: Member[]
   onClose: () => void; onSaved: () => void
 }) {
   const isEdit = !!workflow
-  const [documentType] = useState<'sow' | 'co'>(workflow?.document_type || defaultType)
+  const [documentType] = useState<'sow' | 'co' | 'invoice'>(workflow?.document_type || defaultType)
   const [name, setName] = useState(workflow?.name || '')
   const [hasThreshold, setHasThreshold] = useState(workflow?.threshold_amount != null)
   const [threshold, setThreshold] = useState(workflow?.threshold_amount != null ? String(workflow.threshold_amount) : '')
@@ -225,9 +236,9 @@ function WorkflowEditorModal({ workflow, defaultType, roles, members, onClose, o
     <>
       <div className="modal-bg" onClick={onClose} />
       <div className="modal modal-lg">
-        <h2 className="modal-title">{isEdit ? 'Edit workflow' : `New ${documentType === 'sow' ? 'SOW' : 'change order'} workflow`}</h2>
+        <h2 className="modal-title">{isEdit ? 'Edit workflow' : `New ${TYPE_LABEL[documentType].singular} workflow`}</h2>
         <p className="modal-sub">
-          {documentType === 'sow' ? 'SOWs' : 'Change orders'} matching this rule are held for sign-off before they can be sent to a client.
+          {TYPE_LABEL[documentType].plural[0].toUpperCase()}{TYPE_LABEL[documentType].plural.slice(1)} matching this rule are held for sign-off before they can be sent to a client.
         </p>
 
         {error && <div className="auth-error" style={{ marginBottom: 14 }}>{error}</div>}
@@ -235,7 +246,7 @@ function WorkflowEditorModal({ workflow, defaultType, roles, members, onClose, o
         <div className="fgrp">
           <label className="flbl">Name</label>
           <input className="finp" value={name} onChange={e => setName(e.target.value)}
-            placeholder={documentType === 'sow' ? 'e.g. SOWs over $25k' : 'e.g. All change orders'} />
+            placeholder={documentType === 'sow' ? 'e.g. SOWs over $25k' : documentType === 'invoice' ? 'e.g. Invoices over $10k' : 'e.g. All change orders'} />
         </div>
 
         <div className="fgrp">

@@ -85,6 +85,7 @@ export default function ProjectsClient({ projects, canCreate, canViewFinancials,
       project: {
         ...p, contractValue: p.contract_value, stallReason: p.stall_reason,
         guardianFlags: p.guardian_flags, changeOrders: p.change_orders, sowDocuments: p.sow_documents,
+        pendingApprovals: (p as any).pending_approvals?.map((a: any) => ({ createdAt: a.created_at })),
       },
       workspace: {
         proactiveRiskAlertsEnabled: workspaceSettings?.proactiveRiskAlertsEnabled,
@@ -268,6 +269,7 @@ function ProjectGroupRow({ project: p, canViewFinancials, hasAttention }: {
     project: {
       ...p, contractValue: p.contract_value, stallReason: p.stall_reason,
       guardianFlags: p.guardian_flags, changeOrders: p.change_orders, sowDocuments: p.sow_documents,
+      pendingApprovals: (p as any).pending_approvals?.map((a: any) => ({ createdAt: a.created_at })),
     }
   }) : null
 

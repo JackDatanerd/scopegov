@@ -87,6 +87,45 @@ export async function finalizeCoAcceptance(service: any, params: {
   if (!updatedCo || updatedCo.length === 0)
     return { ok: false as const, error: 'This change order was already accepted', status: 409 }
 
+  // FIX (section-11/12 audit — cross-section bug): change_orders.is_retainer_renewal
+  // is a real, user-facing checkbox ("This is a retainer renewal" in
+  // CoEditor.tsx) that was captured and persisted but never acted on
+  // anywhere. Every accepted CO's financial impact — retainer renewals
+  // included — only ever landed in the amendments table below; nothing
+  // ever touched projects.contract_value. That's correct for an ordinary
+  // scope-adding CO (amendments is the additive ledger on top of the
+  // original contract_value), but app/api/cron/retainer-milestones/route.ts
+  // reads contract_value LIVE, every month, AS the current monthly
+  // retainer amount — it has no concept of amendments at all. So a client
+  // could sign a CO explicitly marked as a retainer-rate renewal, and the
+  // monthly auto-generated billing milestone would keep invoicing them at
+  // the ORIGINAL rate forever, silently, with nothing anywhere ever
+  // surfacing the discrepancy. Scoped to type:'retainer' projects only —
+  // for a fixed-fee project this flag shouldn't be checked in the first
+  // place, and blindly overwriting a fixed contract_value here would be
+  // its own bug. The CO's total is treated as the new absolute monthly
+  // rate (an agency drafts this as a single "New monthly retainer rate"
+  // line item), not a delta on top of the old one — consistent with how
+  // the checkbox reads and with there being no separate "increase by"
+  // field anywhere in the CO editor.
+  if (co.is_retainer_renewal && project.type === 'retainer') {
+    const { error: renewalErr } = await (service as any)
+      .from('projects')
+      .update({ contract_value: co.total, updated_at: now })
+      .eq('id', co.project_id)
+    if (renewalErr) {
+      console.error('Retainer renewal contract_value update failed after CO accept:', renewalErr, { coId: co.id })
+    } else {
+      await logAudit(service, {
+        workspaceId: co.workspace_id, actorId: client.email,
+        actorEmail: client.email, actorName: signerName.trim(),
+        eventType: 'project.retainer_renewed', entityType: 'project',
+        entityId: co.project_id, entityName: project.name,
+        metadata: { change_order_id: co.id, new_monthly_amount: co.total, currency: project.currency || 'USD' },
+      })
+    }
+  }
+
   const lineItems    = typeof co.line_items === 'string' ? JSON.parse(co.line_items) : (co.line_items || [])
   const deliverables = lineItems.map((l: any) => l.description).filter(Boolean)
 

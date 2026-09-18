@@ -23,9 +23,17 @@ interface Props {
   currency: string
   router: any
   defaultPaymentInstructions?: string
+  // FIX (section-12 audit — feature gap follow-through): invoices can now
+  // be gated by an approval workflow (see /api/invoices/[id]/send). An
+  // invoice's own status stays 'draft' the whole time it's pending — this
+  // is the only signal the UI has that a draft is actually "sent for
+  // approval" rather than just sitting untouched, same reasoning as the
+  // sow:<id>/co:<id> map ProjectDetail.tsx already threads to the SOW/CO
+  // tabs. Keyed "invoice:<id>".
+  pendingApprovals?: Record<string, { id: string; current_step: number; total_steps: number }>
 }
 
-export default function BillingTab({ project, milestones, invoices, reconciliation, permissions, currency, router, defaultPaymentInstructions = '' }: Props) {
+export default function BillingTab({ project, milestones, invoices, reconciliation, permissions, currency, router, defaultPaymentInstructions = '', pendingApprovals = {} }: Props) {
   const [creating, setCreating]   = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [payingId, setPayingId]   = useState<string | null>(null)
@@ -141,6 +149,7 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {invoices.map((inv: any) => {
             const balance = Math.max(0, Number(inv.amount) - Number(inv.amount_paid))
+            const pendingApproval = inv.status === 'draft' ? pendingApprovals[`invoice:${inv.id}`] : null
             return (
               <div key={inv.id} className="surface surface-p">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
@@ -148,6 +157,16 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
                       <span style={{ fontSize: 14, fontWeight: 500 }}>{inv.title}</span>
                       <span className={`pill pill-${invoicePill(inv.status)}`}>{invoiceStatusLabel(inv.status)}</span>
+                      {/* FIX (section-12 audit — feature gap follow-through):
+                          mirrors the "Awaiting approval" pill already shown
+                          on the SOW/CO tabs — without this, a gated
+                          invoice just silently sat there with no visible
+                          explanation for why it hadn't gone out. */}
+                      {pendingApproval && (
+                        <span className="pill pill-amber">
+                          <i className="ti ti-shield-check" style={{ fontSize: 10 }} /> Awaiting approval ({pendingApproval.current_step}/{pendingApproval.total_steps})
+                        </span>
+                      )}
                     </div>
                     <div style={{ fontSize: 12, color: 'var(--text-3)' }}>
                       {inv.invoice_number ? `${inv.invoice_number} · ` : ''}
@@ -175,7 +194,7 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
                 </div>
 
                 <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
-                  {inv.status === 'draft' && permissions.sendInvoices && (
+                  {inv.status === 'draft' && permissions.sendInvoices && !pendingApproval && (
                     <>
                       <button className="btn btn-ghost btn-sm" disabled={busyId === inv.id} onClick={() => sendInvoice(inv.id)}>
                         {busyId === inv.id ? <span className="spin spin-dark" /> : <><i className="ti ti-send" style={{ fontSize: 11 }} /> Send</>}
@@ -193,6 +212,16 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
                         <i className="ti ti-trash" style={{ fontSize: 11 }} /> Delete
                       </button>
                     </>
+                  )}
+                  {/* FIX (section-12 audit — feature gap follow-through):
+                      once gated, PATCH /api/invoices/[id] and DELETE both
+                      now reject with "cancel it first" (matching SOW/CO) —
+                      this button routes there instead of leaving the
+                      invoice with no visible next step. */}
+                  {inv.status === 'draft' && pendingApproval && (
+                    <a href="/approvals" className="btn btn-ghost btn-xs">
+                      <i className="ti ti-shield-check" style={{ fontSize: 11 }} /> Awaiting approval
+                    </a>
                   )}
                   {['sent', 'partially_paid', 'overdue'].includes(inv.status) && (
                     <>
@@ -365,6 +394,10 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
   const [title, setTitle]   = useState('')
   const [amount, setAmount] = useState('')
   const [dueDate, setDueDate] = useState('')
+  // FIX (section-12 audit — feature gap): po_number was fully modeled and
+  // rendered on every invoice PDF/portal view but had no input anywhere in
+  // the product — see the create-route comment for the full explanation.
+  const [poNumber, setPoNumber] = useState('')
   // FIX (doc-completeness audit): workspace Settings had a "default payment
   // instructions" field that was saved but never actually used anywhere —
   // every invoice started blank regardless. Prefill from it; still editable
@@ -559,6 +592,7 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
         body: JSON.stringify({
           projectId, title: title.trim(), amount: Number(amount), dueDate: dueDate || undefined,
           paymentInstructions: paymentInstructions || undefined,
+          poNumber: poNumber.trim() || undefined,
           taxRate: Number(taxRate) || 0, taxInclusive,
           lineItems: cleanItems.length > 0 ? cleanItems.map(({ id, ...rest }) => rest) : undefined,
           milestoneId: source.type === 'milestone' ? source.id : undefined,
@@ -744,6 +778,11 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
               <input type="date" className="finp" value={dueDate} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDueDate(e.target.value)} />
             </div>
 
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 5 }}>PO number <span style={{ fontWeight: 400, color: 'var(--text-4)' }}>— optional, if the client requires one</span></label>
+              <input className="finp" value={poNumber} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPoNumber(e.target.value)} placeholder="e.g. PO-4471" />
+            </div>
+
             <div style={{ marginBottom: 6 }}>
               <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 5 }}>Payment instructions <span style={{ fontWeight: 400, color: 'var(--text-4)' }}>— shown to the client</span></label>
               <RichTextField
@@ -787,6 +826,7 @@ function EditInvoiceModal({ invoiceId, projectCurrency, onClose, onSaved }: {
   const [title, setTitle] = useState('')
   const [amount, setAmount] = useState('')
   const [dueDate, setDueDate] = useState('')
+  const [poNumber, setPoNumber] = useState('')
   const [paymentInstructions, setPaymentInstructions] = useState('')
   const [taxRate, setTaxRate] = useState('0')
   const [taxInclusive, setTaxInclusive] = useState(true)
@@ -810,6 +850,7 @@ function EditInvoiceModal({ invoiceId, projectCurrency, onClose, onSaved }: {
         setTitle(inv.title || '')
         setAmount(String(inv.amount ?? ''))
         setDueDate(inv.due_date ? String(inv.due_date).slice(0, 10) : '')
+        setPoNumber(inv.po_number || '')
         setPaymentInstructions(inv.payment_instructions || '')
         setTaxRate(inv.tax_rate != null ? String(inv.tax_rate) : '0')
         setTaxInclusive(inv.tax_inclusive ?? true)
@@ -868,7 +909,7 @@ function EditInvoiceModal({ invoiceId, projectCurrency, onClose, onSaved }: {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           title: title.trim(), amount: Number(amount),
-          dueDate: dueDate || null, paymentInstructions,
+          dueDate: dueDate || null, poNumber: poNumber.trim() || null, paymentInstructions,
           taxRate: Number(taxRate) || 0, taxInclusive,
           lineItems: itemized ? cleanItems.map(({ id, ...rest }) => rest) : [],
         }),
@@ -984,6 +1025,11 @@ function EditInvoiceModal({ invoiceId, projectCurrency, onClose, onSaved }: {
             <div style={{ marginBottom: 12 }}>
               <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 5 }}>Due date <span style={{ fontWeight: 400, color: 'var(--text-4)' }}>— optional</span></label>
               <input type="date" className="finp" value={dueDate} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDueDate(e.target.value)} />
+            </div>
+
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 5 }}>PO number <span style={{ fontWeight: 400, color: 'var(--text-4)' }}>— optional, if the client requires one</span></label>
+              <input className="finp" value={poNumber} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPoNumber(e.target.value)} placeholder="e.g. PO-4471" />
             </div>
 
             <div style={{ marginBottom: 6 }}>

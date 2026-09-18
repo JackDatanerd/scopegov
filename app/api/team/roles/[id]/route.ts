@@ -112,6 +112,25 @@ export async function PATCH(
 
     if (error) throw new Error(error.message)
 
+    // FIX (section-11 audit): stripping APPROVE_DOCUMENTS from a role here
+    // silently breaks any active workflow step that assigns it — everyone
+    // who held the role remains "reachable" (getMembersWithRole() and the
+    // stall cron only match on role_id, not on live permission), so
+    // requests just stall with no visible cause and no escalation, since
+    // the stall cron's zero-recipients path never fires. DELETE below
+    // already checks this for role deletion; edits had no equivalent.
+    // Warn rather than block, matching the member-deactivation pattern.
+    let affectedWorkflowNames: string[] = []
+    if (permissions !== undefined && existingRole.permissions?.['APPROVE_DOCUMENTS'] === true && permissions['APPROVE_DOCUMENTS'] !== true) {
+      const { data: affectedSteps } = await (service as any)
+        .from('approval_workflow_steps')
+        .select('id, approval_workflows!inner(name, is_active)')
+        .eq('approver_role_id', id)
+        .eq('approval_workflows.workspace_id', session.workspaceId)
+        .eq('approval_workflows.is_active', true)
+      affectedWorkflowNames = Array.from(new Set((affectedSteps || []).map((s: any) => s.approval_workflows?.name).filter(Boolean)))
+    }
+
     // FIX (deep audit, Team & Invites re-pass): POST (role_created) and
     // DELETE (role.deleted) right next to this both log to the audit
     // trail — this edit path never did, despite being the most
@@ -123,10 +142,18 @@ export async function PATCH(
       actorEmail: session.email, actorName: session.name,
       eventType: 'role.updated', entityType: 'role',
       entityId: id, entityName: (name as string) || existingRole.name,
-      metadata: { fields: Object.keys(updates).filter(k => k !== 'updated_at') },
+      metadata: {
+        fields: Object.keys(updates).filter(k => k !== 'updated_at'),
+        ...(affectedWorkflowNames.length ? { orphaned_approval_workflows: affectedWorkflowNames } : {}),
+      },
     })
 
-    return NextResponse.json({ ok: true })
+    return NextResponse.json({
+      ok: true,
+      ...(affectedWorkflowNames.length ? {
+        warning: `This role is named as an approver on: ${affectedWorkflowNames.join(', ')}. Holders of this role may no longer be able to act on those steps — update those workflows in Settings so documents don't get stuck waiting.`,
+      } : {}),
+    })
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Error' },

@@ -212,10 +212,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // fetch role_id/permission_overrides too, not just effective_permissions
     // — the admin-floor simulation below needs them to compute what this
     // member's effective_permissions would become post-change.
-    let targetMember: { role_id: string | null; permission_overrides: Record<string, unknown> | null; effective_permissions: Record<string, unknown> | null } | null = null
+    let targetMember: { user_id: string | null; role_id: string | null; permission_overrides: Record<string, unknown> | null; effective_permissions: Record<string, unknown> | null } | null = null
     if (body.permissionOverrides !== undefined || body.roleId !== undefined) {
       const { data } = await (service as any)
-        .from('workspace_members').select('role_id,permission_overrides,effective_permissions')
+        .from('workspace_members').select('user_id,role_id,permission_overrides,effective_permissions')
         .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
       if (!data) return NextResponse.json({ error: 'Member not found' }, { status: 404 })
       targetMember = data
@@ -277,27 +277,31 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // themselves with nothing to stop it. Simulate the target's
     // post-change effective_permissions and refuse if it would leave the
     // workspace with zero active MANAGE_ROLES holders.
+    // FIX (section-11/12 audit): hoisted out of the MANAGE_ROLES-only branch
+    // below so the same simulated post-change permission set can also back
+    // the APPROVE_DOCUMENTS warning further down — previously this was only
+    // ever computed when the member currently held MANAGE_ROLES.
+    let simulatedPerms: Record<string, unknown> | null = null
     if (targetMember) {
+      const finalOverrides = body.permissionOverrides !== undefined ? body.permissionOverrides : targetMember.permission_overrides
+      const finalRolePermissions = newRolePermissions !== undefined
+        ? newRolePermissions
+        : (targetMember.role_id
+            ? (await (service as any).from('roles').select('permissions').eq('id', targetMember.role_id).maybeSingle()).data?.permissions
+            : null)
+      simulatedPerms = mergePermissions(finalRolePermissions, finalOverrides)
+
       const hasManageRolesNow = targetMember.effective_permissions?.['MANAGE_ROLES'] === true
-      if (hasManageRolesNow) {
-        const finalOverrides = body.permissionOverrides !== undefined ? body.permissionOverrides : targetMember.permission_overrides
-        const finalRolePermissions = newRolePermissions !== undefined
-          ? newRolePermissions
-          : (targetMember.role_id
-              ? (await (service as any).from('roles').select('permissions').eq('id', targetMember.role_id).maybeSingle()).data?.permissions
-              : null)
-        const simulatedPerms = mergePermissions(finalRolePermissions, finalOverrides)
-        if (simulatedPerms['MANAGE_ROLES'] !== true) {
-          const { data: activeMembers } = await (service as any)
-            .from('workspace_members').select('id,effective_permissions')
-            .eq('workspace_id', session.workspaceId).eq('status', 'active')
-          const snapshot = (activeMembers || []).map((m: any) => ({ id: m.id, effectivePermissions: m.effective_permissions }))
-          const simulated = new Map([[id, simulatedPerms]])
-          if (wouldOrphanManageRoles(snapshot, simulated)) {
-            return NextResponse.json({
-              error: 'This would leave the workspace with no one who can manage roles. Assign MANAGE_ROLES to another member first.',
-            }, { status: 409 })
-          }
+      if (hasManageRolesNow && simulatedPerms['MANAGE_ROLES'] !== true) {
+        const { data: activeMembers } = await (service as any)
+          .from('workspace_members').select('id,effective_permissions')
+          .eq('workspace_id', session.workspaceId).eq('status', 'active')
+        const snapshot = (activeMembers || []).map((m: any) => ({ id: m.id, effectivePermissions: m.effective_permissions }))
+        const simulated = new Map([[id, simulatedPerms]])
+        if (wouldOrphanManageRoles(snapshot, simulated)) {
+          return NextResponse.json({
+            error: 'This would leave the workspace with no one who can manage roles. Assign MANAGE_ROLES to another member first.',
+          }, { status: 409 })
         }
       }
     }
@@ -307,15 +311,42 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     if (error) throw new Error(error.message)
 
+    // FIX (section-11 audit): editing a member's permission_overrides or
+    // reassigning their role can drop their effective APPROVE_DOCUMENTS the
+    // same way deactivating them does above (see the affectedWorkflowNames
+    // block in DELETE) — but this path had no equivalent check at all. A
+    // role-based approver whose access is quietly revoked here stays
+    // "reachable" as far as getMembersWithRole() and the stall cron are
+    // concerned (they're still an active member of the right role), so the
+    // stall cron's zero-recipients escalation never fires — the step just
+    // silently can never be decided by anyone. Named-user steps have the
+    // exact same exposure. Warn the same way DELETE does rather than
+    // blocking the edit outright.
+    let affectedWorkflowNames: string[] = []
+    if (targetMember && simulatedPerms && targetMember.effective_permissions?.['APPROVE_DOCUMENTS'] === true && simulatedPerms['APPROVE_DOCUMENTS'] !== true && targetMember.user_id) {
+      const { data: affectedSteps } = await (service as any)
+        .from('approval_workflow_steps')
+        .select('id, approval_workflows!inner(name, is_active)')
+        .eq('approver_user_id', targetMember.user_id)
+        .eq('approval_workflows.workspace_id', session.workspaceId)
+        .eq('approval_workflows.is_active', true)
+      affectedWorkflowNames = Array.from(new Set((affectedSteps || []).map((s: any) => s.approval_workflows?.name).filter(Boolean)))
+    }
+
     await logAudit(service, {
       workspaceId: session.workspaceId, actorId: session.id,
       actorEmail: session.email, actorName: session.name,
       eventType: body.permissionOverrides ? 'member.permission_overridden' : 'member.role_changed',
       entityType: 'workspace_member', entityId: id, entityName: '',
-      metadata: body,
+      metadata: affectedWorkflowNames.length ? { ...body, orphaned_approval_workflows: affectedWorkflowNames } : body,
     })
 
-    return NextResponse.json({ ok: true })
+    return NextResponse.json({
+      ok: true,
+      ...(affectedWorkflowNames.length ? {
+        warning: `This person is named as an approver on: ${affectedWorkflowNames.join(', ')}. They may no longer be able to act on those steps — update those workflows in Settings so documents don't get stuck waiting on them.`,
+      } : {}),
+    })
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
   }

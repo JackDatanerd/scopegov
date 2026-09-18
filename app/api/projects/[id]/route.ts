@@ -4,6 +4,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
 import { roundCurrency } from '@/lib/utils/format'
+import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
 
 // FIX (deep audit, section 7): body.status was written straight through
 // with no validation against the actual project_status enum — a malformed
@@ -47,7 +48,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     // Verify project belongs to workspace
     const { data: project } = await (service as any)
-      .from('projects').select('id,name,status,type,contract_value,currency,retainer_duration_months,sow_documents(status)').eq('id', id)
+      .from('projects').select('id,name,status,type,contract_value,currency,retainer_duration_months,sow_documents(id,status)').eq('id', id)
       .eq('workspace_id', session.workspaceId).single()
     if (!project) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     // FIX (audit round 3): see lib/utils/project-access.ts.
@@ -127,6 +128,28 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           return NextResponse.json({
             error: 'A SOW is currently out for signature at the existing contract value — withdraw it before changing the value, then send the client the revised SOW.',
           }, { status: 409 })
+        }
+        // FIX (section-11 audit): a gated SOW stays at status:'draft' the
+        // entire time it's sitting in an approval chain (see
+        // lib/approvals/engine.ts), so neither of the two locks above ever
+        // caught it — this route would happily change contract_value out
+        // from under a request an approver is actively reviewing. On
+        // final approval, sendSowDocument() re-reads contract_value LIVE
+        // and sends whatever it finds, so the document that actually
+        // reaches the client could differ from the amount the approver
+        // signed off on (approval_requests.context.amount is a snapshot,
+        // taken at request time, that would now be stale) — and if the
+        // SOW uses a milestone payment schedule, that schedule was
+        // validated to foot to the OLD value and would no longer match
+        // the new one. Same failure class as 9-G5 above, just for the
+        // approval window instead of the signature window.
+        for (const sow of (project.sow_documents || [])) {
+          if (sow.status !== 'draft') continue
+          if (await getPendingApprovalForDocument(service, 'sow', sow.id)) {
+            return NextResponse.json({
+              error: 'A SOW on this project has a pending approval request — cancel it before changing the contract value, then resend.',
+            }, { status: 409 })
+          }
         }
         changes.contractValue = { from: project.contract_value, to: newValue }
         updates.contract_value = newValue

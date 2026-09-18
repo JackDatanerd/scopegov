@@ -73,7 +73,7 @@ export async function POST(request: NextRequest) {
     const {
       projectId, milestoneId, sowId, coId,
       title, amount, dueDate, paymentInstructions, notes,
-      taxRate, taxInclusive, lineItems,
+      taxRate, taxInclusive, lineItems, poNumber,
     } = body || {}
 
     if (!projectId) return NextResponse.json({ error: 'projectId is required' }, { status: 400 })
@@ -99,6 +99,17 @@ export async function POST(request: NextRequest) {
     // and is in a billable state — an invoice against a still-draft SOW or
     // a not-yet-accepted CO would have nothing behind it to justify billing.
     let coTaxDefaults: { taxRate: number; taxInclusive: boolean; subtotal: number } | null = null
+    // FIX (section-12 audit, real bug — flagship finding): milestone.amount
+    // and co.subtotal were both already being fetched here and then never
+    // referenced again — an agency could bill any figure at all against a
+    // milestone or CO with zero validation tying the two together, on a
+    // product whose entire premise is preventing exactly this kind of
+    // financial drift. Capped below (after tax math resolves finalSubtotal)
+    // to whatever the linked source was actually scoped for. Under-billing
+    // (partial invoicing) is intentionally still allowed — only billing
+    // MORE than the source's own defined value is blocked.
+    let milestoneCap: number | null = null
+    let coSubtotalCap: number | null = null
     if (milestoneId) {
       const { data: milestone } = await (service as any)
         .from('payment_milestones').select('id, project_id, amount, status')
@@ -121,6 +132,7 @@ export async function POST(request: NextRequest) {
             ? 'This milestone is already marked paid'
             : 'This milestone already has an invoice against it — void the existing one first if you need to re-invoice it',
         }, { status: 400 })
+      milestoneCap = Number(milestone.amount)
     }
     if (sowId) {
       const { data: sow } = await (service as any)
@@ -143,6 +155,7 @@ export async function POST(request: NextRequest) {
       // a plain untaxed invoice line unless the agency explicitly
       // overrides taxRate/taxInclusive in the request body.
       if (taxRate === undefined) coTaxDefaults = { taxRate: co.tax_rate, taxInclusive: co.tax_inclusive, subtotal: co.subtotal }
+      coSubtotalCap = Number(co.subtotal)
     }
 
     // Optional itemized breakdown (migration 017), computed before the
@@ -195,6 +208,21 @@ export async function POST(request: NextRequest) {
       finalSubtotal = coTaxDefaults.subtotal ?? numAmount
     }
 
+    // FIX (section-12 audit, flagship finding continued): the actual cap
+    // check — compared pre-tax to pre-tax, since tax is something the
+    // agency adds on top at invoicing time and was never part of what the
+    // milestone/CO was originally scoped or accepted for.
+    if (milestoneCap != null && finalSubtotal > milestoneCap + 0.01) {
+      return NextResponse.json({
+        error: `Invoice amount (${finalSubtotal.toFixed(2)} before tax) exceeds this milestone's defined amount (${milestoneCap.toFixed(2)}). Adjust the milestone first if its value has genuinely changed.`,
+      }, { status: 400 })
+    }
+    if (coSubtotalCap != null && finalSubtotal > coSubtotalCap + 0.01) {
+      return NextResponse.json({
+        error: `Invoice amount (${finalSubtotal.toFixed(2)} before tax) exceeds this change order's accepted amount (${coSubtotalCap.toFixed(2)}).`,
+      }, { status: 400 })
+    }
+
     // Soft rule enforced in code, not a DB constraint (matches the
     // column's documented contract): if the agency supplies line items,
     // they must foot to the invoice subtotal — otherwise the PDF would
@@ -245,6 +273,14 @@ export async function POST(request: NextRequest) {
         line_items:    cleanLineItems,
         currency:      project.currency || 'USD',
         due_date:      dueDate || null,
+        // FIX (section-12 audit — feature gap): po_number (migration 011)
+        // was fully modeled and rendered in the send-email PDF, the
+        // standalone PDF download, and the client portal view — but had no
+        // write path anywhere. Every invoice this product ever generated
+        // had a blank PO-number line by construction. Cap matches the
+        // column's own documented purpose (a short client-issued
+        // reference), not an arbitrary limit.
+        po_number:     poNumber?.trim().slice(0, 100) || null,
         payment_instructions: sanitizeRichTextOrNull(paymentInstructions),
         notes:         notes?.trim() || null,
         created_by:    session.id,

@@ -6,6 +6,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
 import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
+import { getPendingApprovalForDocument, cancelApprovalRequest } from '@/lib/approvals/engine'
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -52,7 +53,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     const service = createServiceClient()
     const { data: invoice } = await (service as any)
-      .from('invoices').select('id, status, title, amount, subtotal, tax_rate, tax_inclusive, project_id, line_items')
+      .from('invoices').select('id, status, title, amount, subtotal, tax_rate, tax_inclusive, project_id, line_items, milestone_id, co_id')
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
@@ -60,6 +61,19 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     if (invoice.status !== 'draft')
       return NextResponse.json({ error: 'Only draft invoices can be edited — void and re-create instead' }, { status: 400 })
+    // FIX (section-12 audit — feature gap follow-through): now that
+    // invoices can be gated by an approval workflow (see
+    // /api/invoices/[id]/send), a gated invoice stays at status:'draft'
+    // the entire time it's under review — same pattern as SOW/CO, and the
+    // same reason those two routes carry this exact check. Without it, an
+    // approver could be reviewing one amount while the requester quietly
+    // changes it underneath them before the chain even clears.
+    if (await getPendingApprovalForDocument(service, 'invoice', id)) {
+      return NextResponse.json(
+        { error: 'This invoice has a pending approval request — cancel it before editing.' },
+        { status: 409 }
+      )
+    }
 
     const body = await request.json()
     const update: Record<string, any> = { updated_at: new Date().toISOString() }
@@ -70,6 +84,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       update.amount = n
     }
     if (body.dueDate !== undefined) update.due_date = body.dueDate || null
+    if (body.poNumber !== undefined) update.po_number = body.poNumber?.trim().slice(0, 100) || null
     if (body.paymentInstructions !== undefined) update.payment_instructions = sanitizeRichTextOrNull(body.paymentInstructions)
     if (body.notes !== undefined) update.notes = body.notes?.trim() || null
 
@@ -125,6 +140,33 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       if (finalTaxRate > 0 && !finalTaxInclusive) update.amount = finalAmount * (1 + finalTaxRate / 100)
     }
 
+    // FIX (section-12 audit, flagship finding — same as POST /api/invoices):
+    // the create-time cap against the linked milestone/CO's own value did
+    // nothing to stop the amount drifting past it again on a later edit,
+    // since this route never even fetched milestone_id/co_id. Only check
+    // when the amount/tax actually changed — an edit that only touches the
+    // title or due date has nothing to re-validate.
+    if (touchesTax) {
+      if (invoice.milestone_id) {
+        const { data: milestone } = await (service as any)
+          .from('payment_milestones').select('amount').eq('id', invoice.milestone_id).maybeSingle()
+        if (milestone && finalSubtotal > Number(milestone.amount) + 0.01) {
+          return NextResponse.json({
+            error: `Invoice amount (${finalSubtotal.toFixed(2)} before tax) exceeds this milestone's defined amount (${Number(milestone.amount).toFixed(2)}).`,
+          }, { status: 400 })
+        }
+      }
+      if (invoice.co_id) {
+        const { data: co } = await (service as any)
+          .from('change_orders').select('subtotal').eq('id', invoice.co_id).maybeSingle()
+        if (co && finalSubtotal > Number(co.subtotal) + 0.01) {
+          return NextResponse.json({
+            error: `Invoice amount (${finalSubtotal.toFixed(2)} before tax) exceeds this change order's accepted amount (${Number(co.subtotal).toFixed(2)}).`,
+          }, { status: 400 })
+        }
+      }
+    }
+
     // Optional itemized breakdown — same footing rule as creation (see
     // POST /api/invoices), checked against the (possibly just-recomputed)
     // SUBTOTAL, not the tax-inclusive grand total — line items are a
@@ -176,6 +218,19 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     if (invoice.status !== 'draft')
       return NextResponse.json({ error: 'Only draft invoices can be deleted — void a sent invoice instead' }, { status: 400 })
+
+    // FIX (section-12 audit — feature gap follow-through): a gated
+    // invoice stays 'draft' the whole time it's under review, so the
+    // status check above didn't stop this route from deleting one out
+    // from under an in-flight approval chain — leaving a pending
+    // approval_requests row notifying an approver about a document that
+    // no longer exists, with nothing to ever clear it. Same
+    // cancel-before-delete pattern already used for CO close/withdraw.
+    await cancelApprovalRequest(service, {
+      documentType: 'invoice', documentId: id, workspaceId: session.workspaceId,
+      actorId: session.id, actorEmail: session.email, actorName: session.name,
+      reason: 'Invoice deleted',
+    })
 
     await (service as any).from('invoices').delete().eq('id', id)
 

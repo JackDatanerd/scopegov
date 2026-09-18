@@ -6,11 +6,22 @@
 
 import type { Project } from '@/lib/supabase/types'
 
+// Same cadence app/api/cron/approval-stall/route.ts reminds on — kept as one
+// shared constant so the dashboard's "needs attention" definition of stale
+// can't silently drift from the cron's, imported by both.
+export const APPROVAL_STALL_DAYS = 2
+
 export interface AttentionContext {
   project: Project & {
     guardianFlags?: Array<{ status: string }>
     changeOrders?: Array<{ status: string }>
     sowDocuments?: Array<{ status: string }>
+    // FIX (section-11/12 audit — feature gap): pending approval_requests
+    // for this project, so a document stuck in an approval chain can be
+    // surfaced the same way a stalled SOW or an open guardian flag already
+    // is. Only createdAt is needed — staleness is computed here, not by
+    // the caller, so every screen agrees on what counts as "stuck".
+    pendingApprovals?: Array<{ createdAt: string }>
   }
   workspace?: {
     proactiveRiskAlertsEnabled?: boolean
@@ -61,7 +72,24 @@ export function isAttentionWorthy({ project, workspace }: AttentionContext): boo
     : null
   if (currentSow && actionableSowStatuses.includes(currentSow.status)) return true
 
-  // 5. Proactive risk alert — high-value project without signed SOW
+  // 5. Any approval request that's been pending long enough to be stuck.
+  // FIX (section-11/12 audit — flagship feature gap): this predicate — the
+  // ONE canonical "needs attention" check used by both the Dashboard and
+  // the Projects list — had no clause for the approval-workflow engine at
+  // all. A gated SOW/CO stays at status:'draft' the entire time it's
+  // sitting in an approval chain, which is exactly the status the
+  // sentSowVersions filter above excludes — so a document stalled in
+  // approval for weeks looked perfectly healthy here, visible only on the
+  // dedicated /approvals page. A brand-new pending request isn't
+  // attention-worthy yet (that's normal in-flight state, same reasoning as
+  // why a project isn't flagged the instant a SOW is sent) — only one
+  // that's outlived the same reminder cadence the stall cron itself uses.
+  if (project.pendingApprovals?.some(r => {
+    const ageDays = (Date.now() - new Date(r.createdAt).getTime()) / 86400000
+    return ageDays >= APPROVAL_STALL_DAYS
+  })) return true
+
+  // 6. Proactive risk alert — high-value project without signed SOW
   if (
     project.status === 'Draft' || project.status === 'Intake'
   ) {
@@ -107,5 +135,8 @@ export function attentionReason({ project }: AttentionContext): string | null {
   if (currentSow?.status === 'changes_requested') return 'Client requested SOW changes'
   if (currentSow?.status === 'declined') return 'Client declined SOW'
   if (currentSow?.status === 'expired') return 'SOW link expired — reopen and resend'
+  if (project.pendingApprovals?.some(r => (Date.now() - new Date(r.createdAt).getTime()) / 86400000 >= APPROVAL_STALL_DAYS)) {
+    return 'Approval pending — stuck awaiting a decision'
+  }
   return 'High-value project — no signed SOW'
 }

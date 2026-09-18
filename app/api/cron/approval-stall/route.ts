@@ -5,6 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { sendApprovalReminder } from '@/lib/approvals/engine'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
+import { APPROVAL_STALL_DAYS } from '@/lib/utils/attention'
 
 // FIX (audit round 3): local copy replaced with the shared,
 // null-safe helper — see lib/utils/verify-cron.ts.
@@ -18,8 +19,10 @@ export async function POST(request: NextRequest) {
     const now       = new Date()
     // Shorter window than co-stall's 5 days — an approval gate is blocking
     // a send that's otherwise ready to go out, not an open client
-    // negotiation, so it's worth nudging sooner.
-    const threshold = 2 // days
+    // negotiation, so it's worth nudging sooner. Shared with
+    // lib/utils/attention.ts so the dashboard's "needs attention" register
+    // and this cron's reminder cadence can't silently drift apart.
+    const threshold = APPROVAL_STALL_DAYS // days
     const cutoff    = new Date(now.getTime() - threshold * 86400000).toISOString()
 
     // updated_at doubles as "last activity on this request" — it moves

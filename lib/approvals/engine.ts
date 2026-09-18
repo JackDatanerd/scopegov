@@ -27,6 +27,7 @@ import { getMembersWithRole, filterByNotificationPreference, filterToProjectAcce
 import { sendApprovalRequestedEmail, sendApprovalDecisionEmail } from '@/lib/email/templates'
 import { sendSowDocument } from '@/lib/documents/send-sow'
 import { sendCoDocument } from '@/lib/documents/send-co'
+import { sendInvoiceDocument } from '@/lib/documents/send-invoice'
 import { acceptCoCounter } from '@/lib/documents/accept-co-counter'
 import { hasPermission } from '@/lib/auth/session'
 import { canReadProject } from '@/lib/utils/project-access'
@@ -41,12 +42,39 @@ import type { SessionUser } from '@/lib/supabase/types'
 // into 'co') so recordApprovalDecision() can auto-finalize it correctly
 // on final approval — accepting a counter-offer and sending a brand-new
 // CO are different actions with different auto-send targets.
-export type ApprovalDocumentType = 'sow' | 'co' | 'co_counter'
+//
+// FIX (section-12 audit — flagship feature gap): 'invoice' added. This is
+// exactly the extension this file's document_type design (free-text on
+// the DB side, specifically so this could happen without a migration —
+// see the workflow-creation routes) was built to anticipate, but Phase 4a
+// shipped without ever wiring it up — invoices had zero approval-gating
+// at all until now, the same governance gap the whole engine exists to
+// close for SOWs and COs.
+export type ApprovalDocumentType = 'sow' | 'co' | 'co_counter' | 'invoice'
 
 // Which document_type an approval_workflows row is configured under, for
 // a given request's document_type. Only 'co_counter' differs from itself.
-function workflowLookupType(documentType: ApprovalDocumentType): 'sow' | 'co' {
+function workflowLookupType(documentType: ApprovalDocumentType): 'sow' | 'co' | 'invoice' {
   return documentType === 'co_counter' ? 'co' : documentType
+}
+
+// FIX (section-12 audit): pulled out of the seven near-identical inline
+// ternaries scattered through this file (audit_log entityType, the
+// requester-facing document label, etc.) — every one of them silently
+// treated anything that wasn't 'sow' as a change order, which was
+// harmless while 'co_counter' was the only other value but would have
+// mislabeled every invoice approval as a "Change order" throughout the
+// audit trail and every notification email.
+function entityTypeFor(documentType: ApprovalDocumentType): 'sow' | 'change_order' | 'invoice' {
+  if (documentType === 'sow') return 'sow'
+  if (documentType === 'invoice') return 'invoice'
+  return 'change_order'
+}
+function documentLabelFor(documentType: ApprovalDocumentType): string {
+  if (documentType === 'sow') return 'SOW'
+  if (documentType === 'invoice') return 'Invoice'
+  if (documentType === 'co_counter') return 'Change order counter-offer'
+  return 'Change order'
 }
 
 interface WorkflowStepRow {
@@ -165,7 +193,19 @@ export async function evaluateApprovalGate(service: any, params: GateParams): Pr
     throw new Error('Failed to create approval request — send halted for safety')
   }
 
-  await service.from('approval_steps').insert(
+  // FIX (section-11 audit): this insert had no error check at all, unlike
+  // the identical approval_workflow_steps insert in the workflow-creation
+  // routes. A partial failure here (e.g. a transient DB error) left a
+  // 'pending' approval_requests row with total_steps > 0 but zero real
+  // approval_steps rows — notifyStepApprovers() below still fires because
+  // it reads from the workflow's template `steps`, not from what actually
+  // got inserted, so an approver would be told to decide on something
+  // recordApprovalDecision() can never find (it looks up approval_steps by
+  // request_id + step_order and would come back empty), returning a
+  // misleading "already decided" error with no way for anyone to tell what
+  // actually went wrong. Fail closed here the same way the request insert
+  // above does: roll back the orphaned request and halt the send.
+  const { error: stepsInsertErr } = await service.from('approval_steps').insert(
     steps.map((s: WorkflowStepRow) => ({
       request_id:       request.id,
       step_order:       s.step_order,
@@ -174,12 +214,16 @@ export async function evaluateApprovalGate(service: any, params: GateParams): Pr
       status:           'pending',
     }))
   )
+  if (stepsInsertErr) {
+    await service.from('approval_requests').delete().eq('id', request.id)
+    throw new Error('Failed to create approval steps — send halted for safety')
+  }
 
   await logAudit(service, {
     workspaceId,
     actorId: params.requestedBy.id, actorEmail: params.requestedBy.email, actorName: params.requestedBy.name,
     eventType: 'approval.requested',
-    entityType: documentType === 'sow' ? 'sow' : 'change_order',
+    entityType: entityTypeFor(documentType),
     entityId: documentId, entityName: params.documentTitle,
     metadata: { workflow_id: workflow.id, approval_request_id: request.id, total_steps: steps.length },
   })
@@ -290,9 +334,7 @@ export async function recordApprovalDecision(service: any, params: DecisionParam
   // plain "Change order" decision, indistinguishable from an ordinary CO
   // send decision, in both the requester's notification and the audit
   // trail's implicit framing.
-  const documentLabel = request.document_type === 'sow' ? 'SOW'
-    : request.document_type === 'co_counter' ? 'Change order counter-offer'
-    : 'Change order'
+  const documentLabel = documentLabelFor(request.document_type)
   const docTitle       = request.context?.title || documentLabel
   const projectName    = request.context?.project_name || ''
 
@@ -337,7 +379,7 @@ export async function recordApprovalDecision(service: any, params: DecisionParam
       workspaceId: params.actor.workspaceId,
       actorId: params.actor.id, actorEmail: params.actor.email, actorName: params.actor.name,
       eventType: 'approval.rejected',
-      entityType: request.document_type === 'sow' ? 'sow' : 'change_order',
+      entityType: entityTypeFor(request.document_type),
       entityId: request.document_id, entityName: docTitle,
       metadata: { approval_request_id: request.id, step: step.step_order, note: params.note || null },
     })
@@ -364,7 +406,7 @@ export async function recordApprovalDecision(service: any, params: DecisionParam
       workspaceId: params.actor.workspaceId,
       actorId: params.actor.id, actorEmail: params.actor.email, actorName: params.actor.name,
       eventType: 'approval.step_approved',
-      entityType: request.document_type === 'sow' ? 'sow' : 'change_order',
+      entityType: entityTypeFor(request.document_type),
       entityId: request.document_id, entityName: docTitle,
       metadata: { approval_request_id: request.id, step: step.step_order, note: params.note || null },
     })
@@ -395,7 +437,7 @@ export async function recordApprovalDecision(service: any, params: DecisionParam
     workspaceId: params.actor.workspaceId,
     actorId: params.actor.id, actorEmail: params.actor.email, actorName: params.actor.name,
     eventType: 'approval.approved',
-    entityType: request.document_type === 'sow' ? 'sow' : 'change_order',
+    entityType: entityTypeFor(request.document_type),
     entityId: request.document_id, entityName: docTitle,
     metadata: { approval_request_id: request.id, step: step.step_order, note: params.note || null },
   })
@@ -418,6 +460,8 @@ export async function recordApprovalDecision(service: any, params: DecisionParam
       ? await sendSowDocument(service, { sowId: request.document_id, ...sendParams })
       : request.document_type === 'co_counter'
       ? await acceptCoCounter(service, { coId: request.document_id, ...sendParams })
+      : request.document_type === 'invoice'
+      ? await sendInvoiceDocument(service, { invoiceId: request.document_id, ...sendParams })
       : await sendCoDocument(service, { coId: request.document_id, ...sendParams })
     autoSent = result.ok
     if (!result.ok) console.error('Auto-send after final approval failed:', result.error)
@@ -518,7 +562,7 @@ export async function cancelApprovalRequest(service: any, params: {
         )
       }
       if (stepRecipients.length) {
-        const docTitle    = request.context?.title || (params.documentType === 'sow' ? 'SOW' : 'Change order')
+        const docTitle    = request.context?.title || documentLabelFor(params.documentType)
         const projectName = request.context?.project_name || ''
         await service.from('notifications').insert(stepRecipients.map(r => ({
           workspace_id: params.workspaceId,
@@ -537,7 +581,7 @@ export async function cancelApprovalRequest(service: any, params: {
     workspaceId: params.workspaceId,
     actorId: params.actorId, actorEmail: params.actorEmail, actorName: params.actorName,
     eventType: 'approval.cancelled',
-    entityType: params.documentType === 'sow' ? 'sow' : 'change_order',
+    entityType: entityTypeFor(params.documentType),
     entityId: params.documentId,
     metadata: { approval_request_id: request.id, reason: params.reason || null },
   })
@@ -672,16 +716,15 @@ async function notifyStepApprovers(service: any, args: {
   const notifiedIds = new Set([...inAppRecipients.map(r => r.id), ...emailRecipients.map(r => r.id)])
   if (notifiedIds.size === 0) return 0
 
-  // FIX (section-11 audit): document_type can be 'sow', 'co', or
-  // 'co_counter' (see evaluateApprovalGate) — this used to collapse
-  // anything that wasn't 'sow' straight to "Change order", so a step
-  // approving acceptance of a client's negotiated counter-offer read
-  // identically to one approving an ordinary first-time CO send. An
-  // approver had no way to tell, from either the bell notification or
-  // the email, which action they were actually being asked to authorize.
-  const documentLabel = args.documentType === 'sow' ? 'SOW'
-    : args.documentType === 'co_counter' ? 'Change order counter-offer'
-    : 'Change order'
+  // FIX (section-11/12 audit): document_type can be 'sow', 'co',
+  // 'co_counter', or 'invoice' (see evaluateApprovalGate) — this used to
+  // collapse anything that wasn't 'sow' straight to "Change order", so a
+  // step approving acceptance of a client's negotiated counter-offer (or,
+  // now, an invoice) read identically to one approving an ordinary
+  // first-time CO send. An approver had no way to tell, from either the
+  // bell notification or the email, which action they were actually being
+  // asked to authorize.
+  const documentLabel = documentLabelFor(args.documentType)
   const actionVerb = args.documentType === 'co_counter' ? 'accept the client\'s counter on' : 'send'
 
   if (inAppRecipients.length) {

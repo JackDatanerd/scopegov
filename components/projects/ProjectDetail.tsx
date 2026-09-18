@@ -294,7 +294,7 @@ export default function ProjectDetail({
         {tab === 'sow'      && <SowTab project={project} sows={project.sow_documents || []} amendments={amendments} permissions={permissions} router={router} pendingApprovals={pendingApprovals} />}
         {tab === 'guardian' && <GuardianTab project={project} flags={project.guardian_flags || []} permissions={permissions} router={router} />}
         {tab === 'co'       && <CoTab project={project} cos={project.change_orders || []} permissions={permissions} currency={currency} pendingApprovals={pendingApprovals} team={team} />}
-        {tab === 'billing'  && <BillingTab project={project} milestones={milestones} invoices={invoices} reconciliation={reconciliation} permissions={permissions} currency={currency} router={router} defaultPaymentInstructions={defaultPaymentInstructions} />}
+        {tab === 'billing'  && <BillingTab project={project} milestones={milestones} invoices={invoices} reconciliation={reconciliation} permissions={permissions} currency={currency} router={router} defaultPaymentInstructions={defaultPaymentInstructions} pendingApprovals={pendingApprovals} />}
         {tab === 'discussion' && (
           <ProjectDiscussion
             projectId={project.id}

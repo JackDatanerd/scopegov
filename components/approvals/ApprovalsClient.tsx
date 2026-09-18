@@ -21,9 +21,10 @@ interface Step {
 
 interface ApprovalRequest {
   id: string
-  // FIX (section-11 audit): runtime values include 'co_counter' (accepting
-  // a negotiated counter-offer) — this type omitted it entirely.
-  document_type: 'sow' | 'co' | 'co_counter'
+  // FIX (section-11/12 audit): runtime values include 'co_counter'
+  // (accepting a negotiated counter-offer) and 'invoice' — this type
+  // previously omitted both.
+  document_type: 'sow' | 'co' | 'co_counter' | 'invoice'
   document_id: string
   project_id: string
   status: 'pending' | 'approved' | 'rejected' | 'cancelled'
@@ -36,6 +37,13 @@ interface ApprovalRequest {
   requester: { id: string; name: string; email: string } | null
   projects: { id: string; name: string } | null
   approval_steps: Step[]
+}
+
+function documentLabelFor(documentType: ApprovalRequest['document_type']): string {
+  if (documentType === 'sow') return 'SOW'
+  if (documentType === 'invoice') return 'Invoice'
+  if (documentType === 'co_counter') return 'Change order counter-offer'
+  return 'Change order'
 }
 
 function requestPill(status: string): string {
@@ -165,13 +173,14 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
               {items.map(r => (
                 <tr key={r.id} onClick={() => setSelected(r)}>
                   <td>
-                    <span style={{ fontWeight: 500 }}>{r.context?.title || (r.document_type === 'sow' ? 'SOW' : 'Change order')}</span>
-                    {/* FIX (section-11 audit, flagship finding): a 'co_counter'
-                        request (accepting a client's negotiated counter-offer)
-                        rendered an identical "CO" pill to an ordinary CO send —
-                        no way to tell the two apart from this list. */}
+                    <span style={{ fontWeight: 500 }}>{r.context?.title || documentLabelFor(r.document_type)}</span>
+                    {/* FIX (section-11/12 audit, flagship finding): a
+                        'co_counter' request (accepting a client's negotiated
+                        counter-offer) or an 'invoice' request rendered an
+                        identical "CO"/generic pill — no way to tell them
+                        apart from this list. */}
                     <span className="pill pill-slate pill-sm" style={{ marginLeft: 8 }}>
-                      {r.document_type === 'sow' ? 'SOW' : r.document_type === 'co_counter' ? 'CO counter' : 'CO'}
+                      {r.document_type === 'sow' ? 'SOW' : r.document_type === 'invoice' ? 'Invoice' : r.document_type === 'co_counter' ? 'CO counter' : 'CO'}
                     </span>
                   </td>
                   <td>{r.projects?.name || r.context?.project_name || '—'}</td>
@@ -215,14 +224,12 @@ function ApprovalDetailModal({ request, session, eligibleStep, onClose, onDone }
   const [error, setError]     = useState('')
 
   const isRequester = request.requested_by === session.id
-  // FIX (section-11 audit, flagship finding): document_type can also be
+  // FIX (section-11/12 audit, flagship finding): document_type can also be
   // 'co_counter' (approving acceptance of a client's negotiated
-  // counter-offer) — collapsing it into plain "Change order" made that
-  // decision indistinguishable from an ordinary CO send approval. Mirrors
-  // the same fix in lib/approvals/engine.ts.
-  const documentLabel = request.document_type === 'sow' ? 'SOW'
-    : request.document_type === 'co_counter' ? 'Change order counter-offer'
-    : 'Change order'
+  // counter-offer) or 'invoice' — collapsing either into plain "Change
+  // order" made that decision indistinguishable from an ordinary CO send
+  // approval. Mirrors the same fix in lib/approvals/engine.ts.
+  const documentLabel = documentLabelFor(request.document_type)
   const canCancel = isRequester && request.status === 'pending'
   // FIX (section-11 audit, flagship finding): eligibleStep only ever
   // checked whether the signed-in member is the assigned approver

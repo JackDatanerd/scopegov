@@ -68,7 +68,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         .eq('is_active', true).is('threshold_amount', null).neq('id', id)
       if ((dupeCatchAll || 0) > 0) {
         return NextResponse.json({
-          error: `An active catch-all ${existing.document_type === 'sow' ? 'SOW' : 'change order'} workflow already exists. Add a value threshold to this one, or deactivate the other rule first.`,
+          error: `An active catch-all ${existing.document_type === 'sow' ? 'SOW' : existing.document_type === 'invoice' ? 'invoice' : 'change order'} workflow already exists. Add a value threshold to this one, or deactivate the other rule first.`,
         }, { status: 409 })
       }
     }

@@ -59,8 +59,8 @@ export async function POST(request: NextRequest) {
       : null
     const steps: Array<{ approverRoleId?: string; approverUserId?: string }> = Array.isArray(body?.steps) ? body.steps : []
 
-    if (!['sow', 'co'].includes(documentType))
-      return NextResponse.json({ error: 'documentType must be "sow" or "co"' }, { status: 400 })
+    if (!['sow', 'co', 'invoice'].includes(documentType))
+      return NextResponse.json({ error: 'documentType must be "sow", "co", or "invoice"' }, { status: 400 })
     if (!name) return NextResponse.json({ error: 'Name is required' }, { status: 400 })
     if (thresholdAmount != null && (!Number.isFinite(thresholdAmount) || thresholdAmount < 0))
       return NextResponse.json({ error: 'Threshold must be a positive number' }, { status: 400 })
@@ -89,7 +89,7 @@ export async function POST(request: NextRequest) {
         .eq('is_active', true).is('threshold_amount', null)
       if ((dupeCatchAll || 0) > 0) {
         return NextResponse.json({
-          error: `An active catch-all ${documentType === 'sow' ? 'SOW' : 'change order'} workflow already exists (applies to every document, no threshold). Add a value threshold to this one, or edit the existing rule instead.`,
+          error: `An active catch-all ${documentType === 'sow' ? 'SOW' : documentType === 'invoice' ? 'invoice' : 'change order'} workflow already exists (applies to every document, no threshold). Add a value threshold to this one, or edit the existing rule instead.`,
         }, { status: 409 })
       }
     }
