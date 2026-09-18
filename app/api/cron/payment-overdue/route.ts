@@ -1,5 +1,21 @@
 export const runtime = 'nodejs'
 
+// FIX (cron audit, section 17 — closing pass): this is the one full-scan
+// cron with no maxDuration override, unlike reconciliation-rollup and
+// scope-health-rollup, which both got this exact fix for the exact same
+// reason — per-row fan-out with no pagination. This route runs SIX
+// separate full-table-ish scans in one invocation (overdue milestones,
+// overdue invoices, trial expiry, grace reminder, grace enforcement,
+// cancelled subscriptions), and unlike the other two crons, several of
+// these sections send a real outbound email per row — network I/O, not
+// just DB writes, so the per-row cost here is higher, not lower. Without
+// an override this is capped at Vercel's platform default, which a
+// growing set of overdue items can exceed well before this loop finishes
+// — silently truncating that day's enforcement/reminder pass with no
+// catchable error. 300s matches the cap already used by this file's two
+// full-scan siblings.
+export const maxDuration = 300
+
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { sendTrialWarningEmail, sendPaymentFailedEmail, sendInvoiceOverdueInternalEmail, sendPaymentMilestoneOverdueEmail, sendSubscriptionEndedEmail } from '@/lib/email/templates'
@@ -98,6 +114,10 @@ export async function POST(request: NextRequest) {
       .not('due_date', 'is', null)
       .lt('due_date', now.toISOString().split('T')[0])
 
+    // FIX (cron audit, section 17 — closing pass): counted below only for
+    // rows that actually won the guarded UPDATE — see the note at the
+    // return statement for why the raw fetched-row count was wrong.
+    let invoicesMarkedOverdue = 0
     for (const inv of (overdueInvoices || [])) {
       try {
         // FIX (re-audit): same false-audit-entry-on-race gap already fixed
@@ -114,6 +134,7 @@ export async function POST(request: NextRequest) {
           .select('id')
 
         if (!updated || updated.length === 0) continue
+        invoicesMarkedOverdue++
 
         const balanceDue = Number(inv.amount) - Number(inv.amount_paid)
 
@@ -161,6 +182,13 @@ export async function POST(request: NextRequest) {
       .lt('trial_ends_at', now.toISOString())
       .is('deleted_at', null)
 
+    // FIX (cron audit, section 17 — closing pass): counted below only for
+    // workspaces actually downgraded by this run — see the note at the
+    // return statement. The raw fetched-row count over-reports here in
+    // three distinct ways: rows skipped for already having a subscription
+    // on file, rows skipped for grace-period math, and rows that lost the
+    // race to a concurrent invocation.
+    let trialsExpiredCount = 0
     for (const ws of (expiredTrials || [])) {
       try {
         if (ws.billing?.paystack_subscription_code) {
@@ -190,6 +218,7 @@ export async function POST(request: NextRequest) {
           .select('id')
 
         if (!updatedWs || updatedWs.length === 0) continue // already downgraded concurrently — lost the race
+        trialsExpiredCount++
 
         await (service as any).from('audit_log').insert({
           workspace_id: ws.id, actor_id: null,
@@ -370,6 +399,10 @@ export async function POST(request: NextRequest) {
       .not('current_period_end', 'is', null)
       .lt('current_period_end', now.toISOString())
 
+    // FIX (cron audit, section 17 — closing pass): same over-reporting
+    // fix as trialsExpiredCount above — see the note at the return
+    // statement.
+    let cancelledSubscriptionsEndedCount = 0
     for (const b of (cancelledExpired || [])) {
       try {
         const ws = b.workspaces
@@ -395,6 +428,7 @@ export async function POST(request: NextRequest) {
           .select('workspace_id')
 
         if (!guardedBilling?.length) continue // reactivated concurrently — lost the race, nothing to do
+        cancelledSubscriptionsEndedCount++
 
         await (service as any).from('workspaces')
           .update({ plan_tier: 'solo', updated_at: now.toISOString() })
@@ -421,12 +455,20 @@ export async function POST(request: NextRequest) {
       } catch (e) { console.error('Cancelled-subscription enforcement error:', e) }
     }
 
+    // FIX (cron audit, section 17 — closing pass): all three counters
+    // below used to report raw fetched-row counts — invoicesOverdue/
+    // trialsExpired/cancelledSubscriptionsEnded counted every row the
+    // initial SELECT matched, including ones later skipped for a payment
+    // landing mid-run, a subscription already on file, grace-period math,
+    // or losing a race to a concurrent invocation. milestonesMarkedOverdue
+    // already counted correctly; reporting what this run actually did
+    // for the other three, not what it merely looked at.
     return NextResponse.json({
       ok: true,
       milestonesMarkedOverdue,
-      invoicesOverdue: overdueInvoices?.length || 0,
-      trialsExpired: expiredTrials?.length || 0,
-      cancelledSubscriptionsEnded: cancelledExpired?.length || 0,
+      invoicesOverdue: invoicesMarkedOverdue,
+      trialsExpired: trialsExpiredCount,
+      cancelledSubscriptionsEnded: cancelledSubscriptionsEndedCount,
     })
   } catch (err) {
     console.error('Payment overdue cron error:', err)

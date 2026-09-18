@@ -334,6 +334,12 @@ function AccountTab({ session, supabase, router, mfaMandatory }: any) {
   const [sessionsMsg,     setSessionsMsg]     = useState('')
   const [msg,         setMsg]         = useState('')
   const [err,         setErr]         = useState('')
+  // FEATURE (cron audit, section 17 — feature gap): see
+  // app/api/account/delete/route.ts's own header comment for the full
+  // story on why this needed building.
+  const [deleteConfirm, setDeleteConfirm] = useState('')
+  const [deleteLoading, setDeleteLoading] = useState(false)
+  const [deleteErr,     setDeleteErr]     = useState('')
   // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — feature
   // gap): avatar_url has been readable and rendered elsewhere (Team,
   // project members, discussion) for as long as those features have
@@ -429,6 +435,26 @@ function AccountTab({ session, supabase, router, mfaMandatory }: any) {
       if (!res.ok) throw new Error(json.error || 'Failed to sign out other sessions')
       setSessionsMsg('Signed out of all other sessions. This device stays signed in.')
     } catch (e: any) { setErr(e.message) } finally { setSessionsLoading(false) }
+  }
+
+  // FEATURE (cron audit, section 17 — feature gap): see
+  // app/api/account/delete/route.ts's own header comment for the full
+  // story on why this needed building.
+  async function handleDeleteAccount() {
+    if (deleteConfirm.trim().toLowerCase() !== session.email.toLowerCase()) return
+    setDeleteLoading(true); setDeleteErr('')
+    try {
+      const res  = await fetch('/api/account/delete', {
+        method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmEmail: deleteConfirm.trim() }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) { setDeleteErr(json.error || 'Could not delete account'); return }
+      await supabase.auth.signOut()
+      router.push('/login?message=Account+deleted.')
+    } catch (e: unknown) {
+      setDeleteErr(e instanceof Error ? e.message : 'Could not delete account')
+    } finally { setDeleteLoading(false) }
   }
 
   return (
@@ -543,6 +569,42 @@ function AccountTab({ session, supabase, router, mfaMandatory }: any) {
           app/(app)/settings/page.tsx via the same shared function every
           other site uses, and passed down as a prop. */}
       <MfaSection mandatory={mfaMandatory} />
+      {/* FEATURE (cron audit, section 17 — feature gap): personal account
+          deletion, not workspace deletion — deliberately NOT gated behind
+          permissions.manageWorkspace (unlike DangerTab below), since any
+          authenticated member can delete their own account regardless of
+          what role they hold. See app/api/account/delete/route.ts's own
+          header comment for the full design (soft delete, reuses the
+          same per-workspace leave guards as the workspace switcher's
+          existing "Leave" action, 30-day grace period before the
+          anonymization cron scrubs the record). */}
+      <div className="settings-section" style={{ border: '1px solid #FECACA', marginTop: 24 }}>
+        <div className="settings-section-title" style={{ color: 'var(--red)' }}>Delete account</div>
+        <p style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.6, marginBottom: 16 }}>
+          Permanently delete your ScopeGov account. This leaves every workspace you belong to
+          and cannot be undone once processed.
+          {' '}
+          <strong>
+            You can&apos;t delete your account while you&apos;re the only member — or the only
+            admin — of a workspace.
+          </strong>
+          {' '}
+          Transfer ownership, reassign that permission, or delete the workspace first (Settings &gt; Danger zone),
+          then retry.
+        </p>
+        {deleteErr && <div className="auth-error" style={{ marginBottom: 14 }}>{deleteErr}</div>}
+        <div className="fgrp">
+          <label className="flbl">Type <strong>{session.email}</strong> to confirm</label>
+          <input className="finp err" value={deleteConfirm}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDeleteConfirm(e.target.value)}
+            placeholder={session.email} />
+        </div>
+        <button className="btn btn-danger btn-sm"
+          disabled={deleteConfirm.trim().toLowerCase() !== session.email.toLowerCase() || deleteLoading}
+          onClick={handleDeleteAccount}>
+          {deleteLoading ? <span className="spin" /> : 'Delete my account'}
+        </button>
+      </div>
     </div>
   )
 }

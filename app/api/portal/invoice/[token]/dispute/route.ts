@@ -12,7 +12,7 @@ export const runtime = 'nodejs'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { jwtVerify } from 'jose'
-import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
+import { getWorkspaceJwtSecret, isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
 import { logAudit } from '@/lib/utils/audit'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
@@ -61,6 +61,17 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     } catch {
       return NextResponse.json({ error: 'Invalid or expired link' }, { status: 401 })
     }
+
+    // FIX (portal audit, section 18 — closing pass): every other client-
+    // mutating portal action (SOW decline/request-changes, CO decline/
+    // counter/accept/countersign) checks isWorkspaceDeleted right after
+    // JWT verification — see that function's own comment in
+    // workspace-secret.ts, which already names this route by name as part
+    // of that fix. It never actually landed here: a client could still
+    // submit a dispute (writing disputed_at/dispute_note and an audit_log
+    // row) against a workspace the agency has deleted.
+    if (await isWorkspaceDeleted(service, invoice.workspace_id))
+      return NextResponse.json({ error: 'This link is no longer active' }, { status: 410 })
 
     const now = new Date().toISOString()
     const project = invoice.projects

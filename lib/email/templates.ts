@@ -974,7 +974,14 @@ export async function sendCoAcceptedClientEmail(params: {
         If you have any questions, please contact ${agencyName} directly.
       </p>
     `,
-    cta: 'Download PDF →',
+    // FIX (portal audit, section 18 — closing pass): this CTA used to
+    // read "Download PDF →" because ctaUrl pointed straight at the raw
+    // /pdf endpoint (see finalize-co.ts's own fix note for why that
+    // changed) — now that ctaUrl is the portal confirmation page, the
+    // same wording the SOW-signed client email already uses for the
+    // equivalent page-link CTA is the accurate label. The page itself
+    // still offers a Download PDF button.
+    cta: 'View your accepted change order',
     ctaUrl: portalUrl,
   })
 

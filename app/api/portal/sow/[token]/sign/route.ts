@@ -330,13 +330,26 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     // ── 10. Confirm to client (Event 4) ───────────────────────
     try {
+      // FIX (portal audit, section 18 — closing pass): every other portal-
+      // link construction site in the codebase (send-sow.ts, send-co.ts,
+      // send-invoice.ts, accept-co-counter.ts, finalize-co.ts, and all
+      // three /remind routes) uses `NEXT_PUBLIC_PORTAL_URL ||
+      // NEXT_PUBLIC_APP_URL` — the client portal is deployed on its own
+      // domain (see README §2.1: sign.scopegov.app, same Vercel
+      // deployment as app.scopegov.app but a distinct configured domain).
+      // This one site — arguably the single most important client-facing
+      // link in the app, since it's the confirmation the client gets
+      // immediately after signing — hardcoded NEXT_PUBLIC_APP_URL only,
+      // silently dropping the dedicated portal-domain routing whenever
+      // the two env vars differ in production.
+      const portalBase = process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL
       await sendSowSignedClientEmail({
         to:          client.email,
         cc:          client.cc_emails || [],
         clientName:  client.name,
         agencyName:  ws.agency_name,
         projectName: project.name,
-        portalUrl:   `${process.env.NEXT_PUBLIC_APP_URL}/portal/sow/${clientToken}`,
+        portalUrl:   `${portalBase}/portal/sow/${clientToken}`,
         attachments: pdfAttachment ? [pdfAttachment] : undefined,
       })
     } catch (e) { console.error('Client confirm email failed:', e) }

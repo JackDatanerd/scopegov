@@ -297,22 +297,33 @@ export async function finalizeCoAcceptance(service: any, params: {
     }
   } catch (e) { console.error('CO accepted agency email failed:', e) }
 
-  // FIX (doc-completeness audit): the CO's accept token is marked
-  // 'superseded' in revoked_tokens the moment it's used (so it can't be
-  // replayed to accept/decline/counter again) — which means the ordinary
-  // portal page for this token would show a generic "link deactivated"
-  // screen, not a happy confirmation. Point the CTA straight at the PDF
-  // endpoint instead, which explicitly allows a 'superseded' token through
-  // read-only once the CO is 'accepted' (see the pdf route for why).
+  // FIX (portal audit, section 18 — closing pass): this used to point the
+  // client CTA straight at the raw /pdf endpoint, reasoning that the
+  // ORIGINAL accept token is marked 'superseded' the moment it's used and
+  // would show a generic "link deactivated" screen on the ordinary portal
+  // page. That reasoning doesn't apply to the token actually used here:
+  // `coToken` (above) is the FRESH, non-revoked token reissued at the top
+  // of this function — the exact same mechanism the SOW sign route uses,
+  // which correctly links its own client confirmation email to the real
+  // portal page, not a raw PDF. app/api/portal/co/[token]/route.ts's
+  // GET handler has a dedicated `state === 'accepted'` branch — "built for
+  // exactly this case" per its own comment — that renders a branded
+  // thank-you with the captured signature AND a Download PDF button, i.e.
+  // a strict superset of what the raw PDF link offered. Linking straight
+  // to the PDF skipped that confirmation experience for every CO client,
+  // unlike every SOW client. Point at the portal page (same URL shape
+  // send-co.ts/accept-co-counter.ts already use for their own links);
+  // the page itself offers the PDF download.
   try {
     if (client?.email) {
-      const pdfUrl = `${process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL}/api/portal/co/${coToken || ''}/pdf`
+      const portalBase = process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL
+      const portalUrl  = `${portalBase}/portal/co/${coToken || ''}`
       await sendCoAcceptedClientEmail({
         to: client.email, cc: client.cc_emails || [],
         clientName: client.name, agencyName: ws.agency_name,
         projectName: project.name, coTitle: co.title,
         total: co.total, currency: project.currency || 'USD',
-        portalUrl: pdfUrl,
+        portalUrl,
         attachments: pdfAttachment ? [pdfAttachment] : undefined,
       })
     }

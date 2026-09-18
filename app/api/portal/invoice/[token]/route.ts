@@ -3,7 +3,7 @@ export const runtime = 'nodejs'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { jwtVerify } from 'jose'
-import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
+import { getWorkspaceJwtSecret, isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
 import { formatAddress } from '@/lib/utils/format'
 
 // GET /api/portal/invoice/[token] — read-only. No pay button, no checkout
@@ -46,6 +46,22 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
     if (invoice.status === 'draft' || invoice.status === 'void')
       return NextResponse.json({ error: 'This invoice is no longer available' }, { status: 409 })
+
+    // FIX (portal audit, section 18 — closing pass): every SOW and CO
+    // portal route (both the GET/route.ts view and every mutating action)
+    // checks isWorkspaceDeleted right after the document's workspace_id is
+    // known — see that function's own comment in workspace-secret.ts,
+    // which already names "invoice route/dispute/pdf" as covered by that
+    // fix. The invoice GET route never actually got it: a client could
+    // still view live balance/payment-instruction data for a workspace the
+    // agency has deleted. Reuses the same 410 the revoked-token branch
+    // above already returns, matching how sow/co's GET routes reuse their
+    // 'revoked' bucket for the same case — the client doesn't need to be
+    // told specifically that the workspace was deleted, just that the
+    // link isn't live. Checked before JWT verify, same order sow/co's GET
+    // routes use.
+    if (await isWorkspaceDeleted(service, invoice.workspace_id))
+      return NextResponse.json({ error: 'Link no longer active' }, { status: 410 })
 
     const workspace = invoice.projects?.workspaces
     // jwt_secret lives in workspace_secrets now, not on workspaces itself —
