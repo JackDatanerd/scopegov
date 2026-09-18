@@ -40,11 +40,31 @@ export default async function ClientDetailPage({ params }: Props) {
 
   const canEditClientData = hasPermission(session, 'CREATE_PROJECTS')
 
-  const { data: projectsRaw = [] } = await (service as any)
+  // FIX (deep audit, section 14 — flagship finding): same project-
+  // visibility gap as the clients list page — see that page's comment for
+  // the full reasoning. This page additionally rendered a working link
+  // straight into each project's detail page, which a limited-access
+  // viewer would then get redirected/404'd out of — worse than just an
+  // inflated count, since it invited a click into a page they can't open.
+  const canViewAllProjects = hasPermission(session, 'VIEW_ALL_PROJECTS')
+  let accessibleProjectIds: Set<string> | null = null
+  if (!canViewAllProjects) {
+    const { data: ids } = await (service as any)
+      .from('project_members')
+      .select('project_id, workspace_members!inner(user_id)')
+      .eq('workspace_members.user_id', session.id)
+    accessibleProjectIds = new Set((ids || []).map((r: { project_id: string }) => r.project_id))
+  }
+
+  const { data: projectsAll = [] } = await (service as any)
     .from('projects')
     .select('id,name,disc,type,status,contract_value,currency,created_at,guardian_flags(status),change_orders(status),sow_documents(status)')
     .eq('client_id', id).eq('workspace_id', session.workspaceId).is('deleted_at', null)
     .order('created_at', { ascending: false })
+
+  const projectsRaw = canViewAllProjects
+    ? (projectsAll || [])
+    : (projectsAll || []).filter((p: any) => accessibleProjectIds!.has(p.id))
 
   // Same fix for contract_value — was shipped unconditionally, only the
   // "Value" column and total below were ever gated in the UI.
@@ -56,6 +76,25 @@ export default async function ClientDetailPage({ params }: Props) {
     ? (projectsRaw || []).reduce((s: number, p: any) => s + (p.contract_value || 0), 0)
     : 0
   const currency   = (projects || [])[0]?.currency || 'USD'
+
+  // FEATURE (deep audit, section 14): guardian_flags/change_orders/
+  // sow_documents were already being joined into this exact query, but
+  // none of it was ever rendered — looks like an abandoned attempt at
+  // per-project status badges (this codebase uses the same pattern on
+  // app/(app)/projects/page.tsx). Wiring it up rather than dropping the
+  // now-explained dead join.
+  const ACTIVE_STATUSES = ['Active', 'Awaiting Signature', 'Intake', 'Changes Requested', 'Stalled']
+  const PENDING_CO_STATUSES = ['awaiting_response', 'countered', 'stalled', 'awaiting_countersignature', 'expired']
+  function projectBadges(p: any) {
+    const openFlags = (p.guardian_flags || []).filter((f: any) => f.status === 'open' || f.status === 'borderline_review').length
+    const pendingCos = (p.change_orders || []).filter((co: any) => PENDING_CO_STATUSES.includes(co.status)).length
+    const awaitingSow = (p.sow_documents || []).some((s: any) => ['sent', 'awaiting_signature'].includes(s.status))
+    return { openFlags, pendingCos, awaitingSow }
+  }
+
+  // Used to warn before archiving a client that still has active work —
+  // see ArchiveClientButton.
+  const activeProjectCount = (projectsAll || []).filter((p: any) => ACTIVE_STATUSES.includes(p.status)).length
 
   function pillVariant(status: string): string {
     const m: Record<string, string> = {
@@ -88,7 +127,7 @@ export default async function ClientDetailPage({ params }: Props) {
           )}
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          {canEditClientData && <ArchiveClientButton clientId={id} status={client.status || 'active'} />}
+          {canEditClientData && <ArchiveClientButton clientId={id} status={client.status || 'active'} activeProjectCount={activeProjectCount} />}
           <Link href={`/projects/new?clientId=${id}`}>
             <button className="btn btn-primary">
               <i className="ti ti-plus" style={{ fontSize: 13 }} /> New project
@@ -130,7 +169,9 @@ export default async function ClientDetailPage({ params }: Props) {
                   </tr>
                 </thead>
                 <tbody>
-                  {(projects || []).map((p: any) => (
+                  {(projects || []).map((p: any) => {
+                    const badges = projectBadges(p)
+                    return (
                     <tr key={p.id}>
                       <td>
                         <Link href={`/projects/${p.id}`}>
@@ -139,9 +180,24 @@ export default async function ClientDetailPage({ params }: Props) {
                         </Link>
                       </td>
                       <td>
-                        <span className={`pill pill-${pillVariant(p.status)}`}>
-                          {projectStatusLabel(p.status)}
-                        </span>
+                        <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', alignItems: 'center' }}>
+                          <span className={`pill pill-${pillVariant(p.status)}`}>
+                            {projectStatusLabel(p.status)}
+                          </span>
+                          {badges.openFlags > 0 && (
+                            <span className="pill pill-red pill-sm" title="Open Guardian flags needing review">
+                              {badges.openFlags} flag{badges.openFlags !== 1 ? 's' : ''}
+                            </span>
+                          )}
+                          {badges.pendingCos > 0 && (
+                            <span className="pill pill-amber pill-sm" title="Change order awaiting resolution">
+                              {badges.pendingCos} CO pending
+                            </span>
+                          )}
+                          {badges.awaitingSow && (
+                            <span className="pill pill-blue pill-sm" title="SOW sent, awaiting signature">SOW pending</span>
+                          )}
+                        </div>
                       </td>
                       {canViewFinancials && (
                         <td className="td-mono" style={{ textAlign: 'right', fontSize: 12 }}>
@@ -150,7 +206,8 @@ export default async function ClientDetailPage({ params }: Props) {
                       )}
                       <td style={{ color: 'var(--text-3)', fontSize: 12 }}>{formatDate(p.created_at)}</td>
                     </tr>
-                  ))}
+                    )
+                  })}
                 </tbody>
               </table>
             </div>

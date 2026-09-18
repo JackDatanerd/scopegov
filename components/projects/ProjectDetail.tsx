@@ -919,12 +919,35 @@ function GenerateSowModal({ project, onClose, onDone }: any) {
 }
 
 // ── GUARDIAN TAB ──────────────────────────────────────────────
+// Hoisted to module scope (was local to GuardianTab) so GuardianHistoryPanel
+// can share the same outcome copy instead of duplicating/drifting from it.
+const VERDICT_COPY: Record<string, { icon: string; color: string; bg: string; title: string }> = {
+  in_scope:              { icon: 'ti-shield-check', color: 'var(--green)', bg: 'var(--green-lt)', title: 'In scope — no action needed' },
+  covered_by_co:         { icon: 'ti-shield-check', color: 'var(--green)', bg: 'var(--green-lt)', title: 'Covered by an accepted change order' },
+  // FIX (re-audit, Guardian ghost-feature finding): this copy predates
+  // borderline items actually raising a flag — it was still telling the
+  // user "no flag raised" even after a borderline_review flag had just
+  // been created below.
+  borderline:            { icon: 'ti-shield-half-filled', color: 'var(--amber)', bg: '#FFF7ED', title: 'Borderline — flagged for human review' },
+  out_of_scope:          { icon: 'ti-shield-x', color: 'var(--red)', bg: 'var(--red-lt)', title: 'Out of scope — flag created below' },
+  duplicate:             { icon: 'ti-copy', color: 'var(--text-3)', bg: 'var(--surface-2)', title: 'Duplicate of a recent check — skipped' },
+  pending:               { icon: 'ti-clock', color: 'var(--text-3)', bg: 'var(--surface-2)', title: 'No signed SOW yet — nothing to check against' },
+  classification_failed: { icon: 'ti-alert-triangle', color: 'var(--red)', bg: 'var(--red-lt)', title: 'Classification failed — try again in a moment' },
+}
+
 function GuardianTab({ project, flags, permissions, router }: any) {
   const [pasteMode,    setPasteMode]    = useState(false)
   const [pasteText,    setPasteText]    = useState('')
   const [submitting,   setSubmitting]   = useState(false)
   const [submitError,  setSubmitError]  = useState('')
   const [filterStatus, setFilterStatus] = useState('all')
+  // FEATURE (deep audit, section 13 — flagship finding): ACCESS_GUARDIAN_
+  // HISTORY has existed as a permission since the initial schema and was
+  // already being computed into `permissions` on every project-page load
+  // (see app/(app)/projects/[id]/page.tsx), but nothing in this component
+  // ever read it — the panel it was supposed to gate didn't exist. See
+  // GuardianHistoryPanel below and app/api/guardian/checks/route.ts.
+  const [historyOpen,  setHistoryOpen]  = useState(false)
   // BUG: the check's actual verdict (in_scope / out_of_scope / duplicate /
   // pending / classification_failed) was fetched from the API and then
   // discarded — the UI just closed the paste box and silently refreshed,
@@ -962,19 +985,7 @@ function GuardianTab({ project, flags, permissions, router }: any) {
     } finally { setSubmitting(false) }
   }
 
-  const VERDICT_COPY: Record<string, { icon: string; color: string; bg: string; title: string }> = {
-    in_scope:              { icon: 'ti-shield-check', color: 'var(--green)', bg: 'var(--green-lt)', title: 'In scope — no action needed' },
-    covered_by_co:         { icon: 'ti-shield-check', color: 'var(--green)', bg: 'var(--green-lt)', title: 'Covered by an accepted change order' },
-    // FIX (re-audit, Guardian ghost-feature finding): this copy predates
-    // borderline items actually raising a flag — it was still telling the
-    // user "no flag raised" even after a borderline_review flag had just
-    // been created below.
-    borderline:            { icon: 'ti-shield-half-filled', color: 'var(--amber)', bg: '#FFF7ED', title: 'Borderline — flagged for human review' },
-    out_of_scope:          { icon: 'ti-shield-x', color: 'var(--red)', bg: 'var(--red-lt)', title: 'Out of scope — flag created below' },
-    duplicate:             { icon: 'ti-copy', color: 'var(--text-3)', bg: 'var(--surface-2)', title: 'Duplicate of a recent check — skipped' },
-    pending:               { icon: 'ti-clock', color: 'var(--text-3)', bg: 'var(--surface-2)', title: 'No signed SOW yet — nothing to check against' },
-    classification_failed: { icon: 'ti-alert-triangle', color: 'var(--red)', bg: 'var(--red-lt)', title: 'Classification failed — try again in a moment' },
-  }
+
 
   return (
     <div>
@@ -1000,13 +1011,28 @@ function GuardianTab({ project, flags, permissions, router }: any) {
         )}
       </div>
 
-      {isActive && permissions.submitGuardian && (
-        <div style={{ marginBottom: 16 }}>
-          {!pasteMode ? (
+      {(permissions.viewGuardianHistory || (isActive && permissions.submitGuardian)) && (
+        <div style={{ display: 'flex', gap: 8, marginBottom: historyOpen ? 0 : 16 }}>
+          {isActive && permissions.submitGuardian && !pasteMode && (
             <button className="btn btn-ghost btn-sm" onClick={() => { setPasteMode(true); setLastResult(null) }}>
               <i className="ti ti-clipboard" style={{ fontSize: 12 }} /> Paste email or message
             </button>
-          ) : (
+          )}
+          {permissions.viewGuardianHistory && (
+            <button className="btn btn-ghost btn-sm" onClick={() => setHistoryOpen(o => !o)}>
+              <i className={`ti ${historyOpen ? 'ti-chevron-up' : 'ti-history'}`} style={{ fontSize: 12 }} /> Check history
+            </button>
+          )}
+        </div>
+      )}
+
+      {permissions.viewGuardianHistory && historyOpen && (
+        <GuardianHistoryPanel projectId={project.id} />
+      )}
+
+      {isActive && permissions.submitGuardian && (
+        <div style={{ marginBottom: 16 }}>
+          {!pasteMode ? null : (
             <div className="surface surface-p">
               <label className="flbl">Paste client message to check against scope</label>
               <textarea className="finp" style={{ minHeight: 100, resize: 'vertical', marginTop: 6 }}
@@ -1080,6 +1106,108 @@ function GuardianTab({ project, flags, permissions, router }: any) {
         filteredFlags.map((flag: any) => (
           <FlagCard key={flag.id} flag={flag} permissions={permissions} router={router} projectId={project.id} />
         ))
+      )}
+    </div>
+  )
+}
+
+// FEATURE (deep audit, section 13 — flagship finding): the missing read
+// surface for guardian_checks — see app/api/guardian/checks/route.ts and
+// the ACCESS_GUARDIAN_HISTORY note on GuardianTab above. Every check that
+// doesn't produce a flag (in_scope, covered_by_co, duplicate, pending, and
+// critically classification_failed) was previously visible nowhere in the
+// product; this is the only place any of that is now surfaced.
+function GuardianHistoryPanel({ projectId }: { projectId: string }) {
+  const [checks,   setChecks]   = useState<any[]>([])
+  const [loading,  setLoading]  = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [error,    setError]    = useState('')
+  const [hasMore,  setHasMore]  = useState(false)
+  const [cursor,   setCursor]   = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true); setError('')
+    fetch(`/api/guardian/checks?projectId=${projectId}`)
+      .then(res => res.json())
+      .then(json => {
+        if (cancelled) return
+        if (json.error) { setError(json.error); return }
+        setChecks(json.checks || [])
+        setHasMore(!!json.hasMore)
+        setCursor(json.nextCursor || null)
+      })
+      .catch(() => { if (!cancelled) setError('Could not load check history.') })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [projectId])
+
+  async function loadMore() {
+    if (!cursor) return
+    setLoadingMore(true)
+    try {
+      const res  = await fetch(`/api/guardian/checks?projectId=${projectId}&before=${encodeURIComponent(cursor)}`)
+      const json = await res.json()
+      if (json.error) { setError(json.error); return }
+      setChecks(prev => [...prev, ...(json.checks || [])])
+      setHasMore(!!json.hasMore)
+      setCursor(json.nextCursor || null)
+    } finally { setLoadingMore(false) }
+  }
+
+  return (
+    <div className="surface surface-p" style={{ marginBottom: 16 }}>
+      <div className="sec-hd" style={{ marginBottom: 10 }}>
+        <div className="sec-title">Check history</div>
+      </div>
+      {loading ? (
+        <div style={{ fontSize: 12, color: 'var(--text-3)', padding: '8px 0' }}>Loading…</div>
+      ) : error ? (
+        <p style={{ fontSize: 12, color: 'var(--red)' }}>{error}</p>
+      ) : checks.length === 0 ? (
+        <p style={{ fontSize: 12, color: 'var(--text-4)', fontStyle: 'italic' }}>No checks recorded yet.</p>
+      ) : (
+        <>
+          {checks.map(c => {
+            const v = VERDICT_COPY[c.outcome] || VERDICT_COPY.pending
+            return (
+              <div key={c.id} style={{
+                display: 'flex', gap: 10, alignItems: 'flex-start', padding: '9px 0',
+                borderBottom: '1px solid var(--surface-2)',
+              }}>
+                <i className={`ti ${v.icon}`} style={{ fontSize: 14, color: v.color, marginTop: 2, flexShrink: 0 }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <span style={{ color: v.color, fontWeight: 500 }}>{v.title}</span>
+                    <span style={{ color: 'var(--text-4)' }}>·</span>
+                    <span style={{ color: 'var(--text-3)' }}>
+                      {c.source === 'email' ? `Email${c.fromEmail ? ` from ${c.fromEmail}` : ''}` : `Pasted by ${c.submittedByName || 'Unknown'}`}
+                    </span>
+                    <span style={{ color: 'var(--text-4)' }}>·</span>
+                    <span style={{ color: 'var(--text-4)' }}>{formatRelative(c.submittedAt)}</span>
+                    {c.isRetroactive && <span className="pill pill-slate pill-sm">Retroactive</span>}
+                  </div>
+                  {c.contentPreview && (
+                    <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 3, lineHeight: 1.4 }}>
+                      {c.contentPreview}{c.contentPreview.length >= 240 ? '…' : ''}
+                    </div>
+                  )}
+                  {c.matchedReference && (
+                    <div style={{ fontSize: 11, color: 'var(--text-4)', marginTop: 2 }}>Matched: {c.matchedReference}</div>
+                  )}
+                  {c.isDuplicate && (
+                    <div style={{ fontSize: 11, color: 'var(--text-4)', marginTop: 2 }}>Duplicate of an earlier check</div>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+          {hasMore && (
+            <button className="btn btn-ghost btn-sm" style={{ marginTop: 10 }} onClick={loadMore} disabled={loadingMore}>
+              {loadingMore ? <span className="spin" /> : 'Load more'}
+            </button>
+          )}
+        </>
       )}
     </div>
   )

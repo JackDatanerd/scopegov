@@ -150,12 +150,24 @@ export async function finalizeCoAcceptance(service: any, params: {
     // does the concatenation as a single atomic UPDATE under Postgres's
     // own row lock instead, so a concurrent acceptance always appends to
     // whatever the other one just wrote rather than to a stale local copy.
+    //
+    // FIX (deep audit, section 13 — cross-cutting): this call used to be a
+    // bare `await (service as any).rpc(...)` with the result discarded
+    // entirely. supabase-js does NOT throw on a Postgres-side error from
+    // an RPC call — it resolves normally with `{ data, error }` — so a
+    // failing function call (see migration 045's note: 043's function had
+    // a jsonb/jsonb[] type mismatch that failed on every real invocation)
+    // never tripped this try/catch, never logged anything, and never told
+    // anyone the scope snapshot didn't actually get updated. Capture and
+    // check `error` explicitly so a broken snapshot write is at least
+    // visible in server logs instead of indistinguishable from success.
     if (deliverables.length) {
-      await (service as any).rpc('append_scope_deliverables', {
+      const { error: appendErr } = await (service as any).rpc('append_scope_deliverables', {
         p_project_id: co.project_id,
         p_added:      deliverables.map((d: string) => ({ title: d })),
         p_now:        now,
       })
+      if (appendErr) console.error('append_scope_deliverables failed:', appendErr, { coId: co.id, projectId: co.project_id })
     }
   } catch (e) { console.error('Snapshot update failed:', e) }
 

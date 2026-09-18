@@ -196,13 +196,21 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       : extractDeliverables(deliverablesSection?.content || '')
     const outOfScope = extractDeliverables(sections.find((s: any) => s.id === 'oos')?.content || '')
 
+    // FIX (deep audit, section 13 — cross-cutting): select version too and
+    // advance it on update — see migration 045's note. This snapshot write
+    // (a re-signed SOW replacing the prior scope) previously left `version`
+    // untouched, which is exactly what let app/api/guardian/scope-adjustment
+    // route.ts's compare-and-swap miss a re-sign landing between its read
+    // and its write: version matched the stale value it read, the write
+    // "succeeded", and it silently clobbered the just-re-signed scope.
     const { data: existingSnap } = await (service as any)
-      .from('project_scope_snapshot').select('id').eq('project_id', project.id).single()
+      .from('project_scope_snapshot').select('id,version').eq('project_id', project.id).single()
 
     if (existingSnap) {
       await (service as any).from('project_scope_snapshot').update({
         deliverables, out_of_scope: outOfScope,
         last_updated_at: now, last_updated_by: 'signing',
+        version: (existingSnap.version || 1) + 1,
       }).eq('project_id', project.id)
     } else {
       await (service as any).from('project_scope_snapshot').insert({

@@ -48,41 +48,64 @@ export async function POST(request: NextRequest) {
     const { data: snap } = await (service as any)
       .from('project_scope_snapshot').select('id,deliverables,version').eq('project_id', projectId).single()
 
-    if (snap) {
-      let matched = false
-      const deliverables = (snap.deliverables || []).map((d: any) => {
-        if (d && typeof d === 'object' && d.title === deliverable) {
-          matched = true
-          return { ...d, title: newValue } // preserve any other fields on the deliverable, not just title
-        }
-        if (d === deliverable) { matched = true; return { title: newValue } }
-        return d
+    // FIX (deep audit, section 13): this route's own comment above claims
+    // the "record a change that didn't really land" class of bug was
+    // fixed by reordering the write-before-history — but that reordering
+    // only covered the "deliverable not found in an existing snapshot"
+    // case below. Calling this route for a project with NO snapshot row
+    // at all (no signed SOW yet) skipped the entire `if (snap)` block —
+    // nothing to update — and fell straight through to recording a
+    // scope_adjustments row and an audit entry claiming the deliverable
+    // was changed, with no scope-of-record anywhere for that to have
+    // actually happened to. The UI never triggers this (the adjust button
+    // only renders for deliverables pulled from an existing snapshot), but
+    // the route is directly callable and has no business accepting an
+    // adjustment against scope that doesn't exist yet.
+    if (!snap) {
+      return NextResponse.json({
+        error: 'This project has no scope snapshot yet — a scope adjustment can only be made once a SOW has been signed.',
+      }, { status: 409 })
+    }
+
+    let matched = false
+    const deliverables = (snap.deliverables || []).map((d: any) => {
+      // FIX (deep audit, section 13): only rename the FIRST match. Two
+      // deliverables sharing the same title (a duplicate entry, however it
+      // got there) would previously all get silently renamed to the same
+      // newValue in one call — `matched` was tracked as a single boolean,
+      // but nothing stopped the `.map()` from touching every match it saw.
+      if (matched) return d
+      if (d && typeof d === 'object' && d.title === deliverable) {
+        matched = true
+        return { ...d, title: newValue } // preserve any other fields on the deliverable, not just title
+      }
+      if (d === deliverable) { matched = true; return { title: newValue } }
+      return d
+    })
+
+    if (!matched) {
+      return NextResponse.json({
+        error: `Deliverable "${deliverable}" was not found in the current scope snapshot — it may have changed since this page loaded. Refresh and try again.`,
+      }, { status: 409 })
+    }
+
+    const { data: updatedSnap, error: snapErr } = await (service as any)
+      .from('project_scope_snapshot')
+      .update({
+        deliverables,
+        last_updated_at: now,
+        last_updated_by: 'scope_adjustment',
+        version: (snap.version || 1) + 1,
       })
+      .eq('project_id', projectId)
+      .eq('version', snap.version) // compare-and-swap — fails (0 rows) if someone else updated it first
+      .select('id')
 
-      if (!matched) {
-        return NextResponse.json({
-          error: `Deliverable "${deliverable}" was not found in the current scope snapshot — it may have changed since this page loaded. Refresh and try again.`,
-        }, { status: 409 })
-      }
-
-      const { data: updatedSnap, error: snapErr } = await (service as any)
-        .from('project_scope_snapshot')
-        .update({
-          deliverables,
-          last_updated_at: now,
-          last_updated_by: 'scope_adjustment',
-          version: (snap.version || 1) + 1,
-        })
-        .eq('project_id', projectId)
-        .eq('version', snap.version) // compare-and-swap — fails (0 rows) if someone else updated it first
-        .select('id')
-
-      if (snapErr) throw new Error(snapErr.message)
-      if (!updatedSnap || updatedSnap.length === 0) {
-        return NextResponse.json({
-          error: 'The scope snapshot changed while processing this adjustment — please retry.',
-        }, { status: 409 })
-      }
+    if (snapErr) throw new Error(snapErr.message)
+    if (!updatedSnap || updatedSnap.length === 0) {
+      return NextResponse.json({
+        error: 'The scope snapshot changed while processing this adjustment — please retry.',
+      }, { status: 409 })
     }
 
     // Only recorded once the snapshot write (if any) has actually

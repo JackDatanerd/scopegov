@@ -20,6 +20,26 @@ export default async function ClientsPage() {
   const canViewFinancials = hasPermission(session, 'VIEW_FINANCIALS')
   const canViewClientData = hasPermission(session, 'VIEW_CLIENT_DATA')
 
+  // FIX (deep audit, section 14 — flagship finding): this page's projects
+  // join had no project-level access filtering at all — every other place
+  // projects are listed (app/(app)/projects/page.tsx, and the individual
+  // project detail page) scopes them to VIEW_ALL_PROJECTS or explicit
+  // project_members membership; this page ignored that entirely and
+  // showed EVERY project for a client to any authenticated workspace
+  // member. That meant "Projects: N" and "Total value: $X" on this list
+  // were aggregated across projects a limited-access team member has no
+  // membership on and couldn't otherwise open — a real information
+  // disclosure, not a cosmetic one. Same fix shape as projects/page.tsx.
+  const canViewAllProjects = hasPermission(session, 'VIEW_ALL_PROJECTS')
+  let accessibleProjectIds: Set<string> | null = null
+  if (!canViewAllProjects) {
+    const { data: ids } = await (service as any)
+      .from('project_members')
+      .select('project_id, workspace_members!inner(user_id)')
+      .eq('workspace_members.user_id', session.id)
+    accessibleProjectIds = new Set((ids || []).map((r: { project_id: string }) => r.project_id))
+  }
+
   // FIX (audit round 4, finding #3): this page shipped email, phone, and
   // per-project contract_value/currency into the initial RSC payload
   // unconditionally — ClientsClient.tsx only ever hid them in the
@@ -36,7 +56,8 @@ export default async function ClientsPage() {
     // correctly excludes them — the same client's project count/total
     // value could disagree between the two screens.
     projects: (canViewFinancials ? c.projects : (c.projects || []).map((p: any) => ({ ...p, contract_value: null })))
-      .filter((p: any) => !p.deleted_at),
+      .filter((p: any) => !p.deleted_at)
+      .filter((p: any) => canViewAllProjects || accessibleProjectIds!.has(p.id)),
   }))
 
   return (
