@@ -242,7 +242,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     // ── 7. Audit log ──────────────────────────────────────────
     await logAudit(service, {
-      workspaceId: sow.workspace_id, actorId: client.email,
+      // FIX (build, Reports & Audit re-pass): actor_id is `uuid REFERENCES
+      // users(id)` — client.email is not a valid uuid, so this insert
+      // failed silently (unchecked supabase-js error) and 'sow.signed' —
+      // arguably the single most consequential event in this whole
+      // app — never once reached audit_log. null is correct for a
+      // non-platform-user actor; actorEmail/actorName already carry the
+      // real identity.
+      workspaceId: sow.workspace_id, actorId: null,
       actorEmail: client.email, actorName: signerName.trim(),
       eventType: 'sow.signed', entityType: 'sow',
       entityId: sow.id, entityName: project.name,
@@ -465,13 +472,23 @@ async function createMilestones(
         // silent one, and flagged in the audit log so it's discoverable
         // if it ever does happen (e.g. a future edit path that bypasses
         // the send-time check).
+        //
+        // FIX (build, Reports & Audit re-pass): this and the two other
+        // logAudit calls in this function were `actorId: ''` — an empty
+        // string is just as invalid a uuid as the literal 'system' string
+        // this codebase already fixed everywhere else (see
+        // lib/utils/audit.ts). The insert failed silently (supabase-js
+        // doesn't throw on a DB error, and it was never checked here), so
+        // these two "make sure this is discoverable if it ever happens"
+        // events were, in fact, never discoverable. null is the correct
+        // value.
         milestones.push({
           title: 'Project payment', amount: roundCurrency(contractValue),
           trigger: 'Full contract value — no itemized milestone schedule was defined in this SOW',
           type: 'fixed', percentage: null,
         })
         await logAudit(service, {
-          workspaceId, actorId: '', actorEmail: 'system@scopegov.app', actorName: 'ScopeGov',
+          workspaceId, actorId: null, actorEmail: 'system@scopegov.app', actorName: 'ScopeGov',
           eventType: 'sow.milestone_schedule_undefined', entityType: 'sow', entityId: sowId,
           metadata: { project_id: projectId, contract_value: contractValue, rows_found: rows.length, rows_valid: parsedRows.length, schedule_sum: scheduleSum },
         }).catch(() => {})
@@ -499,7 +516,7 @@ async function createMilestones(
     if (insertErr) {
       console.error('Milestone creation failed:', insertErr)
       await logAudit(service, {
-        workspaceId, actorId: '', actorEmail: 'system@scopegov.app', actorName: 'ScopeGov',
+        workspaceId, actorId: null, actorEmail: 'system@scopegov.app', actorName: 'ScopeGov',
         eventType: 'sow.milestones_creation_failed', entityType: 'sow', entityId: sowId,
         metadata: { project_id: projectId, error: insertErr.message || String(insertErr) },
       }).catch(() => {})
@@ -507,7 +524,7 @@ async function createMilestones(
   } catch (e) {
     console.error('Milestone creation failed:', e)
     await logAudit(service, {
-      workspaceId, actorId: '', actorEmail: 'system@scopegov.app', actorName: 'ScopeGov',
+      workspaceId, actorId: null, actorEmail: 'system@scopegov.app', actorName: 'ScopeGov',
       eventType: 'sow.milestones_creation_failed', entityType: 'sow', entityId: sowId,
       metadata: { project_id: projectId, error: e instanceof Error ? e.message : String(e) },
     }).catch(() => {})

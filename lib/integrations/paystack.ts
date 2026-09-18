@@ -58,6 +58,47 @@ export async function fetchPaystackNextPaymentDate(subscriptionCode: string): Pr
   }
 }
 
+// FEATURE (build, Billing re-pass): cancels_at_period_end exists precisely
+// so a customer keeps access (and the option to change their mind) until
+// the period they already paid for runs out — but nothing anywhere let
+// them actually change their mind. Paystack's subscription/enable
+// endpoint is the exact mirror of subscription/disable below, so this is
+// the same call shape as cancelPaystackSubscription, just the other verb.
+export interface ResumePaystackResult {
+  ok: boolean
+  error?: string
+}
+
+export async function resumePaystackSubscription(billing: {
+  paystack_subscription_code?: string | null
+  paystack_email_token?: string | null
+} | null | undefined): Promise<ResumePaystackResult> {
+  if (!billing?.paystack_subscription_code) return { ok: false, error: 'No subscription on file to resume' }
+
+  try {
+    const resp = await fetch('https://api.paystack.co/subscription/enable', {
+      method:  'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+        'Content-Type':  'application/json',
+      },
+      body: JSON.stringify({
+        code:  billing.paystack_subscription_code,
+        token: billing.paystack_email_token,
+      }),
+    })
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}))
+      console.error('Paystack enable error:', err)
+      return { ok: false, error: err.message || 'Paystack declined the resume request' }
+    }
+    return { ok: true }
+  } catch (e) {
+    console.error('Paystack enable call failed:', e)
+    return { ok: false, error: e instanceof Error ? e.message : 'Could not reach Paystack' }
+  }
+}
+
 export async function cancelPaystackSubscription(billing: {
   paystack_subscription_code?: string | null
   paystack_email_token?: string | null

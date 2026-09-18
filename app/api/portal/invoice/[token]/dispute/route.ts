@@ -74,7 +74,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .eq('id', invoice.id)
 
     await logAudit(service, {
-      workspaceId: invoice.workspace_id, actorId: client?.name || 'client',
+      // FIX (build, Reports & Audit re-pass): actor_id is `uuid REFERENCES
+      // users(id)` — a client is never a platform user, so actorId was
+      // being set to their display name (not even an email), an invalid
+      // uuid that fails silently on insert (supabase-js doesn't throw on
+      // a DB error, and this call site's return value was never checked).
+      // This event never once reached audit_log. null is correct here,
+      // same as every automated call site; actorEmail (fixed to the real
+      // client email above) and actorName still carry the identity.
+      workspaceId: invoice.workspace_id, actorId: null,
       // FIX (build, cron/portal audit round): this was hardcoded to the
       // placeholder 'portal@client' because the query never selected
       // clients.email — every equivalent client-actioned event elsewhere

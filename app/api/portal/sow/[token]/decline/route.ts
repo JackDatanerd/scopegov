@@ -98,7 +98,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // Project stays at Awaiting Signature — surfaces on attention list (spec §4.3)
 
     await logAudit(service, {
-      workspaceId: sow.workspace_id, actorId: client.email,
+      // FIX (build, Reports & Audit re-pass): actor_id is `uuid REFERENCES
+      // users(id)` — client.email is not a valid uuid, so this insert
+      // failed silently (unchecked supabase-js error) and 'sow.declined'
+      // never reached audit_log. null is correct for a non-platform-user
+      // actor; actorEmail/actorName already carry the real identity.
+      workspaceId: sow.workspace_id, actorId: null,
       actorEmail: client.email, actorName: client.name,
       eventType: 'sow.declined', entityType: 'sow',
       entityId: sow.id, entityName: project.name,

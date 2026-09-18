@@ -280,7 +280,15 @@ function csvCell(value: unknown): string {
 // real counter-offer dollar amount under this exact key on every
 // `co.revised` event, and it was never added here. Same leak class,
 // different key that got missed.
-const FINANCIAL_METADATA_KEYS = ['amount', 'balance_due', 'estimated_value', 'counter_amount', 'client_counter_amount', 'total', 'subtotal', 'contract_value', 'contractValue', 'schedule_sum']
+//
+// FIX (build, Reports & Audit re-pass #2): grepped every logAudit /
+// audit_log.insert call in the repo for dollar-shaped metadata and found
+// two more missing keys, same leak class: `threshold_amount`
+// (api/approval-workflows/route.ts — an approval workflow's own dollar
+// threshold, logged on approval_workflow.created) and
+// `new_monthly_amount` (lib/documents/finalize-co.ts — the new retainer
+// rate on project.retainer_renewed).
+const FINANCIAL_METADATA_KEYS = ['amount', 'balance_due', 'estimated_value', 'counter_amount', 'client_counter_amount', 'total', 'subtotal', 'contract_value', 'contractValue', 'schedule_sum', 'threshold_amount', 'new_monthly_amount']
 function redactMetadata(metadata: Record<string, unknown> | null | undefined, canViewFinancials: boolean) {
   if (!metadata || !Object.keys(metadata).length) return metadata
   if (canViewFinancials) return metadata

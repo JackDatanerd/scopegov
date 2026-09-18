@@ -117,7 +117,13 @@ export async function finalizeCoAcceptance(service: any, params: {
       console.error('Retainer renewal contract_value update failed after CO accept:', renewalErr, { coId: co.id })
     } else {
       await logAudit(service, {
-        workspaceId: co.workspace_id, actorId: client.email,
+        // FIX (build, Reports & Audit re-pass): actor_id is `uuid
+        // REFERENCES users(id)` — client.email is not a valid uuid, so
+        // this insert failed silently (unchecked supabase-js error) and
+        // 'project.retainer_renewed' never reached audit_log. null is
+        // correct for a non-platform-user actor; actorEmail/actorName
+        // already carry the real identity.
+        workspaceId: co.workspace_id, actorId: null,
         actorEmail: client.email, actorName: signerName.trim(),
         eventType: 'project.retainer_renewed', entityType: 'project',
         entityId: co.project_id, entityName: project.name,
@@ -218,7 +224,13 @@ export async function finalizeCoAcceptance(service: any, params: {
   }
 
   await logAudit(service, {
-    workspaceId: co.workspace_id, actorId: client.email,
+    // FIX (build, Reports & Audit re-pass): actor_id is `uuid REFERENCES
+    // users(id)` — client.email is not a valid uuid, so this insert
+    // failed silently (unchecked supabase-js error) and 'co.accepted' —
+    // a client accepting a change order — never once reached audit_log.
+    // null is correct for a non-platform-user actor; actorEmail/actorName
+    // already carry the real identity.
+    workspaceId: co.workspace_id, actorId: null,
     actorEmail: client.email, actorName: signerName.trim(),
     eventType: 'co.accepted', entityType: 'change_order',
     entityId: co.id, entityName: co.title,

@@ -55,7 +55,16 @@ async function revertFlagIfLinked(service: any, co: any, reason: string, session
     }).eq('id', co.flag_id)
     await logAudit(service, {
       workspaceId: co.workspace_id,
-      actorId: co.projects?.clients?.email || 'client',
+      // FIX (build, Reports & Audit re-pass): actor_id is `uuid REFERENCES
+    // users(id)` — a client is never a platform user, so passing their
+    // email/name string here made every insert below fail Postgres's uuid
+    // cast. supabase-js doesn't throw on a DB error (it returns
+    // {error}, unchecked here), so this failed completely silently —
+    // this event never once reached audit_log. null is the correct
+    // "no platform-user actor" value, same as every automated/webhook
+    // call site already uses; actorEmail/actorName (both plain text
+    // columns) still carry the real client identity.
+    actorId: null,
       actorEmail: co.projects?.clients?.email || '',
       actorName: co.projects?.clients?.name || 'Client',
       eventType: 'flag.reverted_to_open', entityType: 'guardian_flag',
@@ -119,7 +128,16 @@ export async function POST_DECLINE(request: NextRequest, token: string) {
 
   await logAudit(service, {
     workspaceId: co.workspace_id,
-    actorId: co.projects?.clients?.email || 'client',
+    // FIX (build, Reports & Audit re-pass): actor_id is `uuid REFERENCES
+    // users(id)` — a client is never a platform user, so passing their
+    // email/name string here made every insert below fail Postgres's uuid
+    // cast. supabase-js doesn't throw on a DB error (it returns
+    // {error}, unchecked here), so this failed completely silently —
+    // this event never once reached audit_log. null is the correct
+    // "no platform-user actor" value, same as every automated/webhook
+    // call site already uses; actorEmail/actorName (both plain text
+    // columns) still carry the real client identity.
+    actorId: null,
     actorEmail: co.projects?.clients?.email || '',
     actorName: co.projects?.clients?.name || 'Client',
     eventType: 'co.declined', entityType: 'change_order',
@@ -209,7 +227,16 @@ export async function POST_COUNTER(request: NextRequest, token: string) {
 
   await logAudit(service, {
     workspaceId: co.workspace_id,
-    actorId: co.projects?.clients?.email || 'client',
+    // FIX (build, Reports & Audit re-pass): actor_id is `uuid REFERENCES
+    // users(id)` — a client is never a platform user, so passing their
+    // email/name string here made every insert below fail Postgres's uuid
+    // cast. supabase-js doesn't throw on a DB error (it returns
+    // {error}, unchecked here), so this failed completely silently —
+    // this event never once reached audit_log. null is the correct
+    // "no platform-user actor" value, same as every automated/webhook
+    // call site already uses; actorEmail/actorName (both plain text
+    // columns) still carry the real client identity.
+    actorId: null,
     actorEmail: co.projects?.clients?.email || '',
     actorName: co.projects?.clients?.name || 'Client',
     eventType: 'co.countered', entityType: 'change_order',

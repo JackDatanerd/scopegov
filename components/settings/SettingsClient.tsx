@@ -1091,6 +1091,11 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
   const [cancelling,   setCancelling]   = useState(false)
   const [cancelError,  setCancelError]  = useState('')
   const [justCancelled, setJustCancelled] = useState(false)
+  // FEATURE (build, Billing re-pass): resuming a not-yet-lapsed
+  // cancellation — see api/billing/resume's own comment for why this
+  // never existed until now.
+  const [resuming,     setResuming]     = useState(false)
+  const [resumeError,  setResumeError]  = useState('')
 
   if (!permissions.manageBilling) return <Restricted />
 
@@ -1103,6 +1108,16 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
       if (res.ok) { setJustCancelled(true); window.location.reload() }
       else setCancelError(json.error || 'Could not cancel — try again or contact support.')
     } finally { setCancelling(false) }
+  }
+
+  async function handleResume() {
+    setResuming(true); setResumeError('')
+    try {
+      const res  = await fetch('/api/billing/resume', { method: 'POST' })
+      const json = await res.json().catch(() => ({}))
+      if (res.ok) window.location.reload()
+      else setResumeError(json.error || 'Could not resume — try again or contact support.')
+    } finally { setResuming(false) }
   }
 
   async function handleUpgrade(planKey: string, intervalOverride?: 'monthly' | 'annual') {
@@ -1210,9 +1225,15 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
           )}
         </div>
         {billing?.cancels_at_period_end && (
-          <div className="banner banner-warn" style={{ marginTop: 12 }}>
+          <div className="banner banner-warn" style={{ marginTop: 12, alignItems: 'center', justifyContent: 'space-between' }}>
             <span>Subscription cancelled — access until {formatDate(billing.current_period_end)}</span>
+            <button className="btn btn-primary btn-sm" disabled={resuming} onClick={handleResume}>
+              {resuming ? <span className="spin" /> : 'Resume subscription'}
+            </button>
           </div>
+        )}
+        {resumeError && (
+          <p style={{ fontSize: 12, color: 'var(--red)', marginTop: 10 }}>{resumeError}</p>
         )}
         {cancelError && (
           <p style={{ fontSize: 12, color: 'var(--red)', marginTop: 10 }}>{cancelError}</p>
