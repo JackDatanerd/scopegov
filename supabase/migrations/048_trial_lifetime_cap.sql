@@ -1,5 +1,5 @@
 -- ============================================================
--- ScopeGov — Migration 047: lifetime trial-usage cap
+-- ScopeGov — Migration 048: lifetime trial-usage cap
 --
 -- FINDING (deep audit, Workspace lifecycle + Onboarding re-pass,
 -- section-by-section): migration 019's one_active_trial_per_creator
