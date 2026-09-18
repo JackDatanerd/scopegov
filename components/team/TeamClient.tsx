@@ -164,7 +164,7 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
   async function handleEditRole() {
     if (!editRole) return
     if (!editName.trim()) { setError('Role name required'); return }
-    setLoading(true); setError('')
+    setLoading(true); setError(''); setNotice('')
     try {
       const res = await fetch(`/api/team/roles/${editRole.id}`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
@@ -172,10 +172,35 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error)
+      if (json.defaultWarning) setNotice(json.defaultWarning)
       setEditRole(null); router.refresh()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to save role')
     } finally { setLoading(false) }
+  }
+
+  // FIX (deep audit, Team & Invites re-pass — feature gap): once a role
+  // became the workspace default it could never be reassigned — the only
+  // way to change which role new members/invites fall back to was
+  // creating an entirely new role at creation time with isDefault checked.
+  // PATCH /api/team/roles/[id] now accepts isDefault (see its own comment
+  // for why the swap has to go through set_default_role_atomic rather
+  // than two separate calls); this is the UI action for it.
+  async function handleSetDefaultRole(roleId: string, roleName: string) {
+    if (!confirm(`Make "${roleName}" the default role? New members and invites with no role selected will get this role's permissions.`)) return
+    setError(''); setNotice('')
+    try {
+      const res = await fetch(`/api/team/roles/${roleId}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isDefault: true }),
+      })
+      const json = await res.json()
+      if (!res.ok) { setError(json.error || 'Could not set default role'); return }
+      if (json.defaultWarning) { setError(json.defaultWarning); return }
+      router.refresh()
+    } catch {
+      setError('Could not set default role')
+    }
   }
 
   // FIX (deep audit, section 6): roles could be created but never deleted.
@@ -440,16 +465,37 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
                         <span className="pill pill-green pill-sm">{permCount} / {ALL_PERMISSIONS.length}</span>
                       </td>
                       <td>
-                        {!r.is_default && canManageRoles && (
+                        {/* FIX (deep audit, Team & Invites re-pass —
+                            feature gap): Edit/Delete used to be hidden
+                            outright for the default role, and there was
+                            no action anywhere to make a different role
+                            the default — the two combined meant the
+                            default role's permissions were frozen the
+                            moment it became default, permanently. Delete
+                            still can't apply to it (a workspace always
+                            needs exactly one default — see DELETE's own
+                            check), but Edit now works on it like any
+                            other role, and non-default rows get a
+                            "Make default" action instead of Delete's
+                            slot. */}
+                        {canManageRoles && (
                           <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
                             <button className="btn-icon" onClick={() => { setEditRole(r); setEditPerms(r.permissions || {}); setEditName(r.name || ''); setEditDesc(r.description || '') }}>
                               <i className="ti ti-pencil" style={{ fontSize: 13 }} />
                             </button>
-                            <button className="btn-icon" style={{ color: 'var(--red)' }}
-                              title={memberCount > 0 ? 'Reassign members before deleting' : 'Delete role'}
-                              onClick={() => handleDeleteRole(r.id, r.name)}>
-                              <i className="ti ti-trash" style={{ fontSize: 13 }} />
-                            </button>
+                            {r.is_default ? null : (
+                              <>
+                                <button className="btn-icon" title="Make this the default role"
+                                  onClick={() => handleSetDefaultRole(r.id, r.name)}>
+                                  <i className="ti ti-star" style={{ fontSize: 13 }} />
+                                </button>
+                                <button className="btn-icon" style={{ color: 'var(--red)' }}
+                                  title={memberCount > 0 ? 'Reassign members before deleting' : 'Delete role'}
+                                  onClick={() => handleDeleteRole(r.id, r.name)}>
+                                  <i className="ti ti-trash" style={{ fontSize: 13 }} />
+                                </button>
+                              </>
+                            )}
                           </div>
                         )}
                       </td>
@@ -547,7 +593,10 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
         <>
           <div className="modal-bg" onClick={() => setEditRole(null)} />
           <div className="modal modal-lg">
-            <h2 className="modal-title">Edit role — {editRole.name}</h2>
+            <h2 className="modal-title">
+              Edit role — {editRole.name}
+              {editRole.is_default && <span className="pill pill-slate pill-sm" style={{ marginLeft: 8, verticalAlign: 'middle' }}>Default</span>}
+            </h2>
             {error && <div className="auth-error">{error}</div>}
             {/* FIX (deep audit, Team & Invites re-pass): name/description
                were editable server-side but had no inputs here — this

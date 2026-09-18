@@ -136,7 +136,16 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     return NextResponse.json({ ok: true, email })
   } catch (err) {
+    // FIX (deep audit, Team & Invites re-pass — the most severe instance
+    // of this pattern in the section): this is a fully public,
+    // unauthenticated endpoint — anyone with the invite link, no session
+    // required, can trigger it — and it was still returning err.message
+    // straight back in the response (including activateErr.message /
+    // createErr.message re-thrown above, which can carry raw
+    // Postgres/Supabase-Auth-Admin internals). Its sibling accept/route.ts
+    // already gets this right: log server-side, return a generic message.
+    // Bring this route in line with it.
     console.error('Invite signup error:', err)
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

@@ -8,6 +8,7 @@ import { sendInviteEmail } from '@/lib/email/templates'
 import { PLAN_LIMITS } from '@/lib/utils/format'
 import { nanoid } from 'nanoid'
 import { roleWithinCeiling } from '@/lib/utils/permission-ceiling'
+import { checkInviteRateLimit } from '@/lib/utils/rate-limit'
 
 export async function POST(request: NextRequest) {
   try {
@@ -15,6 +16,16 @@ export async function POST(request: NextRequest) {
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     if (!hasPermission(session, 'INVITE_MEMBERS'))
       return NextResponse.json({ error: 'Missing permission: INVITE_MEMBERS' }, { status: 403 })
+
+    const service = createServiceClient()
+
+    // FIX (deep audit, Team & Invites re-pass — feature gap): see
+    // lib/utils/rate-limit.ts's own comment on checkInviteRateLimit for
+    // the full story — no backstop existed here at all despite this
+    // route sending real email to an arbitrary address.
+    const limited = await checkInviteRateLimit(service, session.workspaceId)
+    if (!limited.allowed)
+      return NextResponse.json({ error: limited.message }, { status: 429 })
 
     // FIX (audit round 2): workspaceId used to be taken from the request
     // body (`workspaceId || session.workspaceId`), which meant the
@@ -30,8 +41,6 @@ export async function POST(request: NextRequest) {
     const { email, roleId } = await request.json()
     const wsId = session.workspaceId
     if (!email?.trim()) return NextResponse.json({ error: 'Email required' }, { status: 400 })
-
-    const service = createServiceClient()
 
     // FIX (audit round 1): roleId came straight from the request body with
     // no check that it actually belongs to this workspace. Low real-world
@@ -165,6 +174,11 @@ export async function POST(request: NextRequest) {
       ...(emailSent ? {} : { emailFailed: true }),
     })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    // FIX (deep audit, Team & Invites re-pass): raw exception messages
+    // (including memberErr.message re-thrown above) were returned
+    // straight to the client — same info-disclosure pattern already
+    // fixed elsewhere in this section. Log server-side only.
+    console.error('Team invite POST error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

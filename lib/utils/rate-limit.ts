@@ -113,3 +113,48 @@ export async function recordAiUsageByProject(
     .insert({ workspace_id: workspaceId, project_id: projectId, route_key: routeKey })
   if (error) console.error('Failed to record AI usage:', error)
 }
+
+// FIX (deep audit, Team & Invites re-pass — feature gap): invite creation
+// (api/team/invite POST) sends a real outbound email to an arbitrary
+// address and is reachable by anyone holding just INVITE_MEMBERS — a
+// permission a narrowly-scoped custom role can hold with nothing else.
+// Every other cost- or abuse-bearing action in the app (every route
+// above, every portal action in portal-rate-limit.ts) already has a
+// sliding-window backstop; invite creation never did, so an
+// invite→revoke→re-invite loop (or just inviting many distinct
+// addresses, bounded only by the seat limit on Pro/Agency plans) could
+// spam ScopeGov's own transactional email sender at an arbitrary
+// address, with nothing here to slow it down. Keyed on workspace_id
+// rather than actor — the concern is the workspace's outbound email
+// volume regardless of which member is doing the inviting — using the
+// audit_log rows invite creation already writes (event_type
+// 'member.invited'), so this needs no new table or migration.
+const INVITE_LIMIT = { max: 15, windowMinutes: 10 }
+
+export async function checkInviteRateLimit(
+  service: any, workspaceId: string
+): Promise<RateLimitResult> {
+  const since = new Date(Date.now() - INVITE_LIMIT.windowMinutes * 60 * 1000).toISOString()
+
+  const { count, error } = await service
+    .from('audit_log')
+    .select('id', { count: 'exact', head: true })
+    .eq('workspace_id', workspaceId)
+    .eq('event_type', 'member.invited')
+    .gte('created_at', since)
+
+  // Fail open on a DB error — a broken rate-limit check should never
+  // block a real admin from inviting a real teammate.
+  if (error) {
+    console.error('Invite rate limit check failed (failing open):', error)
+    return { allowed: true }
+  }
+
+  if ((count || 0) >= INVITE_LIMIT.max) {
+    return {
+      allowed: false,
+      message: `Too many invites sent recently — please wait a few minutes and try again (limit: ${INVITE_LIMIT.max} per ${INVITE_LIMIT.windowMinutes}m).`,
+    }
+  }
+  return { allowed: true }
+}

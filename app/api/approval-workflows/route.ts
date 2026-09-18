@@ -35,7 +35,13 @@ export async function GET() {
 
     return NextResponse.json({ workflows: workflows || [] })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    // FIX (deep audit, Settings re-pass): raw exception messages were
+    // returned straight to the client here — the same info-disclosure
+    // pattern already fixed for workspace/settings, /defaults, /branding
+    // (and every one of the "seven named workspace-lifecycle routes"),
+    // just never applied to this file. Log server-side only.
+    console.error('Approval workflows GET error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
 
@@ -160,8 +166,14 @@ export async function POST(request: NextRequest) {
       .select('id')
       .single()
 
-    if (insertErr || !workflow)
-      return NextResponse.json({ error: insertErr?.message || 'Could not create workflow' }, { status: 500 })
+    // FIX (deep audit, Settings re-pass): insertErr?.message — a raw
+    // Postgres error — was returned straight to the client. Same
+    // info-disclosure pattern as the catch-alls below; log it and hand
+    // back a generic message instead.
+    if (insertErr || !workflow) {
+      if (insertErr) console.error('Approval workflow insert failed:', insertErr)
+      return NextResponse.json({ error: 'Could not create workflow' }, { status: 500 })
+    }
 
     // FIX (deep audit, section 5 re-pass): this insert's result was
     // discarded — a failure here left an ACTIVE workflow row with zero
@@ -194,6 +206,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ ok: true, id: workflow.id })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('Approval workflows POST error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

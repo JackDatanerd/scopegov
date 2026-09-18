@@ -18,7 +18,7 @@ export async function PATCH(
     if (!hasPermission(session, 'MANAGE_ROLES'))
       return NextResponse.json({ error: 'Missing permission: MANAGE_ROLES' }, { status: 403 })
 
-    const { permissions, name, description } = await request.json()
+    const { permissions, name, description, isDefault } = await request.json()
 
     const service = createServiceClient()
 
@@ -29,8 +29,27 @@ export async function PATCH(
     // ok:true, and so the role's name is available below for the audit
     // log regardless of which fields changed.
     const { data: existingRole } = await (service as any)
-      .from('roles').select('name, permissions').eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
+      .from('roles').select('name, permissions, is_default').eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
     if (!existingRole) return NextResponse.json({ error: 'Role not found' }, { status: 404 })
+
+    // FIX (deep audit, Team & Invites re-pass — feature gap): isDefault
+    // was accepted at role CREATION only (POST /api/team/roles) — this
+    // route never read it at all, and the frontend hid the Edit button
+    // outright for whichever role currently had is_default = true. Net
+    // effect: once a role became the workspace default, nothing about it
+    // — not its permissions, not its name, not even WHICH role holds the
+    // title — could ever be changed again short of creating a brand-new
+    // role and marking that one default instead, leaving the old one an
+    // orphaned non-default role. `isDefault: false` on the currently-
+    // default role is rejected rather than silently ignored — there's
+    // always exactly one default role (roles_one_default, migration 001);
+    // removing the title requires naming a replacement, same as DELETE
+    // already requires below.
+    if (isDefault === false && existingRole.is_default) {
+      return NextResponse.json({
+        error: 'Every workspace needs a default role. Make a different role the default first, rather than unsetting this one.',
+      }, { status: 409 })
+    }
 
     // FIX (section-by-section re-audit, RLS+permissions Finding 2 —
     // CRITICAL): the ceiling check below only ever blocked granting a
@@ -112,6 +131,24 @@ export async function PATCH(
 
     if (error) throw new Error(error.message)
 
+    // FIX (deep audit, Team & Invites re-pass — feature gap, continued):
+    // promote this role to default via the same atomic swap role
+    // creation uses (migration 049) — never two separate non-transactional
+    // statements, for the same "workspace briefly has zero default roles"
+    // reason documented there. Only fires when it's actually a change;
+    // re-sending isDefault: true on the role that's already default is a
+    // harmless no-op, not a wasted RPC call.
+    let defaultSwapFailed = false
+    if (isDefault === true && !existingRole.is_default) {
+      const { error: defaultErr } = await (service as any).rpc('set_default_role_atomic', {
+        p_workspace_id: session.workspaceId, p_new_role_id: id,
+      })
+      if (defaultErr) {
+        console.error('set_default_role_atomic failed:', defaultErr)
+        defaultSwapFailed = true
+      }
+    }
+
     // FIX (section-11 audit): stripping APPROVE_DOCUMENTS from a role here
     // silently breaks any active workflow step that assigns it — everyone
     // who held the role remains "reachable" (getMembersWithRole() and the
@@ -145,6 +182,7 @@ export async function PATCH(
       metadata: {
         fields: Object.keys(updates).filter(k => k !== 'updated_at'),
         ...(affectedWorkflowNames.length ? { orphaned_approval_workflows: affectedWorkflowNames } : {}),
+        ...(isDefault === true ? { requested_default: true, default_swap_failed: defaultSwapFailed } : {}),
       },
     })
 
@@ -153,12 +191,16 @@ export async function PATCH(
       ...(affectedWorkflowNames.length ? {
         warning: `This role is named as an approver on: ${affectedWorkflowNames.join(', ')}. Holders of this role may no longer be able to act on those steps — update those workflows in Settings so documents don't get stuck waiting.`,
       } : {}),
+      ...(defaultSwapFailed ? {
+        defaultWarning: 'Your other changes were saved, but this role could not be set as the default — try again.',
+      } : {}),
     })
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Error' },
-      { status: 500 }
-    )
+    // FIX (deep audit, Team & Invites re-pass): raw exception messages
+    // were returned straight to the client — same info-disclosure pattern
+    // already fixed elsewhere. Log server-side only.
+    console.error('Team roles PATCH error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
 
@@ -233,9 +275,7 @@ export async function DELETE(
 
     return NextResponse.json({ ok: true })
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Error' },
-      { status: 500 }
-    )
+    console.error('Team roles DELETE error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

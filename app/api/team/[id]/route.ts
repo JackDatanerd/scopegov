@@ -127,7 +127,13 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
       } : {}),
     })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    // FIX (deep audit, Team & Invites re-pass): raw exception messages
+    // were returned straight to the client here — the same
+    // info-disclosure pattern already fixed for workspace/settings,
+    // /defaults, /branding and invite/[token]/accept, missed across this
+    // entire Team API surface. Log server-side only.
+    console.error('Team member DELETE error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
 
@@ -212,10 +218,21 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // fetch role_id/permission_overrides too, not just effective_permissions
     // — the admin-floor simulation below needs them to compute what this
     // member's effective_permissions would become post-change.
-    let targetMember: { user_id: string | null; role_id: string | null; permission_overrides: Record<string, unknown> | null; effective_permissions: Record<string, unknown> | null } | null = null
+    // FIX (deep audit, Settings re-pass — audit-trail traceability): this
+    // select never fetched the member's email, so the logAudit call below
+    // always logged entityName: '' for 'member.role_changed' /
+    // 'member.permission_overridden' — unlike DELETE's own audit call
+    // just above, which was already fixed to include invited_email/email
+    // for exactly this reason. Every row this route writes showed up in
+    // Settings → Audit Log with no way to tell which member it was about
+    // short of looking up the raw entityId UUID by hand, and it couldn't
+    // be found via the log's own free-text search either (that matches
+    // on entity_name). Pull the email alongside the fields already
+    // fetched for the ceiling/floor checks.
+    let targetMember: { user_id: string | null; role_id: string | null; permission_overrides: Record<string, unknown> | null; effective_permissions: Record<string, unknown> | null; users?: { email: string | null } | null } | null = null
     if (body.permissionOverrides !== undefined || body.roleId !== undefined) {
       const { data } = await (service as any)
-        .from('workspace_members').select('user_id,role_id,permission_overrides,effective_permissions')
+        .from('workspace_members').select('user_id,role_id,permission_overrides,effective_permissions,users!workspace_members_user_id_fkey(email)')
         .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
       if (!data) return NextResponse.json({ error: 'Member not found' }, { status: 404 })
       targetMember = data
@@ -337,7 +354,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       workspaceId: session.workspaceId, actorId: session.id,
       actorEmail: session.email, actorName: session.name,
       eventType: body.permissionOverrides ? 'member.permission_overridden' : 'member.role_changed',
-      entityType: 'workspace_member', entityId: id, entityName: '',
+      entityType: 'workspace_member', entityId: id, entityName: targetMember?.users?.email || '',
       metadata: affectedWorkflowNames.length ? { ...body, orphaned_approval_workflows: affectedWorkflowNames } : body,
     })
 
@@ -348,6 +365,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       } : {}),
     })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    // FIX (deep audit, Team & Invites re-pass): same info-disclosure
+    // pattern fixed on DELETE above — this PATCH catch-all was missed too.
+    console.error('Team member PATCH error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

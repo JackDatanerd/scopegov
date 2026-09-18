@@ -30,33 +30,59 @@ export async function POST(request: NextRequest) {
 
     const service = createServiceClient()
 
-    // If setting as default, clear existing default
-    if (isDefault) {
-      await (service as any).from('roles').update({ is_default: false })
-        .eq('workspace_id', session.workspaceId).eq('is_default', true)
-    }
-
+    // FIX (deep audit, Team & Invites re-pass — CRITICAL): this used to
+    // unset the old default with one UPDATE, then insert the new role as
+    // default with a second, entirely separate statement. If the insert
+    // failed for any reason after the unset landed (a validation error,
+    // a transient DB blip), the workspace was left with ZERO default
+    // roles — see migration 049 for the traced downstream consequence
+    // (a member joining mid-race gets activated with no role and no
+    // permissions at all, silently). Always insert the new role as
+    // non-default first; if isDefault was requested, promote it via
+    // set_default_role_atomic (migration 049), which unsets the old one
+    // and sets the new one in a single transaction. Worst case now if
+    // that second step fails: the role exists but isn't (yet) the
+    // default — recoverable and visible, never a workspace with none.
     const { data: role, error } = await (service as any).from('roles').insert({
       workspace_id: session.workspaceId,
       name:         name.trim(),
       description:  description?.trim() || null,
       permissions:  permissions || {},
-      is_default:   isDefault || false,
+      is_default:   false,
       created_by:   session.id,
     }).select('id').single()
 
     if (error) throw new Error(error.message)
 
+    let defaultSwapFailed = false
+    if (isDefault) {
+      const { error: defaultErr } = await (service as any).rpc('set_default_role_atomic', {
+        p_workspace_id: session.workspaceId, p_new_role_id: role.id,
+      })
+      if (defaultErr) {
+        console.error('set_default_role_atomic failed:', defaultErr)
+        defaultSwapFailed = true
+      }
+    }
+
     await logAudit(service, {
       workspaceId: session.workspaceId, actorId: session.id,
       actorEmail: session.email, actorName: session.name,
       eventType: 'workspace.role_created', entityType: 'role',
-      entityId: role.id, entityName: name, metadata: {},
+      entityId: role.id, entityName: name,
+      metadata: isDefault ? { requested_default: true, default_swap_failed: defaultSwapFailed } : {},
     })
 
-    return NextResponse.json({ roleId: role.id })
+    return NextResponse.json({
+      roleId: role.id,
+      ...(defaultSwapFailed ? { warning: 'Role created, but it could not be set as the default — try again from the role list.' } : {}),
+    })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    // FIX (deep audit, Team & Invites re-pass): raw exception messages
+    // (including error.message re-thrown above) were returned straight to
+    // the client — same info-disclosure pattern already fixed elsewhere.
+    console.error('Team roles POST error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
 

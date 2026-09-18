@@ -33,6 +33,20 @@ function normalizeProjectType(value: unknown): ProjectType | null | undefined {
   return PROJECT_TYPES.includes(value as ProjectType) ? (value as ProjectType) : undefined
 }
 
+// FIX (deep audit, Settings re-pass): paymentStructure was written
+// straight through with `paymentStructure || '50_50'` — no check against
+// the fixed set of values anything downstream actually understands. Every
+// other constrained field on this route (projectType) is validated up
+// front with a clear 400; this one wasn't, so a bad value (a typo, a
+// stale client, a direct API call) saved silently and only ever surfaced
+// later, opaquely, at the one place that does validate it —
+// app/api/sow/generate/route.ts's own PAYMENT_STRUCTURE_LABELS check —
+// as a generic "invalid paymentStructure" error on a completely different
+// screen, with no link back to Settings → Defaults as the actual place to
+// fix it. Mirrored from that same route's label set so the two can't
+// drift apart.
+const PAYMENT_STRUCTURES = ['50_50', '100_upfront', 'milestones', 'monthly', 'on_delivery'] as const
+
 // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): saveDefaults
 // used to throw new Error(error.message) / new Error(wsError.message) for
 // real DB failures, indistinguishable from its own deliberate, safe
@@ -66,6 +80,10 @@ async function saveDefaults(workspaceId: string, body: any) {
   const projectType = normalizeProjectType(body.projectType)
   if (projectType === undefined && body.projectType !== undefined) {
     throw new DefaultsValidationError(`Invalid project type. Must be one of: ${PROJECT_TYPES.join(', ')}`)
+  }
+  if (paymentStructure !== undefined && paymentStructure !== null && paymentStructure !== '' &&
+      !PAYMENT_STRUCTURES.includes(paymentStructure)) {
+    throw new DefaultsValidationError(`Invalid payment structure. Must be one of: ${PAYMENT_STRUCTURES.join(', ')}`)
   }
   const service = createServiceClient()
 

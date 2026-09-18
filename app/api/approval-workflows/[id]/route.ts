@@ -157,7 +157,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     return NextResponse.json({ ok: true })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    // FIX (deep audit, Settings re-pass): same raw-message leak already
+    // fixed for approval-workflows/route.ts (GET/POST) — this PATCH
+    // handler was missed. Log server-side only.
+    console.error('Approval workflow PATCH error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
 
@@ -205,6 +209,7 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
 
     return NextResponse.json({ ok: true })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('Approval workflow DELETE error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

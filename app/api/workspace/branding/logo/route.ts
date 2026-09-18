@@ -110,6 +110,36 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Upload failed' }, { status: 500 })
     }
 
+    // FIX (deep audit, Settings re-pass — logo/branding race): this route
+    // used to delete the previous logo from storage right here, but the
+    // workspace's own `logo_storage_path` column was only ever updated by
+    // a SEPARATE, later PATCH /api/workspace/branding call made by the
+    // client (see SettingsClient.tsx's saveBranding). Those are two
+    // independent HTTP round-trips — if the second one failed for any
+    // reason (network drop, the person closing the tab, a validation
+    // error on the colour field bundled into the same request) after a
+    // successful upload with a different file extension, the old logo was
+    // already gone from storage while the DB still pointed at it (a
+    // broken image), and the newly uploaded file sat orphaned, never
+    // linked to anything. Persist the association here, in the same
+    // request that performs the upload, so the two can never desync —
+    // only delete the stale object once the workspace row durably points
+    // at the new one. The client's subsequent branding PATCH (which also
+    // carries brandColour) still sends logoStoragePath along and simply
+    // re-writes the same value; that's a harmless no-op, not a race.
+    const { error: linkErr } = await (service as any)
+      .from('workspaces')
+      .update({ logo_storage_path: path, updated_at: new Date().toISOString() })
+      .eq('id', session.workspaceId)
+
+    if (linkErr) {
+      console.error('Logo association update failed:', linkErr)
+      // Don't touch the previous logo — it's still the one the workspace
+      // actually references. The newly uploaded object is orphaned but
+      // harmless; a retry will just upsert over it at the same path.
+      return NextResponse.json({ error: 'Upload succeeded but could not be saved. Try again.' }, { status: 500 })
+    }
+
     if (previousPath && previousPath !== path) {
       const { error: removeErr } = await (service as any).storage.from('logos').remove([previousPath])
       if (removeErr) console.error('Stale logo cleanup failed (non-fatal):', removeErr)
