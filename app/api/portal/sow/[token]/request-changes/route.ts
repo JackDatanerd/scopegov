@@ -26,6 +26,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     if (!note || note.trim().length < 20)
       return NextResponse.json({ error: 'Please describe the changes needed (minimum 20 characters)' }, { status: 400 })
+    // FIX (build, cron/portal audit round): a minimum length existed but
+    // no maximum — every other free-form field a client can submit
+    // through this portal is capped (signature data at 500KB, CO
+    // title/trigger via .slice()) precisely because this is an
+    // unauthenticated, token-only form. This note is written into
+    // audit_log, a notification body, and an inline email verbatim, with
+    // nothing else in the codebase bounding its size before that happens.
+    if (note.trim().length > 4000)
+      return NextResponse.json({ error: 'Please keep your feedback under 4000 characters' }, { status: 400 })
 
     const { revoked } = await checkRevokedToken(service, token)
     if (revoked) return NextResponse.json({ error: 'Link no longer active' }, { status: 410 })

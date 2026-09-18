@@ -87,60 +87,83 @@ export async function POST(request: NextRequest) {
           continue
         }
 
-        const monthKey   = `${year}-${String(month).padStart(2, '0')}`
-        const dueDate    = `${year}-${String(month).padStart(2, '0')}-01`
+        // FIX (build, cron/portal audit round): this used to only ever
+        // generate the CURRENT month's milestone. Every other cron in
+        // this directory is heavily guarded against silently losing work
+        // (races, timeouts, partial failures) — this one wasn't: if the
+        // cron didn't run for a stretch (a bad deploy, an outage), that
+        // month's milestone was gone forever, with nothing else ever
+        // looking backward to catch it up. That's silent under-billing,
+        // exactly the kind of "let something go stale with zero signal"
+        // gap the ended-retainer notification just above exists to
+        // prevent, just for a skipped month instead of a finished
+        // contract. Loop over every month from signing through the
+        // current one (capped at the retainer's duration) instead of just
+        // "this month" — the existing per-month dedup check below means
+        // already-generated months are simply skipped, so this only ever
+        // fills genuine gaps, never duplicates.
+        const monthsToGenerate = Math.min(monthsSigned, (p.retainer_duration_months || 12) - 1)
+        for (let i = 0; i <= monthsToGenerate; i++) {
+          const targetDate  = new Date(signedDate.getFullYear(), signedDate.getMonth() + i, 1)
+          const targetYear  = targetDate.getFullYear()
+          const targetMonth = targetDate.getMonth() + 1
+          const monthKey    = `${targetYear}-${String(targetMonth).padStart(2, '0')}`
+          const dueDate     = `${targetYear}-${String(targetMonth).padStart(2, '0')}-01`
 
-        // FIX (re-audit, cron section): the old check searched for
-        // monthKey ("2026-12") *inside the title string*, but the title
-        // is generated below as "Monthly retainer — December 2026" — a
-        // completely different format with zero textual overlap. That
-        // `.like()` could never match, so this dedup check silently never
-        // worked: any re-run in the same month (retry, redeploy, manual
-        // trigger) created a second real-money milestone, and `.single()`
-        // on a lookup that could match 0+ rows compounded it further by
-        // erroring (not throwing — supabase-js returns an error object,
-        // which was also never checked) instead of ever returning `null`
-        // cleanly. due_date is always set deterministically to the 1st of
-        // the target month by this same function, so matching on it
-        // (alongside project + type) is an exact, format-independent key.
-        const { data: existing, error: existingErr } = await (service as any)
-          .from('payment_milestones')
-          .select('id')
-          .eq('project_id', p.id)
-          .eq('type', 'retainer_monthly')
-          .eq('due_date', dueDate)
+          // FIX (re-audit, cron section): the old check searched for
+          // monthKey ("2026-12") *inside the title string*, but the title
+          // is generated below as "Monthly retainer — December 2026" — a
+          // completely different format with zero textual overlap. That
+          // `.like()` could never match, so this dedup check silently
+          // never worked: any re-run in the same month (retry, redeploy,
+          // manual trigger) created a second real-money milestone, and
+          // `.single()` on a lookup that could match 0+ rows compounded
+          // it further by erroring (not throwing — supabase-js returns an
+          // error object, which was also never checked) instead of ever
+          // returning `null` cleanly. due_date is always set
+          // deterministically to the 1st of the target month by this same
+          // function, so matching on it (alongside project + type) is an
+          // exact, format-independent key — and now also the key that
+          // makes the backfill loop above safe to re-run every day.
+          const { data: existing, error: existingErr } = await (service as any)
+            .from('payment_milestones')
+            .select('id')
+            .eq('project_id', p.id)
+            .eq('type', 'retainer_monthly')
+            .eq('due_date', dueDate)
 
-        if (existingErr) { console.error('Retainer milestone dedup check failed for project:', p.id, existingErr); continue }
-        if (existing?.length) continue
+          if (existingErr) { console.error('Retainer milestone dedup check failed for project:', p.id, existingErr); continue }
+          if (existing?.length) continue
 
-        const monthLabel = now.toLocaleString('en-US', { month: 'long', year: 'numeric' })
+          const monthLabel = targetDate.toLocaleString('en-US', { month: 'long', year: 'numeric' })
 
-        await (service as any).from('payment_milestones').insert({
-          project_id:   p.id,
-          sow_id:       signedSow.id,
-          title:        `Monthly retainer — ${monthLabel}`,
-          type:         'retainer_monthly',
-          amount:       p.contract_value || 0,
-          percentage:   null,
-          trigger:      `Monthly retainer payment — ${monthLabel}`,
-          tax_rate:     0,
-          tax_inclusive: false,
-          due_date:     dueDate,
-          status:       'pending',
-        })
+          await (service as any).from('payment_milestones').insert({
+            project_id:   p.id,
+            sow_id:       signedSow.id,
+            title:        `Monthly retainer — ${monthLabel}`,
+            type:         'retainer_monthly',
+            amount:       p.contract_value || 0,
+            percentage:   null,
+            trigger:      `Monthly retainer payment — ${monthLabel}`,
+            tax_rate:     0,
+            tax_inclusive: false,
+            due_date:     dueDate,
+            status:       'pending',
+          })
 
-        await (service as any).from('audit_log').insert({
-          workspace_id: p.workspace_id,
-          actor_id:     null,
-          actor_email:  'cron@scopegov.app',
-          actor_name:   'ScopeGov',
-          event_type:   'payment.milestone_generated',
-          entity_type:  'project',
-          entity_id:    p.id,
-          entity_name:  monthLabel,
-          metadata:     { month: monthKey, amount: p.contract_value },
-        })
-        generated++
+          await (service as any).from('audit_log').insert({
+            workspace_id: p.workspace_id,
+            actor_id:     null,
+            actor_email:  'cron@scopegov.app',
+            actor_name:   'ScopeGov',
+            event_type:   'payment.milestone_generated',
+            entity_type:  'project',
+            entity_id:    p.id,
+            entity_name:  monthLabel,
+            metadata:     { month: monthKey, amount: p.contract_value, backfilled: monthKey !== `${year}-${String(month).padStart(2, '0')}` },
+          })
+          generated++
+        }
       } catch (e) { console.error('Retainer milestone error for project:', p.id, e) }
     }
 
@@ -154,7 +177,12 @@ export async function POST(request: NextRequest) {
 // FIX (cron): Vercel Cron Jobs invoke the configured path with a GET
 // request, not POST — every route here only exported POST, so all 6 jobs
 // wired up in vercel.json would 405 the moment Vercel actually triggered
-// them. The 3 sub-hourly jobs (sow-stall, co-stall, guardian-health) are
-// triggered by the GitHub Actions workflow via POST, which still works.
-// Exporting GET as an alias makes both invocation paths work.
+// them. Exporting GET as an alias makes both invocation paths work.
+//
+// FIX (build, cron/portal audit round): the 3 sub-hourly jobs (sow-stall,
+// co-stall, guardian-health) are now scheduled directly in vercel.json
+// AND kept in .github/workflows/vercel-crons.yml as a redundant trigger
+// (see that file's own comment for why both are kept intentionally) —
+// this comment previously implied GitHub Actions was the only path,
+// which stopped being true once vercel.json picked these three up too.
 export const GET = POST

@@ -122,7 +122,12 @@ export async function POST(request: NextRequest) {
 // FIX (cron): Vercel Cron Jobs invoke the configured path with a GET
 // request, not POST — every route here only exported POST, so all 6 jobs
 // wired up in vercel.json would 405 the moment Vercel actually triggered
-// them. The 3 sub-hourly jobs (sow-stall, co-stall, guardian-health) are
-// triggered by the GitHub Actions workflow via POST, which still works.
-// Exporting GET as an alias makes both invocation paths work.
+// them. Exporting GET as an alias makes both invocation paths work.
+//
+// FIX (build, cron/portal audit round): the 3 sub-hourly jobs (sow-stall,
+// co-stall, guardian-health) are now scheduled directly in vercel.json
+// AND kept in .github/workflows/vercel-crons.yml as a redundant trigger
+// (see that file's own comment for why both are kept intentionally) —
+// this comment previously implied GitHub Actions was the only path,
+// which stopped being true once vercel.json picked these three up too.
 export const GET = POST

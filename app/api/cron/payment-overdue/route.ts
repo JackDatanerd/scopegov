@@ -230,7 +230,7 @@ export async function POST(request: NextRequest) {
     const graceReminderWindowEnd   = new Date(now.getTime() - 2 * 86400000).toISOString()
     const { data: graceReminderDue } = await (service as any)
       .from('billing')
-      .select('workspace_id, workspaces(id,agency_name,plan_tier,created_by,creator:users!workspaces_created_by_fkey(name,email))')
+      .select('workspace_id, workspaces(id,agency_name,plan_tier,deleted_at,created_by,creator:users!workspaces_created_by_fkey(name,email))')
       .not('grace_period_started_at', 'is', null)
       .lt('grace_period_started_at', graceReminderWindowEnd)
       .gte('grace_period_started_at', graceReminderWindowStart)
@@ -238,7 +238,19 @@ export async function POST(request: NextRequest) {
     for (const b of (graceReminderDue || [])) {
       try {
         const ws = b.workspaces
-        if (!ws || ws.plan_tier === 'solo') continue
+        // FIX (build, cron/portal audit round): unlike section 2 (trial
+        // expiry), which filters `.is('deleted_at', null)` directly on
+        // workspaces, sections 3/4/5 here query `billing` and only embed
+        // workspaces — a soft-deleted workspace's billing row isn't
+        // excluded by any filter above, and deleting a workspace doesn't
+        // clear grace_period_started_at/cancels_at_period_end (those only
+        // change via the Paystack webhook, asynchronously, and can
+        // continue arriving well after deletion — see cancelPaystackSubscription
+        // in workspace/delete). Without this check, a workspace someone
+        // deleted weeks ago could still get "downgraded" and its former
+        // owner could still get emailed about a subscription change on a
+        // workspace that no longer exists.
+        if (!ws || ws.deleted_at || ws.plan_tier === 'solo') continue
 
         // Dedup so a daily-scheduled cron only ever sends this once per
         // grace period, even though the window above spans a full day.
@@ -271,14 +283,17 @@ export async function POST(request: NextRequest) {
     const graceCutoff = new Date(now.getTime() - 5 * 86400000).toISOString()
     const { data: graceExpired } = await (service as any)
       .from('billing')
-      .select('workspace_id, workspaces(id,agency_name,plan_tier,created_by,creator:users!workspaces_created_by_fkey(name,email))')
+      .select('workspace_id, workspaces(id,agency_name,plan_tier,deleted_at,created_by,creator:users!workspaces_created_by_fkey(name,email))')
       .not('grace_period_started_at', 'is', null)
       .lt('grace_period_started_at', graceCutoff)
 
     for (const b of (graceExpired || [])) {
       try {
         const ws = b.workspaces
-        if (!ws || ws.plan_tier === 'solo') continue
+        // FIX (build, cron/portal audit round): see the identical note on
+        // section 3 above — a soft-deleted workspace's billing row isn't
+        // otherwise excluded here.
+        if (!ws || ws.deleted_at || ws.plan_tier === 'solo') continue
 
         // FIX (cron audit, section 17): this used to update `workspaces`
         // unconditionally on whatever was fetched by the select above, with
@@ -315,12 +330,24 @@ export async function POST(request: NextRequest) {
         // FIX (cron audit, section 17 — closing pass): notify the actual
         // workspace owner (workspaces.created_by) — see the identical fix
         // and rationale in section 2 above.
+        //
+        // FIX (build, cron/portal audit round): this used to call
+        // sendPaymentFailedEmail({ graceDaysLeft: 0 }) — but that template
+        // is written entirely in future/prescriptive tense ("You have a
+        // 0-day grace period... if not resolved within 0 days, your plan
+        // will be downgraded"), sent AFTER the downgrade two blocks above
+        // has already happened. sendSubscriptionEndedEmail exists
+        // specifically for "the downgrade already happened, tell them
+        // calmly" (see its own comment) and is already used for the
+        // parallel cancelled-subscription case in section 5 below — this
+        // is the same outcome (nonpayment vs. cancellation), so it gets
+        // the same past-tense email instead of a reused pre-downgrade
+        // warning that no longer makes sense once it's already too late.
         const owner = ws.creator
         if (owner?.email) {
-          await sendPaymentFailedEmail({
+          await sendSubscriptionEndedEmail({
             to: owner.email, name: owner.name || owner.email, agencyName: ws.agency_name,
             upgradeUrl: `${process.env.NEXT_PUBLIC_APP_URL}/settings?tab=billing`,
-            graceDaysLeft: 0,
           })
         }
       } catch (e) { console.error('Grace enforcement error:', e) }
@@ -338,7 +365,7 @@ export async function POST(request: NextRequest) {
     // access indefinitely. This is the missing enforcement step.
     const { data: cancelledExpired } = await (service as any)
       .from('billing')
-      .select('workspace_id, current_period_end, workspaces(id,agency_name,plan_tier,created_by,creator:users!workspaces_created_by_fkey(name,email))')
+      .select('workspace_id, current_period_end, workspaces(id,agency_name,plan_tier,deleted_at,created_by,creator:users!workspaces_created_by_fkey(name,email))')
       .eq('cancels_at_period_end', true)
       .not('current_period_end', 'is', null)
       .lt('current_period_end', now.toISOString())
@@ -346,7 +373,13 @@ export async function POST(request: NextRequest) {
     for (const b of (cancelledExpired || [])) {
       try {
         const ws = b.workspaces
-        if (!ws || ws.plan_tier === 'solo') continue
+        // FIX (build, cron/portal audit round): see the identical note on
+        // section 3 above — this is the exact path that surfaced the gap:
+        // deleting a workspace cancels its Paystack subscription, whose
+        // async subscription.disable webhook then sets
+        // cancels_at_period_end=true — which is precisely what this query
+        // looks for, with no awareness the workspace is already gone.
+        if (!ws || ws.deleted_at || ws.plan_tier === 'solo') continue
 
         // FIX (cron audit, section 17): same missing guard as the grace-
         // period step above — no re-check that cancels_at_period_end was
@@ -404,7 +437,12 @@ export async function POST(request: NextRequest) {
 // FIX (cron): Vercel Cron Jobs invoke the configured path with a GET
 // request, not POST — every route here only exported POST, so all 6 jobs
 // wired up in vercel.json would 405 the moment Vercel actually triggered
-// them. The 3 sub-hourly jobs (sow-stall, co-stall, guardian-health) are
-// triggered by the GitHub Actions workflow via POST, which still works.
-// Exporting GET as an alias makes both invocation paths work.
+// them. Exporting GET as an alias makes both invocation paths work.
+//
+// FIX (build, cron/portal audit round): the 3 sub-hourly jobs (sow-stall,
+// co-stall, guardian-health) are now scheduled directly in vercel.json
+// AND kept in .github/workflows/vercel-crons.yml as a redundant trigger
+// (see that file's own comment for why both are kept intentionally) —
+// this comment previously implied GitHub Actions was the only path,
+// which stopped being true once vercel.json picked these three up too.
 export const GET = POST

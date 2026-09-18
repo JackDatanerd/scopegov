@@ -57,6 +57,10 @@
       "schedule": "15 7 * * *"
     },
     {
+      "path": "/api/cron/invoice-expiry",
+      "schedule": "15 7 * * *"
+    },
+    {
       "path": "/api/cron/guardian-flag-stall",
       "schedule": "0 11 * * *"
     }

@@ -33,6 +33,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { note } = await request.json()
     if (!note || note.trim().length < 10)
       return NextResponse.json({ error: 'Please describe the issue (minimum 10 characters)' }, { status: 400 })
+    // FIX (build, cron/portal audit round): no maximum length existed —
+    // same gap as SOW request-changes (see that route's identical fix).
+    // This note is written into invoices.dispute_note, audit_log, a
+    // notification body, and an email, unbounded.
+    if (note.trim().length > 4000)
+      return NextResponse.json({ error: 'Please keep your description under 4000 characters' }, { status: 400 })
 
     const { data: revoked } = await (service as any)
       .from('revoked_tokens').select('id').eq('token', token).single()
@@ -40,7 +46,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const { data: invoice } = await (service as any)
       .from('invoices')
-      .select('id, title, invoice_number, status, workspace_id, project_id, projects(id, name, clients(name))')
+      .select('id, title, invoice_number, status, workspace_id, project_id, projects(id, name, clients(name, email))')
       .eq('token', token).single()
 
     if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
@@ -69,7 +75,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     await logAudit(service, {
       workspaceId: invoice.workspace_id, actorId: client?.name || 'client',
-      actorEmail: 'portal@client', actorName: client?.name || 'Client',
+      // FIX (build, cron/portal audit round): this was hardcoded to the
+      // placeholder 'portal@client' because the query never selected
+      // clients.email — every equivalent client-actioned event elsewhere
+      // in the portal (SOW decline/counter, CO decline/counter) logs the
+      // real client email. Fall back to the placeholder only in the
+      // unexpected case a client record has none, rather than always
+      // discarding it.
+      actorEmail: client?.email || 'portal@client', actorName: client?.name || 'Client',
       eventType: 'invoice.disputed', entityType: 'invoice',
       entityId: invoice.id, entityName: invoice.title,
       metadata: { note: note.trim() },

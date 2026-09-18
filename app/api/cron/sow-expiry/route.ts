@@ -39,7 +39,7 @@ export async function POST(request: NextRequest) {
     // has already reached a terminal state.
     const { data: expiring } = await (service as any)
       .from('sow_documents')
-      .select('id, version, workspace_id, project_id, expires_at, projects(id, name, status, clients(name))')
+      .select('id, version, workspace_id, project_id, expires_at, token, projects(id, name, status, clients(name))')
       .in('status', ['awaiting_signature', 'changes_requested'])
       .not('expires_at', 'is', null)
       .lt('expires_at', now)
@@ -54,9 +54,22 @@ export async function POST(request: NextRequest) {
           .update({ status: 'expired', token: null, updated_at: now })
           .eq('id', sow.id)
           .in('status', ['awaiting_signature', 'changes_requested'])
-          .select('id')
+          .select('id, token')
 
         if (!updated?.length) continue
+
+        // FIX (build, cron/portal audit round — see migration 051): decline
+        // and withdraw both insert a revoked_tokens row alongside nulling
+        // the document's own token column, so the portal GET route can
+        // still resolve the right client-facing state even after the
+        // column goes null. This route only ever did the null — closing
+        // that gap here, mirroring decline's own revoked_tokens insert
+        // exactly, just with reason: 'expired'. Read the pre-update token
+        // from `sow` (the row fetched above, before this UPDATE nulled it)
+        // since that's the value clients actually have in hand.
+        await (service as any).from('revoked_tokens').insert({
+          token: sow.token, token_type: 'sow', reason: 'expired', document_id: sow.id,
+        })
 
         await (service as any).from('audit_log').insert({
           workspace_id: sow.workspace_id,

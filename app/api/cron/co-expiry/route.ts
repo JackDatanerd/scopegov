@@ -36,7 +36,7 @@ export async function POST(request: NextRequest) {
 
     const { data: expiring } = await (service as any)
       .from('change_orders')
-      .select('id, title, workspace_id, project_id, expires_at, projects(id, name, clients(name))')
+      .select('id, title, workspace_id, project_id, expires_at, token, projects(id, name, clients(name))')
       .in('status', EXPIRABLE_FROM)
       .not('expires_at', 'is', null)
       .lt('expires_at', now)
@@ -54,6 +54,17 @@ export async function POST(request: NextRequest) {
           .select('id')
 
         if (!updated?.length) continue
+
+        // FIX (build, cron/portal audit round — see migration 051 and the
+        // identical fix in sow-expiry): insert a revoked_tokens row
+        // alongside nulling change_orders.token, mirroring exactly how
+        // decline/withdraw already do it, so the portal GET route's
+        // revoked-reason handling can distinguish 'expired' from a
+        // generic dead link instead of both collapsing to the same
+        // fallback state once the token column is gone.
+        await (service as any).from('revoked_tokens').insert({
+          token: co.token, token_type: 'co', reason: 'expired', document_id: co.id,
+        })
 
         await (service as any).from('audit_log').insert({
           workspace_id: co.workspace_id,

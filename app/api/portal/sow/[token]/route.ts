@@ -38,6 +38,15 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       return NextResponse.json({
         state: revokedReason === 'declined' ? 'declined'
           : revokedReason === 'withdrawn' ? 'withdrawn'
+          // FIX (build, cron/portal audit round — see migration 051):
+          // sow-expiry now inserts a revoked_tokens row (reason: 'expired')
+          // alongside nulling sow_documents.token, closing the gap where
+          // an expired link — once the daily cron had caught up — fell
+          // through to the generic 'revoked' bucket instead of the
+          // purpose-built 'expired' one below (line ~96 already handles
+          // this correctly for the pre-cron window; this is the same
+          // outcome for after the cron has run).
+          : revokedReason === 'expired' ? 'expired'
           : 'revoked',
       })
     }

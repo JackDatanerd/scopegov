@@ -7,6 +7,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { sendInvoiceReminderEmail } from '@/lib/email/templates'
 import { canReadProject } from '@/lib/utils/project-access'
 import { checkReminderCooldown } from '@/lib/utils/reminder-cooldown'
+import { renewInvoiceTokenIfExpired } from '@/lib/documents/renew-invoice-token'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -19,7 +20,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const service = createServiceClient()
     const { data: invoice } = await (service as any)
       .from('invoices')
-      .select(`id, title, amount, amount_paid, currency, status, due_date, token, invoice_number, project_id, payment_instructions,
+      .select(`id, title, amount, amount_paid, currency, status, due_date, token, expires_at, invoice_number, project_id, payment_instructions,
         projects(id, name, clients(name, email, cc_emails), workspaces(agency_name, brand_colour))`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
@@ -31,6 +32,19 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!invoice.token)
       return NextResponse.json({ error: 'No portal link found — resend the invoice' }, { status: 400 })
 
+    // FIX (build, cron/portal audit round): this used to resend the
+    // reminder pointing at whatever token was already stored, with no
+    // check that it still worked — invoice-expiry (the new daily cron)
+    // renews a dead token once a day, but a click landing in the gap
+    // between the old token dying and that cron's next run would still
+    // resend a broken link. Renewing defensively here closes that window
+    // immediately rather than waiting on the cron — see
+    // renew-invoice-token.ts for why renewal (not expiry) is the right
+    // behaviour for an invoice's link.
+    let token = invoice.token
+    const renewal = await renewInvoiceTokenIfExpired(service, id, session.workspaceId, invoice.status, invoice.expires_at)
+    if (renewal.renewed && renewal.token) token = renewal.token
+
     // FIX (re-audit): no cooldown existed at all — an agency user could
     // spam this button and spam the client's inbox with no rate limit.
     const cooldown = await checkReminderCooldown(service, 'invoice', id)
@@ -39,7 +53,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const project   = invoice.projects
     const client    = project?.clients
     const workspace = project?.workspaces
-    const portalUrl = `${process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL}/portal/invoice/${invoice.token}`
+    const portalUrl = `${process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL}/portal/invoice/${token}`
     const balanceDue = Math.max(0, invoice.amount - invoice.amount_paid)
 
     // FIX (re-audit, notifications section): same check-then-act race as

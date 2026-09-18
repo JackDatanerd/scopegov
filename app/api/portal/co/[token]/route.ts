@@ -38,6 +38,18 @@ async function getCoByToken(token: string, service: any) {
   // state the frontend already supports, instead of generic 'revoked'.
   if (revoked && revoked.reason === 'withdrawn') return { state: 'withdrawn' }
 
+  // FIX (build, cron/portal audit round — see migration 051): co-expiry
+  // now inserts a revoked_tokens row (reason: 'expired') alongside nulling
+  // change_orders.token, the same way 'withdrawn' already does — same
+  // reasoning as the withdrawn check just above: the token is genuinely
+  // gone from the row, so co-by-token lookup below would never resolve
+  // it, and this must be trusted directly rather than falling through to
+  // the generic `revoked ? 'revoked' : 'invalid'` at the bottom of this
+  // function (which is what happened before this reason existed — see
+  // that line's own comment for the pre-cron-catch-up case this doesn't
+  // replace, just complements).
+  if (revoked && revoked.reason === 'expired') return { state: 'expired' }
+
   // FIX (doc-completeness audit): same gap as the SOW portal route — legal
   // and billing fields were never selected here, so the client accepted a
   // CO without ever seeing the agency/client addresses or tax IDs that
