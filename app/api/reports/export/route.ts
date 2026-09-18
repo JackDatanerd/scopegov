@@ -113,6 +113,14 @@ function scopeToCsv(data: any): string {
   const lines: string[] = []
   const m = data.metrics
 
+  // FIX (deep audit, Reports & Audit re-pass — CRITICAL): see
+  // lib/reports/scope-financial-data.ts's `truncated` comment. Same
+  // single-cell note-line convention already used by
+  // api/reports/audit-export/route.ts's toCsv.
+  if (data.truncated) {
+    lines.push(csvCell('This export is based on a large volume of data for the selected period and may be undercounting some figures. Narrow the date range for a fully accurate total.'))
+  }
+
   lines.push('Scope protection summary')
   lines.push(['Metric', 'Value'].map(csvCell).join(','))
   lines.push(['Flags raised', m.total_flags ?? 0].map(csvCell).join(','))
@@ -147,6 +155,10 @@ function scopeToCsv(data: any): string {
 function financialToCsv(data: any): string {
   const lines: string[] = []
   const m = data.metrics
+
+  if (data.truncated) {
+    lines.push(csvCell('This export is based on a large volume of data for the selected period and may be undercounting some figures. Narrow the date range for a fully accurate total.'))
+  }
 
   lines.push('Financial overview summary')
   lines.push(['Metric', 'Value'].map(csvCell).join(','))

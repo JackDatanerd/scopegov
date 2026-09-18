@@ -21,7 +21,17 @@ import { renderAuditReportPdf, type AuditReportRow } from '@/lib/pdf/audit-repor
 
 const MAX_ROWS_CSV = 25000
 const MAX_ROWS_PDF = 1000
-const MAX_ROWS_JSON = 500 // table view shows a "truncated, use CSV export" banner beyond this — see components/settings/AuditLogClient.tsx (no true pagination exists here)
+// FIX (deep audit, Reports & Audit re-pass — feature gap): this used to be
+// a hard 500-row ceiling with a "truncated, use CSV export" banner and no
+// way to see anything past it from the table view itself — see the old
+// comment here and AuditLogClient's own note ("no true pagination exists
+// here"). PAGE_SIZE_JSON now pages through it via `offset`/`hasMore`
+// instead; MAX_ROWS_JSON stays as an overall ceiling on how far in-app
+// paging goes (raised from 500 — CSV/PDF remain the tool for anything
+// beyond this) so a single workspace can't page through an unbounded
+// audit trail one row at a time in the browser.
+const MAX_ROWS_JSON = 2000
+const PAGE_SIZE_JSON = 100
 
 export async function GET(request: Request) {
   try {
@@ -43,6 +53,10 @@ export async function GET(request: Request) {
     const projectId = url.searchParams.get('projectId') || undefined
     const actorId = url.searchParams.get('actorId') || undefined
     const q = (url.searchParams.get('q') || '').trim()
+    // FEATURE (deep audit, Reports & Audit re-pass): pagination offset —
+    // only meaningful for format=json (see the fetch branch below); CSV/PDF
+    // always start from the top of the range up to their own row ceiling.
+    const offset = Math.max(0, Math.min(parseInt(url.searchParams.get('offset') || '0', 10) || 0, MAX_ROWS_JSON))
 
     const now = new Date()
     const defaultFrom = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000)
@@ -166,12 +180,22 @@ export async function GET(request: Request) {
     // and `totalCount` are simply correct rather than best-effort.
     if (projectEntityIds) query = query.in('entity_id', projectEntityIds)
 
-    const { data: rawRows, count } = await query.limit(maxRows + 1)
+    const { data: rawRows, count } = format === 'json'
+      // FEATURE (deep audit, Reports & Audit re-pass): true pagination for
+      // the table view — page forward with `.range()` instead of always
+      // re-fetching from the top and slicing. CSV/PDF below are unchanged:
+      // they're a one-shot export up to their own ceiling, not something
+      // the user pages through.
+      ? await query.range(offset, Math.min(offset + PAGE_SIZE_JSON, MAX_ROWS_JSON) - 1)
+      : await query.limit(maxRows + 1)
 
     const rows = (rawRows || []) as any[]
     const totalCount = count ?? rows.length
-    const truncated = rows.length > maxRows
-    const pageRows = rows.slice(0, maxRows)
+    const truncated = format === 'json' ? totalCount > MAX_ROWS_JSON : rows.length > maxRows
+    const pageRows = format === 'json' ? rows : rows.slice(0, maxRows)
+    // Only relevant for format=json — whether another page is available
+    // before MAX_ROWS_JSON's ceiling.
+    const hasMore = format === 'json' && offset + pageRows.length < Math.min(totalCount, MAX_ROWS_JSON)
 
     // Log the export itself — who pulled the audit trail, and with what
     // filters, is exactly the kind of thing a compliance audit trail should
@@ -192,12 +216,21 @@ export async function GET(request: Request) {
           id: r.id, eventType: r.event_type, entityType: r.entity_type, entityName: r.entity_name,
           actorName: r.actor_name, actorEmail: r.actor_email, createdAt: r.created_at, ipAddress: r.ip_address,
         })),
-        totalCount, truncated,
+        totalCount, truncated, hasMore, offset, nextOffset: offset + pageRows.length,
       })
     }
 
     if (format === 'csv') {
-      const csv = toCsv(pageRows, canViewFinancials)
+      // FIX (deep audit, Reports & Audit re-pass — CRITICAL): toCsv used to
+      // be called with no truncation info at all, so a range with more
+      // than MAX_ROWS_CSV events produced a CSV that silently stopped at
+      // the cap with zero indication anything was missing — while the PDF
+      // export (below) explicitly tells the reader "export CSV for the
+      // complete, unabridged record" when it's the one that's truncated.
+      // That sentence is false the moment CSV is ALSO truncated. Pass the
+      // same truncated/totalCount signal through so the file that's
+      // supposed to be the authoritative fallback says so when it isn't.
+      const csv = toCsv(pageRows, canViewFinancials, truncated, totalCount)
       // BUG-008 convention: Uint8Array for NextResponse BodyInit
       return new NextResponse(new Uint8Array(Buffer.from(csv, 'utf-8')), {
         headers: {
@@ -299,9 +332,16 @@ function redactMetadata(metadata: Record<string, unknown> | null | undefined, ca
   return redacted
 }
 
-function toCsv(rows: any[], canViewFinancials: boolean): string {
+function toCsv(rows: any[], canViewFinancials: boolean, truncated: boolean, totalCount: number): string {
   const header = ['Timestamp (UTC)', 'Event', 'Entity type', 'Entity', 'Actor name', 'Actor email', 'IP address', 'Metadata']
-  const lines = [header.map(csvCell).join(',')]
+  const lines: string[] = []
+  // FIX (deep audit, Reports & Audit re-pass — CRITICAL): see the call
+  // site's comment. Same single-cell note-line convention already used by
+  // scopeToCsv/financialToCsv in api/reports/export/route.ts.
+  if (truncated) {
+    lines.push(csvCell(`This export shows the first ${rows.length.toLocaleString()} of ${totalCount.toLocaleString()} matching events. Narrow the date range or filters to capture the rest.`))
+  }
+  lines.push(header.map(csvCell).join(','))
   for (const r of rows) {
     const metadata = redactMetadata(r.metadata, canViewFinancials)
     lines.push([

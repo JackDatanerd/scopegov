@@ -32,6 +32,15 @@ const RANGE_PRESETS = [
   { key: 'custom', label: 'Custom range', days: 0 },
 ]
 
+// FEATURE (deep audit, Reports & Audit re-pass — feature gap): the search
+// box used to fire a fresh fetch on every keystroke — a `cancelled` guard
+// prevented a slow, stale response from clobbering a newer one, but it did
+// nothing to stop the request volume itself: typing a 10-character search
+// term fired 10 requests. Debouncing is standard practice for exactly this
+// kind of free-text filter and costs nothing in responsiveness a person
+// would actually notice.
+const SEARCH_DEBOUNCE_MS = 350
+
 export default function AuditLogClient({ projects, members }: { projects: Project[]; members: Member[] }) {
   const today = useMemo(() => new Date(), [])
   const [preset, setPreset] = useState('90d')
@@ -39,12 +48,24 @@ export default function AuditLogClient({ projects, members }: { projects: Projec
   const [to, setTo] = useState(isoDate(today))
   const [projectId, setProjectId] = useState('')
   const [actorId, setActorId] = useState('')
+  // FEATURE (deep audit, Reports & Audit re-pass — feature gap): `qInput`
+  // is what the text box is bound to (updates instantly, so typing never
+  // feels laggy); `q` is the debounced value that actually drives the
+  // fetch below.
+  const [qInput, setQInput] = useState('')
   const [q, setQ] = useState('')
+
+  useEffect(() => {
+    const t = setTimeout(() => setQ(qInput), SEARCH_DEBOUNCE_MS)
+    return () => clearTimeout(t)
+  }, [qInput])
 
   const [rows, setRows] = useState<Row[]>([])
   const [totalCount, setTotalCount] = useState(0)
   const [truncated, setTruncated] = useState(false)
+  const [hasMore, setHasMore] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [exporting, setExporting] = useState<'csv' | 'pdf' | null>(null)
   const [error, setError] = useState('')
 
@@ -57,14 +78,18 @@ export default function AuditLogClient({ projects, members }: { projects: Projec
     }
   }
 
-  const queryString = useCallback((format: string) => {
+  const queryString = useCallback((format: string, offset?: number) => {
     const params = new URLSearchParams({ format, from, to })
     if (projectId) params.set('projectId', projectId)
     if (actorId) params.set('actorId', actorId)
     if (q.trim()) params.set('q', q.trim())
+    if (offset) params.set('offset', String(offset))
     return params.toString()
   }, [from, to, projectId, actorId, q])
 
+  // FEATURE (deep audit, Reports & Audit re-pass — feature gap): true
+  // pagination. Any filter change starts over from offset 0 and replaces
+  // the row list; "Load more" (below) appends the next page instead.
   useEffect(() => {
     let cancelled = false
     setLoading(true); setError('')
@@ -72,12 +97,32 @@ export default function AuditLogClient({ projects, members }: { projects: Projec
       .then(async res => {
         const json = await res.json()
         if (!res.ok) throw new Error(json.error || 'Could not load audit log')
-        if (!cancelled) { setRows(json.rows); setTotalCount(json.totalCount); setTruncated(json.truncated) }
+        if (!cancelled) {
+          setRows(json.rows)
+          setTotalCount(json.totalCount)
+          setTruncated(json.truncated)
+          setHasMore(json.hasMore)
+        }
       })
       .catch((err: unknown) => { if (!cancelled) setError(err instanceof Error ? err.message : 'Could not load audit log') })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
   }, [queryString])
+
+  async function handleLoadMore() {
+    setLoadingMore(true)
+    try {
+      const res = await fetch(`/api/reports/audit-export?${queryString('json', rows.length)}`)
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json.error || 'Could not load more events')
+      setRows(prev => [...prev, ...json.rows])
+      setTotalCount(json.totalCount)
+      setTruncated(json.truncated)
+      setHasMore(json.hasMore)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not load more events')
+    } finally { setLoadingMore(false) }
+  }
 
   async function handleExport(format: 'csv' | 'pdf') {
     setExporting(format)
@@ -157,16 +202,23 @@ export default function AuditLogClient({ projects, members }: { projects: Projec
           </div>
           <div className="fgrp" style={{ margin: 0, flex: 1, minWidth: 180 }}>
             <label className="flbl">Search</label>
-            <input className="finp search-inp" placeholder="Event or record name…" value={q}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQ(e.target.value)} />
+            <input className="finp search-inp" placeholder="Event or record name…" value={qInput}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQInput(e.target.value)} />
           </div>
         </div>
       </div>
 
       {error && <div className="auth-error" style={{ marginBottom: 14 }}>{error}</div>}
-      {truncated && !loading && (
+      {/* FIX (deep audit, Reports & Audit re-pass — feature gap): this used
+          to always mean "hit the hard ceiling, go export CSV" because
+          there was no other way to see more. Now that "Load more" exists,
+          this banner only appears once paging has reached MAX_ROWS_JSON's
+          ceiling (api/reports/audit-export/route.ts) — while more pages
+          remain below that ceiling, the "Load more" button under the
+          table is the way forward instead. */}
+      {truncated && !loading && !hasMore && (
         <div className="auth-error" style={{ background: '#FFFBEB', borderColor: '#FDE68A', color: '#92400E', marginBottom: 14 }}>
-          Showing the first {rows.length.toLocaleString()} of {totalCount.toLocaleString()} matching events in this table. Export CSV for the complete record.
+          Showing the first {rows.length.toLocaleString()} of {totalCount.toLocaleString()} matching events — this view caps out here. Export CSV for the complete record.
         </div>
       )}
 
@@ -218,6 +270,13 @@ export default function AuditLogClient({ projects, members }: { projects: Projec
           <div className="empty-state" style={{ padding: '40px 0' }}>
             <i className="ti ti-clock empty-state-icon" />
             <p className="empty-state-title">No audit events in this range</p>
+          </div>
+        )}
+        {!loading && hasMore && (
+          <div style={{ display: 'flex', justifyContent: 'center', padding: '14px 0' }}>
+            <button className="btn btn-ghost btn-sm" disabled={loadingMore} onClick={handleLoadMore}>
+              {loadingMore ? <span className="spin spin-dark" /> : `Load more (${(totalCount - rows.length).toLocaleString()} remaining)`}
+            </button>
           </div>
         )}
       </div>

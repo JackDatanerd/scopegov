@@ -11,6 +11,25 @@ import { PROJECT_TYPE_LABELS } from '@/lib/utils/format'
 
 export type ReportMode = 'scope' | 'financial'
 
+// FIX (deep audit, Reports & Audit re-pass — CRITICAL): every query in
+// this file used to run with no `.limit()`/`.range()` at all — confirmed
+// by grep, no query anywhere in this codebase used `.range()` before this
+// fix. PostgREST caps an unlimited select at its own configured row limit
+// server-side, so a mature, active workspace's "All time" rollup (flags,
+// exceptions, adjustments, amendments, change_orders, or even the
+// projects list itself) could silently come back short with no signal
+// anywhere that it happened — the totals on screen would just be wrong.
+// api/reports/audit-export already caps and reports `truncated` for
+// exactly this reason; these two workspace-wide rollups had none of that
+// awareness. Cap generously (this is a rollup total, not a page a human
+// reads row-by-row) and surface `truncated` on the result so the UI can
+// at least say so instead of presenting a short count as complete.
+const MAX_ROLLUP_ROWS = 5000
+
+function isTruncated(res: { data: any[] | null }): boolean {
+  return (res.data?.length || 0) > MAX_ROLLUP_ROWS
+}
+
 const PERIOD_DAYS: Record<string, number | null> = {
   '30d': 30, '90d': 90, '6m': 180, '12m': 365, 'all': null,
 }
@@ -29,22 +48,24 @@ export async function getScopeReportData(
 ) {
   const [flagsRes, exceptionsRes, adjustmentsRes, cosRes, projCurrencyRes] = await Promise.all([
     service.from('guardian_flags').select('id,status,projects(id,name)')
-      .eq('workspace_id', wsId).gte('created_at', since),
+      .eq('workspace_id', wsId).gte('created_at', since).limit(MAX_ROLLUP_ROWS + 1),
     service.from('exceptions_log').select('id,deliverable,estimated_value,project_id,projects(id,name,currency)')
-      .eq('workspace_id', wsId).gte('created_at', since),
+      .eq('workspace_id', wsId).gte('created_at', since).limit(MAX_ROLLUP_ROWS + 1),
     service.from('scope_adjustments').select('id,deliverable,old_value,new_value,reason,adjusted_at,project_id,projects(id,name)')
-      .eq('workspace_id', wsId).gte('adjusted_at', since).order('adjusted_at', { ascending: false }),
+      .eq('workspace_id', wsId).gte('adjusted_at', since).order('adjusted_at', { ascending: false }).limit(MAX_ROLLUP_ROWS + 1),
     service.from('amendments').select('id,financial_impact,project_id')
-      .eq('workspace_id', wsId).gte('created_at', since),
-    service.from('projects').select('id,currency').eq('workspace_id', wsId).is('deleted_at', null),
+      .eq('workspace_id', wsId).gte('created_at', since).limit(MAX_ROLLUP_ROWS + 1),
+    service.from('projects').select('id,currency').eq('workspace_id', wsId).is('deleted_at', null).limit(MAX_ROLLUP_ROWS + 1),
   ])
 
-  const flags      = flagsRes.data || []
-  const exceptions = exceptionsRes.data || []
-  const allAdjustments = adjustmentsRes.data || []
-  const allAmendments = cosRes.data || []
+  const truncated = [flagsRes, exceptionsRes, adjustmentsRes, cosRes, projCurrencyRes].some(isTruncated)
+
+  const flags      = (flagsRes.data || []).slice(0, MAX_ROLLUP_ROWS)
+  const exceptions = (exceptionsRes.data || []).slice(0, MAX_ROLLUP_ROWS)
+  const allAdjustments = (adjustmentsRes.data || []).slice(0, MAX_ROLLUP_ROWS)
+  const allAmendments = (cosRes.data || []).slice(0, MAX_ROLLUP_ROWS)
   const projCurrencyById: Record<string, string> = {}
-  for (const p of (projCurrencyRes.data || [])) projCurrencyById[p.id] = p.currency || 'USD'
+  for (const p of (projCurrencyRes.data || []).slice(0, MAX_ROLLUP_ROWS)) projCurrencyById[p.id] = p.currency || 'USD'
 
   const currencyCounts: Record<string, number> = {}
   for (const c of Object.values(projCurrencyById)) currencyCounts[c] = (currencyCounts[c] || 0) + 1
@@ -88,6 +109,7 @@ export async function getScopeReportData(
     currency,
     mixedCurrencies,
     availableCurrencies,
+    truncated,
   }
 }
 
@@ -96,16 +118,18 @@ export async function getFinancialReportData(
 ) {
   const [projectsRes, amendmentsRes, cosRes2] = await Promise.all([
     service.from('projects').select('id,name,type,contract_value,currency,client_id,clients(id,name)')
-      .eq('workspace_id', wsId).is('deleted_at', null).neq('status', 'Draft').neq('status', 'Archived'),
+      .eq('workspace_id', wsId).is('deleted_at', null).neq('status', 'Draft').neq('status', 'Archived')
+      .limit(MAX_ROLLUP_ROWS + 1),
     service.from('amendments').select('id,financial_impact,project_id')
-      .eq('workspace_id', wsId).gte('created_at', since),
+      .eq('workspace_id', wsId).gte('created_at', since).limit(MAX_ROLLUP_ROWS + 1),
     service.from('change_orders').select('id,status,total,project_id')
-      .eq('workspace_id', wsId).gte('created_at', since),
+      .eq('workspace_id', wsId).gte('created_at', since).limit(MAX_ROLLUP_ROWS + 1),
   ])
 
-  const allProjects = projectsRes.data || []
-  const allAmendments = amendmentsRes.data || []
-  const allCos      = cosRes2.data || []
+  const truncated = [projectsRes, amendmentsRes, cosRes2].some(isTruncated)
+  const allProjects = (projectsRes.data || []).slice(0, MAX_ROLLUP_ROWS)
+  const allAmendments = (amendmentsRes.data || []).slice(0, MAX_ROLLUP_ROWS)
+  const allCos      = (cosRes2.data || []).slice(0, MAX_ROLLUP_ROWS)
 
   const currencyCounts: Record<string, number> = {}
   for (const p of allProjects) currencyCounts[p.currency || 'USD'] = (currencyCounts[p.currency || 'USD'] || 0) + 1
@@ -157,5 +181,6 @@ export async function getFinancialReportData(
     currency,
     mixedCurrencies,
     availableCurrencies,
+    truncated,
   }
 }

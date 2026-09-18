@@ -14,7 +14,7 @@ import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { SessionUser } from '@/lib/supabase/types'
-import { PLAN_LABELS, PLAN_LIMITS, PROJECT_TYPE_LABELS, formatDate, initials, avatarColour } from '@/lib/utils/format'
+import { PLAN_LABELS, PLAN_LIMITS, PROJECT_TYPE_LABELS, formatDate, formatCurrency, initials, avatarColour } from '@/lib/utils/format'
 import SignaturePad, { type SignaturePadHandle } from '@/components/ui/SignaturePad'
 import MfaSection from '@/components/settings/MfaSection'
 // FIX (deep audit, Settings re-pass): WorkspaceTab's currency <select> used
@@ -1177,6 +1177,19 @@ function GuardianTab({ form, setForm, permissions, onSave, saving }: any) {
 }
 
 // ── BILLING ───────────────────────────────────────────────────
+// Labels for the event types api/billing/history/route.ts returns — kept
+// as a small local map rather than reusing lib/pdf/audit-report.tsx's
+// humanizeEvent (server-only, part of the PDF renderer bundle) since this
+// list only ever needs to cover the handful of billing-specific events.
+const BILLING_HISTORY_LABELS: Record<string, string> = {
+  'billing.payment_succeeded':          'Payment succeeded',
+  'billing.payment_failed_grace_started': 'Payment failed',
+  'billing.downgraded_for_nonpayment':  'Downgraded — payment not resolved',
+  'billing.subscription_ended':         'Subscription ended',
+  'billing.trial_expired':              'Trial ended',
+  'billing.plan_changed':               'Plan changed',
+}
+
 function BillingTab({ workspace, billing, session, permissions }: any) {
   const planTier  = workspace?.plan_tier || 'trial'
   const planLabel = PLAN_LABELS[planTier] || planTier
@@ -1201,6 +1214,25 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
   // never existed until now.
   const [resuming,     setResuming]     = useState(false)
   const [resumeError,  setResumeError]  = useState('')
+
+  // FEATURE (deep audit, Reports & Audit / Billing re-pass — feature gap):
+  // there was no way at all to see past charges/receipts in-app — see
+  // api/billing/history/route.ts's own header comment for the full story.
+  const [history,        setHistory]        = useState<any[] | null>(null)
+  const [historyError,   setHistoryError]   = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/billing/history')
+      .then(async res => {
+        const json = await res.json().catch(() => ({}))
+        if (cancelled) return
+        if (!res.ok) { setHistoryError(json.error || 'Could not load billing history.'); return }
+        setHistory(json.rows || [])
+      })
+      .catch(() => { if (!cancelled) setHistoryError('Could not load billing history.') })
+    return () => { cancelled = true }
+  }, [])
 
   if (!permissions.manageBilling) return <Restricted />
 
@@ -1344,6 +1376,36 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
           <p style={{ fontSize: 12, color: 'var(--red)', marginTop: 10 }}>{cancelError}</p>
         )}
       </div>
+
+      {/* FEATURE (deep audit, Reports & Audit / Billing re-pass — feature
+          gap): payment history — see api/billing/history/route.ts's own
+          header comment for why this never existed until now. */}
+      <div className="settings-section" style={{ marginBottom: 14 }}>
+        <div className="settings-section-title">Payment history</div>
+        {historyError ? (
+          <p style={{ fontSize: 13, color: 'var(--text-3)' }}>{historyError}</p>
+        ) : history === null ? (
+          <div style={{ display: 'flex', padding: '12px 0' }}><span className="spin spin-dark" /></div>
+        ) : history.length === 0 ? (
+          <p style={{ fontSize: 13, color: 'var(--text-3)' }}>No billing events yet.</p>
+        ) : (
+          <table className="gov-table" style={{ width: '100%' }}>
+            <thead><tr><th>Event</th><th>Date</th><th style={{ textAlign: 'right' }}>Amount</th></tr></thead>
+            <tbody>
+              {history.map(h => (
+                <tr key={h.id}>
+                  <td style={{ fontSize: 13 }}>{BILLING_HISTORY_LABELS[h.eventType] || h.eventType}</td>
+                  <td style={{ fontSize: 12, color: 'var(--text-3)' }}>{formatDate(h.createdAt)}</td>
+                  <td className="td-mono" style={{ textAlign: 'right', fontSize: 12 }}>
+                    {h.amount != null ? formatCurrency(h.amount, h.currency || 'USD') : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
       <div className="settings-section">
         <div className="settings-section-title">Available plans</div>
         <div style={{ display: 'inline-flex', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', overflow: 'hidden', marginBottom: 20 }}>

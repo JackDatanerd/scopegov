@@ -49,6 +49,7 @@ const s = StyleSheet.create({
   tdSub:      { fontSize: 7.5, color: '#909090' },
   emptyNote:  { fontSize: 8.5, color: '#909090', paddingVertical: 8 },
   mixedNote:  { fontSize: 7.5, color: '#B45309', backgroundColor: '#FFFBEB', border: '1 solid #FDE68A', borderRadius: 3, padding: 6, marginBottom: 10 },
+  truncNote:  { fontSize: 7.5, color: '#B45309', backgroundColor: '#FFFBEB', border: '1 solid #FDE68A', borderRadius: 3, padding: 6, marginBottom: 10 },
   footer:     { position: 'absolute', bottom: 20, left: 40, right: 40, flexDirection: 'row', justifyContent: 'space-between', paddingTop: 8, borderTop: '1 solid #E5E1D8', fontSize: 7.5, color: '#B0B0B0' },
 })
 
@@ -95,17 +96,34 @@ function MixedCurrencyNote({ currency, availableCurrencies }: { currency: string
   )
 }
 
+// FIX (deep audit, Reports & Audit re-pass — CRITICAL): lib/reports/
+// scope-financial-data.ts now caps its queries and reports `truncated`
+// when a workspace's data for the selected period exceeds that cap — see
+// that file's own comment for why. Surface it here the same way
+// MixedCurrencyNote already does, so a PDF handed to someone outside the
+// app doesn't imply a completeness this data doesn't have.
+function TruncatedNote({ truncated }: { truncated?: boolean }) {
+  if (!truncated) return null
+  return (
+    <Text style={s.truncNote}>
+      This report is based on a large volume of data for the selected period and may be undercounting some figures.
+      Narrow the date range for a fully accurate total.
+    </Text>
+  )
+}
+
 const FLAG_COL = { project: 220, count: 80 }
 const EXC_COL = { deliverable: 200, project: 150 }
 const ADJ_COL = { project: 130, change: 170 }
 
 function ScopeReportDocument({ meta, data }: { meta: ReportPdfMeta; data: any }) {
-  const { metrics, flagsByProject, exceptionsByProject, adjustments, currency, availableCurrencies } = data
+  const { metrics, flagsByProject, exceptionsByProject, adjustments, currency, availableCurrencies, truncated } = data
   return (
     <Document>
       <Page size="A4" style={s.page} wrap>
         <Header meta={meta} title="Scope Protection Report" />
         <MixedCurrencyNote currency={currency} availableCurrencies={availableCurrencies} />
+        <TruncatedNote truncated={truncated} />
 
         <View style={s.metricRow}>
           <View style={s.metricBox}>
@@ -199,12 +217,13 @@ const CLIENT_COL = { name: 260 }
 const TYPE_COL = { name: 200 }
 
 function FinancialReportDocument({ meta, data }: { meta: ReportPdfMeta; data: any }) {
-  const { metrics, byClient, byType, coGrid, currency, availableCurrencies } = data
+  const { metrics, byClient, byType, coGrid, currency, availableCurrencies, truncated } = data
   return (
     <Document>
       <Page size="A4" style={s.page} wrap>
         <Header meta={meta} title="Financial Overview Report" />
         <MixedCurrencyNote currency={currency} availableCurrencies={availableCurrencies} />
+        <TruncatedNote truncated={truncated} />
 
         <View style={s.metricRow}>
           <View style={s.metricBox}>

@@ -70,6 +70,23 @@ function planCodeToInterval(planCode: string): 'monthly' | 'annual' | null {
   return null
 }
 
+// FIX (deep audit, Reports & Audit / Billing re-pass — CRITICAL): Paystack
+// expresses every amount field (charge.success, invoice.payment_failed,
+// etc.) in the smallest currency subunit — kobo for NGN, cents for
+// USD/KES/GHS/ZAR — same convention as most payment providers. Nothing in
+// this webhook ever converted that back to the human-readable figure
+// before logging it: billing.payment_succeeded's `amount` metadata has
+// been recording a value 100x the real charge (e.g. a genuine $25.00
+// renewal logged as `amount: 2500`) since the very first version of this
+// handler. That number was previously only ever eyeballed as raw JSON in
+// an audit-log export, which is likely why nobody caught it — but the new
+// billing/history endpoint (see api/billing/history/route.ts) formats it
+// straight through formatCurrency() for the customer to read, so a wrong
+// order of magnitude here is no longer a cosmetic footnote.
+function fromSubunit(amount: unknown): number | undefined {
+  return typeof amount === 'number' ? Math.round(amount) / 100 : undefined
+}
+
 // FEATURE (deep audit, Billing re-pass): billing.payment_method_last4/
 // payment_method_type (001_initial_schema.sql) were selected on
 // settings/page.tsx and never written to anywhere — a fully scaffolded
@@ -296,7 +313,7 @@ export async function POST(request: NextRequest) {
           actorEmail: customerEmail, actorName: 'Paystack',
           eventType: 'billing.payment_succeeded', entityType: 'workspace',
           entityId: workspaceId, entityName: customerEmail,
-          metadata: { amount: event.data?.amount },
+          metadata: { amount: fromSubunit(event.data?.amount), currency: event.data?.currency },
         })
         break
       }
@@ -320,7 +337,14 @@ export async function POST(request: NextRequest) {
           workspaceId, actorId: null,
           actorEmail: customerEmail, actorName: 'Paystack',
           eventType: 'billing.payment_failed_grace_started', entityType: 'workspace',
-          entityId: workspaceId, entityName: customerEmail, metadata: {},
+          entityId: workspaceId, entityName: customerEmail,
+          // FEATURE (deep audit, Reports & Audit / Billing re-pass): this
+          // was logged with an empty metadata object — fine for the audit
+          // trail alone, but the new billing/history endpoint needs an
+          // amount to show next to a failed-payment row the same way it
+          // does for a succeeded one. Paystack's invoice payload carries
+          // the attempted amount in the same subunit as charge.success.
+          metadata: { amount: fromSubunit(event.data?.amount), currency: event.data?.currency },
         })
 
         // Event 28: payment failed email (awaited — carry-forward §4.4)
@@ -388,8 +412,25 @@ export async function POST(request: NextRequest) {
           break
         }
 
+        // FIX (deep audit, Reports & Audit / Billing re-pass — CRITICAL):
+        // this used to null paystack_subscription_code right here, on
+        // every matching (non-superseded) disable/not_renew event — which
+        // is exactly the event a NORMAL, single-subscription cancellation
+        // fires moments after api/billing/cancel calls Paystack's
+        // /subscription/disable. That made api/billing/resume permanently
+        // 422 ("No active subscription found") for the one path it was
+        // actually built for — resumePaystackSubscription needs this same
+        // code to call Paystack's /subscription/enable, and disabling a
+        // subscription doesn't delete it on Paystack's side, so the code
+        // was still perfectly usable; this app was just erasing its own
+        // pointer to it. cancels_at_period_end is already the correct
+        // "cancellation is pending" signal on its own — the code only
+        // needs to be cleared once the paid period has actually lapsed,
+        // which cron/payment-overdue's cancelled-subscription sweep
+        // (section 5 there) already does, guarded on current_period_end.
+        // Leave the code in place here so resume keeps working right up
+        // until that terminal point.
         await (service as any).from('billing').update({
-          paystack_subscription_code: null,
           cancels_at_period_end: true,
           updated_at: new Date().toISOString(),
         }).eq('workspace_id', workspaceId)

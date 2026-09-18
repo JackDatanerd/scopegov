@@ -143,6 +143,19 @@ function ReportsPageInner() {
         </div>
       )}
 
+      {/* FIX (deep audit, Reports & Audit re-pass — CRITICAL): lib/reports/
+          scope-financial-data.ts now caps every query at 5,000 rows and
+          reports `truncated` when a workspace's data exceeds that in the
+          selected period — previously these totals could be silently
+          short with no signal anywhere. Surface it the same way the
+          mixed-currencies notice above already does. */}
+      {data?.truncated && (
+        <div className="auth-error" style={{ marginBottom: 16 }}>
+          This report is based on a large volume of data for the selected period and may be undercounting some
+          figures. Narrow the date range for a fully accurate total.
+        </div>
+      )}
+
       {/* Mode toggle */}
       <div className="reports-mode-tabs">
         <button className={`rmt${mode === 'scope' ? ' active' : ''}`} onClick={() => setMode('scope')}>
@@ -206,9 +219,16 @@ function ScopeReport({ data }: { data: any }) {
         <div className="mc">
           <div className="mc-lbl">Recovered value</div>
           <div className="mc-val green">
-            {metrics?.recovered_value > 0
-              ? formatCurrency(metrics.recovered_value, currency || 'USD', true)
-              : '—'}
+            {/* FIX (deep audit, Reports & Audit re-pass): `> 0 ? … : '—'`
+                treated a genuine $0 recovered (permission held, nothing
+                converted yet) identically to a redacted null (no
+                VIEW_FINANCIALS) — both rendered '—' with no way to tell
+                them apart. Same ambiguity class already fixed for the
+                exceptions total just below; only a real null (redacted)
+                should fall back to the placeholder. */}
+            {metrics?.recovered_value == null
+              ? '—'
+              : formatCurrency(metrics.recovered_value, currency || 'USD', true)}
           </div>
           <div className="mc-sub">From accepted COs</div>
         </div>
@@ -241,13 +261,14 @@ function ScopeReport({ data }: { data: any }) {
             <div className="sec-title">Exceptions granted</div>
             {/* FIX (deep audit, Reports & Audit re-pass): estimated_value is
                 redacted to null server-side for anyone without
-                VIEW_FINANCIALS (same gate as recovered_value above, which
-                correctly falls back to "—"). Summing `e.estimated_value ||
-                0` across an all-null list previously rendered a confident
-                "$0 total estimated" — implying zero exposure rather than
-                "hidden from you". Only show a total when at least one
-                value actually came through; otherwise show the same "—"
-                placeholder recovered_value already uses. */}
+                VIEW_FINANCIALS. Summing `e.estimated_value || 0` across an
+                all-null list previously rendered a confident "$0 total
+                estimated" — implying zero exposure rather than "hidden
+                from you". Only show a total when at least one value
+                actually came through; otherwise show the same "—"
+                placeholder recovered_value uses (also fixed above — it
+                had the identical null-vs-zero ambiguity, just less
+                visibly since it's a single number rather than a sum). */}
             {(exceptionsByProject || []).length > 0 && (
               <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
                 {(exceptionsByProject || []).every((e: any) => e.estimated_value == null)
@@ -276,7 +297,22 @@ function ScopeReport({ data }: { data: any }) {
                     <td><div className="td-primary" style={{ fontSize: 12 }}>{ex.deliverable}</div></td>
                     <td style={{ fontSize: 12, color: 'var(--text-2)' }}>{ex.projects?.name}</td>
                     <td className="td-mono" style={{ textAlign: 'right', fontSize: 12 }}>
-                      {formatCurrency(ex.estimated_value, currency || 'USD')}
+                      {/* FIX (deep audit, Reports & Audit re-pass —
+                          CRITICAL): estimated_value is null here for
+                          anyone without VIEW_FINANCIALS, but this was
+                          passed straight into formatCurrency() with no
+                          guard — Intl.NumberFormat coerces null to 0, so
+                          every row rendered a literal "$0", falsely
+                          implying the exception carried no value at all
+                          instead of being hidden. The aggregate total
+                          right above already distinguishes this
+                          correctly (`e.estimated_value == null`); the
+                          per-row cell never did. The CSV export of this
+                          same field (scopeToCsv in
+                          api/reports/export/route.ts) already uses
+                          `?? 'redacted'` — match that here instead of a
+                          fabricated number. */}
+                      {ex.estimated_value == null ? '—' : formatCurrency(ex.estimated_value, currency || 'USD')}
                     </td>
                   </tr>
                 ))}
