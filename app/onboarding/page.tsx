@@ -336,12 +336,41 @@ function OnboardingWizard() {
       clearSavedProgress()
       if (otherWorkspaces.length > 0) {
         await switchToWorkspace(otherWorkspaces[0].id)
-      } else {
-        setWorkspaceId(null)
-        setOtherWorkspaces([])
-        setStep(0)
-        router.replace('/onboarding?new=1')
+        return
       }
+      // FIX (deep audit, Workspace lifecycle + Onboarding re-pass —
+      // feature gap): this used to go straight to '/onboarding?new=1' —
+      // the exact flag the mount effect's own comment says deliberately
+      // SKIPS resume-detection — the moment otherWorkspaces (deliberately
+      // scoped to already-*completed* workspaces only) came up empty.
+      // Migration 019's trial_cap_exempt grandfather clause proves a user
+      // can legitimately own two INCOMPLETE workspaces at once; discarding
+      // one used to silently strand the other rather than ever offering
+      // to resume it — the user got shoved into starting a brand-new
+      // third workspace instead. Ask the server directly before assuming
+      // there's nothing left to resume.
+      setOtherWorkspaces([])
+      try {
+        const res  = await fetch('/api/workspace/onboarding-status')
+        const json = await res.json().catch(() => ({}))
+        if (res.ok && json.status === 'resume' && json.workspaceId) {
+          // Best-effort switch, then a full reload so the mount effect's
+          // own (already-hardened) resume logic re-runs from scratch and
+          // populates every field from the server — rather than
+          // duplicating that logic a second time here.
+          try {
+            await fetch('/api/workspace/switch', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ workspaceId: json.workspaceId }),
+            })
+          } catch { /* best-effort */ }
+          window.location.assign('/onboarding')
+          return
+        }
+      } catch { /* status check failed — fall through to starting fresh */ }
+      setWorkspaceId(null)
+      setStep(0)
+      router.replace('/onboarding?new=1')
     } catch {
       setError('Could not discard this workspace — try again, or contact support@scopegov.app.')
     } finally { setLoading(false) }

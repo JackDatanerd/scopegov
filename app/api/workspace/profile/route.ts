@@ -2,6 +2,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession } from '@/lib/auth/session'
 import { sanitizeDisplayName } from '@/lib/utils/sanitize'
+import { logAudit } from '@/lib/utils/audit'
 
 export async function PATCH(request: NextRequest) {
   try {
@@ -35,6 +36,28 @@ export async function PATCH(request: NextRequest) {
       console.error('Profile name update failed:', error)
       return NextResponse.json({ error: 'Failed to update name' }, { status: 500 })
     }
+
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — feature
+    // gap): this route's OWN comment above already establishes that
+    // `name` flows unescaped into audit_log.actor_name, notification
+    // titles, and email greetings across the entire app — yet the
+    // rename itself had no audit trail at all, unlike every other
+    // consequential account-level mutation here (password and MFA
+    // changes both log AND email — see auth/change-password). Without
+    // this, someone could briefly rename themselves to match another
+    // teammate around a sensitive action and rename back afterward with
+    // zero record of it ever happening. Scoped to the caller's current
+    // active workspace since a display name isn't itself
+    // workspace-scoped but audit_log.workspace_id is NOT NULL.
+    // Best-effort, same as every other audit-log insert in this
+    // codebase — must never fail an already-successful name change.
+    try {
+      await logAudit(service, {
+        workspaceId: session.workspaceId, actorId: session.id, actorEmail: session.email,
+        actorName: name, eventType: 'user.name_changed', entityType: 'user',
+        entityId: session.id, entityName: name, metadata: { previousName: session.name },
+      })
+    } catch (e) { console.error('user.name_changed audit log failed (non-fatal):', e) }
 
     return NextResponse.json({ ok: true })
   } catch (err) {

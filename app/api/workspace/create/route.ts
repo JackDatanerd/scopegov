@@ -78,6 +78,21 @@ export async function POST(request: NextRequest) {
           error: 'You already have an active trial workspace. Upgrade it, delete it, or contact support@scopegov.app to start another trial.',
         }, { status: 409 })
       }
+      // FIX (deep audit, Workspace lifecycle + Onboarding re-pass —
+      // feature gap): the check above (019's one_active_trial_per_creator)
+      // only ever blocked having two trials active AT ONCE — it did
+      // nothing to stop discard-then-recreate from resetting the 14-day
+      // clock indefinitely, despite this exact rpcError branch's own
+      // pre-existing comment claiming that scenario was closed. Migration
+      // 047 adds a real lifetime flag (with a 24h grace window so the
+      // wizard's own "discard and start over" escape hatch still works
+      // for a genuine early restart) and raises this distinguishable
+      // error once that window has passed.
+      if (String(rpcError.message || '').includes('TRIAL_ALREADY_USED')) {
+        return NextResponse.json({
+          error: 'You\u2019ve already used your free trial. Contact support@scopegov.app to discuss a plan.',
+        }, { status: 409 })
+      }
       // FIX (re-audit, minor finding): raw Postgres error message/code/hint
       // was returned straight to the browser — fine for local debugging,
       // but an information-disclosure leftover for production. Log server-side

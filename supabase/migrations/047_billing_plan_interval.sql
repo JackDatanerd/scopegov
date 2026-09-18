@@ -1,5 +1,5 @@
 -- ============================================================
--- ScopeGov — Migration 045: billing plan interval
+-- ScopeGov — Migration 047: billing plan interval
 --
 -- FEATURE GAP (deep audit, Billing re-pass): billing.payment_method_last4/
 -- payment_method_type (001_initial_schema.sql) already anticipated

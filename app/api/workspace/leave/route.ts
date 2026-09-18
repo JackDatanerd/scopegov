@@ -29,6 +29,15 @@ export async function POST(request: NextRequest) {
 
     if (!member) return NextResponse.json({ error: 'Not a member of that workspace' }, { status: 404 })
 
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): this
+    // audit entry's actorName used to just be user.email — the one place
+    // in this section that never even tried the real display name, unlike
+    // every sibling route (workspace/create, complete-onboarding) which
+    // sources it from the canonical users.name, falling back to Auth
+    // metadata and finally email only as a last resort.
+    const { data: leavingUserRow } = await (service as any)
+      .from('users').select('name').eq('id', user.id).maybeSingle()
+
     // FIX (deep audit, Workspace lifecycle section — TOCTOU race): the
     // last-member and sole-admin guards used to read the active-member
     // set, then write, as two separate steps with no lock between them —
@@ -92,7 +101,8 @@ export async function POST(request: NextRequest) {
     }
 
     await logAudit(service, {
-      workspaceId, actorId: user.id, actorEmail: user.email || '', actorName: user.email || '',
+      workspaceId, actorId: user.id, actorEmail: user.email || '',
+      actorName: leavingUserRow?.name || user.user_metadata?.name || user.email || '',
       eventType: 'member.left', entityType: 'workspace_member', entityId: member.id,
       entityName: member.workspaces?.name || '', metadata: {},
     }).catch(() => {})

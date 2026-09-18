@@ -91,8 +91,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // Distinguish insert (brand-new user row, safe to seed a name) from
     // update (existing row, whose name is the user's own to keep) instead
     // of upserting blindly.
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): also
+    // select `name` here — see the logAudit call below's own comment.
     const { data: existingUserRow } = await (service as any)
-      .from('users').select('id').eq('id', user.id).maybeSingle()
+      .from('users').select('id,name').eq('id', user.id).maybeSingle()
     if (existingUserRow) {
       await (service as any).from('users').update({
         email:                user.email,
@@ -109,9 +111,23 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       })
     }
 
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): this
+    // used user.user_metadata?.name — the ORIGINAL signup-time value,
+    // frozen forever, never touched by workspace/profile's rename (that
+    // route only ever writes public.users.name, never Auth metadata).
+    // This is the exact same staleness pattern workspace/create's own
+    // Finding 5 comment claims was uniquely fixed for that route — it
+    // wasn't; this second call site was missed. An existing user who
+    // renamed themselves and later accepted an invite to a second
+    // workspace got their OLD name permanently baked into this specific
+    // audit-log row. existingUserRow?.name (fetched above) is the
+    // canonical current value when this is an existing user; falls back
+    // to Auth metadata and finally email for a brand-new user row, same
+    // order every other call site in this section now uses.
     await logAudit(service, {
       workspaceId: member.workspace_id,
-      actorId: user.id, actorEmail: user.email!, actorName: user.user_metadata?.name || user.email!,
+      actorId: user.id, actorEmail: user.email!,
+      actorName: existingUserRow?.name || user.user_metadata?.name || user.email!,
       eventType: 'member.joined', entityType: 'workspace_member',
       entityId: member.id, entityName: user.email!,
       metadata: { workspace_name: member.workspaces?.name },
@@ -119,6 +135,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     return NextResponse.json({ ok: true, workspaceId: member.workspace_id })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): same
+    // info-disclosure pattern already fixed for every route in this
+    // section (workspace/create, complete-onboarding, leave, profile) —
+    // this catch-all was returning the raw exception message straight to
+    // the client. Log server-side only.
+    console.error('Invite accept error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
