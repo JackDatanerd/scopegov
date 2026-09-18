@@ -31,6 +31,28 @@ export async function DELETE() {
       }, { status: 409 })
     }
 
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): a SOW
+    // still 'awaiting_signature' didn't block deletion at all — combined
+    // with the portal sign route having no workspace.deleted_at check
+    // (now fixed, see isWorkspaceDeleted in lib/utils/workspace-secret.ts),
+    // an agency could delete a workspace out from under a client who was
+    // mid-review and the client could still go ahead and sign it
+    // afterward. That specific race is closed now on the portal side, but
+    // blocking here too means the agency actually has to withdraw or wait
+    // out a pending SOW first — the same "resolve it, don't just vanish"
+    // discipline the signed-SOW guard above already enforces.
+    const { count: pendingSowCount } = await (service as any)
+      .from('sow_documents')
+      .select('id', { count: 'exact', head: true })
+      .eq('workspace_id', session.workspaceId)
+      .eq('status', 'awaiting_signature')
+
+    if ((pendingSowCount || 0) > 0) {
+      return NextResponse.json({
+        error: 'Workspaces with a SOW still awaiting the client\u2019s signature cannot be deleted — withdraw it first. Contact support@scopegov.app if you need help.',
+      }, { status: 409 })
+    }
+
     // FIX (deep audit, section 5): this guard only ever looked at
     // sow_documents. An accepted change order is just as binding as a
     // signed SOW (change_orders.status can reach 'accepted'), and
@@ -49,6 +71,25 @@ export async function DELETE() {
       }, { status: 409 })
     }
 
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): same gap
+    // as pendingSowCount above, for change orders — 'awaiting_response'
+    // (not yet responded to) and 'awaiting_countersignature' (agency
+    // already accepted the client's counter-offer; only the client's
+    // final countersign is outstanding) didn't block deletion, and the
+    // client's accept/counter/countersign links had no deleted_at check
+    // on the portal side either (also fixed now).
+    const { count: pendingCoCount } = await (service as any)
+      .from('change_orders')
+      .select('id', { count: 'exact', head: true })
+      .eq('workspace_id', session.workspaceId)
+      .in('status', ['awaiting_response', 'awaiting_countersignature'])
+
+    if ((pendingCoCount || 0) > 0) {
+      return NextResponse.json({
+        error: 'Workspaces with a change order still awaiting the client\u2019s response cannot be deleted — withdraw it first. Contact support@scopegov.app if you need help.',
+      }, { status: 409 })
+    }
+
     const { count: paymentCount } = await (service as any)
       .from('invoice_payments')
       .select('id', { count: 'exact', head: true })
@@ -59,6 +100,43 @@ export async function DELETE() {
         error: 'Workspaces with recorded invoice payments cannot be deleted. Contact support@scopegov.app.',
       }, { status: 409 })
     }
+
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): the
+    // invoice_payments check above only catches money already collected
+    // ('paid'/'partially_paid' invoices, which necessarily have a payment
+    // row). An invoice sitting at 'sent' or 'overdue' — a real, live
+    // financial claim on a client, just with nothing paid against it yet
+    // — sailed straight through. Deleting the workspace left that
+    // obligation stranded: the client's portal link (now also fixed to
+    // check deleted_at) would otherwise have kept showing payment
+    // instructions with no agency member left active to manage or record
+    // whatever the client actually pays.
+    const { count: outstandingInvoiceCount } = await (service as any)
+      .from('invoices')
+      .select('id', { count: 'exact', head: true })
+      .eq('workspace_id', session.workspaceId)
+      .in('status', ['sent', 'overdue'])
+
+    if ((outstandingInvoiceCount || 0) > 0) {
+      return NextResponse.json({
+        error: 'Workspaces with an outstanding unpaid invoice cannot be deleted — void it first if it\u2019s no longer owed. Contact support@scopegov.app if you need help.',
+      }, { status: 409 })
+    }
+
+    // NOTE for future re-audits: combined, the four guards above mean a
+    // deleted workspace can never have a SOW at 'signed'/'awaiting_signature',
+    // a CO at 'accepted'/'awaiting_response'/'awaiting_countersignature', or
+    // an invoice at anything but 'draft'/'void'. The portal's *mutating*
+    // routes (SOW sign/decline/request-changes, CO accept/counter/
+    // countersign/decline) each still carry their own explicit
+    // isWorkspaceDeleted() check (belt-and-suspenders — see that
+    // function's comment in lib/utils/workspace-secret.ts), since those
+    // create new state. The three read-only document views/downloads
+    // (SOW pdf, CO pdf, invoice route+dispute+pdf) only ever serve
+    // documents in exactly the statuses these guards already keep out of
+    // deleted workspaces, so they're unreachable in the vulnerable state
+    // by construction — don't "fix" them by bolting on a redundant check
+    // without first checking whether one of the guards above moved.
 
     // FIX (section-by-section re-audit, Workspace lifecycle Finding 1 —
     // CRITICAL): deletion never cancelled the workspace's Paystack

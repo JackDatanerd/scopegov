@@ -11,7 +11,7 @@ import { roundCurrency } from '@/lib/utils/format'
 import { renderSowPdf } from '@/lib/pdf/renderer'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
-import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
+import { getWorkspaceJwtSecret, isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
 import { checkRevokedToken, verifySowJwt } from '../_shared'
 import { checkPortalRateLimit, recordPortalAction } from '@/lib/utils/portal-rate-limit'
 import { getClientIp } from '@/lib/utils/request-ip'
@@ -63,6 +63,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // workspaces itself — see migration 013.
     if (!(await verifySowJwt(service, token, sow.workspace_id)))
       return NextResponse.json({ error: 'Invalid or expired signing link' }, { status: 401 })
+
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — flagship
+    // finding): see isWorkspaceDeleted's own comment. Without this, a SOW
+    // still 'awaiting_signature' when the agency deletes the workspace
+    // could be signed anyway, creating a real signed document, milestones,
+    // and emails against a workspace that no longer has any active member.
+    if (await isWorkspaceDeleted(service, sow.workspace_id))
+      return NextResponse.json({ error: 'This link is no longer active' }, { status: 410 })
 
     const now     = new Date().toISOString()
     const project = sow.projects

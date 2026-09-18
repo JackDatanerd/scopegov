@@ -364,7 +364,7 @@ export default function InvoicePortalPage() {
 
           {disputeOpen && !invoice.disputedAt && (
             <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid #F0F0EA' }}>
-              <div className="portal-section-title">What's the issue?</div>
+              <div className="portal-section-title">What&apos;s the issue?</div>
               <textarea
                 value={disputeNote}
                 onChange={e => setDisputeNote(e.target.value)}

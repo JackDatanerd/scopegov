@@ -3,7 +3,7 @@ export const runtime = 'nodejs'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { jwtVerify } from 'jose'
-import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
+import { getWorkspaceJwtSecret, isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
 import { finalizeCoAcceptance } from '@/lib/documents/finalize-co'
 import { checkPortalRateLimit, recordPortalAction } from '@/lib/utils/portal-rate-limit'
 import { getClientIp } from '@/lib/utils/request-ip'
@@ -77,6 +77,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     } catch {
       return NextResponse.json({ error: 'Invalid or expired link' }, { status: 401 })
     }
+
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — flagship
+    // finding): see isWorkspaceDeleted's own comment in workspace-secret.ts.
+    if (await isWorkspaceDeleted(service, co.workspace_id))
+      return NextResponse.json({ error: 'This link is no longer active' }, { status: 410 })
 
     const project = co.projects
     const client  = project.clients

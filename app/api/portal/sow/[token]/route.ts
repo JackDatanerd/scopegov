@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { formatAddress } from '@/lib/utils/format'
 import { checkRevokedToken, verifySowJwt } from './_shared'
+import { isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
 
 const SOW_COLUMNS = `id, version, status, sections, metadata, expires_at, signed_at, signed_by, client_signature_data, first_viewed_at,
   projects(id, name, disc, contract_value, currency, client_id,
@@ -52,6 +53,16 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       .from('sow_documents').select(SOW_COLUMNS).eq('token', token).single()
 
     if (!sow) return NextResponse.json({ state: 'invalid' })
+
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — flagship
+    // finding): see isWorkspaceDeleted's own comment in workspace-secret.ts.
+    // Reuses the 'revoked' UI bucket rather than a new state — the message
+    // ("no longer active, contact the agency") is accurate either way and
+    // doesn't need to spell out to the client that the workspace was
+    // specifically deleted.
+    const workspaceIdForDeleteCheck = sow.projects?.workspaces?.id
+    if (workspaceIdForDeleteCheck && await isWorkspaceDeleted(service, workspaceIdForDeleteCheck))
+      return NextResponse.json({ state: 'revoked' })
 
     // Verify JWT with workspace-specific secret — jwt_secret lives in
     // workspace_secrets now, not on workspaces itself — see migration 013.

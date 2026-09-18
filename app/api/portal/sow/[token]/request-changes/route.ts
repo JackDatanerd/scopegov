@@ -8,6 +8,7 @@ import { insertNextSowVersion } from '@/lib/documents/sow-version'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { escapeHtml } from '@/lib/utils/sanitize'
 import { checkRevokedToken, verifySowJwt } from '../_shared'
+import { isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
 import { checkPortalRateLimit, recordPortalAction } from '@/lib/utils/portal-rate-limit'
 import { getClientIp } from '@/lib/utils/request-ip'
 
@@ -42,6 +43,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // see migration 013.
     if (!(await verifySowJwt(service, token, sow.workspace_id)))
       return NextResponse.json({ error: 'Invalid or expired link' }, { status: 401 })
+
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — flagship
+    // finding): see isWorkspaceDeleted's own comment in workspace-secret.ts.
+    if (await isWorkspaceDeleted(service, sow.workspace_id))
+      return NextResponse.json({ error: 'This link is no longer active' }, { status: 410 })
 
     const now     = new Date().toISOString()
     const project = sow.projects

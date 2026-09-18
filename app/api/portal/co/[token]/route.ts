@@ -4,7 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { jwtVerify } from 'jose'
 import { formatAddress } from '@/lib/utils/format'
-import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
+import { getWorkspaceJwtSecret, isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
 
 const CO_COLUMNS = `id,title,note,status,version,line_items,subtotal,tax_rate,tax_inclusive,
   total,expires_at,flag_id,workspace_id,accepted_by,accepted_at,client_signature_data,first_viewed_at,
@@ -71,6 +71,11 @@ async function getCoByToken(token: string, service: any) {
   }
 
   if (!co) return { state: revoked ? 'revoked' : 'invalid' }
+
+  // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — flagship
+  // finding): see isWorkspaceDeleted's own comment in workspace-secret.ts.
+  // Reuses the 'revoked' UI bucket, same as the SOW portal route.
+  if (await isWorkspaceDeleted(service, co.workspace_id)) return { state: 'revoked' }
 
   if (!skipJwtVerify) {
     // jwt_secret lives in workspace_secrets now, not on workspaces itself —

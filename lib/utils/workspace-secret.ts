@@ -21,3 +21,29 @@ export async function getWorkspaceJwtSecret(service: any, workspaceId: string): 
     .maybeSingle()
   return data?.jwt_secret || null
 }
+
+// FIX (deep audit, Workspace lifecycle + Onboarding re-pass — flagship
+// finding, traced beyond both sections): workspace/delete/route.ts soft-
+// deletes a workspace (deactivates every member, cancels billing) but
+// every portal API route (SOW sign/route/request-changes/decline/pdf, CO
+// accept/counter/countersign/decline/route/pdf, invoice route/dispute/pdf)
+// had zero references to workspace.deleted_at anywhere — grep-confirmed
+// across the whole portal surface. A client's SOW-signing or CO-accept
+// link kept working indefinitely after the agency "deleted" the
+// workspace, letting them create a real signed SOW or accepted CO — with
+// milestones, PDFs, audit-log rows, and emails — against a workspace the
+// rest of the app treats as gone. This is the one check every portal
+// route now runs (same choke point as getWorkspaceJwtSecret above, which
+// every one of those routes already imports), right after the document's
+// workspace_id is known and before anything else happens.
+export async function isWorkspaceDeleted(service: any, workspaceId: string): Promise<boolean> {
+  const { data } = await service
+    .from('workspaces')
+    .select('deleted_at')
+    .eq('id', workspaceId)
+    .maybeSingle()
+  // Fail closed: if the workspace row can't be found or read at all,
+  // treat it the same as deleted rather than letting a lookup failure
+  // silently permit the action through.
+  return !data || !!data.deleted_at
+}

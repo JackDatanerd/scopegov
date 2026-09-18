@@ -7,7 +7,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { sendCoDeclinedEmail, sendCoCounteredEmail } from '@/lib/email/templates'
-import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
+import { getWorkspaceJwtSecret, isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
 import { checkPortalRateLimit, recordPortalAction } from '@/lib/utils/portal-rate-limit'
 import { getClientIp } from '@/lib/utils/request-ip'
 
@@ -32,6 +32,13 @@ async function resolveCoAndToken(token: string, service: any) {
     const secret = new TextEncoder().encode(jwtSecret)
     await jwtVerify(token, secret)
   } catch { return { error: 'Invalid or expired link', status: 401 } }
+
+  // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — flagship
+  // finding): see isWorkspaceDeleted's own comment in workspace-secret.ts.
+  // Single choke point for both decline and counter below, same as the
+  // JWT check right above it.
+  if (await isWorkspaceDeleted(service, co.workspace_id))
+    return { error: 'This link is no longer active', status: 410 }
 
   return { co }
 }
