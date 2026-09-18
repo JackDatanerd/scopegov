@@ -93,6 +93,19 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
     router.refresh()
   }
 
+  // FEATURE (deep audit, Auth+MFA section — feature gap): closes the
+  // "lost authenticator AND all backup codes" lockout — see
+  // api/team/[id]/reset-mfa/route.ts's own comment for the full case.
+  async function handleResetMfa(memberId: string, memberName: string) {
+    if (!confirm(`Reset two-factor authentication for ${memberName}? They'll need to set it up again the next time their role requires it.`)) return
+    setError(''); setNotice('')
+    const res = await fetch(`/api/team/${memberId}/reset-mfa`, { method: 'POST' })
+    const json = await res.json().catch(() => ({}))
+    if (!res.ok) { setError(json.error || 'Could not reset two-factor authentication'); return }
+    setNotice(`Two-factor authentication reset for ${memberName}.`)
+    router.refresh()
+  }
+
   // FIX (deep audit, section 6): this used to PATCH `{ status: 'deactivated' }`
   // to clear the old invite row before resending — but PATCH never handled
   // a `status` field at all, so that call was a silent no-op, and the
@@ -279,12 +292,33 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
                   <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 12 }}>{u?.email}</div>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                     <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Joined {m.joined_at ? formatDate(m.joined_at) : '—'}</span>
-                    {!isMe && !isOwner && canInvite && (
-                      <button className="btn btn-ghost btn-xs" style={{ color: 'var(--red)', borderColor: '#FECACA' }}
-                        onClick={() => handleDeactivate(m.id, name)}>
-                        Deactivate
-                      </button>
-                    )}
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      {/* FEATURE (deep audit, Auth+MFA section — feature
+                          gap): the only prior way back in for a member
+                          locked out of MFA (device lost + backup codes
+                          gone) was a self-service backup code — with none
+                          left, nothing else in the app could help, not
+                          even the workspace owner. Gated the same as every
+                          other member-targeting action here (MANAGE_ROLES
+                          + the server-side floor check in
+                          api/team/[id]/reset-mfa/route.ts) rather than
+                          also excluding owners the way Deactivate does —
+                          a co-owner should be able to reset a locked-out
+                          fellow owner's MFA, which the floor check still
+                          correctly allows since neither holds anything
+                          the other doesn't. */}
+                      {!isMe && canManageRoles && (
+                        <button className="btn btn-ghost btn-xs" onClick={() => handleResetMfa(m.id, name)}>
+                          Reset MFA
+                        </button>
+                      )}
+                      {!isMe && !isOwner && canInvite && (
+                        <button className="btn btn-ghost btn-xs" style={{ color: 'var(--red)', borderColor: '#FECACA' }}
+                          onClick={() => handleDeactivate(m.id, name)}>
+                          Deactivate
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               )

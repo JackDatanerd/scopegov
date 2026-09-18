@@ -5,6 +5,7 @@ import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/
 import { logAudit } from '@/lib/utils/audit'
 import { hashBackupCode } from '@/lib/utils/backup-codes'
 import { sendMfaDisabledEmail } from '@/lib/email/templates'
+import { resolveActiveWorkspaceId, resolveActorName } from '@/lib/auth/session'
 
 // Recovery path for a user at aal1 who has lost their authenticator device.
 // Supabase's AAL is controlled entirely by its own auth server — we cannot
@@ -64,18 +65,32 @@ export async function POST(request: Request) {
     // call, so that one session must survive the revocation.
     await supabase.auth.signOut({ scope: 'others' }).catch(e => console.error('MFA recovery session revocation failed (non-fatal):', e))
 
-    const { data: userRow } = await (service as any).from('users').select('active_workspace_id').eq('id', user.id).maybeSingle()
+    // FIX (deep audit, RLS+permissions section, independent re-pass): this
+    // was still the old bare `.select('active_workspace_id')` with no
+    // fallback — every sibling MFA route (verify, factors DELETE, backup-
+    // codes) and the password routes were already migrated to
+    // resolveActiveWorkspaceId(), but this one route was missed. Since
+    // audit_log.workspace_id is NOT NULL, an unset/stale
+    // active_workspace_id meant the 'security.mfa_backup_code_used' entry
+    // below — logged at exactly the "assume compromise" moment this
+    // route's own top comment describes — silently failed to insert
+    // (logAudit swallows its own errors), and the accompanying
+    // notification was dropped too.
+    const workspaceId = await resolveActiveWorkspaceId(service, user.id)
+    // FIX (deep audit, Auth+MFA section — actor-name staleness): see
+    // resolveActorName's own comment in lib/auth/session.ts.
+    const actorName = await resolveActorName(service, user.id, user.user_metadata?.name || user.email!)
     try {
       await logAudit(service, {
-        workspaceId: userRow?.active_workspace_id || '',
-        actorId: user.id, actorEmail: user.email!, actorName: user.user_metadata?.name || user.email!,
+        workspaceId: workspaceId || '',
+        actorId: user.id, actorEmail: user.email!, actorName,
         eventType: 'security.mfa_backup_code_used', entityType: 'user', entityId: user.id, entityName: user.email!,
         metadata: { result: 'factor_removed' },
       })
     } catch (e) { console.error('MFA recovery audit log failed (non-fatal):', e) }
     try {
       await (service as any).from('notifications').insert({
-        workspace_id: userRow?.active_workspace_id, recipient_id: user.id,
+        workspace_id: workspaceId, recipient_id: user.id,
         type: 'security', title: 'Signed in with a backup code',
         body: 'Two-factor authentication was reset using a backup code. Set it up again to keep your account protected.',
       })
@@ -91,7 +106,7 @@ export async function POST(request: Request) {
     // everywhere else in this codebase: await email sends, even inside a
     // .catch(). This one tells the user their MFA factor was just reset
     // via a backup code — a real security event they need to see.
-    await sendMfaDisabledEmail({ to: user.email!, name: user.user_metadata?.name || user.email!, via: 'backup_code_recovery' })
+    await sendMfaDisabledEmail({ to: user.email!, name: actorName, via: 'backup_code_recovery' })
       .catch(e => console.error('MFA recovery email failed (non-fatal):', e))
 
     return NextResponse.json({ ok: true })

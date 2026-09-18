@@ -5,7 +5,7 @@ import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/
 import { logAudit } from '@/lib/utils/audit'
 import { generateBackupCodes } from '@/lib/utils/backup-codes'
 import { sendMfaEnabledEmail } from '@/lib/email/templates'
-import { resolveActiveWorkspaceId } from '@/lib/auth/session'
+import { resolveActiveWorkspaceId, resolveActorName } from '@/lib/auth/session'
 
 // Single endpoint for both flows:
 //  - Enrollment confirmation: no backup codes exist for this user yet →
@@ -63,6 +63,9 @@ export async function POST(request: Request) {
     if (insertErr) throw insertErr
 
     const workspaceId = await resolveActiveWorkspaceId(service, user.id)
+    // FIX (deep audit, Auth+MFA section — actor-name staleness): see
+    // resolveActorName's own comment in lib/auth/session.ts.
+    const actorName = await resolveActorName(service, user.id, user.user_metadata?.name || user.email!)
 
     // Everything below is best-effort (log/notify/email) — none of it
     // should cost the user their backup codes if it fails. BUG (fixed):
@@ -77,7 +80,7 @@ export async function POST(request: Request) {
     try {
       await logAudit(service, {
         workspaceId: workspaceId || '',
-        actorId: user.id, actorEmail: user.email!, actorName: user.user_metadata?.name || user.email!,
+        actorId: user.id, actorEmail: user.email!, actorName,
         eventType: 'security.mfa_enabled', entityType: 'user', entityId: user.id, entityName: user.email!,
         metadata: { factor_id: factorId },
       })
@@ -97,7 +100,7 @@ export async function POST(request: Request) {
     // response is sent, before the send completes). Same rule as
     // everywhere else in this codebase: await email sends, even inside a
     // .catch().
-    await sendMfaEnabledEmail({ to: user.email!, name: user.user_metadata?.name || user.email! })
+    await sendMfaEnabledEmail({ to: user.email!, name: actorName })
       .catch(e => console.error('MFA enable email failed (non-fatal):', e))
 
     return NextResponse.json({ ok: true, backupCodes: plaintext })

@@ -3,7 +3,7 @@ export const runtime = 'nodejs'
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
 import { logAudit } from '@/lib/utils/audit'
-import { resolveActiveWorkspaceId } from '@/lib/auth/session'
+import { resolveActiveWorkspaceId, resolveActorName } from '@/lib/auth/session'
 
 // FEATURE (deep audit, Auth+MFA section — feature gap): there was no way
 // for a user to see or revoke sessions on other devices/browsers at all.
@@ -40,9 +40,12 @@ export async function POST() {
     // Best-effort audit entry — a missing workspace shouldn't fail the
     // actual sign-out, which has already happened by this point.
     if (workspaceId) {
+      // FIX (deep audit, Auth+MFA section — actor-name staleness): see
+      // resolveActorName's own comment in lib/auth/session.ts.
+      const actorName = await resolveActorName(service, user.id, user.user_metadata?.name || user.email!)
       await logAudit(service, {
         workspaceId, actorId: user.id,
-        actorEmail: user.email!, actorName: user.user_metadata?.name || user.email!,
+        actorEmail: user.email!, actorName,
         eventType: 'security.other_sessions_revoked', entityType: 'user', entityId: user.id, entityName: user.email!,
         metadata: {},
       })

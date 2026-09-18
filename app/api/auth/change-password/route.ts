@@ -2,7 +2,7 @@ export const runtime = 'nodejs'
 
 import { NextResponse, type NextRequest } from 'next/server'
 import { createServerSupabaseClient, createServiceClient, createStatelessAuthClient } from '@/lib/supabase/server'
-import { userHasAnyMfaMandatoryMembership, resolveActiveWorkspaceId } from '@/lib/auth/session'
+import { userHasAnyMfaMandatoryMembership, resolveActiveWorkspaceId, resolveActorName } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { sendPasswordChangedEmail } from '@/lib/email/templates'
 
@@ -106,13 +106,19 @@ export async function POST(request: NextRequest) {
     // active_workspace_id is unset (e.g. a stale reference left over from
     // a deleted workspace) silently lost this event from the trail rather
     // than having it attributed to their actual remaining membership.
+    // FIX (deep audit, Auth+MFA section — actor-name staleness): see
+    // resolveActorName's own comment. actorName/the email greeting below
+    // used to be user.user_metadata?.name — frozen at signup — instead of
+    // the canonical, current public.users.name.
+    const actorName = await resolveActorName(service, user.id, user.user_metadata?.name || user.email!)
+
     await logAudit(service, {
       workspaceId: await resolveActiveWorkspaceId(service, user.id) || '',
-      actorId: user.id, actorEmail: user.email!, actorName: user.user_metadata?.name || user.email!,
+      actorId: user.id, actorEmail: user.email!, actorName,
       eventType: 'security.password_changed', entityType: 'user', entityId: user.id, entityName: user.email!,
       metadata: { via: 'settings' },
     })
-    await sendPasswordChangedEmail({ to: user.email!, name: user.user_metadata?.name || user.email!, via: 'settings' })
+    await sendPasswordChangedEmail({ to: user.email!, name: actorName, via: 'settings' })
       .catch(e => console.error('Password changed email failed (non-fatal):', e))
 
     return NextResponse.json({ ok: true })

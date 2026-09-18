@@ -177,6 +177,28 @@ export async function resolveActiveWorkspaceId(service: any, userId: string): Pr
   return fallback?.workspace_id || null
 }
 
+// FIX (deep audit, Auth+MFA section — actor-name staleness): every route
+// in this section (change-password, mfa/verify, mfa/factors DELETE,
+// mfa/backup-codes, mfa/recover, password-changed, login-event, callback,
+// signout-others) wrote actorName — and the "Hi {name}," greeting in the
+// security email that goes with it — from `user.user_metadata?.name`,
+// which is frozen at signup. api/workspace/profile/route.ts (the actual
+// rename endpoint) only ever updates public.users.name; it never touches
+// Supabase's own raw_user_meta_data. So the moment a user renames
+// themselves via Settings, every single MFA/password security audit-log
+// entry and notification email in this whole section carries the wrong
+// name, forever. This is the exact staleness class already fixed
+// everywhere else in the app (workspace/create, team/invite/accept,
+// workspace/leave, workspace/complete-onboarding, and getSession() itself
+// above all correctly prefer the canonical name) — just never touched in
+// this section. Centralizing the fix here, same shape as
+// resolveActiveWorkspaceId above, so every caller gets it instead of
+// reimplementing (or continuing to omit) it.
+export async function resolveActorName(service: any, userId: string, fallback: string): Promise<string> {
+  const { data } = await service.from('users').select('name').eq('id', userId).maybeSingle()
+  return data?.name || fallback
+}
+
 export function hasPermission(session: SessionUser, permission: Permission): boolean {
   return session.permissions.includes(permission)
 }

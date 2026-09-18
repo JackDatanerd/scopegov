@@ -10,6 +10,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import type { EmailOtpType } from '@supabase/supabase-js'
 import { safeRedirectPath } from '@/lib/utils/safe-redirect'
 import { logAudit } from '@/lib/utils/audit'
+import { resolveActorName } from '@/lib/auth/session'
 
 // FIX (deep audit, Auth+MFA independent re-pass — CRITICAL): this used to
 // resolve "the" member row via a bare
@@ -75,9 +76,12 @@ async function logLoginEvent(
   workspaceId: string,
   method: 'google' | 'email_confirmation'
 ) {
+  // FIX (deep audit, Auth+MFA section — actor-name staleness): see
+  // resolveActorName's own comment in lib/auth/session.ts.
+  const actorName = await resolveActorName(serviceClient, user.id, user.user_metadata?.name || user.email || '')
   await logAudit(serviceClient as any, {
     workspaceId, actorId: user.id,
-    actorEmail: user.email || '', actorName: user.user_metadata?.name || user.email || '',
+    actorEmail: user.email || '', actorName,
     eventType: 'security.login_succeeded', entityType: 'user', entityId: user.id, entityName: user.email || '',
     metadata: { method },
   })

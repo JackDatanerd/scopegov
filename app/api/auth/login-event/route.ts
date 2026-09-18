@@ -3,7 +3,7 @@ export const runtime = 'nodejs'
 import { NextResponse, type NextRequest } from 'next/server'
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
 import { logAudit } from '@/lib/utils/audit'
-import { resolveActiveWorkspaceId } from '@/lib/auth/session'
+import { resolveActiveWorkspaceId, resolveActorName } from '@/lib/auth/session'
 
 // FEATURE (deep audit, Auth+MFA section — feature gap): every other
 // security-sensitive account action in this app writes to audit_log
@@ -91,9 +91,13 @@ export async function POST(request: NextRequest) {
     // so there's nowhere to attribute this login to yet. Nothing to log.
     if (!workspaceId) return NextResponse.json({ ok: true })
 
+    // FIX (deep audit, Auth+MFA section — actor-name staleness): see
+    // resolveActorName's own comment in lib/auth/session.ts.
+    const actorName = await resolveActorName(service, user.id, user.user_metadata?.name || user.email!)
+
     await logAudit(service, {
       workspaceId, actorId: user.id,
-      actorEmail: user.email!, actorName: user.user_metadata?.name || user.email!,
+      actorEmail: user.email!, actorName,
       eventType: 'security.login_succeeded', entityType: 'user', entityId: user.id, entityName: user.email!,
       metadata: { method },
     })

@@ -4,7 +4,7 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
 import { logAudit } from '@/lib/utils/audit'
 import { sendMfaDisabledEmail } from '@/lib/email/templates'
-import { userHasAnyMfaMandatoryMembership, resolveActiveWorkspaceId } from '@/lib/auth/session'
+import { userHasAnyMfaMandatoryMembership, resolveActiveWorkspaceId, resolveActorName } from '@/lib/auth/session'
 
 export async function GET() {
   try {
@@ -90,6 +90,10 @@ export async function DELETE(request: Request) {
     const { error } = await supabase.auth.mfa.unenroll({ factorId })
     if (error) return NextResponse.json({ error: error.message }, { status: 400 })
 
+    // FIX (deep audit, Auth+MFA section — actor-name staleness): see
+    // resolveActorName's own comment in lib/auth/session.ts.
+    const actorName = await resolveActorName(service, user.id, user.user_metadata?.name || user.email!)
+
     // FIX (deep audit, Auth+MFA re-pass — session revocation): disabling
     // two-factor is a straight downgrade of the account's security
     // posture — this route required aal2 to prevent an idle/stolen
@@ -110,7 +114,7 @@ export async function DELETE(request: Request) {
     try {
       await logAudit(service, {
         workspaceId: activeWorkspaceId || '',
-        actorId: user.id, actorEmail: user.email!, actorName: user.user_metadata?.name || user.email!,
+        actorId: user.id, actorEmail: user.email!, actorName,
         eventType: 'security.mfa_disabled', entityType: 'user', entityId: user.id, entityName: user.email!,
         metadata: { via: 'user' },
       })
@@ -135,7 +139,7 @@ export async function DELETE(request: Request) {
     // forget them, even inside a .catch(). This is the one that tells a
     // user their two-factor protection was just removed — it must not
     // silently fail to send.
-    await sendMfaDisabledEmail({ to: user.email!, name: user.user_metadata?.name || user.email!, via: 'user' })
+    await sendMfaDisabledEmail({ to: user.email!, name: actorName, via: 'user' })
       .catch(e => console.error('MFA disable email failed (non-fatal):', e))
 
     return NextResponse.json({ ok: true })

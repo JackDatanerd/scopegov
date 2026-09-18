@@ -232,7 +232,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     let targetMember: { user_id: string | null; role_id: string | null; permission_overrides: Record<string, unknown> | null; effective_permissions: Record<string, unknown> | null; users?: { email: string | null } | null } | null = null
     if (body.permissionOverrides !== undefined || body.roleId !== undefined) {
       const { data } = await (service as any)
-        .from('workspace_members').select('user_id,role_id,permission_overrides,effective_permissions,users!workspace_members_user_id_fkey(email)')
+        .from('workspace_members').select('user_id,role_id,permission_overrides,effective_permissions,users!workspace_members_user_id_fkey(name,email)')
         .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
       if (!data) return NextResponse.json({ error: 'Member not found' }, { status: 404 })
       targetMember = data
@@ -354,7 +354,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       workspaceId: session.workspaceId, actorId: session.id,
       actorEmail: session.email, actorName: session.name,
       eventType: body.permissionOverrides ? 'member.permission_overridden' : 'member.role_changed',
-      entityType: 'workspace_member', entityId: id, entityName: targetMember?.users?.email || '',
+      entityType: 'workspace_member', entityId: id, entityName: targetMember?.users?.name || targetMember?.users?.email || '',
       metadata: affectedWorkflowNames.length ? { ...body, orphaned_approval_workflows: affectedWorkflowNames } : body,
     })
 

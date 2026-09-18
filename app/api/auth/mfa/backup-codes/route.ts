@@ -5,7 +5,7 @@ import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/
 import { logAudit } from '@/lib/utils/audit'
 import { generateBackupCodes } from '@/lib/utils/backup-codes'
 import { sendMfaBackupCodesRegeneratedEmail } from '@/lib/email/templates'
-import { resolveActiveWorkspaceId } from '@/lib/auth/session'
+import { resolveActiveWorkspaceId, resolveActorName } from '@/lib/auth/session'
 
 // Regenerates backup codes — invalidates every previous code. Requires
 // aal2 for the same reason DELETE /factors does: this is a sensitive
@@ -45,9 +45,13 @@ export async function POST() {
     // active membership — see resolveActiveWorkspaceId's comment for why
     // that silently dropped this event from the audit trail whenever
     // active_workspace_id was unset.
+    // FIX (deep audit, Auth+MFA section — actor-name staleness): see
+    // resolveActorName's own comment in lib/auth/session.ts.
+    const actorName = await resolveActorName(service, user.id, user.user_metadata?.name || user.email!)
+
     await logAudit(service, {
       workspaceId: await resolveActiveWorkspaceId(service, user.id) || '',
-      actorId: user.id, actorEmail: user.email!, actorName: user.user_metadata?.name || user.email!,
+      actorId: user.id, actorEmail: user.email!, actorName,
       eventType: 'security.mfa_backup_codes_regenerated', entityType: 'user', entityId: user.id, entityName: user.email!,
       metadata: {},
     })
@@ -57,7 +61,7 @@ export async function POST() {
     // everywhere else in this codebase: await email sends, even inside a
     // .catch(). This one confirms a backup-code regeneration, which
     // invalidates every prior code — the user needs to actually receive it.
-    await sendMfaBackupCodesRegeneratedEmail({ to: user.email!, name: user.user_metadata?.name || user.email! })
+    await sendMfaBackupCodesRegeneratedEmail({ to: user.email!, name: actorName })
       .catch(e => console.error('MFA backup codes regenerated email failed (non-fatal):', e))
 
     return NextResponse.json({ backupCodes: plaintext })
