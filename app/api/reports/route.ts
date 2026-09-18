@@ -1,7 +1,7 @@
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
-import { PROJECT_TYPE_LABELS } from '@/lib/utils/format'
+import { periodSince, getScopeReportData, getFinancialReportData } from '@/lib/reports/scope-financial-data'
 
 export async function GET(request: NextRequest) {
   try {
@@ -22,188 +22,24 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url)
     const mode   = searchParams.get('mode') || 'scope'
     const period = searchParams.get('period') || '90d'
+    const requestedCurrency = searchParams.get('currency')
 
     const service = createServiceClient()
-
-    // Period filter
-    const periodDays: Record<string, number | null> = {
-      '30d': 30, '90d': 90, '6m': 180, '12m': 365, 'all': null,
-    }
-    const days = periodDays[period]
-    const since = days
-      ? new Date(Date.now() - days * 86400000).toISOString()
-      : '2000-01-01T00:00:00Z'
-
+    const since = periodSince(period)
     const wsId = session.workspaceId
     const canSeeFinancials = hasPermission(session, 'VIEW_FINANCIALS')
 
     if (mode === 'scope') {
-      const [flagsRes, exceptionsRes, adjustmentsRes, cosRes, projCurrencyRes] = await Promise.all([
-        (service as any).from('guardian_flags').select('id,status,projects(id,name)')
-          .eq('workspace_id', wsId).gte('created_at', since),
-        (service as any).from('exceptions_log').select('id,deliverable,estimated_value,project_id,projects(id,name,currency)')
-          .eq('workspace_id', wsId).gte('created_at', since),
-        (service as any).from('scope_adjustments').select('id,deliverable,old_value,new_value,reason,adjusted_at,projects(id,name)')
-          .eq('workspace_id', wsId).gte('adjusted_at', since).order('adjusted_at', { ascending: false }),
-        (service as any).from('amendments').select('id,financial_impact,project_id')
-          .eq('workspace_id', wsId).gte('created_at', since),
-        (service as any).from('projects').select('id,currency').eq('workspace_id', wsId).is('deleted_at', null),
-      ])
-
-      const flags      = flagsRes.data || []
-      const exceptions = exceptionsRes.data || []
-      const adjustments = adjustmentsRes.data || []
-      const allAmendments = cosRes.data || []
-      const projCurrencyById: Record<string, string> = {}
-      for (const p of (projCurrencyRes.data || [])) projCurrencyById[p.id] = p.currency || 'USD'
-
-      // FIX: recovered_value and exception totals were summed across every
-      // project's currency with a hardcoded 'USD' label — same bug as
-      // financial mode. Filter to one currency at a time here too.
-      const currencyCounts: Record<string, number> = {}
-      for (const c of Object.values(projCurrencyById)) currencyCounts[c] = (currencyCounts[c] || 0) + 1
-      const availableCurrencies = Object.keys(currencyCounts).sort()
-      const mixedCurrencies = availableCurrencies.length > 1
-      const requestedCurrency = searchParams.get('currency')
-      const currency = (requestedCurrency && availableCurrencies.includes(requestedCurrency))
-        ? requestedCurrency
-        : (availableCurrencies.sort((a, b) => currencyCounts[b] - currencyCounts[a])[0] || 'USD')
-
-      const amendments = allAmendments.filter((a: any) => (projCurrencyById[a.project_id] || 'USD') === currency)
-      const exceptionsInCurrency = exceptions.filter((e: any) => (e.projects?.currency || 'USD') === currency)
-      const recoveredValue = amendments.reduce((s: number, a: any) => s + (a.financial_impact || 0), 0)
-
-      // FIX (audit round 6): total_flags/converted_to_co/flagsByProject
-      // used to be built from the raw, currency-unfiltered `flags` array —
-      // every flag across every currency in the workspace — while this
-      // same response's exceptionsByProject/recovered_value ARE filtered
-      // to the selected currency. In a multi-currency workspace, switching
-      // the currency selector would change two of these numbers and leave
-      // the other two exactly the same, with no way for either the API
-      // consumer or a person reading the report to tell they don't
-      // reconcile with each other.
-      const flagsInCurrency = flags.filter((f: any) => (projCurrencyById[f.projects?.id] || 'USD') === currency)
-      const flagMapInCurrency: Record<string, { project_id: string; project_name: string; flag_count: number }> = {}
-      for (const f of flagsInCurrency) {
-        const pid = f.projects?.id
-        if (!pid) continue
-        if (!flagMapInCurrency[pid]) flagMapInCurrency[pid] = { project_id: pid, project_name: f.projects.name, flag_count: 0 }
-        flagMapInCurrency[pid].flag_count++
-      }
-
-      return NextResponse.json({
-        metrics: {
-          total_flags:     flagsInCurrency.length,
-          converted_to_co: flagsInCurrency.filter((f: any) => f.status === 'converted_to_co').length,
-          recovered_value: canSeeFinancials ? recoveredValue : null,
-        },
-        flagsByProject: Object.values(flagMapInCurrency).sort((a, b) => b.flag_count - a.flag_count),
-        // FIX (audit round 6): recovered_value is nulled above for anyone
-        // without VIEW_FINANCIALS, but exceptionsInCurrency carries each
-        // exception's estimated_value — a raw dollar figure — completely
-        // unconditionally. Someone with VIEW_ALL_PROJECTS (all that's
-        // needed to hit scope mode) but not VIEW_FINANCIALS could see
-        // recovered_value hidden right above and every exception's real
-        // dollar value in the very same response. Apply the same gate.
-        exceptionsByProject: exceptionsInCurrency.map((e: any) => ({
-          ...e,
-          estimated_value: canSeeFinancials ? e.estimated_value : null,
-        })),
-        adjustments,
-        currency,
-        mixedCurrencies,
-        availableCurrencies,
-      })
+      const data = await getScopeReportData(service, wsId, since, requestedCurrency, canSeeFinancials)
+      return NextResponse.json(data)
     }
 
     // ── Financial mode ────────────────────────────────────────
     if (!canSeeFinancials)
       return NextResponse.json({ error: 'Missing permission: VIEW_FINANCIALS' }, { status: 403 })
 
-    const [projectsRes, amendmentsRes, cosRes2] = await Promise.all([
-      // FIX (audit round 6): was `.not('status', 'in', '("Draft","Archived")')`
-      // — a hand-built, double-quoted PostgREST filter string. Every other
-      // in/not-in filter in this codebase uses `.in()`/an unquoted list;
-      // this was the only place written this way, and while PostgREST's
-      // `in` syntax does support double-quoted list elements, it wasn't
-      // worth leaving as the one unverified, non-idiomatic filter sitting
-      // in the financial-reporting query. Two plain `.neq()` calls are
-      // unambiguous for a two-value exclusion list.
-      (service as any).from('projects').select('id,name,type,contract_value,currency,client_id,clients(id,name)')
-        .eq('workspace_id', wsId).is('deleted_at', null).neq('status', 'Draft').neq('status', 'Archived'),
-      (service as any).from('amendments').select('id,financial_impact,project_id')
-        .eq('workspace_id', wsId).gte('created_at', since),
-      (service as any).from('change_orders').select('id,status,total,project_id')
-        .eq('workspace_id', wsId).gte('created_at', since),
-    ])
-
-    const allProjects = projectsRes.data || []
-    const allAmendments = amendmentsRes.data || []
-    const allCos      = cosRes2.data || []
-
-    // FIX: this used to sum contract_value across every project regardless
-    // of currency, then slapped an arbitrary single currency label
-    // (projects[0]'s) on the blended total — e.g. USD + KES + GBP added
-    // together and reported as "USD X". No conversion was ever applied.
-    // Doing real FX conversion correctly (live rates, caching, historical
-    // accuracy for past periods) is a real feature to build deliberately,
-    // not a one-line fix — so instead: never blend. Filter to one currency
-    // at a time, and tell the frontend when there's more than one so it
-    // can offer a selector, rather than silently producing a wrong number.
-    const currencyCounts: Record<string, number> = {}
-    for (const p of allProjects) currencyCounts[p.currency || 'USD'] = (currencyCounts[p.currency || 'USD'] || 0) + 1
-    const availableCurrencies = Object.keys(currencyCounts).sort()
-    const mixedCurrencies = availableCurrencies.length > 1
-
-    const requestedCurrency = searchParams.get('currency')
-    const currency = (requestedCurrency && availableCurrencies.includes(requestedCurrency))
-      ? requestedCurrency
-      : (availableCurrencies.sort((a, b) => currencyCounts[b] - currencyCounts[a])[0] || 'USD')
-
-    const projects   = allProjects.filter((p: any) => (p.currency || 'USD') === currency)
-    const projectIds = new Set(projects.map((p: any) => p.id))
-    const amendments = allAmendments.filter((a: any) => projectIds.has(a.project_id))
-    const cos        = allCos.filter((c: any) => projectIds.has(c.project_id))
-
-    const baseValue = projects.reduce((s: number, p: any) => s + (p.contract_value || 0), 0)
-    const coImpact  = amendments.reduce((s: number, a: any) => s + (a.financial_impact || 0), 0)
-
-    // By client
-    const clientMap: Record<string, { client_id: string; client_name: string; value: number }> = {}
-    for (const p of projects) {
-      const cid = p.client_id
-      if (!cid) continue
-      if (!clientMap[cid]) clientMap[cid] = { client_id: cid, client_name: p.clients?.name || 'Unknown', value: 0 }
-      clientMap[cid].value += p.contract_value || 0
-    }
-
-    // By type
-    const typeMap: Record<string, number> = {}
-    for (const p of projects) {
-      typeMap[p.type] = (typeMap[p.type] || 0) + (p.contract_value || 0)
-    }
-
-    return NextResponse.json({
-      metrics: {
-        effective_value: baseValue + coImpact,
-        co_impact:       coImpact,
-        cos_raised:      cos.length,
-        cos_accepted:    cos.filter((c: any) => c.status === 'accepted').length,
-      },
-      byClient: Object.values(clientMap).sort((a, b) => b.value - a.value),
-      byType:   Object.entries(typeMap)
-        .map(([type, value]) => ({ type, type_label: PROJECT_TYPE_LABELS[type] || type, value }))
-        .sort((a, b) => b.value - a.value),
-      coGrid: {
-        raised:   cos.length,
-        accepted: cos.filter((c: any) => c.status === 'accepted').length,
-        declined: cos.filter((c: any) => c.status === 'declined').length,
-        pending:  cos.filter((c: any) => ['awaiting_response','countered','stalled'].includes(c.status)).length,
-      },
-      currency,
-      mixedCurrencies,
-      availableCurrencies,
-    })
+    const data = await getFinancialReportData(service, wsId, since, requestedCurrency)
+    return NextResponse.json(data)
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
   }

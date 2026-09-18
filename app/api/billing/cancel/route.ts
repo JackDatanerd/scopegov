@@ -13,11 +13,20 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Missing permission: MANAGE_BILLING' }, { status: 403 })
 
     const service = createServiceClient()
+    // FIX (deep audit, Billing re-pass, minor): this was `.single()` — the
+    // rest of the codebase (settings/page.tsx, workspace/delete/route.ts)
+    // explicitly uses `.maybeSingle()` here with a comment noting the
+    // billing row may not exist at all for a trial workspace that's never
+    // subscribed. `.single()` happened to still behave correctly (a
+    // zero-rows PostgREST error resolves to `data: null` rather than
+    // throwing, so the `!billing?.paystack_subscription_code` check below
+    // still catches it) but it's the one place in this codebase that
+    // pattern is spelled differently for the same known condition.
     const { data: billing } = await (service as any)
       .from('billing')
       .select('paystack_subscription_code, paystack_email_token, cancels_at_period_end, current_period_end')
       .eq('workspace_id', session.workspaceId)
-      .single()
+      .maybeSingle()
 
     // Carry-forward §5.6: if no subscription code yet, show support message
     if (!billing?.paystack_subscription_code) {

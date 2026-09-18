@@ -33,21 +33,71 @@ function ReportsPageInner() {
   const [currency, setCurrency] = useState<string>('')
   const [data,    setData]    = useState<any>(null)
   const [loading, setLoading] = useState(true)
+  // FIX (deep audit, Reports & Audit re-pass): the fetch below never
+  // checked `res.ok` — a 403 (missing VIEW_ALL_PROJECTS, or VIEW_FINANCIALS
+  // on the financial tab) or a genuine 500 both return a truthy
+  // `{error: '...'}` body, which used to be handed straight to `setData`.
+  // Every metric then destructured to `undefined` and rendered as if the
+  // workspace genuinely had zero flags/exceptions/adjustments — a
+  // permission-denied user saw what looked like a clean bill of health
+  // instead of being told they can't see this page. `errorMsg` now
+  // distinguishes "no permission" / "failed to load" from "genuinely
+  // empty", and the Reports nav link itself is now gated behind
+  // VIEW_ALL_PROJECTS in Sidebar.tsx so this is a true defense-in-depth
+  // case, not the only line of defense.
+  const [errorMsg, setErrorMsg] = useState('')
+  const [exporting, setExporting] = useState<'csv' | 'pdf' | null>(null)
 
   useEffect(() => {
-    setLoading(true)
+    let cancelled = false
+    setLoading(true); setErrorMsg('')
     const currencyParam = currency ? `&currency=${currency}` : ''
     fetch(`/api/reports?mode=${mode}&period=${period}${currencyParam}`)
-      .then(r => r.json())
-      .then(json => {
+      .then(async res => {
+        const json = await res.json().catch(() => ({}))
+        if (cancelled) return
+        if (!res.ok) {
+          setData(null)
+          setErrorMsg(json.error || 'Could not load report data.')
+          return
+        }
         setData(json)
-        // Lock in whichever currency the backend resolved to, so the
-        // selector reflects reality and subsequent fetches stay pinned.
-        if (json.currency && !currency) setCurrency(json.currency)
-        setLoading(false)
+        // FIX (deep audit, Reports & Audit re-pass): this used to only
+        // sync once (`if (json.currency && !currency)`), so switching
+        // between Scope and Financial tabs — which can legitimately have
+        // different available currencies, since financial mode excludes
+        // Draft/Archived projects and scope mode doesn't — could leave
+        // this selector showing a currency the backend silently fell back
+        // away from. The numbers on screen were always correctly labeled
+        // from `data.currency`, but the dropdown itself could drift out of
+        // sync with them. Always resync to whatever the backend actually
+        // resolved.
+        if (json.currency) setCurrency(json.currency)
       })
-      .catch(() => setLoading(false))
+      .catch(() => { if (!cancelled) setErrorMsg('Could not load report data.') })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
   }, [mode, period, currency])
+
+  async function handleExport(format: 'csv' | 'pdf') {
+    setExporting(format)
+    try {
+      const currencyParam = currency ? `&currency=${currency}` : ''
+      const res = await fetch(`/api/reports/export?mode=${mode}&period=${period}&format=${format}${currencyParam}`)
+      if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || 'Export failed') }
+      const blob = await res.blob()
+      const disposition = res.headers.get('Content-Disposition') || ''
+      const match = disposition.match(/filename="([^"]+)"/)
+      const filename = match?.[1] || `${mode}-report.${format}`
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url; a.download = filename
+      document.body.appendChild(a); a.click(); a.remove()
+      URL.revokeObjectURL(url)
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : 'Export failed')
+    } finally { setExporting(null) }
+  }
 
   const PERIODS: { key: Period; label: string }[] = [
     { key: '30d',  label: 'Last 30 days' },
@@ -75,6 +125,14 @@ function ReportsPageInner() {
             onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setPeriod(e.target.value as Period)}>
             {PERIODS.map(p => <option key={p.key} value={p.key}>{p.label}</option>)}
           </select>
+          {/* FEATURE (deep audit, Reports & Audit re-pass): this page had
+              no export at all — see api/reports/export/route.ts. */}
+          <button className="btn btn-ghost btn-sm" disabled={!data || exporting !== null || loading} onClick={() => handleExport('csv')}>
+            {exporting === 'csv' ? <span className="spin" /> : <><i className="ti ti-file-spreadsheet" style={{ marginRight: 6 }} />CSV</>}
+          </button>
+          <button className="btn btn-ghost btn-sm" disabled={!data || exporting !== null || loading} onClick={() => handleExport('pdf')}>
+            {exporting === 'pdf' ? <span className="spin" /> : <><i className="ti ti-file-type-pdf" style={{ marginRight: 6 }} />PDF</>}
+          </button>
         </div>
       </div>
 
@@ -98,6 +156,13 @@ function ReportsPageInner() {
       {loading ? (
         <div style={{ display: 'flex', justifyContent: 'center', padding: 60 }}>
           <span className="spin spin-dark" style={{ width: 24, height: 24 }} />
+        </div>
+      ) : errorMsg ? (
+        <div className="surface">
+          <div className="empty-state">
+            <i className="ti ti-lock empty-state-icon" />
+            <p className="empty-state-title">{errorMsg}</p>
+          </div>
         </div>
       ) : !data ? (
         <div className="surface"><div className="empty-state"><p className="empty-state-title">Could not load report data</p></div></div>
@@ -174,12 +239,23 @@ function ScopeReport({ data }: { data: any }) {
         <div className="surface surface-p">
           <div className="sec-hd" style={{ marginBottom: 16 }}>
             <div className="sec-title">Exceptions granted</div>
+            {/* FIX (deep audit, Reports & Audit re-pass): estimated_value is
+                redacted to null server-side for anyone without
+                VIEW_FINANCIALS (same gate as recovered_value above, which
+                correctly falls back to "—"). Summing `e.estimated_value ||
+                0` across an all-null list previously rendered a confident
+                "$0 total estimated" — implying zero exposure rather than
+                "hidden from you". Only show a total when at least one
+                value actually came through; otherwise show the same "—"
+                placeholder recovered_value already uses. */}
             {(exceptionsByProject || []).length > 0 && (
               <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
-                {formatCurrency(
-                  (exceptionsByProject || []).reduce((s: number, e: any) => s + (e.estimated_value || 0), 0),
-                  currency || 'USD', true
-                )} total estimated
+                {(exceptionsByProject || []).every((e: any) => e.estimated_value == null)
+                  ? '—'
+                  : `${formatCurrency(
+                      (exceptionsByProject || []).reduce((s: number, e: any) => s + (e.estimated_value || 0), 0),
+                      currency || 'USD', true
+                    )} total estimated`}
               </span>
             )}
           </div>

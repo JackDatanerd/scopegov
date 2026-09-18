@@ -44,6 +44,33 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // FIX (deep audit, Billing re-pass): the seat check above exists
+    // precisely because nothing else guarded a downgrade against a
+    // workspace no longer fitting the target plan's limits — but
+    // PLAN_LIMITS[planKey].projects (api/projects/route.ts already
+    // enforces this same limit at project-creation time, counting every
+    // non-deleted project regardless of status) had no equivalent check
+    // here at all. A workspace on Pro/Agency (unlimited projects) with
+    // dozens of active projects could downgrade to Solo/Starter through
+    // checkout with zero warning, pay for it, and immediately land in a
+    // permanent "can't create any new project" state they were never told
+    // about before money changed hands. Same reasoning, same place to
+    // catch it, as the seat check right above.
+    const targetProjects = PLAN_LIMITS[planKey]?.projects
+    if (targetProjects != null) {
+      const { count: activeProjects } = await (service as any)
+        .from('projects')
+        .select('id', { count: 'exact', head: true })
+        .eq('workspace_id', session.workspaceId)
+        .is('deleted_at', null)
+      if ((activeProjects || 0) > targetProjects) {
+        return NextResponse.json({
+          error: `This workspace has ${activeProjects} project${activeProjects === 1 ? '' : 's'}, more than the ${targetProjects}-project limit on ${PLAN_LIMITS[planKey]?.name || planKey}. Archive or delete projects down to the new limit first, then switch plans.`,
+          projectLimitExceeded: true,
+        }, { status: 409 })
+      }
+    }
+
     const { data: user } = await (service as any)
       .from('users').select('email').eq('id', session.id).single()
 

@@ -274,7 +274,13 @@ function csvCell(value: unknown): string {
 // role with VIEW_AUDIT_LOG but not VIEW_FINANCIALS could still pull exact
 // contract values straight out of a CSV export — the same leak class this
 // list was built to close.
-const FINANCIAL_METADATA_KEYS = ['amount', 'balance_due', 'estimated_value', 'counter_amount', 'total', 'subtotal', 'contract_value', 'contractValue', 'schedule_sum']
+//
+// FIX (deep audit, Reports & Audit re-pass): also missing
+// `client_counter_amount` — api/co/[id]/revise/route.ts logs the client's
+// real counter-offer dollar amount under this exact key on every
+// `co.revised` event, and it was never added here. Same leak class,
+// different key that got missed.
+const FINANCIAL_METADATA_KEYS = ['amount', 'balance_due', 'estimated_value', 'counter_amount', 'client_counter_amount', 'total', 'subtotal', 'contract_value', 'contractValue', 'schedule_sum']
 function redactMetadata(metadata: Record<string, unknown> | null | undefined, canViewFinancials: boolean) {
   if (!metadata || !Object.keys(metadata).length) return metadata
   if (canViewFinancials) return metadata

@@ -14,7 +14,14 @@ const NAV_ITEMS = [
   { href: '/sow',       icon: 'ti-file-description',  label: 'SOW Registry' },
   { href: '/invoices',  icon: 'ti-receipt-2',         label: 'Invoices' },
   { href: '/approvals', icon: 'ti-shield-check',      label: 'Approvals' },
-  { href: '/reports',   icon: 'ti-chart-bar',         label: 'Reports' },
+  // FIX (deep audit, Reports & Audit re-pass): both tabs behind /reports
+  // (api/reports's scope and financial modes) require VIEW_ALL_PROJECTS —
+  // same workspace-wide rollup reasoning as Portfolio just below, which
+  // already gates on it. This link had no `permission` at all, so anyone
+  // without that permission could still see it in the nav, click through,
+  // and land on a page that (before this pass) silently rendered as an
+  // empty report instead of a permission error.
+  { href: '/reports',   icon: 'ti-chart-bar',         label: 'Reports', permission: 'VIEW_ALL_PROJECTS' as const },
   // Workspace-wide by definition — only meaningful (and only shown) for
   // anyone who can actually see the whole portfolio.
   { href: '/portfolio', icon: 'ti-building-skyscraper', label: 'Portfolio', permission: 'VIEW_ALL_PROJECTS' as const },

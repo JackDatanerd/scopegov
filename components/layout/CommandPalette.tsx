@@ -195,7 +195,15 @@ export default function CommandPalette({ permissions = [] }: Props) {
               // primary sidebar destinations that had no quick-nav entry here.
               { label: 'Invoices',    href: '/invoices',    icon: 'ti-receipt-2' },
               { label: 'Approvals',   href: '/approvals',   icon: 'ti-shield-check' },
-              { label: 'Reports',     href: '/reports',     icon: 'ti-chart-bar' },
+              // FIX (deep audit, Reports & Audit re-pass): same gap this
+              // file's own Portfolio entry was already fixed for — /reports
+              // requires VIEW_ALL_PROJECTS in both of its tabs
+              // (api/reports/route.ts), but this quick-nav entry was
+              // unconditional, unlike Sidebar.tsx's matching link (now
+              // also gated — see components/layout/Sidebar.tsx).
+              ...(permissions.includes('VIEW_ALL_PROJECTS')
+                ? [{ label: 'Reports', href: '/reports', icon: 'ti-chart-bar' }]
+                : []),
               ...(permissions.includes('VIEW_ALL_PROJECTS')
                 ? [{ label: 'Portfolio', href: '/portfolio', icon: 'ti-building-skyscraper' }]
                 : []),

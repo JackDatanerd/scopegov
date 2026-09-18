@@ -52,6 +52,38 @@ function planCodeToTier(planCode: string): string | null {
   return map[planCode] || null
 }
 
+// FEATURE (deep audit, Billing re-pass): see migration 045 — this is the
+// missing other half of the (planKey, interval) pair api/billing/upgrade
+// already checks out separately. Mirrors planCodeToTier exactly, just
+// keyed on the ANNUAL half of each pair.
+function planCodeToInterval(planCode: string): 'monthly' | 'annual' | null {
+  const annualCodes = new Set([
+    process.env.PAYSTACK_PLAN_SOLO_ANNUAL, process.env.PAYSTACK_PLAN_STARTER_ANNUAL,
+    process.env.PAYSTACK_PLAN_PRO_ANNUAL, process.env.PAYSTACK_PLAN_AGENCY_ANNUAL,
+  ].filter(Boolean))
+  const monthlyCodes = new Set([
+    process.env.PAYSTACK_PLAN_SOLO_MONTHLY, process.env.PAYSTACK_PLAN_STARTER_MONTHLY,
+    process.env.PAYSTACK_PLAN_PRO_MONTHLY, process.env.PAYSTACK_PLAN_AGENCY_MONTHLY,
+  ].filter(Boolean))
+  if (annualCodes.has(planCode)) return 'annual'
+  if (monthlyCodes.has(planCode)) return 'monthly'
+  return null
+}
+
+// FEATURE (deep audit, Billing re-pass): billing.payment_method_last4/
+// payment_method_type (001_initial_schema.sql) were selected on
+// settings/page.tsx and never written to anywhere — a fully scaffolded
+// "card on file" feature with no data behind it. Paystack's subscription
+// and charge payloads both carry an `authorization` object with the
+// card's last4/brand; this just reads it instead of discarding it.
+function extractPaymentMethod(data: any): { last4: string | null; type: string | null } {
+  const auth = data?.authorization
+  return {
+    last4: auth?.last4 || null,
+    type:  auth?.brand || auth?.card_type || auth?.channel || null,
+  }
+}
+
 // FIX (audit round 6): api/billing/upgrade deliberately captures
 // session.workspaceId — the workspace actually being paid for — into
 // metadata.workspaceId at checkout time. Every handler below used to
@@ -176,6 +208,12 @@ export async function POST(request: NextRequest) {
         }).eq('id', workspaceId)
 
         // Store Paystack subscription code for cancellation
+        // FEATURE (deep audit, Billing re-pass): plan_interval and
+        // payment_method_last4/type were either missing entirely or
+        // selected-but-never-written (see migration 045 and
+        // extractPaymentMethod's comment) — populated here, at the one
+        // point this app always has the full plan + authorization payload.
+        const paymentMethod = extractPaymentMethod(data)
         await (service as any).from('billing').upsert({
           workspace_id:               workspaceId,
           paystack_customer_code:     data.customer?.customer_code,
@@ -184,6 +222,9 @@ export async function POST(request: NextRequest) {
           current_period_end:         periodEnd,
           cancels_at_period_end:      false,
           grace_period_started_at:    null,
+          plan_interval:              planCodeToInterval(planCode),
+          payment_method_last4:       paymentMethod.last4,
+          payment_method_type:        paymentMethod.type,
           updated_at:                 new Date().toISOString(),
         }, { onConflict: 'workspace_id' })
 
@@ -237,9 +278,16 @@ export async function POST(request: NextRequest) {
         // Clear any grace period, and refresh the period end if we got one
         // — a failure to refresh must not block clearing the grace period,
         // since the payment itself did succeed.
+        // FEATURE (deep audit, Billing re-pass): also refresh the
+        // card-on-file details here, not just at subscription.create — a
+        // successful renewal charge is exactly when a previously-failing
+        // card would have just been replaced/retried, and this is the
+        // event most likely to reflect that.
+        const paymentMethod = extractPaymentMethod(event.data)
         await (service as any).from('billing').update({
           grace_period_started_at: null,
           ...(nextPeriodEnd ? { current_period_end: nextPeriodEnd } : {}),
+          ...(paymentMethod.last4 ? { payment_method_last4: paymentMethod.last4, payment_method_type: paymentMethod.type } : {}),
           updated_at: new Date().toISOString(),
         }).eq('workspace_id', workspaceId)
 
@@ -304,6 +352,41 @@ export async function POST(request: NextRequest) {
         if (!customerEmail) break
         const workspaceId = await resolveWorkspaceId(service, event.data, customerEmail)
         if (!workspaceId) break
+
+        // FIX (deep audit, Billing re-pass — CRITICAL): this used to
+        // update by workspace_id alone, with no check that the event was
+        // actually about the subscription currently on file. Look above,
+        // in subscription.create: switching plans disables the customer's
+        // PREVIOUS subscription server-side (cancelPaystackSubscription)
+        // to stop it double-billing — and that disable call itself makes
+        // Paystack fire this exact event for the now-superseded old
+        // subscription, asynchronously, some time after the new
+        // subscription has already been recorded. Every plan switch was
+        // therefore a delayed, self-inflicted cancellation: this handler
+        // would match on workspace_id, null out the brand-new (paid,
+        // active) subscription code, and set cancels_at_period_end —
+        // which cron/payment-overdue's cancelled-subscription sweep would
+        // later act on and downgrade a paying, actively-renewing customer
+        // to Solo weeks after they upgraded. Only apply this when the
+        // event's own subscription_code still matches what's currently on
+        // file for the workspace; a mismatch means this event is about a
+        // subscription the workspace has already moved on from, not the
+        // live one. (If either side is unknown — no subscription_code on
+        // the payload, or no billing row yet — fall through and apply as
+        // before rather than silently never cancelling anything.)
+        const incomingSubCode = event.data?.subscription_code
+        const { data: currentBilling } = await (service as any)
+          .from('billing').select('paystack_subscription_code').eq('workspace_id', workspaceId).maybeSingle()
+
+        if (incomingSubCode && currentBilling?.paystack_subscription_code
+            && currentBilling.paystack_subscription_code !== incomingSubCode) {
+          console.log(
+            `Paystack ${event.event} for superseded subscription ${incomingSubCode} on workspace ${workspaceId} ` +
+            `(currently on ${currentBilling.paystack_subscription_code}) — ignoring; this is expected fallout ` +
+            `from a plan switch that already disabled this old subscription on purpose.`
+          )
+          break
+        }
 
         await (service as any).from('billing').update({
           paystack_subscription_code: null,

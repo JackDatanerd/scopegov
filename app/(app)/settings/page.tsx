@@ -32,7 +32,14 @@ export default async function SettingsPage() {
       .single(),
     (service as any)
       .from('billing')
-      .select('paystack_customer_code,paystack_subscription_code,cancels_at_period_end,current_period_end,payment_method_last4,payment_method_type')
+      // FIX (deep audit, Reports & Audit / Billing re-pass): plan_interval
+      // and grace_period_started_at were both missing from this select —
+      // plan_interval didn't exist as a column until now (migration 045),
+      // and grace_period_started_at was written by the webhook but never
+      // read back anywhere, so BillingTab had no way to show an in-app
+      // warning during an active payment-failure grace period (see the
+      // banner in BillingTab below).
+      .select('paystack_customer_code,paystack_subscription_code,cancels_at_period_end,current_period_end,payment_method_last4,payment_method_type,plan_interval,grace_period_started_at')
       .eq('workspace_id', session.workspaceId)
       .maybeSingle(), // billing row may not exist on trial
     (service as any)

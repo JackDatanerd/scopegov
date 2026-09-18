@@ -1079,7 +1079,14 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
     ? Math.max(0, Math.ceil((new Date(workspace.trial_ends_at).getTime() - Date.now()) / 86400000))
     : null
 
-  const [planInterval, setPlanInterval] = useState<'monthly' | 'annual'>('monthly')
+  // FIX (deep audit, Billing re-pass — feature gap): this always defaulted
+  // to 'monthly' regardless of which interval the workspace is actually
+  // on (billing.plan_interval — see migration 045, populated by the
+  // webhook). That's what made switching intervals impossible in
+  // practice: even once the button below exists, the toggle needs to
+  // start on the customer's REAL current interval, or "switch to annual"
+  // and "you're already on annual" look identical.
+  const [planInterval, setPlanInterval] = useState<'monthly' | 'annual'>(billing?.plan_interval || 'monthly')
   const [upgrading,    setUpgrading]    = useState<string | null>(null)
   const [cancelling,   setCancelling]   = useState(false)
   const [cancelError,  setCancelError]  = useState('')
@@ -1098,16 +1105,26 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
     } finally { setCancelling(false) }
   }
 
-  async function handleUpgrade(planKey: string) {
+  async function handleUpgrade(planKey: string, intervalOverride?: 'monthly' | 'annual') {
     setUpgrading(planKey)
     try {
+      // FIX (deep audit, Billing re-pass): the Paystack inline script
+      // (js.paystack.co/v1/inline.js, loaded in app/layout.tsx) can fail
+      // to load — blocked by an ad-blocker or content-blocklist, which
+      // commonly target payment-provider scripts, or a transient network
+      // issue. `PaystackPop?.setup(...)` and `handler?.openIframe()` both
+      // silently no-op when that happens: the button's spinner would just
+      // stop with no explanation at all. Fail loudly instead.
+      if (!(window as any).PaystackPop) {
+        throw new Error('Could not load the payment provider. If you\u2019re using an ad-blocker or privacy extension, try disabling it for this site, then refresh and try again.')
+      }
       const res  = await fetch('/api/billing/upgrade', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ planKey, interval: planInterval }),
+        body: JSON.stringify({ planKey, interval: intervalOverride || planInterval }),
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error)
-      const handler = (window as any).PaystackPop?.setup({
+      const handler = (window as any).PaystackPop.setup({
         key:      json.publicKey,
         email:    json.email,
         plan:     json.planCode,
@@ -1119,7 +1136,7 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
         },
         onClose: () => {},
       })
-      handler?.openIframe()
+      handler.openIframe()
     } catch (err: unknown) {
       alert(err instanceof Error ? err.message : 'Could not open checkout')
     } finally { setUpgrading(null) }
@@ -1132,9 +1149,37 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
     { key: 'agency',  name: 'Agency',  price: { monthly: '$399/mo', annual: '$3,990/yr'}, seats: 10, projects: null },
   ]
 
+  // FIX (deep audit, Billing re-pass — feature gap): grace_period_started_at
+  // is set by the webhook on invoice.payment_failed and enforced 5 days
+  // later by cron/payment-overdue, but until now it was never surfaced
+  // anywhere in the app — the only signal a customer got was one email at
+  // the moment the charge failed. cancels_at_period_end gets a persistent
+  // banner right below; this state deserves the same treatment, since
+  // missing/ignoring that one email currently means no warning at all
+  // before a forced downgrade to Solo.
+  const graceDaysLeft = billing?.grace_period_started_at
+    ? Math.max(0, 5 - Math.floor((Date.now() - new Date(billing.grace_period_started_at).getTime()) / 86400000))
+    : null
+
   return (
     <div>
       <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, marginBottom: 20 }}>Billing & plan</h2>
+
+      {graceDaysLeft !== null && (
+        <div className="banner banner-warn" style={{ marginBottom: 14, alignItems: 'center', justifyContent: 'space-between' }}>
+          <span>
+            Your last payment failed. Update your payment method within {graceDaysLeft} day{graceDaysLeft === 1 ? '' : 's'} or this
+            workspace will be downgraded to Solo.
+          </span>
+          <button
+            className="btn btn-primary btn-sm"
+            disabled={!!upgrading}
+            onClick={() => handleUpgrade(planTier === 'trial' ? 'solo' : planTier, planInterval)}>
+            Retry with a new card
+          </button>
+        </div>
+      )}
+
       <div className="settings-section" style={{ marginBottom: 14 }}>
         <div className="settings-section-title">Current plan</div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
@@ -1145,6 +1190,16 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
             )}
             {billing?.current_period_end && (
               <div style={{ fontSize: 12, color: 'var(--text-3)' }}>Renews {formatDate(billing.current_period_end)}</div>
+            )}
+            {/* FEATURE (deep audit, Billing re-pass): payment_method_last4/
+                type existed as columns, were fetched by settings/page.tsx,
+                and were never once rendered anywhere — a fully scaffolded
+                "card on file" feature with no display. Now populated by
+                the webhook (see extractPaymentMethod) and shown here. */}
+            {billing?.payment_method_last4 && (
+              <div style={{ fontSize: 12, color: 'var(--text-3)' }}>
+                {billing.payment_method_type ? `${billing.payment_method_type} ` : ''}···· {billing.payment_method_last4}
+              </div>
             )}
           </div>
           {planTier !== 'trial' && !billing?.cancels_at_period_end && (
@@ -1179,16 +1234,29 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
         </div>
         <div className="tier-cards">
           {plans.map(plan => {
-            const isCurrent = planTier === plan.key
+            const isCurrentTier = planTier === plan.key
+            // FIX (deep audit, Billing re-pass — feature gap): a plan card
+            // used to lock into static "Current plan" text purely on
+            // planTier matching, with no regard for interval — so a
+            // workspace paying monthly for Pro had no way to ever switch
+            // to annual (or vice versa): the one button that could do it
+            // was replaced by inert text the moment the tier matched,
+            // regardless of which interval they were actually paying.
+            // billing.plan_interval (migration 045) is what finally makes
+            // "same tier, different interval" a distinguishable, buildable
+            // state.
+            const isExactCurrentPlan = isCurrentTier && planTier !== 'trial' && billing?.plan_interval
+              ? billing.plan_interval === planInterval
+              : isCurrentTier
             const isLoading = upgrading === plan.key
             return (
-              <div key={plan.key} className={`tier-card${isCurrent ? ' current' : ''}`}>
+              <div key={plan.key} className={`tier-card${isExactCurrentPlan ? ' current' : ''}`}>
                 <div className="tier-card-name">{plan.name}</div>
                 <div className="tier-card-price">{plan.price[planInterval]}</div>
                 <div className="tier-card-desc">
                   {plan.seats} seat{plan.seats > 1 ? 's' : ''} · {plan.projects ? `${plan.projects} projects` : 'Unlimited projects'}
                 </div>
-                {isCurrent ? (
+                {isExactCurrentPlan ? (
                   <div style={{ marginTop: 12, fontSize: 11, color: 'var(--green)', fontWeight: 600 }}>Current plan</div>
                 ) : (
                   <button className="btn btn-ghost btn-sm"
@@ -1196,17 +1264,21 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
                     disabled={!!upgrading}
                     onClick={() => handleUpgrade(plan.key)}>
                     {isLoading ? <span className="spin spin-dark" /> : (
-                      // FIX (deep audit, Settings re-pass): trial's 10-seat
-                      // allowance is more generous than every paid tier
-                      // except Agency, so comparing raw seat counts labelled
-                      // every plan pick except Agency "Downgrade" during the
-                      // trial period — exactly the moment a workspace is
-                      // converting from trial to paid, the most common
-                      // conversion in this whole flow. Trial isn't a real
-                      // tier to downgrade from; picking any paid plan while
-                      // on trial is always an upgrade (a first purchase).
-                      planTier === 'trial' || (PLAN_LIMITS[planTier]?.seats || 0) <= (PLAN_LIMITS[plan.key]?.seats || 0)
-                        ? 'Upgrade' : 'Downgrade'
+                      isCurrentTier
+                        // Same tier, different interval — this is a switch,
+                        // not an upgrade or downgrade.
+                        ? (planInterval === 'annual' ? 'Switch to annual' : 'Switch to monthly')
+                        // FIX (deep audit, Settings re-pass): trial's 10-seat
+                        // allowance is more generous than every paid tier
+                        // except Agency, so comparing raw seat counts labelled
+                        // every plan pick except Agency "Downgrade" during the
+                        // trial period — exactly the moment a workspace is
+                        // converting from trial to paid, the most common
+                        // conversion in this whole flow. Trial isn't a real
+                        // tier to downgrade from; picking any paid plan while
+                        // on trial is always an upgrade (a first purchase).
+                        : planTier === 'trial' || (PLAN_LIMITS[planTier]?.seats || 0) <= (PLAN_LIMITS[plan.key]?.seats || 0)
+                          ? 'Upgrade' : 'Downgrade'
                     )}
                   </button>
                 )}
