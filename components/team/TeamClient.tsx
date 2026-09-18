@@ -7,7 +7,14 @@
 import { useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import type { SessionUser } from '@/lib/supabase/types'
-import { initials, avatarColour, formatDate, ALL_PERMISSIONS } from '@/lib/utils/format'
+import { initials, avatarColour, formatDate, ALL_PERMISSIONS, PLAN_LIMITS } from '@/lib/utils/format'
+
+// FIX (deep audit, section 6 — feature gap): mirrors the exact allowlist
+// api/team/roles POST enforces server-side. Kept as one shared constant
+// so the "which plans get custom roles" answer can't drift between the
+// two again the way it already had (this file previously hardcoded a
+// second, narrower ['pro','agency'] copy that silently excluded trial).
+const CUSTOM_ROLE_PLANS = ['pro', 'agency', 'trial']
 
 interface Props {
   members:            any[]
@@ -23,15 +30,20 @@ interface Props {
   canInvite:          boolean
   canManageRoles:     boolean
   workspaceId:        string
-  // FIX (deep audit, Team & Invites re-pass): true when the workspace is
-  // on Solo (1 seat) but has more than one active member — only reachable
-  // if it was downgraded without its seat count being checked first (see
-  // /api/billing/upgrade). Lets the page still render instead of locking
-  // the workspace out of managing its own over-limit team.
+  // FIX (deep audit, section 6 — feature gap): generalized from a
+  // Solo-only check — true whenever this workspace has more active
+  // members than its CURRENT plan's seat limit allows, on any tier, not
+  // just Solo (see app/(app)/team/page.tsx's own comment for how a
+  // non-Solo workspace can end up here). Lets the page still render
+  // instead of locking the workspace out of managing its own over-limit
+  // team.
   overSeatLimit?:     boolean
+  // Paired with overSeatLimit — the seat count the banner below should
+  // actually name, instead of a hardcoded "1 seat".
+  seatLimit?:         number | null
 }
 
-export default function TeamClient({ members, pendingInvites, expiredInvites = [], deactivatedMembers = [], roles, session, canInvite, canManageRoles, workspaceId, overSeatLimit }: Props) {
+export default function TeamClient({ members, pendingInvites, expiredInvites = [], deactivatedMembers = [], roles, session, canInvite, canManageRoles, workspaceId, overSeatLimit, seatLimit }: Props) {
   const router  = useRouter()
   const searchParams = useSearchParams()
   // FIX (deep audit, section 5 re-pass): Settings computed a `manageRoles`
@@ -244,8 +256,13 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
 
       {overSeatLimit && (
         <div className="auth-error" style={{ marginBottom: 16 }}>
-          This workspace is on the Solo plan (1 seat) but has {members.length} active members.
-          Deactivate members down to 1, or upgrade in Settings &rarr; Billing.
+          {/* FIX (deep audit, section 6 — feature gap): hardcoded "Solo
+             plan (1 seat)" / "down to 1" — now names the workspace's
+             actual plan and seat limit so the banner is accurate on
+             every tier, not just Solo. */}
+          This workspace is on the {PLAN_LIMITS[session.planTier]?.name || session.planTier} plan
+          ({seatLimit} seat{seatLimit === 1 ? '' : 's'}) but has {members.length} active members.
+          Deactivate members down to {seatLimit}, or upgrade in Settings &rarr; Billing.
         </div>
       )}
       {error && <div className="auth-error" style={{ marginBottom: 16 }}>{error}</div>}
@@ -460,11 +477,19 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
             <p style={{ fontSize: 13, color: 'var(--text-2)' }}>
-              {['pro','agency'].includes(session.planTier)
+              {/* FIX (deep audit, section 6 — feature gap): this checked
+                 ['pro','agency'] only, but api/team/roles POST has always
+                 also allowed 'trial' — every trial workspace was entitled
+                 to custom roles server-side with no way to reach the
+                 feature in the UI, and this copy actively told them
+                 otherwise ("Custom roles require Pro or Agency"). Mirror
+                 the server's own allowlist exactly instead of a second,
+                 drifted copy of it. */}
+              {CUSTOM_ROLE_PLANS.includes(session.planTier)
                 ? 'Create custom roles for fine-grained access control.'
-                : 'Preset roles are available on all plans. Custom roles require Pro or Agency.'}
+                : 'Preset roles are available on all plans. Custom roles require Pro, Agency, or an active trial.'}
             </p>
-            {canManageRoles && ['pro','agency'].includes(session.planTier) && (
+            {canManageRoles && CUSTOM_ROLE_PLANS.includes(session.planTier) && (
               <button className="btn btn-primary btn-sm" onClick={() => setModal('role')}>
                 <i className="ti ti-plus" style={{ fontSize: 12 }} /> New role
               </button>

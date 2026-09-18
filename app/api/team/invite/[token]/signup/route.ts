@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { logAudit } from '@/lib/utils/audit'
 import { sanitizeDisplayName } from '@/lib/utils/sanitize'
+import { checkSeatLimit } from '@/lib/utils/seat-limit'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
@@ -28,7 +29,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const { data: member } = await (service as any)
       .from('workspace_members')
-      .select('id, status, invite_token_expires_at, invited_email, workspace_id, role_id, workspaces(name,deleted_at)')
+      .select('id, status, invite_token_expires_at, invited_email, workspace_id, role_id, workspaces(name,deleted_at,plan_tier)')
       .eq('invite_token', token)
       .single()
 
@@ -63,6 +64,19 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const email = member.invited_email
     if (!email) return NextResponse.json({ error: 'Invite email missing.' }, { status: 400 })
+
+    // FIX (deep audit, section 6 — flagship finding): same gap as
+    // accept/route.ts (see its own comment for the full story) — the seat
+    // limit was never re-checked at the point membership actually becomes
+    // 'active', only at invite-creation time. Checked before creating the
+    // Supabase auth account below, not after, so a rejected signup here
+    // never leaves behind an orphaned auth user with no workspace to join.
+    const seatCheck = await checkSeatLimit(service, member.workspace_id, member.workspaces?.plan_tier, ['active'])
+    if (!seatCheck.ok) {
+      return NextResponse.json({
+        error: 'This workspace is currently full for its plan. Ask a workspace admin to free up a seat or upgrade the plan, then try this invite link again.',
+      }, { status: 409 })
+    }
 
     const adminClient = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,

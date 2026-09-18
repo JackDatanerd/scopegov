@@ -5,10 +5,10 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { sendInviteEmail } from '@/lib/email/templates'
-import { PLAN_LIMITS } from '@/lib/utils/format'
 import { nanoid } from 'nanoid'
 import { roleWithinCeiling } from '@/lib/utils/permission-ceiling'
 import { checkInviteRateLimit } from '@/lib/utils/rate-limit'
+import { checkSeatLimit } from '@/lib/utils/seat-limit'
 
 export async function POST(request: NextRequest) {
   try {
@@ -61,20 +61,13 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'Cannot invite someone into a role with permissions you don\u2019t hold yourself' }, { status: 403 })
     }
 
-    // Seat limit check
-    const limits = PLAN_LIMITS[session.planTier]
-    if (limits?.seats) {
-      const { count } = await (service as any)
-        .from('workspace_members')
-        .select('id', { count: 'exact', head: true })
-        .eq('workspace_id', wsId)
-        .in('status', ['active', 'invited'])
-      if ((count || 0) >= limits.seats)
-        return NextResponse.json({
-          error: `Seat limit reached (${limits.seats} seats on ${session.planTier} plan). Upgrade to invite more members.`,
-          upgradeRequired: true,
-        }, { status: 403 })
-    }
+    // Seat limit check — reserves a seat for a pending invite too, not
+    // just active members, so an admin can't invite more people than the
+    // plan has room for even before anyone accepts. See
+    // lib/utils/seat-limit.ts for why this now lives in one shared place.
+    const seatCheck = await checkSeatLimit(service, wsId, session.planTier, ['active', 'invited'])
+    if (!seatCheck.ok)
+      return NextResponse.json({ error: seatCheck.message, upgradeRequired: true }, { status: 403 })
 
     // Check for existing membership
     const normalizedEmail = email.toLowerCase().trim()

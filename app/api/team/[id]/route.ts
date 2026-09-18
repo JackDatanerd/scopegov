@@ -4,6 +4,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { permissionsBeyondCeiling, permissionsBeyondActorForTarget, roleWithinCeiling } from '@/lib/utils/permission-ceiling'
 import { mergePermissions, wouldOrphanManageRoles } from '@/lib/utils/admin-floor'
+import { checkSeatLimit } from '@/lib/utils/seat-limit'
 
 export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -182,6 +183,19 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         return NextResponse.json({
           error: `Cannot reactivate a member who holds permissions you don't have yourself: ${beyond.join(', ')}`,
         }, { status: 403 })
+      }
+
+      // FIX (deep audit, section 6 — flagship finding): reactivation was
+      // the third of three places a member could become 'active' with
+      // zero seat-limit enforcement (see lib/utils/seat-limit.ts for the
+      // other two and the full writeup) — and the most self-contained one,
+      // needing no external plan change or timing window at all: on a
+      // 2-seat plan, deactivate a member, invite+accept a replacement
+      // (2/2 active again), then reactivate the first one straight past
+      // the limit with nothing objecting anywhere.
+      const seatCheck = await checkSeatLimit(service, session.workspaceId, session.planTier, ['active'])
+      if (!seatCheck.ok) {
+        return NextResponse.json({ error: seatCheck.message }, { status: 409 })
       }
 
       await (service as any).from('workspace_members').update({

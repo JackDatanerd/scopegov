@@ -1,6 +1,7 @@
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { logAudit } from '@/lib/utils/audit'
+import { checkSeatLimit } from '@/lib/utils/seat-limit'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
@@ -13,7 +14,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const { data: member } = await (service as any)
       .from('workspace_members')
-      .select('id,status,workspace_id,invite_token_expires_at,invited_email,role_id,workspaces(name,deleted_at)')
+      .select('id,status,workspace_id,invite_token_expires_at,invited_email,role_id,workspaces(name,deleted_at,plan_tier)')
       .eq('invite_token', token)
       .single()
 
@@ -56,6 +57,27 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({
         error: `This invite was sent to ${member.invited_email}. Please sign in with that email address.`,
       }, { status: 403 })
+    }
+
+    // FIX (deep audit, section 6 — flagship finding): the seat limit was
+    // only ever checked at invite-creation time (api/team/invite POST) —
+    // nothing re-checked it here, at the point the row actually becomes
+    // 'active'. The workspace's plan can change between an invite being
+    // sent and accepted (a downgrade, or an external Paystack subscription
+    // change via the webhook), and the invite-creation check only ever
+    // reserved a seat among 'active'+'invited' rows at the moment it was
+    // sent — it never re-validates against the plan that's current NOW.
+    // Only count 'active' here: this row is still 'invited', not part of
+    // the active headcount yet, and it's the count of members who would
+    // actually be active immediately after this that has to fit the plan.
+    const seatCheck = await checkSeatLimit(service, member.workspace_id, member.workspaces?.plan_tier, ['active'])
+    if (!seatCheck.ok) {
+      // Reworded for the invitee (who has no workspace access yet, so
+      // "deactivate a member" / "upgrade in Settings" — checkSeatLimit's
+      // own admin-facing phrasing — wouldn't make sense here).
+      return NextResponse.json({
+        error: 'This workspace is currently full for its plan. Ask a workspace admin to free up a seat or upgrade the plan, then try this invite link again.',
+      }, { status: 409 })
     }
 
     const now = new Date().toISOString()

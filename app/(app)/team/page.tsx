@@ -7,6 +7,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import TeamClient from '@/components/team/TeamClient'
 import Link from 'next/link'
+import { PLAN_LIMITS } from '@/lib/utils/format'
 
 export const metadata = { title: 'Team' }
 
@@ -76,6 +77,21 @@ export default async function TeamPage() {
     return <SoloUpsell />
   }
 
+  // FIX (deep audit, section 6 — feature gap): this banner used to check
+  // `session.planTier === 'solo'` specifically. That covered the cron-
+  // driven downgrade paths (trial-expiry and payment-overdue both only
+  // ever force a workspace to 'solo'), but api/billing/webhook's own
+  // `subscription.create` handler sets plan_tier to WHATEVER plan the
+  // Paystack subscription says — with no seat check at all, unlike the
+  // self-service /api/billing/upgrade route. A Starter/Pro/Agency
+  // workspace that ends up over its own seat cap that way (an external
+  // subscription change, not a checkout through this app) got no warning
+  // anywhere. Generalize to the actual condition — active members beyond
+  // whatever this workspace's current plan actually allows — for every
+  // tier, not just Solo.
+  const seatLimit = PLAN_LIMITS[session.planTier]?.seats
+  const overSeatLimit = seatLimit != null && active.length > seatLimit
+
   return (
     <TeamClient
       members={active}
@@ -87,7 +103,8 @@ export default async function TeamPage() {
       canInvite={hasPermission(session, 'INVITE_MEMBERS')}
       canManageRoles={hasPermission(session, 'MANAGE_ROLES')}
       workspaceId={session.workspaceId}
-      overSeatLimit={session.planTier === 'solo' && active.length > 1}
+      overSeatLimit={overSeatLimit}
+      seatLimit={seatLimit ?? null}
     />
   )
 }
