@@ -54,6 +54,16 @@ export async function POST(request: Request) {
       .update({ used_at: new Date().toISOString() })
       .eq('user_id', user.id).is('used_at', null)
 
+    // FIX (deep audit, Auth+MFA re-pass — session revocation): this route's
+    // whole premise is "the authenticator device is lost or stolen" —
+    // the single strongest assume-compromise signal anywhere in this
+    // file — yet it never revoked anything beyond the one factor. Any
+    // other session/refresh token (e.g. on the lost device itself, still
+    // logged in) survived untouched. Scoped to 'others': the caller is
+    // actively regaining access through the very session making this
+    // call, so that one session must survive the revocation.
+    await supabase.auth.signOut({ scope: 'others' }).catch(e => console.error('MFA recovery session revocation failed (non-fatal):', e))
+
     const { data: userRow } = await (service as any).from('users').select('active_workspace_id').eq('id', user.id).maybeSingle()
     try {
       await logAudit(service, {

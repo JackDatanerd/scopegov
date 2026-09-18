@@ -74,6 +74,25 @@ export async function POST(request: NextRequest) {
     const { error } = await supabase.auth.updateUser({ password })
     if (error) return NextResponse.json({ error: error.message }, { status: 400 })
 
+    // FIX (deep audit, Auth+MFA re-pass — session revocation): changing
+    // your password is precisely the moment a user is most likely acting
+    // because they suspect their account is compromised — but this route
+    // never revoked anything else. A hijacked/stolen refresh token on
+    // another device survived a password change untouched, keeping the
+    // exact access the user just tried to shut off. The infrastructure
+    // for this already exists and is already correct elsewhere:
+    // /api/auth/signout-others uses this same `scope: 'others'` call for
+    // the standalone "sign out other devices" feature, and
+    // reset-password/page.tsx already invalidates everything (global
+    // scope) after a forgot-password reset, specifically per "Spec
+    // §16.2: all sessions invalidated on success" — this in-app path,
+    // the one place you change a password you still remember, never got
+    // the equivalent. Scoped to 'others' (not global) because the caller
+    // just proved they hold the account via currentPassword/aal2 above —
+    // there's no reason to also kick them out of the session they're
+    // sitting in right now.
+    await supabase.auth.signOut({ scope: 'others' }).catch(e => console.error('Password change session revocation failed (non-fatal):', e))
+
     // FIX (deep audit, Auth+MFA section): password change previously left
     // no trail at all — every other sensitive account action here (MFA
     // enroll/disable/recover/regenerate) writes to audit_log and emails

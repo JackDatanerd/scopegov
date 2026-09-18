@@ -90,6 +90,16 @@ export async function DELETE(request: Request) {
     const { error } = await supabase.auth.mfa.unenroll({ factorId })
     if (error) return NextResponse.json({ error: error.message }, { status: 400 })
 
+    // FIX (deep audit, Auth+MFA re-pass — session revocation): disabling
+    // two-factor is a straight downgrade of the account's security
+    // posture — this route required aal2 to prevent an idle/stolen
+    // session cookie from doing it, but never checked whether some OTHER
+    // session was sitting at aal2 too (fully verified, on a device the
+    // legitimate user doesn't recognize as theirs). Same gap and same fix
+    // as change-password: 'others' scope only — the caller just proved
+    // aal2 in this session, nothing to revoke here.
+    await supabase.auth.signOut({ scope: 'others' }).catch(e => console.error('MFA disable session revocation failed (non-fatal):', e))
+
     // Consume any remaining backup codes — they were tied to the factor
     // that no longer exists; leaving them active would let a leaked code
     // silently persist as a route back into an account.

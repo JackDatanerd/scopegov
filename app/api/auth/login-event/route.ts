@@ -35,6 +35,36 @@ export async function POST(request: NextRequest) {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+    // FIX (deep audit, Auth+MFA re-pass — audit-trail integrity): this
+    // route had no check that a sign-in had actually just happened —
+    // only that SOME valid session exists right now. Any authenticated
+    // user could call it at any point, any number of times, and always
+    // get a fresh 'security.login_succeeded' row stamped with the
+    // current time. For a product whose stated purpose is a trustworthy
+    // governance/audit trail, that let a member pad or dilute their own
+    // workspace's login history with fabricated entries — e.g. to bury a
+    // genuine unauthorized-login timestamp in noise. Fixed by checking
+    // the access token's own `iat` claim: LoginForm.tsx fires this within
+    // milliseconds of signInWithPassword() succeeding, so a legitimate
+    // call always carries a token minted seconds ago. This doesn't fully
+    // close the window — Supabase doesn't rotate the access token on
+    // every request, so repeat calls remain possible until it next
+    // refreshes (up to its ~1h lifetime) — but it collapses "forever,
+    // unlimited" down to "briefly, around a real sign-in," which is the
+    // proportionate fix for a route with no other session state to key
+    // a stronger check on. Fails closed to a silent no-op (ok:true, no
+    // audit row) rather than an error — this is a best-effort logger,
+    // never something that should surface as a visible failure.
+    const { data: { session } } = await supabase.auth.getSession()
+    const tokenPayload = session?.access_token
+      ? JSON.parse(Buffer.from(session.access_token.split('.')[1] || '', 'base64').toString('utf8') || '{}')
+      : {}
+    const issuedAt = typeof tokenPayload.iat === 'number' ? tokenPayload.iat : null
+    const ageSeconds = issuedAt ? (Date.now() / 1000 - issuedAt) : Infinity
+    if (!issuedAt || ageSeconds > 120) {
+      return NextResponse.json({ ok: true })
+    }
+
     // FIX (deep audit, Auth+MFA section, standalone pass): `method` used
     // to be read from the request body (`body?.method === 'google' ?
     // 'google' : 'password'`) — but this route's only real caller,
