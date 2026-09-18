@@ -6,6 +6,8 @@
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
+import { logAudit } from '@/lib/utils/audit'
+import type { SessionUser } from '@/lib/supabase/types'
 
 // FIX (deep audit, section 5 re-pass): workspace_defaults was designed
 // from the start as a per-project-type table — see the 8-column,
@@ -75,7 +77,17 @@ class DefaultsValidationError extends Error {}
 // governing law (e.g. the Settings → Defaults tab, post-fix) simply
 // omit governingLaw from the body and this leaves the workspace's
 // value untouched rather than clobbering it with a default.
-async function saveDefaults(workspaceId: string, body: any) {
+// FIX (deep audit, section 5 — compliance gap): none of this route's
+// writes were ever recorded in audit_log, despite every other
+// workspace-settings mutation (workspace/settings, branding, logo) doing
+// so — an odd, unexplained gap given the app's whole value proposition is
+// governance/audit. Revision rounds, payment structure, and the
+// governing-law write-through all bake into every new SOW a workspace
+// generates from here on, exactly the kind of change that belongs in the
+// "immutable record." `actor` is optional so DELETE below (which already
+// has its own session in scope) and POST/PATCH can share this one
+// function without changing its existing signature contract.
+async function saveDefaults(workspaceId: string, body: any, actor?: SessionUser) {
   const { revisionRounds, paymentStructure, governingLaw } = body
   const projectType = normalizeProjectType(body.projectType)
   if (projectType === undefined && body.projectType !== undefined) {
@@ -96,10 +108,23 @@ async function saveDefaults(workspaceId: string, body: any) {
   query = projectType ? query.eq('project_type', projectType) : query.is('project_type', null)
   const { data: existing } = await query.maybeSingle()
 
+  // FIX (deep audit, section 5 re-pass): `Number(revisionRounds) || 2`
+  // treated a deliberately-entered 0 revision rounds as falsy and
+  // silently substituted the default — the same falsy-zero shape already
+  // found and fixed for proactiveRiskThreshold in
+  // app/api/workspace/settings/route.ts. The Settings UI's own dropdown
+  // only offers 1–5 today, so this was never triggered through the app,
+  // but it's an outright data-corruption bug for anyone (or anything)
+  // calling this route directly with a valid, intentional 0.
+  const parsedRevisionRounds = Number(revisionRounds)
+  const revisionRoundsValue = Number.isFinite(parsedRevisionRounds) && parsedRevisionRounds >= 0
+    ? parsedRevisionRounds
+    : 2
+
   const payload: Record<string, unknown> = {
     workspace_id:      workspaceId,
     project_type:      projectType || null,
-    revision_rounds:   Number(revisionRounds) || 2,
+    revision_rounds:   revisionRoundsValue,
     payment_structure: paymentStructure || '50_50',
     updated_at:        new Date().toISOString(),
   }
@@ -129,6 +154,7 @@ async function saveDefaults(workspaceId: string, body: any) {
   }
 
   // The write-through: this is the field SOW generation actually reads.
+  let governingLawUpdated = false
   if (!projectType && governingLaw !== undefined && governingLaw !== null && String(governingLaw).trim() !== '') {
     const { error: wsError } = await (service as any)
       .from('workspaces')
@@ -138,6 +164,22 @@ async function saveDefaults(workspaceId: string, body: any) {
       console.error('workspaces.governing_law write-through failed:', wsError)
       throw new Error('Could not save your governing law. Try again.')
     }
+    governingLawUpdated = true
+  }
+
+  if (actor) {
+    await logAudit(service, {
+      workspaceId, actorId: actor.id,
+      actorEmail: actor.email, actorName: actor.name,
+      eventType: 'workspace.defaults_updated', entityType: 'workspace_defaults',
+      entityId: workspaceId, entityName: projectType || 'global',
+      metadata: {
+        projectType: projectType || 'global',
+        revisionRounds: payload.revision_rounds,
+        paymentStructure: payload.payment_structure,
+        ...(governingLawUpdated ? { governingLawUpdated: true } : {}),
+      },
+    })
   }
 }
 
@@ -156,7 +198,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Missing permission: MANAGE_WORKSPACE_SETTINGS' }, { status: 403 })
     }
     const body = await request.json()
-    await saveDefaults(session.workspaceId, body)
+    await saveDefaults(session.workspaceId, body, session)
     return NextResponse.json({ ok: true })
   } catch (err) {
     // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): raw
@@ -179,7 +221,7 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: 'Missing permission: MANAGE_WORKSPACE_SETTINGS' }, { status: 403 })
     }
     const body = await request.json()
-    await saveDefaults(session.workspaceId, body)
+    await saveDefaults(session.workspaceId, body, session)
     return NextResponse.json({ ok: true })
   } catch (err) {
     // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): same
@@ -222,6 +264,18 @@ export async function DELETE(request: NextRequest) {
       console.error('Workspace defaults delete failed:', error)
       return NextResponse.json({ error: 'Could not remove that override. Try again.' }, { status: 500 })
     }
+
+    // FIX (deep audit, section 5 — compliance gap): same missing-audit
+    // gap as saveDefaults() above — removing a per-type override changes
+    // what every future project of that type gets baked into its SOW.
+    await logAudit(service, {
+      workspaceId: session.workspaceId, actorId: session.id,
+      actorEmail: session.email, actorName: session.name,
+      eventType: 'workspace.defaults_override_removed', entityType: 'workspace_defaults',
+      entityId: session.workspaceId, entityName: projectType,
+      metadata: { projectType },
+    })
+
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error('Workspace defaults DELETE error:', err)

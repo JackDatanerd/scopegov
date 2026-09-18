@@ -163,3 +163,63 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
+
+// FIX (deep audit, section 5 — feature gap): there was no way to remove a
+// logo once uploaded anywhere in the app. POST only ever upserts a new
+// file, and PATCH /api/workspace/branding's `if (logoStoragePath && ...)`
+// truthy-check meant even a client sending `null`/`''` to explicitly
+// clear it was silently ignored — the exact same "clear via explicit
+// null" shape agencySignatureData already supports on that same route.
+// A dedicated DELETE here (rather than overloading PATCH) keeps the
+// Storage removal and the DB column update in the same request, same
+// reasoning as POST's own upload+link-in-one-request fix above.
+export async function DELETE() {
+  try {
+    const session = await getSession()
+    if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!hasPermission(session, 'MANAGE_WORKSPACE_SETTINGS')) {
+      return NextResponse.json({ error: 'Missing permission: MANAGE_WORKSPACE_SETTINGS' }, { status: 403 })
+    }
+
+    const service = createServiceClient()
+
+    const { data: ws } = await (service as any)
+      .from('workspaces').select('logo_storage_path').eq('id', session.workspaceId).maybeSingle()
+    const currentPath: string | undefined = ws?.logo_storage_path
+
+    if (!currentPath) {
+      // Nothing to remove — treat as a harmless no-op rather than an error.
+      return NextResponse.json({ ok: true })
+    }
+
+    const { error: clearErr } = await (service as any)
+      .from('workspaces')
+      .update({ logo_storage_path: null, updated_at: new Date().toISOString() })
+      .eq('id', session.workspaceId)
+
+    if (clearErr) {
+      console.error('Logo removal (DB) failed:', clearErr)
+      return NextResponse.json({ error: 'Could not remove logo. Try again.' }, { status: 500 })
+    }
+
+    // Same ordering as POST: only delete the Storage object once the
+    // workspace row durably no longer points at it. Best-effort — a
+    // failure here leaves an orphaned-but-harmless file behind, not a
+    // broken image reference.
+    const { error: removeErr } = await (service as any).storage.from('logos').remove([currentPath])
+    if (removeErr) console.error('Logo storage removal failed (non-fatal):', removeErr)
+
+    await logAudit(service, {
+      workspaceId: session.workspaceId, actorId: session.id,
+      actorEmail: session.email, actorName: session.name,
+      eventType: 'workspace.logo_removed', entityType: 'workspace',
+      entityId: session.workspaceId, entityName: session.workspaceName,
+      metadata: { path: currentPath },
+    })
+
+    return NextResponse.json({ ok: true })
+  } catch (err) {
+    console.error('Logo removal route error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+  }
+}

@@ -200,7 +200,12 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
   const [logoPreview, setLogoPreview] = useState<string | null>(logoUrl)
 
   const [defaultsForm, setDefaultsForm] = useState(() => ({
-    revRounds:    String(defaults?.revision_rounds || 2),
+    // FIX (deep audit, section 5 re-pass): `|| 2` — same falsy-zero read
+    // bug as riskThreshold below. The dropdown only offers 1–5 today so
+    // this was never user-reachable, but fixing the write side
+    // (api/workspace/defaults/route.ts) without fixing this read would
+    // leave a value saved via direct API call misrendered here.
+    revRounds:    String(defaults?.revision_rounds ?? 2),
     payStructure: defaults?.payment_structure || '50_50',
     // FIX (doc-completeness audit, finding #1): governing law used to be a
     // second, independent field here (workspace_defaults.governing_law)
@@ -214,7 +219,16 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
   const [guardianForm, setGuardianForm] = useState(() => ({
     sensitivity:   workspace?.guardian_sensitivity_tier || 'medium',
     riskEnabled:   workspace?.proactive_risk_alerts_enabled ?? true,
-    riskThreshold: String(workspace?.proactive_risk_threshold || 10000),
+    // FIX (deep audit, section 5 re-pass): `|| 10000` treated a validly-
+    // saved 0 ("alert on any project without a signed SOW, regardless of
+    // value") the same way the Save handler below used to before it was
+    // fixed — as falsy, silently substituting the default. The save path
+    // already correctly distinguishes "genuinely unset" from "explicitly
+    // zero" (see the onClick handler's own comment further down); this
+    // read path didn't, so a workspace that successfully saved 0 saw
+    // "10000" on next page load, and saving again from that stale value
+    // would have overwritten the real 0 right back to 10000.
+    riskThreshold: String(workspace?.proactive_risk_threshold ?? 10000),
   }))
 
 
@@ -693,6 +707,7 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, save
   const [logoFile,  setLogoFile]  = useState<File | null>(null)
   const [uploading, setUploading] = useState(false)
   const [fileError, setFileError] = useState('')
+  const [removingLogo, setRemovingLogo] = useState(false)
   const [sigSaved,   setSigSaved]   = useState<string | null>(savedSignature)
   const [savingSig,  setSavingSig]  = useState(false)
   const [sigError,   setSigError]   = useState('')
@@ -750,6 +765,26 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, save
     } finally { setUploading(false) }
   }
 
+  // FIX (deep audit, section 5 — feature gap): there was previously no way
+  // to remove a logo once uploaded — see
+  // app/api/workspace/branding/logo/route.ts's DELETE handler for the
+  // backend half of this. Clears the local preview immediately; the
+  // server call is what actually deletes the Storage object and the
+  // workspace's logo_storage_path.
+  async function removeLogo() {
+    if (!confirm('Remove the workspace logo? This can\u2019t be undone — you\u2019ll need to upload a new one.')) return
+    setRemovingLogo(true); setFileError('')
+    try {
+      const res = await fetch('/api/workspace/branding/logo', { method: 'DELETE' })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) { setFileError(json.error || 'Could not remove logo — try again.'); return }
+      setPreview(null)
+      setLogoFile(null)
+    } catch {
+      setFileError('Could not remove logo — try again.')
+    } finally { setRemovingLogo(false) }
+  }
+
   async function saveSignature() {
     const dataUrl = sigPadRef.current?.toDataURL()
     if (!dataUrl) { setSigError('Draw a signature first.'); return }
@@ -789,10 +824,18 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, save
               : <i className="ti ti-building" style={{ fontSize: 28, color: 'var(--text-4)' }} />}
           </div>
           <div>
-            <label className="btn btn-ghost btn-sm" style={{ cursor: 'pointer' }}>
-              <i className="ti ti-upload" style={{ fontSize: 12 }} /> {logoFile ? 'Change logo' : 'Upload logo'}
-              <input type="file" accept="image/png,image/jpeg" style={{ display: 'none' }} onChange={handleLogoChange} />
-            </label>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <label className="btn btn-ghost btn-sm" style={{ cursor: 'pointer' }}>
+                <i className="ti ti-upload" style={{ fontSize: 12 }} /> {logoFile ? 'Change logo' : 'Upload logo'}
+                <input type="file" accept="image/png,image/jpeg" style={{ display: 'none' }} onChange={handleLogoChange} />
+              </label>
+              {preview && !logoFile && (
+                <button type="button" className="btn btn-ghost btn-sm" style={{ color: 'var(--red)' }}
+                  disabled={removingLogo} onClick={removeLogo}>
+                  {removingLogo ? <span className="spin spin-dark" /> : 'Remove logo'}
+                </button>
+              )}
+            </div>
             <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 5 }}>PNG or JPEG · Max 2 MB</p>
             {fileError && <p className="ferr" style={{ marginTop: 4 }}>{fileError}</p>}
           </div>

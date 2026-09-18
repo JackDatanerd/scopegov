@@ -123,11 +123,60 @@ export async function PATCH(request: NextRequest) {
     if (typeof updates.agency_name === 'string') updates.agency_name = sanitizeDisplayName(updates.agency_name)
     if (typeof updates.name === 'string')        updates.name        = sanitizeDisplayName(updates.name)
 
+    // FIX (deep audit, section 5 — validation gap): taxId/phone/website/
+    // defaultPaymentInstructions had no length cap or type check at all,
+    // unlike every other free-text field on this route (industry,
+    // agency_name, name). They don't flow into email headers the way
+    // agency_name/name do — they only ever render as plain PDF text (see
+    // lib/pdf/renderer.tsx's <Text> usage) or auto-escaped JSX on portal
+    // pages — so this isn't an injection fix, just closing an
+    // unbounded-input gap on columns that are otherwise unguarded.
+    const TEXT_FIELD_LIMITS: Record<string, number> = {
+      tax_id: 50, phone: 40, website: 200, default_payment_instructions: 2000,
+    }
+    for (const [col, max] of Object.entries(TEXT_FIELD_LIMITS)) {
+      if (typeof updates[col] === 'string') {
+        const trimmed = (updates[col] as string).trim()
+        if (trimmed.length > max) {
+          return NextResponse.json({ error: `${col.replace(/_/g, ' ')} must be under ${max} characters` }, { status: 400 })
+        }
+        updates[col] = trimmed
+      }
+    }
+
     // legalAddress is a structured object (line1/line2/city/region/postalCode/country),
     // not a flat scalar, so it doesn't fit the fieldMap loop above. Stored as-is in the
     // legal_address jsonb column; the PDF renderer formats it for display.
+    //
+    // FIX (deep audit, section 5 — validation gap): previously stored
+    // whatever shape the client sent with zero validation — not just
+    // unbounded length, but no guarantee it was even an object (a string,
+    // array, or number would have been accepted and persisted as-is into
+    // a jsonb column typed for a structured address). formatAddressLines()
+    // (lib/utils/format.ts) already degrades gracefully against a
+    // malformed shape, so this was never a crash risk — but it's still an
+    // unvalidated write path. Only pick the six known keys, coerce each to
+    // a capped, trimmed string, and reject anything that isn't a plain
+    // object to begin with.
     if (body.legalAddress !== undefined) {
-      updates.legal_address = body.legalAddress
+      if (body.legalAddress === null) {
+        updates.legal_address = null
+      } else if (typeof body.legalAddress !== 'object' || Array.isArray(body.legalAddress)) {
+        return NextResponse.json({ error: 'Invalid legal address' }, { status: 400 })
+      } else {
+        const ADDRESS_FIELDS = ['line1', 'line2', 'city', 'region', 'postalCode', 'country'] as const
+        const cleanAddress: Record<string, string> = {}
+        for (const key of ADDRESS_FIELDS) {
+          const value = (body.legalAddress as Record<string, unknown>)[key]
+          if (typeof value !== 'string') continue
+          const trimmed = value.trim()
+          if (trimmed.length > 200) {
+            return NextResponse.json({ error: `Address ${key} must be under 200 characters` }, { status: 400 })
+          }
+          if (trimmed) cleanAddress[key] = trimmed
+        }
+        updates.legal_address = cleanAddress
+      }
     }
 
     // Slug is editable exactly once (spec §1.0). The UI now always submits
