@@ -229,7 +229,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // be found via the log's own free-text search either (that matches
     // on entity_name). Pull the email alongside the fields already
     // fetched for the ceiling/floor checks.
-    let targetMember: { user_id: string | null; role_id: string | null; permission_overrides: Record<string, unknown> | null; effective_permissions: Record<string, unknown> | null; users?: { email: string | null } | null } | null = null
+    let targetMember: { user_id: string | null; role_id: string | null; permission_overrides: Record<string, unknown> | null; effective_permissions: Record<string, unknown> | null; users?: { name: string | null; email: string | null } | null } | null = null
     if (body.permissionOverrides !== undefined || body.roleId !== undefined) {
       const { data } = await (service as any)
         .from('workspace_members').select('user_id,role_id,permission_overrides,effective_permissions,users!workspace_members_user_id_fkey(name,email)')

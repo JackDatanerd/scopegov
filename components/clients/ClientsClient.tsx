@@ -37,9 +37,15 @@ export default function ClientsClient({ clients, canCreate, canViewFinancials, c
     )
   }, [clients, search, showArchived])
 
+  // FIX (deep audit, section 14, finding #5): this list disagreed with
+  // clients/[id]/page.tsx's ACTIVE_STATUSES (used for the archive-warning
+  // threshold) on whether 'Stalled' counts as active — a client with only
+  // a Stalled project showed "0 active" here but would count toward the
+  // warning on its own detail page. Same list, both places.
+  const ACTIVE_STATUSES = ['Active', 'Awaiting Signature', 'Intake', 'Changes Requested', 'Stalled']
   function clientStats(c: any) {
     const projects  = c.projects || []
-    const active    = projects.filter((p: any) => ['Active','Awaiting Signature','Intake','Changes Requested'].includes(p.status)).length
+    const active    = projects.filter((p: any) => ACTIVE_STATUSES.includes(p.status)).length
     const total     = projects.length
     const value     = projects.reduce((s: number, p: any) => s + (p.contract_value || 0), 0)
     const currency  = projects[0]?.currency || 'USD'

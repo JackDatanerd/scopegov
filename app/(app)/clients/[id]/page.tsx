@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { formatCurrency, formatDate, projectStatusLabel } from '@/lib/utils/format'
 import BillingDetailsCard from '@/components/clients/BillingDetailsCard'
 import ClientContactCard from '@/components/clients/ClientContactCard'
+import ClientContactsCard from '@/components/clients/ClientContactsCard'
 import ArchiveClientButton from '@/components/clients/ArchiveClientButton'
 
 interface Props { params: Promise<{ id: string }> }
@@ -39,6 +40,20 @@ export default async function ClientDetailPage({ params }: Props) {
   }
 
   const canEditClientData = hasPermission(session, 'CREATE_PROJECTS')
+
+  // FEATURE (deep audit, section 14, finding #8): see
+  // components/clients/ClientContactsCard.tsx for the full context —
+  // client_contacts has existed in the schema since day one and is only
+  // now getting a read/write surface. Same visibility gate as every other
+  // contact-visibility field on this page (email/phone/cc_emails above).
+  const { data: contacts = [] } = canViewClientData
+    ? await (service as any)
+        .from('client_contacts')
+        .select('id,name,email,role,is_primary,created_at')
+        .eq('client_id', id)
+        .order('is_primary', { ascending: false })
+        .order('created_at', { ascending: true })
+    : { data: [] }
 
   // FIX (deep audit, section 14 — flagship finding): same project-
   // visibility gap as the clients list page — see that page's comment for
@@ -237,6 +252,14 @@ export default async function ClientDetailPage({ params }: Props) {
                 </p>
               </div>
             </>
+          )}
+
+          {canViewClientData && (
+            <ClientContactsCard
+              clientId={client.id}
+              contacts={contacts || []}
+              editable={canEditClientData}
+            />
           )}
 
           {/* Phase 11: billing address + VAT — feeds the "Bill To" block on

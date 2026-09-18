@@ -292,7 +292,7 @@ export default function ProjectDetail({
       <div style={{ padding: '24px 40px', maxWidth: 1080 }}>
         {tab === 'overview' && <OverviewTab project={project} milestones={milestones} amendments={amendments} permissions={permissions} currency={currency} router={router} />}
         {tab === 'sow'      && <SowTab project={project} sows={project.sow_documents || []} amendments={amendments} permissions={permissions} router={router} pendingApprovals={pendingApprovals} />}
-        {tab === 'guardian' && <GuardianTab project={project} flags={project.guardian_flags || []} permissions={permissions} router={router} />}
+        {tab === 'guardian' && <GuardianTab project={project} flags={project.guardian_flags || []} exceptions={project.exceptions_log || []} permissions={permissions} router={router} team={team} />}
         {tab === 'co'       && <CoTab project={project} cos={project.change_orders || []} permissions={permissions} currency={currency} pendingApprovals={pendingApprovals} team={team} />}
         {tab === 'billing'  && <BillingTab project={project} milestones={milestones} invoices={invoices} reconciliation={reconciliation} permissions={permissions} currency={currency} router={router} defaultPaymentInstructions={defaultPaymentInstructions} pendingApprovals={pendingApprovals} />}
         {tab === 'discussion' && (
@@ -935,7 +935,7 @@ const VERDICT_COPY: Record<string, { icon: string; color: string; bg: string; ti
   classification_failed: { icon: 'ti-alert-triangle', color: 'var(--red)', bg: 'var(--red-lt)', title: 'Classification failed — try again in a moment' },
 }
 
-function GuardianTab({ project, flags, permissions, router }: any) {
+function GuardianTab({ project, flags, exceptions = [], permissions, router, team }: any) {
   const [pasteMode,    setPasteMode]    = useState(false)
   const [pasteText,    setPasteText]    = useState('')
   const [submitting,   setSubmitting]   = useState(false)
@@ -1104,9 +1104,57 @@ function GuardianTab({ project, flags, permissions, router }: any) {
         </div>
       ) : (
         filteredFlags.map((flag: any) => (
-          <FlagCard key={flag.id} flag={flag} permissions={permissions} router={router} projectId={project.id} />
+          <FlagCard key={flag.id} flag={flag} permissions={permissions} router={router} projectId={project.id} team={team} />
         ))
       )}
+
+      {/* FEATURE (deep audit, section 13 — flagship finding): exceptions_log
+          rows have existed since the initial schema, and flag_comments/
+          flag_attachments (via FlagCollaboration entityType="exception")
+          have supported annotating them since Phase 2 — but nothing ever
+          listed a project's granted exceptions anywhere in this tab, so
+          that entire collaboration surface was unreachable. The only place
+          an exception was ever visible was the cross-workspace Reports
+          page's read-only, unclickable, top-8 table. */}
+      {exceptions.length > 0 && (permissions.viewGuardianHistory || permissions.approveFlags || permissions.grantExceptions) && (
+        <div style={{ marginTop: 24 }}>
+          <div className="sec-hd" style={{ marginBottom: 10 }}>
+            <div className="sec-title">Exceptions granted ({exceptions.length})</div>
+          </div>
+          {exceptions.map((ex: any) => (
+            <ExceptionCard key={ex.id} exception={ex} permissions={permissions} currency={project.currency || 'USD'} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// FEATURE (deep audit, section 13 — flagship finding): see the "Exceptions
+// granted" note above. Read-only card (the record itself — deliverable,
+// value, reason, who granted it — is fixed once created; only the
+// governance discussion around it, via FlagCollaboration, is interactive).
+function ExceptionCard({ exception, permissions, currency }: any) {
+  const canWrite = permissions.approveFlags || permissions.grantExceptions
+  return (
+    <div className="surface surface-p" style={{ marginBottom: 10 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 13, fontWeight: 500 }}>{exception.granted_what || exception.deliverable || 'Exception'}</div>
+          {exception.reason && (
+            <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 4 }}>{exception.reason}</div>
+          )}
+          <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 6 }}>
+            {formatRelative(exception.created_at)}
+          </div>
+        </div>
+        {permissions.viewFinancials && (
+          <div style={{ fontFamily: 'IBM Plex Mono, monospace', fontSize: 13, color: 'var(--text-2)', whiteSpace: 'nowrap' }}>
+            {formatCurrency(exception.estimated_value || 0, currency)}
+          </div>
+        )}
+      </div>
+      <FlagCollaboration entityType="exception" entityId={exception.id} canWrite={canWrite} />
     </div>
   )
 }
@@ -1169,7 +1217,22 @@ function GuardianHistoryPanel({ projectId }: { projectId: string }) {
       ) : (
         <>
           {checks.map(c => {
-            const v = VERDICT_COPY[c.outcome] || VERDICT_COPY.pending
+            // FIX (deep audit, section 13, finding #6): guardian_checks.
+            // outcome is DB-constrained to pending/in_scope/borderline/
+            // out_of_scope/covered_by_co — 'duplicate' and
+            // 'classification_failed' live in separate boolean columns
+            // (is_duplicate / classification_failed) and both leave
+            // outcome='pending' in the row. This panel indexed VERDICT_COPY
+            // by the raw c.outcome, so both cases rendered as a plain,
+            // wrong "No signed SOW yet" pending verdict — indistinguishable
+            // from a genuine pending check, and directly contradicting this
+            // panel's own header comment that classification failures are
+            // "surfaced" here. The POST /api/guardian/check response
+            // already gets this right by returning a synthetic outcome
+            // string for these two cases (see lastResult above) — apply
+            // the same derivation to the history rows.
+            const displayOutcome = c.isDuplicate ? 'duplicate' : c.classificationFailed ? 'classification_failed' : c.outcome
+            const v = VERDICT_COPY[displayOutcome] || VERDICT_COPY.pending
             return (
               <div key={c.id} style={{
                 display: 'flex', gap: 10, alignItems: 'flex-start', padding: '9px 0',
@@ -1213,25 +1276,41 @@ function GuardianHistoryPanel({ projectId }: { projectId: string }) {
   )
 }
 
-function FlagCard({ flag, permissions, router, projectId }: any) {
+function FlagCard({ flag, permissions, router, projectId, team }: any) {
   const [acting, setActing] = useState(false)
+  // FIX (deep audit, section 13, finding #4): res.ok was never checked —
+  // a 409 (already resolved/closed/converted), a 403, or any other error
+  // still fell through to router.refresh() as if it had succeeded, with
+  // no error shown anywhere. Every other action handler in this file
+  // (handlePasteSubmit, EscalateCoModal, CoCard.doAction,
+  // ArchiveClientButton) checks res.ok and surfaces json.error — this one
+  // didn't.
+  const [actionError, setActionError] = useState('')
+  const [showException, setShowException] = useState(false)
+  const [showEscalate,  setShowEscalate]  = useState(false)
+  const [showClose,     setShowClose]     = useState(false)
 
-  async function handleAction(action: string) {
-    setActing(true)
+  async function handleAction(action: string, extra: Record<string, unknown> = {}) {
+    setActing(true); setActionError('')
     try {
       const res  = await fetch(`/api/guardian/flags/${flag.id}`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, projectId }),
+        body: JSON.stringify({ action, projectId, ...extra }),
       })
       const json = await res.json().catch(() => ({}))
+      if (!res.ok) { setActionError(json.error || 'Action failed — try again.'); return false }
       // FIX: draft_co creates a real, editable CO — but this just did
       // router.refresh() and left the user on the Guardian tab with no way
       // to find it. Take them straight to the new draft.
       if (action === 'draft_co' && json.coId) {
         router.push(`/projects/${projectId}/co/${json.coId}`)
-        return
+        return true
       }
       router.refresh()
+      return true
+    } catch {
+      setActionError('Action failed — try again.')
+      return false
     } finally { setActing(false) }
   }
 
@@ -1249,7 +1328,7 @@ function FlagCard({ flag, permissions, router, projectId }: any) {
             <p className="flag-ref">Ref: {flag.sow_reference} · {formatRelative(flag.created_at)}</p>
           </div>
           {flag.status === 'open' && (
-            <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+            <div style={{ display: 'flex', gap: 6, flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
               {permissions.createCo && (
                 <button className="btn btn-primary btn-xs" onClick={() => handleAction('draft_co')} disabled={acting}>
                   <i className="ti ti-plus" style={{ fontSize: 11 }} /> Draft CO
@@ -1259,7 +1338,19 @@ function FlagCard({ flag, permissions, router, projectId }: any) {
                 <button className="btn btn-ghost btn-xs" onClick={() => handleAction('resolve')} disabled={acting}>Resolve</button>
               )}
               {permissions.grantExceptions && (
-                <button className="btn btn-ghost btn-xs" onClick={() => handleAction('exception')} disabled={acting}>Exception</button>
+                <button className="btn btn-ghost btn-xs" onClick={() => setShowException(true)} disabled={acting}>Exception</button>
+              )}
+              {/* FIX (deep audit, section 13, finding #2): 'escalate' and
+                  'close' have been fully built and permission-checked
+                  server-side (see guardian/flags/[id]/route.ts) since
+                  audit round 2 — this component just never had a button
+                  for either, so a flag could never be escalated or closed,
+                  only resolved/exception'd/drafted-to-CO. */}
+              {permissions.approveFlags && (
+                <button className="btn btn-ghost btn-xs" onClick={() => setShowEscalate(true)} disabled={acting}>Escalate</button>
+              )}
+              {permissions.approveFlags && (
+                <button className="btn btn-ghost btn-xs" onClick={() => setShowClose(true)} disabled={acting}>Close</button>
               )}
             </div>
           )}
@@ -1269,21 +1360,199 @@ function FlagCard({ flag, permissions, router, projectId }: any) {
               for status === 'borderline_review' — every borderline flag
               was a dead end no one could act on. */}
           {flag.status === 'borderline_review' && permissions.approveFlags && (
-            <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+            <div style={{ display: 'flex', gap: 6, flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
               <button className="btn btn-primary btn-xs" onClick={() => handleAction('confirm_out_of_scope')} disabled={acting}>
                 Confirm out of scope
               </button>
               <button className="btn btn-ghost btn-xs" onClick={() => handleAction('dismiss_borderline')} disabled={acting}>
                 Dismiss
               </button>
+              <button className="btn btn-ghost btn-xs" onClick={() => setShowEscalate(true)} disabled={acting}>Escalate</button>
+            </div>
+          )}
+          {/* FIX (deep audit, section 13, finding #2): 'close' is also valid
+              from 'resolved' (see the route's own status guard) — a
+              resolved flag previously had no action available at all. */}
+          {flag.status === 'resolved' && permissions.approveFlags && (
+            <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+              <button className="btn btn-ghost btn-xs" onClick={() => setShowClose(true)} disabled={acting}>Close</button>
             </div>
           )}
         </div>
+        {actionError && <p className="ferr" style={{ marginTop: 4 }}>{actionError}</p>}
         <FlagCollaboration
           entityType="flag"
           entityId={flag.id}
           canWrite={permissions.approveFlags || permissions.grantExceptions}
         />
+      </div>
+      {showException && (
+        <ExceptionModal
+          flag={flag}
+          onClose={() => setShowException(false)}
+          onSubmit={async (fields: any) => {
+            const ok = await handleAction('exception', fields)
+            if (ok) setShowException(false)
+            return ok
+          }}
+        />
+      )}
+      {showEscalate && (
+        <EscalateFlagModal
+          flag={flag}
+          team={team}
+          onClose={() => setShowEscalate(false)}
+          onSubmit={async (fields: any) => {
+            const ok = await handleAction('escalate', fields)
+            if (ok) setShowEscalate(false)
+            return ok
+          }}
+        />
+      )}
+      {showClose && (
+        <CloseFlagModal
+          onClose={() => setShowClose(false)}
+          onSubmit={async (fields: any) => {
+            const ok = await handleAction('close', fields)
+            if (ok) setShowClose(false)
+            return ok
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+// FIX (deep audit, section 13, finding #1): the missing collection surface
+// for exceptions_log.estimated_value/reason — see guardian/flags/[id]
+// 'exception' case for the backend half of this fix. Every exception
+// granted before now recorded $0 and an empty reason because nothing ever
+// asked for either.
+function ExceptionModal({ flag, onClose, onSubmit }: any) {
+  const [grantedWhat, setGrantedWhat] = useState(flag.description || '')
+  const [estimatedValue, setEstimatedValue] = useState('')
+  const [exceptionReason, setExceptionReason] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  async function submit() {
+    if (!exceptionReason.trim()) { setError('A reason is required.'); return }
+    setBusy(true); setError('')
+    try {
+      const ok = await onSubmit({ grantedWhat: grantedWhat.trim(), estimatedValue, exceptionReason: exceptionReason.trim() })
+      if (!ok) setError('Could not save the exception — try again.')
+    } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h2 className="modal-title">Grant exception</h2>
+        <p style={{ fontSize: 13, color: 'var(--text-3)', marginBottom: 16 }}>
+          Record what&rsquo;s being given away for free and why — this is the audit trail for scope granted without a change order.
+        </p>
+        <label className="form-label">What&rsquo;s being granted</label>
+        <textarea className="form-input" rows={2} value={grantedWhat} onChange={(e) => setGrantedWhat(e.target.value)}
+          style={{ marginBottom: 12 }} />
+        <label className="form-label">Estimated value <span className="fhint">— optional, defaults to $0</span></label>
+        <input type="number" min="0" step="0.01" className="form-input" value={estimatedValue}
+          onChange={(e) => setEstimatedValue(e.target.value)} placeholder="0.00" style={{ marginBottom: 12 }} />
+        <label className="form-label">Reason</label>
+        <textarea className="form-input" rows={3} value={exceptionReason} onChange={(e) => setExceptionReason(e.target.value)}
+          placeholder="e.g. Client relationship — one-time goodwill, not worth a CO for $200…" />
+        {error && <p style={{ fontSize: 12, color: 'var(--red)', marginTop: 8 }}>{error}</p>}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+          <button className="btn btn-ghost btn-sm" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="btn btn-primary btn-sm" onClick={submit} disabled={busy || !exceptionReason.trim()}>
+            {busy ? <span className="spin" /> : 'Grant exception'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// FIX (deep audit, section 13, finding #2): mirrors EscalateCoModal — the
+// backend action this posts to has existed and been permission-audited
+// since audit round 2, but had no UI entry point until now.
+function EscalateFlagModal({ flag, team, onClose, onSubmit }: any) {
+  const [escalateTo, setEscalateTo] = useState('')
+  const [note, setNote] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  async function submit() {
+    if (note.trim().length < 10) { setError('Note must be at least 10 characters.'); return }
+    setBusy(true); setError('')
+    try {
+      const ok = await onSubmit({ escalateTo: escalateTo || null, escalationNote: note.trim() })
+      if (!ok) setError('Could not escalate — try again.')
+    } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h2 className="modal-title">Escalate scope flag</h2>
+        <p style={{ fontSize: 13, color: 'var(--text-3)', marginBottom: 16 }}>
+          Flag &ldquo;{flag.sow_reference}&rdquo; for someone to step in. This doesn&rsquo;t change its status — it&rsquo;s just a heads-up.
+        </p>
+        <label className="form-label">Escalate to</label>
+        <select className="form-input" value={escalateTo} onChange={(e) => setEscalateTo(e.target.value)} style={{ marginBottom: 12 }}>
+          <option value="">Myself</option>
+          {(team || []).map((t: any) => {
+            const u = t.workspace_members?.users
+            return u ? <option key={t.workspace_members.id} value={t.workspace_members.id}>{u.name}</option> : null
+          })}
+        </select>
+        <label className="form-label">Why is this being escalated?</label>
+        <textarea className="form-input" rows={3} value={note} onChange={(e) => setNote(e.target.value)}
+          placeholder="e.g. Client is pushing back hard on this being out of scope…" />
+        {error && <p style={{ fontSize: 12, color: 'var(--red)', marginTop: 8 }}>{error}</p>}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+          <button className="btn btn-ghost btn-sm" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="btn btn-primary btn-sm" onClick={submit} disabled={busy}>
+            {busy ? <span className="spin" /> : 'Escalate'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// FIX (deep audit, section 13, finding #2): 'close' — same missing UI
+// entry point as escalate. Reason is optional server-side (close_reason
+// can be null), so this modal allows submitting blank.
+function CloseFlagModal({ onClose, onSubmit }: any) {
+  const [reason, setReason] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  async function submit() {
+    setBusy(true); setError('')
+    try {
+      const ok = await onSubmit({ reason: reason.trim() || undefined })
+      if (!ok) setError('Could not close — try again.')
+    } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h2 className="modal-title">Close flag</h2>
+        <p style={{ fontSize: 13, color: 'var(--text-3)', marginBottom: 16 }}>
+          Closes this flag without resolving it or drafting a change order.
+        </p>
+        <label className="form-label">Reason <span className="fhint">— optional</span></label>
+        <textarea className="form-input" rows={3} value={reason} onChange={(e) => setReason(e.target.value)}
+          placeholder="e.g. Superseded by a broader CO covering this and other items…" />
+        {error && <p style={{ fontSize: 12, color: 'var(--red)', marginTop: 8 }}>{error}</p>}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+          <button className="btn btn-ghost btn-sm" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="btn btn-primary btn-sm" onClick={submit} disabled={busy}>
+            {busy ? <span className="spin" /> : 'Close flag'}
+          </button>
+        </div>
       </div>
     </div>
   )

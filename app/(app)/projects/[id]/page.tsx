@@ -64,6 +64,7 @@ export default async function ProjectPage({ params, searchParams }: Props) {
       client_id, created_by, workspace_id, guardian_email,
       clients(id, name, company_name, email, cc_emails, phone, notes),
       guardian_flags(id, status, severity, description, sow_reference, type, created_at, change_order_id, escalated_to),
+      exceptions_log(id, deliverable, granted_what, granted_by, estimated_value, reason, flag_id, created_at),
       change_orders(id, title, status, total, sent_at, accepted_at, version, document_number,
         counter_amount, counter_note, declined_reason, close_reason, tax_rate, tax_inclusive),
       sow_documents(id, version, status, sent_at, signed_at, created_at, document_number),
@@ -77,6 +78,7 @@ export default async function ProjectPage({ params, searchParams }: Props) {
     // could silently be a stale/withdrawn version instead of the live one.
     .order('version', { ascending: false, foreignTable: 'sow_documents' })
     .order('version', { ascending: false, foreignTable: 'change_orders' })
+    .order('created_at', { ascending: false, foreignTable: 'exceptions_log' })
     .eq('id', id)
     .eq('workspace_id', session.workspaceId)
     .is('deleted_at', null)

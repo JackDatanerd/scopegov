@@ -5,6 +5,8 @@ import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { sanitizePlainText } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
+import { sendEscalationEmail } from '@/lib/email/templates'
+import { filterByNotificationPreference } from '@/lib/utils/permissions-query'
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -23,7 +25,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // see that case for the full note.
     const { data: flag } = await (service as any)
       .from('guardian_flags')
-      .select('id,status,project_id,description,severity,sow_reference,change_order_id,check_id,projects(name),guardian_checks(creep_confidence)')
+      .select('id,status,project_id,description,severity,sow_reference,change_order_id,check_id,escalated_to,escalation_note,projects(name),guardian_checks(creep_confidence)')
       .eq('id', id)
       .eq('workspace_id', session.workspaceId)
       .single()
@@ -87,15 +89,30 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         if (flag.status !== 'open')
           return NextResponse.json({ error: `Cannot grant an exception on a flag with status "${flag.status}"` }, { status: 409 })
         const { estimatedValue, grantedWhat, exceptionReason } = body
+        // FIX (deep audit, section 13, finding #1): estimatedValue/
+        // exceptionReason were accepted here but nothing on the frontend
+        // ever sent them (FlagCard's generic handleAction posted only
+        // {action, projectId}) — every exception silently recorded $0 and
+        // an empty reason, corrupting the Reports "exceptions granted"
+        // total and cron/scope-health-rollup's contract-value-at-risk
+        // math. Now that ExceptionModal collects both, require the reason
+        // — the whole point of this record is documenting why scope was
+        // given away for free — and reject a non-numeric value instead of
+        // silently coercing it to 0.
+        if (!exceptionReason || !exceptionReason.trim())
+          return NextResponse.json({ error: 'A reason is required to grant an exception' }, { status: 400 })
+        const parsedValue = estimatedValue === undefined || estimatedValue === '' ? 0 : parseFloat(estimatedValue)
+        if (Number.isNaN(parsedValue) || parsedValue < 0)
+          return NextResponse.json({ error: 'Estimated value must be a non-negative number' }, { status: 400 })
         await (service as any).from('exceptions_log').insert({
           project_id:   flag.project_id,
           workspace_id: session.workspaceId,
           flag_id:      id,
           deliverable:  flag.sow_reference,
-          granted_what: grantedWhat || flag.description,
+          granted_what: sanitizePlainText(grantedWhat || flag.description),
           granted_by:   session.id,
-          estimated_value: parseFloat(estimatedValue) || 0,
-          reason:       exceptionReason || reason || '',
+          estimated_value: parsedValue,
+          reason:       sanitizePlainText(exceptionReason.trim()),
         })
         await (service as any).from('guardian_flags').update({
           status: 'resolved', resolution: 'exception',
@@ -105,7 +122,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           workspaceId: session.workspaceId, actorId: session.id,
           actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
           eventType: 'flag.exception_granted', entityType: 'guardian_flag', entityId: id,
-          entityName: projectName, metadata: { estimated_value: estimatedValue },
+          entityName: projectName, metadata: { estimated_value: parsedValue },
         })
         break
       }
@@ -121,23 +138,45 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         if (!escalationNote || escalationNote.length < 10)
           return NextResponse.json({ error: 'Escalation note must be at least 10 characters' }, { status: 400 })
 
+        // FIX (deep audit, section 13, finding #7): this action had no
+        // status guard at all — a resolved/closed/converted_to_co flag
+        // could still be "escalated", pinging someone about a matter
+        // that's already finished. Mirrors co/[id]/escalate's 10-G5 fix
+        // (escalation is an overlay on something still open).
+        if (!['open', 'borderline_review'].includes(flag.status)) {
+          return NextResponse.json(
+            { error: `This flag is ${flag.status.replace(/_/g, ' ')} — there's nothing open to escalate.` },
+            { status: 400 }
+          )
+        }
+
         // FIX (audit round 2, item #5): escalateTo was never checked
         // against workspace membership — resolve it scoped to this
         // workspace, falling back to self-assignment if it doesn't
         // resolve to an active member here, same treatment as
         // co/[id]/escalate.
         let resolvedEscalateTo: string | null = null
+        let assignee: { name: string; email: string } | null = null
         if (escalateTo) {
           const { data: member } = await (service as any)
             .from('workspace_members')
-            .select('user_id')
+            .select('user_id, users!workspace_members_user_id_fkey!inner(id,name,email)')
             .eq('workspace_id', session.workspaceId)
             .eq('user_id', escalateTo)
             .eq('status', 'active')
             .single()
-          if (member) resolvedEscalateTo = member.user_id
+          if (member?.users) {
+            resolvedEscalateTo = member.users.id
+            assignee = { name: member.users.name, email: member.users.email }
+          }
         }
         const safeNote = sanitizePlainText(escalationNote)
+
+        // FIX (deep audit, section 13, finding #7): escalated_to/
+        // escalation_note are a single overwritable slot, same as CO's —
+        // record what it held before this overwrite in the audit metadata
+        // so the chain is reconstructable.
+        const previousEscalation = { to: flag.escalated_to ?? null, note: flag.escalation_note ?? null }
 
         // Spec §6.3: escalation NEVER changes status — it is an overlay
         await (service as any).from('guardian_flags').update({
@@ -145,11 +184,52 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           escalation_note: safeNote,
           updated_at:      now,
         }).eq('id', id)
+
+        // FIX (deep audit, section 13, finding #7): unlike co/[id]/escalate,
+        // this action never sent an email or created an in-app notification
+        // for the assignee — the 'escalation' preference toggle in Settings
+        // existed and applied to CO escalations only. Same treatment here.
+        if (assignee?.email && resolvedEscalateTo) {
+          const [allowed] = await filterByNotificationPreference(
+            service, session.workspaceId, 'escalation',
+            [{ id: resolvedEscalateTo }]
+          )
+
+          try {
+            await (service as any).from('notifications').insert({
+              workspace_id: session.workspaceId,
+              recipient_id: resolvedEscalateTo,
+              type:         'escalation',
+              title:        `Escalated — ${projectName}`,
+              body:         `${session.name} escalated a scope flag: ${safeNote}`,
+              entity_type:  'project',
+              entity_id:    flag.project_id,
+            })
+          } catch { /* never let a notification failure break escalation */ }
+
+          if (allowed) {
+            try {
+              await sendEscalationEmail({
+                to:           assignee.email,
+                assigneeName: assignee.name,
+                agencyName:   session.agencyName,
+                entityType:   'scope flag',
+                entityName:   projectName,
+                note:         safeNote,
+                url:          `${process.env.NEXT_PUBLIC_APP_URL}/projects/${flag.project_id}?tab=guardian`,
+              })
+            } catch (e) { console.error('Escalation email failed:', e) }
+          }
+        }
+
         await logAudit(service, {
           workspaceId: session.workspaceId, actorId: session.id,
           actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
           eventType: 'flag.escalated', entityType: 'guardian_flag', entityId: id,
-          entityName: projectName, metadata: { escalated_to: resolvedEscalateTo, note: safeNote },
+          entityName: projectName, metadata: {
+            escalated_to: resolvedEscalateTo, note: safeNote,
+            ...(previousEscalation.to || previousEscalation.note ? { superseded: previousEscalation } : {}),
+          },
         })
         break
       }
