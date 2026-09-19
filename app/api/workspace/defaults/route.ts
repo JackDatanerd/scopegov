@@ -121,13 +121,23 @@ async function saveDefaults(workspaceId: string, body: any, actor?: SessionUser)
     ? parsedRevisionRounds
     : 2
 
+  // FIX (deep audit, Settings section \u2014 PATCH behaving like PUT): both
+  // columns used to be written unconditionally on every call, so a
+  // partial body silently clobbered whatever it omitted \u2014
+  // `PATCH { paymentStructure: 'milestones' }` also reset revision_rounds
+  // to 2, because `Number(undefined)` is NaN and fell to the default.
+  // Not reachable from the Defaults tab (which always sends both), but
+  // this route is documented as feeding the new-project wizard, and a
+  // PATCH that resets fields it wasn't given is a data-loss bug waiting
+  // for its second caller. On INSERT the defaults still apply \u2014 a brand
+  // new row genuinely needs a value for the NOT NULL columns.
   const payload: Record<string, unknown> = {
     workspace_id:      workspaceId,
     project_type:      projectType || null,
-    revision_rounds:   revisionRoundsValue,
-    payment_structure: paymentStructure || '50_50',
     updated_at:        new Date().toISOString(),
   }
+  if (revisionRounds !== undefined || !existing?.id) payload.revision_rounds   = revisionRoundsValue
+  if (paymentStructure !== undefined || !existing?.id) payload.payment_structure = paymentStructure || '50_50'
   // Governing law is workspace-wide (lives on `workspaces`, not
   // per-project-type) — a per-type save never touches it, even if it's
   // present in the body, so a type-specific form can't accidentally
@@ -175,8 +185,8 @@ async function saveDefaults(workspaceId: string, body: any, actor?: SessionUser)
       entityId: workspaceId, entityName: projectType || 'global',
       metadata: {
         projectType: projectType || 'global',
-        revisionRounds: payload.revision_rounds,
-        paymentStructure: payload.payment_structure,
+        ...(payload.revision_rounds !== undefined ? { revisionRounds: payload.revision_rounds } : {}),
+        ...(payload.payment_structure !== undefined ? { paymentStructure: payload.payment_structure } : {}),
         ...(governingLawUpdated ? { governingLawUpdated: true } : {}),
       },
     })

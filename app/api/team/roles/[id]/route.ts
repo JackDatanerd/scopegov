@@ -4,7 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { permissionsBeyondCeiling, permissionsBeyondActorForTarget } from '@/lib/utils/permission-ceiling'
-import { mergePermissions, wouldOrphanManageRoles } from '@/lib/utils/admin-floor'
+import { mergePermissions, protectedPermissionsOrphanedBy, describeProtectedPermission, PROTECTED_PERMISSIONS } from '@/lib/utils/admin-floor'
 import { logAudit } from '@/lib/utils/audit'
 
 export async function PATCH(
@@ -19,6 +19,25 @@ export async function PATCH(
       return NextResponse.json({ error: 'Missing permission: MANAGE_ROLES' }, { status: 403 })
 
     const { permissions, name, description, isDefault } = await request.json()
+
+    // A null/non-object `permissions` reached `permissions['MANAGE_ROLES']`
+    // below and threw a TypeError into the catch-all, surfacing as a 500
+    // where a 400 belongs. Not client-reachable; still the wrong answer.
+    if (permissions !== undefined && (permissions === null || typeof permissions !== 'object' || Array.isArray(permissions))) {
+      return NextResponse.json({ error: 'Invalid permissions payload' }, { status: 400 })
+    }
+    // FIX (deep audit, Team & Invites section): PATCH applied `if (name)`
+    // with no trim and no length cap at all — unlike POST, which at least
+    // trims, and unlike every comparable field in the codebase (042 caps
+    // users.name; sanitizeDisplayName caps agency/workspace names at 120).
+    if (name !== undefined) {
+      if (typeof name !== 'string' || !name.trim()) {
+        return NextResponse.json({ error: 'Role name required' }, { status: 400 })
+      }
+      if (name.trim().length > 60) {
+        return NextResponse.json({ error: 'Role name must be under 60 characters' }, { status: 400 })
+      }
+    }
 
     const service = createServiceClient()
 
@@ -45,6 +64,17 @@ export async function PATCH(
     // always exactly one default role (roles_one_default, migration 001);
     // removing the title requires naming a replacement, same as DELETE
     // already requires below.
+    // Same uniqueness rule POST enforces — a rename can collide just as
+    // easily as a creation, and the ambiguity it creates in the approver
+    // pickers is identical.
+    if (name !== undefined && name.trim().toLowerCase() !== (existingRole.name || '').toLowerCase()) {
+      const { data: nameClash } = await (service as any)
+        .from('roles').select('id').eq('workspace_id', session.workspaceId)
+        .ilike('name', name.trim()).neq('id', id).maybeSingle()
+      if (nameClash)
+        return NextResponse.json({ error: 'A role with that name already exists in this workspace' }, { status: 409 })
+    }
+
     if (isDefault === false && existingRole.is_default) {
       return NextResponse.json({
         error: 'Every workspace needs a default role. Make a different role the default first, rather than unsetting this one.',
@@ -99,28 +129,43 @@ export async function PATCH(
     // one of the members losing) MANAGE_ROLES. If this role is currently
     // the only source of MANAGE_ROLES workspace-wide, stripping it here
     // zeroes out MANAGE_ROLES for the entire workspace in one save.
-    if (permissions !== undefined && existingRole.permissions?.['MANAGE_ROLES'] === true && permissions['MANAGE_ROLES'] !== true) {
-      const { data: activeMembers } = await (service as any)
-        .from('workspace_members').select('id,role_id,permission_overrides,effective_permissions')
-        .eq('workspace_id', session.workspaceId).eq('status', 'active')
-
-      const snapshot = (activeMembers || []).map((m: any) => ({ id: m.id, effectivePermissions: m.effective_permissions }))
-      const simulated = new Map<string, Record<string, unknown> | null>(
-        (activeMembers || [])
-          .filter((m: any) => m.role_id === id)
-          .map((m: any): [string, Record<string, unknown> | null] => [m.id, mergePermissions(permissions, m.permission_overrides)])
+    // FIX (deep audit, Team & Invites section — HIGH): this only ever ran
+    // when MANAGE_ROLES was being dropped, so stripping the workspace's
+    // last MANAGE_WORKSPACE_SETTINGS holder sailed straight through —
+    // even though leave_workspace_atomic (027/034/038) guards BOTH
+    // permissions for exactly the same reason. See
+    // lib/utils/admin-floor.ts for the full trace and why the result is
+    // permanent rather than merely inconvenient. Runs whenever ANY
+    // protected permission is being removed, and names the one at risk.
+    if (permissions !== undefined && permissions !== null) {
+      const losing = PROTECTED_PERMISSIONS.filter(
+        perm => existingRole.permissions?.[perm] === true && permissions[perm] !== true
       )
+      if (losing.length > 0) {
+        const { data: activeMembers } = await (service as any)
+          .from('workspace_members').select('id,role_id,permission_overrides,effective_permissions')
+          .eq('workspace_id', session.workspaceId).eq('status', 'active')
 
-      if (wouldOrphanManageRoles(snapshot, simulated)) {
-        return NextResponse.json({
-          error: 'This would leave the workspace with no one who can manage roles. Grant MANAGE_ROLES to another member or role first.',
-        }, { status: 409 })
+        const snapshot = (activeMembers || []).map((m: any) => ({ id: m.id, effectivePermissions: m.effective_permissions }))
+        const simulated = new Map<string, Record<string, unknown> | null>(
+          (activeMembers || [])
+            .filter((m: any) => m.role_id === id)
+            .map((m: any): [string, Record<string, unknown> | null] => [m.id, mergePermissions(permissions, m.permission_overrides)])
+        )
+
+        const orphaned = protectedPermissionsOrphanedBy(snapshot, simulated)
+        if (orphaned.length > 0) {
+          const label = orphaned.map(describeProtectedPermission).join(' or ')
+          return NextResponse.json({
+            error: `This would leave the workspace with no one who can ${label}. Grant ${orphaned.join(' / ')} to another member or role first — once nobody holds it, nobody can grant it back.`,
+          }, { status: 409 })
+        }
       }
     }
 
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
     if (permissions !== undefined) updates.permissions = permissions
-    if (name)        updates.name        = name
+    if (name)        updates.name        = name.trim()
     if (description !== undefined) updates.description = description
 
     const { error } = await (service as any)

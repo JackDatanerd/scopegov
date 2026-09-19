@@ -4,6 +4,10 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { permissionsBeyondCeiling } from '@/lib/utils/permission-ceiling'
 
+// Mirrors the same constant in components/team/TeamClient.tsx — the
+// allowlist and the copy that describes it must not drift apart again.
+const CUSTOM_ROLE_PLANS = ['pro', 'agency', 'trial']
+
 export async function POST(request: NextRequest) {
   try {
     const session = await getSession()
@@ -11,12 +15,24 @@ export async function POST(request: NextRequest) {
     if (!hasPermission(session, 'MANAGE_ROLES'))
       return NextResponse.json({ error: 'Missing permission: MANAGE_ROLES' }, { status: 403 })
 
-    // Custom roles are Pro/Agency only
-    if (!['pro','agency','trial'].includes(session.planTier))
-      return NextResponse.json({ error: 'Custom roles require Pro or Agency plan' }, { status: 403 })
+    // FIX (deep audit, Team & Invites section): the allowlist has always
+    // included 'trial', but this message said "Pro or Agency plan" —
+    // telling a trial workspace it can't do the thing it just did. The
+    // client copy was corrected in an earlier pass (CUSTOM_ROLE_PLANS in
+    // TeamClient.tsx); the server message it mirrors was missed.
+    if (!CUSTOM_ROLE_PLANS.includes(session.planTier))
+      return NextResponse.json({ error: 'Custom roles require Pro, Agency, or an active trial' }, { status: 403 })
 
     const { name, description, permissions, isDefault } = await request.json()
-    if (!name?.trim()) return NextResponse.json({ error: 'Role name required' }, { status: 400 })
+    if (typeof name !== 'string' || !name.trim())
+      return NextResponse.json({ error: 'Role name required' }, { status: 400 })
+    // FIX (deep audit, Team & Invites section): no length cap existed at
+    // all, unlike every comparable field in the codebase (042 caps
+    // users.name; sanitizeDisplayName caps agency/workspace names).
+    if (name.trim().length > 60)
+      return NextResponse.json({ error: 'Role name must be under 60 characters' }, { status: 400 })
+    if (permissions !== undefined && (permissions === null || typeof permissions !== 'object' || Array.isArray(permissions)))
+      return NextResponse.json({ error: 'Invalid permissions payload' }, { status: 400 })
 
     // FIX (audit round 4, finding #1): MANAGE_ROLES let you shape the
     // workspace's role structure — it was never meant to let you mint a
@@ -29,6 +45,18 @@ export async function POST(request: NextRequest) {
       }, { status: 403 })
 
     const service = createServiceClient()
+
+    // FIX (deep audit, Team & Invites section): nothing stopped two roles
+    // in the same workspace sharing a name. That's not just untidy — the
+    // approver pickers in Settings → Approval Workflows, the Role column
+    // on the Team page and the invite modal's role <select> all identify
+    // a role to the user by name alone, so duplicates are genuinely
+    // ambiguous at the point someone is granting access.
+    const { data: nameClash } = await (service as any)
+      .from('roles').select('id').eq('workspace_id', session.workspaceId)
+      .ilike('name', name.trim()).maybeSingle()
+    if (nameClash)
+      return NextResponse.json({ error: 'A role with that name already exists in this workspace' }, { status: 409 })
 
     // FIX (deep audit, Team & Invites re-pass — CRITICAL): this used to
     // unset the old default with one UPDATE, then insert the new role as

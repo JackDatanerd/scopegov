@@ -127,7 +127,17 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .from('workspace_members')
       .update({
         user_id: userId, status: 'active', joined_at: now,
-        effective_permissions: defaultRole?.permissions || '{}',
+        // FIX (deep audit, Team & Invites section): this wrote the DEFAULT
+      // role's permissions even when the inviter had explicitly chosen a
+      // different role on the line above. It was correct only by
+      // accident: trg_member_effective_permissions is
+      // `BEFORE INSERT OR UPDATE OF permission_overrides, role_id`, and
+      // role_id IS in this SET list, so the trigger fired and recomputed
+      // the right value, discarding what the app wrote. Remove the field
+      // rather than leave a wrong value that happens to be overwritten —
+      // drop role_id from this update for any future reason and every
+      // invitee would silently land on the default role's permissions
+      // regardless of what they were invited as, with nothing to catch it.
         role_id: member.role_id || defaultRole?.id || null,
       })
       .eq('id', member.id)

@@ -47,18 +47,68 @@ export interface ActiveMemberSnapshot {
   effectivePermissions: Record<string, unknown> | null
 }
 
+// FIX (deep audit, Team & Invites section — HIGH): this guard was
+// hardcoded to MANAGE_ROLES, but the RPC whose reasoning it was built
+// from protects TWO permissions, not one. leave_workspace_atomic blocks
+// the sole MANAGE_WORKSPACE_SETTINGS holder from leaving (027), and 034
+// then added MANAGE_ROLES *alongside* it — 038 preserves both. The JS
+// half of that same floor only ever re-implemented the second one.
+//
+// So the exact lockout 027 exists to prevent was still fully reachable,
+// just through a different door: strip MANAGE_WORKSPACE_SETTINGS from
+// the only role that carries it (Settings → Team → Roles → Edit), and
+// trg_role_permissions_propagate (001) zeroes it out for every holder
+// the instant it saves. Nothing objected, because this function wasn't
+// looking for it.
+//
+// And it is permanent. permissionsBeyondCeiling enforces "you can only
+// grant a permission you already hold" — with zero holders workspace-
+// wide, no role edit and no member override can ever put it back.
+// Permanently lost: Settings → Workspace, Branding, Defaults, Guardian,
+// Danger zone, Approval workflows, workspace deletion and ownership
+// transfer. Same unrecoverable shape as the APPROVE_DOCUMENTS seeding
+// gap (migration 054), reached from the opposite direction.
+//
+// Expressed as a list rather than a second hardcoded key so the next
+// permission that turns out to be self-gating can be added in one place
+// instead of a fourth copy of this logic.
+export const PROTECTED_PERMISSIONS = ['MANAGE_ROLES', 'MANAGE_WORKSPACE_SETTINGS'] as const
+export type ProtectedPermission = typeof PROTECTED_PERMISSIONS[number]
+
 // `simulated` maps member id -> their post-change effective_permissions,
 // for whichever member(s) the caller's change actually affects. Every
 // active member NOT in that map keeps their current effective_permissions
-// (the change doesn't touch them). Returns true if NO active member would
-// hold MANAGE_ROLES once the change lands — i.e. the change must be
-// blocked.
+// (the change doesn't touch them). Returns the protected permissions that
+// would have ZERO active holders once the change lands — i.e. exactly
+// what the caller must refuse to do. Empty array = safe to proceed.
+export function protectedPermissionsOrphanedBy(
+  activeMembers: ActiveMemberSnapshot[],
+  simulated: Map<string, Record<string, unknown> | null>
+): ProtectedPermission[] {
+  return PROTECTED_PERMISSIONS.filter(permission =>
+    !activeMembers.some(m => {
+      const perms = simulated.has(m.id) ? simulated.get(m.id) : m.effectivePermissions
+      return perms?.[permission] === true
+    })
+  )
+}
+
+// Kept as a thin wrapper so existing call sites keep compiling and keep
+// meaning what they always meant. New code should prefer
+// protectedPermissionsOrphanedBy, which can name WHICH permission is
+// about to be orphaned in the error message.
 export function wouldOrphanManageRoles(
   activeMembers: ActiveMemberSnapshot[],
   simulated: Map<string, Record<string, unknown> | null>
 ): boolean {
-  return !activeMembers.some(m => {
-    const perms = simulated.has(m.id) ? simulated.get(m.id) : m.effectivePermissions
-    return perms?.['MANAGE_ROLES'] === true
-  })
+  return protectedPermissionsOrphanedBy(activeMembers, simulated).includes('MANAGE_ROLES')
+}
+
+// Human-readable label for an error message, so the UI says
+// "no one who can manage workspace settings" rather than echoing a
+// permission constant at the person.
+export function describeProtectedPermission(permission: ProtectedPermission): string {
+  return permission === 'MANAGE_ROLES'
+    ? 'manage roles'
+    : 'manage workspace settings'
 }

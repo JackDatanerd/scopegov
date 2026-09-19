@@ -140,7 +140,12 @@ export async function checkInviteRateLimit(
     .from('audit_log')
     .select('id', { count: 'exact', head: true })
     .eq('workspace_id', workspaceId)
-    .eq('event_type', 'member.invited')
+    // FIX (deep audit, Team & Invites section): counts BOTH invite events.
+    // api/team/[id]/resend also sends real email to an arbitrary address,
+    // so leaving it uncounted would have left an unmetered path to the
+    // very thing this limiter exists to bound — and resending is the
+    // cheaper action to repeat, since it needs no new row.
+    .in('event_type', ['member.invited', 'member.invite_resent'])
     .gte('created_at', since)
 
   // Fail open on a DB error — a broken rate-limit check should never

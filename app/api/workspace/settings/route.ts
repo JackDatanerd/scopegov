@@ -71,11 +71,58 @@ export async function PATCH(request: NextRequest) {
     // generator actually has boilerplate translations for — an
     // unrecognized code would otherwise silently fall back to English at
     // generation time with no indication anything was wrong.
+    // FIX (deep audit, Settings section — CRITICAL): this rejected the
+    // value the DATABASE ITSELF produces. workspaces.sow_language was
+    // `NOT NULL DEFAULT 'en-US'` (001, line 54) and create_workspace_atomic
+    // never set the column, so every workspace ever created sat at
+    // 'en-US' — which is not in this list. Because Settings \u2192 Workspace
+    // posts the whole form object on save (both its buttons send `form`,
+    // seeded from this column), that made the ENTIRE tab \u2014 Identity and
+    // Billing identity alike \u2014 unsaveable on any workspace that had never
+    // explicitly touched the language field: change the agency name, hit
+    // save, get back "Unsupported SOW language" naming a field you never
+    // touched. The <select> hid it completely, since 'en-US' matches no
+    // <option> and the browser just paints the first one ("English").
+    //
+    // Migration 054 normalizes the stored data, fixes the default and adds
+    // a CHECK constraint. This normalizes defensively on the way in too,
+    // so a regional code from a stale client or an old bookmark is coerced
+    // onto its base language rather than 400ing the whole form.
     if (typeof updates.sow_language === 'string') {
       const SUPPORTED_SOW_LANGUAGES = ['en', 'es', 'fr', 'pt', 'de', 'sw']
-      if (!SUPPORTED_SOW_LANGUAGES.includes(updates.sow_language)) {
+      const base = updates.sow_language.replace('_', '-').split('-')[0].toLowerCase()
+      if (!SUPPORTED_SOW_LANGUAGES.includes(base)) {
         return NextResponse.json({ error: 'Unsupported SOW language' }, { status: 400 })
       }
+      updates.sow_language = base
+    }
+
+    // FIX (deep audit, Settings section \u2014 validation gap): these two were
+    // the only mapped fields on this route with no server-side check at
+    // all. Every other constrained column here got one in an earlier pass
+    // (sow_language, guardian_sensitivity_tier, currency, timezone,
+    // industry, the four TEXT_FIELD_LIMITS columns, legal_address) \u2014
+    // these were simply skipped. proactive_risk_threshold is
+    // `decimal NOT NULL` and proactive_risk_alerts_enabled is
+    // `boolean NOT NULL` (001), so a non-numeric threshold, an explicit
+    // null, or a string boolean produced a raw Postgres type/NOT-NULL
+    // error that surfaced as an opaque 500, and a negative threshold
+    // persisted silently. GuardianTab's own Save handler already applies
+    // exactly this rule client-side
+    // (`Number.isFinite(parsed) && parsed >= 0`), which is the tell: the
+    // constraint was known, it just never made it to the server.
+    if (updates.proactive_risk_threshold !== undefined) {
+      const parsed = typeof updates.proactive_risk_threshold === 'number'
+        ? updates.proactive_risk_threshold
+        : parseFloat(String(updates.proactive_risk_threshold))
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        return NextResponse.json({ error: 'Risk threshold must be a number of 0 or more' }, { status: 400 })
+      }
+      updates.proactive_risk_threshold = parsed
+    }
+    if (updates.proactive_risk_alerts_enabled !== undefined &&
+        typeof updates.proactive_risk_alerts_enabled !== 'boolean') {
+      return NextResponse.json({ error: 'Risk alerts setting must be true or false' }, { status: 400 })
     }
 
     // FIX (deep audit, Settings section — missing-column bug): validate
@@ -122,6 +169,24 @@ export async function PATCH(request: NextRequest) {
     // restriction anywhere on the settings-update path either.
     if (typeof updates.agency_name === 'string') updates.agency_name = sanitizeDisplayName(updates.agency_name)
     if (typeof updates.name === 'string')        updates.name        = sanitizeDisplayName(updates.name)
+
+    // FIX (deep audit, Settings section \u2014 HIGH): sanitizeDisplayName('')
+    // returns '', and nothing rejected it. Both columns are NOT NULL, but
+    // '' satisfies NOT NULL perfectly well \u2014 so `{"name": ""}` was a
+    // completely valid save. That is not just cosmetic: DangerTab gates
+    // workspace deletion on `confirm !== workspace?.name`, so once the
+    // name is '', the empty, untouched confirmation input EQUALS the
+    // workspace name and "Delete workspace permanently" is live on page
+    // load with no type-to-confirm step at all. An empty agency_name is
+    // milder but prints as a blank "From" block on every SOW/CO/Invoice
+    // PDF and outbound email.
+    for (const col of ['name', 'agency_name'] as const) {
+      if (updates[col] !== undefined && !String(updates[col] ?? '').trim()) {
+        return NextResponse.json({
+          error: col === 'name' ? 'Workspace name is required' : 'Agency name is required',
+        }, { status: 400 })
+      }
+    }
 
     // FIX (deep audit, section 5 — validation gap): taxId/phone/website/
     // defaultPaymentInstructions had no length cap or type check at all,
@@ -185,6 +250,11 @@ export async function PATCH(request: NextRequest) {
     // what's stored — otherwise every future save of any other field would
     // 409 once the slug had been set once.
     if (body.slug !== undefined) {
+      // Guard the type before .toLowerCase() \u2014 a non-string slug threw a
+      // TypeError straight into the catch-all below and surfaced as a 500.
+      if (typeof body.slug !== 'string') {
+        return NextResponse.json({ error: 'Invalid workspace slug' }, { status: 400 })
+      }
       const { data: ws } = await (service as any)
         .from('workspaces').select('slug, slug_changed_at').eq('id', session.workspaceId).single()
       const newSlug = body.slug.toLowerCase().replace(/[^a-z0-9-]/g, '-')

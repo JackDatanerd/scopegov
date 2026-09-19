@@ -67,6 +67,36 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
   // for them, so a role could be named at creation but never renamed.
   const [editName,  setEditName]  = useState('')
   const [editDesc,  setEditDesc]  = useState('')
+  // FIX (deep audit, Team & Invites section — CRITICAL feature gap):
+  // PATCH /api/team/[id] has always supported reassigning a member's role
+  // AND setting per-member permission_overrides, behind a genuinely
+  // careful security model — workspace-scoped role lookup,
+  // roleWithinCeiling, permissionsBeyondActorForTarget as a floor check,
+  // a simulated post-change permission set fed through the admin-floor
+  // guard, an APPROVE_DOCUMENTS orphan warning, and audit events that
+  // distinguish member.role_changed from member.permission_overridden.
+  //
+  // None of it had a front door. This component never sent roleId and
+  // never sent permissionOverrides; the member card rendered
+  // `{m.roles?.name || 'No role'}` as static text. The consequences
+  // compounded:
+  //   - invite someone into the wrong role and it was permanent; the
+  //     only remedy was deactivate + re-invite, which then hit the
+  //     unique-constraint 500 in api/team/invite
+  //   - DELETE /api/team/roles/[id] refuses with "N active members
+  //     currently hold this role. Reassign them first" — pointing at an
+  //     action that did not exist, making any role ever assigned
+  //     undeletable forever
+  //   - permission_overrides — a column, a trigger, and the entire
+  //     ceiling/floor model built around it — was 100% unreachable
+  //   - Settings' own Transfer Ownership panel tells the owner the
+  //     recipient "must already hold Manage workspace settings (Team >
+  //     Roles)", which could only be done by editing a shared role and
+  //     hitting everyone who held it
+  const [roleEditMember, setRoleEditMember] = useState<any | null>(null)
+  const [roleEditRoleId, setRoleEditRoleId] = useState('')
+  const [overrideMember, setOverrideMember] = useState<any | null>(null)
+  const [overrideDraft,  setOverrideDraft]  = useState<Record<string, boolean>>({})
   const [loading, setLoading] = useState(false)
   const [error,   setError]   = useState('')
   const [notice,  setNotice]  = useState('')
@@ -118,32 +148,33 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
     router.refresh()
   }
 
-  // FIX (deep audit, section 6): this used to PATCH `{ status: 'deactivated' }`
-  // to clear the old invite row before resending — but PATCH never handled
-  // a `status` field at all, so that call was a silent no-op, and the
-  // follow-up POST always 409'd with "an invite is already pending" since
-  // the old row was never actually cleared. DELETE already does exactly
-  // what "deactivate this pending invite" needs and is fully permission-
-  // consistent with the Revoke button right next to Resend — reuse it.
+  // FIX (deep audit, Team & Invites section — HIGH, destructive): this
+  // was DELETE-then-POST. That shape was itself a fix for an earlier bug
+  // (PATCH { status } was a silent no-op so the POST always 409'd), and
+  // it solved that — but it turned a retry into a destructive operation.
+  // Since DELETE now correctly HARD-deletes a never-accepted invite, a
+  // POST that failed for any of four realistic reasons (rate limit — the
+  // DELETE doesn't refund the audit row that counts toward the window;
+  // seat limit on a plan that changed since; a role that's since been
+  // deleted; or the resender holding less than the original inviter)
+  // left NOTHING behind: the admin saw an error, the row vanished, and
+  // the invitee's still-live link was now dead, with nothing explaining
+  // that the invite had been destroyed rather than left alone.
+  //
+  // Resending doesn't need a new row — it needs a fresh token, a fresh
+  // expiry and another email. api/team/[id]/resend does exactly that in
+  // place, which is atomic by construction: if anything fails, the
+  // invite is exactly as it was. It also preserves role_id, invited_by
+  // and invited_at rather than re-attributing the invite to whoever
+  // happened to click Resend.
   async function handleResendInvite(m: any) {
-    const email = m.invited_email || m.users?.email
-    if (!email) return
     setError(''); setNotice('')
-    const delRes = await fetch(`/api/team/${m.id}`, { method: 'DELETE' })
-    if (!delRes.ok) {
-      const j = await delRes.json().catch(() => ({}))
-      setError(j.error || 'Could not resend invite'); return
-    }
-    const res = await fetch('/api/team/invite', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, roleId: m.role_id || null, workspaceId }),
-    })
+    const res = await fetch(`/api/team/${m.id}/resend`, { method: 'POST' })
     const json = await res.json().catch(() => ({}))
     if (!res.ok) { setError(json.error || 'Could not resend invite'); return }
-    if (json.emailFailed) {
-      setNotice('Invite recreated, but the email couldn\u2019t be sent. Try Resend again shortly.')
-    }
+    setNotice(json.emailFailed
+      ? 'Invite refreshed, but the email couldn\u2019t be sent. Try Resend again shortly \u2014 the invite itself is intact.'
+      : 'Invite resent. The previous link is no longer valid.')
     router.refresh()
   }
 
@@ -167,6 +198,52 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
     const json = await res.json().catch(() => ({}))
     if (!res.ok) { setError(json.error || 'Could not reactivate member'); return }
     router.refresh()
+  }
+
+  // Reassign a member's role. The server re-verifies the role belongs to
+  // this workspace and fits inside the actor's own ceiling, so this only
+  // needs to send the id and surface whatever comes back — including the
+  // APPROVE_DOCUMENTS orphan warning, which is advisory rather than an
+  // error and would otherwise be silently dropped.
+  async function handleSaveMemberRole() {
+    if (!roleEditMember) return
+    setLoading(true); setError(''); setNotice('')
+    try {
+      const res = await fetch(`/api/team/${roleEditMember.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ roleId: roleEditRoleId || null }),
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error)
+      if (json.warning) setNotice(json.warning)
+      setRoleEditMember(null); router.refresh()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not change this member\u2019s role')
+    } finally { setLoading(false) }
+  }
+
+  // Per-member permission overrides. Deliberately tri-state rather than a
+  // flat checkbox grid: compute_effective_permissions (migration 001)
+  // merges overrides over the role's permissions per-key, so "not
+  // overridden" is a genuinely distinct state from "explicitly false" —
+  // collapsing them would silently freeze a member's permissions against
+  // future changes to their role, which is the opposite of what an
+  // override is for.
+  async function handleSaveOverrides() {
+    if (!overrideMember) return
+    setLoading(true); setError(''); setNotice('')
+    try {
+      const res = await fetch(`/api/team/${overrideMember.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ permissionOverrides: overrideDraft }),
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error)
+      if (json.warning) setNotice(json.warning)
+      setOverrideMember(null); router.refresh()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not save permission overrides')
+    } finally { setLoading(false) }
   }
 
   async function handleCreateRole(e: React.FormEvent) {
@@ -272,9 +349,17 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
         <button className={`tabi${tab === 'members' ? ' act' : ''}`} onClick={() => setTab('members')}>
           Members ({members.length + pendingInvites.length})
         </button>
-        <button className={`tabi${tab === 'roles' ? ' act' : ''}`} onClick={() => setTab('roles')}>
-          Roles ({roles.length})
-        </button>
+        {/* FIX (deep audit, Team & Invites section): the Roles tab rendered
+            for everyone — only the buttons inside it were gated — so any
+            member could read the full permission matrix for every role in
+            the workspace. The permission maps are no longer sent to
+            unprivileged members at all (see app/(app)/team/page.tsx), so
+            the tab would now render an empty grid; hide it instead. */}
+        {canManageRoles && (
+          <button className={`tabi${tab === 'roles' ? ' act' : ''}`} onClick={() => setTab('roles')}>
+            Roles ({roles.length})
+          </button>
+        )}
       </div>
 
       {tab === 'members' && (
@@ -285,7 +370,6 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
               const isMe   = u?.id === session.id
               const name   = u?.name || u?.email || 'Unknown'
               const colour = avatarColour(name)
-              const isOwner = m.effective_permissions?.MANAGE_WORKSPACE_SETTINGS === true
               return (
                 <div key={m.id} className="member-card">
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
@@ -324,12 +408,38 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
                           fellow owner's MFA, which the floor check still
                           correctly allows since neither holds anything
                           the other doesn't. */}
+                      {canManageRoles && (
+                        <button className="btn btn-ghost btn-xs"
+                          onClick={() => { setRoleEditMember(m); setRoleEditRoleId(m.role_id || '') }}>
+                          Change role
+                        </button>
+                      )}
+                      {canManageRoles && (
+                        <button className="btn btn-ghost btn-xs"
+                          title="Grant or revoke individual permissions for this person, on top of their role"
+                          onClick={() => { setOverrideMember(m); setOverrideDraft({ ...(m.permission_overrides || {}) }) }}>
+                          Overrides
+                        </button>
+                      )}
                       {!isMe && canManageRoles && (
                         <button className="btn btn-ghost btn-xs" onClick={() => handleResetMfa(m.id, name)}>
                           Reset MFA
                         </button>
                       )}
-                      {!isMe && !isOwner && canInvite && (
+                      {/* FIX (deep audit, Team & Invites section): Deactivate
+                          used to be hidden for every MANAGE_WORKSPACE_SETTINGS
+                          holder, while the over-seat banner directly above
+                          instructs the person to "Deactivate members down to
+                          {seatLimit}". A workspace whose surplus members all
+                          hold that permission — the likely shape after an
+                          external Paystack downgrade, which this page's own
+                          comment identifies as the way in — could not follow
+                          its own instruction. The server is the real
+                          authority here and already handles it correctly:
+                          permissionsBeyondActorForTarget lets a peer admin
+                          act on an equal, and refuses anyone reaching above
+                          their own ceiling. Only the client was blocking it. */}
+                      {!isMe && canInvite && (
                         <button className="btn btn-ghost btn-xs" style={{ color: 'var(--red)', borderColor: '#FECACA' }}
                           onClick={() => handleDeactivate(m.id, name)}>
                           Deactivate
@@ -473,7 +583,7 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
         </>
       )}
 
-      {tab === 'roles' && (
+      {tab === 'roles' && canManageRoles && (
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
             <p style={{ fontSize: 13, color: 'var(--text-2)' }}>
@@ -643,6 +753,99 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
                 </button>
               </div>
             </form>
+          </div>
+        </>
+      )}
+
+      {/* Change a member's role — see handleSaveMemberRole above for why
+          this had to be built. */}
+      {roleEditMember && (
+        <>
+          <div className="modal-bg" onClick={() => setRoleEditMember(null)} />
+          <div className="modal">
+            <h2 className="modal-title">Change role</h2>
+            <p className="modal-sub">
+              {roleEditMember.users?.name || roleEditMember.users?.email || roleEditMember.invited_email}
+              {' '}currently has the {roleEditMember.roles?.name || 'No role'} role.
+            </p>
+            {error && <div className="auth-error">{error}</div>}
+            <div className="fgrp">
+              <label className="flbl">Role</label>
+              <select className="finp" value={roleEditRoleId}
+                onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setRoleEditRoleId(e.target.value)}>
+                <option value="">No role (default permissions only)</option>
+                {roles.map((r: any) => <option key={r.id} value={r.id}>{r.name}</option>)}
+              </select>
+              <span className="fhint">
+                You can only assign a role whose permissions you hold yourself. Changing this takes effect
+                immediately for that person.
+              </span>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-ghost" onClick={() => setRoleEditMember(null)}>Cancel</button>
+              <button className="btn btn-primary" onClick={handleSaveMemberRole}
+                disabled={loading || roleEditRoleId === (roleEditMember.role_id || '')}>
+                {loading ? <span className="spin" /> : 'Save role'}
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Per-member permission overrides. Tri-state on purpose — see
+          handleSaveOverrides above. */}
+      {overrideMember && (
+        <>
+          <div className="modal-bg" onClick={() => setOverrideMember(null)} />
+          <div className="modal modal-lg">
+            <h2 className="modal-title">
+              Permission overrides — {overrideMember.users?.name || overrideMember.users?.email || overrideMember.invited_email}
+            </h2>
+            <p className="modal-sub">
+              Overrides sit on top of the {overrideMember.roles?.name || 'No role'} role for this one person.
+              Leave a permission on <strong>Use role</strong> and it keeps following the role, including any
+              future changes to it.
+            </p>
+            {error && <div className="auth-error">{error}</div>}
+            <div style={{ maxHeight: 340, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: 14, marginBottom: 16 }}>
+              {ALL_PERMISSIONS.map(perm => {
+                const fromRole = overrideMember.roles?.id
+                  ? roles.find((r: any) => r.id === overrideMember.role_id)?.permissions?.[perm] === true
+                  : false
+                const state = overrideDraft[perm] === undefined ? 'inherit' : (overrideDraft[perm] ? 'grant' : 'revoke')
+                return (
+                  <div key={perm} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '5px 0' }}>
+                    <span style={{ fontSize: 12 }}>
+                      {perm.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase())}
+                      <span style={{ fontSize: 10.5, color: 'var(--text-3)', marginLeft: 6 }}>
+                        role: {fromRole ? 'granted' : 'not granted'}
+                      </span>
+                    </span>
+                    <select className="finp" style={{ maxWidth: 140, fontSize: 11.5, padding: '3px 6px' }}
+                      value={state}
+                      onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
+                        const v = e.target.value
+                        setOverrideDraft(prev => {
+                          const next = { ...prev }
+                          if (v === 'inherit') delete next[perm]
+                          else next[perm] = v === 'grant'
+                          return next
+                        })
+                      }}>
+                      <option value="inherit">Use role</option>
+                      <option value="grant">Always grant</option>
+                      <option value="revoke">Always revoke</option>
+                    </select>
+                  </div>
+                )
+              })}
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-ghost" onClick={() => setOverrideMember(null)}>Cancel</button>
+              <button className="btn btn-primary" onClick={handleSaveOverrides} disabled={loading}>
+                {loading ? <span className="spin" /> : 'Save overrides'}
+              </button>
+            </div>
           </div>
         </>
       )}

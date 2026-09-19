@@ -40,7 +40,18 @@ export async function POST(request: NextRequest) {
     // use the caller's own active workspace.
     const { email, roleId } = await request.json()
     const wsId = session.workspaceId
-    if (!email?.trim()) return NextResponse.json({ error: 'Email required' }, { status: 400 })
+    // FIX (deep audit, Team & Invites section): `!email?.trim()` was the
+    // ONLY check — `.trim()` on a non-string body value threw a TypeError
+    // into the catch-all as a 500, and any non-empty string at all
+    // created a real workspace_members row and fired a real Resend call.
+    // The client's type="email" was the only actual validation in the
+    // system, so a typo'd address produced a Pending invite that could
+    // never be accepted while still consuming a seat against the
+    // ['active','invited'] count until somebody noticed and revoked it.
+    if (typeof email !== 'string' || !email.trim())
+      return NextResponse.json({ error: 'Email required' }, { status: 400 })
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()))
+      return NextResponse.json({ error: 'That doesn\u2019t look like a valid email address' }, { status: 400 })
 
     // FIX (audit round 1): roleId came straight from the request body with
     // no check that it actually belongs to this workspace. Low real-world
@@ -72,7 +83,7 @@ export async function POST(request: NextRequest) {
     // Check for existing membership
     const normalizedEmail = email.toLowerCase().trim()
     const { data: existingUser } = await (service as any)
-      .from('users').select('id').eq('email', normalizedEmail).single()
+      .from('users').select('id').eq('email', normalizedEmail).maybeSingle()
 
     if (existingUser) {
       const { data: existingMember } = await (service as any)
@@ -80,26 +91,63 @@ export async function POST(request: NextRequest) {
         .select('id,status')
         .eq('workspace_id', wsId)
         .eq('user_id', existingUser.id)
-        .single()
+        .maybeSingle()
 
       if (existingMember?.status === 'active')
         return NextResponse.json({ error: 'This person is already a member of the workspace' }, { status: 409 })
       if (existingMember?.status === 'invited')
         return NextResponse.json({ error: 'An invite is already pending for this email' }, { status: 409 })
+      // FIX (deep audit, Team & Invites section — HIGH): only those two
+      // statuses were handled. 'deactivated' and 'expired' fell straight
+      // through to the INSERT below and hit
+      // `UNIQUE(workspace_id, user_id)` (001, line 106), which rethrew
+      // memberErr into the catch-all as a bare 500 "Internal server
+      // error". The admin's mental model — "they left, I'll invite them
+      // back" — got an unexplained internal error with no hint that
+      // Reactivate is the path, and no hint that anything was wrong with
+      // the request rather than with the server.
+      //
+      // Migration 020's comment already worked through this exact
+      // reasoning for the NO-ACCOUNT branch below (which is why
+      // workspace_members_pending_email is scoped WHERE status =
+      // 'invited'); the existing-user branch was never brought in line.
+      if (existingMember?.status === 'deactivated')
+        return NextResponse.json({
+          error: 'This person was deactivated in this workspace. Reactivate them from the Deactivated list instead of sending a new invite — that restores the access their role already had.',
+          reactivateMemberId: existingMember.id,
+        }, { status: 409 })
+      if (existingMember?.status === 'expired')
+        return NextResponse.json({
+          error: 'This person already has an expired invite in this workspace. Use Resend on that invite instead of creating a new one.',
+          resendMemberId: existingMember.id,
+        }, { status: 409 })
     } else {
       // No account yet — check for a duplicate pending invite by email
       // (DB also enforces this via workspace_members_pending_email, this
       // just gives a clean error message instead of a raw constraint error)
-      const { data: pendingInvite } = await (service as any)
+      const { data: priorInvite } = await (service as any)
         .from('workspace_members')
-        .select('id')
+        .select('id,status')
         .eq('workspace_id', wsId)
         .eq('invited_email', normalizedEmail)
-        .eq('status', 'invited')
-        .single()
+        .in('status', ['invited', 'expired'])
+        .maybeSingle()
 
-      if (pendingInvite)
+      if (priorInvite?.status === 'invited')
         return NextResponse.json({ error: 'An invite is already pending for this email' }, { status: 409 })
+
+      // FIX (deep audit, Team & Invites section): an 'expired' row for the
+      // same address is NOT caught by workspace_members_pending_email
+      // (that partial index is scoped WHERE status = 'invited'), so a
+      // re-invite used to insert a SECOND row alongside the dead one —
+      // leaving a permanent phantom entry in the Expired list that no
+      // longer corresponds to anything, for an address that now also has
+      // a live invite. An expired, never-accepted invite has no user and
+      // nothing to preserve; clear it, exactly as DELETE already
+      // hard-deletes rows in this state.
+      if (priorInvite?.status === 'expired') {
+        await (service as any).from('workspace_members').delete().eq('id', priorInvite.id)
+      }
     }
 
     const inviteToken   = nanoid(32)

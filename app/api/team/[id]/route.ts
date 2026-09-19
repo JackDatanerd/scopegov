@@ -3,7 +3,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { permissionsBeyondCeiling, permissionsBeyondActorForTarget, roleWithinCeiling } from '@/lib/utils/permission-ceiling'
-import { mergePermissions, wouldOrphanManageRoles } from '@/lib/utils/admin-floor'
+import { mergePermissions, protectedPermissionsOrphanedBy, describeProtectedPermission, PROTECTED_PERMISSIONS } from '@/lib/utils/admin-floor'
 import { checkSeatLimit } from '@/lib/utils/seat-limit'
 
 export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -216,6 +216,17 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (!hasPermission(session, 'MANAGE_ROLES'))
       return NextResponse.json({ error: 'Missing permission: MANAGE_ROLES' }, { status: 403 })
 
+    // A body carrying none of status/roleId/permissionOverrides left
+    // `updates` as {}, and `.update({})` errors in PostgREST — rethrown
+    // into the catch-all as a 500 where a 400 belongs.
+    if (body.roleId === undefined && body.permissionOverrides === undefined) {
+      return NextResponse.json({ error: 'Nothing to update' }, { status: 400 })
+    }
+    if (body.permissionOverrides !== undefined && body.permissionOverrides !== null &&
+        (typeof body.permissionOverrides !== 'object' || Array.isArray(body.permissionOverrides))) {
+      return NextResponse.json({ error: 'Invalid permission overrides payload' }, { status: 400 })
+    }
+
     const updates: Record<string, unknown> = {}
 
     // FIX (section-by-section re-audit, RLS+permissions Finding 2 —
@@ -322,16 +333,28 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
             : null)
       simulatedPerms = mergePermissions(finalRolePermissions, finalOverrides)
 
-      const hasManageRolesNow = targetMember.effective_permissions?.['MANAGE_ROLES'] === true
-      if (hasManageRolesNow && simulatedPerms['MANAGE_ROLES'] !== true) {
+      // FIX (deep audit, Team & Invites section — HIGH): same one-key
+      // blind spot as the sibling check in api/team/roles/[id] — this
+      // guarded MANAGE_ROLES only, while leave_workspace_atomic
+      // (027/034/038) guards MANAGE_WORKSPACE_SETTINGS too. A member
+      // override (or a role reassignment) that removed the workspace's
+      // last MANAGE_WORKSPACE_SETTINGS holder passed unchallenged, and
+      // the ceiling rule then makes it impossible to grant back. See
+      // lib/utils/admin-floor.ts.
+      const losing = PROTECTED_PERMISSIONS.filter(
+        perm => targetMember.effective_permissions?.[perm] === true && simulatedPerms![perm] !== true
+      )
+      if (losing.length > 0) {
         const { data: activeMembers } = await (service as any)
           .from('workspace_members').select('id,effective_permissions')
           .eq('workspace_id', session.workspaceId).eq('status', 'active')
         const snapshot = (activeMembers || []).map((m: any) => ({ id: m.id, effectivePermissions: m.effective_permissions }))
         const simulated = new Map([[id, simulatedPerms]])
-        if (wouldOrphanManageRoles(snapshot, simulated)) {
+        const orphaned = protectedPermissionsOrphanedBy(snapshot, simulated)
+        if (orphaned.length > 0) {
+          const label = orphaned.map(describeProtectedPermission).join(' or ')
           return NextResponse.json({
-            error: 'This would leave the workspace with no one who can manage roles. Assign MANAGE_ROLES to another member first.',
+            error: `This would leave the workspace with no one who can ${label}. Assign ${orphaned.join(' / ')} to another member first — once nobody holds it, nobody can grant it back.`,
           }, { status: 409 })
         }
       }

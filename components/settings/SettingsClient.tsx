@@ -71,6 +71,16 @@ const SOW_LANGUAGES: Array<{ code: string; label: string }> = [
   { code: 'sw', label: 'Swahili (Kiswahili)' },
 ]
 
+// Maps a stored value (possibly a legacy regional code like 'en-US', or
+// something unrecognized entirely) onto one of SOW_LANGUAGES' codes.
+// Mirrors the same normalization api/workspace/settings/route.ts applies
+// server-side, so the two can't disagree about what a saved value means.
+function normalizeSowLanguage(value: unknown): string {
+  if (typeof value !== 'string' || !value) return 'en'
+  const base = value.replace('_', '-').split('-')[0].toLowerCase()
+  return SOW_LANGUAGES.some(l => l.code === base) ? base : 'en'
+}
+
 const TABS: { key: SettingsTab; label: string }[] = [
   { key: 'account',       label: 'Account' },
   { key: 'workspace',     label: 'Workspace' },
@@ -161,7 +171,28 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
   const searchParams = useSearchParams()
   const router       = useRouter()
   const supabase     = createClient()
-  const [tab,    setTab]    = useState<SettingsTab>((searchParams.get('tab') as SettingsTab) || 'account')
+  // FIX (deep audit, Settings section): the ?tab= value was cast straight
+  // to SettingsTab with no validation, so a stale or mistyped value
+  // (?tab=general, a bookmark from before a tab was renamed) selected
+  // nothing in the nav AND rendered a completely blank content pane —
+  // every `tab === '...'` branch below simply failed to match. Validate
+  // against the real tab list and fall back to 'account'. The Team page
+  // already does this correctly for its own ?tab= handling.
+  const requestedTab = searchParams.get('tab')
+  const [tab, setTabState] = useState<SettingsTab>(
+    TABS.some(t => t.key === requestedTab) ? (requestedTab as SettingsTab) : 'account'
+  )
+
+  // Keep the URL in step with the selected tab, so a tab is linkable and
+  // survives a refresh — the ?tab= parameter was read on mount but never
+  // written, which made it a one-way deep link that silently reset to
+  // Account the moment the page reloaded.
+  function setTab(next: SettingsTab) {
+    setTabState(next)
+    const params = new URLSearchParams(Array.from(searchParams.entries()))
+    params.set('tab', next)
+    router.replace(`/settings?${params.toString()}`, { scroll: false })
+  }
   const [saving, setSaving] = useState(false)
   const [saved,  setSaved]  = useState(false)
   const [error,  setError]  = useState('')
@@ -174,7 +205,18 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
     timezone:     workspace?.timezone || '',
     currency:     workspace?.currency || 'USD',
     governingLaw: workspace?.governing_law || '',
-    sowLanguage:  workspace?.sow_language || 'en',
+    // FIX (deep audit, Settings section — CRITICAL, client half): seeded
+    // straight from the column, which defaulted to 'en-US' on every
+    // workspace ever created (see migration 054 and
+    // api/workspace/settings/route.ts). 'en-US' matches no <option>
+    // below, so the select painted "English" while state held the
+    // rejected value — and since both Save buttons on this tab post the
+    // whole `form`, every save on an untouched workspace 400'd with
+    // "Unsupported SOW language", naming a field nobody had touched.
+    // Normalize any regional code onto its base language on read, so the
+    // select shows the real value and the save carries an accepted one
+    // even before the migration has run.
+    sowLanguage:  normalizeSowLanguage(workspace?.sow_language),
     slug:         workspace?.slug || '',
     // Phase 11 — document billing identity. Printed on every SOW/CO/Invoice
     // PDF as the agency's "From" block; all optional, PDFs render fine
@@ -820,7 +862,16 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, save
           const json = await res.json()
           logoStoragePath = json.logoStoragePath
         } else {
-          setFileError('Could not upload logo — try again.')
+          // FIX (deep audit, Settings section): this fell through to the
+          // branding PATCH below with no early return, so a failed logo
+          // upload still produced a successful colour save — and `onSave`
+          // sets the shared `saved` flag, so the person got a green
+          // "Changes saved." banner sitting directly above a red "Could
+          // not upload logo" error. Stop here instead; the colour can be
+          // saved on its own by retrying without picking a file.
+          const json = await res.json().catch(() => ({}))
+          setFileError(json.error || 'Could not upload logo — try again.')
+          return
         }
       }
       await onSave('/api/workspace/branding', { brandColour: colour, ...(logoStoragePath ? { logoStoragePath } : {}) })
@@ -1702,8 +1753,20 @@ function DangerTab({ workspace, permissions, session }: any) {
 
   if (!permissions.manageWorkspace) return <Restricted />
 
+  // FIX (deep audit, Settings section — HIGH): the delete gate is a
+  // string comparison against the workspace name, and an empty workspace
+  // name used to be a perfectly valid save (see the non-empty check now
+  // added to api/workspace/settings/route.ts). With name === '', the
+  // empty untouched input EQUALS the workspace name — so the
+  // type-to-confirm step vanished entirely and "Delete workspace
+  // permanently" was live on page load. The server-side fix closes the
+  // way in; this makes the gate itself refuse to be satisfied by a blank
+  // value regardless of how the workspace got one.
+  const confirmName = (workspace?.name || '').trim()
+  const canDelete = !!confirmName && confirm.trim() === confirmName
+
   async function handleDelete() {
-    if (confirm !== workspace?.name) return
+    if (!canDelete) return
     setDeleting(true); setErr('')
     try {
       const res  = await fetch('/api/workspace/delete', { method: 'DELETE' })
@@ -1742,8 +1805,14 @@ function DangerTab({ workspace, permissions, session }: any) {
             onChange={(e: React.ChangeEvent<HTMLInputElement>) => setConfirm(e.target.value)}
             placeholder={workspace?.name} />
         </div>
+        {!confirmName && (
+          <p className="ferr" style={{ marginBottom: 10 }}>
+            This workspace has no name set, so it can&rsquo;t be confirmed for deletion. Give it a name on the
+            Workspace tab first.
+          </p>
+        )}
         <button className="btn btn-danger btn-sm"
-          disabled={confirm !== workspace?.name || deleting}
+          disabled={!canDelete || deleting}
           onClick={handleDelete}>
           {deleting ? <span className="spin" /> : 'Delete workspace permanently'}
         </button>

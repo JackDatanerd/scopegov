@@ -27,7 +27,7 @@ export default async function SettingsPage() {
       // correctly; they just never came back on the next page load, so a
       // successful save looked exactly like a failed one (fields render
       // blank again on refresh, even though the data is in Postgres).
-      .select('id,name,slug,slug_changed_at,agency_name,brand_colour,logo_storage_path,agency_signature_data,industry,currency,timezone,sow_language,governing_law,proactive_risk_threshold,proactive_risk_alerts_enabled,guardian_sensitivity_tier,plan_tier,trial_ends_at,created_at,created_by,tax_id,phone,website,default_payment_instructions,legal_address')
+      .select('id,name,slug,slug_changed_at,agency_name,brand_colour,logo_storage_path,agency_signature_data,industry,currency,timezone,sow_language,governing_law,proactive_risk_threshold,proactive_risk_alerts_enabled,guardian_sensitivity_tier,plan_tier,trial_ends_at,created_at,created_by,tax_id,phone,website,default_payment_instructions,legal_address,updated_at')
       .eq('id', session.workspaceId)
       .single(),
     (service as any)
@@ -64,12 +64,28 @@ export default async function SettingsPage() {
     console.error('Settings: failed to load workspace', wsRes.error)
   }
 
+  // FIX (deep audit, Settings section \u2014 stale logo after replacement):
+  // the upload path is `${workspaceId}/logo.${ext}` with `upsert: true`,
+  // so replacing a PNG with another PNG writes to the *same* object at
+  // the *same* public URL. Supabase serves that URL with its default
+  // `cache-control: max-age=3600`, so the OLD logo kept being served \u2014
+  // in the app, in every generated SOW/CO/Invoice PDF, and in outbound
+  // email \u2014 for up to an hour after the change. An earlier pass fixed
+  // the different-extension case (cleaning up the stale object), which
+  // quietly left the same-extension case \u2014 by far the common one \u2014
+  // untouched, because nothing about it LOOKS broken server-side.
+  // Version the URL off the workspace's own updated_at (bumped by every
+  // branding/logo write) so a replacement busts cache immediately while
+  // an unchanged logo still caches normally.
   let logoUrl: string | null = null
   if (wsRes.data?.logo_storage_path) {
     const { data: u } = await (service as any).storage
       .from('logos')
       .getPublicUrl(wsRes.data.logo_storage_path)
-    logoUrl = u?.publicUrl || null
+    if (u?.publicUrl) {
+      const stamp = wsRes.data.updated_at ? new Date(wsRes.data.updated_at).getTime() : Date.now()
+      logoUrl = `${u.publicUrl}?v=${stamp}`
+    }
   }
 
   // FIX (deep audit, RLS+permissions re-pass): agency_signature_data,
@@ -105,17 +121,31 @@ export default async function SettingsPage() {
   // enforce for a mandatory-MFA role held in a non-active workspace.
   const mfaMandatory = await userHasAnyMfaMandatoryMembership(session.id)
 
+  // FIX (deep audit, Settings section \u2014 the redaction above, not applied
+  // to its neighbour): the `workspace` block directly above exists because
+  // a prop handed to a Client Component is serialized into the page's RSC
+  // payload and reaches the browser of EVERY visitor to /settings,
+  // readable in dev tools, regardless of whether the tab that consumes it
+  // ever renders. That reasoning applies verbatim to `billing`, which was
+  // passed down untouched three lines later: paystack_customer_code,
+  // paystack_subscription_code, payment_method_last4/type and
+  // grace_period_started_at all shipped to members without MANAGE_BILLING
+  // \u2014 the same people for whom BillingTab renders <Restricted />. Same
+  // page, same class, same fix shape; it just never got applied here.
+  const canManageBilling = hasPermission(session, 'MANAGE_BILLING')
+  const billing = billingRes.data && !canManageBilling ? null : billingRes.data
+
   return (
     <SettingsClient
       workspace={workspace}
-      billing={billingRes.data}
+      billing={billing}
       defaults={defaultsRes.data}
       logoUrl={logoUrl}
       session={session}
       mfaMandatory={mfaMandatory}
       permissions={{
         manageWorkspace: canManageWorkspace,
-        manageBilling:   hasPermission(session, 'MANAGE_BILLING'),
+        manageBilling:   canManageBilling,
         viewAuditLog:    hasPermission(session, 'VIEW_AUDIT_LOG'),
         // FIX (deep audit, section 5 re-pass): EXPORT_DATA removed — see
         // lib/supabase/types.ts for why; it never gated anything.

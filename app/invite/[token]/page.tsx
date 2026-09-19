@@ -21,6 +21,33 @@ export default function InvitePage() {
   const [password, setPassword] = useState('')
   const [loading,  setLoading]  = useState(false)
   const [error,    setError]    = useState('')
+  // FIX (deep audit, Team & Invites section — HIGH feature gap): the
+  // existing-user screen offered exactly one path — email (disabled) +
+  // password + signInWithPassword — on an app whose README (§1.3) lists
+  // Google OAuth as a first-class signup route, whose SessionUser carries
+  // `hasPasswordIdentity` precisely because password-less accounts exist,
+  // and which ships /api/auth/callback to handle them. A Google-only user
+  // reaching this screen had no password to type, no Google button to
+  // click, and — unlike the 'expired' and 'already_used' screens — not
+  // even a "Sign in instead" escape link. It was a hard dead end on a
+  // core flow.
+  //
+  // Two states are now handled that weren't: an already-signed-in visitor
+  // (who needs no credentials at all — /accept works off the session they
+  // are already carrying), and an OAuth user (who needs to authenticate
+  // somewhere other than this form and come straight back).
+  const [sessionEmail, setSessionEmail] = useState<string | null>(null)
+  const [checkingSession, setCheckingSession] = useState(true)
+
+  useEffect(() => {
+    let cancelled = false
+    supabase.auth.getUser()
+      .then(({ data }: any) => { if (!cancelled) setSessionEmail(data?.user?.email ?? null) })
+      .catch(() => { if (!cancelled) setSessionEmail(null) })
+      .finally(() => { if (!cancelled) setCheckingSession(false) })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
     fetch(`/api/team/invite/${token}`)
@@ -101,6 +128,39 @@ export default function InvitePage() {
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Something went wrong')
     } finally { setLoading(false) }
+  }
+
+  // Already signed in as the invited address — there is nothing to
+  // authenticate, so just accept. This also covers the OAuth round trip
+  // below, which lands back here with a live session.
+  async function acceptWithCurrentSession() {
+    setLoading(true); setError('')
+    try {
+      const res = await fetch(`/api/team/invite/${token}/accept`, { method: 'POST' })
+      if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || 'Could not accept this invite') }
+      setMode('done')
+      setTimeout(() => router.push('/dashboard'), 1500)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not accept this invite')
+    } finally { setLoading(false) }
+  }
+
+  // Send the person through Google and bring them straight back to this
+  // invite URL, rather than dumping them on /dashboard and leaving them
+  // to find the link in their inbox again. `next` is the same mechanism
+  // middleware.ts already uses for deep links.
+  async function signInWithGoogle() {
+    setLoading(true); setError('')
+    try {
+      const { error: oauthErr } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: { redirectTo: `${window.location.origin}/api/auth/callback?next=/invite/${token}` },
+      })
+      if (oauthErr) throw oauthErr
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not start Google sign-in')
+      setLoading(false)
+    }
   }
 
   async function handleExistingUser(e: React.FormEvent) {
@@ -260,6 +320,48 @@ export default function InvitePage() {
           <h2 className="auth-form-title">Join {invite?.workspaceName}</h2>
           <p className="auth-form-sub">You already have a ScopeGov account. Sign in to accept the invitation from {invite?.inviterName}.</p>
           {error && <div className="auth-error">{error}</div>}
+
+          {/* Already signed in as the invited address — no credentials
+              needed at all; /accept works off the existing session. This
+              screen used to demand a password from someone who was
+              already authenticated. */}
+          {!checkingSession && sessionEmail && invite?.email &&
+            sessionEmail.toLowerCase() === invite.email.toLowerCase() && (
+            <div style={{ marginBottom: 20 }}>
+              <p style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.7, marginBottom: 12 }}>
+                You&rsquo;re already signed in as <strong>{sessionEmail}</strong>.
+              </p>
+              <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', padding: '10px' }}
+                disabled={loading} onClick={acceptWithCurrentSession}>
+                {loading ? <span className="spin" /> : 'Accept invitation'}
+              </button>
+            </div>
+          )}
+
+          {/* Signed in as somebody else — say so explicitly rather than
+              letting the password form silently switch accounts. */}
+          {!checkingSession && sessionEmail && invite?.email &&
+            sessionEmail.toLowerCase() !== invite.email.toLowerCase() && (
+            <div className="auth-error" style={{ marginBottom: 16 }}>
+              You&rsquo;re signed in as {sessionEmail}, but this invite was sent to {invite.email}.
+              Signing in below will switch you to that account.
+            </div>
+          )}
+
+          {/* The Google path. Without this, an account created through
+              Google OAuth had no password to enter and no way forward
+              from this screen at all. */}
+          <button type="button" className="btn btn-ghost"
+            style={{ width: '100%', justifyContent: 'center', padding: '10px', marginBottom: 14 }}
+            disabled={loading} onClick={signInWithGoogle}>
+            <i className="ti ti-brand-google" style={{ fontSize: 14 }} /> Continue with Google
+          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '0 0 14px' }}>
+            <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+            <span style={{ fontSize: 11, color: 'var(--text-3)' }}>or use your password</span>
+            <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+          </div>
+
           <form onSubmit={handleExistingUser}>
             <div className="fgrp">
               <label className="flbl">Email</label>
@@ -276,6 +378,16 @@ export default function InvitePage() {
               {loading ? <span className="spin" /> : 'Sign in & accept invitation'}
             </button>
           </form>
+          {/* The 'expired' and 'already_used' screens both offer a way out
+              to /login; this one — the screen people actually get stuck
+              on — offered none. */}
+          <p style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 14, textAlign: 'center' }}>
+            Trouble signing in?{' '}
+            <Link href={`/login?next=/invite/${token}`} style={{ color: 'var(--green)' }}>
+              Sign in another way
+            </Link>
+            {' '}and we&rsquo;ll bring you back here.
+          </p>
         </div>
       </div>
     </div>

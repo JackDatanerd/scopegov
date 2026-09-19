@@ -99,6 +99,19 @@ export async function GET(request: NextRequest) {
   // allowed and why the origin+next concatenation didn't actually
   // protect against it.
   const next       = safeRedirectPath(searchParams.get('next'))
+  // FIX (deep audit, Team & Invites section): both branches below send a
+  // user with no workspace membership to /onboarding, which is right for
+  // an ordinary signup and wrong for an invitee — a pending invite has
+  // user_id NULL until it's accepted, so resolveOnboardingMember returns
+  // null for exactly the person who is mid-acceptance. Before this, a
+  // Google-authenticating invitee was diverted into workspace-CREATION
+  // onboarding and the invite was silently dropped; they'd have to find
+  // the email again, and would land back here in the same loop.
+  // An invite path is the one destination that is legitimate without a
+  // membership, so honour it ahead of the onboarding redirect. `next` has
+  // already been through safeRedirectPath, so this can only ever be a
+  // same-app relative path.
+  const isInviteDestination = next.startsWith('/invite/')
   const error      = searchParams.get('error')
   const errorDescription = searchParams.get('error_description')
 
@@ -126,9 +139,11 @@ export async function GET(request: NextRequest) {
 
         const member = await resolveOnboardingMember(serviceClient, user.id)
 
-        if (!member) return NextResponse.redirect(`${origin}/onboarding`)
+        if (!member) {
+          return NextResponse.redirect(`${origin}${isInviteDestination ? next : '/onboarding'}`)
+        }
         await logLoginEvent(serviceClient, user, member.workspaceId, 'google')
-        if (!member.onboardingCompletedAt) {
+        if (!member.onboardingCompletedAt && !isInviteDestination) {
           return NextResponse.redirect(`${origin}/onboarding`)
         }
       }
@@ -151,9 +166,11 @@ export async function GET(request: NextRequest) {
 
         const member = await resolveOnboardingMember(serviceClient, user.id)
 
-        if (!member) return NextResponse.redirect(`${origin}/onboarding`)
+        if (!member) {
+          return NextResponse.redirect(`${origin}${isInviteDestination ? next : '/onboarding'}`)
+        }
         await logLoginEvent(serviceClient, user, member.workspaceId, 'email_confirmation')
-        if (!member.onboardingCompletedAt) {
+        if (!member.onboardingCompletedAt && !isInviteDestination) {
           return NextResponse.redirect(`${origin}/onboarding`)
         }
       }

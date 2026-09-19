@@ -22,6 +22,7 @@ export default async function TeamPage() {
       .from('workspace_members')
       .select(`
         id, status, joined_at, invited_at, effective_permissions, role_id,
+        permission_overrides,
         invited_email, invite_token_expires_at,
         users!workspace_members_user_id_fkey(id, name, email, avatar_url),
         roles(id, name)
@@ -50,7 +51,20 @@ export default async function TeamPage() {
   ])
 
   const members = membersRes.data || []
-  const roles   = rolesRes.data  || []
+  const canManageRoles = hasPermission(session, 'MANAGE_ROLES')
+
+  // FIX (deep audit, Team & Invites section): every member received the
+  // complete roles.permissions jsonb for every role in the workspace,
+  // plus each member's own effective_permissions — and TeamClient gated
+  // only the ACTIONS, not the Roles tab itself, so anyone could read the
+  // full permission matrix. Props handed to a Client Component are
+  // serialized into the RSC payload and reach the browser regardless of
+  // what renders, which is the exact reasoning app/(app)/settings/page.tsx
+  // already applies to its own sensitive columns. Only ship the
+  // permission maps to someone who can actually act on them.
+  const roles = (rolesRes.data || []).map((r: any) => canManageRoles ? r : ({
+    id: r.id, name: r.name, description: r.description, is_default: r.is_default,
+  }))
   const active  = members.filter((m: any) => m.status === 'active')
   const pending = members.filter((m: any) => m.status === 'invited')
   // FIX (deep audit, Team & Invites re-pass): the main query already
@@ -101,7 +115,7 @@ export default async function TeamPage() {
       roles={roles}
       session={session}
       canInvite={hasPermission(session, 'INVITE_MEMBERS')}
-      canManageRoles={hasPermission(session, 'MANAGE_ROLES')}
+      canManageRoles={canManageRoles}
       workspaceId={session.workspaceId}
       overSeatLimit={overSeatLimit}
       seatLimit={seatLimit ?? null}

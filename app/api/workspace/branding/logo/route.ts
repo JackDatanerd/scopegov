@@ -103,7 +103,14 @@ export async function POST(request: NextRequest) {
 
     const { error } = await (service as any).storage
       .from('logos')
-      .upload(path, bytes, { upsert: true, contentType: file.type })
+      // `cacheControl: '60'` pairs with the ?v= cache-buster that
+      // app/(app)/settings/page.tsx now appends: the versioned URL is what
+      // actually guarantees a replacement is seen immediately, and this
+      // just keeps the window small for any consumer holding a bare,
+      // unversioned URL (a previously-generated PDF, an already-sent
+      // email). Default was 3600, which is what made a same-extension
+      // logo replacement invisible for up to an hour.
+      .upload(path, bytes, { upsert: true, contentType: file.type, cacheControl: '60' })
 
     if (error) {
       console.error('Logo upload error:', error)

@@ -1,0 +1,186 @@
+scopegov — Section 5 (Settings) + Section 6 (Team & invites) audit fixes
+=======================================================================
+
+REQUIRES A MIGRATION: supabase/migrations/054_approve_documents_seed_and_sow_language.sql
+Run it before or with this code. Two of the fixes below are data-level and
+do not work from the code alone.
+
+RETRACTION FROM THE AUDIT REPORT
+--------------------------------
+"S6-B1 — middleware redirects unauthenticated API calls to /login" was
+reported in error and no change has been made for it. That finding came
+from reading middleware.ts off GitHub main during pre-tarball recon rather
+than from the archive; the archive's middleware.ts (290 lines vs main's
+128) already has /api/portal/, /api/team/invite/ and /api/auth/callback in
+isPublicRoute, with comments describing the same trace. Every other
+finding was read from the extracted archive and re-verified before work
+started.
+
+NEW FILES (2)
+-------------
+  supabase/migrations/054_approve_documents_seed_and_sow_language.sql
+      PART 1 — APPROVE_DOCUMENTS appeared in ZERO migrations. It exists in
+      types.ts (ALL_PERMISSIONS), mfa-policy.ts, approvals/engine.ts and
+      its own test, but create_workspace_atomic seeds 24 permissions and
+      omits it, and 008_approval_chains.sql (which SHIPPED approval
+      chains) has no permissions statement at all. So no role, not even
+      Owner, held it on any workspace ever created — making the entire
+      Approval Workflows feature dead on arrival, and unrecoverable, since
+      permission-ceiling.ts only lets you grant what you already hold.
+      Backfills roles + workspace_members (proxying on
+      MANAGE_WORKSPACE_SETTINGS, least privilege), and replaces
+      create_workspace_atomic with 048's exact body plus the 25th
+      permission in all four seeded role blobs.
+      PART 2 — workspaces.sow_language defaulted to 'en-US', which
+      api/workspace/settings rejects. Normalizes existing rows, changes
+      the default to 'en', adds a CHECK constraint.
+
+  app/api/team/[id]/resend/route.ts
+      Atomic invite resend. Replaces TeamClient's DELETE-then-POST, which
+      hard-deleted the invite before recreating it — so a POST failing on
+      rate limit / seat limit / deleted role / ceiling left nothing at
+      all, killing the invitee's live link with no indication that had
+      happened. Refreshes token + expiry in place, preserving role_id,
+      invited_by and invited_at.
+
+MODIFIED FILES (17)
+-------------------
+
+Section 5 — Settings:
+
+  app/api/workspace/settings/route.ts
+      - sow_language: normalizes regional codes ('en-US' -> 'en') instead
+        of 400ing. This alone made the ENTIRE Workspace tab unsaveable on
+        every untouched workspace, since both its Save buttons post the
+        whole form and the <select> painted "English" over the rejected
+        value.
+      - proactiveRiskThreshold / proactiveRiskAlertsEnabled: the only
+        mapped fields with no server validation at all; a bad value hit
+        NOT NULL / type constraints as an opaque 500, negatives persisted.
+      - name / agency_name: rejects empty. '' satisfied NOT NULL and armed
+        the delete-confirmation bypass below.
+      - slug: type guard before .toLowerCase().
+
+  app/(app)/settings/page.tsx
+      - billing prop redacted for members without MANAGE_BILLING. The
+        workspace prop directly above already does this, with a comment
+        explaining RSC payloads reach the browser regardless of what
+        renders; billing (paystack customer/subscription codes, card
+        last4) was never given the same treatment.
+      - logo URL versioned off updated_at — a same-extension logo
+        replacement hits the same public URL and was cached for an hour.
+
+  app/api/workspace/branding/logo/route.ts
+      cacheControl '60' to pair with the versioned URL.
+
+  app/api/workspace/defaults/route.ts
+      PATCH no longer writes columns it wasn't given (it silently reset
+      revision_rounds to 2 on a paymentStructure-only call).
+
+  components/settings/SettingsClient.tsx
+      - normalizeSowLanguage on read (client half of the above).
+      - ?tab= validated against the real tab list; an unknown value
+        rendered a completely blank pane. Tab now written back to the URL.
+      - delete confirmation refuses a blank workspace name outright.
+      - failed logo upload no longer falls through to a "Changes saved."
+
+  components/settings/AuditLogClient.tsx
+      "Back to Settings" breadcrumb (approvals page has one, this didn't);
+      Load-more dedupes on id, since offset-by-rows.length duplicates rows
+      when events arrive between pages.
+
+Section 6 — Team & invites:
+
+  lib/utils/admin-floor.ts
+      Generalized from a hardcoded MANAGE_ROLES check to
+      PROTECTED_PERMISSIONS. leave_workspace_atomic (027/034/038) guards
+      MANAGE_WORKSPACE_SETTINGS *and* MANAGE_ROLES; the JS half only ever
+      re-implemented the second, so the sole settings-holder could strip
+      themselves via a role edit and permanently lose all of Settings,
+      approval workflows, deletion and ownership transfer — with no way
+      back, since nobody left could grant it. wouldOrphanManageRoles kept
+      as a wrapper so existing call sites and tests are unaffected.
+
+  app/api/team/[id]/route.ts
+      Floor check now covers every protected permission and names the one
+      at risk; empty PATCH body 400s instead of 500ing on .update({});
+      permissionOverrides shape validated.
+
+  app/api/team/roles/[id]/route.ts
+      Same generalized floor; null/array permissions 400s instead of
+      throwing a TypeError; role name trimmed, capped at 60, uniqueness
+      enforced on rename.
+
+  app/api/team/roles/route.ts
+      Name cap + workspace-scoped uniqueness (duplicate names are
+      genuinely ambiguous in the approver pickers); plan-gate message
+      corrected — the allowlist has always included 'trial' while the
+      error said "Pro or Agency".
+
+  app/api/team/invite/route.ts
+      - 'deactivated' / 'expired' existing members no longer fall through
+        to the INSERT and hit UNIQUE(workspace_id, user_id) as a bare 500;
+        both now return a 409 naming the action that actually works.
+      - stale 'expired' invite rows for the same address are cleared
+        before re-inviting (the partial unique index only covers
+        status='invited', so a second row used to accumulate).
+      - real email format validation; non-string email no longer 500s.
+
+  lib/utils/rate-limit.ts
+      Invite limiter counts resends too, so the new endpoint isn't an
+      unmetered path to the thing the limiter exists to bound.
+
+  app/api/team/invite/[token]/accept/route.ts
+  app/api/team/invite/[token]/signup/route.ts
+      Dropped the explicit effective_permissions write. It wrote the
+      DEFAULT role's permissions even when the inviter chose another, and
+      was correct only because role_id happens to be in the same SET list
+      and fires the recompute trigger.
+
+  app/(app)/team/page.tsx
+      Role permission maps no longer sent to members without MANAGE_ROLES;
+      permission_overrides added to the member query for the new editor.
+
+  components/team/TeamClient.tsx
+      - MEMBER ROLE REASSIGNMENT and PER-MEMBER PERMISSION OVERRIDES built.
+        PATCH /api/team/[id] has always supported both behind a careful
+        ceiling/floor model and had no front door at all: a wrong role at
+        invite time was permanent, any role ever assigned was undeletable
+        ("Reassign them first" pointed at an action that didn't exist),
+        and permission_overrides was 100% unreachable. Overrides are
+        tri-state (Use role / Always grant / Always revoke) because the
+        trigger merges per-key and "not overridden" is a real state.
+      - Resend routed through the new atomic endpoint.
+      - Deactivate no longer hidden for admins — the over-seat banner told
+        people to do a thing the client blocked, while the server already
+        allowed a peer admin to do it.
+      - Roles tab hidden without MANAGE_ROLES.
+
+  app/invite/[token]/page.tsx
+      The existing-user screen was password-only on an app that ships
+      Google OAuth: a Google-only invitee had no password, no Google
+      button, and no escape link. Adds Continue-with-Google (returning to
+      the invite), one-click accept when already signed in as the invited
+      address, a warning when signed in as somebody else, and a
+      sign-in-another-way link.
+
+  app/api/auth/callback/route.ts
+      An invitee has no membership until they accept, so both branches
+      diverted them to workspace-creation onboarding and dropped the
+      invite. An /invite/ destination (already validated by
+      safeRedirectPath) is now honoured ahead of the onboarding redirect.
+
+  tests/admin-floor.test.ts
+      Regression tests pinning both protected permissions, and that the
+      legacy wrapper still means what it meant.
+
+NOT FIXED (deliberate)
+----------------------
+  Nothing outstanding from the report except the retracted S6-B1.
+
+VERIFICATION DONE
+-----------------
+  Repo-wide TypeScript syntax check (tsc --noEmit --noResolve) clean.
+  Full typecheck and vitest not run — no node_modules in this sandbox and
+  no network to install them. Please run `npm ci && npx tsc --noEmit &&
+  npx vitest run` before pushing.

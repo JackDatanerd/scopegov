@@ -1,5 +1,6 @@
 'use client'
 import { useState, useEffect, useMemo, useCallback } from 'react'
+import Link from 'next/link'
 import { formatRelative } from '@/lib/utils/format'
 
 interface Project { id: string; name: string }
@@ -115,7 +116,18 @@ export default function AuditLogClient({ projects, members }: { projects: Projec
       const res = await fetch(`/api/reports/audit-export?${queryString('json', rows.length)}`)
       const json = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(json.error || 'Could not load more events')
-      setRows(prev => [...prev, ...json.rows])
+      // FIX (deep audit, Settings section): paging by `rows.length` as the
+      // offset means any event written between two pages shifts the
+      // window, duplicating a row across the boundary (and hiding
+      // another). audit_log is append-only and this page is most useful
+      // on a live workspace, so that's the normal case, not a rare one.
+      // Dedupe on id when appending — cheap, and it also makes a
+      // double-clicked "Load more" harmless.
+      setRows(prev => {
+        const seen = new Set(prev.map(r => r.id).filter(Boolean))
+        const fresh = (json.rows || []).filter((r: Row) => !r.id || !seen.has(r.id))
+        return [...prev, ...fresh]
+      })
       setTotalCount(json.totalCount)
       setTruncated(json.truncated)
       setHasMore(json.hasMore)
@@ -147,6 +159,16 @@ export default function AuditLogClient({ projects, members }: { projects: Projec
     <div className="page" style={{ maxWidth: 1080 }}>
       <div className="page-hd">
         <div>
+          {/* FIX (deep audit, Settings section): settings/approvals — the
+              other page reached from the same Settings nav — renders a
+              "← Settings" breadcrumb; this one rendered none, leaving the
+              browser back button as the only way out of a page people
+              routinely land on from a deep link. */}
+          <div style={{ marginBottom: 6 }}>
+            <Link href="/settings" style={{ fontSize: 12, color: 'var(--text-3)' }}>
+              <i className="ti ti-arrow-left" style={{ fontSize: 11 }} /> Settings
+            </Link>
+          </div>
           <h1 className="page-title">Audit log</h1>
           <p className="page-sub">{totalCount.toLocaleString()} event{totalCount === 1 ? '' : 's'} · immutable record</p>
         </div>
