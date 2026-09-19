@@ -51,7 +51,7 @@ export async function collectAttachmentPaths(service: any, scope: PurgeScope): P
   for (const res of await Promise.all(runs)) {
     for (const r of res.rows) if (r.storage_path) paths.add(r.storage_path)
   }
-  return [...paths]
+  return Array.from(paths)
 }
 
 export async function removeStoragePaths(

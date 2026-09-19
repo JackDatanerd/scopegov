@@ -35,6 +35,18 @@
 //     double-counted the renewal (and reported the whole new rate as
 //     "recovered").
 //  8. The currency picker no longer sorts `availableCurrencies` in place.
+//  9. Every multi-page read is pinned to a single "as of now" instant
+//     (`asOf`, captured once per call) via an upper bound on whichever
+//     time column each query orders by. Without it, a row created between
+//     this call's first and a later page — landing at the FRONT of a
+//     descending `created_at`/`adjusted_at`/`sent_at` order — shifts every
+//     later row's offset by one, so a busy workspace could see one row
+//     counted twice (inflating a sum) or skipped once (undercounting it)
+//     across a single rollup. audit-export already solved this exact
+//     problem for its own pagination; this is the same fix applied here.
+//     `projects` doesn't need it — it orders by `id` (random UUIDs), not a
+//     time-correlated column, so a new row can't shift an existing one's
+//     position.
 
 import { PROJECT_TYPE_LABELS } from '@/lib/utils/format'
 import { fetchPaged } from '@/lib/utils/paginate'
@@ -101,22 +113,24 @@ export function buildCoGrid(cos: Array<{ id: string; status: string; parent_co_i
 export async function getScopeReportData(
   service: any, wsId: string, since: string, requestedCurrency: string | null, canSeeFinancials: boolean
 ) {
+  // See file header, point 9: pins every time-ordered read to one instant.
+  const asOf = new Date().toISOString()
   const [flagsQ, exceptionsQ, adjustmentsQ, amendmentsQ, projectsQ] = await Promise.all([
     loadAll('flags', (f, t) => service.from('guardian_flags')
       .select('id,status,resolution,projects(id,name)', { count: 'exact' })
-      .eq('workspace_id', wsId).gte('created_at', since)
+      .eq('workspace_id', wsId).gte('created_at', since).lte('created_at', asOf)
       .order('created_at', { ascending: false }).order('id').range(f, t)),
     loadAll('exceptions', (f, t) => service.from('exceptions_log')
       .select('id,deliverable,estimated_value,project_id,projects(id,name,currency)', { count: 'exact' })
-      .eq('workspace_id', wsId).gte('created_at', since)
+      .eq('workspace_id', wsId).gte('created_at', since).lte('created_at', asOf)
       .order('created_at', { ascending: false }).order('id').range(f, t)),
     loadAll('scope adjustments', (f, t) => service.from('scope_adjustments')
       .select('id,deliverable,old_value,new_value,reason,adjusted_at,project_id,projects(id,name)', { count: 'exact' })
-      .eq('workspace_id', wsId).gte('adjusted_at', since)
+      .eq('workspace_id', wsId).gte('adjusted_at', since).lte('adjusted_at', asOf)
       .order('adjusted_at', { ascending: false }).order('id').range(f, t)),
     loadAll('amendments', (f, t) => service.from('amendments')
       .select('id,financial_impact,project_id,change_orders(is_retainer_renewal)', { count: 'exact' })
-      .eq('workspace_id', wsId).gte('created_at', since)
+      .eq('workspace_id', wsId).gte('created_at', since).lte('created_at', asOf)
       .order('created_at', { ascending: false }).order('id').range(f, t)),
     loadAll('projects', (f, t) => service.from('projects')
       .select('id,currency,type', { count: 'exact' })
@@ -188,21 +202,24 @@ export async function getScopeReportData(
 export async function getFinancialReportData(
   service: any, wsId: string, since: string, requestedCurrency: string | null
 ) {
+  // See file header, point 9: pins every time-ordered read to one instant.
+  const asOf = new Date().toISOString()
   const [projectsQ, amendmentsQ, cosQ] = await Promise.all([
     loadAll('projects', (f, t) => service.from('projects')
       .select('id,name,type,contract_value,currency,client_id,clients(id,name)', { count: 'exact' })
       .eq('workspace_id', wsId).is('deleted_at', null).neq('status', 'Draft').neq('status', 'Archived')
       .order('id').range(f, t)),
-    // ALL amendments (not just the period's): the portfolio's effective value
-    // is base + every accepted amendment; the period only scopes `co_impact`.
+    // ALL amendments up to `asOf` (not just the period's): the portfolio's
+    // effective value is base + every accepted amendment; the period only
+    // scopes `co_impact` (filtered client-side below, also against `asOf`).
     loadAll('amendments', (f, t) => service.from('amendments')
       .select('id,financial_impact,project_id,created_at,change_orders(is_retainer_renewal)', { count: 'exact' })
-      .eq('workspace_id', wsId)
+      .eq('workspace_id', wsId).lte('created_at', asOf)
       .order('created_at', { ascending: false }).order('id').range(f, t)),
     // COs SENT in the period (drafts have sent_at null and never match).
     loadAll('change orders', (f, t) => service.from('change_orders')
       .select('id,status,total,project_id,parent_co_id,sent_at', { count: 'exact' })
-      .eq('workspace_id', wsId).gte('sent_at', since)
+      .eq('workspace_id', wsId).gte('sent_at', since).lte('sent_at', asOf)
       .order('sent_at', { ascending: false }).order('id').range(f, t)),
   ])
 

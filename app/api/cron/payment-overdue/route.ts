@@ -306,7 +306,29 @@ export async function POST(request: NextRequest) {
         // deleted weeks ago could still get "downgraded" and its former
         // owner could still get emailed about a subscription change on a
         // workspace that no longer exists.
-        if (!ws || ws.deleted_at || ws.plan_tier === 'solo') continue
+        //
+        // FIX (Billing re-pass #4 — HIGH): this used to also skip
+        // `ws.plan_tier === 'solo'`, on the assumption that solo is always
+        // "the floor a higher tier falls to, nothing left to enforce." But
+        // `plan_tier` is dual-purpose: PLAN_LIMITS.solo is a real,
+        // separately-billed Paystack plan a customer can subscribe to
+        // directly (its own PAYSTACK_PLAN_SOLO_* codes), not only the
+        // no-subscription state a trial converts to when it expires with no
+        // card on file. Sections 3/4/5 all query `billing` rows that already
+        // have `grace_period_started_at` or `cancels_at_period_end` set —
+        // fields ONLY ever written by a real Paystack webhook for a real
+        // subscription — so a workspace that reached trial→solo with no
+        // card never appears in these result sets regardless of this check.
+        // The old exclusion therefore had no legitimate case to protect and
+        // only ever fired for a genuine paying Solo subscriber: their card
+        // failing got no day-2 reminder, no day-5 downgrade/Paystack-cancel,
+        // ever — and a Solo subscriber who explicitly cancelled kept full
+        // paid access forever, with their subscription/customer codes never
+        // cleared, because there was no lower tier for "downgrade" to move
+        // them to. Enforcement now applies to every tier equally; a Solo
+        // customer already at the floor still gets disabled/cleaned up, it
+        // just has nowhere further to fall.
+        if (!ws || ws.deleted_at) continue
 
         // Dedup so a daily-scheduled cron only ever sends this once per
         // grace period, even though the window above spans a full day.
@@ -353,7 +375,13 @@ export async function POST(request: NextRequest) {
         // FIX (build, cron/portal audit round): see the identical note on
         // section 3 above — a soft-deleted workspace's billing row isn't
         // otherwise excluded here.
-        if (!ws || ws.deleted_at || ws.plan_tier === 'solo') continue
+        // FIX (Billing re-pass #4): see section 3 above for why the old
+        // `|| ws.plan_tier === 'solo'` skip is gone — this reached here only
+        // because a real subscription's grace period actually expired, and a
+        // Solo subscriber's failed card needs disabling exactly like any
+        // other tier's, not a permanent pass because there's no lower tier
+        // to fall to.
+        if (!ws || ws.deleted_at) continue
 
         // FIX (cron audit, section 17): this used to update `workspaces`
         // unconditionally on whatever was fetched by the select above, with
@@ -508,7 +536,13 @@ export async function POST(request: NextRequest) {
         // async subscription.disable webhook then sets
         // cancels_at_period_end=true — which is precisely what this query
         // looks for, with no awareness the workspace is already gone.
-        if (!ws || ws.deleted_at || ws.plan_tier === 'solo') continue
+        // FIX (Billing re-pass #4): see section 3 above for why the old
+        // `|| ws.plan_tier === 'solo'` skip is gone — a Solo subscriber who
+        // cancels and lets their paid period lapse needs the same
+        // subscription/customer-code cleanup below as any other tier;
+        // without it they kept full paid Solo access indefinitely with a
+        // cancelled subscription nothing ever finished tearing down.
+        if (!ws || ws.deleted_at) continue
 
         // FIX (cron audit, section 17): same missing guard as the grace-
         // period step above — no re-check that cancels_at_period_end was

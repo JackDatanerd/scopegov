@@ -100,7 +100,7 @@ export default function EditProjectModal({
           <div>
             <label className="form-label">Currency</label>
             <select className="form-input" value={currency} disabled={hasAnySow} onChange={e => setCurrency(e.target.value)}>
-              {[...new Set([currency, ...CURRENCIES])].map(c => <option key={c} value={c}>{c}</option>)}
+              {Array.from(new Set([currency, ...CURRENCIES])).map(c => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
         </div>

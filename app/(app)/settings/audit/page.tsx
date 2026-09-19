@@ -32,7 +32,7 @@ export default async function AuditLogPage() {
   // that project" is a normal audit question and the project filter is now
   // backed by audit_log.project_id, which outlives the project row.
   // Paged so a workspace past PostgREST's max-rows cap still lists them all.
-  const [projects, membersRes] = await Promise.all([
+  const [projects, members] = await Promise.all([
     fetchPaged<any>(
       (f, t) => (service as any)
         .from('projects')
@@ -47,13 +47,24 @@ export default async function AuditLogPage() {
       // Everyone, not only active members: "what did this person do before
       // they left" is precisely when a compliance-grade record matters.
       .select('user_id, status, users!workspace_members_user_id_fkey(id, name, email)')
-      .eq('workspace_id', session.workspaceId),
+      .eq('workspace_id', session.workspaceId)
+      // FIX (Reports & Audit re-pass #4): unlike the projects fetch right
+      // above (which logs and falls back on failure), this query's `error`
+      // was never checked — a failed read silently rendered as an empty
+      // actor-filter dropdown with no signal anywhere that anything went
+      // wrong. Same swallowed-Supabase-result class of bug this codebase
+      // has fixed repeatedly elsewhere (round 13's logAudit fix being the
+      // most direct precedent).
+      .then((res: any) => {
+        if (res.error) { console.error('Audit page members load failed:', res.error.message); return [] }
+        return res.data || []
+      }),
   ])
 
   const projectOptions = projects.map((p: any) => ({ id: p.id, name: p.name, deleted: !!p.deleted_at }))
-  const members = (membersRes.data || [])
+  const memberOptions = (members as any[])
     .filter((m: any) => m.users)
     .map((m: any) => ({ id: m.users.id, name: m.users.name || m.users.email, email: m.users.email, active: m.status === 'active' }))
 
-  return <AuditLogClient projects={projectOptions} members={members} />
+  return <AuditLogClient projects={projectOptions} members={memberOptions} />
 }
