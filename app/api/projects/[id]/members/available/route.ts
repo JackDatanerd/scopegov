@@ -29,6 +29,10 @@ export async function GET(
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
     if (!(await canReadProject(service, session, projectId)))
       return NextResponse.json({ error: 'Project not found' }, { status: 404 })
+    // Soft-deleted projects are not assignable.
+    const { data: live } = await (service as any).from('projects').select('id')
+      .eq('id', projectId).eq('workspace_id', session.workspaceId).is('deleted_at', null).maybeSingle()
+    if (!live) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
 
     // Get member IDs already on the project
     const { data: existing } = await (service as any)

@@ -24,7 +24,7 @@ const NAV_ITEMS = [
   { href: '/reports',   icon: 'ti-chart-bar',         label: 'Reports', permission: 'VIEW_ALL_PROJECTS' as const },
   // Workspace-wide by definition — only meaningful (and only shown) for
   // anyone who can actually see the whole portfolio.
-  { href: '/portfolio', icon: 'ti-building-skyscraper', label: 'Portfolio', permission: 'VIEW_ALL_PROJECTS' as const },
+  { href: '/portfolio', icon: 'ti-building-skyscraper', label: 'Portfolio', permission: 'VIEW_PORTFOLIO' as const },
 ]
 const BOTTOM_NAV = [
   { href: '/team',     icon: 'ti-user-circle', label: 'Team' },

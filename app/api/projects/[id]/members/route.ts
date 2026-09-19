@@ -6,6 +6,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { canReadProject } from '@/lib/utils/project-access'
 
 export async function POST(
   request: NextRequest,
@@ -18,10 +19,18 @@ export async function POST(
     if (!hasPermission(session, 'ASSIGN_TEAM_MEMBERS'))
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
 
-    const { memberId } = await request.json()
-    if (!memberId) return NextResponse.json({ error: 'memberId required' }, { status: 400 })
+    const body = await request.json().catch(() => null)
+    const memberId = body?.memberId
+    if (!memberId || typeof memberId !== 'string') return NextResponse.json({ error: 'memberId required' }, { status: 400 })
 
     const service = createServiceClient()
+
+    // Projects & Dashboard deep audit: this route (unlike members/available)
+    // never checked that the CALLER can see the project. A custom role with
+    // ASSIGN_TEAM_MEMBERS but only VIEW_OWN_PROJECTS could add themselves to
+    // any project in the workspace and thereby grant themselves access.
+    if (!(await canReadProject(service, session, projectId)))
+      return NextResponse.json({ error: 'Project not found' }, { status: 404 })
 
     // FIX (audit round 2, item #6): projectId (from the URL) was never
     // checked against the caller's workspace — only memberId was. A
@@ -97,10 +106,15 @@ export async function DELETE(
     if (!hasPermission(session, 'ASSIGN_TEAM_MEMBERS'))
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
 
-    const { memberId } = await request.json()
-    if (!memberId) return NextResponse.json({ error: 'memberId required' }, { status: 400 })
+    const body = await request.json().catch(() => null)
+    const memberId = body?.memberId
+    if (!memberId || typeof memberId !== 'string') return NextResponse.json({ error: 'memberId required' }, { status: 400 })
 
     const service = createServiceClient()
+
+    // Same caller-can-see-the-project check as POST above.
+    if (!(await canReadProject(service, session, projectId)))
+      return NextResponse.json({ error: 'Project not found' }, { status: 404 })
 
     const { data: project } = await (service as any)
       .from('projects').select('id')
@@ -115,9 +129,15 @@ export async function DELETE(
       .select('id, users!workspace_members_user_id_fkey(name, email)')
       .eq('id', memberId).eq('workspace_id', session.workspaceId).maybeSingle()
 
-    await (service as any)
+    // Read the result: the delete's error was ignored and a project.member
+    // "removed" audit row was written even when nothing was removed.
+    const { data: removed, error: delErr } = await (service as any)
       .from('project_members').delete()
       .eq('project_id', projectId).eq('member_id', memberId)
+      .select('member_id')
+    if (delErr) throw new Error(delErr.message)
+    if (!removed || removed.length === 0)
+      return NextResponse.json({ ok: true, removed: false })
 
     await logAudit(service, {
       workspaceId: session.workspaceId, actorId: session.id,

@@ -11,6 +11,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { canReadProject } from '@/lib/utils/project-access'
 import {
   extractMentions, MESSAGE_MAX_LENGTH,
   filterMentionsToProjectMembers, notifyMentionedUsers,
@@ -42,8 +43,8 @@ export async function PATCH(
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-    const body = await request.json()
-    const text = (body?.body || '').trim()
+    const body = await request.json().catch(() => null)
+    const text = typeof body?.body === 'string' ? body.body.trim() : ''
     if (!text) return NextResponse.json({ error: 'Message body is required' }, { status: 400 })
     if (text.length > MESSAGE_MAX_LENGTH) return NextResponse.json({ error: 'Message is too long' }, { status: 400 })
 
@@ -52,6 +53,10 @@ export async function PATCH(
     if (!message || message.deleted_at) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (message.author_id !== session.id)
       return NextResponse.json({ error: 'Only the author can edit this message' }, { status: 403 })
+    // Authorship isn't enough: someone removed from the project must not be able
+    // to keep editing (and @mention-notifying people through) its discussion.
+    if (!(await canReadProject(service, session, projectId)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
     const now = new Date().toISOString()
     const { error } = await (service as any)

@@ -2,6 +2,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { PLAN_LIMITS } from '@/lib/utils/format'
+import { LIMIT_COUNTED_STATUSES } from '@/lib/utils/project-status'
 import { parsePlanRequest, planCodeFor } from '@/lib/billing/plans'
 import { createPendingCheckout } from '@/lib/billing/checkouts'
 
@@ -78,9 +79,14 @@ export async function POST(request: NextRequest) {
         .select('id', { count: 'exact', head: true })
         .eq('workspace_id', session.workspaceId)
         .is('deleted_at', null)
+        // Same rule as POST /api/projects: only live projects count toward the
+        // allowance ("Active projects" on the pricing table). Complete/Archived
+        // used to count here, so the advice below could never get anyone under
+        // the limit (archiving didn't change the number).
+        .in('status', [...LIMIT_COUNTED_STATUSES])
       if ((activeProjects || 0) > targetProjects) {
         return NextResponse.json({
-          error: `This workspace has ${activeProjects} project${activeProjects === 1 ? '' : 's'}, more than the ${targetProjects}-project limit on ${PLAN_LIMITS[planKey]?.name || planKey}. Archive or delete projects down to the new limit first, then switch plans.`,
+          error: `This workspace has ${activeProjects} active project${activeProjects === 1 ? '' : 's'}, more than the ${targetProjects}-project limit on ${PLAN_LIMITS[planKey]?.name || planKey}. Complete, archive or delete projects down to the new limit first, then switch plans.`,
           projectLimitExceeded: true,
         }, { status: 409 })
       }

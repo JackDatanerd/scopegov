@@ -4,12 +4,23 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { formatCurrency, formatCurrencyGroups, formatRelative, projectStatusLabel, PLAN_LABELS } from '@/lib/utils/format'
 import { isAttentionWorthy, attentionReason } from '@/lib/utils/attention'
+import { IN_PROGRESS_STATUSES } from '@/lib/utils/project-status'
 import type { SessionUser } from '@/lib/supabase/types'
 
 export const metadata = { title: 'Dashboard' }
 
-function greeting() {
-  const h = new Date().getHours()
+// Projects & Dashboard deep audit: this used new Date().getHours() on the
+// SERVER (UTC on Vercel), so the greeting was wrong for almost everyone
+// ("Good morning" at 1pm in Nairobi, "Good afternoon" at 8am in California).
+// It now uses the workspace's own timezone.
+function greeting(timeZone?: string | null) {
+  let h: number
+  try {
+    h = parseInt(new Intl.DateTimeFormat('en-GB', { hour: 'numeric', hourCycle: 'h23', timeZone: timeZone || undefined }).format(new Date()), 10)
+    if (Number.isNaN(h)) h = new Date().getUTCHours()
+  } catch {
+    h = new Date().getUTCHours() // invalid stored timezone name
+  }
   return h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening'
 }
 
@@ -28,7 +39,7 @@ function feedColour(type: string): string {
   return 'var(--blue)'
 }
 
-function formatEvent(a: any): string {
+function formatEvent(a: any, canViewFinances: boolean): string {
   const n = a.entity_name ? `"${a.entity_name}"` : ''
   const actor = a.actor_name || 'System'
   const map: Record<string, string> = {
@@ -40,7 +51,15 @@ function formatEvent(a: any): string {
     'co.accepted': `Change order accepted — ${n}`,
     'co.declined': `Change order declined — ${n}`,
     'co.countered': `Counter offer received on ${n}`,
-    'project.retainer_renewed': `Retainer renewed — ${n} now ${a.metadata?.currency || ''} ${a.metadata?.new_monthly_amount ?? ''}/mo`,
+    // The renewal amount is a financial figure: only members with
+    // VIEW_FINANCIALS see it (it was shown to everyone before).
+    'project.retainer_renewed': canViewFinances
+      ? `Retainer renewed — ${n} now ${a.metadata?.currency || ''} ${a.metadata?.new_monthly_amount ?? ''}/mo`
+      : `Retainer renewed — ${n}`,
+    'project.completed': `${n} marked complete`,
+    'project.reopened': `${n} reopened`,
+    'project.archived': `${n} archived`,
+    'co.sent': `Change order sent — ${n}`,
     'flag.raised': `Scope flag raised on ${n}`,
     'flag.resolved': `Scope flag resolved on ${n}`,
     'member.invited': `${actor} invited a team member`,
@@ -83,6 +102,16 @@ export default async function DashboardPage() {
   // project in the workspace uncapped with this same join shape, so
   // there's no new cost model here — compute against the full set, keep
   // the .slice() calls below for what's actually rendered.
+  // FIX (deep audit, section 7): this omitted `currency`, so
+  // isAttentionWorthy's currency-mismatch guard on the proactive-risk-alert
+  // rule (workspace?.currency undefined → currencyMatches always true)
+  // was silently defeated here — the exact guard it's meant to enforce was
+  // correctly applied on the Projects list (which does fetch currency) and
+  // not on the Dashboard, for the same project.
+  const { data: ws } = await (service as any)
+    .from('workspaces').select('proactive_risk_alerts_enabled,proactive_risk_threshold,currency,timezone')
+    .eq('id', session.workspaceId).single()
+
   let projQuery = (service as any)
     .from('projects')
     .select(`id,name,disc,type,status,stall_reason,contract_value,currency,updated_at,
@@ -100,20 +129,11 @@ export default async function DashboardPage() {
       .from('project_members').select('project_id, workspace_members!inner(user_id)')
       .eq('workspace_members.user_id', session.id)
     accessibleProjectIds = (myIds || []).map((r: any) => r.project_id)
-    if (!accessibleProjectIds?.length) return <EmptyDash session={session} canCreate={canCreate} daysLeft={daysLeft} />
+    if (!accessibleProjectIds?.length) return <EmptyDash session={session} canCreate={canCreate} daysLeft={daysLeft} greetingText={greeting(ws?.timezone)} />
     projQuery = projQuery.in('id', accessibleProjectIds)
   }
 
   const { data: projects = [] } = await projQuery
-  // FIX (deep audit, section 7): this omitted `currency`, so
-  // isAttentionWorthy's currency-mismatch guard on the proactive-risk-alert
-  // rule (workspace?.currency undefined → currencyMatches always true)
-  // was silently defeated here — the exact guard it's meant to enforce was
-  // correctly applied on the Projects list (which does fetch currency) and
-  // not on the Dashboard, for the same project.
-  const { data: ws } = await (service as any)
-    .from('workspaces').select('proactive_risk_alerts_enabled,proactive_risk_threshold,currency')
-    .eq('id', session.workspaceId).single()
 
   // FIX (audit round 4, finding #8): this was workspace-wide with no
   // project-membership filtering at all — a VIEW_OWN_PROJECTS-restricted
@@ -129,12 +149,25 @@ export default async function DashboardPage() {
   // guaranteed to be the project id itself) for projects they can access.
   // A `project_id` column on audit_log, populated at write time, would
   // let this show the full picture safely — worth a follow-up migration.
+  // Activity feed. Projects & Dashboard deep audit — two bugs fixed here:
+  //  1. It showed the WHOLE workspace audit log (security.login_succeeded,
+  //     billing.plan_changed, role.updated ...) to anyone with
+  //     VIEW_ALL_PROJECTS, bypassing VIEW_AUDIT_LOG and burying project events
+  //     under login noise. It is now project-scoped: only rows tied to a
+  //     project (audit_log.project_id, migration 056).
+  //  2. Restricted (VIEW_OWN_PROJECTS) members only ever saw project.* rows,
+  //     because SOW/CO/flag/invoice events carry their own entity ids. With
+  //     project_id every project event is reachable for the projects they
+  //     can access.
   let activityQuery = (service as any)
     .from('audit_log').select('id,event_type,entity_name,actor_name,created_at,metadata')
-    .eq('workspace_id', session.workspaceId).order('created_at', { ascending: false }).limit(14)
+    .eq('workspace_id', session.workspaceId)
+    .not('project_id', 'is', null)
+    .not('event_type', 'like', 'project_message.%')
+    .order('created_at', { ascending: false }).limit(14)
 
   if (!canViewAll) {
-    activityQuery = activityQuery.eq('entity_type', 'project').in('entity_id', accessibleProjectIds || [])
+    activityQuery = activityQuery.in('project_id', accessibleProjectIds || [])
   }
 
   const { data: activity = [] } = await activityQuery
@@ -160,8 +193,10 @@ export default async function DashboardPage() {
     pendingApprovalsByProject.set(r.project_id, list)
   }
 
+  // Shared definition (lib/utils/project-status): includes Stalled, which the
+  // dashboard used to drop while the Portfolio counted it.
   const active = (projects || []).filter((p: any) =>
-    ['Active', 'Awaiting Signature', 'Intake', 'Changes Requested'].includes(p.status))
+    (IN_PROGRESS_STATUSES as readonly string[]).includes(p.status))
   const attention = (projects || []).filter((p: any) =>
     isAttentionWorthy({
       project: { ...p, contractValue: p.contract_value, stallReason: p.stall_reason,
@@ -174,7 +209,7 @@ export default async function DashboardPage() {
   // lib/utils/format.ts — this used to sum contract_value across every
   // active project regardless of currency, then label the sum with
   // active[0]'s currency.
-  const activeValueDisplay = formatCurrencyGroups(active, true)
+  const activeValueDisplay = formatCurrencyGroups(active, true, ws?.currency || 'USD')
 
   return (
     <div className="page" style={{ maxWidth: 980 }}>
@@ -194,7 +229,7 @@ export default async function DashboardPage() {
       {/* Header */}
       <div className="page-hd">
         <div>
-          <h1 className="page-title">{greeting()}, {session.name.split(' ')[0]}</h1>
+          <h1 className="page-title">{greeting(ws?.timezone)}, {session.name.split(' ')[0]}</h1>
           <p className="page-sub">
             {attention.length > 0
               ? `${attention.length} matter${attention.length !== 1 ? 's' : ''} require${attention.length === 1 ? 's' : ''} attention`
@@ -251,7 +286,9 @@ export default async function DashboardPage() {
                   <i className="ti ti-alert-circle" style={{ marginRight: 5 }} />
                   Attention register ({attention.length})
                 </div>
-                <Link href="/projects" style={{ fontSize: 11, color: 'var(--green)' }}>All projects →</Link>
+                <Link href="/projects?filter=attention" style={{ fontSize: 11, color: 'var(--green)' }}>
+                  {attention.length > 6 ? `View all ${attention.length} →` : 'All projects →'}
+                </Link>
               </div>
               <div className="surface" style={{ overflow: 'hidden' }}>
                 <table className="gov-table" style={{ width: '100%' }}>
@@ -371,7 +408,7 @@ export default async function DashboardPage() {
                 <div key={a.id} className="feed-item">
                   <div className="feed-dot" style={{ background: feedColour(a.event_type), marginTop: 6 }} />
                   <div className="feed-body">
-                    <div className="feed-text">{formatEvent(a)}</div>
+                    <div className="feed-text">{formatEvent(a, canViewFinances)}</div>
                     <div className="feed-time">{formatRelative(a.created_at)}</div>
                   </div>
                 </div>
@@ -384,7 +421,7 @@ export default async function DashboardPage() {
   )
 }
 
-function EmptyDash({ session, canCreate, daysLeft }: { session: SessionUser; canCreate: boolean; daysLeft: number | null }) {
+function EmptyDash({ session, canCreate, daysLeft, greetingText }: { session: SessionUser; canCreate: boolean; daysLeft: number | null; greetingText: string }) {
   return (
     <div className="page" style={{ maxWidth: 980 }}>
       {session.planTier === 'trial' && daysLeft !== null && daysLeft <= 5 && (
@@ -397,7 +434,7 @@ function EmptyDash({ session, canCreate, daysLeft }: { session: SessionUser; can
       )}
       <div className="page-hd">
         <div>
-          <h1 className="page-title">{greeting()}, {session.name.split(' ')[0]}</h1>
+          <h1 className="page-title">{greetingText}, {session.name.split(' ')[0]}</h1>
           <p className="page-sub">{session.agencyName} · ScopeGov workspace</p>
         </div>
         {canCreate && (

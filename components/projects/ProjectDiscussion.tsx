@@ -97,6 +97,12 @@ export default function ProjectDiscussion({
 }) {
   const [messages, setMessages] = useState<Message[]>([])
   const [loaded, setLoaded] = useState(false)
+  // Projects & Dashboard deep audit: the feed used to load the oldest 200
+  // messages only. It now loads the newest page, can page backwards, and
+  // polls for new messages so the discussion doesn't go stale until a reload.
+  const [hasMore, setHasMore] = useState(false)
+  const [loadingOlder, setLoadingOlder] = useState(false)
+  const preserveScrollRef = useRef(false)
   const [draft, setDraft] = useState('')
   const [posting, setPosting] = useState(false)
   const [error, setError] = useState('')
@@ -112,23 +118,77 @@ export default function ProjectDiscussion({
   const load = useCallback(async () => {
     try {
       const res = await fetch(base)
-      const json = await res.json()
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json.error || 'Could not load the discussion.')
       setMessages(json.messages || [])
+      setHasMore(!!json.hasMore)
       setLoaded(true)
-    } catch { setError('Could not load the discussion.'); setLoaded(true) }
+    } catch (e) { setError(e instanceof Error ? e.message : 'Could not load the discussion.'); setLoaded(true) }
   }, [base])
+
+  async function loadOlder() {
+    const oldest = messages[0]
+    if (!oldest || loadingOlder) return
+    setLoadingOlder(true)
+    try {
+      const res = await fetch(`${base}?before=${encodeURIComponent(oldest.createdAt)}`)
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json.error || 'Could not load earlier messages.')
+      preserveScrollRef.current = true
+      setMessages(prev => {
+        const have = new Set(prev.map(m => m.id))
+        return [...(json.messages || []).filter((m: Message) => !have.has(m.id)), ...prev]
+      })
+      setHasMore(!!json.hasMore)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not load earlier messages.')
+    } finally { setLoadingOlder(false) }
+  }
 
   useEffect(() => { load() }, [load])
 
   // Mark read once the feed has loaded, and tell the parent tab badge
   // to clear — opening the tab is the read signal, same as most inbox UIs.
+  // Mark read up to the newest message actually on screen (not "now"), so a
+  // message that arrives between the fetch and this call is not silently
+  // marked as read.
+  const newestCreatedAt = messages.length ? messages[messages.length - 1].createdAt : null
   useEffect(() => {
     if (!loaded) return
-    fetch(`${base}/read`, { method: 'POST' }).catch(() => {})
+    fetch(`${base}/read`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newestCreatedAt ? { upTo: newestCreatedAt } : {}),
+    }).catch(() => {})
     onRead?.()
-  }, [loaded, base]) // eslint-disable-line
+  }, [loaded, base, newestCreatedAt]) // eslint-disable-line
+
+  // Poll for new messages while the tab is visible.
+  const newestRef = useRef<string | null>(null)
+  newestRef.current = newestCreatedAt
+  useEffect(() => {
+    if (!loaded) return
+    const timer = setInterval(async () => {
+      if (document.visibilityState !== 'visible') return
+      try {
+        if (!newestRef.current) { await load(); return }
+        const res = await fetch(`${base}?after=${encodeURIComponent(newestRef.current)}`)
+        if (!res.ok) return
+        const json = await res.json()
+        const incoming: Message[] = json.messages || []
+        if (!incoming.length) return
+        setMessages(prev => {
+          const have = new Set(prev.map(m => m.id))
+          const fresh = incoming.filter(m => !have.has(m.id))
+          return fresh.length ? [...prev, ...fresh] : prev
+        })
+      } catch { /* transient — next tick retries */ }
+    }, 30000)
+    return () => clearInterval(timer)
+  }, [loaded, base, load])
 
   useEffect(() => {
+    if (preserveScrollRef.current) { preserveScrollRef.current = false; return }
     if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight
   }, [messages.length])
 
@@ -222,7 +282,15 @@ export default function ProjectDiscussion({
             </p>
           </div>
         ) : (
-          messages.map(m => (
+          <>
+            {hasMore && (
+              <div style={{ textAlign: 'center', marginBottom: 10 }}>
+                <button className="btn btn-ghost btn-xs" onClick={loadOlder} disabled={loadingOlder}>
+                  {loadingOlder ? 'Loading…' : 'Load earlier messages'}
+                </button>
+              </div>
+            )}
+            {messages.map(m => (
             <div key={m.id} className="pm-row" style={{ display: 'flex', gap: 10, marginBottom: 14, position: 'relative' }}>
               <Avatar name={m.authorName} avatarUrl={m.authorAvatarUrl} />
               <div style={{ flex: 1, minWidth: 0 }}>
@@ -270,7 +338,8 @@ export default function ProjectDiscussion({
                 </div>
               )}
             </div>
-          ))
+            ))}
+          </>
         )}
       </div>
 

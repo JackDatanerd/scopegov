@@ -49,15 +49,45 @@ export async function GET(
     if (!(await canReadProject(service, session, projectId)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
-    const { data: rows } = await (service as any)
+    // Projects & Dashboard deep audit: this used to be
+    // `order created_at ASC limit 200`, which returns the OLDEST 200 messages.
+    // Once a project had 200 messages (deleted placeholders included) every
+    // new message was saved but never shown again after a reload, while the
+    // unread badge kept counting it. The default page is now the NEWEST
+    // FEED_LIMIT messages; `before` pages backwards ("load earlier") and
+    // `after` fetches only what arrived since the newest loaded message
+    // (used for polling).
+    const url = new URL(request.url)
+    const beforeRaw = url.searchParams.get('before')
+    const afterRaw = url.searchParams.get('after')
+    const validTs = (v: string | null) => v !== null && !Number.isNaN(new Date(v).getTime())
+    if ((beforeRaw && !validTs(beforeRaw)) || (afterRaw && !validTs(afterRaw)))
+      return NextResponse.json({ error: 'Invalid cursor' }, { status: 400 })
+
+    let feed = (service as any)
       .from('project_messages')
       .select(`
         id, body, created_at, edited_at, deleted_at, author_id,
         users!project_messages_author_id_fkey(name, avatar_url)
       `)
       .eq('project_id', projectId)
-      .order('created_at', { ascending: true })
-      .limit(FEED_LIMIT)
+
+    let rows: any[]
+    let hasMore = false
+    if (afterRaw) {
+      const { data, error } = await feed.gt('created_at', afterRaw)
+        .order('created_at', { ascending: true }).order('id', { ascending: true }).limit(FEED_LIMIT)
+      if (error) throw new Error(error.message)
+      rows = data || []
+    } else {
+      if (beforeRaw) feed = feed.lt('created_at', beforeRaw)
+      const { data, error } = await feed
+        .order('created_at', { ascending: false }).order('id', { ascending: false }).limit(FEED_LIMIT + 1)
+      if (error) throw new Error(error.message)
+      const desc: any[] = data || []
+      hasMore = desc.length > FEED_LIMIT
+      rows = desc.slice(0, FEED_LIMIT).reverse()
+    }
 
     const { data: readRow } = await (service as any)
       .from('project_message_reads')
@@ -66,7 +96,7 @@ export async function GET(
       .eq('user_id', session.id)
       .maybeSingle()
 
-    const messages = (rows || []).map((m: any) => ({
+    const messages = rows.map((m: any) => ({
       id: m.id,
       // Deleted messages keep their row (mentions/audit still reference
       // it) but the client only ever sees a tombstone, never the body.
@@ -80,7 +110,7 @@ export async function GET(
       isMine: m.author_id === session.id,
     }))
 
-    return NextResponse.json({ messages, lastReadAt: readRow?.last_read_at || null })
+    return NextResponse.json({ messages, hasMore, lastReadAt: readRow?.last_read_at || null })
   } catch (err) {
     console.error('Project messages GET error:', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
@@ -96,8 +126,8 @@ export async function POST(
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-    const body = await request.json()
-    const text = (body?.body || '').trim()
+    const body = await request.json().catch(() => null)
+    const text = typeof body?.body === 'string' ? body.body.trim() : ''
     if (!text) return NextResponse.json({ error: 'Message body is required' }, { status: 400 })
     if (text.length > MESSAGE_MAX_LENGTH) return NextResponse.json({ error: 'Message is too long' }, { status: 400 })
 
@@ -155,7 +185,7 @@ export async function POST(
     })
   } catch (err) {
     console.error('Project messages POST error:', err)
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Internal server error' }, { status: 500 })
+    return NextResponse.json({ error: 'Could not post the message' }, { status: 500 })
   }
 }
 

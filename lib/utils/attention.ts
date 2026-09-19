@@ -5,6 +5,7 @@
 // more prominent; it does not independently make a resolved item attention-worthy.
 
 import type { Project } from '@/lib/supabase/types'
+import { isTerminalStatus } from '@/lib/utils/project-status'
 
 // Same cadence app/api/cron/approval-stall/route.ts reminds on — kept as one
 // shared constant so the dashboard's "needs attention" definition of stale
@@ -31,11 +32,20 @@ export interface AttentionContext {
 }
 
 export function isAttentionWorthy({ project, workspace }: AttentionContext): boolean {
+  // Projects & Dashboard deep audit: finished projects never need attention.
+  // A declined/expired CO on a Complete or Archived project used to sit in
+  // the dashboard's "Needs attention" list forever (the projects page counted
+  // only its active/awaiting tabs, so the two disagreed).
+  if (isTerminalStatus(project.status)) return false
   // 1. Stalled project
   if (project.status === 'Stalled') return true
 
   // 2. Any open guardian flags
-  if (project.guardianFlags?.some(f => f.status === 'open')) return true
+  // borderline_review = Guardian flagged something a human must confirm or
+  // dismiss. It is unresolved work, and used to be invisible here (only
+  // 'open' counted), so a project whose only pending item was a review
+  // request never surfaced anywhere on the dashboard.
+  if (project.guardianFlags?.some(f => f.status === 'open' || f.status === 'borderline_review')) return true
 
   // 3. Any actionable change orders
   // FIX (section-10 audit, feature gap — CO expiry): 'expired' added,
@@ -115,6 +125,7 @@ export function isAttentionWorthy({ project, workspace }: AttentionContext): boo
 }
 
 export function attentionReason({ project }: AttentionContext): string | null {
+  if (isTerminalStatus(project.status)) return null
   if (project.status === 'Stalled') {
     return project.stallReason === 'sow_unsigned'
       ? 'SOW unsigned — project stalled'
@@ -123,6 +134,10 @@ export function attentionReason({ project }: AttentionContext): string | null {
   if (project.guardianFlags?.some(f => f.status === 'open')) {
     const count = project.guardianFlags.filter(f => f.status === 'open').length
     return `${count} open scope flag${count !== 1 ? 's' : ''}`
+  }
+  if (project.guardianFlags?.some(f => f.status === 'borderline_review')) {
+    const count = project.guardianFlags.filter(f => f.status === 'borderline_review').length
+    return `${count} Guardian flag${count !== 1 ? 's' : ''} awaiting your review`
   }
   if (project.changeOrders?.some(co => co.status === 'declined')) return 'Change order declined'
   if (project.changeOrders?.some(co => co.status === 'countered')) return 'Counter offer received'

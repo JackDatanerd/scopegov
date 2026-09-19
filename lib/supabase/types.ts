@@ -44,8 +44,13 @@ export type CoStatus =
   | 'stalled'
   | 'withdrawn'
   | 'exception_granted'
+  // Added by migrations 014 / 044 — present in the DB CHECK constraint (and
+  // read by attention.ts / the project page) but missing from this union.
+  | 'awaiting_countersignature'
+  | 'expired'
 
-export type FlagStatus = 'open' | 'resolved' | 'closed' | 'converted_to_co'
+// 'borderline_review' (migration 022): a Guardian flag awaiting a human's confirm/dismiss.
+export type FlagStatus = 'open' | 'borderline_review' | 'resolved' | 'closed' | 'converted_to_co'
 export type GuardianOutcome = 'pending' | 'in_scope' | 'borderline' | 'out_of_scope' | 'covered_by_co'
 export type GuardianSensitivity = 'conservative' | 'medium' | 'aggressive'
 export type MemberStatus = 'active' | 'invited' | 'deactivated'
@@ -179,6 +184,11 @@ export type Permission =
   // or user approves, so splitting the permission itself would just add
   // bureaucracy without adding real granularity.
   | 'APPROVE_DOCUMENTS'
+  // Portfolio dashboard (workspace-wide scope-risk rollup). Deliberately its
+  // own permission — separate from VIEW_ALL_PROJECTS — so an executive /
+  // finance stakeholder can be given the rollup without every project, and a
+  // project manager can see every project without the rollup. Migration 057.
+  | 'VIEW_PORTFOLIO'
 
 export const ALL_PERMISSIONS: Permission[] = [
   'VIEW_OWN_PROJECTS', 'VIEW_ALL_PROJECTS', 'VIEW_FINANCIALS', 'VIEW_CLIENT_DATA',
@@ -187,7 +197,7 @@ export const ALL_PERMISSIONS: Permission[] = [
   'MARK_PROJECT_COMPLETE', 'ASSIGN_TEAM_MEMBERS', 'SUBMIT_GUARDIAN_CHECKS',
   'ACCESS_GUARDIAN_HISTORY', 'INVITE_MEMBERS', 'MANAGE_ROLES', 'MANAGE_BILLING',
   'DELETE_PROJECTS', 'VIEW_AUDIT_LOG', 'MANAGE_WORKSPACE_SETTINGS',
-  'SEND_INVOICES', 'APPROVE_DOCUMENTS',
+  'SEND_INVOICES', 'APPROVE_DOCUMENTS', 'VIEW_PORTFOLIO',
 ]
 
 export interface Role {

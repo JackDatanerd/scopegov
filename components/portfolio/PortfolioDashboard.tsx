@@ -1,9 +1,11 @@
 'use client'
 import { useState, useEffect, useMemo } from 'react'
+import type React from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { formatCurrency, formatDate, formatRelative } from '@/lib/utils/format'
 
-type Period = '30d' | '90d' | '6m' | '12m'
+type Period = '30d' | '90d' | '6m' | '12m' | 'all'
 
 interface HistoryPoint {
   date: string
@@ -19,19 +21,29 @@ interface OpenFlag {
 interface StalledSow { projectId: string; projectName: string; clientName: string | null; since: string }
 interface StalledCo { id: string; title: string; total: number | null; currency: string; projectId: string; projectName: string; since: string }
 
+interface CurrencyRow {
+  currency: string; activeProjectCount: number; openFlagsCount: number
+  contractValueAtRisk: number | null; exceptionsValueTotal: number | null
+}
+
 interface PortfolioData {
   currency: string
+  // Portfolio deep audit: `current` is now computed LIVE server-side (it used
+  // to be the last daily snapshot, which disagreed with the lists below it and
+  // was empty for a new workspace's first day).
   current: {
     openFlagsCount: number
     openFlagsBySeverity: { high: number; medium: number; low: number }
+    borderlineFlagsCount: number
     exceptionsCount: number
     exceptionsValueTotal: number | null
     contractValueAtRisk: number | null
     stalledSowCount: number
     stalledCoCount: number
     activeProjectCount: number
-    snapshotDate: string
-  } | null
+    asOf: string
+    byCurrency: CurrencyRow[]
+  }
   history: HistoryPoint[]
   // FIX (deep audit, section 8): atRiskDelta is now null when the viewer
   // lacks VIEW_FINANCIALS — see api/reports/portfolio/route.ts.
@@ -48,6 +60,7 @@ const PERIODS: { key: Period; label: string }[] = [
   { key: '90d', label: 'Last 90 days' },
   { key: '6m', label: '6 months' },
   { key: '12m', label: '12 months' },
+  { key: 'all', label: 'All time' },
 ]
 
 const SEVERITY_META: Record<string, { label: string; colour: string }> = {
@@ -56,10 +69,16 @@ const SEVERITY_META: Record<string, { label: string; colour: string }> = {
   low: { label: 'Low', colour: 'var(--text-4)' },
 }
 
-export default function PortfolioDashboard({ canViewFinancials, agencyName }: { canViewFinancials: boolean; agencyName: string }) {
+export default function PortfolioDashboard({ canViewFinancials, agencyName, canOpenProjects = false }: { canViewFinancials: boolean; agencyName: string; canOpenProjects?: boolean }) {
+  const router = useRouter()
   const [period, setPeriod] = useState<Period>('90d')
   const [data, setData] = useState<PortfolioData | null>(null)
   const [loading, setLoading] = useState(true)
+  // Portfolio deep audit: a failed request used to fall through to the
+  // "No portfolio history yet — come back tomorrow" empty state (the fetch
+  // never checked r.ok, so a 403/500 body became `data`). Errors now say so.
+  const [loadError, setLoadError] = useState('')
+  const [reloadKey, setReloadKey] = useState(0)
   const [flagFilter, setFlagFilter] = useState<'all' | 'high' | 'medium' | 'low'>('all')
   // FEATURE (deep audit, section 8): the dashboard had no export at all —
   // see api/reports/portfolio/export/route.ts. Same download-via-blob
@@ -77,12 +96,23 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName }: { 
     // page.tsx).
     let cancelled = false
     setLoading(true)
+    setLoadError('')
     fetch(`/api/reports/portfolio?period=${period}`)
-      .then(r => r.json())
+      .then(async r => {
+        const json = await r.json().catch(() => ({}))
+        if (!r.ok) throw new Error(json.error || `Request failed (${r.status})`)
+        return json
+      })
       .then(json => { if (!cancelled) { setData(json); setLoading(false) } })
-      .catch(() => { if (!cancelled) setLoading(false) })
+      .catch((e: unknown) => {
+        if (!cancelled) {
+          setData(null)
+          setLoadError(e instanceof Error ? e.message : 'Could not load the portfolio')
+          setLoading(false)
+        }
+      })
     return () => { cancelled = true }
-  }, [period])
+  }, [period, reloadKey])
 
   const filteredFlags = useMemo(() => {
     if (!data) return []
@@ -122,11 +152,11 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName }: { 
             onChange={e => setPeriod(e.target.value as Period)}>
             {PERIODS.map(p => <option key={p.key} value={p.key}>{p.label}</option>)}
           </select>
-          <button className="btn btn-ghost btn-sm" disabled={exporting !== null || loading || !data?.hasSnapshots}
+          <button className="btn btn-ghost btn-sm" disabled={exporting !== null || loading || !data}
             onClick={() => handleExport('csv')} title="Export CSV">
             {exporting === 'csv' ? <span className="spin" /> : <><i className="ti ti-file-spreadsheet" style={{ marginRight: 6 }} />CSV</>}
           </button>
-          <button className="btn btn-ghost btn-sm" disabled={exporting !== null || loading || !data?.hasSnapshots}
+          <button className="btn btn-ghost btn-sm" disabled={exporting !== null || loading || !data}
             onClick={() => handleExport('pdf')} title="Export PDF">
             {exporting === 'pdf' ? <span className="spin" /> : <><i className="ti ti-file-type-pdf" style={{ marginRight: 6 }} />PDF</>}
           </button>
@@ -139,20 +169,45 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName }: { 
         <div style={{ display: 'flex', justifyContent: 'center', padding: 60 }}>
           <span className="spin spin-dark" style={{ width: 24, height: 24 }} />
         </div>
-      ) : !data || !data.hasSnapshots ? (
+      ) : loadError || !data ? (
         <div className="surface">
           <div className="empty-state">
-            <i className="ti ti-building-skyscraper empty-state-icon" />
-            <p className="empty-state-title">No portfolio history yet</p>
-            <p className="empty-state-sub">
-              The scope-health rollup runs once a day. Come back tomorrow, or check that at least
-              one project has activity — this view is built from that daily snapshot.
-            </p>
+            <i className="ti ti-alert-triangle empty-state-icon" />
+            <p className="empty-state-title">Couldn&apos;t load the portfolio</p>
+            <p className="empty-state-sub">{loadError || 'Something went wrong.'}</p>
+            <button className="btn btn-ghost btn-sm" style={{ marginTop: 12 }} onClick={() => setReloadKey(k => k + 1)}>Try again</button>
           </div>
         </div>
       ) : (
         <>
           <MetricStrip data={data} canViewFinancials={canViewFinancials} />
+          <p style={{ fontSize: 11.5, color: 'var(--text-3)', margin: '-14px 0 20px' }}>
+            Live as of {formatRelative(data.current.asOf)}. The chart and “vs period start” figures use daily snapshots.
+            {data.current.borderlineFlagsCount > 0 && ` ${data.current.borderlineFlagsCount} Guardian flag${data.current.borderlineFlagsCount === 1 ? '' : 's'} awaiting human review ${data.current.borderlineFlagsCount === 1 ? 'is' : 'are'} not counted as open.`}
+          </p>
+          {data.current.byCurrency.length > 1 && (
+            <div className="surface surface-p" style={{ marginBottom: 24 }}>
+              <div className="sec-hd" style={{ marginBottom: 10 }}>
+                <div className="sec-title">By currency</div>
+              </div>
+              <p style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 10 }}>
+                Money can&apos;t be summed across currencies, so the headline value is {data.currency}. Counts above include every currency.
+              </p>
+              <table className="gov-table" style={{ width: '100%' }}>
+                <thead><tr><th>Currency</th><th>Active projects</th><th>Open flags</th>{canViewFinancials && <th style={{ textAlign: 'right' }}>Value at risk</th>}</tr></thead>
+                <tbody>
+                  {data.current.byCurrency.map(row => (
+                    <tr key={row.currency}>
+                      <td className="td-primary">{row.currency}</td>
+                      <td>{row.activeProjectCount}</td>
+                      <td>{row.openFlagsCount}</td>
+                      {canViewFinancials && <td className="td-mono" style={{ textAlign: 'right' }}>{row.contractValueAtRisk !== null ? formatCurrency(row.contractValueAtRisk, row.currency) : '—'}</td>}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 24, alignItems: 'start', marginBottom: 24 }}>
             <div className="surface surface-p">
@@ -172,15 +227,15 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName }: { 
               <div className="sec-hd" style={{ marginBottom: 16 }}>
                 <div className="sec-title">Open flags by severity</div>
               </div>
-              <SeverityBreakdown breakdown={data.current!.openFlagsBySeverity} />
+              <SeverityBreakdown breakdown={data.current.openFlagsBySeverity} />
             </div>
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24, alignItems: 'start', marginBottom: 24 }}>
-            <StalledPanel sows={data.stalledSows} cos={data.stalledCos} canViewFinancials={canViewFinancials} />
+            <StalledPanel sows={data.stalledSows} cos={data.stalledCos} canViewFinancials={canViewFinancials} canOpenProjects={canOpenProjects} />
             <ExceptionsPanel
-              count={data.current!.exceptionsCount}
-              value={data.current!.exceptionsValueTotal}
+              count={data.current.exceptionsCount}
+              value={data.current.exceptionsValueTotal}
               canViewFinancials={canViewFinancials}
               currency={data.currency}
             />
@@ -188,7 +243,7 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName }: { 
 
           <div>
             <div className="sec-hd">
-              <div className="sec-title">Open scope flags ({data.openFlags.length}{data.openFlagsTotal && data.openFlagsTotal > data.openFlags.length ? ` of ${data.openFlagsTotal} · most recent shown` : ''})</div>
+              <div className="sec-title">Open scope flags ({data.openFlags.length}{data.openFlagsTotal && data.openFlagsTotal > data.openFlags.length ? ` of ${data.openFlagsTotal} · highest severity first` : ''})</div>
               <div style={{ display: 'flex', gap: 4 }}>
                 {(['all', 'high', 'medium', 'low'] as const).map(s => (
                   <button key={s}
@@ -221,9 +276,15 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName }: { 
                   </thead>
                   <tbody>
                     {filteredFlags.map(f => (
-                      <tr key={f.id} onClick={() => window.location.href = `/projects/${f.projectId}?tab=guardian`}>
+                      <tr key={f.id}
+                        style={canOpenProjects ? { cursor: 'pointer' } : undefined}
+                        onClick={canOpenProjects ? () => router.push(`/projects/${f.projectId}?tab=guardian`) : undefined}>
                         <td>
-                          <div className="td-primary">{f.projectName}</div>
+                          <div className="td-primary">
+                            {canOpenProjects
+                              ? <Link href={`/projects/${f.projectId}?tab=guardian`} onClick={e => e.stopPropagation()} style={{ color: 'inherit', textDecoration: 'none' }}>{f.projectName}</Link>
+                              : f.projectName}
+                          </div>
                           {f.clientName && <div className="td-sub">{f.clientName}</div>}
                         </td>
                         <td style={{ maxWidth: 340 }}>
@@ -234,7 +295,7 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName }: { 
                         </td>
                         <td>
                           <span className={`pill pill-${f.severity === 'high' ? 'red' : f.severity === 'medium' ? 'amber' : 'slate'}`}>
-                            {SEVERITY_META[f.severity].label}
+                            {(SEVERITY_META[f.severity]?.label ?? f.severity)}
                           </span>
                         </td>
                         {canViewFinancials && (
@@ -258,7 +319,7 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName }: { 
 
 // ── METRIC STRIP ─────────────────────────────────────────────────
 function MetricStrip({ data, canViewFinancials }: { data: PortfolioData; canViewFinancials: boolean }) {
-  const c = data.current!
+  const c = data.current
   const trend = data.trend
   return (
     <div className="mstrip" style={{ marginBottom: 24 }}>
@@ -406,7 +467,14 @@ function SeverityBreakdown({ breakdown }: { breakdown: { high: number; medium: n
 // full list, same shape as the "show all" pattern elsewhere in the UI.
 const STALLED_PREVIEW_COUNT = 8
 
-function StalledPanel({ sows, cos, canViewFinancials }: { sows: StalledSow[]; cos: StalledCo[]; canViewFinancials: boolean }) {
+// Deep-links into the SOW / CO tab of the project (not just its overview) and
+// degrades to a plain row for members who can't open every project.
+function StalledRow({ href, children }: { href: string | null; children: React.ReactNode }) {
+  const style: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--surface-2)', textDecoration: 'none' }
+  return href ? <Link href={href} style={style}>{children}</Link> : <div style={style}>{children}</div>
+}
+
+function StalledPanel({ sows, cos, canViewFinancials, canOpenProjects }: { sows: StalledSow[]; cos: StalledCo[]; canViewFinancials: boolean; canOpenProjects: boolean }) {
   const [expanded, setExpanded] = useState(false)
   const items = [
     ...sows.map(s => ({ kind: 'SOW' as const, id: s.projectId, title: s.projectName, sub: s.clientName, since: s.since, projectId: s.projectId, amount: null as number | null, currency: null as string | null })),
@@ -429,8 +497,8 @@ function StalledPanel({ sows, cos, canViewFinancials }: { sows: StalledSow[]; co
       ) : (
         <>
           {visible.map(item => (
-            <Link key={`${item.kind}-${item.id}`} href={`/projects/${item.projectId}`}
-              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--surface-2)', textDecoration: 'none' }}>
+            <StalledRow key={`${item.kind}-${item.id}`}
+              href={canOpenProjects ? `/projects/${item.projectId}?tab=${item.kind === 'SOW' ? 'sow' : 'co'}` : null}>
               <div style={{ minWidth: 0 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <span className="pill pill-red pill-sm">{item.kind}</span>
@@ -444,7 +512,7 @@ function StalledPanel({ sows, cos, canViewFinancials }: { sows: StalledSow[]; co
                 ) : null}
                 <div style={{ fontSize: 10.5, color: 'var(--text-4)' }}>since {formatRelative(item.since)}</div>
               </div>
-            </Link>
+            </StalledRow>
           ))}
           {(hiddenCount > 0 || expanded) && items.length > STALLED_PREVIEW_COUNT && (
             <button

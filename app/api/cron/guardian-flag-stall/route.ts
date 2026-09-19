@@ -20,6 +20,7 @@ export const runtime = 'nodejs'
 // automated follow-up, which is exactly the gap this cron exists to
 // close, just half of it. Covering both statuses here.
 
+import { isTerminalStatus } from '@/lib/utils/project-status'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
@@ -48,7 +49,7 @@ export async function POST(request: NextRequest) {
     // up again until it's been quiet for the full window again.
     const { data: stale } = await (service as any)
       .from('guardian_flags')
-      .select('id, workspace_id, project_id, status, severity, description, sow_reference, projects(id, name, clients(name))')
+      .select('id, workspace_id, project_id, status, severity, description, sow_reference, projects(id, name, status, deleted_at, clients(name))')
       .in('status', ['open', 'borderline_review'])
       .lt('updated_at', cutoff)
 
@@ -57,6 +58,11 @@ export async function POST(request: NextRequest) {
       try {
         const project = flag.projects
         if (!project) continue
+        // Projects & Dashboard deep audit: a flag left over on a finished or
+        // deleted project (e.g. a borderline_review flag, which completing a
+        // project used to leave behind) is nobody's live work — don't keep
+        // reminding people about it every window.
+        if (project.deleted_at || isTerminalStatus(project.status)) continue
         const isBorderline = flag.status === 'borderline_review'
 
         const { data: updated } = await (service as any).from('guardian_flags')

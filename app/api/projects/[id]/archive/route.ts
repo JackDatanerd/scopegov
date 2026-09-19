@@ -4,35 +4,40 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
 
+// Complete -> Archived.
+// The status update is guarded on the status we validated and its `{ error }`
+// is checked — it used to be fire-and-forget, so a failed write still
+// returned { ok: true } and logged an audit event for a change that never
+// happened. Soft-deleted projects are treated as not found.
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id }  = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    // Reuses MARK_PROJECT_COMPLETE — archiving is the next step in the same
-    // project-closeout lifecycle, not a distinct permission concern.
     if (!hasPermission(session, 'MARK_PROJECT_COMPLETE'))
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
 
     const service = createServiceClient()
-    // FIX (deep audit, section 7): same gap as complete/route.ts — added
-    // the same canReadProject check so a narrowly-scoped custom role can't
-    // archive a project it can't otherwise see.
     if (!(await canReadProject(service, session, id)))
       return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     const { data: project } = await (service as any)
-      .from('projects').select('id,name,status').eq('id', id).eq('workspace_id', session.workspaceId).single()
+      .from('projects').select('id,name,status').eq('id', id).eq('workspace_id', session.workspaceId).is('deleted_at', null).maybeSingle()
     if (!project) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-    // Archived is already a valid value in the project_status enum, but
-    // only reachable from Complete — matches the intended lifecycle
-    // (Draft → ... → Active → Complete → Archived) and avoids skipping
-    // the completion checks (blocking COs, open flags) that Complete enforces.
     if (project.status !== 'Complete')
       return NextResponse.json({ error: 'Only Complete projects can be archived' }, { status: 400 })
 
     const now = new Date().toISOString()
-    await (service as any).from('projects').update({ status: 'Archived', updated_at: now }).eq('id', id)
+    const { data: moved, error: moveErr } = await (service as any).from('projects')
+      .update({ status: 'Archived', updated_at: now })
+      .eq('id', id).eq('workspace_id', session.workspaceId).eq('status', 'Complete').is('deleted_at', null)
+      .select('id')
+    if (moveErr) {
+      console.error('Project archive error:', moveErr)
+      return NextResponse.json({ error: 'Could not archive the project' }, { status: 500 })
+    }
+    if (!moved || moved.length === 0)
+      return NextResponse.json({ error: 'This project changed. Refresh and try again.' }, { status: 409 })
 
     await logAudit(service, {
       workspaceId: session.workspaceId, actorId: session.id,
@@ -43,6 +48,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     return NextResponse.json({ ok: true })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('Project archive error:', err)
+    return NextResponse.json({ error: 'Could not archive the project' }, { status: 500 })
   }
 }

@@ -1,6 +1,7 @@
 'use client'
 import { useState, useMemo } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import type { SessionUser } from '@/lib/supabase/types'
 import { isAttentionWorthy, attentionReason } from '@/lib/utils/attention'
 import { formatCurrency, formatCurrencyGroups, formatDate, projectStatusLabel, PROJECT_TYPE_ICONS } from '@/lib/utils/format'
@@ -34,6 +35,16 @@ const STATUS_TO_TAB: Record<string, string> = {
   'Archived': 'archived',
 }
 
+// Which tab a project lives under. A project the USER paused (stall_reason
+// 'manual') is in-flight work and belongs under Active — only a project
+// stalled for an unsigned SOW belongs under "Awaiting Signature". Both used to
+// land under "Awaiting Signature", so a manually paused Active project seemed
+// to vanish from the Active tab.
+function tabFor(p: ProjectRow): string {
+  if (p.status === 'Stalled') return p.stall_reason === 'manual' ? 'active' : 'awaiting'
+  return STATUS_TO_TAB[p.status]
+}
+
 function pillVariant(status: string): string {
   const m: Record<string, string> = {
     'Active': 'green', 'Awaiting Signature': 'amber', 'Changes Requested': 'amber',
@@ -43,6 +54,8 @@ function pillVariant(status: string): string {
 }
 
 interface Props {
+  /** Deep link from the dashboard's attention register: /projects?filter=attention */
+  initialFilter?: 'attention' | null
   projects: ProjectRow[]
   canCreate: boolean
   canViewFinancials: boolean
@@ -61,24 +74,31 @@ interface Props {
   }
 }
 
-export default function ProjectsClient({ projects, canCreate, canViewFinancials, workspaceSettings }: Props) {
-  const [tab,    setTab]    = useState('active')
+export default function ProjectsClient({ projects, canCreate, canViewFinancials, workspaceSettings, initialFilter }: Props) {
+  const [tab,    setTab]    = useState(initialFilter === 'attention' ? 'all' : 'active')
+  // The dashboard's "Attention register" shows 6 rows; this is where the rest live.
+  const [attentionOnly, setAttentionOnly] = useState(initialFilter === 'attention')
   const [search, setSearch] = useState('')
   const [view,   setView]   = useState<'grouped' | 'list'>('grouped')
 
   const filtered = useMemo(() => {
     let list = projects
-    if (tab !== 'all') list = list.filter((p: ProjectRow) => STATUS_TO_TAB[p.status] === tab)
+    if (tab !== 'all') list = list.filter((p: ProjectRow) => tabFor(p) === tab)
+    if (attentionOnly) list = list.filter((p: ProjectRow) => projectAttention(p))
     if (search.trim()) {
-      const q = search.toLowerCase()
+      const q = search.trim().toLowerCase()
       list = list.filter((p: ProjectRow) =>
         p.name?.toLowerCase().includes(q) ||
         p.clients?.name?.toLowerCase().includes(q) ||
-        p.disc?.toLowerCase().includes(q)
+        p.clients?.company_name?.toLowerCase().includes(q) ||
+        p.disc?.toLowerCase().includes(q) ||
+        // Internal reference (PO / job number) was stored and shown on the
+        // project page but not searchable here.
+        p.internal_ref?.toLowerCase().includes(q)
       )
     }
     return list
-  }, [projects, tab, search])
+  }, [projects, tab, search, attentionOnly]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function projectAttention(p: ProjectRow) {
     return isAttentionWorthy({
@@ -95,15 +115,17 @@ export default function ProjectsClient({ projects, canCreate, canViewFinancials,
     })
   }
 
+  // Every project the dashboard counts (finished projects never need attention
+  // any more, so this now agrees with the dashboard's "Needs attention").
   const attentionCount = useMemo(() =>
-    projects.filter((p: ProjectRow) => ['active','awaiting'].includes(STATUS_TO_TAB[p.status]) && projectAttention(p)).length
-  , [projects])
+    projects.filter((p: ProjectRow) => projectAttention(p)).length
+  , [projects]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const attentionByTab = useMemo(() => {
     const counts: Record<string, number> = {}
     for (const p of projects) {
       if (!projectAttention(p)) continue
-      const t = STATUS_TO_TAB[p.status]
+      const t = tabFor(p)
       counts[t] = (counts[t] || 0) + 1
     }
     return counts
@@ -142,6 +164,13 @@ export default function ProjectsClient({ projects, canCreate, canViewFinancials,
           <input className="finp search-inp" placeholder="Search projects…" value={search}
             onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearch(e.target.value)} />
         </div>
+        <button
+          className={`btn btn-xs ${attentionOnly ? 'btn-primary' : 'btn-ghost'}`}
+          onClick={() => setAttentionOnly(v => !v)}
+          title="Show only projects that need attention">
+          <i className="ti ti-alert-triangle" style={{ fontSize: 11, marginRight: 4 }} />
+          Needs attention{attentionCount > 0 ? ` (${attentionCount})` : ''}
+        </button>
         <div style={{ display: 'flex', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: 2 }}>
           <button
             onClick={() => setView('grouped')}
@@ -172,7 +201,7 @@ export default function ProjectsClient({ projects, canCreate, canViewFinancials,
             )}
             {!attentionByTab[t.key] && (
               <span style={{ marginLeft: 5, fontSize: 11, color: 'var(--text-4)' }}>
-                {t.key === 'all' ? projects.length : projects.filter((p: ProjectRow) => STATUS_TO_TAB[p.status] === t.key).length}
+                {t.key === 'all' ? projects.length : projects.filter((p: ProjectRow) => tabFor(p) === t.key).length}
               </span>
             )}
           </button>
@@ -185,7 +214,7 @@ export default function ProjectsClient({ projects, canCreate, canViewFinancials,
           <div className="empty-state">
             <i className="ti ti-search empty-state-icon" />
             <p className="empty-state-title">No projects found</p>
-            <p className="empty-state-sub">{search ? `No results for "${search}"` : `No ${tab} projects yet`}</p>
+            <p className="empty-state-sub">{search ? `No results for "${search}"` : attentionOnly ? 'Nothing needs attention right now.' : `No ${tab} projects yet`}</p>
           </div>
         </div>
       ) : view === 'grouped' ? (
@@ -309,15 +338,28 @@ function ProjectGroupRow({ project: p, canViewFinancials, hasAttention }: {
 function ProjectTableRow({ project: p, canViewFinancials, hasAttention }: {
   project: ProjectRow; canViewFinancials: boolean; hasAttention: boolean
 }) {
+  // A real link (open in new tab, keyboard, screen readers) plus a full-row
+  // click via the client router — the row used to assign window.location,
+  // which reloaded the whole app and had no link semantics at all.
+  const router = useRouter()
+  const reason = hasAttention ? attentionReason({
+    project: {
+      ...p, contractValue: p.contract_value, stallReason: p.stall_reason,
+      guardianFlags: p.guardian_flags, changeOrders: p.change_orders, sowDocuments: p.sow_documents,
+      pendingApprovals: (p as any).pending_approvals?.map((a: any) => ({ createdAt: a.created_at })),
+    }
+  }) : null
   return (
-    <tr onClick={() => { window.location.href = `/projects/${p.id}` }}>
+    <tr style={{ cursor: 'pointer' }} onClick={() => router.push(`/projects/${p.id}`)}>
       <td>
-        <div className="td-primary">{p.name}</div>
+        <Link href={`/projects/${p.id}`} onClick={e => e.stopPropagation()} style={{ color: 'inherit', textDecoration: 'none' }}>
+          <div className="td-primary">{p.name}</div>
+        </Link>
         {p.disc && <div className="td-sub">{p.disc}</div>}
       </td>
       <td style={{ color: 'var(--text-2)', fontSize: 13 }}>
         {p.clients?.name || '—'}
-        {hasAttention && <span className="attn-marker" style={{ marginLeft: 8 }}>Attention</span>}
+        {hasAttention && <span className="attn-marker" style={{ marginLeft: 8 }}>{reason || 'Attention'}</span>}
       </td>
       {canViewFinancials && (
         <td className="td-mono" style={{ textAlign: 'right' }}>

@@ -29,10 +29,11 @@ export async function GET(request: NextRequest) {
   try {
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    if (!hasPermission(session, 'VIEW_ALL_PROJECTS'))
-      return NextResponse.json({ error: 'Missing permission: VIEW_ALL_PROJECTS' }, { status: 403 })
+    if (!hasPermission(session, 'VIEW_PORTFOLIO'))
+      return NextResponse.json({ error: 'Missing permission: VIEW_PORTFOLIO' }, { status: 403 })
 
     const canViewFinancials = hasPermission(session, 'VIEW_FINANCIALS')
+    const canViewClients = hasPermission(session, 'VIEW_CLIENT_DATA')
     const { searchParams } = new URL(request.url)
     const format = (searchParams.get('format') || 'csv') as 'csv' | 'pdf'
     const period = parsePeriod(searchParams.get('period'))
@@ -42,11 +43,38 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid period' }, { status: 400 })
 
     const service = createServiceClient()
-    const data = await getPortfolioData(service, session.workspaceId, period, canViewFinancials)
+    const data = await getPortfolioData(service, session.workspaceId, period, canViewFinancials, canViewClients)
+    const filenameBase = filenameSlug(session.workspaceName, period)
 
-    // Same reasoning as audit_log.exported: who pulled a portfolio-wide
-    // scope-risk summary, and when, is itself something a compliance
-    // trail should capture.
+    // Build the file FIRST, audit after: the audit row used to be written
+    // before generation, so a failed render still recorded a successful export.
+    let response: NextResponse
+    if (format === 'csv') {
+      const csv = toCsv(data, canViewFinancials, PERIOD_LABELS[period])
+      response = new NextResponse(new Uint8Array(Buffer.from(CSV_BOM + csv, 'utf-8')), {
+        headers: {
+          'Content-Type': 'text/csv; charset=utf-8',
+          'Content-Disposition': `attachment; filename="${filenameBase}.csv"`,
+        },
+      })
+    } else {
+      const buffer = await renderPortfolioReportPdf({
+        agencyName: session.agencyName,
+        workspaceName: session.workspaceName,
+        generatedBy: session.name,
+        generatedAt: new Date().toISOString(),
+        periodLabel: PERIOD_LABELS[period],
+        canViewFinancials,
+        data,
+      })
+      response = new NextResponse(new Uint8Array(buffer), {
+        headers: {
+          'Content-Type': 'application/pdf',
+          'Content-Disposition': `attachment; filename="${filenameBase}.pdf"`,
+        },
+      })
+    }
+
     await logAudit(service, {
       workspaceId: session.workspaceId,
       actorId: session.id, actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
@@ -54,35 +82,7 @@ export async function GET(request: NextRequest) {
       entityType: 'workspace', entityId: session.workspaceId, entityName: session.workspaceName,
       metadata: { format, period },
     })
-
-    const filenameBase = filenameSlug(session.workspaceName, period)
-
-    if (format === 'csv') {
-      const csv = toCsv(data, canViewFinancials)
-      // BUG-008 convention: Uint8Array for NextResponse BodyInit
-      return new NextResponse(new Uint8Array(Buffer.from(CSV_BOM + csv, 'utf-8')), {
-        headers: {
-          'Content-Type': 'text/csv; charset=utf-8',
-          'Content-Disposition': `attachment; filename="${filenameBase}.csv"`,
-        },
-      })
-    }
-
-    const buffer = await renderPortfolioReportPdf({
-      agencyName: session.agencyName,
-      workspaceName: session.workspaceName,
-      generatedBy: session.name,
-      generatedAt: new Date().toISOString(),
-      periodLabel: PERIOD_LABELS[period],
-      canViewFinancials,
-      data,
-    })
-    return new NextResponse(new Uint8Array(buffer), {
-      headers: {
-        'Content-Type': 'application/pdf',
-        'Content-Disposition': `attachment; filename="${filenameBase}.pdf"`,
-      },
-    })
+    return response
   } catch (err) {
     console.error('Portfolio export error:', err)
     return NextResponse.json({ error: 'Could not generate export' }, { status: 500 })
@@ -95,31 +95,46 @@ function filenameSlug(workspaceName: string, period: string): string {
   return `${slug}-portfolio-${period}-${date}`
 }
 
-function toCsv(data: Awaited<ReturnType<typeof getPortfolioData>>, canViewFinancials: boolean): string {
+function toCsv(data: Awaited<ReturnType<typeof getPortfolioData>>, canViewFinancials: boolean, periodLabel: string): string {
   const lines: string[] = []
   const c = data.current
+  const money = (v: number | null) => (canViewFinancials ? (v ?? 0) : 'redacted')
 
+  // Every headline figure below is LIVE ("as of" the timestamp); only the
+  // History section is scoped to the selected period.
   lines.push('Portfolio summary')
   lines.push(['Metric', 'Value'].map(csvCell).join(','))
-  lines.push(['Open scope flags', c?.openFlagsCount ?? 0].map(csvCell).join(','))
-  lines.push(['Contract value at risk', canViewFinancials ? (c?.contractValueAtRisk ?? 0) : 'redacted'].map(csvCell).join(','))
-  lines.push(['Exceptions granted', c?.exceptionsCount ?? 0].map(csvCell).join(','))
-  lines.push(['Exceptions value, all-time', canViewFinancials ? (c?.exceptionsValueTotal ?? 0) : 'redacted'].map(csvCell).join(','))
-  lines.push(['Stalled SOWs', c?.stalledSowCount ?? 0].map(csvCell).join(','))
-  lines.push(['Stalled change orders', c?.stalledCoCount ?? 0].map(csvCell).join(','))
-  lines.push(['Active projects', c?.activeProjectCount ?? 0].map(csvCell).join(','))
-  lines.push(['Currency', data.currency].map(csvCell).join(','))
+  lines.push(['As of', c.asOf].map(csvCell).join(','))
+  lines.push(['Money figures currency', data.currency].map(csvCell).join(','))
+  lines.push(['Active projects (all currencies)', c.activeProjectCount].map(csvCell).join(','))
+  lines.push(['Open scope flags (all currencies)', c.openFlagsCount].map(csvCell).join(','))
+  lines.push(['Guardian flags awaiting review', c.borderlineFlagsCount].map(csvCell).join(','))
+  lines.push([`Contract value at risk (${data.currency})`, money(c.contractValueAtRisk)].map(csvCell).join(','))
+  lines.push(['Exceptions granted, all-time', c.exceptionsCount].map(csvCell).join(','))
+  lines.push([`Exceptions value, all-time (${data.currency})`, money(c.exceptionsValueTotal)].map(csvCell).join(','))
+  lines.push(['Stalled SOWs', c.stalledSowCount].map(csvCell).join(','))
+  lines.push(['Stalled change orders', c.stalledCoCount].map(csvCell).join(','))
   lines.push('')
 
+  if (c.byCurrency.length > 1) {
+    lines.push('By currency')
+    lines.push(['Currency', 'Active projects', 'Open flags', 'Contract value at risk', 'Exceptions value, all-time'].map(csvCell).join(','))
+    for (const row of c.byCurrency) {
+      lines.push([row.currency, row.activeProjectCount, row.openFlagsCount, money(row.contractValueAtRisk), money(row.exceptionsValueTotal)].map(csvCell).join(','))
+    }
+    lines.push('')
+  }
+
   lines.push(data.openFlagsTotal > data.openFlags.length
-    ? `Open scope flags (most recent ${data.openFlags.length} of ${data.openFlagsTotal})`
+    ? `Open scope flags (highest severity first: ${data.openFlags.length} of ${data.openFlagsTotal})`
     : `Open scope flags (${data.openFlags.length})`)
-  lines.push(['Project', 'Client', 'Severity', 'Flag', 'SOW reference', 'Raised', 'Contract value'].map(csvCell).join(','))
+  lines.push(['Project', 'Client', 'Severity', 'Flag', 'SOW reference', 'Raised', 'Contract value', 'Currency'].map(csvCell).join(','))
   for (const f of data.openFlags) {
     lines.push([
       f.projectName, f.clientName || '', f.severity, f.description, f.sowReference,
       new Date(f.createdAt).toISOString(),
-      canViewFinancials && f.contractValue ? f.contractValue : (canViewFinancials ? '' : 'redacted'),
+      canViewFinancials ? (f.contractValue ?? '') : 'redacted',
+      f.currency,
     ].map(csvCell).join(','))
   }
   lines.push('')
@@ -135,6 +150,15 @@ function toCsv(data: Awaited<ReturnType<typeof getPortfolioData>>, canViewFinanc
   lines.push(['Type', 'Document', 'Client', 'Stalled since', 'Amount', 'Currency'].map(csvCell).join(','))
   for (const item of stalledItems) {
     lines.push([item.kind, item.project, item.client, new Date(item.since).toISOString(), item.amount, item.currency].map(csvCell).join(','))
+  }
+  lines.push('')
+
+  // The period selector only ever scoped THIS section; the export used to omit
+  // it entirely, so 30-day and 12-month files were identical.
+  lines.push(`History (${periodLabel})`)
+  lines.push(['Date', 'Open flags', `Contract value at risk (${data.currency})`, 'Exceptions granted, all-time'].map(csvCell).join(','))
+  for (const h of data.history) {
+    lines.push([h.date, h.openFlagsCount, canViewFinancials ? (h.contractValueAtRisk ?? 0) : 'redacted', h.exceptionsCount].map(csvCell).join(','))
   }
 
   return lines.join('\r\n')

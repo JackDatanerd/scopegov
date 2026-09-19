@@ -1,9 +1,15 @@
-import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
-import { roundCurrency, PLAN_LIMITS } from '@/lib/utils/format'
-
+import { PLAN_LIMITS } from '@/lib/utils/format'
 import { insertAuditRow } from '@/lib/utils/audit'
+import { LIMIT_COUNTED_STATUSES } from '@/lib/utils/project-status'
+import {
+  parseProjectName, parseOptionalText, parseProjectType, parseContractValue,
+  parseCurrencyCode, parseStartDate, parseRetainerMonths,
+  MAX_PROJECT_DISC, MAX_PROJECT_REF,
+} from '@/lib/utils/project-input'
+
 export async function POST(request: NextRequest) {
   try {
     const session = await getSession()
@@ -11,59 +17,67 @@ export async function POST(request: NextRequest) {
     if (!hasPermission(session, 'CREATE_PROJECTS'))
       return NextResponse.json({ error: 'Missing permission: CREATE_PROJECTS' }, { status: 403 })
 
-    const body = await request.json()
-    const { clientId, newClient, name, disc, type, contractValue, currency, startDate, internalRef, retainerDurationMonths } = body
+    const body = await request.json().catch(() => null)
+    if (!body || typeof body !== 'object')
+      return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+    const { clientId, newClient, disc, contractValue, currency, startDate, internalRef, retainerDurationMonths } = body
 
-    if (!name?.trim() || !type)
-      return NextResponse.json({ error: 'Name and type are required' }, { status: 400 })
+    // Projects & Dashboard deep audit: every free-form field is validated the
+    // same way PATCH /api/projects/[id] validates it (lib/utils/project-input).
+    // Invalid input used to reach Postgres and come back as a 500 carrying the
+    // raw database message; negative contract values were accepted outright.
+    const nameP = parseProjectName(body.name)
+    if (!nameP.ok) return NextResponse.json({ error: nameP.error }, { status: 400 })
+    if (!body.type) return NextResponse.json({ error: 'Name and type are required' }, { status: 400 })
+    const typeP = parseProjectType(body.type)
+    if (!typeP.ok) return NextResponse.json({ error: typeP.error }, { status: 400 })
+    const valueP = parseContractValue(contractValue)
+    if (!valueP.ok) return NextResponse.json({ error: valueP.error }, { status: 400 })
+    const discP = parseOptionalText(disc, 'Subtitle', MAX_PROJECT_DISC)
+    if (!discP.ok) return NextResponse.json({ error: discP.error }, { status: 400 })
+    const refP = parseOptionalText(internalRef, 'Internal reference', MAX_PROJECT_REF)
+    if (!refP.ok) return NextResponse.json({ error: refP.error }, { status: 400 })
+    const dateP = parseStartDate(startDate)
+    if (!dateP.ok) return NextResponse.json({ error: dateP.error }, { status: 400 })
 
-    // FIX (deep audit, section 7 — flagship finding): retainer_duration_months
-    // is read by api/cron/retainer-milestones, which only ever considers
-    // projects where it's NOT NULL — but nothing wrote this column
-    // anywhere (not here, not PATCH /api/projects/[id], no settings page).
-    // It was permanently null for every project, so the monthly
-    // retainer-billing cron matched zero projects, ever. Accept it here
-    // for type='retainer' the same way contractValue/currency are
-    // accepted; a stray value for a non-retainer type is just ignored
-    // rather than erroring, since it has no effect on anything for those
-    // types.
-    let retainerDuration: number | null = null
-    if (type === 'retainer' && retainerDurationMonths != null && retainerDurationMonths !== '') {
-      const parsed = parseInt(retainerDurationMonths, 10)
-      if (!Number.isFinite(parsed) || parsed < 1 || parsed > 60)
-        return NextResponse.json({ error: 'Retainer duration must be between 1 and 60 months' }, { status: 400 })
-      retainerDuration = parsed
+    // Currency is normalised (uppercase) at the one place it is ever written:
+    // evaluateApprovalGate() compares threshold_currency with a case-sensitive
+    // `===` against uppercase stored thresholds.
+    let normalizedCurrency = 'USD'
+    if (currency !== undefined && currency !== null && currency !== '') {
+      const curP = parseCurrencyCode(currency)
+      if (!curP.ok) return NextResponse.json({ error: curP.error }, { status: 400 })
+      normalizedCurrency = curP.value
     }
 
-    // FIX (section-11 audit, pass 2): currency was taken straight from the
-    // request body with no normalization. The dropdown in the new-project
-    // UI only ever sends fixed uppercase codes, so this doesn't misfire
-    // through normal use — but evaluateApprovalGate() compares
-    // threshold_currency to this value with a case-sensitive `===`, and
-    // approval-workflow thresholds are stored uppercase (POST /api/
-    // approval-workflows already does `.toUpperCase()`). Any future
-    // integration/import path that writes projects.currency without going
-    // through that one dropdown (e.g. lowercase "usd") would silently
-    // never match a "USD" threshold — a fail-open gate miss with nothing
-    // surfaced anywhere. Normalizing at the one place currency is ever
-    // written closes that off regardless of what calls this route next.
-    const normalizedCurrency = currency ? String(currency).trim().toUpperCase() : null
+    // retainer_duration_months is read by api/cron/retainer-milestones, which
+    // only considers projects where it is NOT NULL. A value for a
+    // non-retainer type has no effect and is ignored.
+    let retainerDuration: number | null = null
+    if (typeP.value === 'retainer') {
+      const retP = parseRetainerMonths(retainerDurationMonths)
+      if (!retP.ok) return NextResponse.json({ error: retP.error }, { status: 400 })
+      retainerDuration = retP.value
+    }
 
-    const service   = createServiceClient()
+    const service = createServiceClient()
 
-    // FIX (deep audit, section 7): PLAN_LIMITS.projects is defined and
-    // displayed to the user (Settings → Billing: "2 projects" / "Unlimited
-    // projects") but was never actually enforced anywhere — unlike seats,
-    // which app/api/team/invite/route.ts does check. A Solo or Starter
-    // workspace could create unlimited projects for free.
+    // Plan project limit. Pricing advertises "Active projects", so only
+    // projects that are still live count (LIMIT_COUNTED_STATUSES). Complete and
+    // Archived projects used to count too — and can never be deleted — so a
+    // Solo workspace was locked out permanently after its second delivery,
+    // and the downgrade error's advice ("archive or delete projects") could
+    // not actually get anyone under the limit.
     const projectLimit = PLAN_LIMITS[session.planTier]?.projects
     if (projectLimit != null) {
-      const { count: existingCount } = await (service as any)
+      const { count: existingCount, error: countErr } = await (service as any)
         .from('projects').select('id', { count: 'exact', head: true })
         .eq('workspace_id', session.workspaceId).is('deleted_at', null)
+        .in('status', [...LIMIT_COUNTED_STATUSES])
+      if (countErr) throw new Error(`plan limit check failed: ${countErr.message}`)
       if ((existingCount || 0) >= projectLimit) {
         return NextResponse.json({
-          error: `Your ${PLAN_LIMITS[session.planTier].name} plan is limited to ${projectLimit} project${projectLimit === 1 ? '' : 's'}. Upgrade to create more.`,
+          error: `Your ${PLAN_LIMITS[session.planTier].name} plan is limited to ${projectLimit} active project${projectLimit === 1 ? '' : 's'} (completed and archived projects don't count). Complete or archive one, or upgrade to create more.`,
         }, { status: 403 })
       }
     }
@@ -71,38 +85,29 @@ export async function POST(request: NextRequest) {
     let resolvedClientId = clientId
 
     // ── Create client if new ──────────────────────────────────
-    // FIX (deep audit, section 14 — flagship finding, traced from clients):
-    // api/clients/route.ts POST and api/clients/[id]/route.ts PATCH both
-    // now require VIEW_CLIENT_DATA in addition to CREATE_PROJECTS before
-    // writing a client's email — this third, independent client-write path
-    // (create-project-with-a-brand-new-client) never got either fix: no
-    // VIEW_CLIENT_DATA gate, and no EMAIL_RE format check before the value
-    // is stored as the address every invoice/SOW/CO for this client
-    // actually gets sent to. Same two checks, same reasoning, applied here.
+    // api/clients POST/PATCH require VIEW_CLIENT_DATA before writing a client's
+    // email; this create-with-a-brand-new-client path applies the same gate
+    // and the same email-format check.
     if (!resolvedClientId && newClient?.name && newClient?.email) {
       if (!hasPermission(session, 'VIEW_CLIENT_DATA'))
         return NextResponse.json({ error: 'Missing permission: VIEW_CLIENT_DATA' }, { status: 403 })
       const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-      if (!EMAIL_RE.test(newClient.email.trim()))
+      if (typeof newClient.name !== 'string' || typeof newClient.email !== 'string' || !EMAIL_RE.test(newClient.email.trim()))
         return NextResponse.json({ error: 'Please enter a valid email address for the new client' }, { status: 400 })
 
-      // Check for duplicate email in this workspace
+      // maybeSingle: `.single()` errors (data:null) on a duplicate, which
+      // would fall through to a second insert.
       const { data: existing } = await (service as any)
         .from('clients')
         .select('id, name, status')
         .eq('workspace_id', session.workspaceId)
         .eq('email', newClient.email.toLowerCase().trim())
-        .single()
+        .maybeSingle()
 
       if (existing) {
         resolvedClientId = existing.id
-        // FIX (re-audit, Clients section): reusing an existing client by
-        // matched email silently kept whatever status they already had —
-        // an archived client (someone the agency marked "done working
-        // with") could get attached to a brand-new active project and stay
-        // tagged "Archived" everywhere, including the Clients list, which
-        // hides archived clients by default. Starting a new project with
-        // them is an unambiguous "we're working with them again" signal.
+        // Re-using an archived client's email reactivates it (not doing so
+        // left the client invisible on the Clients page).
         if (existing.status === 'archived') {
           await (service as any).from('clients').update({ status: 'active' }).eq('id', existing.id)
           await insertAuditRow(service, {
@@ -131,28 +136,14 @@ export async function POST(request: NextRequest) {
     if (!resolvedClientId)
       return NextResponse.json({ error: 'Client is required' }, { status: 400 })
 
-    // FIX (audit round 4, finding #2 — HIGH): an explicitly-passed
-    // clientId (the "pick an existing client" path — the newClient
-    // branch above always creates/looks up scoped to this workspace
-    // already) was never checked against session.workspaceId before
-    // being written into projects.client_id. Exact same bug class
-    // already found and fixed for change_orders.project_id (see
-    // app/api/co/route.ts, round 3) — a member of Workspace A could
-    // point a new project at a client row belonging to Workspace B,
-    // leaking that client's name/email/billing address/VAT into A on
-    // every subsequent read (PDFs, portal sends, invoices all join
-    // projects → clients with no re-check), and potentially emailing an
-    // unrelated agency's real client under A's branding.
+    // An explicitly-passed clientId must belong to THIS workspace (otherwise a
+    // member of workspace A could attach a project to workspace B's client and
+    // read that client's details through every later join).
     if (clientId) {
+      if (typeof clientId !== 'string') return NextResponse.json({ error: 'Client not found' }, { status: 404 })
       const { data: client } = await (service as any)
         .from('clients').select('id, name, status').eq('id', clientId).eq('workspace_id', session.workspaceId).maybeSingle()
       if (!client) return NextResponse.json({ error: 'Client not found' }, { status: 404 })
-      // FIX (re-audit, Clients section): an archived client could be picked
-      // from the "search existing clients" list here with zero warning and
-      // zero effect on their status — the archive feature only ever showed
-      // up on the Clients list page itself. A new active project is a clear
-      // signal they're no longer archived; reactivate them the same way the
-      // inline-new-client-by-email-match path above now does.
       if (client.status === 'archived') {
         await (service as any).from('clients').update({ status: 'active' }).eq('id', client.id)
         await insertAuditRow(service, {
@@ -171,14 +162,14 @@ export async function POST(request: NextRequest) {
       .insert({
         workspace_id:   session.workspaceId,
         client_id:      resolvedClientId,
-        name:           name.trim(),
-        disc:           disc?.trim() || null,
-        type,
+        name:           nameP.value,
+        disc:           discP.value,
+        type:           typeP.value,
         status:         'Draft',
-        contract_value: roundCurrency(parseFloat(contractValue) || 0),
-        currency:       normalizedCurrency || 'USD',
-        start_date:     startDate || null,
-        internal_ref:   internalRef?.trim() || null,
+        contract_value: valueP.value,
+        currency:       normalizedCurrency,
+        start_date:     dateP.value,
+        internal_ref:   refP.value,
         retainer_duration_months: retainerDuration,
         created_by:     session.id,
       })
@@ -187,23 +178,32 @@ export async function POST(request: NextRequest) {
 
     if (projErr) throw new Error(projErr.message)
 
-    // Auto-add creator to project_members
+    // ── Add creator as project member ─────────────────────────
+    // The creator must be a member or a VIEW_OWN_PROJECTS-only user can't open
+    // the project they just made. The insert result used to be ignored, so a
+    // failure here silently produced a project its creator couldn't see. The
+    // project has no children yet, so on failure it is removed and the request
+    // fails loudly instead.
     const { data: member } = await (service as any)
       .from('workspace_members')
       .select('id')
       .eq('workspace_id', session.workspaceId)
       .eq('user_id', session.id)
-      .single()
+      .maybeSingle()
 
     if (member) {
-      await (service as any).from('project_members').insert({
+      const { error: memberErr } = await (service as any).from('project_members').insert({
         project_id: project.id,
         member_id:  member.id,
         added_by:   session.id,
       })
+      if (memberErr) {
+        console.error('Project create: could not add creator as member, rolling back:', memberErr)
+        await (service as any).from('projects').delete().eq('id', project.id)
+        return NextResponse.json({ error: 'Could not create the project. Please try again.' }, { status: 500 })
+      }
     }
 
-    // Audit log
     await insertAuditRow(service, {
       workspace_id: session.workspaceId,
       actor_id:     session.id,
@@ -212,17 +212,18 @@ export async function POST(request: NextRequest) {
       event_type:   'project.created',
       entity_type:  'project',
       entity_id:    project.id,
-      entity_name:  name.trim(),
-      metadata:     { type, contract_value: contractValue, currency },
+      entity_name:  nameP.value,
+      // The values as STORED (raw input used to be logged: a string, an
+      // un-normalised currency).
+      metadata:     { type: typeP.value, contract_value: valueP.value, currency: normalizedCurrency },
     })
 
-    return NextResponse.json({ projectId: project.id })
+    // clientId is returned so the wizard can re-use the (possibly just-created) client
+    // when the user steps Back and re-submits, instead of creating a second project.
+    return NextResponse.json({ projectId: project.id, clientId: resolvedClientId })
   } catch (err) {
     console.error('Project create error:', err)
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Internal server error' },
-      { status: 500 }
-    )
+    return NextResponse.json({ error: 'Could not create the project' }, { status: 500 })
   }
 }
 
@@ -233,6 +234,7 @@ export async function GET() {
 
     const service    = createServiceClient()
     const canViewAll = hasPermission(session, 'VIEW_ALL_PROJECTS')
+    const canViewFinancials = hasPermission(session, 'VIEW_FINANCIALS')
 
     let query = (service as any)
       .from('projects')
@@ -242,12 +244,9 @@ export async function GET() {
       .order('name')
 
     if (!canViewAll) {
-      // FIX: project_members has neither workspace_id nor user_id columns
-      // (it links to workspace_members via member_id, which links to users
-      // via user_id) — this query referenced two nonexistent columns, so it
-      // always errored and silently resolved to an empty list, meaning
-      // anyone with only VIEW_OWN_PROJECTS saw zero projects, always,
-      // regardless of actual assignments.
+      // project_members links to workspace_members via member_id (which links
+      // to users via user_id) — it has no user_id / workspace_id columns of
+      // its own.
       const { data: ids } = await (service as any)
         .from('project_members')
         .select('project_id, workspace_members!inner(user_id)')
@@ -255,9 +254,14 @@ export async function GET() {
       query = query.in('id', (ids || []).map((r: any) => r.project_id))
     }
 
-    const { data: projects } = await query
-    return NextResponse.json({ projects: projects || [] })
-  } catch {
+    const { data: projects, error } = await query
+    if (error) throw new Error(error.message)
+    // Contract values are withheld from members without VIEW_FINANCIALS (the
+    // dashboard and project pages already do this — the API didn't).
+    const safe = (projects || []).map((p: any) => canViewFinancials ? p : { ...p, contract_value: null })
+    return NextResponse.json({ projects: safe })
+  } catch (err) {
+    console.error('Project list error:', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

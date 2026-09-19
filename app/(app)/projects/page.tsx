@@ -6,7 +6,8 @@ import ProjectsClient from '@/components/projects/ProjectsClient'
 
 export const metadata = { title: 'Projects' }
 
-export default async function ProjectsPage() {
+export default async function ProjectsPage({ searchParams }: { searchParams: Promise<{ filter?: string }> }) {
+  const { filter } = await searchParams
   const session = await getSession()
   if (!session) redirect('/login')
 
@@ -19,7 +20,7 @@ export default async function ProjectsPage() {
     .from('projects')
     .select(`
       id, name, disc, type, status, stall_reason, contract_value, currency,
-      start_date, created_at, updated_at,
+      start_date, created_at, updated_at, internal_ref,
       clients(id, name, company_name),
       guardian_flags(status, severity),
       change_orders(id, status, title, total),
@@ -85,6 +86,7 @@ export default async function ProjectsPage() {
   return (
     <ProjectsClient
       projects={projectsWithApprovals}
+      initialFilter={filter === 'attention' ? 'attention' : null}
       canCreate={canCreate}
       canViewFinancials={hasPermission(session, 'VIEW_FINANCIALS')}
       session={session}

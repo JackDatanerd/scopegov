@@ -1,0 +1,35 @@
+SCOPEGOV — Projects & Dashboard (section 7) + Portfolio (section 8) fix round
+Baseline: repo tarball 1789846080384. Apply migrations 057 BEFORE deploying the code
+(the app now reads the VIEW_PORTFOLIO permission). Migration 055/056 belong to other rounds.
+
+MIGRATION
+  057_view_portfolio_permission.sql   new VIEW_PORTFOLIO permission; backfills every role/member
+                                      that has VIEW_ALL_PROJECTS; create_workspace_atomic reseeded.
+
+PORTFOLIO (section 8)
+  lib/reports/scope-health.ts (new)   ONE live computation used by the page, exports and the cron.
+  lib/reports/portfolio-data.ts       headline figures live (were a 24h-old snapshot next to live lists),
+                                      severity-ordered list, currency breakdown, client-name redaction.
+  api/cron/scope-health-rollup        no more zero-snapshot on a failed read; upsert error checked; 207 on partial failure.
+  api/reports/portfolio (+/export)    VIEW_PORTFOLIO gate; CSV/PDF now contain the period-scoped history;
+                                      audit row written after the file exists.
+  components/portfolio/…, lib/pdf/portfolio-report.tsx, portfolio/page.tsx, Sidebar, CommandPalette,
+  lib/auth/mfa-policy.ts, lib/supabase/types.ts, tests/mfa-policy.test.ts   permission wiring + UI.
+
+PROJECTS & DASHBOARD (section 7)
+  lib/utils/project-status.ts, project-input.ts (new)   shared status groups + field validators.
+  api/projects (POST/GET), api/projects/[id] (GET/PATCH/DELETE), complete, archive, unarchive,
+  reopen (new), members, members/available, messages, messages/read, messages/[messageId].
+  lib/utils/attention.ts              finished projects never need attention; borderline_review counts.
+  dashboard/page.tsx, projects/page.tsx, projects/[id]/page.tsx, projects/new/page.tsx,
+  ProjectsClient, ProjectDetail, ProjectDiscussion, EditProjectModal (new).
+  api/billing/upgrade                 downgrade guard uses the same project-limit rule as create.
+  api/cron/guardian-flag-stall        skips finished/deleted projects.
+  lib/utils/format.ts                 formatCurrencyGroups(emptyCurrency).
+
+TESTS ADDED   tests/project-input.test.ts, tests/attention.test.ts, tests/scope-health.test.ts
+
+NOT DONE / OUT OF SCOPE
+  - purge_project still deletes DB rows but does not remove Storage objects (cron/project-purge).
+  - SettingsClient billing label still says "N projects" (pricing page says "Active projects").
+  - Pending approval_requests are not cancelled when a Draft project is soft-deleted.

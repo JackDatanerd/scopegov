@@ -4,7 +4,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
 
-// Archived -> Complete.
+// Complete -> Active (undo an accidental "Mark complete"). FEATURE (Projects deep audit): the only way back from Complete used to be the PATCH status hole, so a mis-click could not be undone. Archived projects go through unarchive first.
 // The status update is guarded on the status we validated and its `{ error }`
 // is checked — it used to be fire-and-forget, so a failed write still
 // returned { ok: true } and logged an audit event for a change that never
@@ -24,17 +24,17 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { data: project } = await (service as any)
       .from('projects').select('id,name,status').eq('id', id).eq('workspace_id', session.workspaceId).is('deleted_at', null).maybeSingle()
     if (!project) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-    if (project.status !== 'Archived')
-      return NextResponse.json({ error: 'Only Archived projects can be unarchived' }, { status: 400 })
+    if (project.status !== 'Complete')
+      return NextResponse.json({ error: 'Only Complete projects can be reopened (unarchive an archived project first)' }, { status: 400 })
 
     const now = new Date().toISOString()
     const { data: moved, error: moveErr } = await (service as any).from('projects')
-      .update({ status: 'Complete', updated_at: now })
-      .eq('id', id).eq('workspace_id', session.workspaceId).eq('status', 'Archived').is('deleted_at', null)
+      .update({ status: 'Active', updated_at: now })
+      .eq('id', id).eq('workspace_id', session.workspaceId).eq('status', 'Complete').is('deleted_at', null)
       .select('id')
     if (moveErr) {
-      console.error('Project unarchive error:', moveErr)
-      return NextResponse.json({ error: 'Could not unarchive the project' }, { status: 500 })
+      console.error('Project reopen error:', moveErr)
+      return NextResponse.json({ error: 'Could not reopen the project' }, { status: 500 })
     }
     if (!moved || moved.length === 0)
       return NextResponse.json({ error: 'This project changed. Refresh and try again.' }, { status: 409 })
@@ -42,13 +42,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     await logAudit(service, {
       workspaceId: session.workspaceId, actorId: session.id,
       actorEmail: session.email, actorName: session.name,
-      eventType: 'project.unarchived', entityType: 'project',
+      eventType: 'project.reopened', entityType: 'project',
       entityId: id, entityName: project.name, metadata: {},
     })
 
     return NextResponse.json({ ok: true })
   } catch (err) {
-    console.error('Project unarchive error:', err)
-    return NextResponse.json({ error: 'Could not unarchive the project' }, { status: 500 })
+    console.error('Project reopen error:', err)
+    return NextResponse.json({ error: 'Could not reopen the project' }, { status: 500 })
   }
 }

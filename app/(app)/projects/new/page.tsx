@@ -46,6 +46,10 @@ function NewProjectPageInner() {
   const [loading, setLoading] = useState(false)
   const [error,   setError]   = useState('')
   const [projectId, setProjectId] = useState<string | null>(null)
+  // What step 0 resolved the client to — used when the user steps Back and
+  // re-submits (see handleBasicsSubmit).
+  const [createdClientId, setCreatedClientId] = useState<string | null>(null)
+  const [createdClientEmail, setCreatedClientEmail] = useState<string>('')
 
   // Step 0: Basics
   const [clientId,     setClientId]     = useState('')
@@ -171,6 +175,44 @@ function NewProjectPageInner() {
     }
     setLoading(true); setError('')
     try {
+      // Projects & Dashboard deep audit: the project is created at the end of
+      // step 0, and "← Back" returns here — so submitting again POSTed a
+      // SECOND project every time (an orphan Draft that also consumed plan
+      // quota, and edits made after going Back were applied to nothing).
+      // Once a project exists, this step edits it instead.
+      if (projectId) {
+        let nextClientId: string | null = clientId || null
+        if (!nextClientId) {
+          const email = clientEmail.trim().toLowerCase()
+          if (createdClientId && createdClientEmail === email) {
+            nextClientId = createdClientId
+          } else {
+            const cr = await fetch('/api/clients', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: clientName, email }),
+            })
+            const cj = await cr.json().catch(() => ({}))
+            if (cr.ok) nextClientId = cj.clientId
+            else if (cr.status === 409 && cj.existingClientId) nextClientId = cj.existingClientId
+            else throw new Error(cj.error || 'Could not create the client')
+            setCreatedClientId(nextClientId); setCreatedClientEmail(email)
+          }
+        }
+        const pr = await fetch(`/api/projects/${projectId}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            clientId: nextClientId,
+            name: projectName, disc: projectDisc || null, type: projectType,
+            contractValue: parseFloat(contractValue) || 0, currency,
+            startDate: startDate || null, internalRef: internalRef || null,
+            ...(projectType === 'retainer' ? { retainerDurationMonths: retainerMonths || null } : {}),
+          }),
+        })
+        const pj = await pr.json().catch(() => ({}))
+        if (!pr.ok) throw new Error(pj.error || 'Could not update the project')
+        setStep(1)
+        return
+      }
       const res = await fetch('/api/projects', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -185,6 +227,8 @@ function NewProjectPageInner() {
       const json = await res.json()
       if (!res.ok) throw new Error(json.error || 'Failed to create project')
       setProjectId(json.projectId)
+      setCreatedClientId(json.clientId || clientId || null)
+      setCreatedClientEmail(clientEmail.trim().toLowerCase())
       setStep(1)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Something went wrong')

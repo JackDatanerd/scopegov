@@ -84,10 +84,13 @@ export function currencyGroupedTotals(
 
 export function formatCurrencyGroups(
   items: Array<{ contract_value?: number | null; currency?: string | null }>,
-  compact = false
+  compact = false,
+  // Shown when nothing has a value yet. It used to be hard-coded to USD, so a
+  // KES/EUR workspace with no active projects saw "$0" on its dashboard.
+  emptyCurrency: string = 'USD'
 ): string {
   const groups = currencyGroupedTotals(items).filter(g => g.total > 0)
-  if (groups.length === 0) return formatCurrency(0, 'USD', compact)
+  if (groups.length === 0) return formatCurrency(0, emptyCurrency, compact)
   return groups.map(g => formatCurrency(g.total, g.currency, compact)).join(' · ')
 }
 

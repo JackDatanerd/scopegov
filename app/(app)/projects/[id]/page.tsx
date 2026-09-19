@@ -20,7 +20,7 @@ export async function generateMetadata({ params }: Props) {
   if (!session) return { title: 'Project' }
   const service = createServiceClient()
   const { data: p } = await (service as any)
-    .from('projects').select('name').eq('id', id).eq('workspace_id', session.workspaceId).single()
+    .from('projects').select('name').eq('id', id).eq('workspace_id', session.workspaceId).is('deleted_at', null).maybeSingle()
   return { title: p?.name || 'Project' }
 }
 
@@ -104,6 +104,13 @@ export default async function ProjectPage({ params, searchParams }: Props) {
       project.change_orders = project.change_orders.map((co: any) => ({ ...co, total: null, subtotal: null, counter_amount: null }))
     }
   }
+  // exceptions_log.estimated_value is the dollar value of scope given away —
+  // financial data on the same footing as change-order totals. It was selected
+  // above and only hidden by the ExceptionCard UI, so it still travelled to
+  // the browser for members without VIEW_FINANCIALS.
+  if (!viewFinancials && Array.isArray(project.exceptions_log)) {
+    project.exceptions_log = project.exceptions_log.map((e: any) => ({ ...e, estimated_value: null }))
+  }
   if (!viewClientData && project.clients) {
     const { id: clientId, name } = project.clients
     project.clients = { id: clientId, name } // strip email, cc_emails, phone, notes
@@ -158,12 +165,24 @@ export default async function ProjectPage({ params, searchParams }: Props) {
     .eq('project_id', id)
 
   // ── Fetch activity ────────────────────────────────────────────────────
+  // Projects & Dashboard deep audit: this matched `entity_id = project id`, so
+  // it only ever contained project.* rows — the SOW, change-order, flag,
+  // Guardian-check and invoice events (which carry their own entity ids) never
+  // appeared on a project's Activity tab. audit_log.project_id (migration 056)
+  // attaches every one of them to its project.
+  //
+  // `metadata` is deliberately NOT selected: the tab never rendered it, but it
+  // still shipped to the browser, and it carries contract-value changes
+  // (project.updated) and amounts — data this page withholds from members
+  // without VIEW_FINANCIALS everywhere else.
   const { data: activity = [] } = await (service as any)
     .from('audit_log')
-    .select('id, event_type, entity_name, actor_name, actor_email, created_at, metadata')
-    .eq('entity_id', id)
+    .select('id, event_type, entity_name, actor_name, actor_email, created_at')
+    .eq('project_id', id)
     .eq('workspace_id', session.workspaceId)
+    .not('event_type', 'like', 'project_message.%')
     .order('created_at', { ascending: false })
+    .order('id', { ascending: false })
     .limit(50)
 
   // ── Fetch invoices (Phase 4a) ────────────────────────────────────────
@@ -250,6 +269,8 @@ export default async function ProjectPage({ params, searchParams }: Props) {
         approveFlags: hasPermission(session, 'APPROVE_FLAGS'),
         grantExceptions: hasPermission(session, 'GRANT_EXCEPTIONS'),
         markComplete: hasPermission(session, 'MARK_PROJECT_COMPLETE'),
+        // Edit details / pause / resume (PATCH /api/projects/[id]).
+        editProject: hasPermission(session, 'CREATE_PROJECTS'),
         markDeliverable: hasPermission(session, 'MARK_DELIVERABLE_STATUS'),
         markMilestone: hasPermission(session, 'MARK_PAYMENT_MILESTONES'),
         submitGuardian: hasPermission(session, 'SUBMIT_GUARDIAN_CHECKS'),

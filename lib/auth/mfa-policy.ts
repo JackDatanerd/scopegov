@@ -14,6 +14,9 @@ import type { Permission } from '@/lib/supabase/types'
 
 export const MFA_REQUIRED_PERMISSIONS: Permission[] = [
   'VIEW_ALL_PROJECTS',
+  // Workspace-wide risk/exposure rollup (and its CSV/PDF export) — the same
+  // sensitivity tier as VIEW_ALL_PROJECTS.
+  'VIEW_PORTFOLIO',
   'VIEW_AUDIT_LOG',
   'MANAGE_BILLING',
   'MANAGE_ROLES',

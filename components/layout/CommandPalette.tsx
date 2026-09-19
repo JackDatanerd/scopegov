@@ -24,7 +24,7 @@ const TYPE_ICONS: Record<string, string> = {
 }
 
 interface Props {
-  // FIX (audit): Portfolio is permission-gated on the sidebar (VIEW_ALL_PROJECTS)
+  // FIX (audit): Portfolio is permission-gated on the sidebar (VIEW_PORTFOLIO)
   // but the palette had no way to know a user's permissions at all — passed
   // down from the layout so the quick-nav list can match the sidebar exactly.
   permissions?: string[]
@@ -204,7 +204,7 @@ export default function CommandPalette({ permissions = [] }: Props) {
               ...(permissions.includes('VIEW_ALL_PROJECTS')
                 ? [{ label: 'Reports', href: '/reports', icon: 'ti-chart-bar' }]
                 : []),
-              ...(permissions.includes('VIEW_ALL_PROJECTS')
+              ...(permissions.includes('VIEW_PORTFOLIO')
                 ? [{ label: 'Portfolio', href: '/portfolio', icon: 'ti-building-skyscraper' }]
                 : []),
               { label: 'Team',        href: '/team',        icon: 'ti-user-circle' },

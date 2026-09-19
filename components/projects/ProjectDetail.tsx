@@ -10,6 +10,7 @@ import type { SessionUser } from '@/lib/supabase/types'
 import BillingTab from '@/components/invoices/BillingTab'
 import FlagCollaboration from './FlagCollaboration'
 import ProjectDiscussion from './ProjectDiscussion'
+import EditProjectModal from './EditProjectModal'
 import {
   formatCurrency, formatDate, formatRelative,
   projectStatusLabel, sowStatusLabel, coStatusLabel, flagStatusLabel,
@@ -65,6 +66,7 @@ interface Permissions {
   markDeliverable: boolean; markMilestone: boolean; submitGuardian: boolean
   viewGuardianHistory: boolean; assignTeam: boolean; viewFinancials: boolean
   deleteProject: boolean; sendInvoices: boolean; moderateMessages: boolean
+  editProject: boolean
 }
 
 interface Props {
@@ -180,6 +182,52 @@ export default function ProjectDetail({
 
   // FIX (deep audit, section 7): Archived was a one-way door — no UI or
   // API path back to Complete. Mirrors handleArchive's shape.
+  // ── Edit / pause / resume / reopen (Projects & Dashboard deep audit) ──
+  // The API for all four existed (PATCH status Active<->Stalled, PATCH details,
+  // and — new — POST /reopen) but the page offered no control for any of them:
+  // a project could not be edited, manually paused, or reopened after a
+  // mis-clicked "Mark complete".
+  const [editing, setEditing] = useState(false)
+  const [pausing, setPausing] = useState(false)
+  const [reopening, setReopening] = useState(false)
+  const isTerminal = ['Complete', 'Archived'].includes(project.status)
+  const hasSignedSow = (project.sow_documents || []).some((s: any) => s.status === 'signed')
+  // A project stalled because its SOW was never signed resumes when the SOW is
+  // signed/resent — not by hand (the API refuses it, so don't offer it).
+  const canResume = project.status === 'Stalled' && (project.stall_reason === 'manual' || hasSignedSow)
+  const canPause = project.status === 'Active'
+
+  async function handlePauseResume(next: 'Stalled' | 'Active') {
+    const msg = next === 'Stalled'
+      ? `Pause "${project.name}"? Guardian monitoring stops while it's paused, and it will show as stalled.`
+      : `Resume "${project.name}"? Guardian monitoring restarts.`
+    if (!confirm(msg)) return
+    setPausing(true); setError('')
+    try {
+      const res = await fetch(`/api/projects/${project.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: next }),
+      })
+      const j = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(j.error || 'Something went wrong')
+      router.refresh()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Something went wrong')
+    } finally { setPausing(false) }
+  }
+
+  async function handleReopen() {
+    if (!confirm(`Reopen "${project.name}"? It returns to Active and Guardian monitoring restarts. Flags that were auto-closed at completion stay closed.`)) return
+    setReopening(true); setError('')
+    try {
+      const res = await fetch(`/api/projects/${project.id}/reopen`, { method: 'POST' })
+      const j = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(j.error || 'Something went wrong')
+      router.refresh()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Something went wrong')
+    } finally { setReopening(false) }
+  }
+
   const [unarchiving, setUnarchiving] = useState(false)
   async function handleUnarchive() {
     setUnarchiving(true); setError('')
@@ -227,6 +275,26 @@ export default function ProjectDetail({
                 <button className="btn btn-ghost btn-sm"><i className="ti ti-plus" style={{ fontSize: 12 }} /> New CO</button>
               </Link>
             )}
+            {permissions.editProject && !isTerminal && (
+              <button className="btn btn-ghost btn-sm" onClick={() => setEditing(true)}>
+                <i className="ti ti-pencil" style={{ fontSize: 12 }} /> Edit
+              </button>
+            )}
+            {permissions.editProject && canPause && (
+              <button className="btn btn-ghost btn-sm" onClick={() => handlePauseResume('Stalled')} disabled={pausing}>
+                {pausing ? <span className="spin spin-dark" /> : <><i className="ti ti-player-pause" style={{ fontSize: 12 }} /> Pause</>}
+              </button>
+            )}
+            {permissions.editProject && canResume && (
+              <button className="btn btn-ghost btn-sm" onClick={() => handlePauseResume('Active')} disabled={pausing}>
+                {pausing ? <span className="spin spin-dark" /> : <><i className="ti ti-player-play" style={{ fontSize: 12 }} /> Resume</>}
+              </button>
+            )}
+            {permissions.markComplete && project.status === 'Complete' && (
+              <button className="btn btn-ghost btn-sm" onClick={handleReopen} disabled={reopening}>
+                {reopening ? <span className="spin spin-dark" /> : <><i className="ti ti-arrow-back-up" style={{ fontSize: 12 }} /> Reopen</>}
+              </button>
+            )}
             {permissions.markComplete && project.status === 'Active' && (
               <button className="btn btn-ghost btn-sm" onClick={handleMarkComplete} disabled={completing}>
                 {completing ? <span className="spin spin-dark" /> : <><i className="ti ti-check" style={{ fontSize: 12 }} /> Mark complete</>}
@@ -251,6 +319,14 @@ export default function ProjectDetail({
         </div>
 
         {error && <div className="auth-error" style={{ marginBottom: 12 }}>{error}</div>}
+        {editing && (
+          <EditProjectModal
+            project={project}
+            canViewFinancials={permissions.viewFinancials}
+            onClose={() => setEditing(false)}
+            onSaved={() => { setEditing(false); router.refresh() }}
+          />
+        )}
 
         {permissions.viewFinancials && (
           <div style={{ display: 'flex', gap: 28, marginBottom: 16, flexWrap: 'wrap' }}>
@@ -498,7 +574,9 @@ function OverviewTab({ project, milestones, amendments, permissions, currency, r
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span style={{ fontWeight: 500 }}>{a.title}</span>
                   {permissions.viewFinancials && (
-                    <span style={{ color: 'var(--green)', fontFamily: 'IBM Plex Mono, monospace' }}>+{formatCurrency(a.financial_impact, currency)}</span>
+                    <span style={{ color: a.financial_impact < 0 ? 'var(--red)' : 'var(--green)', fontFamily: 'IBM Plex Mono, monospace' }}>
+                      {a.financial_impact < 0 ? '−' : '+'}{formatCurrency(Math.abs(a.financial_impact), currency)}
+                    </span>
                   )}
                 </div>
                 <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 3 }}>
@@ -1647,7 +1725,7 @@ function CoTab({ project, cos, permissions, currency, pendingApprovals, team }: 
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <div className="sec-title">Change orders ({cos.length})</div>
-        {permissions.createCo && project.status === 'Active' && (
+        {permissions.createCo && ['Active', 'Stalled'].includes(project.status) && (
           <Link href={`/projects/${project.id}/co/new`}>
             <button className="btn btn-primary btn-sm"><i className="ti ti-plus" style={{ fontSize: 12 }} /> New CO</button>
           </Link>

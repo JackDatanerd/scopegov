@@ -59,4 +59,11 @@ describe('permissionsRequireMfa', () => {
     expect(permissionsRequireMfa({ VIEW_FINANCIALS: true })).toBe(true)
     expect(permissionsRequireMfa({ VIEW_CLIENT_DATA: true })).toBe(true)
   })
+  // Portfolio deep audit: VIEW_PORTFOLIO (the dedicated Portfolio permission)
+  // exposes the workspace-wide exposure rollup and its export.
+  it('VIEW_PORTFOLIO is in the required list and triggers MFA', () => {
+    expect(MFA_REQUIRED_PERMISSIONS).toContain('VIEW_PORTFOLIO')
+    expect(permissionsRequireMfa(['VIEW_PORTFOLIO'])).toBe(true)
+    expect(permissionsRequireMfa({ VIEW_PORTFOLIO: true })).toBe(true)
+  })
 })
