@@ -3,6 +3,7 @@ export const runtime = 'nodejs'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
+import { collectAttachmentPaths, removeStoragePaths } from '@/lib/utils/storage-cleanup'
 
 // FIX (audit round 3): local copy replaced with the shared,
 // null-safe helper — see lib/utils/verify-cron.ts.
@@ -50,6 +51,17 @@ export async function POST(request: NextRequest) {
     let purgedCount = 0
     const failures: Array<{ id: string; error: string }> = []
     for (const w of (candidates || [])) {
+      // Same ordering as project-purge: list the evidence files BEFORE the rows
+      // that reference them are deleted; skip (retry next run) if we can't.
+      let filePaths: string[]
+      try {
+        filePaths = await collectAttachmentPaths(service, { workspaceId: w.id })
+      } catch (e) {
+        console.error(`Workspace purge skipped for ${w.id} — could not list its attachment files:`, e)
+        failures.push({ id: w.id, error: `attachment lookup failed: ${e instanceof Error ? e.message : 'unknown'}` })
+        continue
+      }
+
       const { error: purgeErr } = await (service as any).rpc('purge_workspace', { p_workspace_id: w.id })
       if (purgeErr) {
         console.error(`Workspace purge failed for ${w.id}:`, purgeErr)
@@ -57,6 +69,11 @@ export async function POST(request: NextRequest) {
         continue
       }
       purgedCount++
+
+      if (filePaths.length) {
+        const r = await removeStoragePaths(service, filePaths)
+        if (r.failed) console.error(`Workspace ${w.id}: ${r.failed} evidence file(s) could not be removed (non-fatal)`)
+      }
       // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): the DB
       // row is gone at this point, but purge_workspace() never touched
       // Storage — the logo object this workspace uploaded (see

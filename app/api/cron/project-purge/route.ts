@@ -3,6 +3,7 @@ export const runtime = 'nodejs'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
+import { collectAttachmentPaths, removeStoragePaths } from '@/lib/utils/storage-cleanup'
 
 // FIX (audit round 3): local copy replaced with the shared,
 // null-safe helper — see lib/utils/verify-cron.ts.
@@ -40,14 +41,35 @@ export async function POST(request: NextRequest) {
     // purge_project() (see migration 019) does the correctly-ordered
     // cascade explicitly, and errors are now surfaced instead of swallowed.
     let purgedCount = 0
+    let filesRemoved = 0
+    let filesFailed = 0
     const failures: Array<{ id: string; error: string }> = []
     for (const p of (candidates || [])) {
+      // Attachment files are only discoverable through their DB rows, which the
+      // purge deletes — collect the paths first, and skip this project (retry
+      // next run) if we can't, rather than orphan its files.
+      let filePaths: string[]
+      try {
+        filePaths = await collectAttachmentPaths(service, { projectId: p.id })
+      } catch (e) {
+        console.error(`Project purge skipped for ${p.id} — could not list its attachment files:`, e)
+        failures.push({ id: p.id, error: `attachment lookup failed: ${e instanceof Error ? e.message : 'unknown'}` })
+        continue
+      }
+
       const { error: purgeErr } = await (service as any).rpc('purge_project', { p_project_id: p.id })
       if (purgeErr) {
         console.error(`Project purge failed for ${p.id}:`, purgeErr)
         failures.push({ id: p.id, error: purgeErr.message })
-      } else {
-        purgedCount++
+        continue
+      }
+      purgedCount++
+
+      // Best-effort: the project is already gone, a stuck file must not fail the run.
+      if (filePaths.length) {
+        const r = await removeStoragePaths(service, filePaths)
+        filesRemoved += r.removed
+        filesFailed += r.failed
       }
     }
 
@@ -55,6 +77,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       ok: failures.length === 0,
       purged: purgedCount,
+      filesRemoved,
+      ...(filesFailed ? { filesFailed } : {}),
       failed: failures.length,
       ...(failures.length ? { failures } : {}),
     }, { status: failures.length ? 207 : 200 })

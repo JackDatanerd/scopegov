@@ -1602,7 +1602,7 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
                 <div className="tier-card-name">{plan.name}</div>
                 <div className="tier-card-price">{plan.price[planInterval]}</div>
                 <div className="tier-card-desc">
-                  {plan.seats} seat{plan.seats > 1 ? 's' : ''} · {plan.projects ? `${plan.projects} projects` : 'Unlimited projects'}
+                  {plan.seats} seat{plan.seats > 1 ? 's' : ''} · {plan.projects ? `${plan.projects} active projects` : 'Unlimited projects'}
                 </div>
                 {isExactCurrentPlan ? (
                   <div style={{ marginTop: 12, fontSize: 11, color: 'var(--green)', fontWeight: 600 }}>Current plan</div>

@@ -3,7 +3,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
-import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
+import { getPendingApprovalForDocument, cancelApprovalRequest } from '@/lib/approvals/engine'
 import { isTerminalStatus } from '@/lib/utils/project-status'
 import {
   parseProjectName, parseOptionalText, parseProjectType, parseContractValue,
@@ -270,6 +270,27 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
     }
     if (!deleted || deleted.length === 0)
       return NextResponse.json({ error: 'This project changed and can no longer be deleted. Refresh and try again.' }, { status: 409 })
+
+    // A deleted project's documents can still be sitting in an approval chain.
+    // Left pending, they stayed on every approver's Approvals page (and in the
+    // approval-stall cron's nag list) for a project that no longer exists, and
+    // could even be approved — which would auto-send a document for a deleted
+    // project. Cancel them (the engine notifies the current approver).
+    try {
+      const { data: pending } = await (service as any).from('approval_requests')
+        .select('document_type, document_id')
+        .eq('workspace_id', session.workspaceId).eq('project_id', id).eq('status', 'pending')
+      for (const r of (pending || [])) {
+        try {
+          await cancelApprovalRequest(service, {
+            documentType: r.document_type, documentId: r.document_id,
+            workspaceId: session.workspaceId, actorId: session.id,
+            actorEmail: session.email, actorName: session.name,
+            reason: 'Project deleted',
+          })
+        } catch (e) { console.error('Project delete: could not cancel approval request:', e) }
+      }
+    } catch (e) { console.error('Project delete: approval cleanup failed (non-fatal):', e) }
 
     await logAudit(service, {
       workspaceId: session.workspaceId, actorId: session.id,
