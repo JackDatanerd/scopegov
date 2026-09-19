@@ -172,7 +172,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           html: `<p><strong>${escapeHtml(client.name)}</strong> has requested changes on the <strong>${escapeHtml(project.name)}</strong> SOW (v${sow.version}).</p>
           <p><strong>Feedback:</strong> ${escapeHtml(note)}</p>
           <p>A new draft (v${sow.version + 1}) has been created in ScopeGov for you to edit and resend.</p>
-          <p><a href="${process.env.NEXT_PUBLIC_APP_URL}/projects/${project.id}?tab=sow">Open project in ScopeGov →</a></p>`,
+          <p><a href="${process.env.NEXT_PUBLIC_APP_URL}/projects/${project.id}?tab=sow">Open project in ScopeGov →</a></p>
+          <p style="font-size:11px;color:#909090;margin-top:20px;"><a href="${process.env.NEXT_PUBLIC_APP_URL}/settings?tab=notifications" style="color:#909090;">Manage notification preferences</a></p>`,
+          // FIX (deep audit round 2, notifications section — feature gap):
+          // same gap as every baseTemplate-based notification email (see
+          // lib/email/templates.ts's APP_URL/showPreferencesLink comment) —
+          // this is the one internal notification in the whole 'sow_changes_
+          // requested' family that bypasses the shared template entirely, so
+          // it needed the manage-preferences link added by hand.
         })
       }
     } catch (e) { console.error('Changes requested email failed:', e) }

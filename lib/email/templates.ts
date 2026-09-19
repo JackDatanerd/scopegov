@@ -17,6 +17,16 @@ function resendClient(): Resend {
 }
 const FROM = process.env.RESEND_FROM_EMAIL || 'noreply@mail.scopegov.app'
 const BRAND_FROM = (agencyName: string) => `${agencyName} via ScopeGov`
+// FIX (deep audit round 2, notifications section — feature gap): the app has
+// a full opt-out/lock system for these events (notification_preferences,
+// workspace_notification_defaults, the Settings > Notifications tab), but
+// not one of the ~20 internal-team notification emails ever linked back to
+// it — a recipient who wanted to turn a given notification off had no way
+// to discover that page from the email itself. Only relevant for internal
+// team members (who have a ScopeGov login and a Settings page); client-
+// facing emails (SOW/CO/invoice sends, reminders, cancellations) don't get
+// this, since clients never have an account or a preferences page to visit.
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL || ''
 
 // FIX (audit round 4, finding #7): none of these templates HTML-escaped
 // interpolated dynamic content — client/project/agency names, notes,
@@ -58,6 +68,11 @@ const C = {
 function baseTemplate({
   agencyName, headerColour = C.green, headerIcon = '⚖️',
   label, headline, body, cta, ctaUrl, ctaSecondary, footerNote,
+  // FIX (deep audit round 2, notifications section — feature gap): see the
+  // comment on APP_URL above. Passed explicitly per-call (rather than
+  // inferred from event type here) so it stays an opt-in per sender —
+  // client-facing sends never set it.
+  showPreferencesLink,
 }: {
   agencyName: string
   headerColour?: string
@@ -69,6 +84,7 @@ function baseTemplate({
   ctaUrl?: string
   ctaSecondary?: string
   footerNote?: string
+  showPreferencesLink?: boolean
 }): string {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -121,6 +137,11 @@ function baseTemplate({
         Sent by <a href="https://scopegov.app" style="color:${C.green};text-decoration:none;">ScopeGov</a>
         on behalf of ${agencyName} &middot; Scope governance for agencies
       </p>
+      ${showPreferencesLink ? `
+      <p style="font-size:11px;color:${C.text3};margin:6px 0 0;">
+        <a href="${APP_URL}/settings?tab=notifications" style="color:${C.text3};text-decoration:underline;">Manage notification preferences</a>
+      </p>
+      ` : ''}
     </div>
   </div>
 </body>
@@ -205,6 +226,7 @@ export async function sendSowSignedAgencyEmail(params: {
     headerColour: C.green,
     label: 'Agreement signed',
     headline: `${clientName} has signed the SOW`,
+    showPreferencesLink: true,
     body: `
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
         Your client has reviewed and signed the Statement of Work for
@@ -309,6 +331,7 @@ export async function sendSowDeclinedEmail(params: {
     `,
     cta: 'Open project in ScopeGov',
     ctaUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects`,
+    showPreferencesLink: true,
   })
 
   return resendClient().emails.send({
@@ -348,6 +371,7 @@ export async function sendSowStalledEmail(params: {
     `,
     cta: 'Open project →',
     ctaUrl: projectUrl,
+    showPreferencesLink: true,
   })
 
   return resendClient().emails.send({
@@ -388,6 +412,7 @@ export async function sendSowExpiredEmail(params: {
     `,
     cta: 'Open project →',
     ctaUrl: projectUrl,
+    showPreferencesLink: true,
   })
 
   return resendClient().emails.send({
@@ -430,6 +455,7 @@ export async function sendCoExpiredEmail(params: {
     `,
     cta: 'Open project →',
     ctaUrl: projectUrl,
+    showPreferencesLink: true,
   })
 
   return resendClient().emails.send({
@@ -484,6 +510,7 @@ export async function sendGuardianFlagEmail(params: {
     `,
     cta: 'Review flag in ScopeGov →',
     ctaUrl: projectUrl,
+    showPreferencesLink: true,
   })
 
   return resendClient().emails.send({
@@ -562,6 +589,7 @@ export async function sendTrialWarningEmail(params: {
     `,
     cta: 'Upgrade your plan →',
     ctaUrl: upgradeUrl,
+    showPreferencesLink: true,
   })
 
   return resendClient().emails.send({
@@ -601,6 +629,7 @@ export async function sendEscalationEmail(params: {
     `,
     cta: 'Review in ScopeGov →',
     ctaUrl: url,
+    showPreferencesLink: true,
   })
 
   return resendClient().emails.send({
@@ -648,6 +677,7 @@ export async function sendApprovalRequestedEmail(params: {
     `,
     cta: 'Review & decide →',
     ctaUrl: url,
+    showPreferencesLink: true,
   })
 
   return resendClient().emails.send({
@@ -715,6 +745,7 @@ export async function sendApprovalDecisionEmail(params: {
     `,
     cta: 'View in ScopeGov →',
     ctaUrl: url,
+    showPreferencesLink: true,
   })
 
   return resendClient().emails.send({
@@ -805,6 +836,7 @@ export async function sendCoStalledEmail(params: {
     `,
     cta: 'Open project →',
     ctaUrl: projectUrl,
+    showPreferencesLink: true,
   })
 
   return resendClient().emails.send({
@@ -851,6 +883,7 @@ export async function sendCoDeclinedEmail(params: {
     `,
     cta: 'View in ScopeGov',
     ctaUrl: projectUrl,
+    showPreferencesLink: true,
   })
 
   return resendClient().emails.send({
@@ -896,6 +929,7 @@ export async function sendCoCounteredEmail(params: {
     `,
     cta: 'Review counter in ScopeGov',
     ctaUrl: projectUrl,
+    showPreferencesLink: true,
   })
 
   return resendClient().emails.send({
@@ -947,6 +981,7 @@ export async function sendCoAcceptedEmail(params: {
     `,
     cta: 'View project →',
     ctaUrl: projectUrl,
+    showPreferencesLink: true,
   })
 
   return resendClient().emails.send({
@@ -1320,6 +1355,7 @@ export async function sendInvoicePaymentRecordedEmail(params: {
     `,
     cta: 'View project →',
     ctaUrl: projectUrl,
+    showPreferencesLink: true,
   })
 
   return resendClient().emails.send({
@@ -1361,6 +1397,7 @@ export async function sendInvoiceSentInternalEmail(params: {
     `,
     cta: 'View project →',
     ctaUrl: projectUrl,
+    showPreferencesLink: true,
   })
 
   return resendClient().emails.send({
@@ -1394,6 +1431,7 @@ export async function sendInvoiceOverdueInternalEmail(params: {
     `,
     cta: 'View project →',
     ctaUrl: projectUrl,
+    showPreferencesLink: true,
   })
 
   return resendClient().emails.send({
@@ -1435,6 +1473,7 @@ export async function sendPaymentMilestoneOverdueEmail(params: {
     `,
     cta: 'View project →',
     ctaUrl: projectUrl,
+    showPreferencesLink: true,
   })
 
   return resendClient().emails.send({
@@ -1475,6 +1514,7 @@ export async function sendRetainerEndingEmail(params: {
     `,
     cta: 'Open project →',
     ctaUrl: projectUrl,
+    showPreferencesLink: true,
   })
 
   return resendClient().emails.send({
@@ -1535,6 +1575,7 @@ export async function sendGuardianFlagStalledEmail(params: {
     `,
     cta: isBorderline ? 'Review item →' : 'Review flag →',
     ctaUrl: projectUrl,
+    showPreferencesLink: true,
   })
 
   return resendClient().emails.send({
@@ -1578,6 +1619,7 @@ export async function sendInvoiceDisputedEmail(params: {
     `,
     cta: 'View invoice →',
     ctaUrl: projectUrl,
+    showPreferencesLink: true,
   })
 
   return resendClient().emails.send({

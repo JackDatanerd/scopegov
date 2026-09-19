@@ -113,7 +113,7 @@ export async function GET(request: NextRequest) {
     // ── Clients ───────────────────────────────────────────────
     const { data: clients } = await (service as any)
       .from('clients')
-      .select('id, name, company_name, email')
+      .select('id, name, company_name, email, status')
       .eq('workspace_id', wsId)
       .textSearch('search_vector', tsQuery)
       .limit(4)
@@ -125,11 +125,25 @@ export async function GET(request: NextRequest) {
     // already apply — email only shown to VIEW_CLIENT_DATA holders.
     const canViewClientData = hasPermission(session, 'VIEW_CLIENT_DATA')
     for (const c of (clients || [])) {
+      // FIX (deep audit round 2, search section): the canonical Clients
+      // list (ClientsClient.tsx) hides archived clients behind a
+      // "Show archived (N)" toggle and clearly badges the ones it does
+      // show — this block had no status filter and never surfaced status
+      // in `sub` at all, so an archived client (which may no longer have
+      // active projects, a live contact, or anything else the rest of the
+      // app treats as current) looked identical to an active one here,
+      // with nothing telling the searcher otherwise. Unlike the list page,
+      // this doesn't hide them outright — a global search for an old
+      // client by name should still find them — but it now labels status
+      // the same way every other result type in this file already does
+      // (projects, change orders, invoices all show their status in `sub`).
+      const subParts = [c.company_name || (canViewClientData ? c.email : ''), c.status === 'archived' ? 'Archived' : null]
+        .filter(Boolean)
       results.push({
         type:  'client',
         id:    c.id,
         title: c.name,
-        sub:   c.company_name || (canViewClientData ? c.email : ''),
+        sub:   subParts.join(' · '),
         href:  `/clients/${c.id}`,
       })
     }

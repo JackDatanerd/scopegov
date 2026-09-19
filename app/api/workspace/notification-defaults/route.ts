@@ -30,6 +30,19 @@ const EMAIL_EVENT_TYPES = [
   // FIX (section-10 audit, feature gap — CO expiry): kept in sync with
   // the same addition in app/api/notifications/preferences/route.ts.
   'co_expired',
+  // FIX (deep audit round 2, notifications section — closing pass): this
+  // file's own header comment claims these lists are "kept in sync the
+  // same manual way" as EVENT_TYPES in app/api/notifications/preferences/
+  // route.ts — they weren't, for these four. All four were added there in
+  // the "cron audit, section 17" pass (payment_milestone_overdue,
+  // retainer_ending, guardian_flag_stalled, invoice_disputed all have real
+  // notify calls and email templates — see that file's comment), but never
+  // added here. SettingsClient.tsx's WorkspaceNotificationDefaultsSection
+  // renders a toggle+lock row for every entry in NOTIF_ITEMS regardless of
+  // what this route recognizes, so an admin could see and click a
+  // lock/default control for any of these four — and every save 400'd on
+  // "Unknown event type" and silently reverted, with no indication why.
+  'payment_milestone_overdue', 'retainer_ending', 'guardian_flag_stalled', 'invoice_disputed',
 ]
 // FIX (deep audit, notifications section): kept in sync with the same
 // addition in app/api/notifications/preferences/route.ts.
