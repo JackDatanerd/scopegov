@@ -58,6 +58,9 @@ function NewProjectPageInner() {
   const [isNewClient,  setIsNewClient]  = useState(false)
   const [clients,      setClients]      = useState<Client[]>([])
   const [clientSearch, setClientSearch] = useState('')
+  // FIX (deep audit, section 14 — bug, traced from Clients): see the
+  // fetch('/api/clients') effect below for the full reasoning.
+  const [canCreateClient, setCanCreateClient] = useState(true)
   const [projectName,  setProjectName]  = useState('')
   const [projectDisc,  setProjectDisc]  = useState('')
   const [projectType,  setProjectType]  = useState<ProjectType>('web')
@@ -96,6 +99,17 @@ function NewProjectPageInner() {
     fetch('/api/clients').then(r => r.json()).then(json => {
       const list = json.clients || []
       setClients(list)
+      // FIX (deep audit, section 14 — bug, traced from Clients): this page
+      // rendered "+ New client" unconditionally, with no awareness of the
+      // session's permissions at all — but creating a client (whether here
+      // or on the Clients page) requires CREATE_PROJECTS AND
+      // VIEW_CLIENT_DATA (see api/clients POST). A role with the former but
+      // not the latter — a legitimate, reachable custom-role combination —
+      // could fill in a brand-new client's name/email here and only learn
+      // it was pointless from a 403 after submitting, potentially losing
+      // everything else already entered on this step. GET /api/clients
+      // now returns this same flag it already computes server-side.
+      setCanCreateClient(!!json.canCreateClient)
       // FIX (re-audit, Clients section): resolve the ?clientId= deep link
       // now that the client list is loaded — it was previously ignored
       // entirely (no useSearchParams usage in this file at all).
@@ -317,11 +331,13 @@ function NewProjectPageInner() {
                     <div className="surface" style={{ marginTop: 4, maxHeight: 200, overflowY: 'auto', position: 'relative', zIndex: 10 }}>
                       {filteredClients.length === 0 ? (
                         <div style={{ padding: '10px 12px' }}>
-                          <span style={{ fontSize: 13, color: 'var(--text-3)' }}>No match — </span>
-                          <button type="button" className="auth-link" style={{ fontSize: 13, background: 'none', border: 'none', padding: 0 }}
-                            onClick={() => { setIsNewClient(true); setClientName(clientSearch); setClientSearch('') }}>
-                            create new client
-                          </button>
+                          <span style={{ fontSize: 13, color: 'var(--text-3)' }}>No match{canCreateClient ? ' — ' : '.'}</span>
+                          {canCreateClient && (
+                            <button type="button" className="auth-link" style={{ fontSize: 13, background: 'none', border: 'none', padding: 0 }}
+                              onClick={() => { setIsNewClient(true); setClientName(clientSearch); setClientSearch('') }}>
+                              create new client
+                            </button>
+                          )}
                         </div>
                       ) : (
                         filteredClients.map(c => (
@@ -351,9 +367,14 @@ function NewProjectPageInner() {
                         onClick={() => { setClientId(''); setClientName(''); setClientSearch('') }}>Change</button>
                     </div>
                   )}
-                  {!clientId && (
+                  {!clientId && canCreateClient && (
                     <button type="button" className="auth-link" style={{ fontSize: 12, marginTop: 6, background: 'none', border: 'none', padding: 0, display: 'block' }}
                       onClick={() => setIsNewClient(true)}>+ New client</button>
+                  )}
+                  {!clientId && !canCreateClient && (
+                    <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 6 }}>
+                      Only an existing client can be selected — creating a new one requires the &ldquo;View client data&rdquo; permission.
+                    </p>
                   )}
                 </>
               ) : (

@@ -12,9 +12,19 @@ export async function POST(request: NextRequest) {
     if (!hasPermission(session, 'EDIT_SOW'))
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
 
-    const { projectId, deliverable, oldValue, newValue, reason } = await request.json()
+    const { projectId, deliverable, oldValue, newValue, reason, field: rawField } = await request.json()
     if (!projectId || !deliverable || !newValue || !reason?.trim())
       return NextResponse.json({ error: 'deliverable, newValue, and reason are required' }, { status: 400 })
+
+    // FEATURE (deep audit, section 13 — feature gap): this route only ever
+    // matched against project_scope_snapshot.deliverables — an out_of_scope
+    // ("Excluded") entry had no correction path at all, in the UI or here,
+    // even though it's the same snapshot row and just as prone to a typo as
+    // a deliverable. `field` is optional and defaults to 'deliverables' so
+    // every existing caller (ScopeAdjustModal's deliverable flow) keeps
+    // working unchanged.
+    const field: 'deliverables' | 'out_of_scope' = rawField === 'out_of_scope' ? 'out_of_scope' : 'deliverables'
+    const fieldLabel = field === 'out_of_scope' ? 'excluded item' : 'deliverable'
 
     const service = createServiceClient()
 
@@ -46,7 +56,7 @@ export async function POST(request: NextRequest) {
     // of a real row lock, since supabase-js can't take one or wrap this in
     // a transaction.
     const { data: snap } = await (service as any)
-      .from('project_scope_snapshot').select('id,deliverables,version').eq('project_id', projectId).single()
+      .from('project_scope_snapshot').select('id,deliverables,out_of_scope,version').eq('project_id', projectId).single()
 
     // FIX (deep audit, section 13): this route's own comment above claims
     // the "record a change that didn't really land" class of bug was
@@ -68,16 +78,17 @@ export async function POST(request: NextRequest) {
     }
 
     let matched = false
-    const deliverables = (snap.deliverables || []).map((d: any) => {
+    const sourceList = field === 'out_of_scope' ? (snap.out_of_scope || []) : (snap.deliverables || [])
+    const updatedList = sourceList.map((d: any) => {
       // FIX (deep audit, section 13): only rename the FIRST match. Two
-      // deliverables sharing the same title (a duplicate entry, however it
+      // entries sharing the same title (a duplicate entry, however it
       // got there) would previously all get silently renamed to the same
       // newValue in one call — `matched` was tracked as a single boolean,
       // but nothing stopped the `.map()` from touching every match it saw.
       if (matched) return d
       if (d && typeof d === 'object' && d.title === deliverable) {
         matched = true
-        return { ...d, title: newValue } // preserve any other fields on the deliverable, not just title
+        return { ...d, title: newValue } // preserve any other fields on the entry, not just title
       }
       if (d === deliverable) { matched = true; return { title: newValue } }
       return d
@@ -85,14 +96,14 @@ export async function POST(request: NextRequest) {
 
     if (!matched) {
       return NextResponse.json({
-        error: `Deliverable "${deliverable}" was not found in the current scope snapshot — it may have changed since this page loaded. Refresh and try again.`,
+        error: `That ${fieldLabel} ("${deliverable}") was not found in the current scope snapshot — it may have changed since this page loaded. Refresh and try again.`,
       }, { status: 409 })
     }
 
     const { data: updatedSnap, error: snapErr } = await (service as any)
       .from('project_scope_snapshot')
       .update({
-        deliverables,
+        [field]: updatedList,
         last_updated_at: now,
         last_updated_by: 'scope_adjustment',
         version: (snap.version || 1) + 1,
@@ -116,6 +127,7 @@ export async function POST(request: NextRequest) {
         project_id:   projectId,
         workspace_id: session.workspaceId,
         deliverable,
+        field,
         old_value:    oldValue || '',
         new_value:    newValue,
         reason:       reason.trim(),
@@ -129,7 +141,7 @@ export async function POST(request: NextRequest) {
       actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
       eventType: 'project.scope_adjustment_made', entityType: 'project',
       entityId: projectId, entityName: project.name,
-      metadata: { deliverable, old_value: oldValue, new_value: newValue, reason },
+      metadata: { deliverable, field, old_value: oldValue, new_value: newValue, reason },
     })
 
     return NextResponse.json({ ok: true, adjustmentId: adjustment.id })

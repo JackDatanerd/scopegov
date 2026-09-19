@@ -26,7 +26,18 @@ export async function GET() {
       ? (clients || [])
       : (clients || []).map((c: any) => ({ ...c, email: null }))
 
-    return NextResponse.json({ clients: result })
+    // FIX (deep audit, section 14 — bug, traced into Projects): POST here
+    // requires CREATE_PROJECTS + VIEW_CLIENT_DATA (see that handler), but
+    // nothing told a caller which of those it's missing before it tries.
+    // app/(app)/projects/new/page.tsx already fetches this exact response
+    // to populate its client picker — surfacing the flag here (the caller
+    // this page already makes, not a new endpoint) lets it hide/disable its
+    // own "+ New client" entry point instead of letting the same
+    // CREATE_PROJECTS-without-VIEW_CLIENT_DATA role fill out a form that
+    // was always going to 403.
+    const canCreateClient = hasPermission(session, 'CREATE_PROJECTS') && canViewClientData
+
+    return NextResponse.json({ clients: result, canCreateClient })
   } catch { return NextResponse.json({ error: 'Error' }, { status: 500 }) }
 }
 

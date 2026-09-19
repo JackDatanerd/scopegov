@@ -60,10 +60,20 @@ export default async function ClientsPage() {
       .filter((p: any) => canViewAllProjects || accessibleProjectIds!.has(p.id)),
   }))
 
+  // FIX (deep audit, section 14 — bug): POST /api/clients requires BOTH
+  // CREATE_PROJECTS and VIEW_CLIENT_DATA (every field it writes — email,
+  // phone, notes, cc_emails — is contact data, gated the same way PATCH
+  // already is). This page only ever gated the "New client" button on
+  // CREATE_PROJECTS, so a role holding that permission without
+  // VIEW_CLIENT_DATA — a legitimate, reachable custom-role combination —
+  // saw and could open the New Client modal, fill it in, and only found out
+  // it was pointless from a generic 403 after submitting.
+  const canCreateClient = hasPermission(session, 'CREATE_PROJECTS') && canViewClientData
+
   return (
     <ClientsClient
       clients={redacted}
-      canCreate={hasPermission(session, 'CREATE_PROJECTS')}
+      canCreate={canCreateClient}
       canViewFinancials={canViewFinancials}
       canViewClientData={canViewClientData}
     />

@@ -93,9 +93,21 @@ export default function ClientContactCard({
           </div>
         )}
         {paymentTermsNote && (
-          <div className="settings-row" style={{ paddingBottom: 0, borderBottom: 'none' }}>
+          <div className="settings-row" style={notes ? undefined : { paddingBottom: 0, borderBottom: 'none' }}>
             <span className="settings-row-key" style={{ fontSize: 12 }}>Payment terms</span>
             <span className="settings-row-val" style={{ fontSize: 11 }}>{paymentTermsNote}</span>
+          </div>
+        )}
+        {/* FIX (deep audit, section 14 — bug): `notes` was collected in the
+            edit form and passed into this component, but the read-only view
+            never rendered it anywhere — the only way to ever see a saved
+            note was to click Edit and scroll to the textarea. That also made
+            notes permanently invisible to anyone with VIEW_CLIENT_DATA but
+            not editable (no Edit button to reveal them through). */}
+        {notes && (
+          <div className="settings-row" style={{ paddingBottom: 0, borderBottom: 'none', alignItems: 'flex-start' }}>
+            <span className="settings-row-key" style={{ fontSize: 12 }}>Internal notes</span>
+            <span className="settings-row-val" style={{ fontSize: 11, whiteSpace: 'pre-wrap' }}>{notes}</span>
           </div>
         )}
       </div>

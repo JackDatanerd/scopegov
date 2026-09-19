@@ -399,11 +399,18 @@ function MetricBlock({ label, value, color, bold }: { label: string; value: stri
   )
 }
 
-function ScopeAdjustModal({ projectId, deliverable, onClose, onDone }: any) {
+// FEATURE (deep audit, section 13 — feature gap): `field` distinguishes an
+// in-scope deliverable from an "Excluded" (out_of_scope) entry — see
+// api/guardian/scope-adjustment's own comment for the backend half of this.
+// Defaults to 'deliverables' so the existing deliverable-adjust callers
+// don't need to change.
+function ScopeAdjustModal({ projectId, deliverable, field = 'deliverables', onClose, onDone }: any) {
   const [newValue, setNewValue] = useState(deliverable)
   const [reason, setReason]     = useState('')
   const [busy, setBusy]         = useState(false)
   const [error, setError]       = useState('')
+  const isExcluded = field === 'out_of_scope'
+  const noun = isExcluded ? 'excluded item' : 'deliverable'
 
   async function submit() {
     if (!newValue.trim() || !reason.trim()) { setError('Both fields are required.'); return }
@@ -411,7 +418,7 @@ function ScopeAdjustModal({ projectId, deliverable, onClose, onDone }: any) {
     try {
       const res  = await fetch('/api/guardian/scope-adjustment', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId, deliverable, oldValue: deliverable, newValue: newValue.trim(), reason: reason.trim() }),
+        body: JSON.stringify({ projectId, deliverable, field, oldValue: deliverable, newValue: newValue.trim(), reason: reason.trim() }),
       })
       const json = await res.json().catch(() => ({}))
       if (res.ok) onDone()
@@ -422,11 +429,11 @@ function ScopeAdjustModal({ projectId, deliverable, onClose, onDone }: any) {
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2 className="modal-title">Adjust deliverable</h2>
+        <h2 className="modal-title">Adjust {noun}</h2>
         <p style={{ fontSize: 13, color: 'var(--text-3)', marginBottom: 16 }}>
           Corrects the scope snapshot directly — for fixing a typo or wording issue, not for adding/removing scope. Real scope changes still go through a change order.
         </p>
-        <label className="form-label">Deliverable</label>
+        <label className="form-label">{isExcluded ? 'Excluded item' : 'Deliverable'}</label>
         <input className="form-input" value={newValue} onChange={(e) => setNewValue(e.target.value)} style={{ marginBottom: 12 }} />
         <label className="form-label">Reason for adjustment</label>
         <textarea className="form-input" rows={2} value={reason} onChange={(e) => setReason(e.target.value)}
@@ -450,7 +457,10 @@ function OverviewTab({ project, milestones, amendments, permissions, currency, r
   const deliverables = snapshot?.deliverables || []
   const outOfScope   = snapshot?.out_of_scope || []
   const sowDocs      = project.sow_documents || []
-  const [adjustingDeliverable, setAdjustingDeliverable] = useState<string | null>(null)
+  // FEATURE (deep audit, section 13 — feature gap): now tracks which list
+  // (deliverables vs out_of_scope) the item being adjusted came from — see
+  // ScopeAdjustModal and api/guardian/scope-adjustment for the rest of this.
+  const [adjusting, setAdjusting] = useState<{ value: string; field: 'deliverables' | 'out_of_scope' } | null>(null)
   const hasSigned    = sowDocs.some((s: any) => s.status === 'signed')
   const latestSow    = sowDocs.length ? [...sowDocs].sort((a: any, b: any) => (b.version ?? 0) - (a.version ?? 0))[0] : null
   const paidAmount   = milestones.filter((m: any) => m.status === 'paid').reduce((s: number, m: any) => s + (m.amount || 0), 0)
@@ -536,7 +546,7 @@ function OverviewTab({ project, milestones, amendments, permissions, currency, r
                       <span>{d.title || d}</span>
                     </div>
                     {permissions.editSow && (
-                      <button className="btn-icon" title="Adjust wording" onClick={() => setAdjustingDeliverable(d.title || d)}>
+                      <button className="btn-icon" title="Adjust wording" onClick={() => setAdjusting({ value: d.title || d, field: 'deliverables' })}>
                         <i className="ti ti-pencil" style={{ fontSize: 11 }} />
                       </button>
                     )}
@@ -547,10 +557,22 @@ function OverviewTab({ project, milestones, amendments, permissions, currency, r
             {outOfScope.length > 0 && (
               <>
                 <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '.06em', margin: '14px 0 6px' }}>Excluded</div>
+                {/* FEATURE (deep audit, section 13 — feature gap): excluded
+                    entries had no correction path at all — only deliverables
+                    got the "Adjust wording" pencil above, even though a typo
+                    here is just as likely and lives in the same snapshot row.
+                    See ScopeAdjustModal and api/guardian/scope-adjustment. */}
                 {outOfScope.map((d: any, i: number) => (
-                  <div key={i} className="scope-entry">
-                    <div className="scope-glyph out"><i className="ti ti-x" style={{ fontSize: 9 }} /></div>
-                    <span style={{ color: 'var(--text-2)' }}>{d.title || d}</span>
+                  <div key={i} className="scope-entry" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <div className="scope-glyph out"><i className="ti ti-x" style={{ fontSize: 9 }} /></div>
+                      <span style={{ color: 'var(--text-2)' }}>{d.title || d}</span>
+                    </div>
+                    {permissions.editSow && (
+                      <button className="btn-icon" title="Adjust wording" onClick={() => setAdjusting({ value: d.title || d, field: 'out_of_scope' })}>
+                        <i className="ti ti-pencil" style={{ fontSize: 11 }} />
+                      </button>
+                    )}
                   </div>
                 ))}
               </>
@@ -620,10 +642,10 @@ function OverviewTab({ project, milestones, amendments, permissions, currency, r
           )}
         </div>
       </div>
-      {adjustingDeliverable !== null && (
-        <ScopeAdjustModal projectId={project.id} deliverable={adjustingDeliverable}
-          onClose={() => setAdjustingDeliverable(null)}
-          onDone={() => { setAdjustingDeliverable(null); router.refresh() }} />
+      {adjusting !== null && (
+        <ScopeAdjustModal projectId={project.id} deliverable={adjusting.value} field={adjusting.field}
+          onClose={() => setAdjusting(null)}
+          onDone={() => { setAdjusting(null); router.refresh() }} />
       )}
     </div>
   )
