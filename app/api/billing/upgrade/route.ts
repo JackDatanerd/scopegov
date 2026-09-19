@@ -2,7 +2,21 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { PLAN_LIMITS } from '@/lib/utils/format'
+import { parsePlanRequest, planCodeFor } from '@/lib/billing/plans'
+import { createPendingCheckout } from '@/lib/billing/checkouts'
 
+// Billing re-pass #3:
+//  - planKey / interval are parsed once against an allowlist and normalised
+//    (lib/billing/plans.ts). Before, `planKey.toUpperCase()` built the env
+//    name while PLAN_LIMITS was indexed with the RAW value, so "SOLO" found a
+//    real plan code but skipped BOTH downgrade guards below; a non-string
+//    threw a TypeError whose text was returned to the browser.
+//  - The checkout is recorded server-side (billing_checkouts) so the webhook
+//    can bind the resulting subscription to THIS workspace without trusting
+//    the metadata the browser hands to Paystack's popup.
+//  - Re-buying the plan + interval the workspace already has (two tabs, a
+//    direct call) is refused instead of creating a second, immediately
+//    charged subscription for nothing.
 export async function POST(request: NextRequest) {
   try {
     const session = await getSession()
@@ -10,25 +24,37 @@ export async function POST(request: NextRequest) {
     if (!hasPermission(session, 'MANAGE_BILLING'))
       return NextResponse.json({ error: 'Missing permission: MANAGE_BILLING' }, { status: 403 })
 
-    const { planKey, interval = 'monthly' } = await request.json()
-    if (!planKey) return NextResponse.json({ error: 'planKey required' }, { status: 400 })
+    const body = await request.json().catch(() => ({}))
+    const parsed = parsePlanRequest(body?.planKey, body?.interval)
+    if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 })
+    const { planKey, interval } = parsed
 
-    // Map planKey + interval to Paystack plan code
-    const envKey    = `PAYSTACK_PLAN_${planKey.toUpperCase()}_${interval.toUpperCase()}`
-    const planCode  = process.env[envKey]
-    if (!planCode)
-      return NextResponse.json({ error: `Plan code not configured: ${envKey}` }, { status: 422 })
+    const planCode = planCodeFor(planKey, interval)
+    if (!planCode) {
+      // Which env var is missing is an operator concern, not the browser's.
+      console.error(`[BILLING] Plan code not configured: ${parsed.envKey}`)
+      return NextResponse.json({ error: 'This plan is not available for purchase right now. Please contact support@scopegov.app.' }, { status: 422 })
+    }
 
     const service = createServiceClient()
 
-    // FIX (deep audit, Settings re-pass): PLAN_LIMITS' seat counts were
-    // only ever used to render labels in this tab — nothing checked a
-    // workspace's actual active-member count against the target plan's
-    // seat limit before opening checkout, so a workspace could switch to
-    // a tier with fewer seats than it currently has members, with no
-    // warning about what happens to the members who no longer fit.
-    // Checked here (not just client-side) since this is the one place
-    // that's actually authoritative before money changes hands.
+    // Already on exactly this plan + interval with a healthy, renewing
+    // subscription: nothing to buy.
+    const [{ data: ws }, { data: billing }] = await Promise.all([
+      (service as any).from('workspaces').select('plan_tier').eq('id', session.workspaceId).maybeSingle(),
+      (service as any).from('billing')
+        .select('paystack_subscription_code, plan_interval, cancels_at_period_end, grace_period_started_at')
+        .eq('workspace_id', session.workspaceId).maybeSingle(),
+    ])
+    if (
+      ws?.plan_tier === planKey && billing?.paystack_subscription_code &&
+      billing.plan_interval === interval && !billing.cancels_at_period_end && !billing.grace_period_started_at
+    ) {
+      return NextResponse.json({ error: `This workspace is already on the ${PLAN_LIMITS[planKey]?.name} plan (${interval}).`, alreadyOnPlan: true }, { status: 409 })
+    }
+
+    // FIX (deep audit, Settings re-pass): seat limit checked server-side,
+    // authoritatively, before money changes hands.
     const targetSeats = PLAN_LIMITS[planKey]?.seats
     if (targetSeats != null) {
       const { count: activeMembers } = await (service as any)
@@ -44,18 +70,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // FIX (deep audit, Billing re-pass): the seat check above exists
-    // precisely because nothing else guarded a downgrade against a
-    // workspace no longer fitting the target plan's limits — but
-    // PLAN_LIMITS[planKey].projects (api/projects/route.ts already
-    // enforces this same limit at project-creation time, counting every
-    // non-deleted project regardless of status) had no equivalent check
-    // here at all. A workspace on Pro/Agency (unlimited projects) with
-    // dozens of active projects could downgrade to Solo/Starter through
-    // checkout with zero warning, pay for it, and immediately land in a
-    // permanent "can't create any new project" state they were never told
-    // about before money changed hands. Same reasoning, same place to
-    // catch it, as the seat check right above.
+    // FIX (deep audit, Billing re-pass): same for the project limit.
     const targetProjects = PLAN_LIMITS[planKey]?.projects
     if (targetProjects != null) {
       const { count: activeProjects } = await (service as any)
@@ -73,20 +88,22 @@ export async function POST(request: NextRequest) {
 
     const { data: user } = await (service as any)
       .from('users').select('email').eq('id', session.id).single()
+    const email = user?.email || session.email
+
+    await createPendingCheckout(service, {
+      workspaceId: session.workspaceId, userId: session.id, email, planKey, interval, planCode,
+    })
 
     return NextResponse.json({
       planCode,
-      email:     user?.email || session.email,
+      email,
       publicKey: process.env.NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY,
-      callbackUrl: `${process.env.NEXT_PUBLIC_APP_URL}/settings?tab=billing&upgraded=1`,
-      metadata: {
-        workspaceId: session.workspaceId,
-        planKey,
-        interval,
-        userId: session.id,
-      },
+      // Kept for the popup, but the webhook treats it as a tie-break hint
+      // only — the server-side checkout row is what binds the workspace.
+      metadata: { workspaceId: session.workspaceId, planKey, interval, userId: session.id },
     })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('Billing upgrade error:', err)
+    return NextResponse.json({ error: 'Could not start checkout' }, { status: 500 })
   }
 }

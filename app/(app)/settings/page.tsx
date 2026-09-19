@@ -39,7 +39,7 @@ export default async function SettingsPage() {
       // read back anywhere, so BillingTab had no way to show an in-app
       // warning during an active payment-failure grace period (see the
       // banner in BillingTab below).
-      .select('paystack_customer_code,paystack_subscription_code,cancels_at_period_end,current_period_end,payment_method_last4,payment_method_type,plan_interval,grace_period_started_at')
+      .select('paystack_subscription_code,cancels_at_period_end,current_period_end,payment_method_last4,payment_method_type,plan_interval,grace_period_started_at')
       .eq('workspace_id', session.workspaceId)
       .maybeSingle(), // billing row may not exist on trial
     (service as any)

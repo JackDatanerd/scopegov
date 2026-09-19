@@ -29,6 +29,7 @@ import MfaSection from '@/components/settings/MfaSection'
 // field. Import the single source of truth instead of a second,
 // drifting copy of the list.
 import { CURRENCIES } from '@/lib/constants/workspace-options'
+import { GRACE_DAYS } from '@/lib/billing/plans'
 
 type SettingsTab = 'account' | 'workspace' | 'branding' | 'defaults' | 'guardian' | 'billing' | 'notifications' | 'integrations' | 'danger'
 
@@ -1239,6 +1240,55 @@ const BILLING_HISTORY_LABELS: Record<string, string> = {
   'billing.subscription_ended':         'Subscription ended',
   'billing.trial_expired':              'Trial ended',
   'billing.plan_changed':               'Plan changed',
+  'billing.payment_retry_failed':       'Payment retry failed',
+  'billing.refund_processed':           'Refund processed',
+  'billing.charge_dispute_create':      'Payment disputed',
+  'billing.charge_dispute_resolve':     'Dispute resolved',
+}
+
+// FIX (Billing re-pass #3): every cancel, resume, switch and end-of-period
+// event is stored as the same 'billing.plan_changed' type and the tab printed
+// "Plan changed" for all of them (the API returned `action` and the UI threw
+// it away). Describe what actually happened.
+const PLAN_ACTION_LABELS: Record<string, string> = {
+  cancellation_requested:      'Cancellation requested',
+  cancellation_reversed:       'Cancellation reversed',
+  subscription_not_renewing:   'Subscription set to end',
+  subscription_disabled:       'Subscription disabled',
+  subscription_created:        'Subscription started',
+}
+
+function billingHistoryLabel(h: any): string {
+  if (h.eventType === 'billing.plan_changed') {
+    const base = (h.action && PLAN_ACTION_LABELS[h.action]) || 'Plan changed'
+    if (h.from && h.to && h.from !== h.to) return `${base}: ${PLAN_LABELS[h.from] || h.from} → ${PLAN_LABELS[h.to] || h.to}`
+    if (h.to && h.action === 'subscription_created') return `${base}: ${PLAN_LABELS[h.to] || h.to}${h.interval ? ` (${h.interval})` : ''}`
+    return base
+  }
+  return BILLING_HISTORY_LABELS[h.eventType] || h.eventType
+}
+
+// Loads Paystack's inline checkout only when someone actually starts a
+// payment. It used to be a beforeInteractive <Script> in the root layout, so
+// every page — including the public client-facing SOW/CO/invoice portals —
+// blocked first paint on a third-party script and sent the visitor's browser
+// to js.paystack.co.
+function loadPaystackScript(): Promise<void> {
+  if (typeof window === 'undefined') return Promise.reject(new Error('No window'))
+  if ((window as any).PaystackPop) return Promise.resolve()
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector('script[data-paystack-inline]') as HTMLScriptElement | null
+    const el = existing || document.createElement('script')
+    const done = () => (window as any).PaystackPop ? resolve() : reject(new Error('Paystack did not initialise'))
+    el.addEventListener('load', done, { once: true })
+    el.addEventListener('error', () => reject(new Error('Could not load the payment provider')), { once: true })
+    if (!existing) {
+      el.src = 'https://js.paystack.co/v1/inline.js'
+      el.async = true
+      el.setAttribute('data-paystack-inline', '1')
+      document.head.appendChild(el)
+    }
+  })
 }
 
 function BillingTab({ workspace, billing, session, permissions }: any) {
@@ -1271,8 +1321,16 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
   // api/billing/history/route.ts's own header comment for the full story.
   const [history,        setHistory]        = useState<any[] | null>(null)
   const [historyError,   setHistoryError]   = useState('')
+  const [historyMore,    setHistoryMore]    = useState<{ hasMore: boolean; nextOffset: number }>({ hasMore: false, nextOffset: 0 })
+  const [historyLoadingMore, setHistoryLoadingMore] = useState(false)
+  // After Paystack's popup reports success the plan only changes once the
+  // webhook lands; this tracks that wait (see confirmPayment below).
+  const [confirming, setConfirming] = useState(false)
 
   useEffect(() => {
+    // Members without MANAGE_BILLING render <Restricted /> below and used to
+    // fire this request anyway, collecting a pointless 403.
+    if (!permissions.manageBilling) return
     let cancelled = false
     fetch('/api/billing/history')
       .then(async res => {
@@ -1280,10 +1338,23 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
         if (cancelled) return
         if (!res.ok) { setHistoryError(json.error || 'Could not load billing history.'); return }
         setHistory(json.rows || [])
+        setHistoryMore({ hasMore: !!json.hasMore, nextOffset: json.nextOffset || 0 })
       })
       .catch(() => { if (!cancelled) setHistoryError('Could not load billing history.') })
     return () => { cancelled = true }
-  }, [])
+  }, [permissions.manageBilling])
+
+  async function loadMoreHistory() {
+    setHistoryLoadingMore(true)
+    try {
+      const res = await fetch(`/api/billing/history?offset=${historyMore.nextOffset}`)
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json.error)
+      setHistory(prev => [...(prev || []), ...(json.rows || [])])
+      setHistoryMore({ hasMore: !!json.hasMore, nextOffset: json.nextOffset || 0 })
+    } catch { setHistoryError('Could not load more billing history.') }
+    finally { setHistoryLoadingMore(false) }
+  }
 
   if (!permissions.manageBilling) return <Restricted />
 
@@ -1308,35 +1379,56 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
     } finally { setResuming(false) }
   }
 
+  // The webhook, not the popup, changes the plan (BUG-054), so after a
+  // successful payment poll until the workspace actually reflects it instead
+  // of reloading into the old plan behind an alert.
+  async function confirmPayment(before: { planTier: string | null; planInterval: string | null }) {
+    setConfirming(true)
+    const deadline = Date.now() + 90_000
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 3000))
+      try {
+        const res = await fetch('/api/billing/status')
+        if (res.ok) {
+          const st = await res.json()
+          if (st.planTier !== before.planTier || st.planInterval !== before.planInterval) break
+        }
+      } catch { /* keep polling */ }
+    }
+    window.location.reload()
+  }
+
   async function handleUpgrade(planKey: string, intervalOverride?: 'monthly' | 'annual') {
+    const targetInterval = intervalOverride || planInterval
+    // Paystack does not prorate: switching starts a NEW subscription that is
+    // charged immediately and the old one ends now, so any time already paid
+    // for on it is forfeited. Say so before money moves.
+    const hasPaidSubscription = !!billing?.paystack_subscription_code && !billing?.cancels_at_period_end && planTier !== 'trial'
+    if (hasPaidSubscription && billing?.current_period_end && new Date(billing.current_period_end) > new Date()) {
+      const ok = confirm(
+        `Switching plans starts a new subscription and charges you now. Your current subscription ends immediately, and the time you've already paid for on it (until ${formatDate(billing.current_period_end)}) is not credited or refunded.\n\nContinue?`
+      )
+      if (!ok) return
+    }
     setUpgrading(planKey)
     try {
-      // FIX (deep audit, Billing re-pass): the Paystack inline script
-      // (js.paystack.co/v1/inline.js, loaded in app/layout.tsx) can fail
-      // to load — blocked by an ad-blocker or content-blocklist, which
-      // commonly target payment-provider scripts, or a transient network
-      // issue. `PaystackPop?.setup(...)` and `handler?.openIframe()` both
-      // silently no-op when that happens: the button's spinner would just
-      // stop with no explanation at all. Fail loudly instead.
-      if (!(window as any).PaystackPop) {
+      await loadPaystackScript().catch(() => {
         throw new Error('Could not load the payment provider. If you\u2019re using an ad-blocker or privacy extension, try disabling it for this site, then refresh and try again.')
-      }
+      })
       const res  = await fetch('/api/billing/upgrade', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ planKey, interval: intervalOverride || planInterval }),
+        body: JSON.stringify({ planKey, interval: targetInterval }),
       })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error)
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json.error || 'Could not start checkout')
+      const before = { planTier: planTier as string | null, planInterval: (billing?.plan_interval ?? null) as string | null }
       const handler = (window as any).PaystackPop.setup({
         key:      json.publicKey,
         email:    json.email,
         plan:     json.planCode,
         currency: 'USD',
         metadata: json.metadata,
-        callback: () => {
-          alert('Payment processing. Your plan will update within a minute.')
-          window.location.reload()
-        },
+        callback: () => { void confirmPayment(before) },
         onClose: () => {},
       })
       handler.openIframe()
@@ -1361,12 +1453,19 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
   // missing/ignoring that one email currently means no warning at all
   // before a forced downgrade to Solo.
   const graceDaysLeft = billing?.grace_period_started_at
-    ? Math.max(0, 5 - Math.floor((Date.now() - new Date(billing.grace_period_started_at).getTime()) / 86400000))
+    ? Math.max(0, GRACE_DAYS - Math.floor((Date.now() - new Date(billing.grace_period_started_at).getTime()) / 86400000))
     : null
 
   return (
     <div>
       <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, marginBottom: 20 }}>Billing & plan</h2>
+
+      {confirming && (
+        <div className="banner banner-warn" style={{ marginBottom: 14, alignItems: 'center' }}>
+          <span className="spin spin-dark" style={{ marginRight: 10 }} />
+          <span>Payment received — confirming your plan. This page will refresh as soon as it&apos;s active.</span>
+        </div>
+      )}
 
       {graceDaysLeft !== null && (
         <div className="banner banner-warn" style={{ marginBottom: 14, alignItems: 'center', justifyContent: 'space-between' }}>
@@ -1377,7 +1476,7 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
           <button
             className="btn btn-primary btn-sm"
             disabled={!!upgrading}
-            onClick={() => handleUpgrade(planTier === 'trial' ? 'solo' : planTier, planInterval)}>
+            onClick={() => handleUpgrade(planTier === 'trial' ? 'solo' : planTier, billing?.plan_interval || 'monthly')}>
             Retry with a new card
           </button>
         </div>
@@ -1445,7 +1544,10 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
             <tbody>
               {history.map(h => (
                 <tr key={h.id}>
-                  <td style={{ fontSize: 13 }}>{BILLING_HISTORY_LABELS[h.eventType] || h.eventType}</td>
+                  <td style={{ fontSize: 13 }}>
+                    {billingHistoryLabel(h)}
+                    {h.reference && <div style={{ fontSize: 10, color: 'var(--text-4)', fontFamily: 'IBM Plex Mono, monospace' }}>Ref {h.reference}</div>}
+                  </td>
                   <td style={{ fontSize: 12, color: 'var(--text-3)' }}>{formatDate(h.createdAt)}</td>
                   <td className="td-mono" style={{ textAlign: 'right', fontSize: 12 }}>
                     {h.amount != null ? formatCurrency(h.amount, h.currency || 'USD') : '—'}
@@ -1454,6 +1556,13 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
               ))}
             </tbody>
           </table>
+        )}
+        {historyMore.hasMore && (
+          <div style={{ display: 'flex', justifyContent: 'center', paddingTop: 12 }}>
+            <button className="btn btn-ghost btn-sm" disabled={historyLoadingMore} onClick={loadMoreHistory}>
+              {historyLoadingMore ? <span className="spin spin-dark" /> : 'Load older'}
+            </button>
+          </div>
         )}
       </div>
 

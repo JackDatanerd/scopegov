@@ -1630,6 +1630,98 @@ export async function sendInvoiceDisputedEmail(params: {
   })
 }
 
+// ── Billing: cancellation scheduled / resumed / card expiring ────────────
+// FEATURE (Billing re-pass #3): cancelling or resuming a subscription — an
+// action with real money consequences — sent no confirmation to anyone, and
+// the other billing admins never learned it had happened.
+export async function sendSubscriptionCancelScheduledEmail(params: {
+  to: string; name: string; agencyName: string; endsAtLabel: string; actorName: string; manageUrl: string
+}) {
+  const { to, name: nameRaw, agencyName: agencyNameRaw, endsAtLabel: endsRaw, actorName: actorRaw, manageUrl } = params
+  const name = escapeHtml(nameRaw), agencyName = escapeHtml(agencyNameRaw)
+  const endsAtLabel = escapeHtml(endsRaw), actorName = escapeHtml(actorRaw)
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.text3,
+    label: 'Cancellation scheduled',
+    headline: 'Your ScopeGov subscription is set to end',
+    body: `
+      <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${name},</p>
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        ${actorName} cancelled the paid subscription for <strong>${agencyName}</strong>. You keep your
+        current plan until <strong>${endsAtLabel}</strong>; after that the workspace moves to the Solo plan.
+        You won&apos;t be charged again.
+      </p>
+      <p style="font-size:13px;color:${C.text2};">
+        Changed your mind? You can resume the subscription any time before then and nothing changes.
+      </p>
+    `,
+    cta: 'Manage subscription →',
+    ctaUrl: manageUrl,
+  })
+  return resendClient().emails.send({
+    from: `ScopeGov <${FROM}>`, to,
+    subject: `Subscription cancellation scheduled — ${agencyNameRaw}`,
+    html,
+  })
+}
+
+export async function sendSubscriptionResumedEmail(params: {
+  to: string; name: string; agencyName: string; actorName: string; manageUrl: string
+}) {
+  const { to, name: nameRaw, agencyName: agencyNameRaw, actorName: actorRaw, manageUrl } = params
+  const name = escapeHtml(nameRaw), agencyName = escapeHtml(agencyNameRaw), actorName = escapeHtml(actorRaw)
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.green,
+    label: 'Subscription resumed',
+    headline: 'Your ScopeGov subscription will keep renewing',
+    body: `
+      <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${name},</p>
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        ${actorName} resumed the subscription for <strong>${agencyName}</strong>. The scheduled
+        cancellation has been removed and your plan will renew as normal.
+      </p>
+    `,
+    cta: 'View billing →',
+    ctaUrl: manageUrl,
+  })
+  return resendClient().emails.send({
+    from: `ScopeGov <${FROM}>`, to,
+    subject: `Subscription resumed — ${agencyNameRaw}`,
+    html,
+  })
+}
+
+export async function sendCardExpiringEmail(params: {
+  to: string; name: string; agencyName: string; cardLabel: string; expiryLabel: string; manageUrl: string
+}) {
+  const { to, name: nameRaw, agencyName: agencyNameRaw, cardLabel: cardRaw, expiryLabel: expRaw, manageUrl } = params
+  const name = escapeHtml(nameRaw), agencyName = escapeHtml(agencyNameRaw)
+  const cardLabel = escapeHtml(cardRaw), expiryLabel = escapeHtml(expRaw)
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.amber,
+    label: 'Card expiring',
+    headline: 'The card on your subscription is about to expire',
+    body: `
+      <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${name},</p>
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        The card used for <strong>${agencyName}</strong>&apos;s ScopeGov subscription (${cardLabel})
+        expires <strong>${expiryLabel}</strong>. Update your payment details before then so the next
+        renewal doesn&apos;t fail.
+      </p>
+    `,
+    cta: 'Update payment details →',
+    ctaUrl: manageUrl,
+  })
+  return resendClient().emails.send({
+    from: `ScopeGov <${FROM}>`, to,
+    subject: `Your card is expiring — ${agencyNameRaw} subscription`,
+    html,
+  })
+}
+
 // ── Security: MFA enabled ────────────────────────────────────
 // (audit round 6: this file previously also gained a sendOpsAlertEmail
 // here for the guardian-health cron's alerting gap — a parallel session

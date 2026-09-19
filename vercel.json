@@ -9,6 +9,10 @@
       "schedule": "0 9 * * *"
     },
     {
+      "path": "/api/cron/billing-reconcile",
+      "schedule": "30 9 * * *"
+    },
+    {
       "path": "/api/cron/invite-cleanup",
       "schedule": "0 2 * * *"
     },

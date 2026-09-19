@@ -25,41 +25,60 @@ import { createServiceClient } from '@/lib/supabase/server'
 const HISTORY_EVENT_TYPES = [
   'billing.payment_succeeded',
   'billing.payment_failed_grace_started',
+  'billing.payment_retry_failed',
+  'billing.refund_processed',
+  'billing.charge_dispute_create',
+  'billing.charge_dispute_resolve',
   'billing.downgraded_for_nonpayment',
   'billing.subscription_ended',
   'billing.trial_expired',
   'billing.plan_changed',
 ]
 
-const MAX_ROWS = 50
+const PAGE_SIZE = 25
+const MAX_OFFSET = 500
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     if (!hasPermission(session, 'MANAGE_BILLING'))
       return NextResponse.json({ error: 'Missing permission: MANAGE_BILLING' }, { status: 403 })
 
+    // FEATURE (Billing re-pass #3): paged (it was a hard 50 with no way to see
+    // older charges), deterministic order, and the read error is surfaced
+    // instead of rendering an empty "no payments yet" list.
+    const offset = Math.max(0, Math.min(parseInt(new URL(request.url).searchParams.get('offset') || '0', 10) || 0, MAX_OFFSET))
     const service = createServiceClient()
-    const { data: rows } = await (service as any)
+    const { data: rows, error } = await (service as any)
       .from('audit_log')
       .select('id, event_type, created_at, metadata')
       .eq('workspace_id', session.workspaceId)
       .in('event_type', HISTORY_EVENT_TYPES)
-      .order('created_at', { ascending: false })
-      .limit(MAX_ROWS)
+      .order('created_at', { ascending: false }).order('id', { ascending: false })
+      .range(offset, offset + PAGE_SIZE) // one extra row to know whether there is another page
+    if (error) throw new Error(error.message)
 
+    const page = (rows || []).slice(0, PAGE_SIZE)
     return NextResponse.json({
-      rows: (rows || []).map((r: any) => ({
+      hasMore: (rows || []).length > PAGE_SIZE && offset + PAGE_SIZE < MAX_OFFSET,
+      nextOffset: offset + page.length,
+      rows: page.map((r: any) => ({
         id: r.id,
         eventType: r.event_type,
         createdAt: r.created_at,
-        // FIX (deep audit, Reports & Audit / Billing re-pass): the amount
-        // stored here now comes from the webhook's fromSubunit() — see
-        // that file's comment for why it used to be 100x too large.
+        // Stored by the webhook via fromSubunit() (human units).
         amount: typeof r.metadata?.amount === 'number' ? r.metadata.amount : null,
         currency: r.metadata?.currency || null,
         action: r.metadata?.action || null,
+        // Detail the UI previously could not show: every cancel, resume and
+        // switch was just "Plan changed".
+        from: r.metadata?.from || null,
+        to: r.metadata?.to || null,
+        interval: r.metadata?.to_interval || r.metadata?.interval || null,
+        reference: r.metadata?.reference || null,
+        channel: r.metadata?.channel || null,
+        endsAt: r.metadata?.ends_at || null,
       })),
     })
   } catch (err) {

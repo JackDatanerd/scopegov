@@ -1,5 +1,4 @@
 import type { Metadata } from 'next'
-import Script from 'next/script'
 import '@/styles/globals.css'
 
 export const metadata: Metadata = {
@@ -51,8 +50,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         {/* Windows tile config — no dedicated field in the Next.js metadata API */}
         <meta name="msapplication-TileColor" content="#1A5C3A" />
         <meta name="msapplication-config" content="/browserconfig.xml" />
-        {/* C11: Paystack inline checkout — required for billing upgrade flow */}
-        <Script src="https://js.paystack.co/v1/inline.js" strategy="beforeInteractive" />
+        {/* Paystack's inline checkout is no longer loaded here — it is injected on demand
+            by the Billing tab (components/settings/SettingsClient.tsx), so public client
+            portals and every other page stop blocking on a third-party script. */}
       </head>
       <body>{children}</body>
     </html>

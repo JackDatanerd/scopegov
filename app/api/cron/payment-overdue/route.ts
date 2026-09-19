@@ -19,44 +19,31 @@ export const maxDuration = 300
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { sendTrialWarningEmail, sendPaymentFailedEmail, sendInvoiceOverdueInternalEmail, sendPaymentMilestoneOverdueEmail, sendSubscriptionEndedEmail } from '@/lib/email/templates'
-import { getMemberEmailsWithPermission, getMembersWithPermission } from '@/lib/utils/permissions-query'
+import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
+import { getBillingRecipients as getBillingRecipientsShared } from '@/lib/billing/recipients'
+import { GRACE_DAYS, GRACE_REMINDER_DAYS_LEFT } from '@/lib/billing/plans'
+import { cancelPaystackSubscription } from '@/lib/integrations/paystack'
+import { alertBillingOps } from '@/lib/billing/ops-alert'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
 
+import { insertAuditRow } from '@/lib/utils/audit'
 // FIX (audit round 3): local copy replaced with the shared,
 // null-safe helper — see lib/utils/verify-cron.ts.
 
-// FIX (deep audit, section 17 follow-up — flagship finding): the four
-// billing-consequence emails below (trial expiry, grace reminder, grace
-// enforcement, cancelled-subscription enforcement) each emailed ONLY
-// workspaces.created_by — a deliberate earlier fix that moved away from
-// "whichever active member happened to come back first" to "the actual
-// owner." But a workspace creator is explicitly allowed to leave a
-// non-trial workspace (migration 038's own comment: the trial-creator
-// lockout only applies to trial-tier workspaces), and created_by is never
-// reassigned unless the deliberate ownership-transfer flow runs. If the
-// creator leaves and later deletes their own account — anonymizing their
-// address to deleted-<uuid>@deleted.scopegov.app (see api/account/delete)
-// — every one of these emails silently addresses a dead inbox forever,
-// with no in-app bell either, leaving only a rarely-checked audit_log row
-// as any signal. Also notifying every active member who actually holds
-// MANAGE_WORKSPACE_SETTINGS (the permission that gates acting on billing
-// at all — see api/billing/upgrade, resume) gives a live fallback that
-// doesn't depend on one specific person staying in the workspace forever.
-// Deduplicated by email so the creator (when still reachable) doesn't get
-// the same email twice.
+// FIX (Billing re-pass #3): the recipient lookup that lived here asked for
+// members holding MANAGE_WORKSPACE_SETTINGS and claimed that was "the
+// permission that gates acting on billing" — but every billing action
+// (upgrade, cancel, resume, history) is gated on MANAGE_BILLING. It now
+// lives in lib/billing/recipients.ts (shared with the webhook and the
+// cancel/resume routes) and looks up MANAGE_BILLING holders. The rest of the
+// earlier rationale stands: the workspace creator alone is a single point of
+// failure once they can leave and anonymise their account, so the creator is
+// still included when reachable, deduplicated by email.
 async function getBillingRecipients(
   service: any, workspaceId: string, creator: { name?: string; email?: string } | null | undefined
 ): Promise<Array<{ name: string; email: string }>> {
-  const recipients = new Map<string, { name: string; email: string }>()
-  if (creator?.email) recipients.set(creator.email, { name: creator.name || creator.email, email: creator.email })
-  try {
-    const admins = await getMembersWithPermission(service, workspaceId, 'MANAGE_WORKSPACE_SETTINGS', 25)
-    for (const a of admins) {
-      if (a.email && !recipients.has(a.email)) recipients.set(a.email, { name: a.name || a.email, email: a.email })
-    }
-  } catch (e) { console.error('getBillingRecipients: admin lookup failed (falling back to creator only):', e) }
-  return Array.from(recipients.values())
+  return getBillingRecipientsShared(service, workspaceId, [creator])
 }
 
 export async function POST(request: NextRequest) {
@@ -99,7 +86,7 @@ export async function POST(request: NextRequest) {
         const project = m.projects
         if (!project) continue
 
-        await (service as any).from('audit_log').insert({
+        await insertAuditRow(service, {
           workspace_id: project.workspace_id, actor_id: null,
           actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
           event_type: 'payment.milestone_overdue', entity_type: 'payment_milestone',
@@ -171,7 +158,7 @@ export async function POST(request: NextRequest) {
 
         const balanceDue = Number(inv.amount) - Number(inv.amount_paid)
 
-        await (service as any).from('audit_log').insert({
+        await insertAuditRow(service, {
           workspace_id: inv.workspace_id, actor_id: null,
           actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
           event_type: 'invoice.overdue', entity_type: 'invoice',
@@ -253,7 +240,7 @@ export async function POST(request: NextRequest) {
         if (!updatedWs || updatedWs.length === 0) continue // already downgraded concurrently — lost the race
         trialsExpiredCount++
 
-        await (service as any).from('audit_log').insert({
+        await insertAuditRow(service, {
           workspace_id: ws.id, actor_id: null,
           actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
           event_type: 'billing.trial_expired', entity_type: 'workspace',
@@ -294,8 +281,9 @@ export async function POST(request: NextRequest) {
     // a customer who missed the first email had no further signal until
     // they were already downgraded. One midpoint nudge, reusing the same
     // template the other two grace-period emails already use.
-    const graceReminderWindowStart = new Date(now.getTime() - 3 * 86400000).toISOString()
-    const graceReminderWindowEnd   = new Date(now.getTime() - 2 * 86400000).toISOString()
+    const reminderDaysIn = GRACE_DAYS - GRACE_REMINDER_DAYS_LEFT
+    const graceReminderWindowStart = new Date(now.getTime() - (reminderDaysIn + 1) * 86400000).toISOString()
+    const graceReminderWindowEnd   = new Date(now.getTime() - reminderDaysIn * 86400000).toISOString()
     const { data: graceReminderDue } = await (service as any)
       .from('billing')
       .select('workspace_id, workspaces(id,agency_name,plan_tier,deleted_at,created_by,creator:users!workspaces_created_by_fkey(name,email))')
@@ -337,25 +325,25 @@ export async function POST(request: NextRequest) {
             await sendPaymentFailedEmail({
               to: r.email, name: r.name, agencyName: ws.agency_name,
               upgradeUrl: `${process.env.NEXT_PUBLIC_APP_URL}/settings?tab=billing`,
-              graceDaysLeft: 3,
+              graceDaysLeft: GRACE_REMINDER_DAYS_LEFT,
             })
           } catch (e) { console.error('Grace reminder email failed for', r.email, e) }
         }
 
-        await (service as any).from('audit_log').insert({
+        await insertAuditRow(service, {
           workspace_id: ws.id, actor_id: null,
           actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
           event_type: 'billing.payment_failed_grace_reminder', entity_type: 'workspace',
-          entity_id: ws.id, entity_name: ws.agency_name, metadata: { grace_days_left: 3 },
+          entity_id: ws.id, entity_name: ws.agency_name, metadata: { grace_days_left: GRACE_REMINDER_DAYS_LEFT },
         })
       } catch (e) { console.error('Grace reminder error:', e) }
     }
 
     // ── 4. Grace period enforcement (5 days after payment failure) ─
-    const graceCutoff = new Date(now.getTime() - 5 * 86400000).toISOString()
+    const graceCutoff = new Date(now.getTime() - GRACE_DAYS * 86400000).toISOString()
     const { data: graceExpired } = await (service as any)
       .from('billing')
-      .select('workspace_id, workspaces(id,agency_name,plan_tier,deleted_at,created_by,creator:users!workspaces_created_by_fkey(name,email))')
+      .select('workspace_id, grace_period_started_at, paystack_subscription_code, paystack_email_token, workspaces(id,agency_name,plan_tier,deleted_at,created_by,creator:users!workspaces_created_by_fkey(name,email))')
       .not('grace_period_started_at', 'is', null)
       .lt('grace_period_started_at', graceCutoff)
 
@@ -379,8 +367,18 @@ export async function POST(request: NextRequest) {
         // proceeding to downgrade the workspace if that guarded update
         // actually matched a row — closes the same race the other steps
         // already close.
+        // FIX (Billing re-pass #3): this used to null paystack_subscription_code
+        // here WITHOUT ever disabling the Paystack subscription. Paystack does
+        // not cancel a subscription because a charge failed — it can retry, and
+        // a customer who fixes their card can succeed — so a workspace that had
+        // just been downgraded could still be charged for the plan it no
+        // longer had, with the only pointer we had to that subscription (and
+        // so cancel/resume in the UI) erased. The claim below now leaves the
+        // code in place; the subscription is disabled first, and only a
+        // confirmed disable clears it. If Paystack can't be reached the code
+        // stays and needs_paystack_cancel makes step 4b retry on every run.
         const { data: guardedBilling } = await (service as any).from('billing')
-          .update({ grace_period_started_at: null, paystack_subscription_code: null })
+          .update({ grace_period_started_at: null })
           .eq('workspace_id', b.workspace_id)
           .not('grace_period_started_at', 'is', null)
           .lt('grace_period_started_at', graceCutoff)
@@ -388,15 +386,43 @@ export async function POST(request: NextRequest) {
 
         if (!guardedBilling?.length) continue // grace period cleared concurrently — lost the race, nothing to do
 
-        await (service as any).from('workspaces')
+        // The write's error was never read: a failed downgrade after the claim
+        // above left the workspace on its paid plan with the grace clock gone,
+        // so nothing would ever retry it. Put the clock back instead.
+        const { error: downgradeErr } = await (service as any).from('workspaces')
           .update({ plan_tier: 'solo', updated_at: now.toISOString() })
           .eq('id', ws.id)
+        if (downgradeErr) {
+          console.error('Grace enforcement: downgrade failed, restoring grace clock:', downgradeErr.message)
+          await (service as any).from('billing')
+            .update({ grace_period_started_at: b.grace_period_started_at }).eq('workspace_id', b.workspace_id)
+          continue
+        }
 
-        await (service as any).from('audit_log').insert({
+        let paystackCancelled = true
+        if (b.paystack_subscription_code) {
+          const r = await cancelPaystackSubscription({
+            paystack_subscription_code: b.paystack_subscription_code, paystack_email_token: b.paystack_email_token,
+          })
+          paystackCancelled = r.ok
+          if (r.ok) {
+            await (service as any).from('billing')
+              .update({ paystack_subscription_code: null, needs_paystack_cancel: false }).eq('workspace_id', b.workspace_id)
+          } else {
+            await (service as any).from('billing')
+              .update({ needs_paystack_cancel: true }).eq('workspace_id', b.workspace_id)
+            await alertBillingOps(service, `billing:orphan-sub:${b.workspace_id}`, 'Downgraded workspace still has a live Paystack subscription', [
+              `workspace: ${b.workspace_id}`, `subscription: ${b.paystack_subscription_code}`, `error: ${r.error}`,
+              'Will be retried on every payment-overdue run (billing.needs_paystack_cancel).',
+            ])
+          }
+        }
+
+        await insertAuditRow(service, {
           workspace_id: ws.id, actor_id: null,
           actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
           event_type: 'billing.downgraded_for_nonpayment', entity_type: 'workspace',
-          entity_id: ws.id, entity_name: ws.agency_name, metadata: {},
+          entity_id: ws.id, entity_name: ws.agency_name, metadata: { paystack_subscription_disabled: paystackCancelled },
         })
 
         // FIX (cron audit, section 17 — closing pass): notify the actual
@@ -427,6 +453,29 @@ export async function POST(request: NextRequest) {
           } catch (e) { console.error('Grace enforcement email failed for', r.email, e) }
         }
       } catch (e) { console.error('Grace enforcement error:', e) }
+    }
+
+    // ── 4b. Retry Paystack cancellations that failed during downgrade ──
+    // (billing.needs_paystack_cancel — see step 4.)
+    const { data: pendingCancels } = await (service as any).from('billing')
+      .select('workspace_id, paystack_subscription_code, paystack_email_token')
+      .eq('needs_paystack_cancel', true)
+      .not('paystack_subscription_code', 'is', null)
+      .limit(50)
+    for (const b of (pendingCancels || [])) {
+      try {
+        const r = await cancelPaystackSubscription({
+          paystack_subscription_code: b.paystack_subscription_code, paystack_email_token: b.paystack_email_token,
+        })
+        if (r.ok) {
+          await (service as any).from('billing')
+            .update({ paystack_subscription_code: null, needs_paystack_cancel: false }).eq('workspace_id', b.workspace_id)
+        } else {
+          await alertBillingOps(service, `billing:orphan-sub:${b.workspace_id}`, 'Downgraded workspace still has a live Paystack subscription', [
+            `workspace: ${b.workspace_id}`, `subscription: ${b.paystack_subscription_code}`, `error: ${r.error}`,
+          ], 24 * 3600_000)
+        }
+      } catch (e) { console.error('Pending Paystack cancel retry error:', e) }
     }
 
     // ── 5. Cancelled subscriptions past their paid period end ──────
@@ -481,7 +530,7 @@ export async function POST(request: NextRequest) {
           .update({ plan_tier: 'solo', updated_at: now.toISOString() })
           .eq('id', ws.id)
 
-        await (service as any).from('audit_log').insert({
+        await insertAuditRow(service, {
           workspace_id: ws.id, actor_id: null,
           actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
           event_type: 'billing.subscription_ended', entity_type: 'workspace',
@@ -505,6 +554,20 @@ export async function POST(request: NextRequest) {
           } catch (e) { console.error('Cancelled-subscription email failed for', r.email, e) }
         }
       } catch (e) { console.error('Cancelled-subscription enforcement error:', e) }
+    }
+
+    // ── 6. Housekeeping ────────────────────────────────────
+    // processed_webhook_events and billing_checkouts only ever grew. A
+    // redelivery window is days, not months, so 90 days of finished events
+    // and 7 days of checkouts (the webhook only trusts ones under 24h old)
+    // is generous.
+    {
+      const { error: pruneEventsErr } = await (service as any).from('processed_webhook_events').delete()
+        .eq('status', 'done').lt('processed_at', new Date(now.getTime() - 90 * 86400000).toISOString())
+      if (pruneEventsErr) console.error('Prune processed_webhook_events failed:', pruneEventsErr.message)
+      const { error: pruneCheckoutsErr } = await (service as any).from('billing_checkouts').delete()
+        .lt('created_at', new Date(now.getTime() - 7 * 86400000).toISOString())
+      if (pruneCheckoutsErr) console.error('Prune billing_checkouts failed:', pruneCheckoutsErr.message)
     }
 
     // FIX (cron audit, section 17 — closing pass): all three counters

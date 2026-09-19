@@ -16,6 +16,9 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { resumePaystackSubscription } from '@/lib/integrations/paystack'
+import { getBillingRecipients } from '@/lib/billing/recipients'
+import { alertBillingOps } from '@/lib/billing/ops-alert'
+import { sendSubscriptionResumedEmail } from '@/lib/email/templates'
 
 export async function POST(request: NextRequest) {
   try {
@@ -60,10 +63,22 @@ export async function POST(request: NextRequest) {
       }, { status: 502 })
     }
 
-    await (service as any).from('billing').update({
+    // FIX (Billing re-pass #3): the write's `error` was never read — see
+    // billing/cancel for the same reasoning. Paystack has already re-enabled
+    // renewal at this point.
+    const localUpdate = () => (service as any).from('billing').update({
       cancels_at_period_end: false,
       updated_at: new Date().toISOString(),
     }).eq('workspace_id', session.workspaceId)
+    let upd = await localUpdate()
+    if (upd.error) upd = await localUpdate()
+    if (upd.error) {
+      await alertBillingOps(service, `billing:resume-local-write:${session.workspaceId}`, 'Resume not recorded locally', [
+        `workspace: ${session.workspaceId}`,
+        `Paystack subscription was RE-ENABLED but billing.cancels_at_period_end could not be cleared: ${upd.error.message}`,
+        'Left as-is, the period-end sweep would downgrade a customer who is still being charged.',
+      ])
+    }
 
     await logAudit(service, {
       workspaceId: session.workspaceId, actorId: session.id,
@@ -73,8 +88,21 @@ export async function POST(request: NextRequest) {
       metadata: { action: 'cancellation_reversed' },
     })
 
+    try {
+      const recipients = await getBillingRecipients(service, session.workspaceId, [{ name: session.name, email: session.email }])
+      for (const r of recipients) {
+        try {
+          await sendSubscriptionResumedEmail({
+            to: r.email, name: r.name, agencyName: session.agencyName, actorName: session.name,
+            manageUrl: `${process.env.NEXT_PUBLIC_APP_URL}/settings?tab=billing`,
+          })
+        } catch (e) { console.error('Resume email failed for', r.email, e) }
+      }
+    } catch (e) { console.error('Resume notification failed:', e) }
+
     return NextResponse.json({ ok: true })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('Billing resume error:', err)
+    return NextResponse.json({ error: 'Could not resume the subscription' }, { status: 500 })
   }
 }

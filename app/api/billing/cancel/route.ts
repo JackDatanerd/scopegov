@@ -4,6 +4,9 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { cancelPaystackSubscription } from '@/lib/integrations/paystack'
+import { getBillingRecipients } from '@/lib/billing/recipients'
+import { alertBillingOps } from '@/lib/billing/ops-alert'
+import { sendSubscriptionCancelScheduledEmail } from '@/lib/email/templates'
 
 export async function POST(request: NextRequest) {
   try {
@@ -66,11 +69,27 @@ export async function POST(request: NextRequest) {
       }, { status: 502 })
     }
 
-    // Mark locally — spec says store cancels_at_period_end: true
-    await (service as any).from('billing').update({
+    // Mark locally — spec says store cancels_at_period_end: true.
+    //
+    // FIX (Billing re-pass #3): this write's `error` was never read. If it
+    // failed after Paystack had already disabled the subscription, the
+    // customer was told it worked while our record still said the
+    // subscription renews. The webhook (subscription.not_renew) usually
+    // self-heals that, but only if it is delivered and resolves cleanly, so
+    // retry once and page a human if it still fails rather than assume.
+    const localUpdate = () => (service as any).from('billing').update({
       cancels_at_period_end: true,
       updated_at: new Date().toISOString(),
     }).eq('workspace_id', session.workspaceId)
+    let upd = await localUpdate()
+    if (upd.error) upd = await localUpdate()
+    if (upd.error) {
+      await alertBillingOps(service, `billing:cancel-local-write:${session.workspaceId}`, 'Cancellation not recorded locally', [
+        `workspace: ${session.workspaceId}`,
+        `Paystack subscription was DISABLED but billing.cancels_at_period_end could not be set: ${upd.error.message}`,
+        'The subscription_not_renew webhook should repair this; verify.',
+      ])
+    }
 
     await logAudit(service, {
       workspaceId: session.workspaceId, actorId: session.id,
@@ -80,8 +99,26 @@ export async function POST(request: NextRequest) {
       metadata: { action: 'cancellation_requested', ends_at: billing.current_period_end, was_already_non_renewing_upstream: result.alreadyCancelled },
     })
 
+    // FEATURE (Billing re-pass #3): tell every billing admin (not just the
+    // person who clicked) that the subscription is set to end, and when.
+    try {
+      const endsAtLabel = billing.current_period_end
+        ? new Date(billing.current_period_end).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })
+        : 'the end of your current billing period'
+      const recipients = await getBillingRecipients(service, session.workspaceId, [{ name: session.name, email: session.email }])
+      for (const r of recipients) {
+        try {
+          await sendSubscriptionCancelScheduledEmail({
+            to: r.email, name: r.name, agencyName: session.agencyName, endsAtLabel, actorName: session.name,
+            manageUrl: `${process.env.NEXT_PUBLIC_APP_URL}/settings?tab=billing`,
+          })
+        } catch (e) { console.error('Cancellation email failed for', r.email, e) }
+      }
+    } catch (e) { console.error('Cancellation notification failed:', e) }
+
     return NextResponse.json({ ok: true, endsAt: billing.current_period_end })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('Billing cancel error:', err)
+    return NextResponse.json({ error: 'Could not cancel the subscription' }, { status: 500 })
   }
 }
