@@ -1,9 +1,15 @@
 export const runtime = 'nodejs'
+// FEATURE (cron audit, section 17 — feature gap, closing pass): unbounded
+// per-row fan-out with no pagination — same shape project-purge and
+// payment-overdue/reconciliation-rollup already carry this override for.
+export const maxDuration = 300
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
 import { collectAttachmentPaths, removeStoragePaths } from '@/lib/utils/storage-cleanup'
+import { alertCronFailure } from '@/lib/utils/cron-alert'
+import { recordCronHeartbeat } from '@/lib/utils/cron-heartbeat'
 
 // FIX (audit round 3): local copy replaced with the shared,
 // null-safe helper — see lib/utils/verify-cron.ts.
@@ -19,8 +25,8 @@ export async function POST(request: NextRequest) {
   if (!verifyCronSecret(request))
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+  const service = createServiceClient()
   try {
-    const service  = createServiceClient()
     const cutoff7yr = new Date(Date.now() - 7 * 365 * 86400000).toISOString()
 
     // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — traced
@@ -35,6 +41,10 @@ export async function POST(request: NextRequest) {
 
     if (findErr) {
       console.error('Workspace purge candidate lookup failed:', findErr)
+      // FEATURE (cron audit, section 17 — feature gap, closing pass): same
+      // fix as project-purge's identical early return — this bypassed the
+      // outer catch, so this failure mode was invisible outside Vercel logs.
+      await alertCronFailure(service, 'workspace-purge', findErr).catch(() => {})
       return NextResponse.json({ error: 'Cron failed' }, { status: 500 })
     }
 
@@ -104,6 +114,7 @@ export async function POST(request: NextRequest) {
     }
 
     console.log(`[WORKSPACE PURGE] Hard-deleted ${purgedCount}/${(candidates || []).length} workspaces older than 7 years`)
+    await recordCronHeartbeat(service, 'workspace-purge', { purged: purgedCount, failed: failures.length })
     return NextResponse.json({
       ok: failures.length === 0,
       purged: purgedCount,
@@ -112,6 +123,7 @@ export async function POST(request: NextRequest) {
     }, { status: failures.length ? 207 : 200 })
   } catch (err) {
     console.error('Workspace purge cron error:', err)
+    await alertCronFailure(service, 'workspace-purge', err).catch(() => {})
     return NextResponse.json({ error: 'Cron failed' }, { status: 500 })
   }
 }

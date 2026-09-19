@@ -1,4 +1,8 @@
 export const runtime = 'nodejs'
+// FEATURE (cron audit, section 17 — feature gap, closing pass): unbounded
+// per-row fan-out with no pagination, same shape payment-overdue and
+// reconciliation-rollup already carry this override for.
+export const maxDuration = 300
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
@@ -6,6 +10,8 @@ import { verifyCronSecret } from '@/lib/utils/verify-cron'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { sendSowStalledEmail } from '@/lib/email/templates'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
+import { alertCronFailure } from '@/lib/utils/cron-alert'
+import { recordCronHeartbeat } from '@/lib/utils/cron-heartbeat'
 
 import { insertAuditRow } from '@/lib/utils/audit'
 // FIX (audit round 3): local copy replaced with the shared,
@@ -92,9 +98,11 @@ export async function POST(request: NextRequest) {
       } catch (e) { console.error('SOW stall error:', e) }
     }
 
+    await recordCronHeartbeat(service, 'sow-stall', { stalled })
     return NextResponse.json({ ok: true, stalled })
   } catch (err) {
     console.error('SOW stall cron error:', err)
+    await alertCronFailure(createServiceClient(), 'sow-stall', err).catch(() => {})
     return NextResponse.json({ error: 'Cron failed' }, { status: 500 })
   }
 }

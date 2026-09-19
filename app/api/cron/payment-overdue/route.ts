@@ -24,6 +24,8 @@ import { getBillingRecipients as getBillingRecipientsShared } from '@/lib/billin
 import { GRACE_DAYS, GRACE_REMINDER_DAYS_LEFT } from '@/lib/billing/plans'
 import { cancelPaystackSubscription } from '@/lib/integrations/paystack'
 import { alertBillingOps } from '@/lib/billing/ops-alert'
+import { alertCronFailure } from '@/lib/utils/cron-alert'
+import { recordCronHeartbeat } from '@/lib/utils/cron-heartbeat'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
 
@@ -612,6 +614,9 @@ export async function POST(request: NextRequest) {
     // or losing a race to a concurrent invocation. milestonesMarkedOverdue
     // already counted correctly; reporting what this run actually did
     // for the other three, not what it merely looked at.
+    await recordCronHeartbeat(service, 'payment-overdue', {
+      milestonesMarkedOverdue, invoicesMarkedOverdue, trialsExpiredCount, cancelledSubscriptionsEndedCount,
+    })
     return NextResponse.json({
       ok: true,
       milestonesMarkedOverdue,
@@ -621,6 +626,7 @@ export async function POST(request: NextRequest) {
     })
   } catch (err) {
     console.error('Payment overdue cron error:', err)
+    await alertCronFailure(createServiceClient(), 'payment-overdue', err).catch(() => {})
     return NextResponse.json({ error: 'Cron failed' }, { status: 500 })
   }
 }

@@ -1,4 +1,11 @@
 export const runtime = 'nodejs'
+// FEATURE (cron audit, section 17 — feature gap, closing pass): this loops
+// per stale approval request with no pagination, the same unbounded-fan-
+// out shape payment-overdue and reconciliation-rollup already carry an
+// explicit override for — see either file's own comment for the full
+// reasoning. Brought to parity rather than waiting for this one to
+// actually time out first.
+export const maxDuration = 300
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
@@ -6,6 +13,8 @@ import { sendApprovalReminder } from '@/lib/approvals/engine'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { APPROVAL_STALL_DAYS } from '@/lib/utils/attention'
+import { alertCronFailure } from '@/lib/utils/cron-alert'
+import { recordCronHeartbeat } from '@/lib/utils/cron-heartbeat'
 
 import { insertAuditRow } from '@/lib/utils/audit'
 // FIX (audit round 3): local copy replaced with the shared,
@@ -90,9 +99,17 @@ export async function POST(request: NextRequest) {
       } catch (e) { console.error('Approval reminder error:', e) }
     }
 
+    // FEATURE (cron audit, section 17 — feature gap, closing pass): see
+    // migration 058 / lib/utils/cron-heartbeat.ts — recorded on success
+    // only, so the watchdog can't be fooled by a cron that's merely
+    // erroring on every run into thinking it's healthy.
+    await recordCronHeartbeat(service, 'approval-stall', { reminded, escalated })
     return NextResponse.json({ ok: true, reminded, escalated })
   } catch (err) {
     console.error('Approval stall cron error:', err)
+    // FEATURE (cron audit, section 17 — feature gap, closing pass): see
+    // lib/utils/cron-alert.ts — this used to be console.error-only.
+    await alertCronFailure(createServiceClient(), 'approval-stall', err).catch(() => {})
     return NextResponse.json({ error: 'Cron failed' }, { status: 500 })
   }
 }

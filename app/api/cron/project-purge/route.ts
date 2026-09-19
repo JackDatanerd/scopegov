@@ -1,9 +1,16 @@
 export const runtime = 'nodejs'
+// FEATURE (cron audit, section 17 — feature gap, closing pass): unbounded
+// per-row fan-out (attachment lookup + storage removal per candidate) with
+// no pagination — same shape payment-overdue/reconciliation-rollup already
+// carry this override for.
+export const maxDuration = 300
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
 import { collectAttachmentPaths, removeStoragePaths } from '@/lib/utils/storage-cleanup'
+import { alertCronFailure } from '@/lib/utils/cron-alert'
+import { recordCronHeartbeat } from '@/lib/utils/cron-heartbeat'
 
 // FIX (audit round 3): local copy replaced with the shared,
 // null-safe helper — see lib/utils/verify-cron.ts.
@@ -13,8 +20,8 @@ export async function POST(request: NextRequest) {
   if (!verifyCronSecret(request))
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+  const service = createServiceClient()
   try {
-    const service  = createServiceClient()
     const cutoff   = new Date(Date.now() - 30 * 86400000).toISOString()
 
     const { data: candidates, error: findErr } = await (service as any)
@@ -25,6 +32,12 @@ export async function POST(request: NextRequest) {
 
     if (findErr) {
       console.error('Project purge candidate lookup failed:', findErr)
+      // FEATURE (cron audit, section 17 — feature gap, closing pass): this
+      // early return used to bypass the outer catch entirely, so a
+      // candidate-lookup failure — the one failure mode that means this
+      // cron did nothing at all that day — was invisible outside Vercel
+      // logs, same gap as every other bare console.error this pass closes.
+      await alertCronFailure(service, 'project-purge', findErr).catch(() => {})
       return NextResponse.json({ error: 'Cron failed' }, { status: 500 })
     }
 
@@ -74,6 +87,7 @@ export async function POST(request: NextRequest) {
     }
 
     console.log(`[PROJECT PURGE] Hard-deleted ${purgedCount}/${(candidates || []).length} projects soft-deleted > 30 days ago`)
+    await recordCronHeartbeat(service, 'project-purge', { purged: purgedCount, failed: failures.length })
     return NextResponse.json({
       ok: failures.length === 0,
       purged: purgedCount,
@@ -84,6 +98,7 @@ export async function POST(request: NextRequest) {
     }, { status: failures.length ? 207 : 200 })
   } catch (err) {
     console.error('Project purge cron error:', err)
+    await alertCronFailure(service, 'project-purge', err).catch(() => {})
     return NextResponse.json({ error: 'Cron failed' }, { status: 500 })
   }
 }

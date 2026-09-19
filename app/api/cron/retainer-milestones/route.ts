@@ -1,4 +1,10 @@
 export const runtime = 'nodejs'
+// FEATURE (cron audit, section 17 — feature gap, closing pass): per-project
+// backfill loop (up to `retainer_duration_months` iterations, each with its
+// own dedup SELECT) with no pagination across projects — same unbounded
+// shape payment-overdue and reconciliation-rollup already carry this
+// override for.
+export const maxDuration = 300
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
@@ -6,6 +12,8 @@ import { verifyCronSecret } from '@/lib/utils/verify-cron'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { sendRetainerEndingEmail } from '@/lib/email/templates'
+import { alertCronFailure } from '@/lib/utils/cron-alert'
+import { recordCronHeartbeat } from '@/lib/utils/cron-heartbeat'
 
 import { insertAuditRow } from '@/lib/utils/audit'
 // FIX (audit round 3): local copy replaced with the shared,
@@ -168,9 +176,11 @@ export async function POST(request: NextRequest) {
       } catch (e) { console.error('Retainer milestone error for project:', p.id, e) }
     }
 
+    await recordCronHeartbeat(service, 'retainer-milestones', { generated, endedNotified })
     return NextResponse.json({ ok: true, generated, endedNotified })
   } catch (err) {
     console.error('Retainer milestone cron error:', err)
+    await alertCronFailure(createServiceClient(), 'retainer-milestones', err).catch(() => {})
     return NextResponse.json({ error: 'Cron failed' }, { status: 500 })
   }
 }

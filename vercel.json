@@ -67,6 +67,10 @@
     {
       "path": "/api/cron/guardian-flag-stall",
       "schedule": "0 11 * * *"
+    },
+    {
+      "path": "/api/cron/cron-heartbeat-watchdog",
+      "schedule": "45 * * * *"
     }
   ]
 }

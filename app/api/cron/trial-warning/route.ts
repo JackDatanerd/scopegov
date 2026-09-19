@@ -1,10 +1,17 @@
 export const runtime = 'nodejs'
+// FEATURE (cron audit, section 17 — feature gap, closing pass): per-row
+// fan-out (an email per workspace member across every trialing workspace)
+// with no pagination — same shape payment-overdue/reconciliation-rollup
+// already carry this override for.
+export const maxDuration = 300
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { sendTrialWarningEmail } from '@/lib/email/templates'
 import { filterByNotificationPreference } from '@/lib/utils/permissions-query'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
+import { alertCronFailure } from '@/lib/utils/cron-alert'
+import { recordCronHeartbeat } from '@/lib/utils/cron-heartbeat'
 
 import { insertAuditRow } from '@/lib/utils/audit'
 // FIX (audit round 3): local copy replaced with the shared helper — see
@@ -113,9 +120,11 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    await recordCronHeartbeat(service, 'trial-warning', { sent })
     return NextResponse.json({ ok: true, sent })
   } catch (err) {
     console.error('Trial warning cron error:', err)
+    await alertCronFailure(createServiceClient(), 'trial-warning', err).catch(() => {})
     return NextResponse.json({ error: 'Cron failed' }, { status: 500 })
   }
 }

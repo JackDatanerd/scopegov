@@ -14,6 +14,8 @@ export const maxDuration = 300
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
+import { alertCronFailure } from '@/lib/utils/cron-alert'
+import { recordCronHeartbeat } from '@/lib/utils/cron-heartbeat'
 
 // FIX (audit round 3): local copy replaced with the shared,
 // null-safe helper — see lib/utils/verify-cron.ts.
@@ -120,9 +122,11 @@ export async function POST(request: NextRequest) {
       } catch (e) { console.error('Reconciliation rollup: project error', project.id, e) }
     }
 
+    await recordCronHeartbeat(service, 'reconciliation-rollup', { projectsProcessed: projects?.length || 0, snapshotsWritten: written })
     return NextResponse.json({ ok: true, projectsProcessed: projects?.length || 0, snapshotsWritten: written })
   } catch (err) {
     console.error('Reconciliation rollup cron error:', err)
+    await alertCronFailure(createServiceClient(), 'reconciliation-rollup', err).catch(() => {})
     return NextResponse.json({ error: 'Cron failed' }, { status: 500 })
   }
 }

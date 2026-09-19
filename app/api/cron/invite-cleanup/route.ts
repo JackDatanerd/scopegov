@@ -1,8 +1,15 @@
 export const runtime = 'nodejs'
+// FEATURE (cron audit, section 17 — feature gap, closing pass): the
+// anonymization loop below has no pagination — bringing this to parity
+// with payment-overdue/reconciliation-rollup rather than waiting for a
+// large deleted-user backlog to actually hit the platform default first.
+export const maxDuration = 300
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
+import { alertCronFailure } from '@/lib/utils/cron-alert'
+import { recordCronHeartbeat } from '@/lib/utils/cron-heartbeat'
 
 // FIX (audit round 3): local copy replaced with the shared,
 // null-safe helper — see lib/utils/verify-cron.ts.
@@ -14,26 +21,27 @@ export async function POST(request: NextRequest) {
   try {
     const service  = createServiceClient()
     const now      = new Date()
-    const d7ago    = new Date(now.getTime() - 7  * 86400000).toISOString()
     const d30ago   = new Date(now.getTime() - 30 * 86400000).toISOString()
 
-    // FIX (re-audit, cron section): d7ago was computed and never used —
-    // invites sat at status='invited' for the full 30-day grace period
-    // even though their token (7-day validity, see team/invite/route.ts)
-    // was long dead, which (a) showed "Pending" in the team UI for an
-    // invite nobody could actually accept anymore, and (b) blocked
-    // re-inviting the same email for up to 30 extra days, since the
-    // pending-invite uniqueness check in team/invite/route.ts only looks
-    // at status='invited' with no expiry awareness of its own. Flipping
-    // status to 'expired' the moment the 7-day token window closes fixes
-    // both — the UI can now distinguish "expired" from "invited", and the
-    // uniqueness check (which only matches status='invited') stops
-    // blocking a fresh invite the instant this runs.
+    // FIX (re-audit, cron section): the previous fix here claimed to flip
+    // status to 'expired' "the moment the 7-day token window closes" but
+    // actually compared invite_token_expires_at against d7ago (now minus
+    // 7 days) instead of now. Since invite_token_expires_at is itself
+    // already created_at + 7 days (team/invite/route.ts), that comparison
+    // only tripped once created_at + 7 days < now - 7 days — i.e.
+    // created_at < now - 14 days. Invites sat at status='invited' for a
+    // full 14 days after creation (double the intended 7) before this
+    // ever ran, still showing "Pending" in the team UI and still blocking
+    // a re-invite of the same email for a week longer than intended,
+    // since the pending-invite uniqueness check in team/invite/route.ts
+    // only looks at status='invited' with no expiry awareness of its own.
+    // Comparing directly against `now` (the token's own actual expiry)
+    // is what "the moment the window closes" actually requires.
     const { error: expireErr } = await (service as any)
       .from('workspace_members')
       .update({ status: 'expired' })
       .eq('status', 'invited')
-      .lt('invite_token_expires_at', d7ago)
+      .lt('invite_token_expires_at', now.toISOString())
     if (expireErr) console.error('Invite expiry transition failed:', expireErr)
 
     // Hard-delete invite rows (invited or already-expired) older than 30 days
@@ -94,6 +102,7 @@ export async function POST(request: NextRequest) {
       } catch (e) { console.error('Anonymization failed for:', u.id, e) }
     }
 
+    await recordCronHeartbeat(service, 'invite-cleanup', { purgedInvites: purged?.length || 0, anonymizedUsers: anonymized })
     return NextResponse.json({
       ok: true,
       purgedInvites: purged?.length || 0,
@@ -101,6 +110,7 @@ export async function POST(request: NextRequest) {
     }, { status: (expireErr || purgeErr || revokedErr || portalLogErr) ? 207 : 200 })
   } catch (err) {
     console.error('Cleanup cron error:', err)
+    await alertCronFailure(createServiceClient(), 'invite-cleanup', err).catch(() => {})
     return NextResponse.json({ error: 'Cron failed' }, { status: 500 })
   }
 }
