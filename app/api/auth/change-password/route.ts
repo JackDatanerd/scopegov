@@ -49,6 +49,55 @@ export async function POST(request: NextRequest) {
       if (verifyError) {
         return NextResponse.json({ error: 'Current password is incorrect' }, { status: 401 })
       }
+    } else {
+      // FIX (deep audit, Auth+MFA re-pass — CRITICAL): a Google-only
+      // account with a non-mandatory-MFA role had *nothing* standing
+      // between "a live session cookie" and "this account now has a
+      // permanent password credential" — the hasPasswordIdentity branch
+      // above proves the caller knows the current password; the
+      // aal-mandatory check below only ever fires for governance-tier
+      // roles. For everyone else, planting a first password is
+      // materially more dangerous than changing an existing one (it's a
+      // brand-new, persistent, survives-logout access path on an account
+      // that had none), yet required strictly less proof of ownership
+      // than the "change" branch above.
+      //
+      // This app's cookies are deliberately non-httpOnly (see
+      // lib/supabase/cookie-options.ts — the browser client needs to read
+      // its own session), and same-origin fetch carries cookies
+      // regardless of httpOnly anyway, so any XSS anywhere in the app
+      // could already ride a live session straight into this endpoint.
+      // Without any check here, that's a silent, permanent backdoor: the
+      // victim gets a "your password was changed" email afterward, but
+      // that's detection, not prevention — and prevention is the
+      // standard every other sensitive action in this section holds to.
+      //
+      // The strongest fix is a proper email-confirmation step before a
+      // first password activates (mirroring signup's own confirm-link
+      // flow) — deliberately not built here; that's real new plumbing
+      // (a token, a confirm route, a template) and a product decision
+      // about UX friction, not a drive-by addition to this fix. This is
+      // the proportionate interim: reuse the exact session-freshness
+      // idiom already established in this same section
+      // (login-event/route.ts's `iat`-based check) to at least collapse
+      // "forever, from any idle or replayed session" down to "only
+      // within 15 minutes of a real, live sign-in." It does not stop
+      // an XSS that fires within that window of a genuine login — no
+      // freshness check can — but it closes off the far larger practical
+      // window (a stolen/idle session cookie exploited hours or days
+      // later, or a background tab an XSS payload sits quietly in until
+      // long after the user last actively used it).
+      const { data: { session } } = await supabase.auth.getSession()
+      const tokenPayload = session?.access_token
+        ? JSON.parse(Buffer.from(session.access_token.split('.')[1] || '', 'base64').toString('utf8') || '{}')
+        : {}
+      const issuedAt = typeof tokenPayload.iat === 'number' ? tokenPayload.iat : null
+      const ageSeconds = issuedAt ? (Date.now() / 1000 - issuedAt) : Infinity
+      if (!issuedAt || ageSeconds > 900) {
+        return NextResponse.json({
+          error: 'For your security, setting a password requires a recent sign-in. Please sign out and back in, then try again.',
+        }, { status: 401 })
+      }
     }
 
     const service = createServiceClient()
