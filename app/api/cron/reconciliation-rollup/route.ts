@@ -47,6 +47,16 @@ export async function POST(request: NextRequest) {
       // detail page, invoices page, and invoice PDFs. (clients.status uses
       // lowercase 'active'/'archived' — this was very likely copied from
       // that table's convention by mistake.)
+      //
+      // FIX (deep audit, section 17 follow-up): this never excluded a
+      // soft-deleted project. A Draft/Intake project can be soft-deleted
+      // (see api/projects/[id]/route.ts's DELETE handler) without its
+      // status ever changing away from 'Draft'/'Intake', so it kept
+      // matching this `.neq('status','Archived')` filter and getting a
+      // daily reconciliation snapshot written for it indefinitely —
+      // scope-health-rollup already excludes deleted projects the same
+      // way this route now does.
+      .is('deleted_at', null)
       .neq('status', 'Archived')
 
     if (projErr) {

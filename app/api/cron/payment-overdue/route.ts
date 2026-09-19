@@ -19,12 +19,45 @@ export const maxDuration = 300
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { sendTrialWarningEmail, sendPaymentFailedEmail, sendInvoiceOverdueInternalEmail, sendPaymentMilestoneOverdueEmail, sendSubscriptionEndedEmail } from '@/lib/email/templates'
-import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
+import { getMemberEmailsWithPermission, getMembersWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
 
 // FIX (audit round 3): local copy replaced with the shared,
 // null-safe helper — see lib/utils/verify-cron.ts.
+
+// FIX (deep audit, section 17 follow-up — flagship finding): the four
+// billing-consequence emails below (trial expiry, grace reminder, grace
+// enforcement, cancelled-subscription enforcement) each emailed ONLY
+// workspaces.created_by — a deliberate earlier fix that moved away from
+// "whichever active member happened to come back first" to "the actual
+// owner." But a workspace creator is explicitly allowed to leave a
+// non-trial workspace (migration 038's own comment: the trial-creator
+// lockout only applies to trial-tier workspaces), and created_by is never
+// reassigned unless the deliberate ownership-transfer flow runs. If the
+// creator leaves and later deletes their own account — anonymizing their
+// address to deleted-<uuid>@deleted.scopegov.app (see api/account/delete)
+// — every one of these emails silently addresses a dead inbox forever,
+// with no in-app bell either, leaving only a rarely-checked audit_log row
+// as any signal. Also notifying every active member who actually holds
+// MANAGE_WORKSPACE_SETTINGS (the permission that gates acting on billing
+// at all — see api/billing/upgrade, resume) gives a live fallback that
+// doesn't depend on one specific person staying in the workspace forever.
+// Deduplicated by email so the creator (when still reachable) doesn't get
+// the same email twice.
+async function getBillingRecipients(
+  service: any, workspaceId: string, creator: { name?: string; email?: string } | null | undefined
+): Promise<Array<{ name: string; email: string }>> {
+  const recipients = new Map<string, { name: string; email: string }>()
+  if (creator?.email) recipients.set(creator.email, { name: creator.name || creator.email, email: creator.email })
+  try {
+    const admins = await getMembersWithPermission(service, workspaceId, 'MANAGE_WORKSPACE_SETTINGS', 25)
+    for (const a of admins) {
+      if (a.email && !recipients.has(a.email)) recipients.set(a.email, { name: a.name || a.email, email: a.email })
+    }
+  } catch (e) { console.error('getBillingRecipients: admin lookup failed (falling back to creator only):', e) }
+  return Array.from(recipients.values())
+}
 
 export async function POST(request: NextRequest) {
   if (!verifyCronSecret(request))
@@ -236,13 +269,19 @@ export async function POST(request: NextRequest) {
         // two, never got the same fix. In any multi-member workspace the
         // owner responsible for billing could go without ever being told
         // their workspace was downgraded.
-        const owner = ws.creator
-        if (owner?.email) {
-          await sendTrialWarningEmail({
-            to: owner.email, name: owner.name || owner.email, agencyName: ws.agency_name,
-            daysLeft: 0,
-            upgradeUrl: `${process.env.NEXT_PUBLIC_APP_URL}/settings?tab=billing`,
-          })
+        //
+        // FIX (deep audit, section 17 follow-up): owner-only was itself a
+        // single point of failure once a creator can leave — see
+        // getBillingRecipients above for the full writeup.
+        const recipients = await getBillingRecipients(service, ws.id, ws.creator)
+        for (const r of recipients) {
+          try {
+            await sendTrialWarningEmail({
+              to: r.email, name: r.name, agencyName: ws.agency_name,
+              daysLeft: 0,
+              upgradeUrl: `${process.env.NEXT_PUBLIC_APP_URL}/settings?tab=billing`,
+            })
+          } catch (e) { console.error('Trial expiry email failed for', r.email, e) }
         }
       } catch (e) { console.error('Trial expiry error:', e) }
     }
@@ -290,13 +329,17 @@ export async function POST(request: NextRequest) {
           .limit(1).maybeSingle()
         if (alreadySent) continue
 
-        const owner = ws.creator
-        if (owner?.email) {
-          await sendPaymentFailedEmail({
-            to: owner.email, name: owner.name || owner.email, agencyName: ws.agency_name,
-            upgradeUrl: `${process.env.NEXT_PUBLIC_APP_URL}/settings?tab=billing`,
-            graceDaysLeft: 3,
-          })
+        // FIX (deep audit, section 17 follow-up): owner-only was a single
+        // point of failure — see getBillingRecipients above.
+        const recipients = await getBillingRecipients(service, ws.id, ws.creator)
+        for (const r of recipients) {
+          try {
+            await sendPaymentFailedEmail({
+              to: r.email, name: r.name, agencyName: ws.agency_name,
+              upgradeUrl: `${process.env.NEXT_PUBLIC_APP_URL}/settings?tab=billing`,
+              graceDaysLeft: 3,
+            })
+          } catch (e) { console.error('Grace reminder email failed for', r.email, e) }
         }
 
         await (service as any).from('audit_log').insert({
@@ -372,12 +415,16 @@ export async function POST(request: NextRequest) {
         // is the same outcome (nonpayment vs. cancellation), so it gets
         // the same past-tense email instead of a reused pre-downgrade
         // warning that no longer makes sense once it's already too late.
-        const owner = ws.creator
-        if (owner?.email) {
-          await sendSubscriptionEndedEmail({
-            to: owner.email, name: owner.name || owner.email, agencyName: ws.agency_name,
-            upgradeUrl: `${process.env.NEXT_PUBLIC_APP_URL}/settings?tab=billing`,
-          })
+        // FIX (deep audit, section 17 follow-up): owner-only was a single
+        // point of failure — see getBillingRecipients above.
+        const recipients = await getBillingRecipients(service, ws.id, ws.creator)
+        for (const r of recipients) {
+          try {
+            await sendSubscriptionEndedEmail({
+              to: r.email, name: r.name, agencyName: ws.agency_name,
+              upgradeUrl: `${process.env.NEXT_PUBLIC_APP_URL}/settings?tab=billing`,
+            })
+          } catch (e) { console.error('Grace enforcement email failed for', r.email, e) }
         }
       } catch (e) { console.error('Grace enforcement error:', e) }
     }
@@ -445,12 +492,17 @@ export async function POST(request: NextRequest) {
         // FIX (cron audit, section 17 — closing pass): notify the actual
         // workspace owner (workspaces.created_by) — see the identical fix
         // and rationale in section 2 above.
-        const owner = ws.creator
-        if (owner?.email) {
-          await sendSubscriptionEndedEmail({
-            to: owner.email, name: owner.name || owner.email, agencyName: ws.agency_name,
-            upgradeUrl: `${process.env.NEXT_PUBLIC_APP_URL}/settings?tab=billing`,
-          })
+        //
+        // FIX (deep audit, section 17 follow-up): owner-only was a single
+        // point of failure — see getBillingRecipients above.
+        const recipients = await getBillingRecipients(service, ws.id, ws.creator)
+        for (const r of recipients) {
+          try {
+            await sendSubscriptionEndedEmail({
+              to: r.email, name: r.name, agencyName: ws.agency_name,
+              upgradeUrl: `${process.env.NEXT_PUBLIC_APP_URL}/settings?tab=billing`,
+            })
+          } catch (e) { console.error('Cancelled-subscription email failed for', r.email, e) }
         }
       } catch (e) { console.error('Cancelled-subscription enforcement error:', e) }
     }

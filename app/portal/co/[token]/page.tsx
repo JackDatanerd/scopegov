@@ -385,7 +385,14 @@ export default function CoPortalPage() {
             <div style={{ display: 'flex', gap: 10 }}>
               <button className="btn" style={{ background: '#B45309', color: '#FFF', padding: '10px 22px' }}
                 onClick={() => submit('counter', { counterAmount: parseFloat(counterAmount), counterNote })}
-                disabled={submitting || !counterAmount || parseFloat(counterAmount) <= 0}>
+                // FIX (deep audit, section 18 follow-up): `parseFloat(counterAmount) <= 0`
+                // is false for a non-numeric value like "abc" (NaN <= 0 is
+                // false), so this button stayed enabled and silently sent
+                // NaN (which JSON.stringify turns into null) — the server
+                // already rejects it correctly, but the button gave no
+                // client-side signal anything was wrong. Number.isFinite
+                // closes that hole the same way the server-side check does.
+                disabled={submitting || !counterAmount || !Number.isFinite(parseFloat(counterAmount)) || parseFloat(counterAmount) <= 0}>
                 {submitting ? <span className="spin" style={{ width: 14, height: 14 }} /> : 'Submit counter offer'}
               </button>
               <button className="btn btn-ghost" onClick={() => { setMode('view'); setError('') }}>Cancel</button>
