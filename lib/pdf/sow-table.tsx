@@ -13,6 +13,7 @@ import React from 'react'
 import { View, Text } from '@react-pdf/renderer'
 import { SOW_TABLE_SCHEMAS, columnLabel, type SowTableSectionId, type SowTableRow } from '@/lib/sow/table-schema'
 
+import { PDF_FONT } from '@/lib/pdf/fonts'
 // FIX (section-9 audit, 9-G7): column headers were hardcoded English and
 // printed straight onto the client-facing document, so a Spanish or
 // Swahili SOW rendered "Deliverable / Acceptance Criteria / Owner /
@@ -36,7 +37,7 @@ export function SowTable({ sectionId, rows, language }: { sectionId: SowTableSec
   if (!rows || rows.length === 0) {
     return (
       <View style={{ border: '1 dashed #D8D4C8', borderRadius: 4, padding: '10 12' }}>
-        <Text style={{ fontSize: 9, color: '#B0B0B0', fontFamily: 'Helvetica-Oblique' }}>To be defined</Text>
+        <Text style={{ fontSize: 9, color: '#B0B0B0', fontFamily: PDF_FONT.italic }}>To be defined</Text>
       </View>
     )
   }
@@ -47,7 +48,7 @@ export function SowTable({ sectionId, rows, language }: { sectionId: SowTableSec
   const s = {
     box:    { border: '1 solid #E5E1D8', borderRadius: 4, overflow: 'hidden' as const },
     hdrRow: { flexDirection: 'row' as const, backgroundColor: '#F9F8F5', borderBottom: '1 solid #E5E1D8', paddingVertical: 5, paddingHorizontal: 8 },
-    th:     { fontSize: 7.5, fontFamily: 'Helvetica-Bold', color: '#909090', textTransform: 'uppercase' as const, letterSpacing: 0.4 },
+    th:     { fontSize: 7.5, fontFamily: PDF_FONT.bold, color: '#909090', textTransform: 'uppercase' as const, letterSpacing: 0.4 },
     row:    { flexDirection: 'row' as const, borderBottom: '1 solid #F2F0EA', paddingVertical: 6, paddingHorizontal: 8 },
     lastRow:{ borderBottom: 'none' as const },
     td:     { fontSize: 9, color: '#1A1A1A', lineHeight: 1.4 },

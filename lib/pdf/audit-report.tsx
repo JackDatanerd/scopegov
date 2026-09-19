@@ -4,6 +4,7 @@
 
 import React from 'react'
 import { Document, Page, View, Text, StyleSheet, renderToBuffer } from '@react-pdf/renderer'
+import { PDF_FONT, sanitizeForPdf } from '@/lib/pdf/fonts'
 
 export interface AuditReportRow {
   createdAt:   string
@@ -59,15 +60,15 @@ function humanizeEvent(eventType: string): string {
 }
 
 const s = StyleSheet.create({
-  page:       { fontFamily: 'Helvetica', fontSize: 9, color: '#1A1A1A', padding: '36 40' },
+  page:       { fontFamily: PDF_FONT.sans, fontSize: 9, color: '#1A1A1A', padding: '36 40' },
   header:     { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '2 solid #1A5C3A', paddingBottom: 12, marginBottom: 16 },
-  h1:         { fontFamily: 'Helvetica-Bold', fontSize: 15, color: '#1A5C3A', marginBottom: 3 },
+  h1:         { fontFamily: PDF_FONT.bold, fontSize: 15, color: '#1A5C3A', marginBottom: 3 },
   meta:       { fontSize: 8, color: '#909090' },
   metaRight:  { fontSize: 8, color: '#909090', textAlign: 'right' },
   filterBar:  { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 14 },
   filterChip: { fontSize: 7.5, color: '#3D3D3D', backgroundColor: '#F2F0EA', border: '1 solid #E5E1D8', borderRadius: 3, paddingVertical: 3, paddingHorizontal: 7 },
   tableHdr:   { flexDirection: 'row', borderBottom: '1 solid #1A1A1A', paddingBottom: 5, marginBottom: 2 },
-  th:         { fontSize: 7, fontFamily: 'Helvetica-Bold', color: '#909090', textTransform: 'uppercase', letterSpacing: 0.4 },
+  th:         { fontSize: 7, fontFamily: PDF_FONT.bold, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.4 },
   row:        { flexDirection: 'row', borderBottom: '1 solid #F2F0EA', paddingVertical: 5 },
   td:         { fontSize: 8.5, color: '#1A1A1A' },
   tdSub:      { fontSize: 7.5, color: '#909090' },
@@ -76,7 +77,7 @@ const s = StyleSheet.create({
   truncNote:  { marginTop: 10, fontSize: 8, color: '#B45309', backgroundColor: '#FFFBEB', border: '1 solid #FDE68A', borderRadius: 3, padding: 8 },
 })
 
-const COL = { when: 100, event: 140, actor: 120, entity: 'auto' as const }
+const COL = { when: 112, event: 132, actor: 118, entity: 'auto' as const }
 
 function AuditReportDocument({ data }: { data: AuditReportData }) {
   const filterChips: string[] = []
@@ -148,5 +149,5 @@ function AuditReportDocument({ data }: { data: AuditReportData }) {
 }
 
 export async function renderAuditReportPdf(data: AuditReportData): Promise<Buffer> {
-  return renderToBuffer(<AuditReportDocument data={data} />)
+  return renderToBuffer(<AuditReportDocument data={sanitizeForPdf(data)} />)
 }

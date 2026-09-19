@@ -13,6 +13,7 @@
 
 import React from 'react'
 import { Document, Page, View, Text, StyleSheet, renderToBuffer } from '@react-pdf/renderer'
+import { PDF_FONT, sanitizeForPdf } from '@/lib/pdf/fonts'
 
 function fmtDateTime(iso: string) {
   return new Date(iso).toLocaleString('en-GB', {
@@ -32,18 +33,18 @@ function fmtMoney(amount: number | null | undefined, currency: string): string {
 }
 
 const s = StyleSheet.create({
-  page:       { fontFamily: 'Helvetica', fontSize: 9, color: '#1A1A1A', padding: '36 40' },
+  page:       { fontFamily: PDF_FONT.sans, fontSize: 9, color: '#1A1A1A', padding: '36 40' },
   header:     { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '2 solid #1A5C3A', paddingBottom: 12, marginBottom: 16 },
-  h1:         { fontFamily: 'Helvetica-Bold', fontSize: 15, color: '#1A5C3A', marginBottom: 3 },
-  h2:         { fontFamily: 'Helvetica-Bold', fontSize: 11, color: '#1A1A1A', marginTop: 18, marginBottom: 8 },
+  h1:         { fontFamily: PDF_FONT.bold, fontSize: 15, color: '#1A5C3A', marginBottom: 3 },
+  h2:         { fontFamily: PDF_FONT.bold, fontSize: 11, color: '#1A1A1A', marginTop: 18, marginBottom: 8 },
   meta:       { fontSize: 8, color: '#909090' },
   metaRight:  { fontSize: 8, color: '#909090', textAlign: 'right' },
   metricRow:  { flexDirection: 'row', gap: 10, marginBottom: 4 },
   metricBox:  { flex: 1, border: '1 solid #E5E1D8', borderRadius: 3, padding: 8 },
   metricLbl:  { fontSize: 7, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 3 },
-  metricVal:  { fontSize: 14, fontFamily: 'Helvetica-Bold', color: '#1A1A1A' },
+  metricVal:  { fontSize: 14, fontFamily: PDF_FONT.bold, color: '#1A1A1A' },
   tableHdr:   { flexDirection: 'row', borderBottom: '1 solid #1A1A1A', paddingBottom: 5, marginBottom: 2 },
-  th:         { fontSize: 7, fontFamily: 'Helvetica-Bold', color: '#909090', textTransform: 'uppercase', letterSpacing: 0.4 },
+  th:         { fontSize: 7, fontFamily: PDF_FONT.bold, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.4 },
   row:        { flexDirection: 'row', borderBottom: '1 solid #F2F0EA', paddingVertical: 5 },
   td:         { fontSize: 8.5, color: '#1A1A1A' },
   tdSub:      { fontSize: 7.5, color: '#909090' },
@@ -198,7 +199,7 @@ function ScopeReportDocument({ meta, data }: { meta: ReportPdfMeta; data: any })
               <View key={a.id} style={s.row} wrap={false}>
                 <Text style={[s.td, { width: ADJ_COL.project }]}>{a.projects?.name || ''}</Text>
                 <View style={{ width: ADJ_COL.change }}>
-                  <Text style={s.td}>{a.old_value} → {a.new_value}</Text>
+                  <Text style={s.td}>{a.old_value} to {a.new_value}</Text>
                   <Text style={s.tdSub}>{fmtDate(a.adjusted_at)}</Text>
                 </View>
                 <Text style={[s.td, { flex: 1 }]}>{a.reason}</Text>
@@ -302,9 +303,9 @@ function FinancialReportDocument({ meta, data }: { meta: ReportPdfMeta; data: an
 }
 
 export async function renderScopeReportPdf(meta: ReportPdfMeta, data: any): Promise<Buffer> {
-  return renderToBuffer(<ScopeReportDocument meta={meta} data={data} />)
+  return renderToBuffer(<ScopeReportDocument meta={sanitizeForPdf(meta)} data={sanitizeForPdf(data)} />)
 }
 
 export async function renderFinancialReportPdf(meta: ReportPdfMeta, data: any): Promise<Buffer> {
-  return renderToBuffer(<FinancialReportDocument meta={meta} data={data} />)
+  return renderToBuffer(<FinancialReportDocument meta={sanitizeForPdf(meta)} data={sanitizeForPdf(data)} />)
 }

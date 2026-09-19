@@ -17,6 +17,7 @@
 
 import React from 'react'
 import { Text, View, Link } from '@react-pdf/renderer'
+import { PDF_FONT } from '@/lib/pdf/fonts'
 
 interface InlineRun {
   text: string
@@ -237,9 +238,9 @@ function renderRuns(runs: InlineRun[]) {
   return runs.map((r, i) => {
     if (r.text === '\n') return '\n'
     const style: any = {}
-    if (r.bold && r.italic)      style.fontFamily = 'Helvetica-BoldOblique'
-    else if (r.bold)             style.fontFamily = 'Helvetica-Bold'
-    else if (r.italic)           style.fontFamily = 'Helvetica-Oblique'
+    if (r.bold && r.italic)      style.fontFamily = PDF_FONT.boldItalic
+    else if (r.bold)             style.fontFamily = PDF_FONT.bold
+    else if (r.italic)           style.fontFamily = PDF_FONT.italic
     if (r.code)                  style.fontFamily = 'Courier'
     if (r.underline && r.strike) style.textDecoration = 'underline line-through'
     else if (r.underline)        style.textDecoration = 'underline'
@@ -325,9 +326,9 @@ export function RichText({ html, style }: { html: string | null | undefined; sty
         }
         const headingSize: Record<string, number> = { h1: 14, h2: 13, h3: 12, h4: 11 }
         const blockStyle = headingSize[b.tag]
-          ? [style, { fontFamily: 'Helvetica-Bold', fontSize: headingSize[b.tag] }]
+          ? [style, { fontFamily: PDF_FONT.bold, fontSize: headingSize[b.tag] }]
           : b.tag === 'blockquote'
-            ? [style, { fontFamily: 'Helvetica-Oblique', paddingLeft: 10, borderLeft: '2 solid #E5E1D8' }]
+            ? [style, { fontFamily: PDF_FONT.italic, paddingLeft: 10, borderLeft: '2 solid #E5E1D8' }]
             : style
         return <Text key={i} style={[blockStyle, { marginBottom: 6 }]}>{renderRuns(collectInlineRuns(b.inner))}</Text>
       })}

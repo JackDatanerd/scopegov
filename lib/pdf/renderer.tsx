@@ -13,6 +13,7 @@ import { RichText } from '@/lib/pdf/rich-text'
 import { SowTable } from '@/lib/pdf/sow-table'
 import { isTableSection, type SowTableRow } from '@/lib/sow/table-schema'
 import { formatAddressLines, type LegalAddress } from '@/lib/utils/format'
+import { PDF_FONT, sanitizeForPdf } from '@/lib/pdf/fonts'
 
 // Phase 11: the ScopeGov credit in the footer of every document is a real
 // hyperlink now, not plain text — same URL everywhere so it's one place to
@@ -236,31 +237,31 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
   const c = data.brandColour || '#1A5C3A'
 
   const s = StyleSheet.create({
-    page:       { fontFamily: 'Helvetica', fontSize: 10, color: '#1A1A1A', padding: '40 48' },
+    page:       { fontFamily: PDF_FONT.sans, fontSize: 10, color: '#1A1A1A', padding: '40 48' },
     // Header
     header:     { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: `2 solid ${c}`, paddingBottom: 14, marginBottom: 20 },
-    h1:         { fontFamily: 'Helvetica-Bold', fontSize: 18, color: c, marginBottom: 3 },
+    h1:         { fontFamily: PDF_FONT.bold, fontSize: 18, color: c, marginBottom: 3 },
     meta:       { fontSize: 8.5, color: '#909090' },
     logo:       { maxHeight: 42, maxWidth: 100, objectFit: 'contain' },
-    agencyText: { fontFamily: 'Helvetica-Bold', fontSize: 11, color: c },
+    agencyText: { fontFamily: PDF_FONT.bold, fontSize: 11, color: c },
     valueLabel: { fontSize: 8, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.5, textAlign: 'right' },
-    value:      { fontSize: 16, color: c, textAlign: 'right', fontFamily: 'Helvetica-Bold' },
+    value:      { fontSize: 16, color: c, textAlign: 'right', fontFamily: PDF_FONT.bold },
     // Parties
     partiesBox: { flexDirection: 'row', gap: 32, backgroundColor: '#F9F8F5', border: `1 solid #E5E1D8`, borderRadius: 4, padding: '10 14', marginBottom: 20 },
     partyLabel: { fontSize: 8, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 },
-    partyName:  { fontFamily: 'Helvetica-Bold', fontSize: 11 },
+    partyName:  { fontFamily: PDF_FONT.bold, fontSize: 11 },
     partyLine:  { fontSize: 9, color: '#666', lineHeight: 1.5, marginTop: 3 },
     partyTax:   { fontSize: 8.5, color: '#909090', marginTop: 4 },
     // Payment schedule
     schedRow:   { flexDirection: 'row', borderBottom: '1 solid #F2F0EA', paddingVertical: 7 },
     schedHdr:   { flexDirection: 'row', borderBottom: '1 solid #E5E1D8', paddingBottom: 5, marginBottom: 2 },
-    th:         { fontSize: 8, fontFamily: 'Helvetica-Bold', color: '#909090', textTransform: 'uppercase', letterSpacing: 0.5 },
+    th:         { fontSize: 8, fontFamily: PDF_FONT.bold, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.5 },
     td:         { fontSize: 9.5, color: '#1A1A1A' },
     tdSub:      { fontSize: 8, color: '#909090', marginTop: 1 },
     mono:       { fontFamily: 'Courier', fontSize: 9.5 },
     // Sections
     section:    { marginBottom: 16 },
-    secTitle:   { fontSize: 8, fontFamily: 'Helvetica-Bold', color: '#909090', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 6, borderBottom: `1 solid #E5E1D8`, paddingBottom: 3 },
+    secTitle:   { fontSize: 8, fontFamily: PDF_FONT.bold, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 6, borderBottom: `1 solid #E5E1D8`, paddingBottom: 3 },
     body:       { fontSize: 10, color: '#333', lineHeight: 1.65 },
     // Signature
     sigBlock:   { flexDirection: 'row', gap: 40, marginTop: 28, paddingTop: 16, borderTop: `1 solid #E5E1D8` },
@@ -268,7 +269,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
     sigLabel:   { fontSize: 8, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 },
     sigLine:    { borderBottom: `1 solid #1A1A1A`, height: 28, marginBottom: 4 },
     sigImg:     { height: 32, maxWidth: 160, marginBottom: 4, objectFit: 'contain' },
-    sigName:    { fontFamily: 'Helvetica-Bold', fontSize: 10 },
+    sigName:    { fontFamily: PDF_FONT.bold, fontSize: 10 },
     sigDate:    { fontSize: 9, color: '#909090' },
     // Watermark
     watermark:  { position: 'absolute', top: '45%', left: '20%', fontSize: 64, color: 'rgba(0,0,0,0.04)', transform: 'rotate(-30deg)' },
@@ -499,16 +500,16 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
   const statusLoud  = data.status ? CO_STATUS_LOUD.has(data.status) : false
 
   const s = StyleSheet.create({
-    page:      { fontFamily: 'Helvetica', fontSize: 10, color: '#1A1A1A', padding: '40 48' },
+    page:      { fontFamily: PDF_FONT.sans, fontSize: 10, color: '#1A1A1A', padding: '40 48' },
     header:    { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: `2 solid ${c}`, paddingBottom: 14, marginBottom: 20 },
-    h1:        { fontFamily: 'Helvetica-Bold', fontSize: 16, color: c, marginBottom: 3 },
+    h1:        { fontFamily: PDF_FONT.bold, fontSize: 16, color: c, marginBottom: 3 },
     meta:      { fontSize: 8.5, color: '#909090' },
     logo:      { maxHeight: 38, maxWidth: 90, objectFit: 'contain' },
-    agencyText:{ fontFamily: 'Helvetica-Bold', fontSize: 11, color: c },
+    agencyText:{ fontFamily: PDF_FONT.bold, fontSize: 11, color: c },
     noteBox:   { backgroundColor: '#F9F8F5', border: `1 solid #E5E1D8`, borderRadius: 4, padding: '10 14', marginBottom: 18, fontSize: 10, color: '#333', lineHeight: 1.6 },
     partiesBox:{ flexDirection: 'row', gap: 32, backgroundColor: '#F9F8F5', border: `1 solid #E5E1D8`, borderRadius: 4, padding: '10 14', marginBottom: 18 },
     partyLabel:{ fontSize: 8, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 },
-    partyName: { fontFamily: 'Helvetica-Bold', fontSize: 11 },
+    partyName: { fontFamily: PDF_FONT.bold, fontSize: 11 },
     partyLine: { fontSize: 9, color: '#666', lineHeight: 1.5, marginTop: 3 },
     partyTax:  { fontSize: 8.5, color: '#909090', marginTop: 4 },
     // FIX (re-audit): CoDocument never had a draft watermark at all,
@@ -517,31 +518,31 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
     watermark: { position: 'absolute', top: '45%', left: '20%', fontSize: 64, color: 'rgba(0,0,0,0.04)', transform: 'rotate(-30deg)' },
     // Table
     tableHdr:  { flexDirection: 'row', borderBottom: `1 solid #E5E1D8`, paddingBottom: 5, marginBottom: 2 },
-    th:        { fontSize: 8, fontFamily: 'Helvetica-Bold', color: '#909090', textTransform: 'uppercase', letterSpacing: 0.5 },
+    th:        { fontSize: 8, fontFamily: PDF_FONT.bold, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.5 },
     row:       { flexDirection: 'row', borderBottom: `1 solid #F2F0EA`, paddingVertical: 8 },
     td:        { fontSize: 10, color: '#1A1A1A' },
     mono:      { fontFamily: 'Courier', fontSize: 9.5 },
     // Totals
     totals:    { marginTop: 10, paddingTop: 10, borderTop: `1 solid #E5E1D8` },
     totalRow:  { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 2, fontSize: 10 },
-    grandRow:  { flexDirection: 'row', justifyContent: 'space-between', paddingTop: 6, marginTop: 4, borderTop: `1 solid #1A1A1A`, fontSize: 13, fontFamily: 'Helvetica-Bold' },
+    grandRow:  { flexDirection: 'row', justifyContent: 'space-between', paddingTop: 6, marginTop: 4, borderTop: `1 solid #1A1A1A`, fontSize: 13, fontFamily: PDF_FONT.bold },
     // Sig
     sigBlock:  { flexDirection: 'row', gap: 40, marginTop: 28, paddingTop: 16, borderTop: `1 solid #E5E1D8` },
     sigCol:    { flex: 1 },
     sigLabel:  { fontSize: 8, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 },
     sigLine:   { borderBottom: `1 solid #1A1A1A`, height: 26, marginBottom: 4 },
     sigImg:    { height: 30, maxWidth: 150, marginBottom: 4, objectFit: 'contain' },
-    sigName:   { fontFamily: 'Helvetica-Bold', fontSize: 10 },
+    sigName:   { fontFamily: PDF_FONT.bold, fontSize: 10 },
     footer:    { flexDirection: 'row', justifyContent: 'space-between', marginTop: 24, paddingTop: 10, borderTop: `1 solid #E5E1D8`, fontSize: 8, color: '#B0B0B0' },
     footerLink:{ color: '#B0B0B0', textDecoration: 'none' },
     // Status badge + section numbering + impact block (doc-quality audit round 2)
-    statusBadge:  { fontSize: 8.5, fontFamily: 'Helvetica-Bold', textTransform: 'uppercase', letterSpacing: 0.6, paddingVertical: 3, paddingHorizontal: 8, borderRadius: 3, marginTop: 6, alignSelf: 'flex-end' },
-    secTitle:  { fontSize: 8, fontFamily: 'Helvetica-Bold', color: '#909090', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 6, borderBottom: '1 solid #E5E1D8', paddingBottom: 3 },
+    statusBadge:  { fontSize: 8.5, fontFamily: PDF_FONT.bold, textTransform: 'uppercase', letterSpacing: 0.6, paddingVertical: 3, paddingHorizontal: 8, borderRadius: 3, marginTop: 6, alignSelf: 'flex-end' },
+    secTitle:  { fontSize: 8, fontFamily: PDF_FONT.bold, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 6, borderBottom: '1 solid #E5E1D8', paddingBottom: 3 },
     secNum:    { color: '#C0C0C0' },
     section:   { marginBottom: 18 },
     impactBox: { border: '1 solid #E5E1D8', borderRadius: 4, marginTop: 12, padding: '10 14' },
     impactRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3, fontSize: 10 },
-    impactGrand: { flexDirection: 'row', justifyContent: 'space-between', paddingTop: 6, marginTop: 4, borderTop: '1 solid #1A1A1A', fontSize: 12, fontFamily: 'Helvetica-Bold' },
+    impactGrand: { flexDirection: 'row', justifyContent: 'space-between', paddingTop: 6, marginTop: 4, borderTop: '1 solid #1A1A1A', fontSize: 12, fontFamily: PDF_FONT.bold },
     pageNum:   { position: 'absolute', bottom: 18, right: 48, fontSize: 8, color: '#C0C0C0' },
   })
 
@@ -781,16 +782,16 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
     : 0
 
   const s = StyleSheet.create({
-    page:      { fontFamily: 'Helvetica', fontSize: 10, color: '#1A1A1A', padding: '40 48' },
+    page:      { fontFamily: PDF_FONT.sans, fontSize: 10, color: '#1A1A1A', padding: '40 48' },
     header:    { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: `2 solid ${c}`, paddingBottom: 14, marginBottom: 20 },
-    h1:        { fontFamily: 'Helvetica-Bold', fontSize: 18, color: c, marginBottom: 3 },
+    h1:        { fontFamily: PDF_FONT.bold, fontSize: 18, color: c, marginBottom: 3 },
     meta:      { fontSize: 8.5, color: '#909090' },
     logo:      { maxHeight: 42, maxWidth: 100, objectFit: 'contain' },
-    agencyText:{ fontFamily: 'Helvetica-Bold', fontSize: 11, color: c },
-    statusPill:{ fontSize: 8, fontFamily: 'Helvetica-Bold', color: c, textTransform: 'uppercase', letterSpacing: 0.5, textAlign: 'right', marginBottom: 4 },
+    agencyText:{ fontFamily: PDF_FONT.bold, fontSize: 11, color: c },
+    statusPill:{ fontSize: 8, fontFamily: PDF_FONT.bold, color: c, textTransform: 'uppercase', letterSpacing: 0.5, textAlign: 'right', marginBottom: 4 },
     partiesBox:{ flexDirection: 'row', gap: 32, backgroundColor: '#F9F8F5', border: '1 solid #E5E1D8', borderRadius: 4, padding: '10 14', marginBottom: 20 },
     partyLabel:{ fontSize: 8, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 },
-    partyName: { fontFamily: 'Helvetica-Bold', fontSize: 11 },
+    partyName: { fontFamily: PDF_FONT.bold, fontSize: 11 },
     partyLine: { fontSize: 9, color: '#666', lineHeight: 1.5, marginTop: 3 },
     partyTax:  { fontSize: 8.5, color: '#909090', marginTop: 4 },
     lineBox:   { border: '1 solid #E5E1D8', borderRadius: 4, marginBottom: 16 },
@@ -800,9 +801,9 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
     lineAmt:   { fontSize: 11, fontFamily: 'Courier-Bold' },
     totals:    { marginTop: 4 },
     totalRow:  { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3, fontSize: 10 },
-    grandRow:  { flexDirection: 'row', justifyContent: 'space-between', paddingTop: 8, marginTop: 6, borderTop: '1 solid #1A1A1A', fontSize: 14, fontFamily: 'Helvetica-Bold' },
+    grandRow:  { flexDirection: 'row', justifyContent: 'space-between', paddingTop: 8, marginTop: 6, borderTop: '1 solid #1A1A1A', fontSize: 14, fontFamily: PDF_FONT.bold },
     section:   { marginTop: 20 },
-    secTitle:  { fontSize: 8, fontFamily: 'Helvetica-Bold', color: '#909090', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 6, borderBottom: '1 solid #E5E1D8', paddingBottom: 3 },
+    secTitle:  { fontSize: 8, fontFamily: PDF_FONT.bold, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 6, borderBottom: '1 solid #E5E1D8', paddingBottom: 3 },
     body:      { fontSize: 10, color: '#333', lineHeight: 1.6 },
     payRow:    { flexDirection: 'row', justifyContent: 'space-between', fontSize: 9.5, color: '#555', paddingVertical: 3, borderBottom: '1 solid #F2F0EA' },
     cpRow:     { flexDirection: 'row', justifyContent: 'space-between', fontSize: 9.5, color: '#555', paddingVertical: 3 },
@@ -813,7 +814,7 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
     // Multi-line itemization (migration 017)
     itemsBox:  { border: '1 solid #E5E1D8', borderRadius: 4, marginBottom: 16, overflow: 'hidden' },
     itemsHdr:  { flexDirection: 'row', backgroundColor: '#F9F8F5', borderBottom: '1 solid #E5E1D8', paddingVertical: 6, paddingHorizontal: 12 },
-    itemsTh:   { fontSize: 8, fontFamily: 'Helvetica-Bold', color: '#909090', textTransform: 'uppercase', letterSpacing: 0.5 },
+    itemsTh:   { fontSize: 8, fontFamily: PDF_FONT.bold, color: '#909090', textTransform: 'uppercase', letterSpacing: 0.5 },
     itemsRow:  { flexDirection: 'row', paddingVertical: 8, paddingHorizontal: 12, borderBottom: '1 solid #F2F0EA' },
     itemsTd:   { fontSize: 10, color: '#1A1A1A' },
   })
@@ -1009,15 +1010,15 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
 
 export async function renderSowPdf(data: SowPdfData): Promise<Buffer> {
   const logo = await resolveLogoDataUri(data.agencyLogoUrl)
-  return renderToBuffer(<SowDocument data={data} logo={logo} />)
+  return renderToBuffer(<SowDocument data={sanitizeForPdf(data)} logo={logo} />)
 }
 
 export async function renderCoPdf(data: CoPdfData): Promise<Buffer> {
   const logo = await resolveLogoDataUri(data.logoUrl)
-  return renderToBuffer(<CoDocument data={data} logo={logo} />)
+  return renderToBuffer(<CoDocument data={sanitizeForPdf(data)} logo={logo} />)
 }
 
 export async function renderInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
   const logo = await resolveLogoDataUri(data.logoUrl)
-  return renderToBuffer(<InvoiceDocument data={data} logo={logo} />)
+  return renderToBuffer(<InvoiceDocument data={sanitizeForPdf(data)} logo={logo} />)
 }
