@@ -215,7 +215,14 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
             await (service as any).from('notifications').insert({
               workspace_id: session.workspaceId,
               recipient_id: resolvedEscalateTo,
-              type:         'escalation',
+              // FIX (deep audit round 3, notifications section): this and
+              // co/[id]/escalate's identical insert both used the bare
+              // 'escalation' type, so NotificationBell's entityHref
+              // couldn't tell a flag escalation from a CO escalation and
+              // always fell back to Overview — see that file's comment.
+              // The 'escalation' notification-preference key above is
+              // unchanged; only the row's own display/link type splits.
+              type:         'escalation_flag',
               title:        `Escalated — ${projectName}`,
               body:         `${session.name} escalated a scope flag: ${safeNote}`,
               entity_type:  'project',

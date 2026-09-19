@@ -122,7 +122,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         await (service as any).from('notifications').insert({
           workspace_id: session.workspaceId,
           recipient_id: resolvedEscalateTo,
-          type:         'escalation',
+          // FIX (deep audit round 3, notifications section): see the
+          // matching comment in guardian/flags/[id]/route.ts — this and
+          // that route's insert shared the bare 'escalation' type, making
+          // it impossible for the bell to link to the right tab. The
+          // 'escalation' preference key passed above is unchanged.
+          type:         'escalation_co',
           title:        `Escalated — ${co.projects?.name || co.title}`,
           body:         `${session.name} escalated "${co.title}": ${safeNote}`,
           entity_type:  'project',

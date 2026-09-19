@@ -64,8 +64,19 @@ export async function notifyMembersWithPermission(service: any, params: NotifyPa
       // 028 and NotificationBell.tsx's entityHref().
       project_id:   params.projectId || null,
     }))
-    await service.from('notifications').insert(rows)
-  } catch {
-    // Never let a notification failure break the actual action it's attached to.
+    // FIX (deep audit round 3, notifications section): supabase-js does
+    // not throw on a DB-level insert error (bad FK, constraint violation,
+    // etc.) — it returns { error } — so this previously ran unchecked and
+    // any such failure vanished into this catch's silent `{}` with zero
+    // trace anywhere, not even a console.error. This is the exact same
+    // failure shape that let 12 audit_log rows silently disappear for
+    // months (round 13's flagship finding, lib/utils/audit.ts) before
+    // being caught by accident. Checking + logging here doesn't change
+    // behavior when things work, but means a future bad-data bug in this
+    // choke point leaves a trace instead of repeating that history.
+    const { error } = await service.from('notifications').insert(rows)
+    if (error) console.error('notifyMembersWithPermission: notifications insert failed:', error)
+  } catch (err) {
+    console.error('notifyMembersWithPermission failed:', err)
   }
 }

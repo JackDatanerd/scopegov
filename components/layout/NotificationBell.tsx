@@ -22,7 +22,16 @@ function entityHref(n: Notification): string | null {
   // FIX (audit): invoice_paid / invoice_payment_received / invoice_overdue
   // notifications point at a project (see notify call sites) — route them
   // straight to the Billing tab instead of Overview.
-  if (n.entity_type === 'project' && n.entity_id && n.type.startsWith('invoice_'))
+  //
+  // FIX (deep audit round 3, notifications section): the invoice_* prefix
+  // check missed two other billing-shaped event types that were added
+  // later — payment_milestone_overdue and retainer_ending (both from
+  // cron/payment-overdue and cron/retainer-milestones, both entity_type
+  // 'project') — neither starts with 'invoice_', so both fell all the way
+  // through to the bare Overview link below despite being exactly the
+  // kind of thing this fix already exists to route correctly.
+  if (n.entity_type === 'project' && n.entity_id &&
+      (n.type.startsWith('invoice_') || n.type === 'payment_milestone_overdue' || n.type === 'retainer_ending'))
     return `/projects/${n.entity_id}?tab=billing`
   // FIX (re-audit, notifications section): the invoice fix above was
   // never generalized — guardian_flag notifications landed on plain
@@ -32,9 +41,20 @@ function entityHref(n: Notification): string | null {
   // (see sendGuardianFlagEmail's path param, and the ?tab=co/?tab=sow
   // URLs built into every co-stall/sow-stall/co_accepted/sow_signed etc.
   // notify call site). The in-app bell just never matched that.
-  if (n.entity_type === 'project' && n.entity_id && n.type.startsWith('guardian_'))
+  //
+  // FIX (deep audit round 3, notifications section): 'escalation' had the
+  // identical gap, but couldn't be fixed with a startsWith prefix like the
+  // others — guardian/flags/[id]/escalate and co/[id]/escalate both wrote
+  // the exact same `type: 'escalation'` with no way to tell which kind of
+  // escalation it was from the row alone, so it always fell through to
+  // Overview no matter the source. Split into 'escalation_flag' /
+  // 'escalation_co' at the two write sites (the shared 'escalation'
+  // notification-preference toggle is untouched — same "one preference
+  // key, multiple type values" shape already used for
+  // approval_approved/approval_rejected under 'approval_decision').
+  if (n.entity_type === 'project' && n.entity_id && (n.type.startsWith('guardian_') || n.type === 'escalation_flag'))
     return `/projects/${n.entity_id}?tab=guardian`
-  if (n.entity_type === 'project' && n.entity_id && n.type.startsWith('co_'))
+  if (n.entity_type === 'project' && n.entity_id && (n.type.startsWith('co_') || n.type === 'escalation_co'))
     return `/projects/${n.entity_id}?tab=co`
   if (n.entity_type === 'project' && n.entity_id && n.type.startsWith('sow_'))
     return `/projects/${n.entity_id}?tab=sow`

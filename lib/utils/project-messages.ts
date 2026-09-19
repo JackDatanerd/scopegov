@@ -134,8 +134,15 @@ export async function notifyMentionedUsers(
         entity_id: projectId,
       }))
 
-    if (rows.length) await service.from('notifications').insert(rows)
-  } catch {
-    // Never let a notification failure break message creation/editing.
+    if (rows.length) {
+      // FIX (deep audit round 3, notifications section): same unchecked-
+      // insert-error gap as notify.ts's notifyMembersWithPermission (see
+      // that file's comment) — a DB-level failure here vanished with no
+      // trace at all, not even a console.error.
+      const { error } = await service.from('notifications').insert(rows)
+      if (error) console.error('notifyMentionedUsers: notifications insert failed:', error)
+    }
+  } catch (err) {
+    console.error('notifyMentionedUsers failed:', err)
   }
 }
