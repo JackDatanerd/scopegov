@@ -144,9 +144,22 @@ function NewProjectPageInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectType])
 
+  // FIX (deep audit, section 14 — bug, traced from Clients): api/clients's
+  // GET route correctly redacts `email` to null for any member who lacks
+  // VIEW_CLIENT_DATA (see that route's own fix comment) — but this filter
+  // called `.toLowerCase()` on it unconditionally. Since it runs on every
+  // render (not just while actively typing a search), that's not a
+  // type-a-character edge case — it's an immediate crash on page load for
+  // any workspace member who has CREATE_PROJECTS but not VIEW_CLIENT_DATA
+  // (a perfectly ordinary role combination) the moment the workspace has
+  // any clients at all, taking out the entire New Project page for exactly
+  // the users the redaction fix was built to protect. ClientsClient.tsx's
+  // own client-search filter already guards this correctly with `?.`; this
+  // one didn't. The shared `Client` type also declares `email: string`
+  // (non-nullable), which is why TypeScript never caught it either.
   const filteredClients = clients.filter(c =>
     c.name.toLowerCase().includes(clientSearch.toLowerCase()) ||
-    c.email.toLowerCase().includes(clientSearch.toLowerCase())
+    c.email?.toLowerCase().includes(clientSearch.toLowerCase())
   )
 
   async function handleBasicsSubmit(e: React.FormEvent) {

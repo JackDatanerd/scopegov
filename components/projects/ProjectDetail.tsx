@@ -954,8 +954,27 @@ function GuardianTab({ project, flags, exceptions = [], permissions, router, tea
   // so an in_scope/borderline result (no flag created) gave the user zero
   // feedback that anything happened at all.
   const [lastResult,   setLastResult]   = useState<any>(null)
+  // FEATURE (deep audit, section 13 — feature gap): `isRetroactive` has been
+  // a fully-wired param on POST /api/guardian/check since it was added —
+  // accepted, used to bypass the Active/Stalled status gate, persisted to
+  // guardian_checks.is_retroactive, and even rendered as a "Retroactive"
+  // pill in GuardianHistoryPanel below — but nothing anywhere ever sent
+  // isRetroactive: true. There was no way to use a feature that was
+  // otherwise fully built. See canSubmitLive below and the two paste-mode
+  // entry points it now feeds.
+  const [pasteRetroactive, setPasteRetroactive] = useState(false)
 
   const isActive   = project.status === 'Active'
+  // FIX (deep audit, section 13): the paste-check UI gated on `isActive`
+  // (status === 'Active' only), but /api/guardian/check itself has always
+  // allowed 'Stalled' projects too (a Stalled project still has a signed
+  // scope to check content against — it's paused, not archived). That made
+  // a real, backend-supported case ("run a scope check while the project
+  // is stalled") completely unreachable from the UI: a Stalled project's
+  // Guardian panel claimed "not yet active" and offered no paste box at
+  // all. This is the actual live-monitoring gate; isActive above is now
+  // only used for the pure display language ("active" vs "paused").
+  const canSubmitLive = ['Active', 'Stalled'].includes(project.status)
   const openFlags  = flags.filter((f: any) => f.status === 'open')
   // FIX (re-audit, Guardian ghost-feature finding): borderline_review flags
   // (added in a prior fix round) were entirely invisible in this UI — no
@@ -971,11 +990,14 @@ function GuardianTab({ project, flags, exceptions = [], permissions, router, tea
     try {
       const res  = await fetch('/api/guardian/check', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId: project.id, content: pasteText, source: 'paste' }),
+        body: JSON.stringify({
+          projectId: project.id, content: pasteText, source: 'paste',
+          isRetroactive: pasteRetroactive,
+        }),
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error)
-      setPasteText(''); setPasteMode(false)
+      setPasteText(''); setPasteMode(false); setPasteRetroactive(false)
       setLastResult(json)
       // Only worth a refresh if a flag was actually created — otherwise
       // there's nothing new to pull from the server.
@@ -991,17 +1013,23 @@ function GuardianTab({ project, flags, exceptions = [], permissions, router, tea
     <div>
       <div className="surface surface-p" style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{ width: 9, height: 9, borderRadius: '50%', background: isActive ? 'var(--green)' : 'var(--text-4)', boxShadow: isActive ? '0 0 0 3px rgba(26,92,58,.15)' : 'none' }} />
+          <div style={{ width: 9, height: 9, borderRadius: '50%', background: isActive ? 'var(--green)' : canSubmitLive ? 'var(--amber)' : 'var(--text-4)', boxShadow: isActive ? '0 0 0 3px rgba(26,92,58,.15)' : 'none' }} />
           <div>
             <div style={{ fontSize: 13, fontWeight: 500 }}>
-              {isActive ? 'Guardian active' : ['Complete','Archived'].includes(project.status) ? 'Guardian inactive' : 'Guardian not yet active'}
+              {/* FIX (deep audit, section 13): 'Stalled' used to fall into the
+                  same "not yet active" bucket as a project that never had a
+                  scope signed at all — misleading, since a Stalled project's
+                  Guardian is fully wired and checkable, just paused. */}
+              {isActive ? 'Guardian active' : project.status === 'Stalled' ? 'Guardian paused' : ['Complete','Archived'].includes(project.status) ? 'Guardian inactive' : 'Guardian not yet active'}
             </div>
             <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
-              {isActive ? `Monitoring via ${project.guardian_email || 'forwarding email'}` : 'Activates when client signs the SOW'}
+              {isActive ? `Monitoring via ${project.guardian_email || 'forwarding email'}`
+                : canSubmitLive ? `Paused — you can still check content against the signed scope via ${project.guardian_email || 'forwarding email'}`
+                : 'Activates when client signs the SOW'}
             </div>
           </div>
         </div>
-        {isActive && project.guardian_email && (
+        {canSubmitLive && project.guardian_email && (
           <div style={{ textAlign: 'right' }}>
             <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 3 }}>Forward client emails to</div>
             <code style={{ fontSize: 12, background: 'var(--surface-2)', padding: '3px 8px', borderRadius: 4, border: '1px solid var(--border)' }}>
@@ -1011,11 +1039,24 @@ function GuardianTab({ project, flags, exceptions = [], permissions, router, tea
         )}
       </div>
 
-      {(permissions.viewGuardianHistory || (isActive && permissions.submitGuardian)) && (
+      {(permissions.viewGuardianHistory || permissions.submitGuardian) && (
         <div style={{ display: 'flex', gap: 8, marginBottom: historyOpen ? 0 : 16 }}>
-          {isActive && permissions.submitGuardian && !pasteMode && (
-            <button className="btn btn-ghost btn-sm" onClick={() => { setPasteMode(true); setLastResult(null) }}>
+          {canSubmitLive && permissions.submitGuardian && !pasteMode && (
+            <button className="btn btn-ghost btn-sm" onClick={() => { setPasteMode(true); setPasteRetroactive(false); setLastResult(null) }}>
               <i className="ti ti-clipboard" style={{ fontSize: 12 }} /> Paste email or message
+            </button>
+          )}
+          {/* FEATURE (deep audit, section 13 — feature gap): the retroactive
+              path — a check the API has always accepted and stored, badge
+              and all, for a project that isn't currently Active/Stalled —
+              had no way to actually be triggered. This is that entry point:
+              a project still in Draft/Intake/Awaiting Signature/Changes
+              Requested/Complete/Archived can log a past message against the
+              scope for the record, without it being treated as live
+              monitoring. */}
+          {!canSubmitLive && permissions.submitGuardian && !pasteMode && (
+            <button className="btn btn-ghost btn-sm" onClick={() => { setPasteMode(true); setPasteRetroactive(true); setLastResult(null) }}>
+              <i className="ti ti-clipboard" style={{ fontSize: 12 }} /> Log a past check
             </button>
           )}
           {permissions.viewGuardianHistory && (
@@ -1027,14 +1068,21 @@ function GuardianTab({ project, flags, exceptions = [], permissions, router, tea
       )}
 
       {permissions.viewGuardianHistory && historyOpen && (
-        <GuardianHistoryPanel projectId={project.id} />
+        <GuardianHistoryPanel projectId={project.id} canRetry={permissions.submitGuardian} />
       )}
 
-      {isActive && permissions.submitGuardian && (
+      {permissions.submitGuardian && (
         <div style={{ marginBottom: 16 }}>
           {!pasteMode ? null : (
             <div className="surface surface-p">
-              <label className="flbl">Paste client message to check against scope</label>
+              <label className="flbl">
+                {pasteRetroactive ? 'Log a past client message for the record' : 'Paste client message to check against scope'}
+              </label>
+              {pasteRetroactive && (
+                <p style={{ fontSize: 11, color: 'var(--text-3)', margin: '2px 0 6px' }}>
+                  This won&apos;t change the project&apos;s status or live monitoring — it just records this content against the signed scope, same as a normal check.
+                </p>
+              )}
               <textarea className="finp" style={{ minHeight: 100, resize: 'vertical', marginTop: 6 }}
                 value={pasteText} autoFocus placeholder="Paste the client's email or message here…"
                 onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setPasteText(e.target.value)} />
@@ -1043,7 +1091,7 @@ function GuardianTab({ project, flags, exceptions = [], permissions, router, tea
                 <button className="btn btn-primary btn-sm" onClick={handlePasteSubmit} disabled={submitting || !pasteText.trim()}>
                   {submitting ? <span className="spin" /> : 'Check scope'}
                 </button>
-                <button className="btn btn-ghost btn-sm" onClick={() => { setPasteMode(false); setPasteText('') }}>Cancel</button>
+                <button className="btn btn-ghost btn-sm" onClick={() => { setPasteMode(false); setPasteText(''); setPasteRetroactive(false) }}>Cancel</button>
               </div>
             </div>
           )}
@@ -1165,13 +1213,20 @@ function ExceptionCard({ exception, permissions, currency }: any) {
 // doesn't produce a flag (in_scope, covered_by_co, duplicate, pending, and
 // critically classification_failed) was previously visible nowhere in the
 // product; this is the only place any of that is now surfaced.
-function GuardianHistoryPanel({ projectId }: { projectId: string }) {
+function GuardianHistoryPanel({ projectId, canRetry }: { projectId: string; canRetry: boolean }) {
   const [checks,   setChecks]   = useState<any[]>([])
   const [loading,  setLoading]  = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
   const [error,    setError]    = useState('')
   const [hasMore,  setHasMore]  = useState(false)
   const [cursor,   setCursor]   = useState<string | null>(null)
+  // FEATURE (deep audit, section 13 — feature gap): pairs with the new
+  // POST /api/guardian/checks/[id]/retry route — see that file's own
+  // comment for why this was missing entirely. retryingId/retryError are
+  // scoped to a single check at a time since retrying is a rare,
+  // deliberate per-row action, not something done in bulk.
+  const [retryingId, setRetryingId] = useState<string | null>(null)
+  const [retryError, setRetryError] = useState<{ id: string; message: string } | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -1201,6 +1256,23 @@ function GuardianHistoryPanel({ projectId }: { projectId: string }) {
       setHasMore(!!json.hasMore)
       setCursor(json.nextCursor || null)
     } finally { setLoadingMore(false) }
+  }
+
+  async function retryCheck(checkId: string) {
+    setRetryingId(checkId); setRetryError(null)
+    try {
+      const res  = await fetch(`/api/guardian/checks/${checkId}/retry`, { method: 'POST' })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error || 'Retry failed')
+      // Targeted update rather than a full refetch — a retry only ever
+      // changes the one row that was retried, and refetching would also
+      // silently discard anything loaded via "Load more" beyond page one.
+      setChecks(prev => prev.map(c => c.id === checkId
+        ? { ...c, outcome: json.outcome, classificationFailed: false, matchedReference: json.matchedReference, flagId: json.flagId }
+        : c))
+    } catch (err: unknown) {
+      setRetryError({ id: checkId, message: err instanceof Error ? err.message : 'Retry failed' })
+    } finally { setRetryingId(null) }
   }
 
   return (
@@ -1260,6 +1332,17 @@ function GuardianHistoryPanel({ projectId }: { projectId: string }) {
                   )}
                   {c.isDuplicate && (
                     <div style={{ fontSize: 11, color: 'var(--text-4)', marginTop: 2 }}>Duplicate of an earlier check</div>
+                  )}
+                  {c.classificationFailed && canRetry && (
+                    <div style={{ marginTop: 6 }}>
+                      <button className="btn btn-ghost btn-sm" style={{ height: 24, fontSize: 11 }}
+                        onClick={() => retryCheck(c.id)} disabled={retryingId === c.id}>
+                        {retryingId === c.id ? <span className="spin" /> : <><i className="ti ti-refresh" style={{ fontSize: 11 }} /> Retry classification</>}
+                      </button>
+                      {retryError && retryError.id === c.id && (
+                        <div style={{ fontSize: 11, color: 'var(--red)', marginTop: 4 }}>{retryError.message}</div>
+                      )}
+                    </div>
                   )}
                 </div>
               </div>

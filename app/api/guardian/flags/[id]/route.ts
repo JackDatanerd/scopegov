@@ -206,31 +206,49 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         // for the assignee — the 'escalation' preference toggle in Settings
         // existed and applied to CO escalations only. Same treatment here.
         if (assignee?.email && resolvedEscalateTo) {
-          const [allowed] = await filterByNotificationPreference(
+          const [emailAllowed] = await filterByNotificationPreference(
             service, session.workspaceId, 'escalation',
-            [{ id: resolvedEscalateTo }]
+            [{ id: resolvedEscalateTo }], 'email'
+          )
+          // FIX (deep audit, section 13 — bug, traced into co/[id]/escalate
+          // too): the in-app notification below was inserted unconditionally
+          // — only the email send was gated on filterByNotificationPreference
+          // (which itself only ever checked the 'email' channel column,
+          // never 'in_app'). That contradicts the pattern this exact
+          // preference system establishes everywhere else it's used (see
+          // lib/utils/notify.ts's "single choke point" comment, and
+          // scope-governance/comments's notifyEntityOwner): email and
+          // in-app are independent, separately-opt-out-able channels. A
+          // member who muted in-app escalation pings still got one anyway.
+          // co/[id]/escalate/route.ts had the identical bug — fixed there
+          // too in the same pass.
+          const [inAppAllowed] = await filterByNotificationPreference(
+            service, session.workspaceId, 'escalation',
+            [{ id: resolvedEscalateTo }], 'in_app'
           )
 
-          try {
-            await (service as any).from('notifications').insert({
-              workspace_id: session.workspaceId,
-              recipient_id: resolvedEscalateTo,
-              // FIX (deep audit round 3, notifications section): this and
-              // co/[id]/escalate's identical insert both used the bare
-              // 'escalation' type, so NotificationBell's entityHref
-              // couldn't tell a flag escalation from a CO escalation and
-              // always fell back to Overview — see that file's comment.
-              // The 'escalation' notification-preference key above is
-              // unchanged; only the row's own display/link type splits.
-              type:         'escalation_flag',
-              title:        `Escalated — ${projectName}`,
-              body:         `${session.name} escalated a scope flag: ${safeNote}`,
-              entity_type:  'project',
-              entity_id:    flag.project_id,
-            })
-          } catch { /* never let a notification failure break escalation */ }
+          if (inAppAllowed) {
+            try {
+              await (service as any).from('notifications').insert({
+                workspace_id: session.workspaceId,
+                recipient_id: resolvedEscalateTo,
+                // FIX (deep audit round 3, notifications section): this and
+                // co/[id]/escalate's identical insert both used the bare
+                // 'escalation' type, so NotificationBell's entityHref
+                // couldn't tell a flag escalation from a CO escalation and
+                // always fell back to Overview — see that file's comment.
+                // The 'escalation' notification-preference key above is
+                // unchanged; only the row's own display/link type splits.
+                type:         'escalation_flag',
+                title:        `Escalated — ${projectName}`,
+                body:         `${session.name} escalated a scope flag: ${safeNote}`,
+                entity_type:  'project',
+                entity_id:    flag.project_id,
+              })
+            } catch { /* never let a notification failure break escalation */ }
+          }
 
-          if (allowed) {
+          if (emailAllowed) {
             try {
               await sendEscalationEmail({
                 to:           assignee.email,

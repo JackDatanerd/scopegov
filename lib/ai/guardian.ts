@@ -42,10 +42,45 @@ interface ScopeSnapshot {
   outOfScope:   Array<{ title: string; description?: string }>
 }
 
-interface Amendment {
+export interface Amendment {
   id: string
   added_deliverables: string[]
   title: string
+}
+
+// FIX (deep audit, section 13 — feature gap): guardian_checks.matched_amendment_id
+// has existed on the table (and in lib/supabase/types.ts) since it was scaffolded,
+// but nothing ever populated it — classifyGuardianCheck only ever returned a free-text
+// matchedReference, so a 'covered_by_co' verdict had no structured link back to the
+// actual change order that covers it, only a fuzzy label. The classifier is already
+// handed the full amendments list (id + title + added_deliverables) when it resolves
+// an amendment match, so resolving the id is just a lookup, not a new AI call. The
+// model is instructed to return "the specific deliverable name matched" — so prefer
+// an exact match against one of that amendment's own added_deliverables lines (what
+// it was actually asked for), fall back to a substring match either way in case of
+// minor wording drift, and fall back to the amendment's own title last, in case the
+// model echoed the CO name instead of a line item.
+export function resolveMatchedAmendmentId(
+  amendments: Amendment[],
+  matchedAgainst: 'sow' | 'amendment' | null,
+  matchedReference: string | null,
+): string | null {
+  if (matchedAgainst !== 'amendment' || !matchedReference?.trim()) return null
+  const ref = matchedReference.trim().toLowerCase()
+
+  for (const a of amendments) {
+    if ((a.added_deliverables || []).some(d => d.trim().toLowerCase() === ref)) return a.id
+  }
+  for (const a of amendments) {
+    if ((a.added_deliverables || []).some(d => {
+      const dl = d.trim().toLowerCase()
+      return dl.length > 0 && (dl.includes(ref) || ref.includes(dl))
+    })) return a.id
+  }
+  for (const a of amendments) {
+    if (a.title.trim().toLowerCase() === ref) return a.id
+  }
+  return null
 }
 
 export async function classifyGuardianCheck({

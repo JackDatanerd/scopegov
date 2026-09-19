@@ -113,29 +113,48 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // never showed up in the bell). Gate the email by preference, same as
     // every other notification type, and add the missing in-app row.
     if (assignee?.email && resolvedEscalateTo) {
-      const [allowed] = await filterByNotificationPreference(
+      const [emailAllowed] = await filterByNotificationPreference(
         service, session.workspaceId, 'escalation',
-        [{ id: resolvedEscalateTo }]
+        [{ id: resolvedEscalateTo }], 'email'
+      )
+      // FIX (deep audit, section 13 — bug traced in from guardian/flags/[id]):
+      // this in-app notification was inserted unconditionally — only the
+      // email above was actually gated by filterByNotificationPreference,
+      // and that call never even passed 'email' explicitly, so it worked by
+      // the default happening to match. filterByNotificationPreference has
+      // always supported an 'in_app' channel too (see its in_app_enabled
+      // column check) but nothing here ever called it that way. That
+      // contradicts the pattern this preference system establishes
+      // everywhere else (lib/utils/notify.ts's "single choke point" comment,
+      // scope-governance/comments's notifyEntityOwner): email and in-app are
+      // independent, separately-opt-out-able channels. guardian/flags/[id]'s
+      // identical escalation insert had the same bug — fixed there too in
+      // the same pass.
+      const [inAppAllowed] = await filterByNotificationPreference(
+        service, session.workspaceId, 'escalation',
+        [{ id: resolvedEscalateTo }], 'in_app'
       )
 
-      try {
-        await (service as any).from('notifications').insert({
-          workspace_id: session.workspaceId,
-          recipient_id: resolvedEscalateTo,
-          // FIX (deep audit round 3, notifications section): see the
-          // matching comment in guardian/flags/[id]/route.ts — this and
-          // that route's insert shared the bare 'escalation' type, making
-          // it impossible for the bell to link to the right tab. The
-          // 'escalation' preference key passed above is unchanged.
-          type:         'escalation_co',
-          title:        `Escalated — ${co.projects?.name || co.title}`,
-          body:         `${session.name} escalated "${co.title}": ${safeNote}`,
-          entity_type:  'project',
-          entity_id:    co.project_id,
-        })
-      } catch { /* never let a notification failure break escalation */ }
+      if (inAppAllowed) {
+        try {
+          await (service as any).from('notifications').insert({
+            workspace_id: session.workspaceId,
+            recipient_id: resolvedEscalateTo,
+            // FIX (deep audit round 3, notifications section): see the
+            // matching comment in guardian/flags/[id]/route.ts — this and
+            // that route's insert shared the bare 'escalation' type, making
+            // it impossible for the bell to link to the right tab. The
+            // 'escalation' preference key passed above is unchanged.
+            type:         'escalation_co',
+            title:        `Escalated — ${co.projects?.name || co.title}`,
+            body:         `${session.name} escalated "${co.title}": ${safeNote}`,
+            entity_type:  'project',
+            entity_id:    co.project_id,
+          })
+        } catch { /* never let a notification failure break escalation */ }
+      }
 
-      if (allowed) {
+      if (emailAllowed) {
         try {
           await sendEscalationEmail({
             to:          assignee.email,

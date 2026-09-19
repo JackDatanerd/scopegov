@@ -7,7 +7,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { stripHtml } from '@/lib/utils/format'
 import {
-  classifyGuardianCheck, getEmbedding, cosineSimilarity,
+  classifyGuardianCheck, getEmbedding, cosineSimilarity, resolveMatchedAmendmentId,
   type Sensitivity,
 } from '@/lib/ai/guardian'
 import { sendGuardianFlagEmail } from '@/lib/email/templates'
@@ -212,11 +212,18 @@ export async function POST(request: NextRequest) {
     }
 
     // ── STEP 5: Update check with results ─────────────────────
+    // FIX (deep audit, section 13 — feature gap): resolve matched_amendment_id
+    // now that we have the classification verdict — see resolveMatchedAmendmentId's
+    // own comment in lib/ai/guardian.ts for why this was never wired up before.
+    const matchedAmendmentId = resolveMatchedAmendmentId(
+      amendments || [], classification.matchedAgainst, classification.matchedReference,
+    )
     await (service as any).from('guardian_checks').update({
       match_confidence:    classification.matchConfidence,
       creep_confidence:    classification.creepConfidence,
       matched_against:     classification.matchedAgainst,
       matched_reference:   classification.matchedReference,
+      matched_amendment_id: matchedAmendmentId,
       outcome:             classification.outcome,
       classified_at:       new Date().toISOString(),
       classification_failed: false,

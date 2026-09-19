@@ -2,7 +2,7 @@ export const runtime = 'nodejs'
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
-import { classifyGuardianCheck, getEmbedding, cosineSimilarity, type Sensitivity } from '@/lib/ai/guardian'
+import { classifyGuardianCheck, getEmbedding, cosineSimilarity, resolveMatchedAmendmentId, type Sensitivity } from '@/lib/ai/guardian'
 import { stripHtml } from '@/lib/utils/format'
 import { sendGuardianFlagEmail } from '@/lib/email/templates'
 import { logAudit } from '@/lib/utils/audit'
@@ -193,11 +193,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true, outcome: 'classification_failed' })
     }
 
+    // FIX (deep audit, section 13 — feature gap): see resolveMatchedAmendmentId's
+    // comment in lib/ai/guardian.ts — mirrors the same fix in api/guardian/check.
+    const matchedAmendmentId = resolveMatchedAmendmentId(
+      amendments || [], classification.matchedAgainst, classification.matchedReference,
+    )
     await (service as any).from('guardian_checks').update({
       match_confidence:  classification.matchConfidence,
       creep_confidence:  classification.creepConfidence,
       matched_against:   classification.matchedAgainst,
       matched_reference: classification.matchedReference,
+      matched_amendment_id: matchedAmendmentId,
       outcome:           classification.outcome,
       classified_at:     new Date().toISOString(),
     }).eq('id', checkRow.id)

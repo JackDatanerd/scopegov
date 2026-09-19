@@ -209,7 +209,13 @@ export interface Client {
   workspaceId: string
   name: string
   companyName: string | null
-  email: string
+  // FIX (deep audit, section 14 — bug): declared non-nullable, but
+  // api/clients's GET route redacts this to null for any member without
+  // VIEW_CLIENT_DATA — the type was lying about a real, already-shipped
+  // API behavior, which is exactly why app/(app)/projects/new/page.tsx's
+  // `.toLowerCase()` crash on it went uncaught by the compiler. See that
+  // file's fix comment.
+  email: string | null
   ccEmails: string[]
   phone: string | null
   timezone: string | null
