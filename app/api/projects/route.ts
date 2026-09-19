@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { roundCurrency, PLAN_LIMITS } from '@/lib/utils/format'
 
+import { insertAuditRow } from '@/lib/utils/audit'
 export async function POST(request: NextRequest) {
   try {
     const session = await getSession()
@@ -104,7 +105,7 @@ export async function POST(request: NextRequest) {
         // them is an unambiguous "we're working with them again" signal.
         if (existing.status === 'archived') {
           await (service as any).from('clients').update({ status: 'active' }).eq('id', existing.id)
-          await (service as any).from('audit_log').insert({
+          await insertAuditRow(service, {
             workspace_id: session.workspaceId, actor_id: session.id,
             actor_email: session.email, actor_name: session.name,
             event_type: 'client.reactivated', entity_type: 'client',
@@ -154,7 +155,7 @@ export async function POST(request: NextRequest) {
       // inline-new-client-by-email-match path above now does.
       if (client.status === 'archived') {
         await (service as any).from('clients').update({ status: 'active' }).eq('id', client.id)
-        await (service as any).from('audit_log').insert({
+        await insertAuditRow(service, {
           workspace_id: session.workspaceId, actor_id: session.id,
           actor_email: session.email, actor_name: session.name,
           event_type: 'client.reactivated', entity_type: 'client',
@@ -203,7 +204,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Audit log
-    await (service as any).from('audit_log').insert({
+    await insertAuditRow(service, {
       workspace_id: session.workspaceId,
       actor_id:     session.id,
       actor_email:  session.email,

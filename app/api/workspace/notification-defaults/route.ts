@@ -15,6 +15,7 @@
 // IN_APP_NOTIF_ITEMS in components/settings/SettingsClient.tsx — matching
 // how those two already relate rather than introducing a new pattern.
 import { createServiceClient } from '@/lib/supabase/server'
+import { logAudit } from '@/lib/utils/audit'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 
@@ -122,6 +123,20 @@ export async function PATCH(request: NextRequest) {
       : await (service as any).from('workspace_notification_defaults').insert(payload)
 
     if (error) throw new Error(error.message)
+
+    // FIX (Reports & Audit re-pass #3): this is a workspace-wide governance
+    // setting (an admin can LOCK an event so members cannot opt out of it)
+    // and it was the one MANAGE_WORKSPACE_SETTINGS mutation with no audit
+    // event, while workspace.settings_updated / workspace.defaults_updated
+    // both log. Who changed which mandatory notification, and when, belongs
+    // in the trail.
+    await logAudit(service, {
+      workspaceId: session.workspaceId,
+      actorId: session.id, actorEmail: session.email, actorName: session.name,
+      eventType: 'workspace.notification_defaults_updated',
+      entityType: 'workspace_defaults', entityId: session.workspaceId, entityName: session.workspaceName,
+      metadata: { event_type: eventType, enabled: !!enabled, locked: !!locked },
+    })
     return NextResponse.json({ ok: true })
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })

@@ -1,4 +1,5 @@
 export const runtime = 'nodejs'
+export const maxDuration = 60
 
 // app/api/reports/portfolio/export/route.ts
 //   ?format=csv|pdf   (default csv)
@@ -18,6 +19,9 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { logAudit } from '@/lib/utils/audit'
+import { getClientIp } from '@/lib/utils/request-ip'
+import { parsePeriod } from '@/lib/reports/period'
+import { csvCell, CSV_BOM } from '@/lib/utils/csv'
 import { getPortfolioData, PERIOD_LABELS } from '@/lib/reports/portfolio-data'
 import { renderPortfolioReportPdf } from '@/lib/pdf/portfolio-report'
 
@@ -31,9 +35,11 @@ export async function GET(request: NextRequest) {
     const canViewFinancials = hasPermission(session, 'VIEW_FINANCIALS')
     const { searchParams } = new URL(request.url)
     const format = (searchParams.get('format') || 'csv') as 'csv' | 'pdf'
-    const period = searchParams.get('period') || '90d'
+    const period = parsePeriod(searchParams.get('period'))
     if (!['csv', 'pdf'].includes(format))
       return NextResponse.json({ error: 'Unsupported format' }, { status: 400 })
+    if (!period)
+      return NextResponse.json({ error: 'Invalid period' }, { status: 400 })
 
     const service = createServiceClient()
     const data = await getPortfolioData(service, session.workspaceId, period, canViewFinancials)
@@ -43,7 +49,7 @@ export async function GET(request: NextRequest) {
     // trail should capture.
     await logAudit(service, {
       workspaceId: session.workspaceId,
-      actorId: session.id, actorEmail: session.email, actorName: session.name,
+      actorId: session.id, actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
       eventType: 'portfolio.exported',
       entityType: 'workspace', entityId: session.workspaceId, entityName: session.workspaceName,
       metadata: { format, period },
@@ -54,7 +60,7 @@ export async function GET(request: NextRequest) {
     if (format === 'csv') {
       const csv = toCsv(data, canViewFinancials)
       // BUG-008 convention: Uint8Array for NextResponse BodyInit
-      return new NextResponse(new Uint8Array(Buffer.from(csv, 'utf-8')), {
+      return new NextResponse(new Uint8Array(Buffer.from(CSV_BOM + csv, 'utf-8')), {
         headers: {
           'Content-Type': 'text/csv; charset=utf-8',
           'Content-Disposition': `attachment; filename="${filenameBase}.csv"`,
@@ -67,7 +73,7 @@ export async function GET(request: NextRequest) {
       workspaceName: session.workspaceName,
       generatedBy: session.name,
       generatedAt: new Date().toISOString(),
-      periodLabel: PERIOD_LABELS[period] || PERIOD_LABELS['90d'],
+      periodLabel: PERIOD_LABELS[period],
       canViewFinancials,
       data,
     })
@@ -89,17 +95,6 @@ function filenameSlug(workspaceName: string, period: string): string {
   return `${slug}-portfolio-${period}-${date}`
 }
 
-// Same CSV-formula-injection guard as api/reports/audit-export/route.ts —
-// entity/project/client names in this export are user-supplied strings
-// (project names, CO titles, client names), so the same neutralization
-// applies here.
-function csvCell(value: unknown): string {
-  let str = value === null || value === undefined ? '' : String(value)
-  if (/^[=+\-@]/.test(str)) str = `'${str}`
-  if (/[",\n\r]/.test(str)) return `"${str.replace(/"/g, '""')}"`
-  return str
-}
-
 function toCsv(data: Awaited<ReturnType<typeof getPortfolioData>>, canViewFinancials: boolean): string {
   const lines: string[] = []
   const c = data.current
@@ -116,7 +111,9 @@ function toCsv(data: Awaited<ReturnType<typeof getPortfolioData>>, canViewFinanc
   lines.push(['Currency', data.currency].map(csvCell).join(','))
   lines.push('')
 
-  lines.push(`Open scope flags (${data.openFlags.length})`)
+  lines.push(data.openFlagsTotal > data.openFlags.length
+    ? `Open scope flags (most recent ${data.openFlags.length} of ${data.openFlagsTotal})`
+    : `Open scope flags (${data.openFlags.length})`)
   lines.push(['Project', 'Client', 'Severity', 'Flag', 'SOW reference', 'Raised', 'Contract value'].map(csvCell).join(','))
   for (const f of data.openFlags) {
     lines.push([

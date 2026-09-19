@@ -11,6 +11,8 @@
 // the data assembly lives here once — the JSON route and the new
 // CSV/PDF export route both call getPortfolioData().
 
+import { PERIOD_LABELS as ALL_PERIOD_LABELS, type PeriodKey } from './period'
+
 export type PortfolioPeriod = '30d' | '90d' | '6m' | '12m'
 
 export interface PortfolioData {
@@ -33,6 +35,8 @@ export interface PortfolioData {
     exceptionsCount: number
   }>
   trend: { openFlagsDelta: number; atRiskDelta: number | null } | null
+  /** Exact number of open flags in the dominant currency (the list below is capped). */
+  openFlagsTotal: number
   openFlags: Array<{
     id: string; severity: string; description: string; sowReference: string
     createdAt: string; projectId: string; projectName: string; clientName: string | null
@@ -46,23 +50,25 @@ export interface PortfolioData {
   hasSnapshots: boolean
 }
 
-const PERIOD_DAYS: Record<string, number> = { '30d': 30, '90d': 90, '6m': 180, '12m': 365 }
+const PERIOD_DAYS: Record<PeriodKey, number | null> = { '30d': 30, '90d': 90, '6m': 180, '12m': 365, 'all': null }
+const OPEN_FLAGS_LIST_LIMIT = 100
 
 export async function getPortfolioData(
   service: any,
   workspaceId: string,
-  period: string,
+  period: PeriodKey,
   canViewFinancials: boolean
 ): Promise<PortfolioData> {
-  const days = PERIOD_DAYS[period] ?? 90
-  const since = new Date(Date.now() - days * 86400000).toISOString().split('T')[0]
+  const days = PERIOD_DAYS[period]
+  const since = days === null ? '2000-01-01' : new Date(Date.now() - days * 86400000).toISOString().split('T')[0]
 
-  const { data: snapshots } = await service
+  const { data: snapshots, error: snapErr } = await service
     .from('scope_health_snapshots')
     .select('snapshot_date, open_flags_count, open_flags_by_severity, exceptions_count, exceptions_value_total, contract_value_at_risk, stalled_sow_count, stalled_co_count, active_project_count, currency')
     .eq('workspace_id', workspaceId)
     .gte('snapshot_date', since)
     .order('snapshot_date', { ascending: true })
+  if (snapErr) throw new Error(`snapshots: ${snapErr.message}`)
 
   const history = snapshots || []
   const latest = history.length ? history[history.length - 1] : null
@@ -75,26 +81,39 @@ export async function getPortfolioData(
   // can disagree.
   const dominantCurrency = latest?.currency || 'USD'
 
-  const { data: openFlags } = await service
+  // FIX (Reports & Audit re-pass #3): the headline counts come from the
+  // scope-health rollup, which excludes soft-deleted projects
+  // (`deleted_at is null`). These drill-downs did not, so a deleted
+  // project's open flags / stalled items were listed under a header count
+  // that didn't include them. Same filter here; errors are surfaced instead
+  // of silently rendering an empty list; the flag list reports its exact
+  // total so a capped list can say so.
+  const { data: openFlags, error: flagsErr, count: openFlagsTotal } = await service
     .from('guardian_flags')
-    .select('id, severity, description, sow_reference, created_at, project_id, projects!inner(id, name, contract_value, currency, clients(name))')
+    .select('id, severity, description, sow_reference, created_at, project_id, projects!inner(id, name, contract_value, currency, clients(name))', { count: 'exact' })
     .eq('workspace_id', workspaceId)
     .eq('status', 'open')
     .eq('projects.currency', dominantCurrency)
-    .order('created_at', { ascending: false })
-    .limit(100)
+    .is('projects.deleted_at', null)
+    .order('created_at', { ascending: false }).order('id', { ascending: false })
+    .limit(OPEN_FLAGS_LIST_LIMIT)
+  if (flagsErr) throw new Error(`open flags: ${flagsErr.message}`)
 
   const [stalledSowsRes, stalledCosRes] = await Promise.all([
     service.from('projects')
       .select('id, name, updated_at, clients(name)')
       .eq('workspace_id', workspaceId).eq('status', 'Stalled').eq('stall_reason', 'sow_unsigned')
+      .is('deleted_at', null)
       .order('updated_at', { ascending: true }),
     service.from('change_orders')
       .select('id, title, total, project_id, updated_at, projects!inner(id, name, currency)')
       .eq('workspace_id', workspaceId).eq('status', 'stalled')
       .eq('projects.currency', dominantCurrency)
+      .is('projects.deleted_at', null)
       .order('updated_at', { ascending: true }),
   ])
+  if (stalledSowsRes.error) throw new Error(`stalled SOWs: ${stalledSowsRes.error.message}`)
+  if (stalledCosRes.error) throw new Error(`stalled COs: ${stalledCosRes.error.message}`)
 
   const trend = earliest && latest ? {
     openFlagsDelta: latest.open_flags_count - earliest.open_flags_count,
@@ -123,6 +142,7 @@ export async function getPortfolioData(
       exceptionsCount: h.exceptions_count,
     })),
     trend,
+    openFlagsTotal: openFlagsTotal ?? (openFlags || []).length,
     openFlags: (openFlags || []).map((f: any) => ({
       id: f.id,
       severity: f.severity,
@@ -147,6 +167,4 @@ export async function getPortfolioData(
   }
 }
 
-export const PERIOD_LABELS: Record<string, string> = {
-  '30d': 'Last 30 days', '90d': 'Last 90 days', '6m': 'Last 6 months', '12m': 'Last 12 months',
-}
+export const PERIOD_LABELS = ALL_PERIOD_LABELS

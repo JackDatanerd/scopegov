@@ -127,11 +127,11 @@ function ScopeReportDocument({ meta, data }: { meta: ReportPdfMeta; data: any })
 
         <View style={s.metricRow}>
           <View style={s.metricBox}>
-            <Text style={s.metricLbl}>Flags raised</Text>
+            <Text style={s.metricLbl}>Flags raised (confirmed)</Text>
             <Text style={s.metricVal}>{metrics.total_flags ?? 0}</Text>
           </View>
           <View style={s.metricBox}>
-            <Text style={s.metricLbl}>Converted to CO</Text>
+            <Text style={s.metricLbl}>Converted to CO (incl. accepted)</Text>
             <Text style={s.metricVal}>{metrics.converted_to_co ?? 0}</Text>
           </View>
           <View style={s.metricBox}>
@@ -227,11 +227,11 @@ function FinancialReportDocument({ meta, data }: { meta: ReportPdfMeta; data: an
 
         <View style={s.metricRow}>
           <View style={s.metricBox}>
-            <Text style={s.metricLbl}>Effective contract value</Text>
+            <Text style={s.metricLbl}>Portfolio contract value</Text>
             <Text style={s.metricVal}>{fmtMoney(metrics.effective_value, currency)}</Text>
           </View>
           <View style={s.metricBox}>
-            <Text style={s.metricLbl}>CO impact</Text>
+            <Text style={s.metricLbl}>Change-order value in period</Text>
             <Text style={s.metricVal}>{fmtMoney(metrics.co_impact, currency)}</Text>
           </View>
           <View style={s.metricBox}>
@@ -246,7 +246,7 @@ function FinancialReportDocument({ meta, data }: { meta: ReportPdfMeta; data: an
           </View>
         </View>
 
-        <Text style={s.h2}>Revenue by client ({(byClient || []).length})</Text>
+        <Text style={s.h2}>Contract value by client ({(byClient || []).length})</Text>
         {!(byClient || []).length ? (
           <Text style={s.emptyNote}>No data in this period.</Text>
         ) : (
@@ -264,7 +264,7 @@ function FinancialReportDocument({ meta, data }: { meta: ReportPdfMeta; data: an
           </>
         )}
 
-        <Text style={s.h2}>Revenue by project type ({(byType || []).length})</Text>
+        <Text style={s.h2}>Contract value by project type ({(byType || []).length})</Text>
         {!(byType || []).length ? (
           <Text style={s.emptyNote}>No data in this period.</Text>
         ) : (
@@ -286,10 +286,11 @@ function FinancialReportDocument({ meta, data }: { meta: ReportPdfMeta; data: an
           <>
             <Text style={s.h2}>Change order impact grid</Text>
             <View style={s.metricRow}>
-              <View style={s.metricBox}><Text style={s.metricLbl}>Raised</Text><Text style={s.metricVal}>{coGrid.raised ?? 0}</Text></View>
+              <View style={s.metricBox}><Text style={s.metricLbl}>Sent</Text><Text style={s.metricVal}>{coGrid.raised ?? 0}</Text></View>
               <View style={s.metricBox}><Text style={s.metricLbl}>Accepted</Text><Text style={s.metricVal}>{coGrid.accepted ?? 0}</Text></View>
               <View style={s.metricBox}><Text style={s.metricLbl}>Declined</Text><Text style={s.metricVal}>{coGrid.declined ?? 0}</Text></View>
               <View style={s.metricBox}><Text style={s.metricLbl}>Pending</Text><Text style={s.metricVal}>{coGrid.pending ?? 0}</Text></View>
+              <View style={s.metricBox}><Text style={s.metricLbl}>Closed / expired</Text><Text style={s.metricVal}>{coGrid.closed ?? 0}</Text></View>
             </View>
           </>
         )}

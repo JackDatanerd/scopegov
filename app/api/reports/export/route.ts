@@ -1,4 +1,5 @@
 export const runtime = 'nodejs'
+export const maxDuration = 60
 
 // app/api/reports/export/route.ts
 //   ?mode=scope|financial   (default scope — same two tabs as the dashboard)
@@ -22,7 +23,9 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
-import { periodSince, PERIOD_LABELS, getScopeReportData, getFinancialReportData } from '@/lib/reports/scope-financial-data'
+import { getScopeReportData, getFinancialReportData } from '@/lib/reports/scope-financial-data'
+import { parsePeriod, periodSince, PERIOD_LABELS } from '@/lib/reports/period'
+import { csvCell, CSV_BOM } from '@/lib/utils/csv'
 import { renderScopeReportPdf, renderFinancialReportPdf } from '@/lib/pdf/reports-report'
 
 export async function GET(request: NextRequest) {
@@ -35,12 +38,18 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url)
     const mode   = (searchParams.get('mode') || 'scope') as 'scope' | 'financial'
     const format = (searchParams.get('format') || 'csv') as 'csv' | 'pdf'
-    const period = searchParams.get('period') || '90d'
-    const requestedCurrency = searchParams.get('currency')
+    // Allowlisted (see lib/reports/period.ts): an unknown period used to
+    // export ALL-TIME data under a "Last 90 days" PDF heading and write the
+    // raw string into the filename and the audit metadata.
+    const period = parsePeriod(searchParams.get('period'))
+    const currencyParam = searchParams.get('currency')
+    const requestedCurrency = currencyParam && /^[A-Za-z]{3}$/.test(currencyParam) ? currencyParam.toUpperCase() : null
     if (!['scope', 'financial'].includes(mode))
       return NextResponse.json({ error: 'Unsupported mode' }, { status: 400 })
     if (!['csv', 'pdf'].includes(format))
       return NextResponse.json({ error: 'Unsupported format' }, { status: 400 })
+    if (!period)
+      return NextResponse.json({ error: 'Invalid period' }, { status: 400 })
 
     const canSeeFinancials = hasPermission(session, 'VIEW_FINANCIALS')
     if (mode === 'financial' && !canSeeFinancials)
@@ -55,19 +64,20 @@ export async function GET(request: NextRequest) {
     // Same reasoning as audit_log.exported / portfolio.exported — who
     // pulled a contract-value or scope-governance rollup, and when, is
     // itself something a compliance trail should capture.
-    await logAudit(service, {
+    const logExport = () => logAudit(service, {
       workspaceId: session.workspaceId,
       actorId: session.id, actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
       eventType: 'reports.exported',
       entityType: 'workspace', entityId: session.workspaceId, entityName: session.workspaceName,
-      metadata: { mode, format, period, currency: data.currency },
+      metadata: { mode, format, period, currency: data.currency, truncated: data.truncated },
     })
 
     const filenameBase = filenameSlug(session.workspaceName, mode, period)
 
     if (format === 'csv') {
       const csv = mode === 'scope' ? scopeToCsv(data) : financialToCsv(data)
-      return new NextResponse(new Uint8Array(Buffer.from(csv, 'utf-8')), {
+      await logExport()
+      return new NextResponse(new Uint8Array(Buffer.from(CSV_BOM + csv, 'utf-8')), {
         headers: {
           'Content-Type': 'text/csv; charset=utf-8',
           'Content-Disposition': `attachment; filename="${filenameBase}.csv"`,
@@ -78,9 +88,10 @@ export async function GET(request: NextRequest) {
     const meta = {
       agencyName: session.agencyName, workspaceName: session.workspaceName,
       generatedBy: session.name, generatedAt: new Date().toISOString(),
-      periodLabel: PERIOD_LABELS[period] || PERIOD_LABELS['90d'],
+      periodLabel: PERIOD_LABELS[period],
     }
     const buffer = mode === 'scope' ? await renderScopeReportPdf(meta, data) : await renderFinancialReportPdf(meta, data)
+    await logExport()
     return new NextResponse(new Uint8Array(buffer), {
       headers: {
         'Content-Type': 'application/pdf',
@@ -99,16 +110,6 @@ function filenameSlug(workspaceName: string, mode: string, period: string): stri
   return `${slug}-${mode}-report-${period}-${date}`
 }
 
-// Same CSV-formula-injection guard as api/reports/audit-export/route.ts and
-// api/reports/portfolio/export/route.ts — project/client/deliverable names
-// in this export are user-supplied strings.
-function csvCell(value: unknown): string {
-  let str = value === null || value === undefined ? '' : String(value)
-  if (/^[=+\-@]/.test(str)) str = `'${str}`
-  if (/[",\n\r]/.test(str)) return `"${str.replace(/"/g, '""')}"`
-  return str
-}
-
 function scopeToCsv(data: any): string {
   const lines: string[] = []
   const m = data.metrics
@@ -123,8 +124,10 @@ function scopeToCsv(data: any): string {
 
   lines.push('Scope protection summary')
   lines.push(['Metric', 'Value'].map(csvCell).join(','))
-  lines.push(['Flags raised', m.total_flags ?? 0].map(csvCell).join(','))
-  lines.push(['Converted to CO', m.converted_to_co ?? 0].map(csvCell).join(','))
+  lines.push(['Flags raised (confirmed)', m.total_flags ?? 0].map(csvCell).join(','))
+  lines.push(['Converted to change order (incl. accepted)', m.converted_to_co ?? 0].map(csvCell).join(','))
+  lines.push(['Dismissed as in scope', m.dismissed_flags ?? 0].map(csvCell).join(','))
+  lines.push(['Awaiting borderline review', m.pending_review_flags ?? 0].map(csvCell).join(','))
   lines.push(['Recovered value', m.recovered_value ?? 'redacted'].map(csvCell).join(','))
   lines.push(['Currency', data.currency].map(csvCell).join(','))
   lines.push('')
@@ -162,21 +165,22 @@ function financialToCsv(data: any): string {
 
   lines.push('Financial overview summary')
   lines.push(['Metric', 'Value'].map(csvCell).join(','))
-  lines.push(['Effective contract value', m.effective_value ?? 0].map(csvCell).join(','))
-  lines.push(['CO impact', m.co_impact ?? 0].map(csvCell).join(','))
-  lines.push(['COs raised', m.cos_raised ?? 0].map(csvCell).join(','))
-  lines.push(['COs accepted', m.cos_accepted ?? 0].map(csvCell).join(','))
+  lines.push(['Portfolio contract value (base + all accepted change orders; not period-filtered)', m.effective_value ?? 0].map(csvCell).join(','))
+  lines.push(['Base contract value', m.base_value ?? 0].map(csvCell).join(','))
+  lines.push(['Change-order value added in period', m.co_impact ?? 0].map(csvCell).join(','))
+  lines.push(['Change orders sent in period', m.cos_raised ?? 0].map(csvCell).join(','))
+  lines.push(['Change orders accepted', m.cos_accepted ?? 0].map(csvCell).join(','))
   lines.push(['Currency', data.currency].map(csvCell).join(','))
   lines.push('')
 
-  lines.push(`Revenue by client (${(data.byClient || []).length})`)
+  lines.push(`Contract value by client (${(data.byClient || []).length})`)
   lines.push(['Client', 'Value'].map(csvCell).join(','))
   for (const c of (data.byClient || [])) {
     lines.push([c.client_name, c.value].map(csvCell).join(','))
   }
   lines.push('')
 
-  lines.push(`Revenue by project type (${(data.byType || []).length})`)
+  lines.push(`Contract value by project type (${(data.byType || []).length})`)
   lines.push(['Type', 'Value'].map(csvCell).join(','))
   for (const t of (data.byType || [])) {
     lines.push([t.type_label, t.value].map(csvCell).join(','))
@@ -185,8 +189,8 @@ function financialToCsv(data: any): string {
 
   if (data.coGrid) {
     lines.push('Change order impact grid')
-    lines.push(['Raised', 'Accepted', 'Declined', 'Pending'].map(csvCell).join(','))
-    lines.push([data.coGrid.raised, data.coGrid.accepted, data.coGrid.declined, data.coGrid.pending].map(csvCell).join(','))
+    lines.push(['Sent', 'Accepted', 'Declined', 'Pending', 'Closed / expired'].map(csvCell).join(','))
+    lines.push([data.coGrid.raised, data.coGrid.accepted, data.coGrid.declined, data.coGrid.pending, data.coGrid.closed].map(csvCell).join(','))
   }
 
   return lines.join('\r\n')

@@ -6,6 +6,7 @@ import { sendTrialWarningEmail } from '@/lib/email/templates'
 import { filterByNotificationPreference } from '@/lib/utils/permissions-query'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
 
+import { insertAuditRow } from '@/lib/utils/audit'
 // FIX (audit round 3): local copy replaced with the shared helper — see
 // lib/utils/verify-cron.ts (this route's original null-safe version is
 // now the shared implementation every other cron route uses too).
@@ -96,7 +97,7 @@ export async function POST(request: NextRequest) {
             upgradeUrl: `${process.env.NEXT_PUBLIC_APP_URL}/settings?tab=billing`,
           })
 
-          await (service as any).from('audit_log').insert({
+          await insertAuditRow(service, {
             workspace_id: ws.id,
             actor_id:     null,
             actor_email:  'cron@scopegov.app',

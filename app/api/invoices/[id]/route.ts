@@ -271,6 +271,9 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
       actorId: session.id, actorEmail: session.email, actorName: session.name,
       eventType: 'invoice.deleted', entityType: 'invoice',
       entityId: id, entityName: invoice.title,
+      // The invoice row is already gone, so the DB trigger can't resolve its
+      // project any more — record it explicitly (migration 056).
+      projectId: invoice.project_id,
     })
 
     return NextResponse.json({ ok: true })

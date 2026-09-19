@@ -1,4 +1,5 @@
 export const runtime = 'nodejs'
+export const maxDuration = 60
 
 import { NextResponse } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
@@ -6,32 +7,51 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { renderAuditReportPdf, type AuditReportRow } from '@/lib/pdf/audit-report'
+import { csvRow, CSV_BOM } from '@/lib/utils/csv'
+import { fetchPaged } from '@/lib/utils/paginate'
+import { buildAuditSearchFilter } from '@/lib/audit/search'
+import { AUDIT_CATEGORIES, categoryFilter } from '@/lib/audit/categories'
+import { redactMetadata } from '@/lib/audit/redact'
 
 // GET /api/reports/audit-export
 //   ?format=json|csv|pdf   (default json — powers the filtered table view)
-//   &from=ISO&to=ISO       (defaults to the last 90 days)
+//   &from=ISO|yyyy-mm-dd   &to=ISO|yyyy-mm-dd   (default: last 90 days)
 //   &projectId=uuid
-//   &actorId=uuid
-//   &q=free text over event_type/entity_name
+//   &actorId=uuid|none     ("none" = events with no signed-in user: client
+//                           portal actions, crons, automated system events)
+//   &category=<AUDIT_CATEGORIES id>
+//   &q=free text over event / record name / actor name / actor email / IP
+//   &offset=N&asOf=ISO     (format=json paging — see below)
 //
 // Gated by VIEW_AUDIT_LOG — the same permission that already gates viewing
 // the audit log itself. Exporting is a stricter form of the same read, not
-// a separate capability, so it doesn't need its own permission (see the
-// note in supabase/migrations/003_mfa_backup_codes.sql).
+// a separate capability, so it doesn't need its own permission.
 
 const MAX_ROWS_CSV = 25000
 const MAX_ROWS_PDF = 1000
-// FIX (deep audit, Reports & Audit re-pass — feature gap): this used to be
-// a hard 500-row ceiling with a "truncated, use CSV export" banner and no
-// way to see anything past it from the table view itself — see the old
-// comment here and AuditLogClient's own note ("no true pagination exists
-// here"). PAGE_SIZE_JSON now pages through it via `offset`/`hasMore`
-// instead; MAX_ROWS_JSON stays as an overall ceiling on how far in-app
-// paging goes (raised from 500 — CSV/PDF remain the tool for anything
-// beyond this) so a single workspace can't page through an unbounded
-// audit trail one row at a time in the browser.
+// In-app paging ceiling; CSV/PDF remain the tool for anything beyond it.
 const MAX_ROWS_JSON = 2000
 const PAGE_SIZE_JSON = 100
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const BARE_DATE_RE = /^\d{4}-\d{2}-\d{2}$/
+
+const SELECT_COLUMNS =
+  'id, event_type, entity_type, entity_id, entity_name, actor_name, actor_email, actor_id, project_id, created_at, metadata, ip_address'
+
+// FIX (Reports & Audit re-pass #3): a bare yyyy-mm-dd is now interpreted as a
+// UTC day explicitly (the old code used setHours() — server-local time — on
+// top of a UTC-parsed date). The in-app UI sends full ISO instants built from
+// the viewer's LOCAL day, so a Nairobi user's "Sep 19" is Sep 19 in Nairobi;
+// bare dates remain supported for direct API callers.
+function parseBound(raw: string | null, kind: 'from' | 'to'): Date | null | undefined {
+  if (!raw) return undefined
+  if (BARE_DATE_RE.test(raw)) {
+    return new Date(`${raw}T${kind === 'from' ? '00:00:00.000' : '23:59:59.999'}Z`)
+  }
+  const d = new Date(raw)
+  return isNaN(d.getTime()) ? null : d
+}
 
 export async function GET(request: Request) {
   try {
@@ -40,207 +60,170 @@ export async function GET(request: Request) {
     if (!hasPermission(session, 'VIEW_AUDIT_LOG')) {
       return NextResponse.json({ error: 'Missing permission: VIEW_AUDIT_LOG' }, { status: 403 })
     }
-    // FIX (re-audit): VIEW_AUDIT_LOG and VIEW_FINANCIALS are independent
-    // toggles on a fully custom per-workspace role (roles.permissions
-    // jsonb — no fixed role table), so a role with audit access but no
-    // financial visibility is a realistic combination, not a contrived
-    // edge case. Used below to redact dollar figures out of the CSV's
-    // Metadata column — see toCsv/redactMetadata for the full note.
+    // VIEW_AUDIT_LOG and VIEW_FINANCIALS are independent toggles on a custom
+    // role, so audit access without financial visibility is realistic —
+    // dollar figures are redacted out of metadata for those viewers.
     const canViewFinancials = hasPermission(session, 'VIEW_FINANCIALS')
 
     const url = new URL(request.url)
-    const format = (url.searchParams.get('format') || 'json') as 'json' | 'csv' | 'pdf'
-    const projectId = url.searchParams.get('projectId') || undefined
-    const actorId = url.searchParams.get('actorId') || undefined
-    const q = (url.searchParams.get('q') || '').trim()
-    // FEATURE (deep audit, Reports & Audit re-pass): pagination offset —
-    // only meaningful for format=json (see the fetch branch below); CSV/PDF
-    // always start from the top of the range up to their own row ceiling.
-    const offset = Math.max(0, Math.min(parseInt(url.searchParams.get('offset') || '0', 10) || 0, MAX_ROWS_JSON))
+    const sp = url.searchParams
+
+    const formatRaw = sp.get('format') || 'json'
+    if (formatRaw !== 'json' && formatRaw !== 'csv' && formatRaw !== 'pdf') {
+      return NextResponse.json({ error: 'Unsupported format' }, { status: 400 })
+    }
+    const format = formatRaw as 'json' | 'csv' | 'pdf'
+
+    const projectId = sp.get('projectId') || undefined
+    if (projectId && !UUID_RE.test(projectId)) {
+      return NextResponse.json({ error: 'Invalid projectId' }, { status: 400 })
+    }
+    const actorParam = sp.get('actorId') || undefined
+    if (actorParam && actorParam !== 'none' && !UUID_RE.test(actorParam)) {
+      return NextResponse.json({ error: 'Invalid actorId' }, { status: 400 })
+    }
+    const category = sp.get('category') || undefined
+    if (category && !AUDIT_CATEGORIES.some(c => c.id === category)) {
+      return NextResponse.json({ error: 'Invalid category' }, { status: 400 })
+    }
+    const q = (sp.get('q') || '').trim().slice(0, 100)
+    const offset = Math.max(0, Math.min(parseInt(sp.get('offset') || '0', 10) || 0, MAX_ROWS_JSON))
 
     const now = new Date()
-    const defaultFrom = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000)
-    const from = url.searchParams.get('from') ? new Date(url.searchParams.get('from')!) : defaultFrom
-    const to = url.searchParams.get('to') ? new Date(url.searchParams.get('to')!) : now
-    if (isNaN(from.getTime()) || isNaN(to.getTime())) {
+    const from = parseBound(sp.get('from'), 'from')
+    const to = parseBound(sp.get('to'), 'to')
+    if (from === null || to === null) {
       return NextResponse.json({ error: 'Invalid date range' }, { status: 400 })
     }
-    // Make `to` inclusive of the whole day when it arrives as a bare date (yyyy-mm-dd)
-    const toInclusive = new Date(to.getTime())
-    if (url.searchParams.get('to') && !url.searchParams.get('to')!.includes('T')) {
-      toInclusive.setHours(23, 59, 59, 999)
+    const fromDate = from ?? new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000)
+    const toDate = to ?? now
+    if (fromDate.getTime() > toDate.getTime()) {
+      return NextResponse.json({ error: '"from" must be on or before "to"' }, { status: 400 })
     }
 
-    const service = createServiceClient()
-    const maxRows = format === 'csv' ? MAX_ROWS_CSV : format === 'pdf' ? MAX_ROWS_PDF : MAX_ROWS_JSON
+    // FIX (Reports & Audit re-pass #3): paging is pinned to a snapshot
+    // instant. Without it, events written between "page 1" and "Load more"
+    // shifted every later row down by however many arrived and produced
+    // duplicated rows across pages. The first response returns `asOf`; the
+    // client sends it back on every later page.
+    let upper = toDate
+    const asOfRaw = sp.get('asOf')
+    if (format === 'json' && asOfRaw) {
+      const asOf = new Date(asOfRaw)
+      if (!isNaN(asOf.getTime()) && asOf.getTime() < upper.getTime()) upper = asOf
+    }
+    const asOfOut = format === 'json' ? (asOfRaw && !isNaN(new Date(asOfRaw).getTime()) ? new Date(asOfRaw) : now).toISOString() : undefined
 
-    // ── Resolve which entity_ids belong to the selected project ──────────
-    // audit_log has no project_id column (see migration 003 for why that's
-    // deliberate) — sow/change_order/guardian_flag/guardian_check rows all
-    // carry project_id already, so we resolve the relevant entity IDs here
-    // instead. Rows on entity types with no project relationship (workspace,
-    // workspace_member, role, user, billing) simply never match a project
-    // filter, which is correct — they aren't project-scoped.
-    let projectEntityIds: string[] | null = null
+    const service = createServiceClient()
+
     let projectName: string | undefined
     if (projectId) {
-      const [proj, sows, cos, flags, checks, exceptions] = await Promise.all([
-        (service as any).from('projects').select('id, name').eq('id', projectId).eq('workspace_id', session.workspaceId).maybeSingle(),
-        (service as any).from('sow_documents').select('id').eq('project_id', projectId),
-        (service as any).from('change_orders').select('id').eq('project_id', projectId),
-        (service as any).from('guardian_flags').select('id').eq('project_id', projectId),
-        (service as any).from('guardian_checks').select('id').eq('project_id', projectId),
-        // FIX (re-audit): exceptions_log was never resolved here, so
-        // flag_comment.added/flag_attachment.added events logged against an
-        // exception (entityType: 'exception', entityId: exceptions_log.id —
-        // see scope-governance/[entityType]/.../comments and attachments)
-        // silently vanished from a project-filtered audit export, even
-        // though granting/discussing an exception is squarely
-        // project-scoped activity.
-        (service as any).from('exceptions_log').select('id').eq('project_id', projectId),
-      ])
-      projectName = proj.data?.name
-      projectEntityIds = [
-        projectId,
-        ...(sows.data || []).map((r: any) => r.id),
-        ...(cos.data || []).map((r: any) => r.id),
-        ...(flags.data || []).map((r: any) => r.id),
-        ...(checks.data || []).map((r: any) => r.id),
-        ...(exceptions.data || []).map((r: any) => r.id),
-      ]
-      if (!proj.data) {
-        return NextResponse.json({ error: 'Project not found' }, { status: 404 })
+      // Deleted (soft or purged) projects are still valid filters — "what
+      // happened on that project" is exactly the question an audit answers.
+      const { data: proj, error: projErr } = await (service as any)
+        .from('projects').select('id, name').eq('id', projectId).eq('workspace_id', session.workspaceId).maybeSingle()
+      if (projErr) throw new Error(`project lookup: ${projErr.message}`)
+      // A purged project no longer has a row, but audit rows can still carry
+      // its id. Only 404 when the id has never appeared in this workspace's log.
+      if (!proj) {
+        const { count: seen, error: seenErr } = await (service as any)
+          .from('audit_log').select('id', { count: 'exact', head: true })
+          .eq('workspace_id', session.workspaceId).eq('project_id', projectId)
+        if (seenErr) throw new Error(`project lookup: ${seenErr.message}`)
+        if (!seen) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
+      } else {
+        projectName = proj.name
       }
     }
 
     let actorName: string | undefined
-    if (actorId) {
-      // FIX (audit round 6): this lookup had no workspace scope, unlike
-      // every other query in this route — passing an arbitrary actorId
-      // for a user in a different workspace would pull that person's real
-      // name into this workspace's exported PDF ("Filters: actor: X"). The
-      // actual audit_log rows returned were still safely workspace-scoped
-      // (nothing in the log itself leaked), but this name lookup wasn't.
-      // Scope it through workspace_members instead of querying `users`
-      // directly.
-      const { data: member } = await (service as any)
-        .from('workspace_members')
-        .select('users(name)')
-        .eq('workspace_id', session.workspaceId)
-        .eq('user_id', actorId)
-        .maybeSingle()
+    if (actorParam === 'none') {
+      actorName = 'System / client portal (no signed-in user)'
+    } else if (actorParam) {
+      // Scoped through workspace_members so a foreign user's name can never
+      // be pulled into this workspace's export header.
+      const { data: member, error: memberErr } = await (service as any)
+        .from('workspace_members').select('users(name)')
+        .eq('workspace_id', session.workspaceId).eq('user_id', actorParam).maybeSingle()
+      if (memberErr) throw new Error(`actor lookup: ${memberErr.message}`)
       actorName = member?.users?.name
     }
 
-    // ── Base query — server-side filters that ARE indexed columns ────────
-    let query = (service as any)
-      .from('audit_log')
-      .select('id, event_type, entity_type, entity_id, entity_name, actor_name, actor_email, actor_id, created_at, metadata, ip_address', { count: 'exact' })
-      .eq('workspace_id', session.workspaceId)
-      .gte('created_at', from.toISOString())
-      .lte('created_at', toInclusive.toISOString())
-      .order('created_at', { ascending: false })
+    const searchFilter = buildAuditSearchFilter(q)
+    const categoryOr = categoryFilter(category)
 
-    if (actorId) query = query.eq('actor_id', actorId)
-    // FIX (audit round 3): `q` used to be interpolated raw into the .or()
-    // filter string — PostgREST's or() syntax is comma/paren-delimited, so
-    // untrusted commas/parens/dots in `q` could break the intended filter
-    // shape. workspace_id is a separate, independently-ANDed query param
-    // so this was never a cross-tenant read, but it's still the wrong way
-    // to build this query and the kind of pattern that becomes a real bug
-    // the next time it's copied somewhere without that compensating
-    // filter. Escape PostgREST's own special characters before building
-    // the filter string, same idea as escaping a LIKE pattern.
-    //
-    // FIX (deep audit, Settings re-pass): the escape set didn't include
-    // `%` or `_` — ILIKE's own wildcard characters — so typing either into
-    // the search box let it match more broadly than the literal text
-    // typed (e.g. "50%" matching any digits-then-anything). No cross-
-    // tenant exposure (workspace_id stays independently scoped) but still
-    // the wrong result for a literal search. Backslash is ILIKE's default
-    // escape character, same as it already is for PostgREST's filter
-    // syntax, so folding these into the same escape pass is correct.
-    if (q) {
-      const escaped = q.replace(/[,()."'\\%_]/g, '\\$&')
-      query = query.or(`event_type.ilike.%${escaped}%,entity_name.ilike.%${escaped}%`)
+    const buildQuery = () => {
+      let query = (service as any)
+        .from('audit_log')
+        .select(SELECT_COLUMNS, { count: 'exact' })
+        .eq('workspace_id', session.workspaceId)
+        .gte('created_at', fromDate.toISOString())
+        .lte('created_at', upper.toISOString())
+        // Deterministic order: rows that share a created_at (several events
+        // written in one transaction) are ordered by id so offset paging can
+        // never duplicate or skip them.
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: false })
+      if (actorParam === 'none') query = query.is('actor_id', null)
+      else if (actorParam) query = query.eq('actor_id', actorParam)
+      if (projectId) query = query.eq('project_id', projectId)
+      if (categoryOr) query = query.or(categoryOr)
+      if (searchFilter) query = query.or(searchFilter)
+      return query
     }
 
-    // FIX (audit round 6): a previous pass (see the "deep audit, section 5"
-    // history in this file) already noticed the project filter's
-    // over-fetch-then-filter-in-memory approach could silently miss rows
-    // past its fetch ceiling, and patched it to at least flag `truncated`
-    // when that ceiling was hit. That stops the export from confidently
-    // lying about completeness, but the underlying rows are still never
-    // fetched — a "trustworthy audit export" that has to tell you it might
-    // be incomplete is still incomplete. We already resolve the exact set
-    // of entity_ids that belong to the project right above
-    // (projectEntityIds) — there's no reason not to push that down as a
-    // real SQL filter instead of over-fetching and hoping. This also makes
-    // `count` exact instead of an in-memory approximation, so `truncated`
-    // and `totalCount` are simply correct rather than best-effort.
-    if (projectEntityIds) query = query.in('entity_id', projectEntityIds)
+    let pageRows: any[]
+    let totalCount: number
+    let truncated: boolean
+    let hasMore = false
 
-    const { data: rawRows, count } = format === 'json'
-      // FEATURE (deep audit, Reports & Audit re-pass): true pagination for
-      // the table view — page forward with `.range()` instead of always
-      // re-fetching from the top and slicing. CSV/PDF below are unchanged:
-      // they're a one-shot export up to their own ceiling, not something
-      // the user pages through.
-      ? await query.range(offset, Math.min(offset + PAGE_SIZE_JSON, MAX_ROWS_JSON) - 1)
-      : await query.limit(maxRows + 1)
-
-    const rows = (rawRows || []) as any[]
-    const totalCount = count ?? rows.length
-    const truncated = format === 'json' ? totalCount > MAX_ROWS_JSON : rows.length > maxRows
-    const pageRows = format === 'json' ? rows : rows.slice(0, maxRows)
-    // Only relevant for format=json — whether another page is available
-    // before MAX_ROWS_JSON's ceiling.
-    const hasMore = format === 'json' && offset + pageRows.length < Math.min(totalCount, MAX_ROWS_JSON)
-
-    // Log the export itself — who pulled the audit trail, and with what
-    // filters, is exactly the kind of thing a compliance audit trail should
-    // capture about itself.
-    if (format !== 'json') {
-      await logAudit(service, {
-        workspaceId: session.workspaceId,
-        actorId: session.id, actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
-        eventType: 'audit_log.exported',
-        entityType: 'workspace', entityId: session.workspaceId, entityName: session.workspaceName,
-        metadata: { format, from: from.toISOString(), to: toInclusive.toISOString(), project_id: projectId || null, actor_id: actorId || null, row_count: pageRows.length },
-      })
+    if (format === 'json') {
+      const end = Math.min(offset + PAGE_SIZE_JSON, MAX_ROWS_JSON) - 1
+      // range(offset, end) with offset > end (offset already at the ceiling)
+      // is a valid "no rows" request, so short-circuit instead.
+      if (offset > end) {
+        const { count, error } = await buildQuery().range(0, 0)
+        if (error) throw new Error(error.message)
+        pageRows = []
+        totalCount = count ?? 0
+      } else {
+        const { data, error, count } = await buildQuery().range(offset, end)
+        if (error) throw new Error(error.message)
+        pageRows = data || []
+        totalCount = count ?? pageRows.length
+      }
+      truncated = totalCount > MAX_ROWS_JSON
+      hasMore = offset + pageRows.length < Math.min(totalCount, MAX_ROWS_JSON)
+    } else {
+      const maxRows = format === 'csv' ? MAX_ROWS_CSV : MAX_ROWS_PDF
+      const res = await fetchPaged<any>((f, t) => buildQuery().range(f, t), { maxRows })
+      pageRows = res.rows
+      totalCount = res.total
+      truncated = res.truncated
     }
 
     if (format === 'json') {
       return NextResponse.json({
         rows: pageRows.map(r => ({
-          id: r.id, eventType: r.event_type, entityType: r.entity_type, entityName: r.entity_name,
-          actorName: r.actor_name, actorEmail: r.actor_email, createdAt: r.created_at, ipAddress: r.ip_address,
+          id: r.id, eventType: r.event_type, entityType: r.entity_type, entityId: r.entity_id, entityName: r.entity_name,
+          actorId: r.actor_id, actorName: r.actor_name, actorEmail: r.actor_email,
+          projectId: r.project_id, createdAt: r.created_at, ipAddress: r.ip_address,
+          metadata: redactMetadata(r.metadata, canViewFinancials),
         })),
-        totalCount, truncated, hasMore, offset, nextOffset: offset + pageRows.length,
+        totalCount, truncated, hasMore, offset, nextOffset: offset + pageRows.length, asOf: asOfOut,
       })
     }
+
+    let body: Uint8Array
+    let contentType: string
+    let filename: string
 
     if (format === 'csv') {
-      // FIX (deep audit, Reports & Audit re-pass — CRITICAL): toCsv used to
-      // be called with no truncation info at all, so a range with more
-      // than MAX_ROWS_CSV events produced a CSV that silently stopped at
-      // the cap with zero indication anything was missing — while the PDF
-      // export (below) explicitly tells the reader "export CSV for the
-      // complete, unabridged record" when it's the one that's truncated.
-      // That sentence is false the moment CSV is ALSO truncated. Pass the
-      // same truncated/totalCount signal through so the file that's
-      // supposed to be the authoritative fallback says so when it isn't.
       const csv = toCsv(pageRows, canViewFinancials, truncated, totalCount)
-      // BUG-008 convention: Uint8Array for NextResponse BodyInit
-      return new NextResponse(new Uint8Array(Buffer.from(csv, 'utf-8')), {
-        headers: {
-          'Content-Type': 'text/csv; charset=utf-8',
-          'Content-Disposition': `attachment; filename="${csvFilename(session.workspaceName, from, toInclusive)}"`,
-        },
-      })
-    }
-
-    if (format === 'pdf') {
+      body = new Uint8Array(Buffer.from(CSV_BOM + csv, 'utf-8'))
+      contentType = 'text/csv; charset=utf-8'
+      filename = exportFilename(session.workspaceName, fromDate, upper, 'csv')
+    } else {
       const pdfRows: AuditReportRow[] = pageRows.map(r => ({
         createdAt: r.created_at, eventType: r.event_type, actorName: r.actor_name || 'System',
         actorEmail: r.actor_email, entityType: r.entity_type, entityName: r.entity_name || '', ipAddress: r.ip_address,
@@ -248,112 +231,75 @@ export async function GET(request: Request) {
       const buffer = await renderAuditReportPdf({
         agencyName: session.agencyName, workspaceName: session.workspaceName,
         generatedBy: session.name, generatedAt: new Date().toISOString(),
-        from: from.toISOString(), to: toInclusive.toISOString(),
-        filters: { project: projectName, actor: actorName, eventType: q || undefined },
+        from: fromDate.toISOString(), to: upper.toISOString(),
+        filters: {
+          project: projectName ?? (projectId ? 'Deleted project' : undefined),
+          actor: actorName,
+          category: category ? AUDIT_CATEGORIES.find(c => c.id === category)?.label : undefined,
+          search: q || undefined,
+        },
         totalCount, truncated, rows: pdfRows,
       })
-      return new NextResponse(new Uint8Array(buffer), {
-        headers: {
-          'Content-Type': 'application/pdf',
-          'Content-Disposition': `attachment; filename="${csvFilename(session.workspaceName, from, toInclusive).replace('.csv', '.pdf')}"`,
-        },
-      })
+      body = new Uint8Array(buffer)
+      contentType = 'application/pdf'
+      filename = exportFilename(session.workspaceName, fromDate, upper, 'pdf')
     }
 
-    return NextResponse.json({ error: 'Unsupported format' }, { status: 400 })
+    // Log the export itself — but only once the file has actually been
+    // produced (a failed PDF render used to be recorded as a successful
+    // export). Who pulled the audit trail, with which filters, is exactly
+    // what a compliance trail should capture about itself.
+    await logAudit(service, {
+      workspaceId: session.workspaceId,
+      actorId: session.id, actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
+      eventType: 'audit_log.exported',
+      entityType: 'workspace', entityId: session.workspaceId, entityName: session.workspaceName,
+      metadata: {
+        format, from: fromDate.toISOString(), to: upper.toISOString(),
+        project_id: projectId || null, actor_id: actorParam || null, category: category || null,
+        search: q || null, row_count: pageRows.length, total_count: totalCount, truncated,
+      },
+    })
+
+    return new NextResponse(body as any, {
+      headers: {
+        'Content-Type': contentType,
+        'Content-Disposition': `attachment; filename="${filename}"`,
+      },
+    })
   } catch (err) {
     console.error('Audit export error:', err)
-    return NextResponse.json({ error: 'Could not generate export' }, { status: 500 })
+    return NextResponse.json({ error: 'Could not load the audit log' }, { status: 500 })
   }
 }
 
-function csvFilename(workspaceName: string, from: Date, to: Date): string {
-  const slug = workspaceName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'workspace'
+function exportFilename(workspaceName: string, from: Date, to: Date, ext: 'csv' | 'pdf'): string {
+  const slug = (workspaceName || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'workspace'
   const d = (dt: Date) => dt.toISOString().slice(0, 10)
-  return `${slug}-audit-log-${d(from)}-to-${d(to)}.csv`
-}
-
-function csvCell(value: unknown): string {
-  let str = value === null || value === undefined ? '' : String(value)
-  // FIX (audit round 1): entity_name, actor_name, and metadata can all
-  // contain user-supplied strings (project names, CO titles, client
-  // names) that end up in this export. Without neutralizing a leading
-  // =, +, -, or @, a value like "=HYPERLINK(...)" or "=cmd|'/c calc'"
-  // opens as a live formula the instant an admin opens the CSV in
-  // Excel/Sheets — classic CSV/formula injection. Prefixing a single
-  // quote forces spreadsheet apps to treat it as text; RFC 4180 quoting
-  // below still applies on top of this for commas/quotes/newlines.
-  if (/^[=+\-@]/.test(str)) str = `'${str}`
-  if (/[",\n\r]/.test(str)) return `"${str.replace(/"/g, '""')}"`
-  return str
-}
-
-// FIX (re-audit): the JSON view (format=json, above) and the PDF export
-// (AuditReportRow, below) both deliberately curate their row shape and
-// never surface `metadata` at all — but toCsv dumped it raw, unfiltered by
-// VIEW_FINANCIALS, for every row. audit_log.metadata routinely carries real
-// dollar figures (invoice amounts, CO totals, payment amounts, exception
-// estimated_value, Paystack payment amounts) — this is exactly the class of
-// leak /api/reports' scope mode was hardened against for
-// exceptionsByProject.estimated_value. Strip the known financial keys
-// rather than the whole metadata blob, so non-financial context (reasons,
-// escalation notes, from/to plan tiers) is still preserved for a reader who
-// genuinely can't see amounts.
-// FIX (deep audit, Settings re-pass): this list was missing contract_value
-// and schedule_sum — both carry real dollar figures and are logged
-// verbatim: project contract-value edits (api/projects/[id]/route.ts) log
-// `contractValue: { from, to }`, and SOW payment-schedule mismatches
-// (portal/sow/[token]/sign/route.ts) log `schedule_sum`. Without these, a
-// role with VIEW_AUDIT_LOG but not VIEW_FINANCIALS could still pull exact
-// contract values straight out of a CSV export — the same leak class this
-// list was built to close.
-//
-// FIX (deep audit, Reports & Audit re-pass): also missing
-// `client_counter_amount` — api/co/[id]/revise/route.ts logs the client's
-// real counter-offer dollar amount under this exact key on every
-// `co.revised` event, and it was never added here. Same leak class,
-// different key that got missed.
-//
-// FIX (build, Reports & Audit re-pass #2): grepped every logAudit /
-// audit_log.insert call in the repo for dollar-shaped metadata and found
-// two more missing keys, same leak class: `threshold_amount`
-// (api/approval-workflows/route.ts — an approval workflow's own dollar
-// threshold, logged on approval_workflow.created) and
-// `new_monthly_amount` (lib/documents/finalize-co.ts — the new retainer
-// rate on project.retainer_renewed).
-const FINANCIAL_METADATA_KEYS = ['amount', 'balance_due', 'estimated_value', 'counter_amount', 'client_counter_amount', 'total', 'subtotal', 'contract_value', 'contractValue', 'schedule_sum', 'threshold_amount', 'new_monthly_amount']
-function redactMetadata(metadata: Record<string, unknown> | null | undefined, canViewFinancials: boolean) {
-  if (!metadata || !Object.keys(metadata).length) return metadata
-  if (canViewFinancials) return metadata
-  const redacted: Record<string, unknown> = {}
-  for (const [key, value] of Object.entries(metadata)) {
-    redacted[key] = FINANCIAL_METADATA_KEYS.includes(key) ? '[redacted]' : value
-  }
-  return redacted
+  return `${slug}-audit-log-${d(from)}-to-${d(to)}.${ext}`
 }
 
 function toCsv(rows: any[], canViewFinancials: boolean, truncated: boolean, totalCount: number): string {
-  const header = ['Timestamp (UTC)', 'Event', 'Entity type', 'Entity', 'Actor name', 'Actor email', 'IP address', 'Metadata']
+  const header = ['Timestamp (UTC)', 'Event', 'Entity type', 'Entity', 'Entity ID', 'Actor name', 'Actor email', 'IP address', 'Metadata']
   const lines: string[] = []
-  // FIX (deep audit, Reports & Audit re-pass — CRITICAL): see the call
-  // site's comment. Same single-cell note-line convention already used by
-  // scopeToCsv/financialToCsv in api/reports/export/route.ts.
+  // Same single-cell note-line convention as the reports CSVs.
   if (truncated) {
-    lines.push(csvCell(`This export shows the first ${rows.length.toLocaleString()} of ${totalCount.toLocaleString()} matching events. Narrow the date range or filters to capture the rest.`))
+    lines.push(csvRow([`This export shows the first ${rows.length.toLocaleString()} of ${totalCount.toLocaleString()} matching events. Narrow the date range or filters to capture the rest.`]))
   }
-  lines.push(header.map(csvCell).join(','))
+  lines.push(csvRow(header))
   for (const r of rows) {
     const metadata = redactMetadata(r.metadata, canViewFinancials)
-    lines.push([
+    lines.push(csvRow([
       new Date(r.created_at).toISOString(),
       r.event_type,
       r.entity_type,
       r.entity_name || '',
+      r.entity_id || '',
       r.actor_name || 'System',
       r.actor_email || '',
       r.ip_address || '',
       metadata && Object.keys(metadata).length ? JSON.stringify(metadata) : '',
-    ].map(csvCell).join(','))
+    ]))
   }
   return lines.join('\r\n')
 }

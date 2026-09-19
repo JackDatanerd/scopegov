@@ -47,11 +47,12 @@ function ReportsPageInner() {
   // case, not the only line of defense.
   const [errorMsg, setErrorMsg] = useState('')
   const [exporting, setExporting] = useState<'csv' | 'pdf' | null>(null)
+  const [exportError, setExportError] = useState('')
 
   useEffect(() => {
     let cancelled = false
     setLoading(true); setErrorMsg('')
-    const currencyParam = currency ? `&currency=${currency}` : ''
+    const currencyParam = currency ? `&currency=${encodeURIComponent(currency)}` : ''
     fetch(`/api/reports?mode=${mode}&period=${period}${currencyParam}`)
       .then(async res => {
         const json = await res.json().catch(() => ({}))
@@ -61,18 +62,14 @@ function ReportsPageInner() {
           setErrorMsg(json.error || 'Could not load report data.')
           return
         }
+        // FIX (Reports & Audit re-pass #3): `currency` is now only the
+        // currency the person REQUESTED. The dropdown displays whatever the
+        // backend resolved (`data.currency`), so it can never drift from
+        // the numbers on screen — and there is no longer a setCurrency()
+        // here. That call changed an effect dependency, so every first load
+        // and every tab switch fetched twice (the '' -> 'USD' resync
+        // re-triggered this effect), doubling the five 5,000-row queries.
         setData(json)
-        // FIX (deep audit, Reports & Audit re-pass): this used to only
-        // sync once (`if (json.currency && !currency)`), so switching
-        // between Scope and Financial tabs — which can legitimately have
-        // different available currencies, since financial mode excludes
-        // Draft/Archived projects and scope mode doesn't — could leave
-        // this selector showing a currency the backend silently fell back
-        // away from. The numbers on screen were always correctly labeled
-        // from `data.currency`, but the dropdown itself could drift out of
-        // sync with them. Always resync to whatever the backend actually
-        // resolved.
-        if (json.currency) setCurrency(json.currency)
       })
       .catch(() => { if (!cancelled) setErrorMsg('Could not load report data.') })
       .finally(() => { if (!cancelled) setLoading(false) })
@@ -80,9 +77,11 @@ function ReportsPageInner() {
   }, [mode, period, currency])
 
   async function handleExport(format: 'csv' | 'pdf') {
-    setExporting(format)
+    setExporting(format); setExportError('')
     try {
-      const currencyParam = currency ? `&currency=${currency}` : ''
+      // Export the currency actually on screen, not merely the requested one.
+      const shown = data?.currency || currency
+      const currencyParam = shown ? `&currency=${encodeURIComponent(shown)}` : ''
       const res = await fetch(`/api/reports/export?mode=${mode}&period=${period}&format=${format}${currencyParam}`)
       if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || 'Export failed') }
       const blob = await res.blob()
@@ -95,7 +94,7 @@ function ReportsPageInner() {
       document.body.appendChild(a); a.click(); a.remove()
       URL.revokeObjectURL(url)
     } catch (err: unknown) {
-      alert(err instanceof Error ? err.message : 'Export failed')
+      setExportError(err instanceof Error ? err.message : 'Export failed')
     } finally { setExporting(null) }
   }
 
@@ -116,7 +115,7 @@ function ReportsPageInner() {
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           {data?.mixedCurrencies && (
-            <select className="finp" style={{ width: 'auto' }} value={currency}
+            <select className="finp" style={{ width: 'auto' }} value={data.currency || currency}
               onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setCurrency(e.target.value)}>
               {(data.availableCurrencies || []).map((c: string) => <option key={c} value={c}>{c}</option>)}
             </select>
@@ -136,10 +135,12 @@ function ReportsPageInner() {
         </div>
       </div>
 
+      {exportError && <div className="auth-error" style={{ marginBottom: 16 }}>{exportError}</div>}
+
       {data?.mixedCurrencies && (
         <div style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '10px 14px', marginBottom: 16, fontSize: 12.5, color: 'var(--text-2)', display: 'flex', alignItems: 'center', gap: 8 }}>
           <i className="ti ti-info-circle" style={{ fontSize: 14, color: 'var(--text-3)' }} />
-          You have projects in multiple currencies ({(data.availableCurrencies || []).join(', ')}). Figures below are shown in <strong>{currency}</strong> only — switch currencies above to see the rest. Totals are never combined across currencies.
+          You have projects in multiple currencies ({(data.availableCurrencies || []).join(', ')}). Figures below are shown in <strong>{data.currency}</strong> only — switch currencies above to see the rest. Totals are never combined across currencies.
         </div>
       )}
 
@@ -200,12 +201,12 @@ function ScopeReport({ data }: { data: any }) {
         <div className="mc">
           <div className="mc-lbl">Flags raised</div>
           <div className="mc-val red">{metrics?.total_flags ?? 0}</div>
-          <div className="mc-sub">Out of scope detected</div>
+          <div className="mc-sub">Confirmed out of scope{metrics?.dismissed_flags ? ` · ${metrics.dismissed_flags} dismissed` : ''}</div>
         </div>
         <div className="mc">
           <div className="mc-lbl">Converted to CO</div>
           <div className="mc-val green">{metrics?.converted_to_co ?? 0}</div>
-          <div className="mc-sub">Revenue captured</div>
+          <div className="mc-sub">Change orders raised or accepted</div>
         </div>
         <div className="mc">
           <div className="mc-lbl">Recovery rate</div>
@@ -214,7 +215,7 @@ function ScopeReport({ data }: { data: any }) {
               ? `${Math.round((metrics.converted_to_co / metrics.total_flags) * 100)}%`
               : '—'}
           </div>
-          <div className="mc-sub">Flags → accepted COs</div>
+          <div className="mc-sub">Flags → change orders</div>
         </div>
         <div className="mc">
           <div className="mc-lbl">Recovered value</div>
@@ -239,6 +240,9 @@ function ScopeReport({ data }: { data: any }) {
         <div className="surface surface-p">
           <div className="sec-hd" style={{ marginBottom: 16 }}>
             <div className="sec-title">Flags by project</div>
+            {(flagsByProject || []).length > 10 && (
+              <span style={{ fontSize: 12, color: 'var(--text-3)' }}>Top 10 of {(flagsByProject || []).length} · export for all</span>
+            )}
           </div>
           {!(flagsByProject || []).length ? (
             <p style={{ fontSize: 13, color: 'var(--text-3)' }}>No scope flags in this period</p>
@@ -258,7 +262,7 @@ function ScopeReport({ data }: { data: any }) {
         {/* Exceptions log */}
         <div className="surface surface-p">
           <div className="sec-hd" style={{ marginBottom: 16 }}>
-            <div className="sec-title">Exceptions granted</div>
+            <div className="sec-title">Exceptions granted{(exceptionsByProject || []).length > 8 ? ` (showing 8 of ${(exceptionsByProject || []).length})` : ''}</div>
             {/* FIX (deep audit, Reports & Audit re-pass): estimated_value is
                 redacted to null server-side for anyone without
                 VIEW_FINANCIALS. Summing `e.estimated_value || 0` across an
@@ -326,7 +330,7 @@ function ScopeReport({ data }: { data: any }) {
       {(adjustments || []).length > 0 && (
         <div className="surface surface-p" style={{ marginTop: 20 }}>
           <div className="sec-hd" style={{ marginBottom: 14 }}>
-            <div className="sec-title">Scope adjustments ({(adjustments || []).length})</div>
+            <div className="sec-title">Scope adjustments ({(adjustments || []).length}{(adjustments || []).length > 10 ? ' · showing 10, export for all' : ''})</div>
           </div>
           <table className="gov-table" style={{ width: '100%' }}>
             <thead><tr><th>Project</th><th>Deliverable change</th><th>Reason</th><th>Date</th></tr></thead>
@@ -360,21 +364,21 @@ function FinancialReport({ data }: { data: any }) {
       {/* Metrics */}
       <div className="mstrip" style={{ marginBottom: 24 }}>
         <div className="mc">
-          <div className="mc-lbl">Effective contract value</div>
+          <div className="mc-lbl">Portfolio contract value</div>
           <div className="mc-val green">
             {formatCurrency(metrics?.effective_value || 0, currency || 'USD', true)}
           </div>
-          <div className="mc-sub">Base + amendments</div>
+          <div className="mc-sub">Base + all accepted change orders</div>
         </div>
         <div className="mc">
-          <div className="mc-lbl">CO impact</div>
+          <div className="mc-lbl">Change orders added</div>
           <div className="mc-val green">
             {formatCurrency(metrics?.co_impact || 0, currency || 'USD', true)}
           </div>
-          <div className="mc-sub">From accepted change orders</div>
+          <div className="mc-sub">Accepted in this period</div>
         </div>
         <div className="mc">
-          <div className="mc-lbl">COs raised</div>
+          <div className="mc-lbl">COs sent</div>
           <div className="mc-val">{metrics?.cos_raised ?? 0}</div>
           <div className="mc-sub">In period</div>
         </div>
@@ -393,10 +397,10 @@ function FinancialReport({ data }: { data: any }) {
         {/* By client */}
         <div className="surface surface-p">
           <div className="sec-hd" style={{ marginBottom: 16 }}>
-            <div className="sec-title">Revenue by client</div>
+            <div className="sec-title">Contract value by client</div>
           </div>
           {!(byClient || []).length ? (
-            <p style={{ fontSize: 13, color: 'var(--text-3)' }}>No data in this period</p>
+            <p style={{ fontSize: 13, color: 'var(--text-3)' }}>No active projects in this currency</p>
           ) : (
             (byClient || []).slice(0, 10).map((c: any) => (
               <div key={c.client_id} className="rbar-row">
@@ -413,10 +417,10 @@ function FinancialReport({ data }: { data: any }) {
         {/* By project type */}
         <div className="surface surface-p">
           <div className="sec-hd" style={{ marginBottom: 16 }}>
-            <div className="sec-title">Revenue by project type</div>
+            <div className="sec-title">Contract value by project type</div>
           </div>
           {!(byType || []).length ? (
-            <p style={{ fontSize: 13, color: 'var(--text-3)' }}>No data in this period</p>
+            <p style={{ fontSize: 13, color: 'var(--text-3)' }}>No active projects in this currency</p>
           ) : (
             (byType || []).map((t: any) => (
               <div key={t.type} className="rbar-row">
@@ -437,12 +441,13 @@ function FinancialReport({ data }: { data: any }) {
           <div className="sec-hd" style={{ marginBottom: 14 }}>
             <div className="sec-title">Change order impact grid</div>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 1, background: 'var(--border)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', overflow: 'hidden' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 1, background: 'var(--border)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', overflow: 'hidden' }}>
             {[
-              { label: 'Raised', val: coGrid.raised,   color: 'var(--text)' },
+              { label: 'Sent', val: coGrid.raised,   color: 'var(--text)' },
               { label: 'Accepted', val: coGrid.accepted, color: 'var(--green)' },
               { label: 'Declined', val: coGrid.declined, color: 'var(--red)' },
               { label: 'Pending', val: coGrid.pending,  color: 'var(--amber)' },
+              { label: 'Closed / expired', val: coGrid.closed, color: 'var(--text-3)' },
             ].map(item => (
               <div key={item.label} style={{ background: 'var(--surface)', padding: '16px 18px' }}>
                 <div className="mc-lbl">{item.label}</div>

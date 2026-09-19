@@ -1,6 +1,7 @@
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
+import { fetchPaged } from '@/lib/utils/paginate'
 import AuditLogClient from '@/components/settings/AuditLogClient'
 
 export const metadata = { title: 'Audit Log' }
@@ -27,30 +28,32 @@ export default async function AuditLogPage() {
   }
 
   const service = createServiceClient()
-  const [projectsRes, membersRes] = await Promise.all([
-    (service as any)
-      .from('projects')
-      .select('id, name')
-      .eq('workspace_id', session.workspaceId)
-      .is('deleted_at', null)
-      .order('name'),
+  // Deleted projects are included (labelled in the UI): "what happened on
+  // that project" is a normal audit question and the project filter is now
+  // backed by audit_log.project_id, which outlives the project row.
+  // Paged so a workspace past PostgREST's max-rows cap still lists them all.
+  const [projects, membersRes] = await Promise.all([
+    fetchPaged<any>(
+      (f, t) => (service as any)
+        .from('projects')
+        .select('id, name, deleted_at', { count: 'exact' })
+        .eq('workspace_id', session.workspaceId)
+        .order('name').order('id')
+        .range(f, t),
+      { maxRows: 5000 },
+    ).then(r => r.rows).catch(err => { console.error('Audit page projects load failed:', err); return [] as any[] }),
     (service as any)
       .from('workspace_members')
-      // FIX (re-audit, Reports & Audit section): this used to filter to
-      // .eq('status', 'active') only. The backend (audit-export's actorId
-      // param) has always accepted any actor, active or not — this was the
-      // only thing stopping someone from filtering the audit log by a
-      // departed member, which is precisely when "what did this person do
-      // before they left" tends to matter for a compliance-grade record.
-      // Fetch everyone and let the client label inactive ones.
+      // Everyone, not only active members: "what did this person do before
+      // they left" is precisely when a compliance-grade record matters.
       .select('user_id, status, users!workspace_members_user_id_fkey(id, name, email)')
       .eq('workspace_id', session.workspaceId),
   ])
 
-  const projects = (projectsRes.data || []).map((p: any) => ({ id: p.id, name: p.name }))
+  const projectOptions = projects.map((p: any) => ({ id: p.id, name: p.name, deleted: !!p.deleted_at }))
   const members = (membersRes.data || [])
     .filter((m: any) => m.users)
     .map((m: any) => ({ id: m.users.id, name: m.users.name || m.users.email, email: m.users.email, active: m.status === 'active' }))
 
-  return <AuditLogClient projects={projects} members={members} />
+  return <AuditLogClient projects={projectOptions} members={members} />
 }

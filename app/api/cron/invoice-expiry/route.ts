@@ -5,6 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
 import { renewInvoiceTokenIfExpired } from '@/lib/documents/renew-invoice-token'
 
+import { insertAuditRow } from '@/lib/utils/audit'
 // FIX (build, cron/portal audit round — flagship finding, section 18):
 // see renew-invoice-token.ts for the full history of why this cron exists
 // (mirrors app/api/cron/sow-expiry and co-expiry, which exist for the
@@ -47,7 +48,7 @@ export async function POST(request: NextRequest) {
         )
         if (!result.renewed) continue
 
-        await (service as any).from('audit_log').insert({
+        await insertAuditRow(service, {
           workspace_id: inv.workspace_id,
           actor_id:     null,
           actor_email:  'cron@scopegov.app',

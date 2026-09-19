@@ -1,7 +1,10 @@
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
-import { periodSince, getScopeReportData, getFinancialReportData } from '@/lib/reports/scope-financial-data'
+import { getScopeReportData, getFinancialReportData } from '@/lib/reports/scope-financial-data'
+import { parsePeriod, periodSince } from '@/lib/reports/period'
+
+export const maxDuration = 60
 
 export async function GET(request: NextRequest) {
   try {
@@ -20,9 +23,15 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Missing permission: VIEW_ALL_PROJECTS' }, { status: 403 })
 
     const { searchParams } = new URL(request.url)
-    const mode   = searchParams.get('mode') || 'scope'
-    const period = searchParams.get('period') || '90d'
-    const requestedCurrency = searchParams.get('currency')
+    const mode = searchParams.get('mode') || 'scope'
+    if (mode !== 'scope' && mode !== 'financial')
+      return NextResponse.json({ error: 'Invalid mode' }, { status: 400 })
+    // Allowlisted — an unknown or inherited-key period ("foo", "constructor")
+    // used to mean "all time" or a 500 respectively (see lib/reports/period.ts).
+    const period = parsePeriod(searchParams.get('period'))
+    if (!period) return NextResponse.json({ error: 'Invalid period' }, { status: 400 })
+    const currencyParam = searchParams.get('currency')
+    const requestedCurrency = currencyParam && /^[A-Za-z]{3}$/.test(currencyParam) ? currencyParam.toUpperCase() : null
 
     const service = createServiceClient()
     const since = periodSince(period)
@@ -41,6 +50,8 @@ export async function GET(request: NextRequest) {
     const data = await getFinancialReportData(service, wsId, since, requestedCurrency)
     return NextResponse.json(data)
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    // Log the real cause; don't hand raw database error text to the browser.
+    console.error('Reports error:', err)
+    return NextResponse.json({ error: 'Could not build the report' }, { status: 500 })
   }
 }

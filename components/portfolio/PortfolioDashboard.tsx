@@ -36,6 +36,7 @@ interface PortfolioData {
   // FIX (deep audit, section 8): atRiskDelta is now null when the viewer
   // lacks VIEW_FINANCIALS — see api/reports/portfolio/route.ts.
   trend: { openFlagsDelta: number; atRiskDelta: number | null } | null
+  openFlagsTotal?: number
   openFlags: OpenFlag[]
   stalledSows: StalledSow[]
   stalledCos: StalledCo[]
@@ -187,7 +188,7 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName }: { 
 
           <div>
             <div className="sec-hd">
-              <div className="sec-title">Open scope flags ({data.openFlags.length})</div>
+              <div className="sec-title">Open scope flags ({data.openFlags.length}{data.openFlagsTotal && data.openFlagsTotal > data.openFlags.length ? ` of ${data.openFlagsTotal} · most recent shown` : ''})</div>
               <div style={{ display: 'flex', gap: 4 }}>
                 {(['all', 'high', 'medium', 'low'] as const).map(s => (
                   <button key={s}

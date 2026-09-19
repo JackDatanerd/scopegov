@@ -7,6 +7,7 @@ import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { sendSowExpiredEmail } from '@/lib/email/templates'
 
+import { insertAuditRow } from '@/lib/utils/audit'
 // FIX (section-9 audit, 9-G3): 'expired' has been a valid sow_documents
 // status since migration 001 — it's in the CHECK constraint, in the
 // registry's pill-colour map (app/(app)/sow/page.tsx), and the client
@@ -71,7 +72,7 @@ export async function POST(request: NextRequest) {
           token: sow.token, token_type: 'sow', reason: 'expired', document_id: sow.id,
         })
 
-        await (service as any).from('audit_log').insert({
+        await insertAuditRow(service, {
           workspace_id: sow.workspace_id,
           actor_id:     null,
           actor_email:  'cron@scopegov.app',

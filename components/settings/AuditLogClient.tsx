@@ -1,19 +1,24 @@
 'use client'
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import Link from 'next/link'
 import { formatRelative } from '@/lib/utils/format'
+import { AUDIT_CATEGORIES } from '@/lib/audit/categories'
 
-interface Project { id: string; name: string }
+interface Project { id: string; name: string; deleted?: boolean }
 interface Member { id: string; name: string; email: string; active: boolean }
 interface Row {
-  id?: string
+  id: string
   eventType: string
   entityType: string
+  entityId: string | null
   entityName: string | null
+  actorId: string | null
   actorName: string | null
   actorEmail: string
+  projectId: string | null
   createdAt: string
   ipAddress: string | null
+  metadata: Record<string, unknown> | null
 }
 
 function eventColour(type: string) {
@@ -24,7 +29,31 @@ function eventColour(type: string) {
   return 'var(--text-3)'
 }
 
-function isoDate(d: Date) { return d.toISOString().slice(0, 10) }
+// FIX (Reports & Audit re-pass #3): dates used to be built with
+// toISOString().slice(0, 10) — the UTC calendar day — and sent to the server
+// as bare dates (also read as UTC). For anyone east of UTC (Nairobi is +3)
+// "today" was wrong for the first hours of every local day and the picker's
+// `max` blocked choosing it. Dates are now the viewer's LOCAL calendar days,
+// and the request carries the exact instants those days start and end at.
+function localDate(d: Date) {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+function startOfLocalDay(ymd: string): Date | null {
+  const [y, m, d] = ymd.split('-').map(Number)
+  if (!y || !m || !d) return null
+  return new Date(y, m - 1, d, 0, 0, 0, 0)
+}
+function endOfLocalDay(ymd: string): Date | null {
+  const [y, m, d] = ymd.split('-').map(Number)
+  if (!y || !m || !d) return null
+  return new Date(y, m - 1, d, 23, 59, 59, 999)
+}
+function daysAgoLocal(days: number) {
+  const d = new Date()
+  d.setDate(d.getDate() - days)
+  return localDate(d)
+}
 
 const RANGE_PRESETS = [
   { key: '30d',  label: 'Last 30 days',  days: 30 },
@@ -33,26 +62,28 @@ const RANGE_PRESETS = [
   { key: 'custom', label: 'Custom range', days: 0 },
 ]
 
-// FEATURE (deep audit, Reports & Audit re-pass — feature gap): the search
-// box used to fire a fresh fetch on every keystroke — a `cancelled` guard
-// prevented a slow, stale response from clobbering a newer one, but it did
-// nothing to stop the request volume itself: typing a 10-character search
-// term fired 10 requests. Debouncing is standard practice for exactly this
-// kind of free-text filter and costs nothing in responsiveness a person
-// would actually notice.
+// Debounce for the free-text search. Export bypasses it (uses the live input)
+// so clicking Export right after typing can never export the previous filter.
 const SEARCH_DEBOUNCE_MS = 350
 
+function formatExact(iso: string) {
+  return new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'medium' })
+}
+
+function formatMetaValue(v: unknown): string {
+  if (v === null || v === undefined) return '—'
+  if (typeof v === 'string') return v
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
+  try { return JSON.stringify(v) } catch { return String(v) }
+}
+
 export default function AuditLogClient({ projects, members }: { projects: Project[]; members: Member[] }) {
-  const today = useMemo(() => new Date(), [])
   const [preset, setPreset] = useState('90d')
-  const [from, setFrom] = useState(isoDate(new Date(today.getTime() - 90 * 86400000)))
-  const [to, setTo] = useState(isoDate(today))
+  const [from, setFrom] = useState(daysAgoLocal(90))
+  const [to, setTo] = useState(localDate(new Date()))
   const [projectId, setProjectId] = useState('')
   const [actorId, setActorId] = useState('')
-  // FEATURE (deep audit, Reports & Audit re-pass — feature gap): `qInput`
-  // is what the text box is bound to (updates instantly, so typing never
-  // feels laggy); `q` is the debounced value that actually drives the
-  // fetch below.
+  const [category, setCategory] = useState('')
   const [qInput, setQInput] = useState('')
   const [q, setQ] = useState('')
 
@@ -65,81 +96,108 @@ export default function AuditLogClient({ projects, members }: { projects: Projec
   const [totalCount, setTotalCount] = useState(0)
   const [truncated, setTruncated] = useState(false)
   const [hasMore, setHasMore] = useState(false)
+  const [asOf, setAsOf] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
   const [exporting, setExporting] = useState<'csv' | 'pdf' | null>(null)
   const [error, setError] = useState('')
+  const [expanded, setExpanded] = useState<string | null>(null)
+
+  // Monotonic id of the current filter set. Anything that resolves after the
+  // filters changed (a slow first page, or a "Load more" started under the
+  // old filters) compares against it and is dropped — previously a late
+  // "Load more" response was appended onto the NEW filter's rows.
+  const querySeq = useRef(0)
+
+  const projectsById = useMemo(() => new Map(projects.map(p => [p.id, p])), [projects])
 
   function applyPreset(key: string) {
     setPreset(key)
     const p = RANGE_PRESETS.find(r => r.key === key)
     if (p && p.days > 0) {
-      setFrom(isoDate(new Date(today.getTime() - p.days * 86400000)))
-      setTo(isoDate(today))
+      setFrom(daysAgoLocal(p.days))
+      setTo(localDate(new Date()))
     }
   }
 
-  const queryString = useCallback((format: string, offset?: number) => {
-    const params = new URLSearchParams({ format, from, to })
+  const dateError = useMemo(() => {
+    const f = startOfLocalDay(from), t = endOfLocalDay(to)
+    if (!f || !t) return 'Choose both a start and an end date.'
+    if (f.getTime() > t.getTime()) return 'The start date must be on or before the end date.'
+    return ''
+  }, [from, to])
+
+  const buildParams = useCallback((format: string, opts: { q: string; offset?: number; asOf?: string | null }) => {
+    const params = new URLSearchParams({ format })
+    const f = startOfLocalDay(from), t = endOfLocalDay(to)
+    if (f) params.set('from', f.toISOString())
+    if (t) params.set('to', t.toISOString())
     if (projectId) params.set('projectId', projectId)
     if (actorId) params.set('actorId', actorId)
-    if (q.trim()) params.set('q', q.trim())
-    if (offset) params.set('offset', String(offset))
+    if (category) params.set('category', category)
+    if (opts.q.trim()) params.set('q', opts.q.trim())
+    if (opts.offset) params.set('offset', String(opts.offset))
+    if (opts.asOf) params.set('asOf', opts.asOf)
     return params.toString()
-  }, [from, to, projectId, actorId, q])
+  }, [from, to, projectId, actorId, category])
 
-  // FEATURE (deep audit, Reports & Audit re-pass — feature gap): true
-  // pagination. Any filter change starts over from offset 0 and replaces
-  // the row list; "Load more" (below) appends the next page instead.
+  // Any filter change starts over: cancel the in-flight request, clear the
+  // old rows immediately (stale rows must never sit under a new filter or an
+  // error banner), and reload page one.
   useEffect(() => {
-    let cancelled = false
+    const seq = ++querySeq.current
+    setRows([]); setExpanded(null); setHasMore(false); setTruncated(false); setAsOf(null)
+    if (dateError) { setLoading(false); setError(dateError); setTotalCount(0); return }
+    const ctrl = new AbortController()
     setLoading(true); setError('')
-    fetch(`/api/reports/audit-export?${queryString('json')}`)
+    fetch(`/api/reports/audit-export?${buildParams('json', { q })}`, { signal: ctrl.signal })
       .then(async res => {
-        const json = await res.json()
+        const json = await res.json().catch(() => ({}))
         if (!res.ok) throw new Error(json.error || 'Could not load audit log')
-        if (!cancelled) {
-          setRows(json.rows)
-          setTotalCount(json.totalCount)
-          setTruncated(json.truncated)
-          setHasMore(json.hasMore)
-        }
+        if (seq !== querySeq.current) return
+        setRows(json.rows)
+        setTotalCount(json.totalCount)
+        setTruncated(json.truncated)
+        setHasMore(json.hasMore)
+        setAsOf(json.asOf || null)
       })
-      .catch((err: unknown) => { if (!cancelled) setError(err instanceof Error ? err.message : 'Could not load audit log') })
-      .finally(() => { if (!cancelled) setLoading(false) })
-    return () => { cancelled = true }
-  }, [queryString])
+      .catch((err: unknown) => {
+        if ((err as any)?.name === 'AbortError' || seq !== querySeq.current) return
+        setTotalCount(0)
+        setError(err instanceof Error ? err.message : 'Could not load audit log')
+      })
+      .finally(() => { if (seq === querySeq.current) setLoading(false) })
+    return () => { ctrl.abort() }
+  }, [buildParams, q, dateError])
 
   async function handleLoadMore() {
+    const seq = querySeq.current
     setLoadingMore(true)
     try {
-      const res = await fetch(`/api/reports/audit-export?${queryString('json', rows.length)}`)
+      const res = await fetch(`/api/reports/audit-export?${buildParams('json', { q, offset: rows.length, asOf })}`)
       const json = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(json.error || 'Could not load more events')
-      // FIX (deep audit, Settings section): paging by `rows.length` as the
-      // offset means any event written between two pages shifts the
-      // window, duplicating a row across the boundary (and hiding
-      // another). audit_log is append-only and this page is most useful
-      // on a live workspace, so that's the normal case, not a rare one.
-      // Dedupe on id when appending — cheap, and it also makes a
-      // double-clicked "Load more" harmless.
+      if (seq !== querySeq.current) return // filters changed while this was in flight
+      // De-dupe by id as a belt-and-braces guard on top of the server's
+      // pinned snapshot + deterministic ordering.
       setRows(prev => {
-        const seen = new Set(prev.map(r => r.id).filter(Boolean))
-        const fresh = (json.rows || []).filter((r: Row) => !r.id || !seen.has(r.id))
-        return [...prev, ...fresh]
+        const seen = new Set(prev.map(r => r.id))
+        return [...prev, ...json.rows.filter((r: Row) => !seen.has(r.id))]
       })
       setTotalCount(json.totalCount)
       setTruncated(json.truncated)
       setHasMore(json.hasMore)
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Could not load more events')
+      if (seq === querySeq.current) setError(err instanceof Error ? err.message : 'Could not load more events')
     } finally { setLoadingMore(false) }
   }
 
   async function handleExport(format: 'csv' | 'pdf') {
+    if (dateError) return
     setExporting(format)
     try {
-      const res = await fetch(`/api/reports/audit-export?${queryString(format)}`)
+      // Uses the live input, not the debounced value.
+      const res = await fetch(`/api/reports/audit-export?${buildParams(format, { q: qInput })}`)
       if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || 'Export failed') }
       const blob = await res.blob()
       const disposition = res.headers.get('Content-Disposition') || ''
@@ -155,15 +213,12 @@ export default function AuditLogClient({ projects, members }: { projects: Projec
     } finally { setExporting(null) }
   }
 
+  const todayStr = localDate(new Date())
+
   return (
     <div className="page" style={{ maxWidth: 1080 }}>
       <div className="page-hd">
         <div>
-          {/* FIX (deep audit, Settings section): settings/approvals — the
-              other page reached from the same Settings nav — renders a
-              "← Settings" breadcrumb; this one rendered none, leaving the
-              browser back button as the only way out of a page people
-              routinely land on from a deep link. */}
           <div style={{ marginBottom: 6 }}>
             <Link href="/settings" style={{ fontSize: 12, color: 'var(--text-3)' }}>
               <i className="ti ti-arrow-left" style={{ fontSize: 11 }} /> Settings
@@ -173,10 +228,10 @@ export default function AuditLogClient({ projects, members }: { projects: Projec
           <p className="page-sub">{totalCount.toLocaleString()} event{totalCount === 1 ? '' : 's'} · immutable record</p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button className="btn btn-ghost btn-sm" disabled={exporting !== null || loading} onClick={() => handleExport('csv')}>
+          <button className="btn btn-ghost btn-sm" disabled={exporting !== null || loading || !!dateError} onClick={() => handleExport('csv')}>
             {exporting === 'csv' ? <span className="spin" /> : <><i className="ti ti-file-spreadsheet" style={{ marginRight: 6 }} />CSV</>}
           </button>
-          <button className="btn btn-ghost btn-sm" disabled={exporting !== null || loading} onClick={() => handleExport('pdf')}>
+          <button className="btn btn-ghost btn-sm" disabled={exporting !== null || loading || !!dateError} onClick={() => handleExport('pdf')}>
             {exporting === 'pdf' ? <span className="spin" /> : <><i className="ti ti-file-type-pdf" style={{ marginRight: 6 }} />PDF</>}
           </button>
         </div>
@@ -194,12 +249,12 @@ export default function AuditLogClient({ projects, members }: { projects: Projec
             <>
               <div className="fgrp" style={{ margin: 0 }}>
                 <label className="flbl">From</label>
-                <input type="date" className="finp" value={from} max={to}
+                <input type="date" className="finp" value={from} max={to || todayStr}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFrom(e.target.value)} />
               </div>
               <div className="fgrp" style={{ margin: 0 }}>
                 <label className="flbl">To</label>
-                <input type="date" className="finp" value={to} min={from} max={isoDate(today)}
+                <input type="date" className="finp" value={to} min={from} max={todayStr}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTo(e.target.value)} />
               </div>
             </>
@@ -208,39 +263,36 @@ export default function AuditLogClient({ projects, members }: { projects: Projec
             <label className="flbl">Project</label>
             <select className="finp" value={projectId} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setProjectId(e.target.value)}>
               <option value="">All projects</option>
-              {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              {projects.map(p => <option key={p.id} value={p.id}>{p.name}{p.deleted ? ' (deleted)' : ''}</option>)}
             </select>
           </div>
           <div className="fgrp" style={{ margin: 0, minWidth: 170 }}>
             <label className="flbl">User</label>
             <select className="finp" value={actorId} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setActorId(e.target.value)}>
               <option value="">All users</option>
-              {/* FIX (re-audit, Reports & Audit section): the dropdown used
-                  to be built from active members only. Departed members are
-                  now included (labeled) so the audit log can actually be
-                  filtered by someone who's since left the workspace. */}
+              <option value="none">System / client portal (no user)</option>
               {members.map(m => <option key={m.id} value={m.id}>{m.name}{!m.active ? ' (Former member)' : ''}</option>)}
             </select>
           </div>
-          <div className="fgrp" style={{ margin: 0, flex: 1, minWidth: 180 }}>
+          <div className="fgrp" style={{ margin: 0, minWidth: 170 }}>
+            <label className="flbl">Type</label>
+            <select className="finp" value={category} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setCategory(e.target.value)}>
+              <option value="">All events</option>
+              {AUDIT_CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+            </select>
+          </div>
+          <div className="fgrp" style={{ margin: 0, flex: 1, minWidth: 200 }}>
             <label className="flbl">Search</label>
-            <input className="finp search-inp" placeholder="Event or record name…" value={qInput}
+            <input className="finp search-inp" placeholder="Event, record, person or IP…" value={qInput} maxLength={100}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQInput(e.target.value)} />
           </div>
         </div>
       </div>
 
       {error && <div className="auth-error" style={{ marginBottom: 14 }}>{error}</div>}
-      {/* FIX (deep audit, Reports & Audit re-pass — feature gap): this used
-          to always mean "hit the hard ceiling, go export CSV" because
-          there was no other way to see more. Now that "Load more" exists,
-          this banner only appears once paging has reached MAX_ROWS_JSON's
-          ceiling (api/reports/audit-export/route.ts) — while more pages
-          remain below that ceiling, the "Load more" button under the
-          table is the way forward instead. */}
       {truncated && !loading && !hasMore && (
         <div className="auth-error" style={{ background: '#FFFBEB', borderColor: '#FDE68A', color: '#92400E', marginBottom: 14 }}>
-          Showing the first {rows.length.toLocaleString()} of {totalCount.toLocaleString()} matching events — this view caps out here. Export CSV for the complete record.
+          Showing the first {rows.length.toLocaleString()} of {totalCount.toLocaleString()} matching events — this view caps out here. Export CSV (up to 25,000 rows) or narrow the filters for the rest.
         </div>
       )}
 
@@ -255,32 +307,73 @@ export default function AuditLogClient({ projects, members }: { projects: Projec
             </tr>
           </thead>
           <tbody>
-            {rows.map((e, i) => (
-              <tr key={e.id || i}>
-                <td>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <div style={{ width: 6, height: 6, borderRadius: '50%', background: eventColour(e.eventType), flexShrink: 0 }} />
-                    <div>
-                      <div style={{ fontSize: 12, fontFamily: 'IBM Plex Mono, monospace', color: 'var(--text-2)' }}>{e.eventType}</div>
-                      <div style={{ fontSize: 10, color: 'var(--text-3)' }}>{e.entityType}</div>
-                    </div>
-                  </div>
-                </td>
-                <td>
-                  <div style={{ fontSize: 13 }}>{e.actorName || 'System'}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{e.actorEmail}</div>
-                </td>
-                <td style={{ fontSize: 13, color: 'var(--text-2)' }}>
-                  {e.entityName || '—'}
-                  {e.ipAddress && (
-                    <div style={{ fontSize: 10, color: 'var(--text-4)', fontFamily: 'IBM Plex Mono, monospace' }}>{e.ipAddress}</div>
+            {rows.map(e => {
+              const open = expanded === e.id
+              const project = e.projectId ? projectsById.get(e.projectId) : undefined
+              const metaEntries = e.metadata ? Object.entries(e.metadata) : []
+              return (
+                <RowFragment key={e.id}>
+                  <tr onClick={() => setExpanded(open ? null : e.id)} style={{ cursor: 'pointer' }} aria-expanded={open}>
+                    <td>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <i className={`ti ti-chevron-${open ? 'down' : 'right'}`} style={{ fontSize: 12, color: 'var(--text-4)' }} />
+                        <div style={{ width: 6, height: 6, borderRadius: '50%', background: eventColour(e.eventType), flexShrink: 0 }} />
+                        <div>
+                          <div style={{ fontSize: 12, fontFamily: 'IBM Plex Mono, monospace', color: 'var(--text-2)' }}>{e.eventType}</div>
+                          <div style={{ fontSize: 10, color: 'var(--text-3)' }}>{e.entityType}</div>
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      <div style={{ fontSize: 13 }}>{e.actorName || 'System'}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{e.actorEmail}</div>
+                    </td>
+                    <td style={{ fontSize: 13, color: 'var(--text-2)' }}>
+                      {e.entityName || '—'}
+                      {e.ipAddress && (
+                        <div style={{ fontSize: 10, color: 'var(--text-4)', fontFamily: 'IBM Plex Mono, monospace' }}>{e.ipAddress}</div>
+                      )}
+                    </td>
+                    <td style={{ fontSize: 12, color: 'var(--text-3)', whiteSpace: 'nowrap' }} title={e.createdAt}>
+                      <div>{formatExact(e.createdAt)}</div>
+                      <div style={{ fontSize: 10, color: 'var(--text-4)' }}>{formatRelative(e.createdAt)}</div>
+                    </td>
+                  </tr>
+                  {open && (
+                    <tr>
+                      <td colSpan={4} style={{ background: 'var(--surface-2, rgba(0,0,0,0.02))', padding: '12px 16px' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', columnGap: 16, rowGap: 4, fontSize: 12 }}>
+                          <span style={{ color: 'var(--text-3)' }}>Exact time</span>
+                          <span>{formatExact(e.createdAt)} · <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{e.createdAt}</span></span>
+                          <span style={{ color: 'var(--text-3)' }}>Record</span>
+                          <span>{e.entityType}{e.entityName ? ` · ${e.entityName}` : ''}{e.entityId ? <span style={{ fontFamily: 'IBM Plex Mono, monospace', color: 'var(--text-3)' }}> · {e.entityId}</span> : null}</span>
+                          {e.projectId && (
+                            <>
+                              <span style={{ color: 'var(--text-3)' }}>Project</span>
+                              <span>{project && !project.deleted ? <a href={`/projects/${e.projectId}`}>{project.name}</a> : `${project?.name || 'Deleted project'}${project?.deleted ? ' (deleted)' : ''}`}</span>
+                            </>
+                          )}
+                          <span style={{ color: 'var(--text-3)' }}>Actor</span>
+                          <span>{e.actorName || 'System'} · {e.actorEmail}{e.actorId ? <span style={{ fontFamily: 'IBM Plex Mono, monospace', color: 'var(--text-3)' }}> · {e.actorId}</span> : ' · no signed-in user'}</span>
+                          <span style={{ color: 'var(--text-3)' }}>IP address</span>
+                          <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{e.ipAddress || 'not recorded'}</span>
+                          {metaEntries.length > 0 && (
+                            <>
+                              <span style={{ color: 'var(--text-3)' }}>Details</span>
+                              <span>
+                                {metaEntries.map(([k, v]) => (
+                                  <div key={k}><span style={{ color: 'var(--text-3)' }}>{k}:</span> <span style={{ fontFamily: 'IBM Plex Mono, monospace', wordBreak: 'break-word' }}>{formatMetaValue(v)}</span></div>
+                                ))}
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
                   )}
-                </td>
-                <td style={{ fontSize: 12, color: 'var(--text-3)', whiteSpace: 'nowrap' }}>
-                  {formatRelative(e.createdAt)}
-                </td>
-              </tr>
-            ))}
+                </RowFragment>
+              )
+            })}
           </tbody>
         </table>
         {loading && (
@@ -288,10 +381,10 @@ export default function AuditLogClient({ projects, members }: { projects: Projec
             <span className="spin spin-dark" />
           </div>
         )}
-        {!loading && !rows.length && (
+        {!loading && !error && !rows.length && (
           <div className="empty-state" style={{ padding: '40px 0' }}>
             <i className="ti ti-clock empty-state-icon" />
-            <p className="empty-state-title">No audit events in this range</p>
+            <p className="empty-state-title">No audit events match these filters</p>
           </div>
         )}
         {!loading && hasMore && (
@@ -304,4 +397,9 @@ export default function AuditLogClient({ projects, members }: { projects: Projec
       </div>
     </div>
   )
+}
+
+// A keyed fragment so a row and its detail row stay siblings inside <tbody>.
+function RowFragment({ children }: { children: React.ReactNode }) {
+  return <>{children}</>
 }

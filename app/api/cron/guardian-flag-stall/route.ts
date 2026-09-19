@@ -27,6 +27,7 @@ import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { sendGuardianFlagStalledEmail } from '@/lib/email/templates'
 
+import { insertAuditRow } from '@/lib/utils/audit'
 export async function POST(request: NextRequest) {
   if (!verifyCronSecret(request))
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -65,7 +66,7 @@ export async function POST(request: NextRequest) {
 
         if (!updated || updated.length === 0) continue // lost the race — already actioned
 
-        await (service as any).from('audit_log').insert({
+        await insertAuditRow(service, {
           workspace_id: flag.workspace_id, actor_id: null,
           actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
           event_type: 'flag.reminder_sent', entity_type: 'guardian_flag',

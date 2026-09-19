@@ -7,6 +7,7 @@ import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { sendRetainerEndingEmail } from '@/lib/email/templates'
 
+import { insertAuditRow } from '@/lib/utils/audit'
 // FIX (audit round 3): local copy replaced with the shared,
 // null-safe helper — see lib/utils/verify-cron.ts.
 
@@ -55,7 +56,7 @@ export async function POST(request: NextRequest) {
             .eq('entity_id', p.id).limit(1).maybeSingle()
           if (alreadyNotified) continue
 
-          await (service as any).from('audit_log').insert({
+          await insertAuditRow(service, {
             workspace_id: p.workspace_id, actor_id: null,
             actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
             event_type: 'retainer.ended', entity_type: 'project',
@@ -151,7 +152,7 @@ export async function POST(request: NextRequest) {
             status:       'pending',
           })
 
-          await (service as any).from('audit_log').insert({
+          await insertAuditRow(service, {
             workspace_id: p.workspace_id,
             actor_id:     null,
             actor_email:  'cron@scopegov.app',

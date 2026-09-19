@@ -7,6 +7,7 @@ import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { sendCoExpiredEmail } from '@/lib/email/templates'
 
+import { insertAuditRow } from '@/lib/utils/audit'
 // FIX (section-10 audit, feature gap): mirrors app/api/cron/sow-expiry
 // exactly — see that route's header comment for the full history of why
 // this pattern exists. change_orders never had the equivalent: no
@@ -66,7 +67,7 @@ export async function POST(request: NextRequest) {
           token: co.token, token_type: 'co', reason: 'expired', document_id: co.id,
         })
 
-        await (service as any).from('audit_log').insert({
+        await insertAuditRow(service, {
           workspace_id: co.workspace_id,
           actor_id:     null,
           actor_email:  'cron@scopegov.app',

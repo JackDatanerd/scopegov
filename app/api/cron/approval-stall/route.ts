@@ -7,6 +7,7 @@ import { verifyCronSecret } from '@/lib/utils/verify-cron'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { APPROVAL_STALL_DAYS } from '@/lib/utils/attention'
 
+import { insertAuditRow } from '@/lib/utils/audit'
 // FIX (audit round 3): local copy replaced with the shared,
 // null-safe helper — see lib/utils/verify-cron.ts.
 
@@ -43,7 +44,7 @@ export async function POST(request: NextRequest) {
         if (result === 'sent') {
           await (service as any).from('approval_requests')
             .update({ updated_at: now.toISOString() }).eq('id', r.id)
-          await (service as any).from('audit_log').insert({
+          await insertAuditRow(service, {
             workspace_id: r.workspace_id,
             actor_id:     null,
             actor_email:  'cron@scopegov.app',
@@ -64,7 +65,7 @@ export async function POST(request: NextRequest) {
           // fix it (MANAGE_ROLES holders) and leave updated_at untouched
           // so this keeps surfacing daily — at this cron's own cadence,
           // not a spammier one — until the assignment is corrected.
-          await (service as any).from('audit_log').insert({
+          await insertAuditRow(service, {
             workspace_id: r.workspace_id,
             actor_id:     null,
             actor_email:  'cron@scopegov.app',

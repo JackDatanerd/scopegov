@@ -1,6 +1,7 @@
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
+import { parsePeriod } from '@/lib/reports/period'
 import { getPortfolioData } from '@/lib/reports/portfolio-data'
 
 // Portfolio dashboard is workspace-wide by definition — it has no
@@ -21,7 +22,8 @@ export async function GET(request: NextRequest) {
 
     const canViewFinancials = hasPermission(session, 'VIEW_FINANCIALS')
     const { searchParams } = new URL(request.url)
-    const period = searchParams.get('period') || '90d'
+    const period = parsePeriod(searchParams.get('period'))
+    if (!period) return NextResponse.json({ error: 'Invalid period' }, { status: 400 })
 
     const service = createServiceClient()
     const data = await getPortfolioData(service, session.workspaceId, period, canViewFinancials)

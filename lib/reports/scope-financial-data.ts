@@ -1,103 +1,175 @@
 // lib/reports/scope-financial-data.ts
 //
-// FEATURE (deep audit, Reports & Audit re-pass): this used to live inline
-// inside app/api/reports/route.ts. Pulled out unchanged (bugs and all —
-// see the FIX comments still attached to the currency-bucketing logic
-// below) so app/api/reports/export/route.ts can compute the identical
-// scope/financial payload instead of hand-rolling a second copy of these
-// queries that could silently drift from the on-screen numbers.
+// Shared by app/api/reports/route.ts (the on-screen report) and
+// app/api/reports/export/route.ts (CSV/PDF), so both compute the identical
+// scope/financial payload instead of two copies that could drift apart.
+//
+// Reports & Audit re-pass #3 — what changed in this file and why:
+//
+//  1. Reads are paged (`fetchPaged`) instead of `.limit(MAX + 1)`. PostgREST's
+//     max-rows cap (Supabase default 1000) silently beats `.limit()`, so the
+//     old "truncated" flag could never fire and a busy workspace's rollup
+//     came back short while claiming to be complete.
+//  2. Read ERRORS are thrown, not swallowed. Every result used to be
+//     `res.data || []`, so a failed query rendered as a confident wall of
+//     zeros.
+//  3. "Converted to CO" now counts flags whose change order was ACCEPTED.
+//     finalize-co moves a flag to status 'resolved' / resolution
+//     'change_order' on acceptance, and the old filter (status ===
+//     'converted_to_co') only matched flags whose CO was still in flight —
+//     so the headline recovery metric fell every time a client said yes.
+//  4. Flags dismissed as 'not_out_of_scope' and borderline flags still
+//     awaiting review are no longer counted as "raised" (they inflated the
+//     denominator of the recovery rate); both are exposed separately.
+//  5. The CO grid reconciles: only SENT change orders count, each revision
+//     lineage counts once (superseded parents are dropped), and every status
+//     lands in exactly one bucket so raised === accepted + declined +
+//     pending + closed.
+//  6. Financial "effective value" no longer mixes an all-time base with a
+//     period-filtered amendment total. Portfolio value (base + ALL accepted
+//     amendments) is a point-in-time snapshot; `co_impact` is the amendment
+//     value added inside the selected period.
+//  7. Retainer-renewal amendments are excluded from additive sums:
+//     finalize-co overwrites projects.contract_value with the new monthly
+//     rate AND writes an amendment for the same total, so summing both
+//     double-counted the renewal (and reported the whole new rate as
+//     "recovered").
+//  8. The currency picker no longer sorts `availableCurrencies` in place.
 
 import { PROJECT_TYPE_LABELS } from '@/lib/utils/format'
+import { fetchPaged } from '@/lib/utils/paginate'
+export { PERIOD_LABELS, periodSince, parsePeriod, type PeriodKey } from './period'
 
-export type ReportMode = 'scope' | 'financial'
-
-// FIX (deep audit, Reports & Audit re-pass — CRITICAL): every query in
-// this file used to run with no `.limit()`/`.range()` at all — confirmed
-// by grep, no query anywhere in this codebase used `.range()` before this
-// fix. PostgREST caps an unlimited select at its own configured row limit
-// server-side, so a mature, active workspace's "All time" rollup (flags,
-// exceptions, adjustments, amendments, change_orders, or even the
-// projects list itself) could silently come back short with no signal
-// anywhere that it happened — the totals on screen would just be wrong.
-// api/reports/audit-export already caps and reports `truncated` for
-// exactly this reason; these two workspace-wide rollups had none of that
-// awareness. Cap generously (this is a rollup total, not a page a human
-// reads row-by-row) and surface `truncated` on the result so the UI can
-// at least say so instead of presenting a short count as complete.
 const MAX_ROLLUP_ROWS = 5000
 
-function isTruncated(res: { data: any[] | null }): boolean {
-  return (res.data?.length || 0) > MAX_ROLLUP_ROWS
+async function loadAll<T = any>(
+  label: string,
+  build: (from: number, to: number) => PromiseLike<any>,
+): Promise<{ rows: T[]; truncated: boolean }> {
+  try {
+    const res = await fetchPaged<T>(build, { maxRows: MAX_ROLLUP_ROWS })
+    return { rows: res.rows, truncated: res.truncated }
+  } catch (err) {
+    throw new Error(`${label}: ${err instanceof Error ? err.message : String(err)}`)
+  }
 }
 
-const PERIOD_DAYS: Record<string, number | null> = {
-  '30d': 30, '90d': 90, '6m': 180, '12m': 365, 'all': null,
+const NO_CURRENCY = '__no_active_project__'
+
+export function pickCurrency(currencyCounts: Record<string, number>, requested: string | null) {
+  const availableCurrencies = Object.keys(currencyCounts).sort()
+  const byCount = [...availableCurrencies].sort((a, b) => currencyCounts[b] - currencyCounts[a])
+  const currency = (requested && availableCurrencies.includes(requested))
+    ? requested
+    : (byCount[0] || 'USD')
+  return { availableCurrencies, mixedCurrencies: availableCurrencies.length > 1, currency }
 }
 
-export function periodSince(period: string): string {
-  const days = PERIOD_DAYS[period]
-  return days ? new Date(Date.now() - days * 86400000).toISOString() : '2000-01-01T00:00:00Z'
+// finalize-co: a retainer-renewal CO on a type:'retainer' project REPLACES
+// projects.contract_value with the CO total (the new monthly rate) and also
+// writes an amendment of the same amount. It is not additive.
+export function isNonAdditiveAmendment(a: any, projectType: string | undefined): boolean {
+  return a?.change_orders?.is_retainer_renewal === true && projectType === 'retainer'
 }
 
-export const PERIOD_LABELS: Record<string, string> = {
-  '30d': 'Last 30 days', '90d': 'Last 90 days', '6m': 'Last 6 months', '12m': 'Last 12 months', 'all': 'All time',
+// ── Flag classification ────────────────────────────────────────────────
+export function classifyFlag(f: { status: string; resolution?: string | null }) {
+  const dismissed = f.resolution === 'not_out_of_scope'
+  const pendingReview = f.status === 'borderline_review'
+  const converted = f.status === 'converted_to_co' || (f.status === 'resolved' && f.resolution === 'change_order')
+  return { dismissed, pendingReview, converted, counted: !dismissed && !pendingReview }
+}
+
+// ── CO grid ────────────────────────────────────────────────────────────
+const CO_PENDING = new Set(['awaiting_response', 'countered', 'stalled', 'awaiting_countersignature'])
+const CO_CLOSED = new Set(['withdrawn', 'closed', 'expired', 'exception_granted'])
+
+export function buildCoGrid(cos: Array<{ id: string; status: string; parent_co_id?: string | null; sent_at?: string | null }>) {
+  const sent = cos.filter(c => !!c.sent_at)
+  const supersededIds = new Set(sent.map(c => c.parent_co_id).filter(Boolean) as string[])
+  const live = sent.filter(c => !supersededIds.has(c.id))
+  const accepted = live.filter(c => c.status === 'accepted').length
+  const declined = live.filter(c => c.status === 'declined').length
+  const pending = live.filter(c => CO_PENDING.has(c.status)).length
+  const closed = live.filter(c => CO_CLOSED.has(c.status)).length
+  // Any status we don't know yet is counted as pending rather than dropped,
+  // so raised always equals the sum of the four buckets.
+  const unknown = live.length - accepted - declined - pending - closed
+  return { raised: live.length, accepted, declined, pending: pending + unknown, closed }
 }
 
 export async function getScopeReportData(
   service: any, wsId: string, since: string, requestedCurrency: string | null, canSeeFinancials: boolean
 ) {
-  const [flagsRes, exceptionsRes, adjustmentsRes, cosRes, projCurrencyRes] = await Promise.all([
-    service.from('guardian_flags').select('id,status,projects(id,name)')
-      .eq('workspace_id', wsId).gte('created_at', since).limit(MAX_ROLLUP_ROWS + 1),
-    service.from('exceptions_log').select('id,deliverable,estimated_value,project_id,projects(id,name,currency)')
-      .eq('workspace_id', wsId).gte('created_at', since).limit(MAX_ROLLUP_ROWS + 1),
-    service.from('scope_adjustments').select('id,deliverable,old_value,new_value,reason,adjusted_at,project_id,projects(id,name)')
-      .eq('workspace_id', wsId).gte('adjusted_at', since).order('adjusted_at', { ascending: false }).limit(MAX_ROLLUP_ROWS + 1),
-    service.from('amendments').select('id,financial_impact,project_id')
-      .eq('workspace_id', wsId).gte('created_at', since).limit(MAX_ROLLUP_ROWS + 1),
-    service.from('projects').select('id,currency').eq('workspace_id', wsId).is('deleted_at', null).limit(MAX_ROLLUP_ROWS + 1),
+  const [flagsQ, exceptionsQ, adjustmentsQ, amendmentsQ, projectsQ] = await Promise.all([
+    loadAll('flags', (f, t) => service.from('guardian_flags')
+      .select('id,status,resolution,projects(id,name)', { count: 'exact' })
+      .eq('workspace_id', wsId).gte('created_at', since)
+      .order('created_at', { ascending: false }).order('id').range(f, t)),
+    loadAll('exceptions', (f, t) => service.from('exceptions_log')
+      .select('id,deliverable,estimated_value,project_id,projects(id,name,currency)', { count: 'exact' })
+      .eq('workspace_id', wsId).gte('created_at', since)
+      .order('created_at', { ascending: false }).order('id').range(f, t)),
+    loadAll('scope adjustments', (f, t) => service.from('scope_adjustments')
+      .select('id,deliverable,old_value,new_value,reason,adjusted_at,project_id,projects(id,name)', { count: 'exact' })
+      .eq('workspace_id', wsId).gte('adjusted_at', since)
+      .order('adjusted_at', { ascending: false }).order('id').range(f, t)),
+    loadAll('amendments', (f, t) => service.from('amendments')
+      .select('id,financial_impact,project_id,change_orders(is_retainer_renewal)', { count: 'exact' })
+      .eq('workspace_id', wsId).gte('created_at', since)
+      .order('created_at', { ascending: false }).order('id').range(f, t)),
+    loadAll('projects', (f, t) => service.from('projects')
+      .select('id,currency,type', { count: 'exact' })
+      .eq('workspace_id', wsId).is('deleted_at', null)
+      .order('id').range(f, t)),
   ])
 
-  const truncated = [flagsRes, exceptionsRes, adjustmentsRes, cosRes, projCurrencyRes].some(isTruncated)
+  const truncated = [flagsQ, exceptionsQ, adjustmentsQ, amendmentsQ, projectsQ].some(q => q.truncated)
 
-  const flags      = (flagsRes.data || []).slice(0, MAX_ROLLUP_ROWS)
-  const exceptions = (exceptionsRes.data || []).slice(0, MAX_ROLLUP_ROWS)
-  const allAdjustments = (adjustmentsRes.data || []).slice(0, MAX_ROLLUP_ROWS)
-  const allAmendments = (cosRes.data || []).slice(0, MAX_ROLLUP_ROWS)
+  const flags = flagsQ.rows
+  const exceptions = exceptionsQ.rows
+  const allAdjustments = adjustmentsQ.rows
+  const allAmendments = amendmentsQ.rows
   const projCurrencyById: Record<string, string> = {}
-  for (const p of (projCurrencyRes.data || []).slice(0, MAX_ROLLUP_ROWS)) projCurrencyById[p.id] = p.currency || 'USD'
+  const projTypeById: Record<string, string> = {}
+  for (const p of projectsQ.rows as any[]) {
+    projCurrencyById[p.id] = p.currency || 'USD'
+    projTypeById[p.id] = p.type
+  }
 
   const currencyCounts: Record<string, number> = {}
   for (const c of Object.values(projCurrencyById)) currencyCounts[c] = (currencyCounts[c] || 0) + 1
-  const availableCurrencies = Object.keys(currencyCounts).sort()
-  const mixedCurrencies = availableCurrencies.length > 1
-  const currency = (requestedCurrency && availableCurrencies.includes(requestedCurrency))
-    ? requestedCurrency
-    : (availableCurrencies.sort((a, b) => currencyCounts[b] - currencyCounts[a])[0] || 'USD')
+  const { availableCurrencies, mixedCurrencies, currency } = pickCurrency(currencyCounts, requestedCurrency)
 
-  // A project missing from projCurrencyById (soft-deleted, or otherwise
-  // gone) should never match ANY selected currency — see the FIX comment
-  // in api/reports/route.ts for the full history of this one.
-  const NO_CURRENCY = '__no_active_project__'
-  const amendments = allAmendments.filter((a: any) => (projCurrencyById[a.project_id] ?? NO_CURRENCY) === currency)
-  const exceptionsInCurrency = exceptions.filter((e: any) => (projCurrencyById[e.project_id] ?? NO_CURRENCY) === currency)
-  const recoveredValue = amendments.reduce((s: number, a: any) => s + (a.financial_impact || 0), 0)
+  // A project missing from projCurrencyById (soft-deleted, or otherwise gone)
+  // must never match ANY selected currency.
+  const inCurrency = (projectId: string | undefined) => (projCurrencyById[projectId ?? ''] ?? NO_CURRENCY) === currency
 
-  const flagsInCurrency = flags.filter((f: any) => (projCurrencyById[f.projects?.id] ?? NO_CURRENCY) === currency)
+  const amendments = allAmendments.filter((a: any) =>
+    inCurrency(a.project_id) && !isNonAdditiveAmendment(a, projTypeById[a.project_id]))
+  const exceptionsInCurrency = exceptions.filter((e: any) => inCurrency(e.project_id))
+  const recoveredValue = amendments.reduce((s: number, a: any) => s + (Number(a.financial_impact) || 0), 0)
+
+  const flagsInCurrency = flags.filter((f: any) => inCurrency(f.projects?.id))
+  const classified = flagsInCurrency.map((f: any) => ({ f, c: classifyFlag(f) }))
+  const counted = classified.filter(x => x.c.counted)
+
   const flagMapInCurrency: Record<string, { project_id: string; project_name: string; flag_count: number }> = {}
-  for (const f of flagsInCurrency) {
+  for (const { f } of counted) {
     const pid = f.projects?.id
     if (!pid) continue
     if (!flagMapInCurrency[pid]) flagMapInCurrency[pid] = { project_id: pid, project_name: f.projects.name, flag_count: 0 }
     flagMapInCurrency[pid].flag_count++
   }
 
-  const adjustmentsInCurrency = allAdjustments.filter((a: any) => (projCurrencyById[a.project_id] ?? NO_CURRENCY) === currency)
+  const adjustmentsInCurrency = allAdjustments.filter((a: any) => inCurrency(a.project_id))
 
   return {
     metrics: {
-      total_flags:     flagsInCurrency.length,
-      converted_to_co: flagsInCurrency.filter((f: any) => f.status === 'converted_to_co').length,
+      total_flags:     counted.length,
+      converted_to_co: counted.filter(x => x.c.converted).length,
+      dismissed_flags: classified.filter(x => x.c.dismissed).length,
+      pending_review_flags: classified.filter(x => x.c.pendingReview).length,
       recovered_value: canSeeFinancials ? recoveredValue : null,
     },
     flagsByProject: Object.values(flagMapInCurrency).sort((a, b) => b.flag_count - a.flag_count),
@@ -116,68 +188,76 @@ export async function getScopeReportData(
 export async function getFinancialReportData(
   service: any, wsId: string, since: string, requestedCurrency: string | null
 ) {
-  const [projectsRes, amendmentsRes, cosRes2] = await Promise.all([
-    service.from('projects').select('id,name,type,contract_value,currency,client_id,clients(id,name)')
+  const [projectsQ, amendmentsQ, cosQ] = await Promise.all([
+    loadAll('projects', (f, t) => service.from('projects')
+      .select('id,name,type,contract_value,currency,client_id,clients(id,name)', { count: 'exact' })
       .eq('workspace_id', wsId).is('deleted_at', null).neq('status', 'Draft').neq('status', 'Archived')
-      .limit(MAX_ROLLUP_ROWS + 1),
-    service.from('amendments').select('id,financial_impact,project_id')
-      .eq('workspace_id', wsId).gte('created_at', since).limit(MAX_ROLLUP_ROWS + 1),
-    service.from('change_orders').select('id,status,total,project_id')
-      .eq('workspace_id', wsId).gte('created_at', since).limit(MAX_ROLLUP_ROWS + 1),
+      .order('id').range(f, t)),
+    // ALL amendments (not just the period's): the portfolio's effective value
+    // is base + every accepted amendment; the period only scopes `co_impact`.
+    loadAll('amendments', (f, t) => service.from('amendments')
+      .select('id,financial_impact,project_id,created_at,change_orders(is_retainer_renewal)', { count: 'exact' })
+      .eq('workspace_id', wsId)
+      .order('created_at', { ascending: false }).order('id').range(f, t)),
+    // COs SENT in the period (drafts have sent_at null and never match).
+    loadAll('change orders', (f, t) => service.from('change_orders')
+      .select('id,status,total,project_id,parent_co_id,sent_at', { count: 'exact' })
+      .eq('workspace_id', wsId).gte('sent_at', since)
+      .order('sent_at', { ascending: false }).order('id').range(f, t)),
   ])
 
-  const truncated = [projectsRes, amendmentsRes, cosRes2].some(isTruncated)
-  const allProjects = (projectsRes.data || []).slice(0, MAX_ROLLUP_ROWS)
-  const allAmendments = (amendmentsRes.data || []).slice(0, MAX_ROLLUP_ROWS)
-  const allCos      = (cosRes2.data || []).slice(0, MAX_ROLLUP_ROWS)
+  const truncated = [projectsQ, amendmentsQ, cosQ].some(q => q.truncated)
+  const allProjects = projectsQ.rows as any[]
+  const allAmendments = amendmentsQ.rows as any[]
+  const allCos = cosQ.rows as any[]
 
   const currencyCounts: Record<string, number> = {}
   for (const p of allProjects) currencyCounts[p.currency || 'USD'] = (currencyCounts[p.currency || 'USD'] || 0) + 1
-  const availableCurrencies = Object.keys(currencyCounts).sort()
-  const mixedCurrencies = availableCurrencies.length > 1
+  const { availableCurrencies, mixedCurrencies, currency } = pickCurrency(currencyCounts, requestedCurrency)
 
-  const currency = (requestedCurrency && availableCurrencies.includes(requestedCurrency))
-    ? requestedCurrency
-    : (availableCurrencies.sort((a, b) => currencyCounts[b] - currencyCounts[a])[0] || 'USD')
+  const projects = allProjects.filter(p => (p.currency || 'USD') === currency)
+  const projectById = new Map(projects.map(p => [p.id, p]))
+  const additive = allAmendments.filter(a => projectById.has(a.project_id) && !isNonAdditiveAmendment(a, projectById.get(a.project_id)?.type))
+  const periodAmendments = additive.filter(a => a.created_at >= since)
+  const cos = allCos.filter(c => projectById.has(c.project_id))
 
-  const projects   = allProjects.filter((p: any) => (p.currency || 'USD') === currency)
-  const projectIds = new Set(projects.map((p: any) => p.id))
-  const amendments = allAmendments.filter((a: any) => projectIds.has(a.project_id))
-  const cos        = allCos.filter((c: any) => projectIds.has(c.project_id))
+  const lifetimeByProject: Record<string, number> = {}
+  for (const a of additive) lifetimeByProject[a.project_id] = (lifetimeByProject[a.project_id] || 0) + (Number(a.financial_impact) || 0)
 
-  const baseValue = projects.reduce((s: number, p: any) => s + (p.contract_value || 0), 0)
-  const coImpact  = amendments.reduce((s: number, a: any) => s + (a.financial_impact || 0), 0)
+  const effectiveOf = (p: any) => (Number(p.contract_value) || 0) + (lifetimeByProject[p.id] || 0)
+
+  const baseValue = projects.reduce((s, p) => s + (Number(p.contract_value) || 0), 0)
+  const lifetimeAmendments = additive.reduce((s, a) => s + (Number(a.financial_impact) || 0), 0)
+  const coImpact = periodAmendments.reduce((s, a) => s + (Number(a.financial_impact) || 0), 0)
 
   const clientMap: Record<string, { client_id: string; client_name: string; value: number }> = {}
   for (const p of projects) {
     const cid = p.client_id
     if (!cid) continue
     if (!clientMap[cid]) clientMap[cid] = { client_id: cid, client_name: p.clients?.name || 'Unknown', value: 0 }
-    clientMap[cid].value += p.contract_value || 0
+    clientMap[cid].value += effectiveOf(p)
   }
 
   const typeMap: Record<string, number> = {}
-  for (const p of projects) {
-    typeMap[p.type] = (typeMap[p.type] || 0) + (p.contract_value || 0)
-  }
+  for (const p of projects) typeMap[p.type] = (typeMap[p.type] || 0) + effectiveOf(p)
+
+  const coGrid = buildCoGrid(cos)
 
   return {
     metrics: {
-      effective_value: baseValue + coImpact,
+      // Point-in-time portfolio value (NOT period-filtered)…
+      effective_value: baseValue + lifetimeAmendments,
+      base_value:      baseValue,
+      // …versus change-order value added inside the selected period.
       co_impact:       coImpact,
-      cos_raised:      cos.length,
-      cos_accepted:    cos.filter((c: any) => c.status === 'accepted').length,
+      cos_raised:      coGrid.raised,
+      cos_accepted:    coGrid.accepted,
     },
     byClient: Object.values(clientMap).sort((a, b) => b.value - a.value),
     byType:   Object.entries(typeMap)
       .map(([type, value]) => ({ type, type_label: PROJECT_TYPE_LABELS[type] || type, value }))
       .sort((a, b) => b.value - a.value),
-    coGrid: {
-      raised:   cos.length,
-      accepted: cos.filter((c: any) => c.status === 'accepted').length,
-      declined: cos.filter((c: any) => c.status === 'declined').length,
-      pending:  cos.filter((c: any) => ['awaiting_response', 'countered', 'stalled'].includes(c.status)).length,
-    },
+    coGrid,
     currency,
     mixedCurrencies,
     availableCurrencies,

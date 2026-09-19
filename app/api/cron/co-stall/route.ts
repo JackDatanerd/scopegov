@@ -7,6 +7,7 @@ import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { sendCoStalledEmail } from '@/lib/email/templates'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 
+import { insertAuditRow } from '@/lib/utils/audit'
 // FIX (audit round 3): local copy replaced with the shared,
 // null-safe helper — see lib/utils/verify-cron.ts.
 
@@ -52,7 +53,7 @@ export async function POST(request: NextRequest) {
 
         if (!updated?.length) continue // lost the race to a concurrent status change — nothing else to do
 
-        await (service as any).from('audit_log').insert({
+        await insertAuditRow(service, {
           workspace_id: co.workspace_id,
           actor_id:     null,
           actor_email:  'cron@scopegov.app',
