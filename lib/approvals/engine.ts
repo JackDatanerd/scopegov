@@ -443,6 +443,7 @@ export async function recordApprovalDecision(service: any, params: DecisionParam
   })
 
   let autoSent = false
+  let sendFailedReason: string | null = null
   if (requester) {
     const sendParams = {
       workspaceId: params.actor.workspaceId,
@@ -464,14 +465,27 @@ export async function recordApprovalDecision(service: any, params: DecisionParam
       ? await sendInvoiceDocument(service, { invoiceId: request.document_id, ...sendParams })
       : await sendCoDocument(service, { coId: request.document_id, ...sendParams })
     autoSent = result.ok
-    if (!result.ok) console.error('Auto-send after final approval failed:', result.error)
+    if (!result.ok) {
+      sendFailedReason = result.error
+      console.error('Auto-send after final approval failed:', result.error)
+      // FIX (section-11 fix round, flagship finding): see migration 053.
+      // Recorded on the request itself (still correctly 'approved' — the
+      // CHAIN approved; only the mechanical send after it failed) so it's
+      // discoverable in the UI and retryable without re-running the whole
+      // gate. Best-effort: if this write itself fails, the console.error
+      // above is still the fallback trail — never let a logging failure
+      // block the approval outcome already recorded above.
+      await service.from('approval_requests').update({
+        send_failed_at: now, send_failed_reason: sendFailedReason,
+      }).eq('id', request.id).then(null, (e: unknown) => console.error('Failed to record send_failed_at:', e))
+    }
   }
 
   if (requester) {
     await notifyRequester(service, {
       workspaceId: params.actor.workspaceId, requester, decision: 'approved',
       documentLabel, docTitle, projectId: request.project_id, projectName,
-      decidedByName: params.actor.name, note: params.note, autoSent,
+      decidedByName: params.actor.name, note: params.note, autoSent, sendFailedReason,
     })
   }
 
@@ -635,6 +649,67 @@ export async function sendApprovalReminder(
   return notifiedCount > 0 ? 'sent' : 'no_recipients'
 }
 
+// ── RETRY (send_failed_at) ──────────────────────────────────────
+// FIX (section-11 fix round, flagship finding): see migration 053 and the
+// send_failed_at/send_failed_reason write in recordApprovalDecision above.
+// This is the recovery path for a request that finished approving but
+// whose auto-send afterward failed — it re-attempts ONLY the mechanical
+// send, against a request that's already 'approved'. It deliberately does
+// NOT go anywhere near evaluateApprovalGate: re-running the gate would
+// create a brand-new approval_request and re-notify every approver to
+// decide something they've already decided, which is exactly the bad
+// "recovery path" this whole fix exists to replace.
+export async function retryFailedSend(service: any, params: {
+  requestId: string
+  workspaceId: string
+  actor: { id: string; email: string; name: string }
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { data: request } = await service
+    .from('approval_requests')
+    .select('id, document_type, document_id, project_id, context, status, send_failed_at')
+    .eq('id', params.requestId).eq('workspace_id', params.workspaceId).single()
+
+  if (!request) return { ok: false, error: 'Approval request not found' }
+  if (request.status !== 'approved' || !request.send_failed_at)
+    return { ok: false, error: 'This request has nothing to retry' }
+
+  const sendParams = {
+    workspaceId: params.workspaceId,
+    actorId: params.actor.id, actorEmail: params.actor.email, actorName: params.actor.name,
+    approvalRequestId: request.id,
+  }
+  const result = request.document_type === 'sow'
+    ? await sendSowDocument(service, { sowId: request.document_id, ...sendParams })
+    : request.document_type === 'co_counter'
+    ? await acceptCoCounter(service, { coId: request.document_id, ...sendParams })
+    : request.document_type === 'invoice'
+    ? await sendInvoiceDocument(service, { invoiceId: request.document_id, ...sendParams })
+    : await sendCoDocument(service, { coId: request.document_id, ...sendParams })
+
+  const now = new Date().toISOString()
+  if (result.ok) {
+    await service.from('approval_requests').update({
+      send_failed_at: null, send_failed_reason: null, updated_at: now,
+    }).eq('id', request.id)
+    await logAudit(service, {
+      workspaceId: params.workspaceId,
+      actorId: params.actor.id, actorEmail: params.actor.email, actorName: params.actor.name,
+      eventType: 'approval.send_retried', entityType: entityTypeFor(request.document_type),
+      entityId: request.document_id, entityName: request.context?.title || '',
+      metadata: { approval_request_id: request.id },
+    })
+    return { ok: true }
+  }
+
+  // Still failing (e.g. the client's email is still missing) — refresh the
+  // reason shown in the UI so it reflects whatever's actually wrong now,
+  // rather than the original failure from however long ago.
+  await service.from('approval_requests').update({
+    send_failed_reason: result.error, updated_at: now,
+  }).eq('id', request.id)
+  return { ok: false, error: result.error }
+}
+
 // ── LOOKUP ───────────────────────────────────────────────────────
 export async function getPendingApprovalForDocument(
   service: any, documentType: ApprovalDocumentType, documentId: string
@@ -761,7 +836,7 @@ async function notifyRequester(service: any, args: {
   requester: { id: string; name: string; email: string }
   decision: 'approved' | 'rejected'
   documentLabel: string; docTitle: string; projectId: string; projectName: string
-  decidedByName: string; note?: string; autoSent?: boolean
+  decidedByName: string; note?: string; autoSent?: boolean; sendFailedReason?: string | null
 }) {
   // FIX (deep audit, notifications section): this was the one notification
   // in the whole approval pipeline that bypassed the preference system
@@ -787,7 +862,15 @@ async function notifyRequester(service: any, args: {
         recipient_id: args.requester.id,
         type:         `approval_${args.decision}`,
         title:        `${args.documentLabel} ${args.decision}`,
-        body:         `${args.decidedByName} ${args.decision} ${args.docTitle}${args.autoSent ? ' — sent to client' : ''}.`,
+        // FIX (section-11 fix round, flagship finding): this used to say
+        // the same "{name} approved {title}." whether or not the
+        // auto-send afterward actually worked — a failure was completely
+        // silent to the one person positioned to notice and act on it.
+        // See migration 053 + the send_failed_at flag surfaced in
+        // ApprovalsClient with a retry action.
+        body: args.decision === 'approved' && args.sendFailedReason
+          ? `${args.decidedByName} approved ${args.docTitle}, but it could not be sent automatically (${args.sendFailedReason}) — open it in Approvals to retry.`
+          : `${args.decidedByName} ${args.decision} ${args.docTitle}${args.autoSent ? ' — sent to client' : ''}.`,
         entity_type:  'project',
         entity_id:    args.projectId,
       })
@@ -802,6 +885,7 @@ async function notifyRequester(service: any, args: {
         decision: args.decision, documentLabel: args.documentLabel, documentTitle: args.docTitle,
         projectName: args.projectName, decidedByName: args.decidedByName, note: args.note,
         url: `${appUrl}/projects/${args.projectId}`, autoSent: args.autoSent,
+        sendFailedReason: args.sendFailedReason,
       })
     } catch (e) { console.error('approval decision email failed:', e) }
   }

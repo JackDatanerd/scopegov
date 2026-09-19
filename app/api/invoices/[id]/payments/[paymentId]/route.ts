@@ -43,6 +43,7 @@ export async function DELETE(
 
     return NextResponse.json({ ok: true })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('Invoice payment delete error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

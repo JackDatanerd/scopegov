@@ -98,6 +98,24 @@ export async function POST(request: NextRequest) {
           error: `An active catch-all ${documentType === 'sow' ? 'SOW' : documentType === 'invoice' ? 'invoice' : 'change order'} workflow already exists (applies to every document, no threshold). Add a value threshold to this one, or edit the existing rule instead.`,
         }, { status: 409 })
       }
+    } else {
+      // FIX (section-11 fix round, real gap): the catch-all guard above
+      // only ever covered the null-threshold case. Two ACTIVE tiered
+      // workflows sharing the exact same (document_type, threshold_amount,
+      // threshold_currency) hit the identical ambiguity it exists to
+      // prevent — evaluateApprovalGate's tie-break (order by id) makes the
+      // outcome deterministic, but one of the two rules is then
+      // permanently dead with no warning anyone ever gets. Block it the
+      // same way.
+      const { count: dupeThreshold } = await (service as any)
+        .from('approval_workflows').select('id', { count: 'exact', head: true })
+        .eq('workspace_id', session.workspaceId).eq('document_type', documentType)
+        .eq('is_active', true).eq('threshold_amount', thresholdAmount).eq('threshold_currency', thresholdCurrency)
+      if ((dupeThreshold || 0) > 0) {
+        return NextResponse.json({
+          error: `An active ${documentType === 'sow' ? 'SOW' : documentType === 'invoice' ? 'invoice' : 'change order'} workflow already exists at this exact threshold (${thresholdCurrency} ${thresholdAmount}) — only one of the two would ever actually apply. Pick a different threshold, or edit the existing rule instead.`,
+        }, { status: 409 })
+      }
     }
 
     // FIX (deep audit, section 5): approverRoleId/approverUserId were

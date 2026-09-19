@@ -89,6 +89,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     return NextResponse.json({ ok: true })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('Invoice reminder error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

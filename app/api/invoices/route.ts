@@ -29,11 +29,16 @@ export async function GET(request: NextRequest) {
     if (projectId && !(await canReadProject(service, session, projectId)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
+    // FIX (section-12 fix round — feature gap): disputed_at was never
+    // selected here, so a client's portal dispute (api/portal/invoice/
+    // [token]/dispute) had no way to surface anywhere in the agency's own
+    // UI beyond the one-time notification it fires. See invoices/page.tsx
+    // and BillingTab.tsx for the corresponding display-side fix.
     let query = (service as any)
       .from('invoices')
       .select(`id, project_id, milestone_id, sow_id, co_id, invoice_number, title,
         amount, amount_paid, currency, status, due_date, sent_at, paid_at, voided_at,
-        created_at, updated_at,
+        disputed_at, created_at, updated_at,
         projects(id, name, clients(id, name, company_name))`)
       .eq('workspace_id', session.workspaceId)
       .order('created_at', { ascending: false })
@@ -57,7 +62,12 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({ invoices: invoices || [] })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    // FIX (section-12 fix round): raw exception messages were returned
+    // straight to the client here — same info-disclosure pattern already
+    // fixed on the invoice PDF/portal routes, just never applied to this
+    // one. Log server-side only.
+    console.error('Invoices list error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
 
@@ -88,7 +98,7 @@ export async function POST(request: NextRequest) {
 
     const { data: project } = await (service as any)
       .from('projects')
-      .select('id, name, currency, status')
+      .select('id, name, currency, status, contract_value')
       .eq('id', projectId).eq('workspace_id', session.workspaceId).single()
 
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
@@ -108,8 +118,24 @@ export async function POST(request: NextRequest) {
     // to whatever the linked source was actually scoped for. Under-billing
     // (partial invoicing) is intentionally still allowed — only billing
     // MORE than the source's own defined value is blocked.
+    //
+    // FIX (section-12 fix round, flagship finding): the per-invoice cap
+    // above was necessary but not sufficient — nothing ever stopped
+    // creating a SECOND (or third) invoice against the same SOW or CO,
+    // each individually under the cap, but together billing the client
+    // twice for the same signed scope. A milestone can't hit this because
+    // it's a natural singleton (blocked from re-selection the moment it's
+    // 'invoiced' — see the milestone branch below), but a SOW/CO has no
+    // such lock. sourceCap/sourceInvoicedElsewhere below make the cap
+    // CUMULATIVE: the sum of every non-void invoice already issued against
+    // this exact source, plus this new one, may never exceed the source's
+    // own value. sowId had no cap at all before this fix — a SOW-linked
+    // invoice's `amount` was never even checked against project.contract_value.
     let milestoneCap: number | null = null
     let coSubtotalCap: number | null = null
+    let sowCap: number | null = null
+    let sourceKind: 'milestone' | 'sow' | 'co' | null = null
+    let sourceId: string | null = null
     if (milestoneId) {
       const { data: milestone } = await (service as any)
         .from('payment_milestones').select('id, project_id, amount, status')
@@ -133,14 +159,22 @@ export async function POST(request: NextRequest) {
             : 'This milestone already has an invoice against it — void the existing one first if you need to re-invoice it',
         }, { status: 400 })
       milestoneCap = Number(milestone.amount)
+      sourceKind = 'milestone'; sourceId = milestoneId
     }
     if (sowId) {
+      // FIX (section-12 fix round, flagship finding): contract_value added
+      // to the select — this branch never fetched it before, so a
+      // SOW-linked invoice had no amount cap at all, not even a
+      // single-invoice one (see the comment on milestoneCap/coSubtotalCap
+      // above).
       const { data: sow } = await (service as any)
         .from('sow_documents').select('id, project_id, status')
         .eq('id', sowId).eq('project_id', projectId).single()
       if (!sow) return NextResponse.json({ error: 'SOW not found on this project' }, { status: 404 })
       if (sow.status !== 'signed')
         return NextResponse.json({ error: 'Only a signed SOW can be invoiced against' }, { status: 400 })
+      sowCap = Number(project.contract_value) || 0
+      sourceKind = 'sow'; sourceId = sowId
     }
     if (coId) {
       const { data: co } = await (service as any)
@@ -156,6 +190,7 @@ export async function POST(request: NextRequest) {
       // overrides taxRate/taxInclusive in the request body.
       if (taxRate === undefined) coTaxDefaults = { taxRate: co.tax_rate, taxInclusive: co.tax_inclusive, subtotal: co.subtotal }
       coSubtotalCap = Number(co.subtotal)
+      sourceKind = 'co'; sourceId = coId
     }
 
     // Optional itemized breakdown (migration 017), computed before the
@@ -221,6 +256,39 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         error: `Invoice amount (${finalSubtotal.toFixed(2)} before tax) exceeds this change order's accepted amount (${coSubtotalCap.toFixed(2)}).`,
       }, { status: 400 })
+    }
+    if (sowCap != null && finalSubtotal > sowCap + 0.01) {
+      return NextResponse.json({
+        error: `Invoice amount (${finalSubtotal.toFixed(2)} before tax) exceeds this SOW's contract value (${sowCap.toFixed(2)}).`,
+      }, { status: 400 })
+    }
+
+    // FIX (section-12 fix round, flagship finding): CUMULATIVE cap — a
+    // single-invoice cap (above) doesn't stop a second or third invoice
+    // against the same SOW/CO, each individually under the cap but
+    // together over-billing the client for the same signed scope. Sum
+    // every non-void invoice already issued against this exact source
+    // (milestone is excluded — it's already a hard singleton via the
+    // status check above, so there's never a prior invoice to sum) and
+    // make sure this new one doesn't push the total past the source's cap.
+    if (sourceKind === 'sow' || sourceKind === 'co') {
+      const cap = sourceKind === 'sow' ? sowCap : coSubtotalCap
+      if (cap != null) {
+        const sourceColumn = sourceKind === 'sow' ? 'sow_id' : 'co_id'
+        const { data: priorInvoices } = await (service as any)
+          .from('invoices')
+          .select('subtotal, amount')
+          .eq(sourceColumn, sourceId)
+          .neq('status', 'void')
+        const alreadyInvoiced = (priorInvoices || [])
+          .reduce((s: number, i: any) => s + Number(i.subtotal ?? i.amount ?? 0), 0)
+        if (alreadyInvoiced + finalSubtotal > cap + 0.01) {
+          const remaining = Math.max(0, cap - alreadyInvoiced)
+          return NextResponse.json({
+            error: `This ${sourceKind === 'sow' ? 'SOW' : 'change order'} has ${alreadyInvoiced.toFixed(2)} already invoiced against it — only ${remaining.toFixed(2)} remains billable (before tax).`,
+          }, { status: 400 })
+        }
+      }
     }
 
     // Soft rule enforced in code, not a DB constraint (matches the
@@ -304,6 +372,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: true, invoice })
   } catch (err) {
     console.error('Invoice create error:', err)
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

@@ -56,6 +56,30 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
   // POST /api/invoices.
   const billableMilestones = milestones.filter((m: any) => m.status !== 'paid' && m.status !== 'invoiced')
 
+  // FIX (section-12 fix round, flagship finding): a signed SOW or accepted
+  // CO stayed selectable in "Bill against" no matter how many invoices
+  // already existed against it — unlike milestones (excluded above the
+  // moment one is 'invoiced'/'paid'), nothing here ever tracked how much
+  // of the source's own value had already been billed. That let an agency
+  // pick the same signed SOW or accepted CO twice and send a client two
+  // full invoices for the same signed scope, with no warning anywhere in
+  // the picker. `remaining` mirrors the cumulative cap now enforced
+  // server-side (POST/PATCH /api/invoices) — the sum of every non-void
+  // invoice already issued against that exact source, subtracted from the
+  // source's own value. Anything fully billed (remaining <= 0) drops out
+  // of the picker entirely; anything partially billed still shows up, but
+  // annotated with what's actually left to invoice.
+  const alreadyInvoicedAgainst = (column: 'sow_id' | 'co_id', id: string) =>
+    invoices
+      .filter((i: any) => i[column] === id && i.status !== 'void')
+      .reduce((s: number, i: any) => s + Number(i.subtotal ?? i.amount ?? 0), 0)
+  const billableSows = signedSows
+    .map((s: any) => ({ ...s, remaining: Number(project.contract_value || 0) - alreadyInvoicedAgainst('sow_id', s.id) }))
+    .filter((s: any) => s.remaining > 0.01)
+  const billableCos = acceptedCos
+    .map((c: any) => ({ ...c, remaining: Number(c.subtotal || 0) - alreadyInvoicedAgainst('co_id', c.id) }))
+    .filter((c: any) => c.remaining > 0.01)
+
   // Phase 4: latest reconciliation snapshot, falling back to a live
   // computation from the props already on hand if the daily rollup cron
   // hasn't run yet for a brand-new project (snapshot table starts empty).
@@ -167,12 +191,29 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
                           <i className="ti ti-shield-check" style={{ fontSize: 10 }} /> Awaiting approval ({pendingApproval.current_step}/{pendingApproval.total_steps})
                         </span>
                       )}
+                      {/* FIX (section-12 fix round, real feature gap): a
+                          client's portal dispute (api/portal/invoice/
+                          [token]/dispute) previously fired one email/
+                          in-app notification and then vanished — nothing
+                          in the agency's own UI ever showed disputed_at
+                          again. Same visibility pattern as the
+                          pending-approval pill right above. */}
+                      {inv.disputed_at && (
+                        <span className="pill pill-red" title={inv.dispute_note || undefined}>
+                          <i className="ti ti-alert-triangle" style={{ fontSize: 10 }} /> Client disputed {formatDate(inv.disputed_at)}
+                        </span>
+                      )}
                     </div>
                     <div style={{ fontSize: 12, color: 'var(--text-3)' }}>
                       {inv.invoice_number ? `${inv.invoice_number} · ` : ''}
                       {inv.sent_at ? `Sent ${formatDate(inv.sent_at)}` : 'Not sent yet'}
                       {inv.due_date && <> · Due {formatDate(inv.due_date)}</>}
                     </div>
+                    {inv.disputed_at && inv.dispute_note && (
+                      <div style={{ fontSize: 12, color: 'var(--red)', marginTop: 4 }}>
+                        &ldquo;{inv.dispute_note}&rdquo;
+                      </div>
+                    )}
                   </div>
                   <div style={{ textAlign: 'right' }}>
                     <div style={{ fontSize: 17, fontFamily: 'Cormorant Garamond, Georgia, serif' }}>
@@ -274,8 +315,8 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
           projectId={project.id}
           projectCurrency={currency}
           milestones={billableMilestones}
-          sows={signedSows}
-          cos={acceptedCos}
+          sows={billableSows}
+          cos={billableCos}
           defaultPaymentInstructions={defaultPaymentInstructions}
           onClose={() => setCreating(false)}
           onCreated={async () => { setCreating(false); await refresh() }}
@@ -634,12 +675,14 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
                 ))}
                 {sows.map((s: any) => (
                   <SourceRow key={s.id} active={source.type === 'sow' && source.id === s.id}
-                    label={`SOW v${s.version}`} sub={s.document_number || 'Signed SOW'}
+                    label={`SOW v${s.version}`}
+                    sub={`${s.document_number || 'Signed SOW'} · ${formatCurrency(s.remaining, projectCurrency)} remaining`}
                     onClick={() => pickSource('sow', s.id)} />
                 ))}
                 {cos.map((c: any) => (
                   <SourceRow key={c.id} active={source.type === 'co' && source.id === c.id}
-                    label={c.title} sub={`Accepted CO · ${formatCurrency(c.total, projectCurrency)}`}
+                    label={c.title}
+                    sub={`Accepted CO · ${formatCurrency(c.remaining, projectCurrency)} remaining`}
                     onClick={() => pickSource('co', c.id)} />
                 ))}
               </div>

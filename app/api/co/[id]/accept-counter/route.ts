@@ -83,6 +83,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status })
     return NextResponse.json({ ok: true, awaitingCountersignature: true })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('CO accept-counter error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

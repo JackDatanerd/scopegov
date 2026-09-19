@@ -37,7 +37,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
     return NextResponse.json({ invoice, payments: payments || [] })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('Invoice detail fetch error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
 
@@ -53,7 +54,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     const service = createServiceClient()
     const { data: invoice } = await (service as any)
-      .from('invoices').select('id, status, title, amount, subtotal, tax_rate, tax_inclusive, project_id, line_items, milestone_id, co_id')
+      .from('invoices').select('id, status, title, amount, subtotal, tax_rate, tax_inclusive, project_id, line_items, milestone_id, co_id, sow_id')
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
@@ -146,22 +147,52 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // since this route never even fetched milestone_id/co_id. Only check
     // when the amount/tax actually changed — an edit that only touches the
     // title or due date has nothing to re-validate.
+    // FIX (section-12 fix round, flagship finding): this block only ever
+    // capped against the linked source's OWN total value in isolation —
+    // it never accounted for other non-void invoices already issued
+    // against the same milestone/CO/SOW, so editing a draft's amount
+    // upward could push the CUMULATIVE total billed against that source
+    // past its real value even though this one invoice's own number
+    // looked fine in isolation. It also never checked sow_id at all
+    // (no cap existed for SOW-linked invoices before this fix — see
+    // POST /api/invoices for the matching creation-time fix). The sum
+    // below excludes this invoice's own current row so an edit is
+    // compared against everything ELSE already billed, not double-counted
+    // against itself.
     if (touchesTax) {
+      let cap: number | null = null
+      let sourceColumn: 'milestone_id' | 'co_id' | 'sow_id' | null = null
+      let sourceId: string | null = null
+      let sourceLabel = ''
       if (invoice.milestone_id) {
         const { data: milestone } = await (service as any)
           .from('payment_milestones').select('amount').eq('id', invoice.milestone_id).maybeSingle()
-        if (milestone && finalSubtotal > Number(milestone.amount) + 0.01) {
+        if (milestone) { cap = Number(milestone.amount); sourceLabel = "this milestone's defined amount" }
+        // Milestones are a natural singleton (see POST /api/invoices) —
+        // no cumulative sum needed, just the direct cap.
+        if (cap != null && finalSubtotal > cap + 0.01) {
           return NextResponse.json({
-            error: `Invoice amount (${finalSubtotal.toFixed(2)} before tax) exceeds this milestone's defined amount (${Number(milestone.amount).toFixed(2)}).`,
+            error: `Invoice amount (${finalSubtotal.toFixed(2)} before tax) exceeds ${sourceLabel} (${cap.toFixed(2)}).`,
           }, { status: 400 })
         }
-      }
-      if (invoice.co_id) {
+      } else if (invoice.co_id) {
         const { data: co } = await (service as any)
           .from('change_orders').select('subtotal').eq('id', invoice.co_id).maybeSingle()
-        if (co && finalSubtotal > Number(co.subtotal) + 0.01) {
+        if (co) { cap = Number(co.subtotal); sourceColumn = 'co_id'; sourceId = invoice.co_id; sourceLabel = "this change order's accepted amount" }
+      } else if (invoice.sow_id) {
+        const { data: proj } = await (service as any)
+          .from('projects').select('contract_value').eq('id', invoice.project_id).maybeSingle()
+        if (proj) { cap = Number(proj.contract_value) || 0; sourceColumn = 'sow_id'; sourceId = invoice.sow_id; sourceLabel = "this SOW's contract value" }
+      }
+      if (cap != null && sourceColumn && sourceId) {
+        const { data: others } = await (service as any)
+          .from('invoices').select('id, subtotal, amount')
+          .eq(sourceColumn, sourceId).neq('status', 'void').neq('id', id)
+        const othersTotal = (others || []).reduce((s: number, i: any) => s + Number(i.subtotal ?? i.amount ?? 0), 0)
+        if (othersTotal + finalSubtotal > cap + 0.01) {
+          const remaining = Math.max(0, cap - othersTotal)
           return NextResponse.json({
-            error: `Invoice amount (${finalSubtotal.toFixed(2)} before tax) exceeds this change order's accepted amount (${Number(co.subtotal).toFixed(2)}).`,
+            error: `${othersTotal.toFixed(2)} is already invoiced elsewhere against ${sourceLabel.replace('this ', '')} — only ${remaining.toFixed(2)} remains billable (before tax).`,
           }, { status: 400 })
         }
       }
@@ -194,7 +225,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     return NextResponse.json({ ok: true })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('Invoice update error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
 
@@ -243,6 +275,7 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
 
     return NextResponse.json({ ok: true })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('Invoice delete error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

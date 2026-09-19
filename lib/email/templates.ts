@@ -666,22 +666,31 @@ export async function sendApprovalDecisionEmail(params: {
   documentLabel: string; documentTitle: string; projectName: string
   decidedByName: string; note?: string; url: string
   autoSent?: boolean
+  // FIX (section-11 fix round, flagship finding): see the matching fix in
+  // lib/approvals/engine.ts (notifyRequester) — a failed auto-send used to
+  // produce the exact same email as a successful one. sendFailedReason
+  // being present means approved && !autoSent, i.e. the chain approved
+  // but the mechanical send afterward failed.
+  sendFailedReason?: string | null
 }) {
   const { to, requesterName: requesterNameRaw, decision, documentLabel, documentTitle: documentTitleRaw,
-    projectName: projectNameRaw, decidedByName: decidedByNameRaw, note: noteRaw, url, autoSent } = params
+    projectName: projectNameRaw, decidedByName: decidedByNameRaw, note: noteRaw, url, autoSent,
+    sendFailedReason: sendFailedReasonRaw } = params
   const approved       = decision === 'approved'
+  const sendFailed      = approved && !!sendFailedReasonRaw
   const requesterName  = escapeHtml(requesterNameRaw)
   const documentTitle  = escapeHtml(documentTitleRaw)
   const projectName    = escapeHtml(projectNameRaw)
   const decidedByName  = escapeHtml(decidedByNameRaw)
   const note           = escapeHtml(noteRaw)
+  const sendFailedReason = escapeHtml(sendFailedReasonRaw)
 
   const html = baseTemplate({
     agencyName: 'ScopeGov',
-    headerColour: approved ? C.green : C.red,
-    label: approved ? 'Approval Granted' : 'Approval Rejected',
+    headerColour: approved ? (sendFailed ? C.amber : C.green) : C.red,
+    label: approved ? (sendFailed ? 'Approved — action needed' : 'Approval Granted') : 'Approval Rejected',
     headline: approved
-      ? `${documentLabel} approved${autoSent ? ' and sent' : ''}`
+      ? (sendFailed ? `${documentLabel} approved, but not sent` : `${documentLabel} approved${autoSent ? ' and sent' : ''}`)
       : `${documentLabel} was rejected`,
     body: `
       <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${requesterName},</p>
@@ -691,6 +700,12 @@ export async function sendApprovalDecisionEmail(params: {
         ${approved && autoSent ? ' It has been sent to the client automatically.' : ''}
         ${!approved ? ' It has not been sent and remains a draft — make any changes needed and resubmit.' : ''}
       </p>
+      ${sendFailed ? `
+      <div style="background:${C.amberLt || C.bg};border:1px solid ${C.amber};border-radius:6px;padding:14px 16px;margin:16px 0;">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:${C.amber};margin-bottom:6px;">It was not sent to the client</div>
+        <p style="font-size:13px;color:${C.text};margin:0;">The approval went through, but sending it failed: ${sendFailedReason}. Open it in Approvals and retry once the issue is resolved — this will not require re-approval.</p>
+      </div>
+      ` : ''}
       ${note ? `
       <div style="background:${C.bg};border:1px solid ${C.border};border-radius:6px;padding:14px 16px;margin:16px 0;">
         <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:${C.text3};margin-bottom:6px;">Note from ${decidedByName}</div>
@@ -705,7 +720,9 @@ export async function sendApprovalDecisionEmail(params: {
   return resendClient().emails.send({
     from:    `ScopeGov <${FROM}>`,
     to,
-    subject: `${approved ? 'Approved' : 'Rejected'}: ${documentTitleRaw} — ${projectNameRaw}`,
+    subject: sendFailed
+      ? `Action needed: ${documentTitleRaw} approved but not sent — ${projectNameRaw}`
+      : `${approved ? 'Approved' : 'Rejected'}: ${documentTitleRaw} — ${projectNameRaw}`,
     html,
   })
 }

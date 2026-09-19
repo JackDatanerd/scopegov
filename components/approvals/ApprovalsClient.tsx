@@ -34,6 +34,10 @@ interface ApprovalRequest {
   created_at: string
   decided_at: string | null
   requested_by: string
+  // FIX (section-11 fix round, flagship finding): see migration 053 — set
+  // when the auto-send that fires on final approval fails.
+  send_failed_at: string | null
+  send_failed_reason: string | null
   requester: { id: string; name: string; email: string } | null
   projects: { id: string; name: string } | null
   approval_steps: Step[]
@@ -44,6 +48,20 @@ function documentLabelFor(documentType: ApprovalRequest['document_type']): strin
   if (documentType === 'invoice') return 'Invoice'
   if (documentType === 'co_counter') return 'Change order counter-offer'
   return 'Change order'
+}
+
+// FIX (section-11 fix round, flagship feature gap): neither the table row
+// nor the detail modal ever linked to the actual document being decided —
+// an approver saw only a title string and a dollar figure, with no way to
+// open the real SOW sections / CO line items / invoice before approving
+// or rejecting it. canReadProject already gates who's allowed to decide
+// (see recordApprovalDecision in lib/approvals/engine.ts), so anyone
+// eligible to act here is already entitled to view the project's SOW/CO/
+// billing tab — this was a pure UI omission, not a permissions gap.
+function tabForDocumentType(documentType: ApprovalRequest['document_type']): string {
+  if (documentType === 'sow') return 'sow'
+  if (documentType === 'invoice') return 'billing'
+  return 'co' // 'co' and 'co_counter' both live on the CO tab
 }
 
 function requestPill(status: string): string {
@@ -66,6 +84,15 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [selected, setSelected] = useState<ApprovalRequest | null>(null)
+  // FIX (section-11 fix round, flagship finding — completing the
+  // send_failed_at fix): fetched independently of the mine/all tabs above,
+  // since a request needing a retry belongs to the ORIGINAL REQUESTER —
+  // who may hold neither the approving role ("mine") nor canViewAll
+  // ("all"). Without this, an ordinary team member who just gets the
+  // notification telling them to "open it in Approvals to retry" would
+  // land on a page with no way to actually find their own request.
+  const [needsRetry, setNeedsRetry] = useState<ApprovalRequest[]>([])
+  const [retryingId, setRetryingId] = useState<string | null>(null)
 
   const load = useCallback(async (scope: 'mine' | 'all') => {
     setLoading(true); setError('')
@@ -79,7 +106,29 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
     } finally { setLoading(false) }
   }, [])
 
+  const loadNeedsRetry = useCallback(async () => {
+    try {
+      const res  = await fetch('/api/approvals?scope=submitted')
+      const json = await res.json()
+      if (!res.ok) return
+      setNeedsRetry((json.requests || []).filter((r: ApprovalRequest) => !!r.send_failed_at))
+    } catch { /* non-fatal — the notification is still the primary signal */ }
+  }, [])
+
   useEffect(() => { load(tab) }, [tab, load])
+  useEffect(() => { loadNeedsRetry() }, [loadNeedsRetry])
+
+  async function retrySend(id: string) {
+    setRetryingId(id)
+    try {
+      const res  = await fetch(`/api/approvals/${id}/retry-send`, { method: 'POST' })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error || 'Retry failed')
+      await Promise.all([load(tab), loadNeedsRetry()])
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Retry failed')
+    } finally { setRetryingId(null) }
+  }
 
   // Auto-open the request linked from a notification.
   useEffect(() => {
@@ -127,6 +176,29 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
           </Link>
         )}
       </div>
+
+      {needsRetry.length > 0 && (
+        <div className="surface surface-p" style={{ marginBottom: 18, borderColor: 'var(--red)' }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--red)', marginBottom: 10 }}>
+            <i className="ti ti-alert-triangle" style={{ fontSize: 12 }} /> Needs your attention — approved but not sent
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {needsRetry.map(r => (
+              <div key={r.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 500 }}>{r.context?.title || documentLabelFor(r.document_type)}</div>
+                  <div style={{ fontSize: 11.5, color: 'var(--text-3)' }}>
+                    {r.projects?.name || r.context?.project_name} · {r.send_failed_reason}
+                  </div>
+                </div>
+                <button className="btn btn-primary btn-sm" onClick={() => retrySend(r.id)} disabled={retryingId === r.id}>
+                  {retryingId === r.id ? <span className="spin" /> : 'Retry send'}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {canViewAll && (
         <div style={{ display: 'flex', gap: 6, marginBottom: 18 }}>
@@ -266,6 +338,13 @@ function ApprovalDetailModal({ request, session, eligibleStep, onClose, onDone }
           {documentLabel} on {request.projects?.name || request.context?.project_name} · requested by {request.requester?.name}
           {request.context?.amount != null && <> · {formatCurrency(request.context.amount, request.context.currency || 'USD')}</>}
         </p>
+        {request.projects?.id && (
+          <p className="modal-sub" style={{ marginTop: -8, marginBottom: 14 }}>
+            <Link href={`/projects/${request.projects.id}?tab=${tabForDocumentType(request.document_type)}`} target="_blank" rel="noreferrer">
+              <i className="ti ti-external-link" style={{ fontSize: 11 }} /> Open the {documentLabel.toLowerCase()} to review before deciding
+            </Link>
+          </p>
+        )}
 
         {error && <div className="auth-error" style={{ marginBottom: 14 }}>{error}</div>}
 

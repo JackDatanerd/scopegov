@@ -142,6 +142,7 @@ Rules:
     return NextResponse.json({ title: parsed.title || '', lineItems })
   } catch (err) {
     console.error('Invoice draft error:', err)
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('Invoice draft-suggest error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

@@ -61,6 +61,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // otherwise-unchanged row can create the same silent-collision.
     const resultingActive    = 'is_active' in patch ? (patch.is_active as boolean) : existing.is_active
     const resultingThreshold = 'threshold_amount' in patch ? patch.threshold_amount : existing.threshold_amount
+    const resultingCurrency  = 'threshold_currency' in patch ? patch.threshold_currency : existing.threshold_currency
     if (resultingActive && resultingThreshold == null) {
       const { count: dupeCatchAll } = await (service as any)
         .from('approval_workflows').select('id', { count: 'exact', head: true })
@@ -69,6 +70,24 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       if ((dupeCatchAll || 0) > 0) {
         return NextResponse.json({
           error: `An active catch-all ${existing.document_type === 'sow' ? 'SOW' : existing.document_type === 'invoice' ? 'invoice' : 'change order'} workflow already exists. Add a value threshold to this one, or deactivate the other rule first.`,
+        }, { status: 409 })
+      }
+    } else if (resultingActive && resultingThreshold != null) {
+      // FIX (section-11 fix round, real gap): matches the equivalent guard
+      // added to POST /api/approval-workflows — two ACTIVE tiered
+      // workflows sharing the exact same (document_type, threshold_amount,
+      // threshold_currency) is the same silent-collision the catch-all
+      // guard above exists to prevent, just never checked for the tiered
+      // case. Only the state this edit RESULTS IN matters, same reasoning
+      // as resultingActive/resultingThreshold above.
+      const { count: dupeThreshold } = await (service as any)
+        .from('approval_workflows').select('id', { count: 'exact', head: true })
+        .eq('workspace_id', session.workspaceId).eq('document_type', existing.document_type)
+        .eq('is_active', true).eq('threshold_amount', resultingThreshold).eq('threshold_currency', resultingCurrency)
+        .neq('id', id)
+      if ((dupeThreshold || 0) > 0) {
+        return NextResponse.json({
+          error: `An active ${existing.document_type === 'sow' ? 'SOW' : existing.document_type === 'invoice' ? 'invoice' : 'change order'} workflow already exists at this exact threshold (${resultingCurrency} ${resultingThreshold}) — only one of the two would ever actually apply. Pick a different threshold, or deactivate the other rule first.`,
         }, { status: 409 })
       }
     }

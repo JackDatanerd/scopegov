@@ -6,6 +6,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
 import { sendDocumentCancelledEmail } from '@/lib/email/templates'
+import { cancelApprovalRequest } from '@/lib/approvals/engine'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -64,6 +65,20 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         error: 'A payment was just recorded on this invoice — refresh and remove or correct it before voiding',
       }, { status: 409 })
 
+    // FIX (section-12 fix round): void had no status check excluding a
+    // still-'draft', approval-gated invoice (one under review stays
+    // 'draft' the whole time — see the send route), and never called
+    // cancelApprovalRequest the way DELETE does for the same case. Voiding
+    // one directly (bypassing the UI, which never offers Void for a draft)
+    // would leave a 'pending' approval_requests row forever notifying an
+    // approver about an invoice that's now void. Safe to call
+    // unconditionally — it's a no-op when there's nothing pending.
+    await cancelApprovalRequest(service, {
+      documentType: 'invoice', documentId: id, workspaceId: session.workspaceId,
+      actorId: session.id, actorEmail: session.email, actorName: session.name,
+      reason: reason || 'Invoice voided',
+    })
+
     // Revoke the portal token, same pattern as SOW/CO withdraw — the client
     // link should stop resolving once an invoice is voided.
     if (invoice.token) {
@@ -105,6 +120,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     return NextResponse.json({ ok: true })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('Invoice void error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

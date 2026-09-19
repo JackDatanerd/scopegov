@@ -42,7 +42,7 @@ export default async function InvoicesPage() {
 
   let invoicesQuery = (service as any)
     .from('invoices')
-    .select(`id, invoice_number, title, amount, amount_paid, currency, status, due_date, sent_at, paid_at, created_at,
+    .select(`id, invoice_number, title, amount, amount_paid, currency, status, due_date, sent_at, paid_at, created_at, disputed_at,
       projects(id, name, clients(name))`)
     .eq('workspace_id', session.workspaceId)
     .order('created_at', { ascending: false })
@@ -252,6 +252,16 @@ export default async function InvoicesPage() {
                   <td style={{ color: 'var(--text-2)', fontSize: 13 }}>{inv.title}</td>
                   <td>
                     <span className={`pill pill-${invoicePill(inv.status)}`}>{invoiceStatusLabel(inv.status)}</span>
+                    {/* FIX (section-12 fix round, real feature gap): see
+                        the matching fix in components/invoices/
+                        BillingTab.tsx — a client dispute previously had
+                        no visible trace anywhere in the agency's own UI
+                        once the one-time notification was dismissed. */}
+                    {inv.disputed_at && (
+                      <span className="pill pill-red pill-sm" style={{ marginLeft: 4 }} title={`Disputed ${formatDate(inv.disputed_at)}`}>
+                        Disputed
+                      </span>
+                    )}
                   </td>
                   <td style={{ color: 'var(--text-3)', fontSize: 12 }}>{inv.due_date ? formatDate(inv.due_date) : '—'}</td>
                   <td className="td-mono" style={{ textAlign: 'right', fontSize: 12 }}>

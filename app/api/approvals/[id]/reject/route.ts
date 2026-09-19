@@ -28,6 +28,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status })
     return NextResponse.json(result)
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('Approval decision (reject) error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

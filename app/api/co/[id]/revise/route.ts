@@ -110,26 +110,51 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // flag reverts through the normal close path rather than being left
     // pointing at an abandoned CO).
     if (co.status === 'countered') {
-      await (service as any).from('change_orders')
+      // FIX (section-11 fix round, real bug): this write had no
+      // compare-and-swap verification — every other status transition in
+      // this file (and its siblings, close/withdraw/accept-counter) checks
+      // whether its own guarded update actually matched a row before
+      // proceeding. This one didn't: if accept-counter or close/route.ts
+      // won a race against this same CO in the gap between the read above
+      // and this write, the update below would silently affect zero rows,
+      // but the code carried on as if it had succeeded — logging an audit
+      // entry claiming "Superseded by revision vN" and cancelling the
+      // co_counter approval request with that same false reason, even
+      // though the original CO had actually moved on to something else
+      // (accepted, or already closed for a different reason). Capture the
+      // result and only treat the supersede as real if a row actually
+      // matched.
+      const { data: superseded } = await (service as any).from('change_orders')
         .update({
           status: 'closed',
           close_reason: `Superseded by revision v${revision.version}`,
           updated_at: new Date().toISOString(),
         })
         .eq('id', co.id).eq('status', 'countered')
+        .select('id').maybeSingle()
 
-      // FIX (section-11 audit): accepting a counter-offer on a gated
-      // workflow creates a pending 'co_counter' approval request while
-      // this CO stays 'countered' (see accept-counter/route.ts +
-      // lib/approvals/engine.ts) — superseding it here with a revision,
-      // same gap as close/route.ts, left that request orphaned: still
-      // pending, still in the approver's queue, referencing a CO that's
-      // now closed. Cancel it the same way withdraw() and close() do.
-      await cancelApprovalRequest(service, {
-        documentType: 'co_counter', documentId: co.id, workspaceId: session.workspaceId,
-        actorId: session.id, actorEmail: session.email, actorName: session.name,
-        reason: `Superseded by revision v${revision.version}`,
-      })
+      if (superseded) {
+        // FIX (section-11 audit): accepting a counter-offer on a gated
+        // workflow creates a pending 'co_counter' approval request while
+        // this CO stays 'countered' (see accept-counter/route.ts +
+        // lib/approvals/engine.ts) — superseding it here with a revision,
+        // same gap as close/route.ts, left that request orphaned: still
+        // pending, still in the approver's queue, referencing a CO that's
+        // now closed. Cancel it the same way withdraw() and close() do.
+        await cancelApprovalRequest(service, {
+          documentType: 'co_counter', documentId: co.id, workspaceId: session.workspaceId,
+          actorId: session.id, actorEmail: session.email, actorName: session.name,
+          reason: `Superseded by revision v${revision.version}`,
+        })
+      } else {
+        // The CO was no longer 'countered' by the time we got here (a
+        // concurrent accept-counter or close already moved it on) — the
+        // new revision draft is still perfectly valid, but we must NOT
+        // claim the original was "superseded" (it wasn't) or cancel an
+        // approval request on that false premise (accept-counter's own
+        // flow already resolved it correctly on its own).
+        console.warn('CO revise: supersede lost a race, co.id =', co.id, '— original CO had already moved on from countered')
+      }
     }
 
     await logAudit(service, {
@@ -147,6 +172,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ coId: revision.id, version: revision.version })
   } catch (err) {
     console.error('CO revise error:', err)
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

@@ -65,7 +65,7 @@ export default async function ProjectPage({ params, searchParams }: Props) {
       clients(id, name, company_name, email, cc_emails, phone, notes),
       guardian_flags(id, status, severity, description, sow_reference, type, created_at, change_order_id, escalated_to),
       exceptions_log(id, deliverable, granted_what, granted_by, estimated_value, reason, flag_id, created_at),
-      change_orders(id, title, status, total, sent_at, accepted_at, version, document_number,
+      change_orders(id, title, status, total, subtotal, sent_at, accepted_at, version, document_number,
         counter_amount, counter_note, declined_reason, close_reason, tax_rate, tax_inclusive),
       sow_documents(id, version, status, sent_at, signed_at, created_at, document_number),
       project_scope_snapshot(id, deliverables, out_of_scope, last_updated_at)
@@ -101,7 +101,7 @@ export default async function ProjectPage({ params, searchParams }: Props) {
     if (Array.isArray(project.change_orders)) {
       // counter_amount is financial data on the same footing as total —
       // withhold it from the same people (10-G1).
-      project.change_orders = project.change_orders.map((co: any) => ({ ...co, total: null, counter_amount: null }))
+      project.change_orders = project.change_orders.map((co: any) => ({ ...co, total: null, subtotal: null, counter_amount: null }))
     }
   }
   if (!viewClientData && project.clients) {
@@ -171,7 +171,12 @@ export default async function ProjectPage({ params, searchParams }: Props) {
   const { data: invoices = [] } = viewFinancials
     ? await (service as any)
         .from('invoices')
-        .select('id, milestone_id, sow_id, co_id, invoice_number, title, amount, amount_paid, currency, status, due_date, sent_at, paid_at, voided_at, token, created_at')
+        // FIX (section-12 fix round): subtotal/disputed_at/dispute_note added —
+        // subtotal so BillingTab can compute remaining billable amount against
+        // a SOW/CO (the cumulative over-billing fix), disputed_at/dispute_note
+        // so a client's portal dispute is actually visible somewhere in the
+        // agency's own UI instead of only firing a one-time notification.
+        .select('id, milestone_id, sow_id, co_id, invoice_number, title, amount, amount_paid, subtotal, currency, status, due_date, sent_at, paid_at, voided_at, disputed_at, dispute_note, token, created_at')
         .eq('project_id', id)
         .order('created_at', { ascending: false })
     : { data: [] }

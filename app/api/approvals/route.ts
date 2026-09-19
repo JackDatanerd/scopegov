@@ -7,6 +7,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 const REQUEST_FIELDS = `
   id, document_type, document_id, project_id, status, current_step, total_steps,
   context, created_at, decided_at, requested_by,
+  send_failed_at, send_failed_reason,
   requester:users!approval_requests_requested_by_fkey(id, name, email),
   projects(id, name),
   approval_steps(
@@ -41,6 +42,31 @@ export async function GET(request: NextRequest) {
         .limit(500)
 
       return NextResponse.json({ requests: data || [], scope: 'all' })
+    }
+
+    // FIX (section-11 fix round, flagship finding — completing the
+    // send_failed_at fix): a request that finishes approving but whose
+    // auto-send then fails needs to be discoverable by the person who
+    // actually has to act on it — the ORIGINAL REQUESTER — not just by
+    // approvers ("mine" above, which only ever returns PENDING requests
+    // assigned to the viewer) or admins ("all" above, gated behind
+    // VIEW_ALL_PROJECTS/MANAGE_WORKSPACE_SETTINGS, which an ordinary team
+    // member filing a routine SOW/CO/invoice send usually doesn't hold).
+    // Without this, the in-app/email notification's "open it in Approvals
+    // to retry" instruction would send a regular requester to a page with
+    // no way to actually find their own request. Scoped strictly to the
+    // caller's own submissions — no project-access or admin check needed,
+    // since requested_by = session.id is inherently "yours to see."
+    if (scope === 'submitted') {
+      const { data } = await (service as any)
+        .from('approval_requests')
+        .select(REQUEST_FIELDS)
+        .eq('workspace_id', session.workspaceId)
+        .eq('requested_by', session.id)
+        .order('created_at', { ascending: false })
+        .limit(200)
+
+      return NextResponse.json({ requests: data || [], scope: 'submitted' })
     }
 
     // "Mine" — pending requests whose CURRENT step is assigned to me,
@@ -102,6 +128,7 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({ requests: mine, scope: 'mine' })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('Approvals list error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
