@@ -86,13 +86,31 @@ function OnboardingWizard() {
   // finished onboarding yet — render a waiting screen instead of ever
   // reaching the steps below, which would otherwise spin up a second,
   // unrelated workspace for them.
-  const [gate, setGate] = useState<'loading' | 'create' | 'waiting'>('loading')
+  // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — critical):
+  // 'switch_error' added. See resumeTarget below and the resume-handling
+  // block in the mount effect for the full story: reaching the wizard's
+  // steps with the wrong workspace silently active is worse than not
+  // reaching them at all, so a failed switch is now its own dead-end gate
+  // rather than something the wizard quietly powers through.
+  const [gate, setGate] = useState<'loading' | 'create' | 'waiting' | 'switch_error'>('loading')
   // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): workspaceId
   // added so the 'waiting' screen can offer a self-service "Leave this
   // workspace" — see the button below and onboarding-status/route.ts's own
   // comment on why 'waiting' now returns it.
   const [waitingFor, setWaitingFor] = useState<{ workspaceId: string; agencyName: string; creatorName: string } | null>(null)
   const [leavingWait, setLeavingWait] = useState(false)
+  // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — critical):
+  // powers the 'switch_error' gate below. Set when onboarding-status
+  // resolves 'resume' for a workspace that isn't already the user's active
+  // one and the follow-up POST /api/workspace/switch doesn't confirm
+  // success — see the mount effect for why this can no longer be treated
+  // as best-effort.
+  const [resumeTarget, setResumeTarget] = useState<{ workspaceId: string; agencyName: string } | null>(null)
+  const [retryingSwitch, setRetryingSwitch] = useState(false)
+  // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — feature
+  // gap): see submitIdentity's own comment on the explicitNew create
+  // path — powers the "resume that workspace instead" link on step 0.
+  const [trialConflict, setTrialConflict] = useState(false)
 
   // FIX (Workspace lifecycle + Onboarding, round 4 — headline feature
   // gap): middleware.ts only gates PAGE routes on onboarding completion,
@@ -109,6 +127,25 @@ function OnboardingWizard() {
   // "switch to an existing workspace" and "discard this one."
   const [otherWorkspaces, setOtherWorkspaces] = useState<Array<{ id: string; agencyName: string; name: string; onboardingComplete?: boolean }>>([])
   const [showExit, setShowExit] = useState(false)
+
+  // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — critical):
+  // extracted so the resume path (mount effect) and its retry button (the
+  // 'switch_error' gate below) share one implementation. Returns whether
+  // the switch actually took — callers must not proceed to render or
+  // submit wizard steps on a `false` result, since every downstream write
+  // resolves its target off the server's active workspace, not any id
+  // this component happens to be holding in state.
+  async function switchIntoWorkspace(id: string): Promise<boolean> {
+    try {
+      const res = await fetch('/api/workspace/switch', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId: id }),
+      })
+      return res.ok
+    } catch {
+      return false
+    }
+  }
 
   useEffect(() => {
     supabase.auth.getUser().then(async ({ data: { user } }) => {
@@ -176,15 +213,37 @@ function OnboardingWizard() {
         // used to make the resumed workspace active — complete() would
         // finish onboarding for it and redirect to /dashboard, landing
         // the user in whatever workspace WAS active instead of the one
-        // they just set up. Explicitly switch into it first. Best-effort:
-        // if this fails, onboarding still completes correctly for this
-        // workspace, it just may not be what greets them on /dashboard.
-        try {
-          await fetch('/api/workspace/switch', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ workspaceId: status.workspaceId }),
-          })
-        } catch { /* best-effort */ }
+        // they just set up. Explicitly switch into it first.
+        //
+        // FIX (deep audit, Workspace lifecycle + Onboarding re-pass —
+        // CRITICAL, headline finding): this used to be best-effort — the
+        // response wasn't even checked (fetch only throws on a
+        // network-level failure, never on a resolved non-2xx), on the
+        // theory that "onboarding still completes correctly for this
+        // workspace." That's false for every OTHER write the wizard makes
+        // between here and complete-onboarding: PATCH workspace/settings,
+        // PATCH workspace/branding, POST workspace/branding/logo, and
+        // POST/PATCH workspace/defaults all resolve their target off
+        // session.workspaceId (the server's active workspace) — by
+        // design, the same confused-deputy defense workspace/switch and
+        // team/invite's own comments describe — NOT off this component's
+        // workspaceId state. If the switch above silently failed while
+        // this resumed workspace differs from whatever WAS already
+        // active, every step-0-through-3 save from here on would land on
+        // that other, unrelated, already-live workspace instead —
+        // silently overwriting its real name/industry/branding/SOW
+        // defaults and even sending a real team invite into it — while
+        // complete-onboarding (which DOES take workspaceId from the body)
+        // would still mark the RESUMED workspace done, despite it never
+        // having received any of that data. A failed switch must block
+        // entering the wizard, not just be logged and ignored.
+        const switchOk = await switchIntoWorkspace(status.workspaceId)
+        if (!switchOk) {
+          setResumeTarget({ workspaceId: status.workspaceId, agencyName: status.agencyName || '' })
+          setGate('switch_error')
+          setRestored(true)
+          return
+        }
 
         setWorkspaceId(status.workspaceId)
         if (status.agencyName) setAgencyName(status.agencyName)
@@ -408,7 +467,7 @@ function OnboardingWizard() {
       } finally { setLoading(false) }
       return
     }
-    setLoading(true); setError('')
+    setLoading(true); setError(''); setTrialConflict(false)
     try {
       const res  = await fetch('/api/workspace/create', {
         method: 'POST',
@@ -416,7 +475,21 @@ function OnboardingWizard() {
         body: JSON.stringify({ agencyName, industry, currency, timezone }),
       })
       const json = await res.json()
-      if (!res.ok) throw new Error(json.error || 'Failed to create workspace')
+      if (!res.ok) {
+        // FIX (deep audit, Workspace lifecycle + Onboarding re-pass —
+        // feature gap): explicitNew deliberately skips resume-detection
+        // (see its own comment above), so hitting
+        // one_active_trial_per_creator (migration 019) here — a real,
+        // reachable case: an earlier abandoned trial workspace still
+        // counts as "active" until deleted — left the person with only
+        // this error, naming "delete it" as an option with no way to
+        // actually reach it from this screen. Detect that specific 409
+        // and offer the one real way back to it.
+        if (res.status === 409 && /active trial workspace/i.test(String(json.error || ''))) {
+          setTrialConflict(true)
+        }
+        throw new Error(json.error || 'Failed to create workspace')
+      }
       setWorkspaceId(json.workspaceId)
       setStep(1)
     } catch (err: unknown) {
@@ -716,6 +789,59 @@ function OnboardingWizard() {
     )
   }
 
+  // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — critical):
+  // reached only when onboarding-status resolved 'resume' for a workspace
+  // that wasn't already active AND the follow-up switch didn't confirm
+  // success — see switchIntoWorkspace's call site above for the full
+  // story. Deliberately a dead end rather than falling through to the
+  // wizard: every save from step 0 onward trusts the server's active
+  // workspace, not resumeTarget.workspaceId, so rendering the form here
+  // would silently start editing whatever workspace WAS already active.
+  if (gate === 'switch_error') {
+    return (
+      <div className="ob-root">
+        <div className="ob-card" style={{ textAlign: 'center', padding: '8px 0' }}>
+          <div style={{ width: 64, height: 64, background: 'var(--red-lt, #fdecea)', border: '1px solid var(--red-mid, #f5c6c2)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px' }}>
+            <i className="ti ti-alert-triangle" style={{ fontSize: 28, color: 'var(--red, #c0392b)' }} />
+          </div>
+          <h2 className="ob-title" style={{ textAlign: 'center' }}>Couldn&rsquo;t resume that workspace</h2>
+          <p className="ob-sub" style={{ textAlign: 'center', marginBottom: 28 }}>
+            We found {resumeTarget?.agencyName ? <>your in-progress workspace <strong style={{ color: 'var(--text)' }}>{resumeTarget.agencyName}</strong></> : 'an in-progress workspace'},
+            but couldn&rsquo;t switch into it just now — try again rather than continuing, so nothing you enter next
+            accidentally gets saved to a different workspace.
+          </p>
+          {error && <div className="auth-error" style={{ marginBottom: 12 }}>{error}</div>}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 280, margin: '0 auto' }}>
+            <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', padding: '11px' }}
+              disabled={retryingSwitch}
+              onClick={async () => {
+                if (!resumeTarget?.workspaceId) return
+                setRetryingSwitch(true); setError('')
+                const ok = await switchIntoWorkspace(resumeTarget.workspaceId)
+                setRetryingSwitch(false)
+                if (ok) {
+                  // Full reload rather than re-deriving resume state here a
+                  // second time — the mount effect already knows how to
+                  // populate every field from the server once the switch
+                  // has actually taken.
+                  window.location.assign('/onboarding')
+                } else {
+                  setError('Still couldn\u2019t switch workspaces. Check your connection and try again.')
+                }
+              }}>
+              {retryingSwitch ? <span className="spin" /> : 'Try again'}
+            </button>
+            <button className="ob-skip" style={{ width: '100%', justifyContent: 'center', display: 'flex' }}
+              disabled={retryingSwitch}
+              onClick={() => supabase.auth.signOut({ scope: 'local' }).then(() => router.push('/login'))}>
+              Sign out
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="ob-root">
       <div className="ob-card">
@@ -777,6 +903,12 @@ function OnboardingWizard() {
             <h2 className="ob-title">Tell us about your agency</h2>
             <p className="ob-sub">This appears on all client-facing documents and emails.</p>
             {error && <div className="auth-error">{error}</div>}
+            {trialConflict && (
+              <button type="button" className="btn btn-ghost btn-sm" style={{ marginBottom: 16 }}
+                onClick={() => window.location.assign('/onboarding')}>
+                Go to that workspace instead
+              </button>
+            )}
 
             <div className="fgrp">
               <label className="flbl">Agency name</label>

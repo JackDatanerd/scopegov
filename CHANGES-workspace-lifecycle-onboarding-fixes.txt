@@ -1,0 +1,92 @@
+scopegov — Sections 3 (Workspace lifecycle) + 4 (Onboarding) independent
+re-pass — 1 critical bug + 1 minor feature gap
+=====================================================================
+
+Both findings are from a fresh, independent audit pass over Section 3
+(api/workspace/create, complete-onboarding, delete, leave, list, switch,
+profile) and Section 4 (app/onboarding + its tie-in to
+workspace/complete-onboarding) that treated every prior "FIX" comment in
+the codebase as if it didn't exist. Section 3's seven routes themselves
+came back clean on this pass — this round's finding lives entirely in how
+app/onboarding/page.tsx drives them. No migration required — code-only.
+
+MODIFIED FILES (1)
+-------------------
+
+  app/onboarding/page.tsx
+
+    CRITICAL — resume-path workspace switch was best-effort; every other
+    write in the wizard trusts the server's active workspace, not this
+    component's state.
+
+      When GET /api/workspace/onboarding-status resolves 'resume' for an
+      owned incomplete workspace that ISN'T the user's currently active
+      one (a normal, expected case, not an edge case — it's exactly what
+      happens whenever someone abandons a second workspace mid-setup
+      while their first stays active and complete), the mount effect
+      switched into it via POST /api/workspace/switch and then continued
+      into the wizard regardless of the outcome — the response wasn't
+      even checked (fetch() only throws on a network-level failure,
+      never on a resolved non-2xx), and any exception was swallowed with
+      a bare "best-effort" comment.
+
+      That comment's own justification — "onboarding still completes
+      correctly for this workspace" — is only true for
+      complete-onboarding. Every OTHER write the wizard makes in between
+      (PATCH workspace/settings on step 0's back-and-edit path, PATCH
+      workspace/branding and POST workspace/branding/logo on step 1,
+      POST/PATCH workspace/defaults on step 2, POST team/invite on step
+      3) resolves its target off session.workspaceId — the server's
+      active workspace — not off any workspaceId the client supplies.
+      That's deliberate, correct design elsewhere (the exact
+      confused-deputy defense workspace/switch's and team/invite's own
+      comments describe), but it means: if the switch above silently
+      failed while the resumed workspace differed from whatever WAS
+      already active, every one of those writes would silently land on
+      that other, unrelated, already-live workspace instead — clobbering
+      its real agency name/industry/currency/timezone/brand
+      colour/logo/signature/SOW defaults/governing law, and even sending
+      a real invite email into it — while complete-onboarding (which
+      DOES take workspaceId from the body) would still mark the RESUMED
+      workspace as done, despite it having received none of that data.
+      All silent; no error was ever surfaced.
+
+      Fixed by extracting a shared switchIntoWorkspace() helper that
+      returns whether the switch actually succeeded, and treating a
+      failure as a hard stop: a new 'switch_error' gate renders a dead-end
+      screen ("Couldn't resume that workspace... try again rather than
+      continuing, so nothing you enter next accidentally gets saved to a
+      different workspace") with a Try again button (retries the same
+      verified switch, then does a full reload so the mount effect's own
+      resume logic re-runs cleanly) and a Sign out fallback. The wizard
+      steps themselves are never reached with mismatched state.
+
+    MINOR — feature gap: the one_active_trial_per_creator (migration 019)
+    conflict on the explicit "Create new workspace" (?new=1) path told the
+    person to "delete it" with no way to actually reach it.
+
+      explicitNew deliberately skips resume-detection (by design — see
+      its own comment), so a person who still owns an earlier abandoned
+      *incomplete* trial workspace and clicks "Create new workspace" hits
+      workspace/create's 409 with no way back to the blocking workspace
+      from that screen. Detect that specific 409 (status 409 + "active
+      trial workspace" in the message) and show a "Go to that workspace
+      instead" link that does a full reload to plain /onboarding, letting
+      the (now-hardened) normal resume path pick it up.
+
+VERIFICATION DONE
+-----------------
+  Brace balance check clean (final depth 0, 1117 lines).
+  Isolated tsc --noEmit syntax check clean — only the expected
+  module-resolution/JSX-intrinsics noise from no node_modules in this
+  sandbox (missing react/next/@/* type declarations), same as every prior
+  round's verification note. Grepped the error output specifically for
+  the new identifiers (switchIntoWorkspace, resumeTarget, trialConflict,
+  retryingSwitch, switch_error) — zero hits, so no new type errors were
+  introduced beyond the pre-existing environmental ones.
+  Please run `npm ci && npx tsc --noEmit && npx vitest run` before
+  pushing, same as every prior round. No automated test previously
+  covered this path (tests/ has no onboarding/workspace-lifecycle spec at
+  all) — worth a follow-up integration test that mocks a failed
+  workspace/switch during resume and asserts the wizard never reaches the
+  form.
