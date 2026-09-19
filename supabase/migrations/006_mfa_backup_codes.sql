@@ -1,5 +1,9 @@
 -- ============================================================
--- ScopeGov — Migration 003: MFA backup codes
+-- ScopeGov — Migration 006: MFA backup codes
+-- (FIX, cosmetic, deep audit Auth+MFA re-pass: this header called itself
+-- "Migration 003" — stale from before a renumbering; the file itself has
+-- always been 006. lib/auth/mfa-policy.ts's comment citing this file by
+-- its correct 006 name was already right; only this header was wrong.)
 -- Account security / 2FA. TOTP enrollment, challenge, and factor
 -- management are handled entirely by Supabase Auth's native MFA
 -- (auth.mfa_factors, auth.mfa_challenges — not application tables).

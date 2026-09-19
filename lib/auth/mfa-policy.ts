@@ -2,7 +2,9 @@
 //
 // Single source of truth for "which permissions make MFA mandatory."
 // Deliberately a fixed constant, not a workspace-configurable setting —
-// see the note at the bottom of supabase/migrations/003_mfa_backup_codes.sql
+// see the note at the bottom of supabase/migrations/006_mfa_backup_codes.sql
+// (FIX, cosmetic, deep audit Auth+MFA re-pass: this cited the file's old,
+// pre-renumbering name — the file itself has always been 006.)
 // for why. If Phase 3 (approval chains) ships APPROVE_DOCUMENTS, add it
 // here and enforcement picks it up everywhere automatically — middleware,
 // the settings compliance panel, and the team roster badge all read from

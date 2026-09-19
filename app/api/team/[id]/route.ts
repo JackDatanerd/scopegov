@@ -216,9 +216,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (!hasPermission(session, 'MANAGE_ROLES'))
       return NextResponse.json({ error: 'Missing permission: MANAGE_ROLES' }, { status: 403 })
 
-    // A body carrying none of status/roleId/permissionOverrides left
-    // `updates` as {}, and `.update({})` errors in PostgREST — rethrown
-    // into the catch-all as a 500 where a 400 belongs.
+    // A body carrying neither roleId nor permissionOverrides had nothing
+    // for the RPC below to actually change — reject it here with a 400
+    // instead of making a pointless round trip that sets both to "leave
+    // unchanged" and returns ok:true for a no-op.
     if (body.roleId === undefined && body.permissionOverrides === undefined) {
       return NextResponse.json({ error: 'Nothing to update' }, { status: 400 })
     }
@@ -226,8 +227,6 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         (typeof body.permissionOverrides !== 'object' || Array.isArray(body.permissionOverrides))) {
       return NextResponse.json({ error: 'Invalid permission overrides payload' }, { status: 400 })
     }
-
-    const updates: Record<string, unknown> = {}
 
     // FIX (section-by-section re-audit, RLS+permissions Finding 2 —
     // CRITICAL): the ceiling checks below only ever block granting a NEW
@@ -282,7 +281,6 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         return NextResponse.json({
           error: `Cannot grant permissions you don't hold yourself: ${beyond.join(', ')}`,
         }, { status: 403 })
-      updates.permission_overrides = body.permissionOverrides
     }
 
     // FIX (audit round 4, finding #1, related): roleId was never verified
@@ -303,7 +301,6 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       } else {
         newRolePermissions = null
       }
-      updates.role_id = body.roleId || null
     }
 
     // FIX (deep audit, RLS+permissions independent re-pass — CRITICAL):
@@ -360,10 +357,38 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       }
     }
 
-    const { error } = await (service as any)
-      .from('workspace_members').update(updates).eq('id', id).eq('workspace_id', session.workspaceId)
+    // FIX (deep audit, RLS+permissions independent re-pass — CRITICAL):
+    // the pre-check just above is a plain SELECT with no lock and no
+    // transaction tying it to this write — two concurrent requests
+    // touching different members (or the same member twice, e.g. a
+    // doubled-up submit) can each read the same pre-change snapshot,
+    // each see someone else still holds the permission, and both
+    // proceed, jointly orphaning it. Kept above as a fast, friendly
+    // pre-check; migration 055's update_member_permissions_atomic is the
+    // actual gate — it locks the workspace's active membership first, so
+    // a second concurrent call re-evaluates against real post-commit
+    // state instead of this same stale read. See that migration's
+    // comment for an empirically-raced reproduction of exactly this
+    // failure mode (against the sibling role-edit path) and its fix.
+    const { error } = await (service as any).rpc('update_member_permissions_atomic', {
+      p_workspace_id: session.workspaceId,
+      p_member_id: id,
+      p_set_role_id: body.roleId !== undefined,
+      p_new_role_id: body.roleId || null,
+      p_set_overrides: body.permissionOverrides !== undefined,
+      p_new_overrides: body.permissionOverrides ?? null,
+    })
 
-    if (error) throw new Error(error.message)
+    if (error) {
+      if (error.message?.startsWith('would_orphan_permissions:')) {
+        const orphaned = error.message.split(':')[1].split(',') as (typeof PROTECTED_PERMISSIONS)[number][]
+        const label = orphaned.map(describeProtectedPermission).join(' or ')
+        return NextResponse.json({
+          error: `This would leave the workspace with no one who can ${label}. Assign ${orphaned.join(' / ')} to another member first — once nobody holds it, nobody can grant it back.`,
+        }, { status: 409 })
+      }
+      throw new Error(error.message)
+    }
 
     // FIX (section-11 audit): editing a member's permission_overrides or
     // reassigning their role can drop their effective APPROVE_DOCUMENTS the

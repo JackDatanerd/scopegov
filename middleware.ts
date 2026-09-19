@@ -53,10 +53,15 @@ export async function middleware(request: NextRequest) {
   // Refresh session — required by @supabase/ssr
   const { data: { user } } = await supabase.auth.getUser()
 
+  // FIX (deep audit, Auth+MFA independent re-pass): '/verify-email' was
+  // listed here but no such page exists anywhere in the app (grep
+  // confirms it) — dead reference to an email-verification flow that was
+  // apparently never built (or renamed and never cleaned up here).
+  // Removed rather than left as a foot-gun implying a route that isn't
+  // actually reachable.
   const isAuthRoute = pathname.startsWith('/login') ||
     pathname.startsWith('/signup') ||
     pathname.startsWith('/reset-password') ||
-    pathname.startsWith('/verify-email') ||
     pathname.startsWith('/forgot-password')
 
   const isPublicRoute =
@@ -162,16 +167,49 @@ export async function middleware(request: NextRequest) {
   // treat that as "already logged in" and bounce them to /dashboard or
   // /onboarding before they ever saw the reset form. Exclude it here.
   if (user && isAuthRoute && pathname !== '/reset-password') {
-    // Check if they have a workspace before sending to dashboard
-    const { data: member } = await (supabase as any)
-      .from('workspace_members')
-      .select('id')
-      .eq('user_id', user.id)
-      .eq('status', 'active')
-      .limit(1)
-      .single()
+    // FIX (deep audit, Auth+MFA independent re-pass): this used to decide
+    // dashboard-vs-onboarding off a bare "does ANY active
+    // workspace_members row exist" query — no deleted_at check, no
+    // preference for active_workspace_id, and no onboarding_completed_at
+    // check at all. workspace/switch/route.ts's own comment says this
+    // exact file was part of the sweep that hardened every one of these
+    // gaps elsewhere ("session.ts, middleware.ts, onboarding-status, and
+    // workspace/list were all explicitly hardened... this route was the
+    // one missed") — but that hardening only reached the onboarding-check
+    // block below, not this one. Self-healed in practice (the very next
+    // request hits that correctly-hardened block and corrects course),
+    // but it's a real, reproducible extra redirect hop for the ordinary
+    // case of a user who hasn't finished onboarding revisiting /login
+    // while still authenticated — not just the rarer deleted-workspace
+    // edge case. Resolve the SAME way getSession() and the onboarding
+    // gate below do, so this decides correctly in one hop instead of
+    // bouncing through /dashboard first.
+    const { data: userRow } = await (supabase as any)
+      .from('users').select('active_workspace_id').eq('id', user.id).maybeSingle()
 
-    const dest = member ? '/dashboard' : '/onboarding'
+    let member: any = null
+    if (userRow?.active_workspace_id) {
+      const { data } = await (supabase as any)
+        .from('workspace_members')
+        .select('workspace:workspaces(onboarding_completed_at, deleted_at)')
+        .eq('user_id', user.id)
+        .eq('workspace_id', userRow.active_workspace_id)
+        .eq('status', 'active')
+        .maybeSingle()
+      member = data?.workspace?.deleted_at ? null : data
+    }
+    if (!member) {
+      const { data } = await (supabase as any)
+        .from('workspace_members')
+        .select('workspace:workspaces(onboarding_completed_at, deleted_at)')
+        .eq('user_id', user.id)
+        .eq('status', 'active')
+        .order('created_at', { ascending: true })
+        .limit(5)
+      member = (data || []).find((m: any) => m.workspace && !m.workspace.deleted_at) || null
+    }
+
+    const dest = (member && member.workspace?.onboarding_completed_at) ? '/dashboard' : '/onboarding'
     return withRef(NextResponse.redirect(new URL(dest, request.url)))
   }
 

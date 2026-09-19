@@ -128,25 +128,27 @@ export async function PATCH(
 
     // FIX (deep audit, RLS+permissions independent re-pass — CRITICAL):
     // leave_workspace_atomic() (027/034/038) exists specifically so the
-    // sole MANAGE_ROLES holder can never leave and orphan the permission
-    // system — "a one-way lockout of the permission system itself, with
-    // no self-service recovery" (034's own words). Editing a role's
-    // permissions in place reaches the exact same end state:
-    // trg_role_permissions_propagate (migration 001) recomputes
-    // effective_permissions for every member currently holding this role
-    // the instant it's saved, and the ceiling/floor checks above pass
-    // trivially when the editor already holds (and therefore already IS
-    // one of the members losing) MANAGE_ROLES. If this role is currently
-    // the only source of MANAGE_ROLES workspace-wide, stripping it here
-    // zeroes out MANAGE_ROLES for the entire workspace in one save.
-    // FIX (deep audit, Team & Invites section — HIGH): this only ever ran
-    // when MANAGE_ROLES was being dropped, so stripping the workspace's
-    // last MANAGE_WORKSPACE_SETTINGS holder sailed straight through —
-    // even though leave_workspace_atomic (027/034/038) guards BOTH
-    // permissions for exactly the same reason. See
-    // lib/utils/admin-floor.ts for the full trace and why the result is
-    // permanent rather than merely inconvenient. Runs whenever ANY
-    // protected permission is being removed, and names the one at risk.
+    // sole MANAGE_ROLES/MANAGE_WORKSPACE_SETTINGS holder can never leave
+    // and orphan the permission system — "a one-way lockout of the
+    // permission system itself, with no self-service recovery" (034's own
+    // words), enforced there by locking every active workspace_members
+    // row (FOR UPDATE) before checking. Editing a role's permissions in
+    // place reaches the exact same end state — trg_role_permissions_
+    // propagate (migration 001) recomputes effective_permissions for
+    // every member holding this role the instant it's saved — but this
+    // pre-check is a plain SELECT with no lock and no transaction tying
+    // it to the write below. Two concurrent MANAGE_ROLES-holder requests
+    // (two co-admins, or a doubled-up submit) can each read this same
+    // pre-change snapshot, both see someone else still holds it, and both
+    // proceed — jointly orphaning the workspace. Kept here as a fast,
+    // friendly pre-check (good error message before ever touching the
+    // database) but it is NOT the actual gate: migration 055's
+    // update_role_permissions_atomic re-runs the identical check inside a
+    // transaction that locks the workspace's active membership first, so
+    // a second concurrent call re-evaluates against real post-commit
+    // state instead of the same stale read this block used. See that
+    // migration's comment for a from-scratch, empirically-raced
+    // reproduction of exactly this failure mode and its fix.
     if (permissions !== undefined && permissions !== null) {
       const losing = PROTECTED_PERMISSIONS.filter(
         perm => existingRole.permissions?.[perm] === true && permissions[perm] !== true
@@ -173,23 +175,48 @@ export async function PATCH(
       }
     }
 
-    const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
-    if (permissions !== undefined) updates.permissions = permissions
-    if (name)        updates.name        = name.trim()
+    // `permissions` goes through the atomic RPC (the real, race-proof
+    // gate — see the long comment above); name/description are a plain
+    // update, same as before. Two calls instead of one, same trade-off
+    // this file already accepts for the default-role swap below
+    // (defaultSwapFailed): if the second call fails, the permissions
+    // change already landed and name/description just didn't — reported
+    // rather than silently dropped.
+    if (permissions !== undefined) {
+      const { error: rpcError } = await (service as any).rpc('update_role_permissions_atomic', {
+        p_workspace_id: session.workspaceId, p_role_id: id, p_permissions: permissions,
+      })
+      if (rpcError) {
+        if (rpcError.message?.startsWith('would_orphan_permissions:')) {
+          const orphaned = rpcError.message.split(':')[1].split(',') as (typeof PROTECTED_PERMISSIONS)[number][]
+          const label = orphaned.map(describeProtectedPermission).join(' or ')
+          return NextResponse.json({
+            error: `This would leave the workspace with no one who can ${label}. Grant ${orphaned.join(' / ')} to another member or role first — once nobody holds it, nobody can grant it back.`,
+          }, { status: 409 })
+        }
+        throw new Error(rpcError.message)
+      }
+    }
+
+    const otherUpdates: Record<string, unknown> = {}
+    if (name)        otherUpdates.name        = name.trim()
     // FIX (build, Team & Invites section): wrote `description` raw, with
     // no trim — inconsistent with POST /api/team/roles, which already
     // trims (and, same as `name` here, with the untrimmed value counting
     // against the 300-char cap just added above, so " ".repeat(301) would
     // pass validation and still land in the DB untrimmed).
-    if (description !== undefined) updates.description = typeof description === 'string' ? description.trim() || null : description
+    if (description !== undefined) otherUpdates.description = typeof description === 'string' ? description.trim() || null : description
 
-    const { error } = await (service as any)
-      .from('roles')
-      .update(updates)
-      .eq('id', id)
-      .eq('workspace_id', session.workspaceId) // scope to workspace — never cross-tenant
+    if (Object.keys(otherUpdates).length > 0 || permissions === undefined) {
+      otherUpdates.updated_at = new Date().toISOString()
+      const { error } = await (service as any)
+        .from('roles')
+        .update(otherUpdates)
+        .eq('id', id)
+        .eq('workspace_id', session.workspaceId) // scope to workspace — never cross-tenant
 
-    if (error) throw new Error(error.message)
+      if (error) throw new Error(error.message)
+    }
 
     // FIX (deep audit, Team & Invites re-pass — feature gap, continued):
     // promote this role to default via the same atomic swap role
@@ -240,7 +267,10 @@ export async function PATCH(
       eventType: 'role.updated', entityType: 'role',
       entityId: id, entityName: (name as string) || existingRole.name,
       metadata: {
-        fields: Object.keys(updates).filter(k => k !== 'updated_at'),
+        fields: [
+          ...Object.keys(otherUpdates).filter(k => k !== 'updated_at'),
+          ...(permissions !== undefined ? ['permissions'] : []),
+        ],
         ...(affectedWorkflowNames.length ? { orphaned_approval_workflows: affectedWorkflowNames } : {}),
         ...(isDefault === true ? { requested_default: true, default_swap_failed: defaultSwapFailed } : {}),
       },

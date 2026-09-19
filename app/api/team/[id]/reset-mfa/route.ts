@@ -82,10 +82,22 @@ export async function POST(
       metadata: {},
     })
 
+    // FIX (deep audit, RLS+permissions section, cross-referenced into
+    // Auth+MFA — this route mutates MFA state so it was traced from
+    // there): fire-and-forget here is unsafe in serverless — the function
+    // can freeze the instant the response above is (about to be) sent, so
+    // the .catch() may never even run. Every sibling MFA route
+    // (enroll/verify/factors/recover/backup-codes) already awaits its
+    // email send for exactly this reason; this one — arguably the most
+    // security-sensitive of all of them, since it tells the affected
+    // member someone else just reset their MFA — was the one missed.
     const targetEmail = member.users?.email
     if (targetEmail) {
-      sendMfaDisabledEmail({ to: targetEmail, name: member.users?.name || targetEmail, via: 'admin_reset' })
-        .catch((e: unknown) => console.error('Admin MFA reset email failed (non-fatal):', e))
+      try {
+        await sendMfaDisabledEmail({ to: targetEmail, name: member.users?.name || targetEmail, via: 'admin_reset' })
+      } catch (e) {
+        console.error('Admin MFA reset email failed (non-fatal):', e)
+      }
     }
 
     return NextResponse.json({ ok: true })
