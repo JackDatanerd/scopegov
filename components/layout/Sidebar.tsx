@@ -67,12 +67,37 @@ export default function Sidebar({ session }: { session: SessionUser }) {
   // than an action item.
   const approvalScope = canApprove ? 'mine' : 'all'
 
+  // FIX (fix round, section-11 flagship finding): this only ever counted
+  // status='pending' steps assigned to the signed-in member as an
+  // approver — a request THEY submitted that fully cleared approval but
+  // then failed to auto-send (send_failed_at set — migration 053) never
+  // moved this number, no matter how long it sat needing a retry. Worse,
+  // an ordinary team member with send permission but none of
+  // APPROVE_DOCUMENTS/VIEW_ALL_PROJECTS/MANAGE_WORKSPACE_SETTINGS got no
+  // badge here at all (canSeeApprovalCount is false for them), even
+  // though the Approvals page's own "needs your attention" banner (see
+  // ApprovalsClient) shows exactly this for them via scope=submitted —
+  // that request is unconditional (no permission gate), so it's fetched
+  // here unconditionally too, independent of canSeeApprovalCount, and
+  // summed into the same badge rather than being a second invisible
+  // number.
   function refetchPendingApprovals() {
-    if (!canSeeApprovalCount) return
-    fetch(`/api/approvals?scope=${approvalScope}`)
-      .then(r => r.json())
-      .then(json => setPendingApprovals((json.requests || []).filter((r: any) => r.status === 'pending').length))
-      .catch(() => {})
+    const requests: Promise<number>[] = []
+    if (canSeeApprovalCount) {
+      requests.push(
+        fetch(`/api/approvals?scope=${approvalScope}`)
+          .then(r => r.json())
+          .then(json => (json.requests || []).filter((r: any) => r.status === 'pending').length)
+          .catch(() => 0)
+      )
+    }
+    requests.push(
+      fetch(`/api/approvals?scope=submitted`)
+        .then(r => r.json())
+        .then(json => (json.requests || []).filter((r: any) => !!r.send_failed_at).length)
+        .catch(() => 0)
+    )
+    Promise.all(requests).then(counts => setPendingApprovals(counts.reduce((a, b) => a + b, 0)))
   }
 
   useEffect(() => {

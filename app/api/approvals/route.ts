@@ -108,11 +108,21 @@ export async function GET(request: NextRequest) {
     // it feeds, are the two places that principle was missing. Mirrors
     // the same allowed-project-ids pattern used by /api/invoices and
     // /api/sow's registry pages.
+    // FIX (fix round, section-11 finding): this joined project_members to
+    // workspace_members and filtered on user_id only — with no workspace
+    // scope, it pulled in every project the viewer belongs to across every
+    // workspace they're a member of, not just this one. Currently harmless
+    // in practice (project ids from a different workspace can never
+    // collide with this workspace's own, so nothing extra actually leaked
+    // through), but it's a duplicate, imprecise reimplementation of
+    // exactly the mistake canReadProject (lib/utils/project-access.ts) was
+    // built to prevent. Mirrors that function's own join pattern.
     let allowedProjectIds: Set<string> | null = null
     if (!hasPermission(session, 'VIEW_ALL_PROJECTS')) {
       const { data: ids } = await (service as any)
         .from('project_members')
-        .select('project_id, workspace_members!inner(user_id)')
+        .select('project_id, projects!inner(workspace_id), workspace_members!inner(user_id)')
+        .eq('projects.workspace_id', session.workspaceId)
         .eq('workspace_members.user_id', session.id)
       allowedProjectIds = new Set((ids || []).map((r: any) => r.project_id))
     }

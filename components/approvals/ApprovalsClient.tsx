@@ -64,11 +64,19 @@ function tabForDocumentType(documentType: ApprovalRequest['document_type']): str
   return 'co' // 'co' and 'co_counter' both live on the CO tab
 }
 
-function requestPill(status: string): string {
+// FIX (fix round, section-11 flagship finding): a send-failed request
+// (status='approved', send_failed_at set) rendered as a plain "Approved"
+// pill here — visually identical to a request that actually went out —
+// so the one place meant to give a workspace-wide view of every approval
+// request showed nothing to distinguish a silently-stuck one from a
+// successful one.
+function requestPill(status: string, sendFailed?: boolean): string {
+  if (status === 'approved' && sendFailed) return 'red'
   const m: Record<string, string> = { pending: 'amber', approved: 'green', rejected: 'red', cancelled: 'slate' }
   return m[status] || 'slate'
 }
-function requestLabel(status: string): string {
+function requestLabel(status: string, sendFailed?: boolean): string {
+  if (status === 'approved' && sendFailed) return 'Approved — not sent'
   const m: Record<string, string> = { pending: 'Pending', approved: 'Approved', rejected: 'Rejected', cancelled: 'Cancelled' }
   return m[status] || status
 }
@@ -93,6 +101,22 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
   // land on a page with no way to actually find their own request.
   const [needsRetry, setNeedsRetry] = useState<ApprovalRequest[]>([])
   const [retryingId, setRetryingId] = useState<string | null>(null)
+  // FIX (fix round, section-11 finding): this used to be derived from
+  // `items`, which only ever holds whichever tab is currently loaded —
+  // so the count on the "My queue" button itself disappeared the moment
+  // you switched to "All requests", unlike the Sidebar's badge (same
+  // underlying number) which fetches independently and stays live no
+  // matter what page or tab you're on. Fetched the same way here now.
+  const [mineCount, setMineCount] = useState<number | null>(null)
+
+  const loadMineCount = useCallback(async () => {
+    try {
+      const res  = await fetch('/api/approvals?scope=mine')
+      const json = await res.json()
+      if (!res.ok) return
+      setMineCount((json.requests || []).filter((r: ApprovalRequest) => r.status === 'pending').length)
+    } catch { /* non-fatal — the button just shows no count */ }
+  }, [])
 
   const load = useCallback(async (scope: 'mine' | 'all') => {
     setLoading(true); setError('')
@@ -117,6 +141,7 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
 
   useEffect(() => { load(tab) }, [tab, load])
   useEffect(() => { loadNeedsRetry() }, [loadNeedsRetry])
+  useEffect(() => { loadMineCount() }, [loadMineCount])
 
   async function retrySend(id: string) {
     setRetryingId(id)
@@ -124,7 +149,8 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
       const res  = await fetch(`/api/approvals/${id}/retry-send`, { method: 'POST' })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error || 'Retry failed')
-      await Promise.all([load(tab), loadNeedsRetry()])
+      await Promise.all([load(tab), loadNeedsRetry(), loadMineCount()])
+      window.dispatchEvent(new Event('scopegov:approvals-changed'))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Retry failed')
     } finally { setRetryingId(null) }
@@ -150,7 +176,7 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
 
   async function refreshAfterAction() {
     setSelected(null)
-    await load(tab)
+    await Promise.all([load(tab), loadMineCount()])
     // FIX (section-11 audit, flagship finding): Sidebar's pending-count
     // badge only ever refetched on a `pathname` change — approving/
     // rejecting/cancelling from this page doesn't navigate anywhere, so
@@ -161,7 +187,7 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
     window.dispatchEvent(new Event('scopegov:approvals-changed'))
   }
 
-  const pendingMineCount = tab === 'mine' ? items.filter(r => r.status === 'pending').length : null
+  const pendingMineCount = mineCount
 
   return (
     <div className="page">
@@ -261,7 +287,7 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
                   <td style={{ fontFamily: 'IBM Plex Mono, monospace' }}>
                     {r.context?.amount != null ? formatCurrency(r.context.amount, r.context.currency || 'USD') : '—'}
                   </td>
-                  <td><span className={`pill pill-${requestPill(r.status)}`}>{requestLabel(r.status)}</span></td>
+                  <td><span className={`pill pill-${requestPill(r.status, !!r.send_failed_at)}`}>{requestLabel(r.status, !!r.send_failed_at)}</span></td>
                   <td style={{ color: 'var(--text-3)', fontSize: 12 }}>{formatRelative(r.created_at)}</td>
                 </tr>
               ))}
@@ -275,6 +301,7 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
           request={selected}
           session={session}
           eligibleStep={myEligibleStep(selected)}
+          canManageWorkflows={canManageWorkflows}
           onClose={() => setSelected(null)}
           onDone={refreshAfterAction}
         />
@@ -283,14 +310,15 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
   )
 }
 
-function ApprovalDetailModal({ request, session, eligibleStep, onClose, onDone }: {
+function ApprovalDetailModal({ request, session, eligibleStep, canManageWorkflows, onClose, onDone }: {
   request: ApprovalRequest
   session: SessionUser
   eligibleStep: Step | null
+  canManageWorkflows: boolean
   onClose: () => void
   onDone: () => void
 }) {
-  const [acting, setActing]   = useState<'approve' | 'reject' | 'cancel' | null>(null)
+  const [acting, setActing]   = useState<'approve' | 'reject' | 'cancel' | 'retry-send' | null>(null)
   const [note, setNote]       = useState('')
   const [showReject, setShowReject] = useState(false)
   const [error, setError]     = useState('')
@@ -302,7 +330,16 @@ function ApprovalDetailModal({ request, session, eligibleStep, onClose, onDone }
   // order" made that decision indistinguishable from an ordinary CO send
   // approval. Mirrors the same fix in lib/approvals/engine.ts.
   const documentLabel = documentLabelFor(request.document_type)
-  const canCancel = isRequester && request.status === 'pending'
+  // FIX (fix round, section-11 finding): this only ever checked
+  // isRequester — the retry-send/cancel API routes have always allowed a
+  // MANAGE_WORKSPACE_SETTINGS admin to act on someone else's request (see
+  // those routes' own comments), but the button to do either was never
+  // rendered for that admin at all, since canManageWorkflows (already
+  // passed into ApprovalsClient for the "Configure workflows" link) was
+  // never threaded down into this modal. The API-level capability existed
+  // but was completely unreachable from the product.
+  const canCancel = (isRequester || canManageWorkflows) && request.status === 'pending'
+  const canRetrySend = (isRequester || canManageWorkflows) && request.status === 'approved' && !!request.send_failed_at
   // FIX (section-11 audit, flagship finding): eligibleStep only ever
   // checked whether the signed-in member is the assigned approver
   // (named user or role) for the current step — never whether they're
@@ -347,6 +384,18 @@ function ApprovalDetailModal({ request, session, eligibleStep, onClose, onDone }
         )}
 
         {error && <div className="auth-error" style={{ marginBottom: 14 }}>{error}</div>}
+
+        {/* FIX (fix round, section-11 flagship finding): before this, a
+            fully-approved-but-send-failed request looked identical to an
+            ordinary successful "Approved" one everywhere in this table —
+            this banner and the retry button below are the only place in
+            the whole product (besides the original requester's one-time
+            email) that ever surfaces this state or offers a way to fix it. */}
+        {request.status === 'approved' && request.send_failed_at && (
+          <div className="auth-error" style={{ marginBottom: 14 }}>
+            <strong>Approved, but couldn&apos;t be sent.</strong> {request.send_failed_reason || 'The send failed.'}
+          </div>
+        )}
 
         <div style={{ marginBottom: 18 }}>
           {request.approval_steps
@@ -414,6 +463,11 @@ function ApprovalDetailModal({ request, session, eligibleStep, onClose, onDone }
             {canCancel && (
               <button className="btn btn-ghost" onClick={() => act('cancel')} disabled={!!acting}>
                 {acting === 'cancel' ? <span className="spin" /> : 'Cancel request'}
+              </button>
+            )}
+            {canRetrySend && (
+              <button className="btn btn-primary" onClick={() => act('retry-send')} disabled={!!acting}>
+                {acting === 'retry-send' ? <span className="spin" /> : 'Retry send'}
               </button>
             )}
           </div>

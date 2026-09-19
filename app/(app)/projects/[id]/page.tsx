@@ -224,16 +224,28 @@ export default async function ProjectPage({ params, searchParams }: Props) {
   // document without a join — a SOW/CO's status stays 'draft' while an
   // approval chain is pending, so this is the only signal the UI has that
   // a draft is actually "sent for approval" rather than just untouched.
+  // FIX (fix round, section-11 flagship finding): only ever matched
+  // status='pending' — a request that fully cleared approval but then
+  // failed to auto-send (status='approved', send_failed_at set —
+  // migration 053) is invisible here too, even though the underlying
+  // document is still sitting at 'draft' the same way a pending one is.
+  // Before this fix, the ONLY place that state was visible to anyone but
+  // the original requester was the one-time email/notification sent at
+  // decision time — nothing on the project's own SOW/CO/Billing tab ever
+  // showed it. Broadened to match both states; sendFailed/sendFailedReason
+  // let ProjectDetail render the retry banner instead of the ordinary
+  // "awaiting approval" one.
   const { data: pendingApprovalRows = [] } = await (service as any)
     .from('approval_requests')
-    .select('id, document_type, document_id, current_step, total_steps')
+    .select('id, document_type, document_id, current_step, total_steps, send_failed_at, send_failed_reason')
     .eq('project_id', id)
-    .eq('status', 'pending')
+    .or('status.eq.pending,and(status.eq.approved,send_failed_at.not.is.null)')
 
-  const pendingApprovals: Record<string, { id: string; current_step: number; total_steps: number }> = {}
+  const pendingApprovals: Record<string, { id: string; current_step: number; total_steps: number; sendFailed: boolean; sendFailedReason: string | null }> = {}
   for (const r of pendingApprovalRows || []) {
     pendingApprovals[`${r.document_type}:${r.document_id}`] = {
       id: r.id, current_step: r.current_step, total_steps: r.total_steps,
+      sendFailed: !!r.send_failed_at, sendFailedReason: r.send_failed_reason || null,
     }
   }
 

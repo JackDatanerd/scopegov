@@ -48,8 +48,8 @@ function newStep(): StepDraft {
   return { key: Math.random().toString(36).slice(2), kind: '', id: '' }
 }
 
-export default function ApprovalWorkflowsClient({ initialWorkflows, roles, members }: {
-  initialWorkflows: Workflow[]; roles: Role[]; members: Member[]
+export default function ApprovalWorkflowsClient({ initialWorkflows, roles, members, workspaceCurrency }: {
+  initialWorkflows: Workflow[]; roles: Role[]; members: Member[]; workspaceCurrency?: string
 }) {
   const router = useRouter()
   const [workflows, setWorkflows] = useState<Workflow[]>(initialWorkflows)
@@ -157,6 +157,7 @@ export default function ApprovalWorkflowsClient({ initialWorkflows, roles, membe
           defaultType={typeof editing === 'string' && editing.startsWith('new-co') ? 'co' : typeof editing === 'string' && editing.startsWith('new-invoice') ? 'invoice' : 'sow'}
           roles={roles}
           members={members}
+          workspaceCurrency={workspaceCurrency}
           onClose={() => setEditing(null)}
           onSaved={() => { setEditing(null); refresh() }}
         />
@@ -165,10 +166,10 @@ export default function ApprovalWorkflowsClient({ initialWorkflows, roles, membe
   )
 }
 
-function WorkflowEditorModal({ workflow, defaultType, roles, members, onClose, onSaved }: {
+function WorkflowEditorModal({ workflow, defaultType, roles, members, workspaceCurrency, onClose, onSaved }: {
   workflow: Workflow | null
   defaultType: 'sow' | 'co' | 'invoice'
-  roles: Role[]; members: Member[]
+  roles: Role[]; members: Member[]; workspaceCurrency?: string
   onClose: () => void; onSaved: () => void
 }) {
   const isEdit = !!workflow
@@ -176,7 +177,16 @@ function WorkflowEditorModal({ workflow, defaultType, roles, members, onClose, o
   const [name, setName] = useState(workflow?.name || '')
   const [hasThreshold, setHasThreshold] = useState(workflow?.threshold_amount != null)
   const [threshold, setThreshold] = useState(workflow?.threshold_amount != null ? String(workflow.threshold_amount) : '')
-  const [thresholdCurrency, setThresholdCurrency] = useState(workflow?.threshold_currency || 'USD')
+  // FIX (fix round, section-11 finding): this used to default to a
+  // hardcoded 'USD' for every new workflow, regardless of the workspace's
+  // actual currency (never fetched on this page before). Threshold
+  // matching is strictly currency-isolated by design (migration 023) — a
+  // KES-only workspace that forgot to change this dropdown got a rule
+  // that silently never matched a single document, with nothing anywhere
+  // warning them. Defaults to the workspace's own currency now; still
+  // freely changeable for a workspace that genuinely bills in more than
+  // one currency.
+  const [thresholdCurrency, setThresholdCurrency] = useState(workflow?.threshold_currency || workspaceCurrency || 'USD')
   const [steps, setSteps] = useState<StepDraft[]>(
     workflow
       ? workflow.approval_workflow_steps

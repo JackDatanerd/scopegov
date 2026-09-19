@@ -22,7 +22,13 @@ export interface AttentionContext {
     // surfaced the same way a stalled SOW or an open guardian flag already
     // is. Only createdAt is needed — staleness is computed here, not by
     // the caller, so every screen agrees on what counts as "stuck".
-    pendingApprovals?: Array<{ createdAt: string }>
+    // FIX (fix round, section-11 flagship finding): sendFailed marks a
+    // request that already fully cleared approval but whose auto-send
+    // afterward failed (status='approved', send_failed_at set — migration
+    // 053) — a distinct, immediately-actionable state from an ordinary
+    // in-flight 'pending' decision, which is why it's surfaced separately
+    // below rather than folded into the same age-gated check.
+    pendingApprovals?: Array<{ createdAt: string; sendFailed?: boolean }>
   }
   workspace?: {
     proactiveRiskAlertsEnabled?: boolean
@@ -99,6 +105,18 @@ export function isAttentionWorthy({ project, workspace }: AttentionContext): boo
     return ageDays >= APPROVAL_STALL_DAYS
   })) return true
 
+  // FIX (fix round, section-11 flagship finding): a request that already
+  // cleared approval but failed to auto-send (send_failed_at set) sat
+  // completely outside this predicate before — status is 'approved', not
+  // 'pending', so it never matched the clause above at any age, and the
+  // underlying document is still 'draft' so the earlier draft-SOW/CO
+  // clauses don't catch it either. It's genuinely stuck the moment it
+  // happens — no reason to wait out APPROVAL_STALL_DAYS the way an
+  // ordinary in-flight decision does, since nobody is "still deciding"
+  // here; the decision is already made and only the mechanical send is
+  // blocked.
+  if (project.pendingApprovals?.some(r => r.sendFailed)) return true
+
   // 6. Proactive risk alert — high-value project without signed SOW
   if (
     project.status === 'Draft' || project.status === 'Intake'
@@ -150,6 +168,13 @@ export function attentionReason({ project }: AttentionContext): string | null {
   if (currentSow?.status === 'changes_requested') return 'Client requested SOW changes'
   if (currentSow?.status === 'declined') return 'Client declined SOW'
   if (currentSow?.status === 'expired') return 'SOW link expired — reopen and resend'
+  // FIX (fix round, section-11 flagship finding): checked before the
+  // age-gated 'pending' reason below — a send failure is its own, more
+  // specific and more urgent reason, and (per the isAttentionWorthy fix
+  // above) can be true independent of how long it's been sitting.
+  if (project.pendingApprovals?.some(r => r.sendFailed)) {
+    return 'Approved but not sent — needs a retry'
+  }
   if (project.pendingApprovals?.some(r => (Date.now() - new Date(r.createdAt).getTime()) / 86400000 >= APPROVAL_STALL_DAYS)) {
     return 'Approval pending — stuck awaiting a decision'
   }

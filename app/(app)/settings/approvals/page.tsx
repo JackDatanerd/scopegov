@@ -33,7 +33,7 @@ export default async function ApprovalWorkflowsPage() {
 
   const service = createServiceClient()
 
-  const [workflowsRes, rolesRes, membersRes] = await Promise.all([
+  const [workflowsRes, rolesRes, membersRes, wsRes] = await Promise.all([
     (service as any)
       .from('approval_workflows')
       .select(`
@@ -70,6 +70,19 @@ export default async function ApprovalWorkflowsPage() {
       .select('id, effective_permissions, users!workspace_members_user_id_fkey(id, name, email)')
       .eq('workspace_id', session.workspaceId)
       .eq('status', 'active'),
+    // FIX (fix round, section-11 finding): the new-workflow threshold
+    // currency picker always defaulted to a hardcoded 'USD', regardless
+    // of the workspace's actual default currency (never fetched on this
+    // page at all) — a non-USD workspace had to remember to change it
+    // every single time, with nothing anywhere warning them a forgotten
+    // change means the rule silently never matches a document (see
+    // migration 023 — threshold_currency is workspace-currency-isolated
+    // by design). Fetched here and passed down as the picker's default.
+    (service as any)
+      .from('workspaces')
+      .select('currency')
+      .eq('id', session.workspaceId)
+      .maybeSingle(),
   ])
 
   const workflows = workflowsRes.data || []
@@ -78,6 +91,7 @@ export default async function ApprovalWorkflowsPage() {
   const members   = (membersRes.data || [])
     .filter((m: any) => m.users)
     .map((m: any) => ({ id: m.users.id, name: m.users.name, email: m.users.email, canApprove: m.effective_permissions?.APPROVE_DOCUMENTS === true }))
+  const workspaceCurrency = wsRes.data?.currency || 'USD'
 
   return (
     <div className="page" style={{ maxWidth: 900 }}>
@@ -100,6 +114,7 @@ export default async function ApprovalWorkflowsPage() {
         initialWorkflows={workflows}
         roles={roles}
         members={members}
+        workspaceCurrency={workspaceCurrency}
       />
     </div>
   )

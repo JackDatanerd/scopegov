@@ -393,14 +393,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // FIX (section-11 audit): editing a member's permission_overrides or
     // reassigning their role can drop their effective APPROVE_DOCUMENTS the
     // same way deactivating them does above (see the affectedWorkflowNames
-    // block in DELETE) — but this path had no equivalent check at all. A
-    // role-based approver whose access is quietly revoked here stays
-    // "reachable" as far as getMembersWithRole() and the stall cron are
-    // concerned (they're still an active member of the right role), so the
-    // stall cron's zero-recipients escalation never fires — the step just
-    // silently can never be decided by anyone. Named-user steps have the
-    // exact same exposure. Warn the same way DELETE does rather than
-    // blocking the edit outright.
+    // block in DELETE) — but this path had no equivalent check at all.
+    // getMembersWithRole() now filters on live effective_permissions (fix
+    // round, section-11 finding), so a member who loses APPROVE_DOCUMENTS
+    // here correctly drops out of "reachable" and the stall cron's
+    // zero-recipients escalation fires as intended — this warning is now
+    // purely a heads-up for the admin making the change, not the only
+    // safety net against a silently-stuck step.
     let affectedWorkflowNames: string[] = []
     if (targetMember && simulatedPerms && targetMember.effective_permissions?.['APPROVE_DOCUMENTS'] === true && simulatedPerms['APPROVE_DOCUMENTS'] !== true && targetMember.user_id) {
       const { data: affectedSteps } = await (service as any)

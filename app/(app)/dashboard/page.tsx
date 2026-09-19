@@ -179,17 +179,26 @@ export default async function DashboardPage() {
   // pending-only filter simple and unambiguous — an embedded-resource
   // filter here would need care not to inner-join projects with zero
   // pending requests out of the result entirely.
+  // FIX (fix round, section-11 flagship finding): this only ever matched
+  // status='pending' — a request that already cleared approval but failed
+  // to auto-send afterward (status='approved', send_failed_at set — see
+  // migration 053) is just as stuck, but the underlying document is still
+  // 'draft' (the send never completed), so nothing else on this page ever
+  // surfaced it either. Broadened to match both states, and send_failed_at
+  // is carried through so isAttentionWorthy/attentionReason (see
+  // lib/utils/attention.ts) can treat it as immediately attention-worthy
+  // rather than waiting out the ordinary pending-decision stall window.
   let pendingApprovalsQuery = (service as any)
     .from('approval_requests')
-    .select('project_id, created_at')
+    .select('project_id, created_at, send_failed_at')
     .eq('workspace_id', session.workspaceId)
-    .eq('status', 'pending')
+    .or('status.eq.pending,and(status.eq.approved,send_failed_at.not.is.null)')
   if (!canViewAll) pendingApprovalsQuery = pendingApprovalsQuery.in('project_id', accessibleProjectIds || [])
   const { data: pendingApprovalRows = [] } = await pendingApprovalsQuery
-  const pendingApprovalsByProject = new Map<string, Array<{ createdAt: string }>>()
+  const pendingApprovalsByProject = new Map<string, Array<{ createdAt: string; sendFailed?: boolean }>>()
   for (const r of (pendingApprovalRows || [])) {
     const list = pendingApprovalsByProject.get(r.project_id) || []
-    list.push({ createdAt: r.created_at })
+    list.push({ createdAt: r.created_at, sendFailed: !!r.send_failed_at })
     pendingApprovalsByProject.set(r.project_id, list)
   }
 

@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { retryFailedSend } from '@/lib/approvals/engine'
+import { canReadProject } from '@/lib/utils/project-access'
 
 // FIX (section-11 fix round, flagship finding): see migration 053 +
 // lib/approvals/engine.ts (recordApprovalDecision/retryFailedSend). Before
@@ -21,7 +22,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const service = createServiceClient()
     const { data: req } = await (service as any)
       .from('approval_requests')
-      .select('id, requested_by, status, send_failed_at')
+      .select('id, requested_by, status, send_failed_at, project_id')
       .eq('id', id)
       .eq('workspace_id', session.workspaceId)
       .single()
@@ -31,6 +32,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // document, just a later stage of the same lifecycle.
     if (req.requested_by !== session.id && !hasPermission(session, 'MANAGE_WORKSPACE_SETTINGS'))
       return NextResponse.json({ error: 'Only the requester or an admin can retry sending this' }, { status: 403 })
+    // FIX (fix round, section-11 finding): same gap and same fix as
+    // cancel/route.ts — retry-send is, if anything, the more consequential
+    // of the two (it fires a real email to the client), and had the exact
+    // same missing project-visibility check for the admin-override branch.
+    if (!(await canReadProject(service, session, req.project_id)))
+      return NextResponse.json({ error: 'You do not have access to this project' }, { status: 403 })
     if (req.status !== 'approved' || !req.send_failed_at)
       return NextResponse.json({ error: 'This request has nothing to retry' }, { status: 400 })
 

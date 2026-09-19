@@ -84,7 +84,14 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
   // computation from the props already on hand if the daily rollup cron
   // hasn't run yet for a brand-new project (snapshot table starts empty).
   const latestSnapshot = reconciliation.length ? reconciliation[reconciliation.length - 1] : null
-  const liveInvoiced = invoices.filter((i: any) => !['draft', 'void'].includes(i.status)).reduce((s: number, i: any) => s + Number(i.amount || 0), 0)
+  // FIX (fix round, section-12 flagship finding): duplicate of the same
+  // pre-tax/post-tax mismatch fixed in cron/reconciliation-rollup — this
+  // live fallback (used whenever a project has no snapshot yet, e.g. every
+  // brand-new project before the first cron run) summed `amount` (tax-
+  // inclusive) against `contract_value` (pre-tax) the same wrong way. A
+  // fix to the cron alone wouldn't have closed this — this formula runs
+  // independently and is what every new project actually shows first.
+  const liveInvoiced = invoices.filter((i: any) => !['draft', 'void'].includes(i.status)).reduce((s: number, i: any) => s + Number(i.subtotal ?? i.amount ?? 0), 0)
   const livePaid      = invoices.filter((i: any) => !['draft', 'void'].includes(i.status)).reduce((s: number, i: any) => s + Number(i.amount_paid || 0), 0)
   const invoicedToDate = latestSnapshot ? latestSnapshot.invoiced_to_date : liveInvoiced
   const paidToDate      = latestSnapshot ? latestSnapshot.paid_to_date : livePaid
@@ -891,7 +898,26 @@ function EditInvoiceModal({ invoiceId, projectCurrency, onClose, onSaved }: {
         if (cancelled) return
         const inv = json.invoice
         setTitle(inv.title || '')
-        setAmount(String(inv.amount ?? ''))
+        // FIX (fix round, section-12 flagship finding): this loaded
+        // inv.amount (the stored GRAND TOTAL) into the "Amount" field
+        // unconditionally — but per the same convention this form's own
+        // submit() and the create route both follow, the field means
+        // different things depending on tax_inclusive: when inclusive, it
+        // IS the grand total (inv.amount is correct); when exclusive, the
+        // field is supposed to hold the SUBTOTAL, which the server then
+        // grosses up into a new amount. Loading the grand total into a
+        // field the server treats as "pre-tax, to be grossed up" meant
+        // merely opening Edit on any non-itemized, tax-exclusive, taxed
+        // invoice and clicking Save with NO other changes — fixing a
+        // typo in the title, say — silently re-grossed-up the total by
+        // another (1 + rate) on every single save, compounding further
+        // on every subsequent open-and-save. Itemized invoices were
+        // already unaffected (a separate effect below re-derives `amount`
+        // from the line-item sum), as are inclusive/untaxed invoices
+        // (inv.amount already is the right figure for those). Loading
+        // inv.subtotal here for the exclusive+taxed case is the fix —
+        // it's exactly what the field represents in that mode.
+        setAmount(String((inv.tax_rate > 0 && inv.tax_inclusive === false ? inv.subtotal : inv.amount) ?? ''))
         setDueDate(inv.due_date ? String(inv.due_date).slice(0, 10) : '')
         setPoNumber(inv.po_number || '')
         setPaymentInstructions(inv.payment_instructions || '')

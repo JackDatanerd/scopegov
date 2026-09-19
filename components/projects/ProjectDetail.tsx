@@ -662,6 +662,24 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
   const [sending, setSending] = useState(false)
   const [error,   setError]   = useState('')
   const [sentForApproval, setSentForApproval] = useState(false)
+  // FIX (fix round, section-11 flagship finding): before this, the only
+  // place a fully-approved-but-send-failed SOW was ever surfaced was a
+  // one-time email/notification to whoever happened to be the original
+  // requester — nothing on the project's own SOW tab showed it, and there
+  // was no way to retry from here at all. See pendingApprovals fetch in
+  // app/(app)/projects/[id]/page.tsx for the matching query-side fix.
+  const [retrying, setRetrying] = useState(false)
+  async function handleRetrySend(approvalRequestId: string) {
+    setRetrying(true); setError('')
+    try {
+      const res  = await fetch(`/api/approvals/${approvalRequestId}/retry-send`, { method: 'POST' })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error || 'Retry failed')
+      router.refresh()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Retry failed')
+    } finally { setRetrying(false) }
+  }
   // FIX (re-audit, "current SOW" finding): defense-in-depth on top of the
   // server-side .order() fix in app/(app)/projects/[id]/page.tsx — sort
   // here too so this never silently picks a stale version if `sows` ever
@@ -783,7 +801,12 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                     <span style={{ fontSize: 14, fontWeight: 600 }}>SOW v{currentSow.version}</span>
                     <span className={`pill pill-${sowPill(currentSow.status)}`}>{sowStatusLabel(currentSow.status)}</span>
-                    {pendingApproval && (
+                    {pendingApproval && pendingApproval.sendFailed && (
+                      <span className="pill pill-red" title={pendingApproval.sendFailedReason || undefined}>
+                        <i className="ti ti-alert-triangle" style={{ fontSize: 10 }} /> Approved — not sent
+                      </span>
+                    )}
+                    {pendingApproval && !pendingApproval.sendFailed && (
                       <span className="pill pill-amber">
                         <i className="ti ti-shield-check" style={{ fontSize: 10 }} /> Awaiting approval ({pendingApproval.current_step}/{pendingApproval.total_steps})
                       </span>
@@ -806,7 +829,12 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
                       {sending ? <span className="spin" /> : <><i className="ti ti-send" style={{ fontSize: 12 }} /> Send to client</>}
                     </button>
                   )}
-                  {currentSow.status === 'draft' && pendingApproval && (
+                  {currentSow.status === 'draft' && pendingApproval && pendingApproval.sendFailed && permissions.sendSow && (
+                    <button className="btn btn-primary btn-sm" onClick={() => handleRetrySend(pendingApproval.id)} disabled={retrying}>
+                      {retrying ? <span className="spin" /> : <><i className="ti ti-refresh" style={{ fontSize: 12 }} /> Retry send</>}
+                    </button>
+                  )}
+                  {currentSow.status === 'draft' && pendingApproval && !pendingApproval.sendFailed && (
                     <Link href="/approvals">
                       <button className="btn btn-ghost btn-sm"><i className="ti ti-shield-check" style={{ fontSize: 12 }} /> Awaiting approval</button>
                     </Link>
@@ -1848,6 +1876,21 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
   // for 'send', so accepting a counter that trips a co_counter workflow
   // looked identical to one that went straight to the client.
   const [actionError, setActionError] = useState('')
+  // FIX (fix round, section-11 flagship finding): same gap as the SOW
+  // tab's matching fix — a CO or CO-counter approval that fully cleared
+  // but failed to auto-send had no retry path anywhere on this card.
+  const [retrying, setRetrying] = useState(false)
+  async function retrySend(approvalRequestId: string) {
+    setRetrying(true); setActionError('')
+    try {
+      const res  = await fetch(`/api/approvals/${approvalRequestId}/retry-send`, { method: 'POST' })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) { setActionError(json?.error || 'Retry failed'); return }
+      router.refresh()
+    } catch {
+      setActionError('Retry failed')
+    } finally { setRetrying(false) }
+  }
   async function doAction(action: string) {
     setActing(true); setActionError('')
     try {
@@ -1900,7 +1943,12 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
             <span style={{ fontSize: 14, fontWeight: 500 }}>{co.title}</span>
             <span className={`pill pill-${coPill(co.status)}`}>{coStatusLabel(co.status)}</span>
-            {pendingApproval && (
+            {pendingApproval && pendingApproval.sendFailed && (
+              <span className="pill pill-red" title={pendingApproval.sendFailedReason || undefined}>
+                <i className="ti ti-alert-triangle" style={{ fontSize: 10 }} /> Approved — not sent
+              </span>
+            )}
+            {pendingApproval && !pendingApproval.sendFailed && (
               <span className="pill pill-amber">
                 <i className="ti ti-shield-check" style={{ fontSize: 10 }} /> Awaiting approval ({pendingApproval.current_step}/{pendingApproval.total_steps})
               </span>
@@ -1919,7 +1967,12 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
           {co.status === 'draft' && permissions.sendCo && !pendingApproval && (
             <button className="btn btn-primary btn-xs" onClick={() => doAction('send')} disabled={acting}>Send</button>
           )}
-          {co.status === 'draft' && pendingApproval && (
+          {co.status === 'draft' && pendingApproval && pendingApproval.sendFailed && permissions.sendCo && (
+            <button className="btn btn-primary btn-xs" onClick={() => retrySend(pendingApproval.id)} disabled={retrying}>
+              {retrying ? <span className="spin" /> : 'Retry send'}
+            </button>
+          )}
+          {co.status === 'draft' && pendingApproval && !pendingApproval.sendFailed && (
             <Link href="/approvals"><button className="btn btn-ghost btn-xs">Awaiting approval</button></Link>
           )}
           {co.status === 'awaiting_response' && (

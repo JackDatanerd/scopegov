@@ -46,9 +46,15 @@ export async function GET(request: NextRequest) {
     if (projectId) {
       query = query.eq('project_id', projectId)
     } else if (!canViewAll) {
+      // FIX (fix round, section-11/12 finding): same workspace-scoping gap
+      // as /api/approvals — filtered on workspace_members.user_id alone,
+      // with no workspace_id scope, so it pulled in project ids from every
+      // workspace the viewer belongs to, not just this one. Mirrors
+      // canReadProject's own join pattern (lib/utils/project-access.ts).
       const { data: ids } = await (service as any)
         .from('project_members')
-        .select('project_id, workspace_members!inner(user_id)')
+        .select('project_id, projects!inner(workspace_id), workspace_members!inner(user_id)')
+        .eq('projects.workspace_id', session.workspaceId)
         .eq('workspace_members.user_id', session.id)
       query = query.in('project_id', (ids || []).map((r: any) => r.project_id))
     }
@@ -239,9 +245,25 @@ export async function POST(request: NextRequest) {
         finalSubtotal = numAmount
         finalAmount   = numAmount * (1 + finalTaxRate / 100)
       }
-    } else if (coTaxDefaults) {
-      finalSubtotal = coTaxDefaults.subtotal ?? numAmount
     }
+    // FIX (fix round, section-12 flagship finding): there used to be an
+    // `else if (coTaxDefaults) { finalSubtotal = coTaxDefaults.subtotal }`
+    // branch here — reachable whenever a CO is linked, taxRate is omitted
+    // from the request, and the inherited rate resolves to 0. It force-set
+    // finalSubtotal to the CO's *full* subtotal, completely disconnected
+    // from numAmount (what the agency actually typed for THIS invoice) —
+    // breaking partial invoicing (explicitly supported, per the cap-check
+    // comment below) and corrupting the cumulative-cap sum for every
+    // subsequent invoice against that CO, since finalSubtotal is what gets
+    // written to `subtotal` and summed by that check. When finalTaxRate is
+    // 0, numAmount already directly IS the subtotal — there's no tax to
+    // back out, so the plain assignment above is already correct; nothing
+    // needs to borrow a value from the CO at all. (Confirmed via trace
+    // that this branch was unreachable from the shipped UI — BillingTab's
+    // CreateInvoiceModal always sends a concrete taxRate specifically to
+    // avoid trusting this fallback — but it's exactly what a future direct
+    // API caller following this route's own documented contract, omitting
+    // taxRate to inherit from the CO, would hit.)
 
     // FIX (section-12 audit, flagship finding continued): the actual cap
     // check — compared pre-tax to pre-tax, since tax is something the

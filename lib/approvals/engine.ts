@@ -70,7 +70,10 @@ function entityTypeFor(documentType: ApprovalDocumentType): 'sow' | 'change_orde
   if (documentType === 'invoice') return 'invoice'
   return 'change_order'
 }
-function documentLabelFor(documentType: ApprovalDocumentType): string {
+// FIX (fix round, section-11 finding): exported so cron/approval-stall's
+// send-failure escalation can build a consistent document label without
+// duplicating this mapping.
+export function documentLabelFor(documentType: ApprovalDocumentType): string {
   if (documentType === 'sow') return 'SOW'
   if (documentType === 'invoice') return 'Invoice'
   if (documentType === 'co_counter') return 'Change order counter-offer'
@@ -388,7 +391,7 @@ export async function recordApprovalDecision(service: any, params: DecisionParam
       await notifyRequester(service, {
         workspaceId: params.actor.workspaceId, requester, decision: 'rejected',
         documentLabel, docTitle, projectId: request.project_id, projectName,
-        decidedByName: params.actor.name, note: params.note,
+        decidedByName: params.actor.name, note: params.note, requestId: request.id,
       })
     }
     return { ok: true, status: 'rejected' }
@@ -485,7 +488,7 @@ export async function recordApprovalDecision(service: any, params: DecisionParam
     await notifyRequester(service, {
       workspaceId: params.actor.workspaceId, requester, decision: 'approved',
       documentLabel, docTitle, projectId: request.project_id, projectName,
-      decidedByName: params.actor.name, note: params.note, autoSent, sendFailedReason,
+      decidedByName: params.actor.name, note: params.note, autoSent, sendFailedReason, requestId: request.id,
     })
   }
 
@@ -507,12 +510,27 @@ export async function cancelApprovalRequest(service: any, params: {
   actorName: string
   reason?: string
 }) {
+  // FIX (fix round, section-11 flagship finding): this used to match only
+  // status='pending' — a request that fully cleared approval but then
+  // failed to auto-send (status='approved', send_failed_at set; see
+  // migration 053) was invisible to this lookup entirely. That's exactly
+  // the state a document sits in while stuck in the send-failure recovery
+  // window, and every caller of this function (SOW/CO/invoice DELETE and
+  // void/withdraw/close routes) is here specifically to stop the document
+  // out from under a live approval concern before destroying/superseding
+  // it. Missing this state meant deleting a document in that window left
+  // its approval_requests row permanently orphaned — cancelApprovalRequest
+  // could never find it (only 'pending' matched), so it just sat there
+  // forever pointing at a document that no longer exists: un-cancellable,
+  // and a retry would only ever fail looking up a dead document_id.
+  // Broadened to match either state; the write below is CAS'd against
+  // whichever one it actually read.
   const { data: request } = await service
     .from('approval_requests')
-    .select('id, project_id, current_step, context')
+    .select('id, project_id, current_step, context, status')
     .eq('document_type', params.documentType)
     .eq('document_id', params.documentId)
-    .eq('status', 'pending')
+    .or('status.eq.pending,and(status.eq.approved,send_failed_at.not.is.null)')
     .maybeSingle()
   if (!request) return
 
@@ -522,9 +540,15 @@ export async function cancelApprovalRequest(service: any, params: {
   // write could blindly overwrite a real decision back to 'cancelled'.
   // Lower-likelihood than the decision-vs-decision race above, but same
   // root cause. If someone else's decision won the race, leave it be.
+  // CAS'd against the same status the read above actually found —
+  // 'pending' for a live chain, or 'approved' for the send-failure limbo
+  // case (guarded further by re-checking send_failed_at isn't null, so a
+  // concurrent successful retry-send can't be clobbered back to cancelled).
   const { data: cancelled } = await service.from('approval_requests').update({
     status: 'cancelled', decided_at: now, updated_at: now,
-  }).eq('id', request.id).eq('status', 'pending').select('id').maybeSingle()
+  }).eq('id', request.id)
+    .or('status.eq.pending,and(status.eq.approved,send_failed_at.not.is.null)')
+    .select('id').maybeSingle()
   if (!cancelled) return
 
   // FIX (deep audit, notifications section — feature gap): whoever was
@@ -711,6 +735,21 @@ export async function retryFailedSend(service: any, params: {
 }
 
 // ── LOOKUP ───────────────────────────────────────────────────────
+// FIX (fix round, section-11 flagship finding): every caller of this
+// function is an edit-lock — "don't let the document change while an
+// approval concern is outstanding." That was only ever true for
+// status='pending'. A request that fully approved but then failed to
+// auto-send (status='approved', send_failed_at set — see migration 053)
+// is just as much an outstanding concern: the document is sitting in a
+// "the client is about to receive exactly this" state, waiting on a
+// retry, and nothing stopped an edit from changing it out from under
+// that already-granted approval in the meantime — the eventual retry
+// would ship whatever the document looks like *now*, with no relation to
+// what was actually approved, and with none of the sending route's own
+// business-rule validation re-run (that validation only ever runs once,
+// at the original send attempt). Broadened to match either state so the
+// edit-lock actually covers the full window a document can be "spoken
+// for" by an approval decision.
 export async function getPendingApprovalForDocument(
   service: any, documentType: ApprovalDocumentType, documentId: string
 ): Promise<{ id: string; current_step: number; total_steps: number } | null> {
@@ -719,7 +758,7 @@ export async function getPendingApprovalForDocument(
     .select('id, current_step, total_steps')
     .eq('document_type', documentType)
     .eq('document_id', documentId)
-    .eq('status', 'pending')
+    .or('status.eq.pending,and(status.eq.approved,send_failed_at.not.is.null)')
     .maybeSingle()
   return data || null
 }
@@ -837,6 +876,7 @@ async function notifyRequester(service: any, args: {
   decision: 'approved' | 'rejected'
   documentLabel: string; docTitle: string; projectId: string; projectName: string
   decidedByName: string; note?: string; autoSent?: boolean; sendFailedReason?: string | null
+  requestId: string
 }) {
   // FIX (deep audit, notifications section): this was the one notification
   // in the whole approval pipeline that bypassed the preference system
@@ -871,8 +911,24 @@ async function notifyRequester(service: any, args: {
         body: args.decision === 'approved' && args.sendFailedReason
           ? `${args.decidedByName} approved ${args.docTitle}, but it could not be sent automatically (${args.sendFailedReason}) — open it in Approvals to retry.`
           : `${args.decidedByName} ${args.decision} ${args.docTitle}${args.autoSent ? ' — sent to client' : ''}.`,
-        entity_type:  'project',
-        entity_id:    args.projectId,
+        // FIX (fix round, section-11 finding): this used entity_type:
+        // 'project' + entity_id: projectId, which NotificationBell's
+        // entityHref() only ever routes to the bare Project Overview —
+        // every OTHER document-event notification family (invoice_*,
+        // guardian_*, co_*, sow_*) got a specific fix to deep-link past
+        // that to the right tab, but 'approval_approved'/'approval_
+        // rejected' never matched any of those startsWith() branches, so
+        // it always fell through. notifyStepApprovers (the sibling
+        // "awaiting your approval" notification, right above) already
+        // uses entity_type: 'approval_request' + entity_id: requestId,
+        // which resolves straight to `/approvals?highlight=<id>` — this
+        // now matches that exactly, which is a better destination anyway:
+        // the approvals detail modal shows the full decision (who, when,
+        // notes on every step), a link straight to the document's own
+        // tab, AND — for the send-failed case — the actual Retry send
+        // button, none of which a bare project page ever had.
+        entity_type:  'approval_request',
+        entity_id:    args.requestId,
       })
     } catch { /* non-fatal */ }
   }
@@ -884,7 +940,16 @@ async function notifyRequester(service: any, args: {
         to: args.requester.email, requesterName: args.requester.name,
         decision: args.decision, documentLabel: args.documentLabel, documentTitle: args.docTitle,
         projectName: args.projectName, decidedByName: args.decidedByName, note: args.note,
-        url: `${appUrl}/projects/${args.projectId}`, autoSent: args.autoSent,
+        // FIX (fix round, section-11 finding): same fix as the in-app
+        // notification above, and it closes a sharper bug for the
+        // send-failed case specifically — the email body text says
+        // "Open it in Approvals and retry", but the button underneath it
+        // still pointed at the bare project page, not /approvals, so the
+        // one channel most likely to reach someone who's stepped away
+        // sent them somewhere that (per the dashboard/project-detail
+        // fixes elsewhere in this round) showed no sign anything was
+        // wrong. The button destination now matches what the text says.
+        url: `${appUrl}/approvals?highlight=${args.requestId}`, autoSent: args.autoSent,
         sendFailedReason: args.sendFailedReason,
       })
     } catch (e) { console.error('approval decision email failed:', e) }

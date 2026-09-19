@@ -33,9 +33,14 @@ export default async function InvoicesPage() {
   const canViewAll = hasPermission(session, 'VIEW_ALL_PROJECTS')
   let allowedProjectIds: string[] | null = null
   if (!canViewAll) {
+    // FIX (fix round, section-11/12 finding): same workspace-scoping gap
+    // as /api/approvals and /api/invoices — mirrors canReadProject's own
+    // join pattern (lib/utils/project-access.ts) instead of filtering on
+    // workspace_members.user_id alone.
     const { data: ids } = await (service as any)
       .from('project_members')
-      .select('project_id, workspace_members!inner(user_id)')
+      .select('project_id, projects!inner(workspace_id), workspace_members!inner(user_id)')
+      .eq('projects.workspace_id', session.workspaceId)
       .eq('workspace_members.user_id', session.id)
     allowedProjectIds = (ids || []).map((r: any) => r.project_id)
   }

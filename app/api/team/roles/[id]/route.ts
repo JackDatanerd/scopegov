@@ -237,13 +237,15 @@ export async function PATCH(
     }
 
     // FIX (section-11 audit): stripping APPROVE_DOCUMENTS from a role here
-    // silently breaks any active workflow step that assigns it — everyone
-    // who held the role remains "reachable" (getMembersWithRole() and the
-    // stall cron only match on role_id, not on live permission), so
-    // requests just stall with no visible cause and no escalation, since
-    // the stall cron's zero-recipients path never fires. DELETE below
-    // already checks this for role deletion; edits had no equivalent.
-    // Warn rather than block, matching the member-deactivation pattern.
+    // silently breaks any active workflow step that assigns it.
+    // getMembersWithRole() now filters on live effective_permissions (fix
+    // round, section-11 finding) instead of matching on role_id alone, so
+    // this correctly drops to zero recipients and the stall cron's
+    // escalation fires — this warning is a heads-up at edit time, not the
+    // only thing standing between this change and a silently-stuck step.
+    // DELETE below already checks this for role deletion; edits had no
+    // equivalent warning. Warn rather than block, matching the
+    // member-deactivation pattern.
     let affectedWorkflowNames: string[] = []
     if (permissions !== undefined && existingRole.permissions?.['APPROVE_DOCUMENTS'] === true && permissions['APPROVE_DOCUMENTS'] !== true) {
       const { data: affectedSteps } = await (service as any)

@@ -85,7 +85,9 @@ export async function POST(request: NextRequest) {
           // amount_paid is the trigger-maintained running total from
           // invoice_payments (004_invoicing.sql), so summing it here is
           // equivalent to summing invoice_payments directly but cheaper.
-          (service as any).from('invoices').select('amount, amount_paid, status').eq('project_id', project.id),
+          // FIX (fix round, section-12 flagship finding): now also selects
+          // `subtotal` — see the invoicedToDate fix below.
+          (service as any).from('invoices').select('amount, amount_paid, subtotal, status').eq('project_id', project.id),
           // At-risk: change orders sent to the client but not yet accepted —
           // same "at risk (pending COs)" definition already shown on the
           // project overview page, rolled here so it's comparable over time.
@@ -97,7 +99,22 @@ export async function POST(request: NextRequest) {
         const contractedValue = (project.contract_value || 0) + amendmentTotal
 
         const billedInvoices = (invoicesRes.data || []).filter((i: any) => !['draft', 'void'].includes(i.status))
-        const invoicedToDate = billedInvoices.reduce((s: number, i: any) => s + (i.amount || 0), 0)
+        // FIX (fix round, section-12 flagship finding): this summed
+        // `amount` — the invoice's tax-INCLUSIVE grand total — against
+        // `contractedValue` above, which is purely pre-tax (contract_value
+        // + amendments; tax is never part of what a milestone/SOW/CO was
+        // originally scoped or accepted for — see migration 023's and the
+        // invoice-creation route's own reasoning for why this codebase is
+        // otherwise careful to keep the two separate). For any taxed
+        // invoice, that meant a contract billed out to exactly 100% would
+        // show invoiced_to_date > contracted_value with nothing to explain
+        // the gap — visible on the client's own portal page, every invoice
+        // PDF, and this workspace's own Invoices page portfolio strip.
+        // amount_paid correctly stays post-tax below (it's real cash the
+        // client actually paid, tax included) — only invoicedToDate was
+        // using the wrong figure. Falls back to `amount` only for a
+        // pre-migration-014 row somehow missing a backfilled subtotal.
+        const invoicedToDate = billedInvoices.reduce((s: number, i: any) => s + (i.subtotal ?? i.amount ?? 0), 0)
         const paidToDate     = billedInvoices.reduce((s: number, i: any) => s + (i.amount_paid || 0), 0)
 
         const atRiskValue = (openCosRes.data || []).reduce((s: number, c: any) => s + (c.total || 0), 0)

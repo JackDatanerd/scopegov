@@ -237,10 +237,24 @@ export async function getMembersWithRole(
     .limit(500)
 
   const eligible = (members || []).filter((m: any) => m.users?.email)
+  // FIX (fix round, section-11 finding): confirmed via independent trace —
+  // this used to return every active member holding the role regardless
+  // of whether the role still actually carries APPROVE_DOCUMENTS. A role
+  // can be validated to have it at workflow-creation time, then later
+  // have it stripped via the "warn, don't block" edit path (see
+  // app/api/team/roles/[id]/route.ts and app/api/team/[id]/route.ts,
+  // whose own comments already documented this exact gap: those members
+  // stay "reachable" here, so the stall cron's zero-recipients escalation
+  // never fires and the step just silently can never be decided). Filter
+  // on effective_permissions directly rather than a separate roles-table
+  // lookup — migration 001's trigger keeps it synchronously in sync with
+  // the role's own permissions for every member holding it, so this is
+  // already the live value, not a stale snapshot.
+  const approvers = eligible.filter((m: any) => m.effective_permissions?.['APPROVE_DOCUMENTS'] === true)
   const permissionMap = new Map<string, Record<string, boolean>>(
-    eligible.map((m: any) => [m.user_id, m.effective_permissions || {}])
+    approvers.map((m: any) => [m.user_id, m.effective_permissions || {}])
   )
-  let recipients = eligible.map((m: any) => ({ id: m.users.id, name: m.users.name, email: m.users.email }))
+  let recipients = approvers.map((m: any) => ({ id: m.users.id, name: m.users.name, email: m.users.email }))
 
   if (projectId) recipients = await filterToProjectAccess(service, projectId, recipients, permissionMap)
   if (eventType) recipients = await filterByNotificationPreference(service, workspaceId, eventType, recipients, channel)

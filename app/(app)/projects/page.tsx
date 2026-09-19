@@ -54,20 +54,25 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
   // A separate query (not an embedded approval_requests(...) above) to
   // keep the pending-only filter from inner-joining out projects with zero
   // pending requests.
+  // FIX (fix round, section-11 flagship finding): broadened to also match
+  // an approved-but-send-failed request (status='approved', send_failed_at
+  // set — migration 053), same reasoning as the Dashboard's matching fix —
+  // that state is just as stuck as a pending decision, but never matched
+  // status='pending' so it was invisible here.
   let pendingApprovalsQuery = (service as any)
     .from('approval_requests')
-    .select('project_id, created_at')
+    .select('project_id, created_at, send_failed_at')
     .eq('workspace_id', session.workspaceId)
-    .eq('status', 'pending')
+    .or('status.eq.pending,and(status.eq.approved,send_failed_at.not.is.null)')
   if (!canViewAll) {
     const ids = (projects || []).map((p: any) => p.id)
     pendingApprovalsQuery = pendingApprovalsQuery.in('project_id', ids)
   }
   const { data: pendingApprovalRows = [] } = await pendingApprovalsQuery
-  const pendingApprovalsByProject = new Map<string, Array<{ created_at: string }>>()
+  const pendingApprovalsByProject = new Map<string, Array<{ created_at: string; send_failed_at: string | null }>>()
   for (const r of (pendingApprovalRows || [])) {
     const list = pendingApprovalsByProject.get(r.project_id) || []
-    list.push({ created_at: r.created_at })
+    list.push({ created_at: r.created_at, send_failed_at: r.send_failed_at })
     pendingApprovalsByProject.set(r.project_id, list)
   }
   const projectsWithApprovals = (projects || []).map((p: any) => ({

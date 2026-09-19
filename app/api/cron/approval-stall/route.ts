@@ -9,7 +9,7 @@ export const maxDuration = 300
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
-import { sendApprovalReminder } from '@/lib/approvals/engine'
+import { sendApprovalReminder, documentLabelFor } from '@/lib/approvals/engine'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { APPROVAL_STALL_DAYS } from '@/lib/utils/attention'
@@ -99,12 +99,57 @@ export async function POST(request: NextRequest) {
       } catch (e) { console.error('Approval reminder error:', e) }
     }
 
+    // FIX (fix round, section-11 flagship finding): this cron only ever
+    // looked at status='pending' requests — a request that fully cleared
+    // approval but then failed to auto-send (status='approved',
+    // send_failed_at set — migration 053) got zero automated reminders or
+    // escalation, no matter how long it sat, unlike every other stall
+    // pattern in this app. The dashboard, project pages, Sidebar badge and
+    // Approvals page were all fixed elsewhere this round to surface it —
+    // but all of those still require someone to go looking. This closes
+    // the remaining gap: a proactive nudge, on the same cadence as an
+    // ordinary stalled decision, to the people actually authorized to act
+    // on it (the requester, or a MANAGE_WORKSPACE_SETTINGS admin — see
+    // retry-send/route.ts's own authorization model).
+    const { data: staleSendFailures } = await (service as any)
+      .from('approval_requests')
+      .select('id, workspace_id, project_id, requested_by, document_type, send_failed_reason, updated_at')
+      .eq('status', 'approved')
+      .not('send_failed_at', 'is', null)
+      .lt('updated_at', cutoff)
+
+    let sendFailureEscalated = 0
+    for (const r of (staleSendFailures || [])) {
+      try {
+        await notifyMembersWithPermission(service, {
+          workspaceId: r.workspace_id, permission: 'MANAGE_WORKSPACE_SETTINGS',
+          eventType: 'approval_no_reachable_approver', type: 'approval_send_failed_stale',
+          title: 'An approved document still hasn\u2019t been sent',
+          body: `A ${documentLabelFor(r.document_type)} was approved ${threshold}+ days ago but couldn't be sent automatically (${r.send_failed_reason || 'send failed'}) and hasn't been retried.`,
+          entityType: 'approval_request', entityId: r.id, projectId: r.project_id,
+        })
+        await (service as any).from('approval_requests')
+          .update({ updated_at: now.toISOString() }).eq('id', r.id)
+        await insertAuditRow(service, {
+          workspace_id: r.workspace_id,
+          actor_id:     null,
+          actor_email:  'cron@scopegov.app',
+          actor_name:   'ScopeGov',
+          event_type:   'approval.send_failure_escalated',
+          entity_type:  'approval_request',
+          entity_id:    r.id,
+          metadata:     { days_stale: threshold },
+        })
+        sendFailureEscalated++
+      } catch (e) { console.error('Approval send-failure escalation error:', e) }
+    }
+
     // FEATURE (cron audit, section 17 — feature gap, closing pass): see
     // migration 058 / lib/utils/cron-heartbeat.ts — recorded on success
     // only, so the watchdog can't be fooled by a cron that's merely
     // erroring on every run into thinking it's healthy.
-    await recordCronHeartbeat(service, 'approval-stall', { reminded, escalated })
-    return NextResponse.json({ ok: true, reminded, escalated })
+    await recordCronHeartbeat(service, 'approval-stall', { reminded, escalated, sendFailureEscalated })
+    return NextResponse.json({ ok: true, reminded, escalated, sendFailureEscalated })
   } catch (err) {
     console.error('Approval stall cron error:', err)
     // FEATURE (cron audit, section 17 — feature gap, closing pass): see
