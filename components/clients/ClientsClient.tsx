@@ -2,7 +2,7 @@
 import { useState, useMemo } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { formatCurrency, formatDate } from '@/lib/utils/format'
+import { formatCurrencyGroups, formatDate } from '@/lib/utils/format'
 
 export default function ClientsClient({ clients, canCreate, canViewFinancials, canViewClientData }: {
   clients: any[]; canCreate: boolean; canViewFinancials: boolean; canViewClientData: boolean
@@ -43,13 +43,23 @@ export default function ClientsClient({ clients, canCreate, canViewFinancials, c
   // a Stalled project showed "0 active" here but would count toward the
   // warning on its own detail page. Same list, both places.
   const ACTIVE_STATUSES = ['Active', 'Awaiting Signature', 'Intake', 'Changes Requested', 'Stalled']
+  // FIX (deep audit, section 14 — flagship finding): value used to be a
+  // plain reduce() summing contract_value across every one of a client's
+  // projects regardless of currency, labelled with whichever project
+  // happened to be first in the array — the exact same bug class already
+  // fixed in dashboard/page.tsx and ProjectsClient.tsx (see
+  // currencyGroupedTotals in lib/utils/format.ts), just never applied
+  // here. A client with e.g. one USD and one KES project got a single
+  // "total value" that silently added the two currencies together under
+  // one wrong currency label. valueDisplay now groups by currency instead
+  // of picking one.
   function clientStats(c: any) {
     const projects  = c.projects || []
     const active    = projects.filter((p: any) => ACTIVE_STATUSES.includes(p.status)).length
     const total     = projects.length
-    const value     = projects.reduce((s: number, p: any) => s + (p.contract_value || 0), 0)
-    const currency  = projects[0]?.currency || 'USD'
-    return { active, total, value, currency }
+    const hasValue  = projects.some((p: any) => (p.contract_value || 0) > 0)
+    const valueDisplay = formatCurrencyGroups(projects)
+    return { active, total, hasValue, valueDisplay }
   }
 
   async function handleCreate(e: React.FormEvent) {
@@ -157,7 +167,7 @@ export default function ClientsClient({ clients, canCreate, canViewFinancials, c
                     </td>
                     {canViewFinancials && (
                       <td className="td-mono" style={{ textAlign: 'right' }}>
-                        {stats.value > 0 ? formatCurrency(stats.value, stats.currency) : '—'}
+                        {stats.hasValue ? stats.valueDisplay : '—'}
                       </td>
                     )}
                     <td style={{ color: 'var(--text-3)', fontSize: 12 }}>{formatDate(c.created_at)}</td>

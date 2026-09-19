@@ -57,6 +57,20 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // note. Resolve the assignee scoped to this workspace; if the id
     // doesn't resolve to a member here, treat it as absent (falls back to
     // self-assignment) rather than erroring the whole request.
+    //
+    // FIX (deep audit, section 13 — flagship finding, traced to CO
+    // escalate): this filtered workspace_members by `.eq('user_id',
+    // escalateTo)`, but EscalateCoModal's dropdown sends
+    // `t.workspace_members.id` — the row's own primary key, not the
+    // user's id (this file's `team` prop is sourced the same way as
+    // Guardian's, via project_members, whose `member_id` column itself
+    // references workspace_members(id)). Those two ids never coincide, so
+    // this query matched nothing for every real selection and silently
+    // fell through to the `resolvedEscalateTo || session.id`
+    // self-assignment below — every "escalate to <teammate>" actually
+    // escalated to the person clicking the button, with a fake success and
+    // no email or notification ever reaching who was actually picked.
+    // Match on the row's own id instead, matching what the dropdown sends.
     let resolvedEscalateTo: string | null = null
     let assignee: { name: string; email: string } | null = null
     if (escalateTo) {
@@ -64,7 +78,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         .from('workspace_members')
         .select('user_id, users!workspace_members_user_id_fkey!inner(id,name,email)')
         .eq('workspace_id', session.workspaceId)
-        .eq('user_id', escalateTo)
+        .eq('id', escalateTo)
         .eq('status', 'active')
         .single()
       if (member?.users) {

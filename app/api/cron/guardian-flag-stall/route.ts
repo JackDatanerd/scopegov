@@ -10,6 +10,15 @@ export const runtime = 'nodejs'
 // This closes that gap the same way the other three do: a reminder once
 // a flag has sat 'open' for the threshold, with updated_at bumped on
 // reminder so this doesn't re-fire every single day afterward.
+//
+// FIX (deep audit, section 13 — flagship finding): this only ever covered
+// status='open'. But 'borderline_review' flags need a human to confirm or
+// dismiss them just as much as an open flag needs resolving — the
+// project-page UI itself treats the two as equally "needs review" (see
+// ProjectDetail.tsx's needsReviewFlags) — and nothing else in the app ever
+// reminds on them. A borderline item could sit forever with zero
+// automated follow-up, which is exactly the gap this cron exists to
+// close, just half of it. Covering both statuses here.
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
@@ -38,8 +47,8 @@ export async function POST(request: NextRequest) {
     // up again until it's been quiet for the full window again.
     const { data: stale } = await (service as any)
       .from('guardian_flags')
-      .select('id, workspace_id, project_id, severity, description, sow_reference, projects(id, name, clients(name))')
-      .eq('status', 'open')
+      .select('id, workspace_id, project_id, status, severity, description, sow_reference, projects(id, name, clients(name))')
+      .in('status', ['open', 'borderline_review'])
       .lt('updated_at', cutoff)
 
     let reminded = 0
@@ -47,10 +56,11 @@ export async function POST(request: NextRequest) {
       try {
         const project = flag.projects
         if (!project) continue
+        const isBorderline = flag.status === 'borderline_review'
 
         const { data: updated } = await (service as any).from('guardian_flags')
           .update({ updated_at: now.toISOString() })
-          .eq('id', flag.id).eq('status', 'open') // guard against this flag being resolved/converted between select and update
+          .eq('id', flag.id).eq('status', flag.status) // guard against this flag being actioned between select and update
           .select('id')
 
         if (!updated || updated.length === 0) continue // lost the race — already actioned
@@ -60,13 +70,18 @@ export async function POST(request: NextRequest) {
           actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
           event_type: 'flag.reminder_sent', entity_type: 'guardian_flag',
           entity_id: flag.id, entity_name: project.name,
-          metadata: { severity: flag.severity, days_open: threshold },
+          metadata: { severity: flag.severity, status: flag.status, days_open: threshold },
         })
 
         await notifyMembersWithPermission(service, {
           workspaceId: flag.workspace_id, permission: 'APPROVE_FLAGS', eventType: 'guardian_flag_stalled',
-          type: 'guardian_flag_stalled', title: `Scope flag needs attention — ${project.name}`,
-          body: `A ${flag.severity} flag on ${project.name} has been open ${threshold}+ days with no action.`,
+          type: 'guardian_flag_stalled',
+          title: isBorderline
+            ? `Borderline item needs review — ${project.name}`
+            : `Scope flag needs attention — ${project.name}`,
+          body: isBorderline
+            ? `A borderline scope item on ${project.name} has been awaiting review ${threshold}+ days with no action.`
+            : `A ${flag.severity} flag on ${project.name} has been open ${threshold}+ days with no action.`,
           entityType: 'project', entityId: project.id, projectId: project.id,
         })
 
@@ -81,6 +96,7 @@ export async function POST(request: NextRequest) {
               description: flag.description,
               daysOpen: threshold,
               projectUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects/${project.id}?tab=guardian`,
+              isBorderline,
             })
           }
         } catch (e) { console.error('Guardian flag stalled email failed:', e) }

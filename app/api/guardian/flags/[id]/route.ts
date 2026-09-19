@@ -155,6 +155,22 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         // workspace, falling back to self-assignment if it doesn't
         // resolve to an active member here, same treatment as
         // co/[id]/escalate.
+        //
+        // FIX (deep audit, section 13 — flagship finding): this filtered
+        // workspace_members by `.eq('user_id', escalateTo)`, but
+        // EscalateFlagModal's dropdown sends `t.workspace_members.id` — the
+        // row's own primary key, not the user's id (the `team` prop here is
+        // sourced from project_members, whose `member_id` column itself
+        // references workspace_members(id), which is why the option value
+        // was built that way). Those two ids never coincide, so this query
+        // matched nothing for every real selection, silently fell through
+        // to the `resolvedEscalateTo || session.id` self-assignment below,
+        // and reported success — every "escalate to <teammate>" action
+        // actually escalated to the person clicking the button, with no
+        // error, no email, and no notification ever reaching who was
+        // actually picked. Match on the row's own id instead, which is
+        // what the dropdown actually sends and what this table's own
+        // primary key is.
         let resolvedEscalateTo: string | null = null
         let assignee: { name: string; email: string } | null = null
         if (escalateTo) {
@@ -162,7 +178,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
             .from('workspace_members')
             .select('user_id, users!workspace_members_user_id_fkey!inner(id,name,email)')
             .eq('workspace_id', session.workspaceId)
-            .eq('user_id', escalateTo)
+            .eq('id', escalateTo)
             .eq('status', 'active')
             .single()
           if (member?.users) {

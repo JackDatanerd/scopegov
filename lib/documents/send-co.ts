@@ -8,6 +8,7 @@ import { sendCoEmail } from '@/lib/email/templates'
 import { logAudit } from '@/lib/utils/audit'
 import { assignDocumentNumber } from '@/lib/utils/document-number'
 import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
+import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
 
 export type SendCoResult =
   | { ok: true; token: string; portalUrl: string; projectId: string; coTitle: string; documentNumber: string }
@@ -45,6 +46,12 @@ export async function sendCoDocument(service: any, params: {
   const workspace = project?.workspaces
 
   if (!client?.email) return { ok: false, error: 'Client email required', status: 400 }
+
+  // FIX (deep audit, section 14 — flagship finding): see
+  // lib/utils/client-contacts.ts — CC the client's designated primary
+  // contact, if any, alongside cc_emails instead of never consulting
+  // client_contacts at all.
+  const ccEmails = await withPrimaryContactCc(service, project.client_id, client.email, client.cc_emails)
 
   // jwt_secret lives in workspace_secrets now, not on workspaces itself —
   // see migration 013.
@@ -93,7 +100,7 @@ export async function sendCoDocument(service: any, params: {
   try {
     await sendCoEmail({
       to:          client.email,
-      cc:          client.cc_emails || [],
+      cc:          ccEmails,
       clientName:  client.name,
       agencyName:  workspace.agency_name,
       projectName: project.name,

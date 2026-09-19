@@ -1472,41 +1472,60 @@ export async function sendRetainerEndingEmail(params: {
 // no stall reminder at all, unlike approval/co/sow, despite being the
 // product's own core primitive. This is that reminder's email
 // counterpart, mirroring sendCoStalledEmail/sendSowStalledEmail.
+// FIX (deep audit, section 13): borderline_review flags previously had no
+// automated stall reminder at all (see cron/guardian-flag-stall's own
+// comment). Extending that cron to cover them meant this template started
+// receiving flags whose status isn't actually 'open' and whose severity is
+// the 'info' placeholder, not high/medium/low — the hardcoded "Open flag"
+// headline and the "Resolve it, convert it to a change order, or log an
+// exception" close-out line were both wrong for that case (a
+// borderline_review flag can only be confirmed-out-of-scope, dismissed, or
+// escalated — see guardian/flags/[id]'s status guards; none of resolve/
+// draft_co/exception are reachable from that status). isBorderline
+// switches both to the copy that actually matches what the reader can do.
 export async function sendGuardianFlagStalledEmail(params: {
   to: string[]; projectName: string; clientName: string
   severity: string; description: string; daysOpen: number; projectUrl: string
+  isBorderline?: boolean
 }) {
-  const { to, projectName: projectNameRaw, clientName: clientNameRaw, severity, description: descriptionRaw, daysOpen, projectUrl } = params
+  const { to, projectName: projectNameRaw, clientName: clientNameRaw, severity, description: descriptionRaw, daysOpen, projectUrl, isBorderline = false } = params
   if (to.length === 0) return
   const projectName = escapeHtml(projectNameRaw)
   const clientName  = escapeHtml(clientNameRaw)
   const description = escapeHtml(descriptionRaw)
+  const severityLabel = isBorderline ? 'borderline' : severity
 
   const html = baseTemplate({
     agencyName: 'ScopeGov',
     headerColour: C.amber,
-    label: 'Scope flag stalled',
-    headline: `Open flag needs attention — ${projectName}`,
+    label: isBorderline ? 'Borderline item stalled' : 'Scope flag stalled',
+    headline: isBorderline
+      ? `Borderline item needs review — ${projectName}`
+      : `Open flag needs attention — ${projectName}`,
     body: `
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
-        A <strong>${severity}</strong>-severity scope flag on <strong>${projectName}</strong>
-        (${clientName}) has been open for ${daysOpen}+ days with no action.
+        A <strong>${severityLabel}</strong>${isBorderline ? '' : '-severity'} scope ${isBorderline ? 'item' : 'flag'} on <strong>${projectName}</strong>
+        (${clientName}) has ${isBorderline ? 'been awaiting review' : 'been open'} for ${daysOpen}+ days with no action.
       </p>
       <div style="background:${C.bg};border:1px solid ${C.border};border-radius:6px;padding:14px 16px;margin:16px 0;">
         <p style="font-size:13px;color:${C.text2};margin:0;line-height:1.6;">${description}</p>
       </div>
       <p style="font-size:13px;color:${C.text2};margin:0;">
-        Resolve it, convert it to a change order, or log an exception from the project's Guardian tab.
+        ${isBorderline
+          ? 'Confirm it as out of scope or dismiss it from the project\'s Guardian tab.'
+          : 'Resolve it, convert it to a change order, or log an exception from the project\'s Guardian tab.'}
       </p>
     `,
-    cta: 'Review flag →',
+    cta: isBorderline ? 'Review item →' : 'Review flag →',
     ctaUrl: projectUrl,
   })
 
   return resendClient().emails.send({
     from:    `ScopeGov <${FROM}>`,
     to,
-    subject: `Scope flag stalled ${daysOpen}+ days — ${projectNameRaw}`,
+    subject: isBorderline
+      ? `Borderline item awaiting review ${daysOpen}+ days — ${projectNameRaw}`
+      : `Scope flag stalled ${daysOpen}+ days — ${projectNameRaw}`,
     html,
   })
 }

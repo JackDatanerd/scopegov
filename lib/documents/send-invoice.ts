@@ -24,6 +24,7 @@ import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { renderInvoicePdf } from '@/lib/pdf/renderer'
 import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
+import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
 
 export type SendInvoiceResult =
   | { ok: true; token: string; portalUrl: string; invoiceNumber: string; projectId: string; projectName: string }
@@ -65,6 +66,12 @@ export async function sendInvoiceDocument(service: any, params: {
   if (!invoice.due_date) return { ok: false, error: 'Add a due date before sending this invoice.', status: 400 }
   if (!invoice.payment_instructions?.trim())
     return { ok: false, error: 'Add payment instructions before sending this invoice.', status: 400 }
+
+  // FIX (deep audit, section 14 — flagship finding): see
+  // lib/utils/client-contacts.ts — the client's designated primary
+  // contact, if any, is now CC'd alongside cc_emails rather than never
+  // being consulted at all.
+  const ccEmails = await withPrimaryContactCc(service, project.client_id, client.email, client.cc_emails)
 
   const jwtSecret = await getWorkspaceJwtSecret(service, workspaceId)
   if (!jwtSecret) return { ok: false, error: 'Workspace signing secret not found', status: 500 }
@@ -177,7 +184,7 @@ export async function sendInvoiceDocument(service: any, params: {
   try {
     await sendInvoiceEmail({
       to:          client.email,
-      cc:          client.cc_emails || [],
+      cc:          ccEmails,
       clientName:  client.name,
       agencyName:  workspace.agency_name,
       projectName: project.name,

@@ -7,6 +7,17 @@
 // named people at the client — "Jane is the primary contact for scope
 // questions, invoices go to Priya in billing" — that this codebase's
 // schema was built to hold on day one but never surfaced.
+//
+// FIX (deep audit, section 14 — flagship finding): for a while this was
+// purely a directory — the contacts recorded here were never actually
+// consulted anywhere a document went out, which is what the comment above
+// was written to eventually solve. lib/utils/client-contacts.ts now CCs
+// whichever contact is marked primary on every invoice/SOW/CO send, so
+// "make primary" is a real routing decision, not just a label. Finer
+// role-based routing (a distinct contact for billing vs. scope questions)
+// is still unbuilt — `role` here is a free-text label with no fixed
+// vocabulary to route against, so it stays a future decision for whoever
+// defines what those roles actually mean.
 
 'use client'
 import { useState } from 'react'
@@ -71,6 +82,12 @@ export default function ClientContactsCard({
       {contacts.length === 0 && !adding && (
         <p style={{ fontSize: 12, color: 'var(--text-4)', fontStyle: 'italic' }}>
           No named contacts yet — the client&rsquo;s own email above is used for documents.
+        </p>
+      )}
+
+      {contacts.length > 0 && (
+        <p style={{ fontSize: 11, color: 'var(--text-4)', marginBottom: 8 }}>
+          The primary contact is CC&rsquo;d on invoices, SOWs, and change orders sent to this client.
         </p>
       )}
 

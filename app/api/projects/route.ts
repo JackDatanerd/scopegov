@@ -70,7 +70,21 @@ export async function POST(request: NextRequest) {
     let resolvedClientId = clientId
 
     // ── Create client if new ──────────────────────────────────
+    // FIX (deep audit, section 14 — flagship finding, traced from clients):
+    // api/clients/route.ts POST and api/clients/[id]/route.ts PATCH both
+    // now require VIEW_CLIENT_DATA in addition to CREATE_PROJECTS before
+    // writing a client's email — this third, independent client-write path
+    // (create-project-with-a-brand-new-client) never got either fix: no
+    // VIEW_CLIENT_DATA gate, and no EMAIL_RE format check before the value
+    // is stored as the address every invoice/SOW/CO for this client
+    // actually gets sent to. Same two checks, same reasoning, applied here.
     if (!resolvedClientId && newClient?.name && newClient?.email) {
+      if (!hasPermission(session, 'VIEW_CLIENT_DATA'))
+        return NextResponse.json({ error: 'Missing permission: VIEW_CLIENT_DATA' }, { status: 403 })
+      const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+      if (!EMAIL_RE.test(newClient.email.trim()))
+        return NextResponse.json({ error: 'Please enter a valid email address for the new client' }, { status: 400 })
+
       // Check for duplicate email in this workspace
       const { data: existing } = await (service as any)
         .from('clients')

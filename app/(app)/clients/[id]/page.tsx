@@ -2,7 +2,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect, notFound } from 'next/navigation'
 import Link from 'next/link'
-import { formatCurrency, formatDate, projectStatusLabel } from '@/lib/utils/format'
+import { formatCurrency, formatCurrencyGroups, formatDate, projectStatusLabel } from '@/lib/utils/format'
 import BillingDetailsCard from '@/components/clients/BillingDetailsCard'
 import ClientContactCard from '@/components/clients/ClientContactCard'
 import ClientContactsCard from '@/components/clients/ClientContactsCard'
@@ -87,10 +87,16 @@ export default async function ClientDetailPage({ params }: Props) {
     ? projectsRaw
     : (projectsRaw || []).map((p: any) => ({ ...p, contract_value: null }))
 
-  const totalValue = canViewFinancials
-    ? (projectsRaw || []).reduce((s: number, p: any) => s + (p.contract_value || 0), 0)
-    : 0
-  const currency   = (projects || [])[0]?.currency || 'USD'
+  // FIX (deep audit, section 14 — flagship finding): this used to reduce()
+  // contract_value across every one of the client's projects regardless
+  // of currency, then label the sum with projects[0]'s currency — the
+  // same bug class already fixed in dashboard/page.tsx and
+  // ProjectsClient.tsx (see currencyGroupedTotals in lib/utils/format.ts)
+  // but never applied to this page. A client with projects in more than
+  // one currency got a single wrongly-labelled combined total. Group by
+  // currency instead of picking one.
+  const totalValueDisplay = canViewFinancials ? formatCurrencyGroups(projectsRaw || []) : ''
+  const hasTotalValue = canViewFinancials && (projectsRaw || []).some((p: any) => (p.contract_value || 0) > 0)
 
   // FEATURE (deep audit, section 14): guardian_flags/change_orders/
   // sow_documents were already being joined into this exact query, but
@@ -156,9 +162,9 @@ export default async function ClientDetailPage({ params }: Props) {
         <div>
           <div className="sec-hd" style={{ marginBottom: 12 }}>
             <div className="sec-title">Projects ({(projects || []).length})</div>
-            {canViewFinancials && totalValue > 0 && (
+            {hasTotalValue && (
               <span style={{ fontSize: 12, color: 'var(--text-2)', fontFamily: 'IBM Plex Mono, monospace' }}>
-                {formatCurrency(totalValue, currency)} total
+                {totalValueDisplay} total
               </span>
             )}
           </div>

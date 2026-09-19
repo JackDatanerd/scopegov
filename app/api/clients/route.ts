@@ -36,6 +36,17 @@ export async function POST(request: NextRequest) {
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     if (!hasPermission(session, 'CREATE_PROJECTS'))
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
+    // FIX (deep audit, section 14 — flagship finding): PATCH /api/clients/
+    // [id] was hardened (audit round 6) to also require VIEW_CLIENT_DATA
+    // before writing email/phone/notes/ccEmails — reasoning being that a
+    // role shouldn't be trusted to set contact data it isn't allowed to
+    // see. This route writes those exact same fields (email is mandatory
+    // on every create) but never got the matching gate — a
+    // CREATE_PROJECTS-only role could set a brand-new client's email,
+    // phone, notes, and cc_emails despite GET already redacting all of
+    // them from that same role's view. Close the same hole here.
+    if (!hasPermission(session, 'VIEW_CLIENT_DATA'))
+      return NextResponse.json({ error: 'Missing permission: VIEW_CLIENT_DATA' }, { status: 403 })
 
     const body    = await request.json()
     const { name, companyName, email, phone, notes, timezone, billingAddress, vatNumber, ccEmails } = body
