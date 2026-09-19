@@ -1,0 +1,59 @@
+scopegov — Section 6 (Team & Invites) independent re-pass — 2 fixes
+=====================================================================
+
+Both findings are from a fresh, independent audit pass over Section 6
+(Team & Invites) that treated every prior "FIX" comment in the codebase
+as if it didn't exist. No migration required — code-only.
+
+MODIFIED FILES (2)
+-------------------
+
+  app/api/team/roles/route.ts
+      GET had no permission check at all — any authenticated member of
+      the workspace (not just MANAGE_ROLES holders) could call it
+      directly and get back the full `permissions` jsonb for every role
+      in the workspace, including Owner/admin roles. This is the exact
+      same "anyone could read the full permission matrix" leak that
+      app/(app)/team/page.tsx's own roles query already redacts against
+      for the page-rendered version of this same data (its own comment:
+      "Only ship the permission maps to someone who can actually act on
+      them") — that fix lived entirely in the page's server-rendered
+      props and never touched this standalone API route, which bypasses
+      it completely when called directly. No current caller in the
+      codebase hits this endpoint (TeamClient only ever POSTs to it),
+      but an unused, reachable, unauthenticated-by-permission leak is
+      still a leak. Fixed by mirroring the page's own redaction shape:
+      MANAGE_ROLES holders get the full row (including permissions),
+      everyone else gets id/name/description/is_default only.
+
+      Also: `description` had no type check or length cap on POST,
+      unlike `name` right above it (60-char cap) and unlike every
+      comparable free-text field elsewhere in the app (workspace/
+      settings' TEXT_FIELD_LIMITS, users.name via migration 042 /
+      sanitizeDisplayName). A non-string value reached the insert
+      untouched and would have surfaced as an opaque 500 instead of a
+      clean 400; an unbounded string persisted with no limit into a
+      field the Team page renders as a single line of small text.
+      Capped at 300 characters, matching a role description's actual
+      use (a short one-line caption, not a document).
+
+  app/api/team/roles/[id]/route.ts
+      Same `description` gap as POST above, on PATCH — no type check,
+      no length cap. Fixed with the same 300-char limit so the two
+      routes can't drift apart again. Also: PATCH wrote `description`
+      raw with no trim (POST already trims), so a value made entirely
+      of whitespace could pass the new length check untrimmed and land
+      in the DB with leading/trailing whitespace intact — now trimmed
+      the same way POST already handles it, including collapsing an
+      all-whitespace description to null the same way POST's
+      `description?.trim() || null` does.
+
+VERIFICATION DONE
+-----------------
+  Brace/paren balance check clean on both files.
+  Isolated tsc --noEmit syntax check clean on both files (only expected
+  module-resolution noise from the missing node_modules/path-alias
+  setup in this sandbox, plus one pre-existing implicit-any on `perm`
+  in roles/[id]/route.ts that predates this change and isn't touched by
+  it). Please run `npm ci && npx tsc --noEmit && npx vitest run` before
+  pushing, same as every prior round.

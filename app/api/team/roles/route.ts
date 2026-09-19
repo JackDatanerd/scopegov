@@ -33,6 +33,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Role name must be under 60 characters' }, { status: 400 })
     if (permissions !== undefined && (permissions === null || typeof permissions !== 'object' || Array.isArray(permissions)))
       return NextResponse.json({ error: 'Invalid permissions payload' }, { status: 400 })
+    // FIX (build, Team & Invites section — validation gap): description had
+    // no type check or length cap at all, unlike `name` right above it (60
+    // chars) and unlike every comparable free-text field elsewhere in the
+    // app (workspace/settings' TEXT_FIELD_LIMITS, users.name via migration
+    // 042 / sanitizeDisplayName). A non-string value (a number, an object)
+    // reached the insert below untouched and surfaced as an opaque 500
+    // instead of a clean 400; an unbounded string persisted with no limit
+    // into a field the Team page renders as a single line of small text.
+    if (description !== undefined && description !== null && typeof description !== 'string')
+      return NextResponse.json({ error: 'Invalid description' }, { status: 400 })
+    if (typeof description === 'string' && description.trim().length > 300)
+      return NextResponse.json({ error: 'Role description must be under 300 characters' }, { status: 400 })
 
     // FIX (audit round 4, finding #1): MANAGE_ROLES let you shape the
     // workspace's role structure — it was never meant to let you mint a
@@ -122,7 +134,26 @@ export async function GET() {
     const { data: roles } = await (service as any)
       .from('roles').select('id,name,description,permissions,is_default')
       .eq('workspace_id', session.workspaceId).order('name')
-    return NextResponse.json({ roles: roles || [] })
+
+    // FIX (build, Team & Invites section — HIGH, info disclosure): this
+    // returned the full permissions jsonb for every role in the workspace
+    // to any authenticated member, with no MANAGE_ROLES check at all — the
+    // exact same "anyone could read the full permission matrix" leak
+    // app/(app)/team/page.tsx's own roles query already redacts against
+    // (see its comment: "Only ship the permission maps to someone who can
+    // actually act on them"). That fix lives entirely in the page's RSC
+    // props; it never touched this standalone API route, which is
+    // reachable directly and bypasses it completely. No caller in this
+    // codebase currently hits this endpoint (TeamClient only ever POSTs to
+    // it), but an unused vulnerable route is still a vulnerable route.
+    // Mirror the page's own redaction shape exactly, so the two can't
+    // silently disagree about what's safe to expose again.
+    const canManageRoles = hasPermission(session, 'MANAGE_ROLES')
+    const safeRoles = (roles || []).map((r: any) => canManageRoles ? r : ({
+      id: r.id, name: r.name, description: r.description, is_default: r.is_default,
+    }))
+
+    return NextResponse.json({ roles: safeRoles })
   } catch {
     return NextResponse.json({ error: 'Error' }, { status: 500 })
   }

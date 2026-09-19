@@ -38,6 +38,16 @@ export async function PATCH(
         return NextResponse.json({ error: 'Role name must be under 60 characters' }, { status: 400 })
       }
     }
+    // FIX (build, Team & Invites section — validation gap): same gap as
+    // POST /api/team/roles — description had no type check or length cap
+    // here either. See that route's own comment for the full reasoning;
+    // kept as the same 300-char limit so the two can't drift apart.
+    if (description !== undefined && description !== null && typeof description !== 'string') {
+      return NextResponse.json({ error: 'Invalid description' }, { status: 400 })
+    }
+    if (typeof description === 'string' && description.trim().length > 300) {
+      return NextResponse.json({ error: 'Role description must be under 300 characters' }, { status: 400 })
+    }
 
     const service = createServiceClient()
 
@@ -166,7 +176,12 @@ export async function PATCH(
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
     if (permissions !== undefined) updates.permissions = permissions
     if (name)        updates.name        = name.trim()
-    if (description !== undefined) updates.description = description
+    // FIX (build, Team & Invites section): wrote `description` raw, with
+    // no trim — inconsistent with POST /api/team/roles, which already
+    // trims (and, same as `name` here, with the untrimmed value counting
+    // against the 300-char cap just added above, so " ".repeat(301) would
+    // pass validation and still land in the DB untrimmed).
+    if (description !== undefined) updates.description = typeof description === 'string' ? description.trim() || null : description
 
     const { error } = await (service as any)
       .from('roles')
