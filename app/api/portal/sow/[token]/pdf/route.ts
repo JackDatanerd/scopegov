@@ -4,7 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { jwtVerify } from 'jose'
 import { renderSowPdf } from '@/lib/pdf/renderer'
-import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
+import { getWorkspaceJwtSecret, isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
 
 const SOW_PDF_COLUMNS = `id, version, document_number, sections, metadata, status, signed_at, signed_by,
   client_signature_data, workspace_id,
@@ -56,6 +56,16 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     if (!sow) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (sow.status !== 'signed')
       return NextResponse.json({ error: 'This SOW has not been signed yet' }, { status: 409 })
+
+    // FIX (portal audit, section 18 re-pass): every other portal route
+    // (GET/route.ts, sign, decline, request-changes) checks isWorkspaceDeleted
+    // right after the document's workspace_id is known — see that function's
+    // own comment in workspace-secret.ts, which already names this route by
+    // name as covered. It never actually landed here: a client could still
+    // download a live PDF of a signed SOW for a workspace the agency has
+    // deleted. Checked before JWT verify, same order the GET route uses.
+    if (await isWorkspaceDeleted(service, sow.workspace_id))
+      return NextResponse.json({ error: 'Link no longer active' }, { status: 410 })
 
     if (!skipJwtVerify) {
       try {

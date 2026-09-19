@@ -36,6 +36,17 @@ export async function getWorkspaceJwtSecret(service: any, workspaceId: string): 
 // route now runs (same choke point as getWorkspaceJwtSecret above, which
 // every one of those routes already imports), right after the document's
 // workspace_id is known and before anything else happens.
+//
+// FIX (portal audit, section 18 re-pass): the claim above — "every portal
+// route now runs this" — was false for exactly the three /pdf routes it
+// names (SOW/CO/invoice). All three read-only document downloads had zero
+// references to this function despite being explicitly listed here as
+// covered; grep-confirmed at the time this note was added. Lower severity
+// than the mutating paths above (no new signed/accepted document gets
+// created), but still live disclosure of a signed SOW, an accepted CO, or
+// an invoice for a workspace the rest of the app treats as gone. All three
+// now call this before generating the PDF, closing the gap this comment
+// already claimed was closed.
 export async function isWorkspaceDeleted(service: any, workspaceId: string): Promise<boolean> {
   const { data } = await service
     .from('workspaces')

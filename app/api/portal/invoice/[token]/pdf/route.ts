@@ -4,7 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { jwtVerify } from 'jose'
 import { renderInvoicePdf } from '@/lib/pdf/renderer'
-import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
+import { getWorkspaceJwtSecret, isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
 
 // GET /api/portal/invoice/[token]/pdf — same document as /api/pdf/invoice/[id],
 // but gated by the client's portal token instead of an internal session, since
@@ -32,6 +32,16 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     if (!invoice) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (invoice.status === 'draft' || invoice.status === 'void')
       return NextResponse.json({ error: 'This invoice is no longer available' }, { status: 409 })
+
+    // FIX (portal audit, section 18 re-pass): every other invoice portal
+    // route (GET/route.ts, dispute) checks isWorkspaceDeleted right after
+    // the document's workspace_id is known — see that function's own
+    // comment in workspace-secret.ts, which already names this route by
+    // name as covered. It never actually landed here: a client could still
+    // download a live invoice PDF for a workspace the agency has deleted.
+    // Checked before JWT verify, same order the GET route uses.
+    if (await isWorkspaceDeleted(service, invoice.workspace_id))
+      return NextResponse.json({ error: 'Link no longer active' }, { status: 410 })
 
     const workspace = invoice.projects?.workspaces
     // jwt_secret lives in workspace_secrets now, not on workspaces itself —

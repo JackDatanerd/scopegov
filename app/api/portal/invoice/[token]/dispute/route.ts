@@ -131,7 +131,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error('Invoice dispute error:', err)
-    console.error('Invoice dispute error:', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

@@ -4,7 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { jwtVerify } from 'jose'
 import { renderCoPdf } from '@/lib/pdf/renderer'
-import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
+import { getWorkspaceJwtSecret, isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
 import { getContractValueBefore } from '@/lib/documents/co-contract-value'
 
 // FIX (doc-completeness audit, finding #9): no portal-scoped PDF route
@@ -57,6 +57,16 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     if (revoked && !readOnlyAllowed) return NextResponse.json({ error: 'Link no longer active' }, { status: 410 })
     if (co.status !== 'accepted')
       return NextResponse.json({ error: 'This change order has not been accepted yet' }, { status: 409 })
+
+    // FIX (portal audit, section 18 re-pass): every other CO portal route
+    // (GET/route.ts, accept, countersign, decline/counter via _actions.ts)
+    // checks isWorkspaceDeleted right after the document's workspace_id is
+    // known — see that function's own comment in workspace-secret.ts, which
+    // already names this route by name as covered. It never actually
+    // landed here: a client could still download a live PDF of an accepted
+    // CO for a workspace the agency has deleted.
+    if (await isWorkspaceDeleted(service, co.workspace_id))
+      return NextResponse.json({ error: 'Link no longer active' }, { status: 410 })
 
     if (!skipJwtVerify) {
       try {
