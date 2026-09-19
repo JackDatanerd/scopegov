@@ -78,7 +78,14 @@ export async function GET() {
 
     return NextResponse.json({ defaults, emailEventTypes: EMAIL_EVENT_TYPES, inAppOnlyEventTypes: IN_APP_ONLY_EVENT_TYPES })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    // FIX (deep audit, Settings re-pass): this returned err.message straight
+    // to the client — the same info-disclosure pattern already fixed for
+    // every other Settings route (workspace/settings, /defaults, /branding,
+    // /branding/logo all log server-side and return a generic message).
+    // This route and its sibling PATCH below were missed. Log server-side
+    // only.
+    console.error('Workspace notification-defaults GET error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
 
@@ -122,7 +129,10 @@ export async function PATCH(request: NextRequest) {
       ? await (service as any).from('workspace_notification_defaults').update(payload).eq('id', existing.id)
       : await (service as any).from('workspace_notification_defaults').insert(payload)
 
-    if (error) throw new Error(error.message)
+    if (error) {
+      console.error('Workspace notification-defaults write failed:', error)
+      return NextResponse.json({ error: 'Could not save this notification default. Try again.' }, { status: 500 })
+    }
 
     // FIX (Reports & Audit re-pass #3): this is a workspace-wide governance
     // setting (an admin can LOCK an event so members cannot opt out of it)
@@ -139,6 +149,9 @@ export async function PATCH(request: NextRequest) {
     })
     return NextResponse.json({ ok: true })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    // FIX (deep audit, Settings re-pass): same info-disclosure pattern as
+    // GET above — log server-side, return a generic message.
+    console.error('Workspace notification-defaults PATCH error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

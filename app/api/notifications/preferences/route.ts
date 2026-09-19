@@ -129,7 +129,14 @@ export async function GET() {
 
     return NextResponse.json({ prefs, locked, inAppOnlyEventTypes: IN_APP_ONLY_EVENT_TYPES })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    // FIX (deep audit, Settings re-pass): this returned err.message straight
+    // to the client — same info-disclosure pattern already fixed for every
+    // other Settings-adjacent route (workspace/settings, /defaults,
+    // /branding, /branding/logo, workspace/notification-defaults). This
+    // route's sibling on the admin side had the identical gap; both are
+    // fixed together. Log server-side only.
+    console.error('Notification preferences GET error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
 
@@ -174,9 +181,15 @@ export async function PATCH(request: NextRequest) {
         { onConflict: 'user_id,workspace_id,event_type' }
       )
 
-    if (error) throw new Error(error.message)
+    if (error) {
+      console.error('Notification preferences write failed:', error)
+      return NextResponse.json({ error: 'Could not save this preference. Try again.' }, { status: 500 })
+    }
     return NextResponse.json({ ok: true })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    // FIX (deep audit, Settings re-pass): same info-disclosure pattern as
+    // GET above.
+    console.error('Notification preferences PATCH error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

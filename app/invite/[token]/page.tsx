@@ -271,6 +271,22 @@ export default function InvitePage() {
   }
 
   if (mode === 'new-user') {
+    // FIX (deep audit, Team & Invites re-pass — feature gap): this screen
+    // used to offer password signup only, with no way in for someone who
+    // wants to use Google — a first-class, explicitly supported signup
+    // method on the main /signup page. A brand-new invitee who preferred
+    // Google had no path here at all short of first tripping the password
+    // form and getting bounced. supabase.auth.signInWithOAuth doesn't
+    // require an existing account — it creates one — so the same
+    // signInWithGoogle/acceptWithCurrentSession pair the existing-user
+    // screen already uses works here unchanged; this screen only needed
+    // the UI for it and the already-signed-in / mismatched-email checks
+    // that go with it.
+    const sameEmailSignedIn = !checkingSession && sessionEmail && invite?.email &&
+      sessionEmail.toLowerCase() === invite.email.toLowerCase()
+    const otherEmailSignedIn = !checkingSession && sessionEmail && invite?.email &&
+      sessionEmail.toLowerCase() !== invite.email.toLowerCase()
+
     return (
       <div className="auth-root"><PanelLeft />
         <div className="auth-form-side">
@@ -282,27 +298,60 @@ export default function InvitePage() {
             <h2 className="auth-form-title">Create your account</h2>
             <p className="auth-form-sub">Invited by {invite?.inviterName} to join {invite?.workspaceName}. Your email is pre-verified.</p>
             {error && <div className="auth-error">{error}</div>}
-            <form onSubmit={handleNewUser}>
-              <div className="fgrp">
-                <label className="flbl">Email</label>
-                <input className="finp" value={invite?.email || ''} disabled />
+
+            {sameEmailSignedIn ? (
+              // Came back from the Google round trip already signed in as
+              // the invited address — nothing left to fill in.
+              <div style={{ marginBottom: 20 }}>
+                <p style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.7, marginBottom: 12 }}>
+                  You&rsquo;re signed in as <strong>{sessionEmail}</strong>.
+                </p>
+                <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', padding: '10px' }}
+                  disabled={loading} onClick={acceptWithCurrentSession}>
+                  {loading ? <span className="spin" /> : 'Accept invitation'}
+                </button>
               </div>
-              <div className="fgrp">
-                <label className="flbl">Your name</label>
-                <input className="finp" value={name} autoFocus placeholder="Jane Mwangi"
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)} required />
-              </div>
-              <div className="fgrp">
-                <label className="flbl">Create password <span className="fhint">— 8 characters minimum</span></label>
-                <input type="password" className="finp" placeholder="Choose a strong password" value={password}
-                  autoComplete="new-password" minLength={8}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)} required />
-              </div>
-              <button type="submit" className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', padding: '10px' }}
-                disabled={loading || !name || !password}>
-                {loading ? <span className="spin" /> : 'Accept invitation'}
-              </button>
-            </form>
+            ) : (
+              <>
+                {otherEmailSignedIn && (
+                  <div className="auth-error" style={{ marginBottom: 16 }}>
+                    You&rsquo;re signed in as {sessionEmail}, but this invite was sent to {invite?.email}.
+                    Continuing with Google below will use whichever Google account you pick.
+                  </div>
+                )}
+                <button type="button" className="btn btn-ghost"
+                  style={{ width: '100%', justifyContent: 'center', padding: '10px', marginBottom: 14 }}
+                  disabled={loading} onClick={signInWithGoogle}>
+                  <i className="ti ti-brand-google" style={{ fontSize: 14 }} /> Continue with Google
+                </button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '0 0 14px' }}>
+                  <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+                  <span style={{ fontSize: 11, color: 'var(--text-3)' }}>or create a password</span>
+                  <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+                </div>
+                <form onSubmit={handleNewUser}>
+                  <div className="fgrp">
+                    <label className="flbl">Email</label>
+                    <input className="finp" value={invite?.email || ''} disabled />
+                  </div>
+                  <div className="fgrp">
+                    <label className="flbl">Your name</label>
+                    <input className="finp" value={name} autoFocus placeholder="Jane Mwangi"
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)} required />
+                  </div>
+                  <div className="fgrp">
+                    <label className="flbl">Create password <span className="fhint">— 8 characters minimum</span></label>
+                    <input type="password" className="finp" placeholder="Choose a strong password" value={password}
+                      autoComplete="new-password" minLength={8}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)} required />
+                  </div>
+                  <button type="submit" className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', padding: '10px' }}
+                    disabled={loading || !name || !password}>
+                    {loading ? <span className="spin" /> : 'Accept invitation'}
+                  </button>
+                </form>
+              </>
+            )}
           </div>
         </div>
       </div>

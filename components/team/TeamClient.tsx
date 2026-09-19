@@ -758,7 +758,22 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
       )}
 
       {/* Change a member's role — see handleSaveMemberRole above for why
-          this had to be built. */}
+          this had to be built.
+          FIX (deep audit, Team & Invites section — mislabeled option):
+          this used to offer "No role (default permissions only)" — but
+          compute_effective_permissions() (migration 001) and
+          update_member_permissions_atomic (migration 055) both resolve a
+          null role_id to an EMPTY permission set, not the workspace's
+          default role. That fallback ("no role selected → default role")
+          only actually happens at invite acceptance
+          (accept/signup/route.ts's `member.role_id || defaultRole?.id`),
+          which this PATCH path doesn't go through at all. An admin
+          picking this option believing it resets someone to baseline
+          access would instead silently strip them to whatever their
+          permission_overrides alone provide — nothing, for most members.
+          Corrected the label to say what actually happens, and added an
+          explicit warning when picking it would leave the person with no
+          effective permissions at all. */}
       {roleEditMember && (
         <>
           <div className="modal-bg" onClick={() => setRoleEditMember(null)} />
@@ -773,13 +788,20 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
               <label className="flbl">Role</label>
               <select className="finp" value={roleEditRoleId}
                 onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setRoleEditRoleId(e.target.value)}>
-                <option value="">No role (default permissions only)</option>
-                {roles.map((r: any) => <option key={r.id} value={r.id}>{r.name}</option>)}
+                <option value="">No role — removes all role-based permissions</option>
+                {roles.map((r: any) => <option key={r.id} value={r.id}>{r.name}{r.is_default ? ' (default)' : ''}</option>)}
               </select>
               <span className="fhint">
                 You can only assign a role whose permissions you hold yourself. Changing this takes effect
                 immediately for that person.
               </span>
+              {roleEditRoleId === '' && !Object.values(roleEditMember.permission_overrides || {}).some(v => v === true) && (
+                <p className="ferr" style={{ marginTop: 8 }}>
+                  This person has no individual permission overrides, so removing their role will leave them
+                  with no permissions at all — not the workspace&rsquo;s default role. If you want to reset them
+                  to a baseline, assign the actual default role above instead.
+                </p>
+              )}
             </div>
             <div className="modal-footer">
               <button className="btn btn-ghost" onClick={() => setRoleEditMember(null)}>Cancel</button>

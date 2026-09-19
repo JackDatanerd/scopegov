@@ -142,7 +142,33 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       })
       .eq('id', member.id)
 
-    if (activateErr) throw new Error(`Membership activation failed: ${activateErr.message}`)
+    if (activateErr) {
+      // FIX (deep audit, Team & Invites re-pass — partial-failure gap):
+      // by this point a real Supabase Auth user already exists with a
+      // password set (adminClient.auth.admin.createUser above), and the
+      // users upsert has already pointed active_workspace_id at this
+      // workspace — but the workspace_members row that would actually
+      // make them a member never flipped to 'active'. Left alone, that's
+      // a real, password-protected account that can sign in but belongs
+      // to no workspace, with the public.users row still describing them
+      // as belonging to one they can't act in. A retry of signup would
+      // also permanently fail from here on ("already exists"), routing
+      // them to a sign-in screen for an account that can never accept
+      // this invite. Best-effort roll back both writes so the person is
+      // back to a clean, retryable state instead of stuck in limbo.
+      console.error('Membership activation failed, rolling back auth user:', activateErr)
+      try {
+        await (service as any).from('users').delete().eq('id', userId)
+      } catch (cleanupErr) {
+        console.error('Users-row rollback failed (non-fatal):', cleanupErr)
+      }
+      try {
+        await adminClient.auth.admin.deleteUser(userId)
+      } catch (cleanupErr) {
+        console.error('Auth-user rollback failed (non-fatal):', cleanupErr)
+      }
+      return NextResponse.json({ error: 'Could not complete signup. Please try again.' }, { status: 500 })
+    }
 
     // FIX (deep audit, Team & Invites re-pass): accept/route.ts (an
     // already-registered user accepting an invite) logs 'member.joined' —
