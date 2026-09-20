@@ -37,6 +37,9 @@ interface Props {
   // field was permanently unreachable. This is the write side: an
   // optional free-text field, autosaved the same way section content is.
   msaReference?: string | null
+  // Lets the parent page force every pending edit to be written (and confirm it was) before it
+  // acts on the document — Send used to fire with up to 1.5s of typing still unsaved.
+  registerFlush?: (flush: () => Promise<boolean>) => void
 }
 
 // FIX (section-9 audit, 9-G10): 'governing_law' and 'oos' added. Generate
@@ -59,7 +62,7 @@ const REQUIRED_SECTIONS = ['parties', 'deliverables', 'oos', 'payment', 'governi
 // it from the single source of truth so the two can't drift again.
 const SECTION_ORDER = [...SOW_SECTION_DEFS].sort((a, b) => a.order - b.order).map(d => d.id)
 
-export default function SowEditor({ sowId, sections: initialSections, isLocked, canSend, canEdit, contractValue, currency, language, changeRequest, msaReference }: Props) {
+export default function SowEditor({ sowId, sections: initialSections, isLocked, canSend, canEdit, contractValue, currency, language, changeRequest, msaReference, registerFlush }: Props) {
   const [sections,      setSections]      = useState<Section[]>(
     [...initialSections].sort((a, b) => a.order - b.order)
   )
@@ -79,6 +82,17 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
   // Keyed per-section so switching sections can no longer cancel another
   // section's in-flight save.
   const saveTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+  type SavePayload = { content: string } | { table: SowTableRow[] }
+  // Edits waiting on the debounce, edits whose last save FAILED (kept so they can be retried
+  // rather than forgotten), and a single chain so saves from this tab run strictly in order.
+  const pendingSaves = useRef<Map<string, SavePayload>>(new Map())
+  const failedSaves  = useRef<Map<string, SavePayload>>(new Map())
+  const saveChain    = useRef<Promise<unknown>>(Promise.resolve())
+  const inFlight     = useRef(0)
+  const [saveError,   setSaveError]   = useState('')
+  const [regenError,  setRegenError]  = useState('')
+  const [regenNotice, setRegenNotice] = useState('')
+  const [regenUndo,   setRegenUndo]   = useState<{ sectionId: string; content: string } | null>(null)
 
   const current = sections.find(s => s.id === activeSection) || sections[0]
 
@@ -104,31 +118,79 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
     editor?.commands.setContent(target.content || '')
   }, [sections, editor])
 
-  function scheduleAutosave(sectionId: string, payload: { content: string } | { table: SowTableRow[] }) {
-    const existing = saveTimers.current.get(sectionId)
-    if (existing) clearTimeout(existing)
-    setSaveStatus('saving')
-    const timer = setTimeout(async () => {
-      saveTimers.current.delete(sectionId)
+  const refreshSaveStatus = useCallback(() => {
+    if (saveTimers.current.size > 0 || inFlight.current > 0) { setSaveStatus('saving'); return }
+    // One "Saved" used to overwrite an earlier failure for a different section, hiding lost edits.
+    if (failedSaves.current.size > 0) { setSaveStatus('error'); return }
+    setSaveError('')
+    setSaveStatus('saved')
+    setTimeout(() => {
+      if (saveTimers.current.size === 0 && failedSaves.current.size === 0 && inFlight.current === 0) setSaveStatus('idle')
+    }, 2000)
+  }, [])
+
+  const persist = useCallback((sectionId: string, payload: SavePayload): Promise<boolean> => {
+    const run = async (): Promise<boolean> => {
+      inFlight.current++
       try {
         const res = await fetch(`/api/sow/${sowId}`, {
           method:  'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body:    JSON.stringify({ sectionId, ...payload }),
         })
-        setSaveStatus(res.ok ? 'saved' : 'error')
-        if (res.ok && saveTimers.current.size === 0) setTimeout(() => setSaveStatus('idle'), 2000)
+        if (res.ok) { failedSaves.current.delete(sectionId); return true }
+        const json = await res.json().catch(() => ({} as any))
+        failedSaves.current.set(sectionId, payload)
+        setSaveError(json?.error || 'Save failed')
+        return false
       } catch {
-        setSaveStatus('error')
+        failedSaves.current.set(sectionId, payload)
+        setSaveError('Network error — your changes are not saved yet')
+        return false
+      } finally {
+        inFlight.current--
+        refreshSaveStatus()
       }
+    }
+    const next = saveChain.current.then(run, run)
+    saveChain.current = next
+    return next as Promise<boolean>
+  }, [sowId, refreshSaveStatus])
+
+  function scheduleAutosave(sectionId: string, payload: SavePayload) {
+    const existing = saveTimers.current.get(sectionId)
+    if (existing) clearTimeout(existing)
+    pendingSaves.current.set(sectionId, payload)
+    failedSaves.current.delete(sectionId) // superseded by this newer edit
+    setSaveStatus('saving')
+    const timer = setTimeout(() => {
+      saveTimers.current.delete(sectionId)
+      const latest = pendingSaves.current.get(sectionId)
+      pendingSaves.current.delete(sectionId)
+      if (latest) void persist(sectionId, latest)
     }, 1500)
     saveTimers.current.set(sectionId, timer)
   }
 
-  // FIX (section-9 audit, 9-G4 — feature gap): same debounced-save shape
-  // as scheduleAutosave above, but this is a single document-level field
-  // (not per-section content), so it gets its own timer rather than
-  // sharing the Map keyed by section id.
+  // Writes everything outstanding NOW (pending edits and previously-failed ones) and reports
+  // whether every section is safely stored.
+  const flush = useCallback(async (): Promise<boolean> => {
+    saveTimers.current.forEach(t => clearTimeout(t))
+    saveTimers.current.clear()
+    const todo = new Map<string, SavePayload>()
+    failedSaves.current.forEach((payload, id) => todo.set(id, payload))
+    pendingSaves.current.forEach((payload, id) => todo.set(id, payload)) // newer edit wins over a failed older one
+    pendingSaves.current.clear()
+    const entries: Array<[string, SavePayload]> = []
+    todo.forEach((payload, id) => entries.push([id, payload]))
+    let ok = true
+    for (const [id, payload] of entries) { if (!(await persist(id, payload))) ok = false }
+    await saveChain.current
+    return ok && failedSaves.current.size === 0
+  }, [persist])
+
+  useEffect(() => { registerFlush?.(flush) }, [registerFlush, flush])
+
   function scheduleMsaAutosave(value: string) {
     if (msaSaveTimer.current) clearTimeout(msaSaveTimer.current)
     setMsaSaveStatus('saving')
@@ -158,7 +220,7 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
   // edit with zero indication anything went wrong.
   useEffect(() => {
     function handleBeforeUnload(e: BeforeUnloadEvent) {
-      if (saveTimers.current.size > 0 || msaSaveTimer.current) {
+      if (saveTimers.current.size > 0 || failedSaves.current.size > 0 || inFlight.current > 0 || msaSaveTimer.current) {
         e.preventDefault()
         e.returnValue = ''
       }
@@ -173,36 +235,46 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
   }
 
   async function handleRegen(sectionId: string) {
-    setRegenLoading(sectionId)
+    setRegenLoading(sectionId); setRegenError(''); setRegenNotice('')
     try {
       const sec = sections.find(s => s.id === sectionId)
+      const before = sec?.content || ''
       const res = await fetch('/api/sow/regenerate-section', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({
           sowId, sectionId,
-          sectionTitle:   sec?.title,
-          currentContent: sec?.content || '',
+          currentContent: before,
           instruction:    regenInstruction.trim() || null,
         }),
       })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error)
+      const json = await res.json().catch(() => ({} as any))
+      if (!res.ok) throw new Error(json.error || 'The AI rewrite failed. Please try again.')
+      if (json.truncated) {
+        // The model's answer was cut off or ran past the length limit. The server kept the current
+        // text; do not overwrite anything.
+        setRegenNotice('The AI reply was too long or was cut off, so this section was left unchanged. Try a narrower instruction.')
+        return
+      }
       setSections(prev => prev.map(s => s.id === sectionId ? { ...s, content: json.content } : s))
       if (sectionId === activeSection) editor?.commands.setContent(json.content)
       scheduleAutosave(sectionId, { content: json.content })
+      setRegenUndo({ sectionId, content: before })
       setShowRegen(null); setRegenInstruction('')
     } catch (err) {
-      console.error('Regen failed:', err)
+      setRegenError(err instanceof Error ? err.message : 'The AI rewrite failed. Please try again.')
     } finally { setRegenLoading(null) }
   }
 
-  // FIX (section-9 audit, 9-B10): this was fire-and-forget — the local
-  // state flipped and the response was never inspected. A 403 (no
-  // EDIT_SOW), a 409 (pending approval) or the new required-section 400
-  // all left the editor showing a section as hidden while it was still
-  // visible in the document the client signs. Roll the optimistic flip
-  // back and surface the failure through the existing save indicator.
+  function undoRegen() {
+    if (!regenUndo) return
+    const { sectionId, content } = regenUndo
+    setSections(prev => prev.map(s => s.id === sectionId ? { ...s, content } : s))
+    if (sectionId === activeSection) editor?.commands.setContent(content)
+    scheduleAutosave(sectionId, { content })
+    setRegenUndo(null)
+  }
+
   async function toggleVisibility(sectionId: string) {
     if (REQUIRED_SECTIONS.includes(sectionId)) return
     const previous = sections
@@ -253,7 +325,12 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
         <span className={`save-status ${saveStatus}`}>
           {saveStatus === 'saving' && <><span className="spin spin-dark" style={{ width: 10, height: 10 }} /> Saving</>}
           {saveStatus === 'saved'  && <><i className="ti ti-check" style={{ fontSize: 11, color: 'var(--green)' }} /> Saved</>}
-          {saveStatus === 'error'  && <><i className="ti ti-alert-circle" style={{ fontSize: 11 }} /> Save failed</>}
+          {saveStatus === 'error'  && (
+            <span title={saveError}>
+              <i className="ti ti-alert-circle" style={{ fontSize: 11 }} /> Save failed{saveError ? ` — ${saveError}` : ''}{' '}
+              <button type="button" className="btn btn-ghost btn-xs" onClick={() => { void flush() }}>Retry</button>
+            </span>
+          )}
         </span>
         {!isLocked && canEdit && current && !REQUIRED_SECTIONS.includes(current.id) && (
           <button type="button" className="btn btn-ghost btn-xs"
@@ -394,6 +471,17 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
               onClick={() => { setShowRegen(null); setRegenInstruction('') }}>
               Cancel
             </button>
+          </div>
+        )}
+
+        {(regenError || regenNotice || (regenUndo && regenUndo.sectionId === current?.id)) && (
+          <div style={{ padding: '8px 16px', borderBottom: '1px solid var(--border)', fontSize: 12, display: 'flex', gap: 10, alignItems: 'center',
+            background: regenError ? 'var(--red-lt, #FEF2F2)' : 'var(--surface-2)', color: regenError ? 'var(--red)' : 'var(--text-2)' }}>
+            <span style={{ flex: 1 }}>{regenError || regenNotice || 'Section rewritten with AI.'}</span>
+            {!regenError && !regenNotice && regenUndo && regenUndo.sectionId === current?.id && (
+              <button type="button" className="btn btn-ghost btn-xs" onClick={undoRegen}>Undo AI change</button>
+            )}
+            <button type="button" className="btn btn-ghost btn-xs" onClick={() => { setRegenError(''); setRegenNotice(''); setRegenUndo(null) }}>Dismiss</button>
           </div>
         )}
 

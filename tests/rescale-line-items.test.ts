@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { rescaleLineItemsToTotal, type RescaleLineItem } from '@/lib/utils/rescale-line-items'
+import { isAdjustmentLine, rescaleLineItemsToTotal, type RescaleLineItem } from '@/lib/utils/rescale-line-items'
 
 const items = (): RescaleLineItem[] => [
   { id: '1', description: 'Design', quantity: 10, rate: 100, total: 1000 },
@@ -50,9 +50,27 @@ describe('rescaleLineItemsToTotal', () => {
     expect(sum).toBeCloseTo(result.subtotal, 2)
   })
 
-  it('treats a tax-inclusive total as the subtotal directly', () => {
+  it('back-solves a NET subtotal from a tax-inclusive negotiated total (never stores the gross as the subtotal)', () => {
+    // 2200 gross at 10% inclusive tax → net subtotal 2000, so the PDF reads Subtotal 2000 / Tax 200 / Total 2200.
     const result = rescaleLineItemsToTotal(items(), 2200, 10, true)
-    expect(result.subtotal).toBe(2200)
+    expect(result.subtotal).toBeCloseTo(2000, 2)
+    expect(result.total).toBe(2200)
+  })
+
+  it('a tax-inclusive counter never reports subtotal equal to total when tax applies', () => {
+    const result = rescaleLineItemsToTotal(
+      [{ id: '1', description: 'Build', quantity: 1, rate: 11600, total: 11600 }], 10000, 16, true)
+    expect(result.subtotal).toBeCloseTo(8620.69, 2)
+    expect(result.total).toBe(10000)
+  })
+
+  it('flags system-written lines as adjustments so they can be negative and are never treated as deliverables', () => {
+    const result = rescaleLineItemsToTotal(items(), 2000, 0, false)
+    const adj = result.lineItems.find(li => li.total < 0)!
+    expect(adj.kind).toBe('adjustment')
+    expect(isAdjustmentLine(adj)).toBe(true)
+    expect(isAdjustmentLine({ description: 'Negotiated discount (per counter-offer)' })).toBe(true) // rows written before the flag existed
+    expect(isAdjustmentLine({ description: 'Extra design revisions' })).toBe(false)
   })
 
   it('falls back to one synthetic line item when the original subtotal is zero', () => {

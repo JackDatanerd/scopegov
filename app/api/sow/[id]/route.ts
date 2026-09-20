@@ -1,13 +1,14 @@
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
-import { sanitizeRichText, sanitizePlainText } from '@/lib/utils/sanitize'
+import { sanitizeRichText, cleanTextField } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
 // NOTE: helpers live in lib/sow/sections.ts, not here — a Next.js route
 // module may only export route handlers, so exporting them from this file
 // failed the production build ("hydrateSections is not a valid Route
 // export field") even though `tsc --noEmit` was perfectly happy.
-import { REQUIRED_SECTION_IDS, hydrateSections, sanitizeSectionList, sanitizeTableRows, MAX_SECTION_CONTENT_LENGTH, MAX_TABLE_CELL_LENGTH } from '@/lib/sow/sections'
+import { REQUIRED_SECTION_IDS, hydrateSections, sanitizeSectionList, sanitizeTableRows, MAX_SECTION_CONTENT_LENGTH, MAX_TABLE_CELL_LENGTH, MAX_TABLE_ROWS } from '@/lib/sow/sections'
+import { isTableSection } from '@/lib/sow/table-schema'
 import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -62,119 +63,112 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       )
     }
 
-    const body = await request.json()
+    const body = await request.json().catch(() => null)
+    if (!body || typeof body !== 'object')
+      return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
 
-    // FIX (section-9 audit, 9-G4 — feature gap): metadata.msaReference has
-    // been declared, read, and rendered on the PDF masthead across three
-    // call sites (this route's own GET/PDF sibling, api/pdf/sow/[id],
-    // api/portal/sow/[token]/pdf, .../sign) since a prior pass — but that
-    // pass only wired the READ side. Nothing anywhere ever wrote it: no
-    // field in SowEditor, no API branch here accepted it. A fully
-    // unreachable feature. This is the write side, handled as its own
-    // independent update (no section content involved) — sanitized as
-    // plain text (it's rendered as a bare masthead line, not rich text)
-    // and length-capped the same way other free-text SOW fields are.
-    if (body.msaReference !== undefined) {
-      const safeMsaReference = sanitizePlainText(body.msaReference).slice(0, 200) || null
-      const { error: metaErr } = await (service as any)
+    const LOCKED_MSG = 'This SOW has already been sent and can no longer be edited.'
+
+    // Every write below is guarded on "still an unsent draft". The checks above are only
+    // a fast path: without the guard on the write itself, a send that landed between the
+    // read and the update let edits slip into a document already in front of the client.
+    const guardedUpdate = async (patch: Record<string, unknown>) => {
+      const { data: written, error } = await (service as any)
         .from('sow_documents')
-        .update({
-          metadata:   { ...(sow.metadata || {}), msaReference: safeMsaReference },
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', id)
-      if (metaErr) throw new Error(metaErr.message)
+        .update({ ...patch, updated_at: new Date().toISOString() })
+        .eq('id', id).eq('status', 'draft').is('sent_at', null)
+        .select('id')
+      if (error) throw new Error(error.message)
+      return Array.isArray(written) && written.length > 0
+    }
+
+    // The MSA reference is plain text rendered on the PDF masthead — independent of sections.
+    if (body.msaReference !== undefined) {
+      const cleaned = cleanTextField(body.msaReference, 200)
+      if (cleaned === null)
+        return NextResponse.json({ error: 'msaReference must be text' }, { status: 400 })
+      const ok = await guardedUpdate({ metadata: { ...(sow.metadata || {}), msaReference: cleaned || null } })
+      if (!ok) return NextResponse.json({ error: LOCKED_MSG }, { status: 409 })
       return NextResponse.json({ ok: true })
     }
 
-    // FIX (audit round 1, item #2): section content is rendered raw via
-    // dangerouslySetInnerHTML on the public, unauthenticated portal page —
-    // sanitize here (not just trust the TipTap editor's own constraints,
-    // which this API route bypasses entirely) so stored XSS can't reach
-    // storage in the first place. See lib/utils/sanitize.ts.
-    // Hydrate first (9-G9) so a per-section PATCH against a section this
-    // SOW predates actually lands instead of silently no-op'ing through
-    // the .map() calls below.
-    let newSections = hydrateSections(sow.sections || [], sow.metadata)
-    if (body.sections) {
-      // FIX (section-9 audit, 9-B13): this used to spread `...s` wholesale
-      // from the request body. Only `content` was sanitized — `id`,
-      // `title`, `order` and `visible` were taken verbatim, so a caller
-      // could rename "Governing Law" to anything, reorder the document,
-      // inject sections that don't exist in SOW_SECTION_DEFS, or drop the
-      // mandatory ones entirely. Send's only structural check is "at
-      // least one visible section with content", so a SOW with no
-      // Signatures and no Governing Law section would sail straight
-      // through to a client for signature.
-      //
-      // The section list is server-owned (that's the whole design of
-      // lib/ai/sow-content.ts — "The server owns the section structure
-      // and JSON shape completely"). Enforce it here too: keep the
-      // canonical id/title/order, take only content/visible/table from
-      // the client, and ignore unknown ids.
-      newSections = sanitizeSectionList(body.sections, sow.sections || [], sow.metadata)
-    } else if (body.sectionId && body.table !== undefined) {
-      // FIX (section-9 audit, no-length-cap finding): reject rather than
-      // silently truncate here — this is the live autosave path
-      // (components/sow/SowEditor.tsx), so the user should see an error
-      // for something that big rather than have it quietly cut short
-      // with no indication anything was lost. See lib/sow/sections.ts.
-      if (Array.isArray(body.table) && body.table.some((row: any) =>
-        row && Object.values(row).some((v: any) => typeof v === 'string' && v.length > MAX_TABLE_CELL_LENGTH)
-      )) {
+    // Section content is rendered raw via dangerouslySetInnerHTML on the public portal
+    // page — sanitize here (this route bypasses the TipTap editor's own constraints).
+    const hydrated = hydrateSections(sow.sections || [], sow.metadata)
+
+    // Whole-list replace (kept for API callers): server owns id/title/order, the client
+    // only supplies content / visible / table.
+    if (body.sections !== undefined) {
+      if (!Array.isArray(body.sections))
+        return NextResponse.json({ error: 'sections must be a list' }, { status: 400 })
+      const ok = await guardedUpdate({ sections: sanitizeSectionList(body.sections, sow.sections || [], sow.metadata) })
+      if (!ok) return NextResponse.json({ error: LOCKED_MSG }, { status: 409 })
+      return NextResponse.json({ ok: true })
+    }
+
+    // Everything else edits exactly ONE section.
+    if (typeof body.sectionId !== 'string')
+      return NextResponse.json({ error: 'Nothing to update' }, { status: 400 })
+    const target = hydrated.find((s: any) => s.id === body.sectionId)
+    if (!target)
+      return NextResponse.json({ error: 'Unknown section' }, { status: 400 })
+
+    let patch: Record<string, unknown>
+    if (body.table !== undefined) {
+      if (!isTableSection(body.sectionId))
+        return NextResponse.json({ error: 'This section does not have a table.' }, { status: 400 })
+      if (!Array.isArray(body.table))
+        return NextResponse.json({ error: 'table must be a list of rows' }, { status: 400 })
+      if (body.table.length > MAX_TABLE_ROWS)
+        return NextResponse.json({ error: `A table can have at most ${MAX_TABLE_ROWS} rows.` }, { status: 400 })
+      // Reject rather than silently truncate: this is the live autosave path, so the user
+      // should see an error for something that big instead of losing the tail.
+      if (body.table.some((row: any) =>
+        row && Object.values(row).some((v: any) => typeof v === 'string' && v.length > MAX_TABLE_CELL_LENGTH)))
         return NextResponse.json(
           { error: `A table cell is too long (max ${MAX_TABLE_CELL_LENGTH.toLocaleString()} characters).` },
-          { status: 400 }
-        )
-      }
-      const safeTable = sanitizeTableRows(body.sectionId, body.table)
-      newSections = newSections.map((s: any) =>
-        s.id === body.sectionId ? { ...s, table: safeTable } : s
-      )
-    } else if (body.sectionId && body.content !== undefined) {
-      // FIX (section-9 audit, no-length-cap finding): same reasoning as
-      // the table branch above.
-      if (typeof body.content === 'string' && body.content.length > MAX_SECTION_CONTENT_LENGTH) {
+          { status: 400 })
+      patch = { table: sanitizeTableRows(body.sectionId, body.table) }
+    } else if (body.content !== undefined) {
+      if (typeof body.content !== 'string')
+        return NextResponse.json({ error: 'content must be text' }, { status: 400 })
+      if (isTableSection(body.sectionId))
+        return NextResponse.json({ error: 'This section is a table — edit its rows instead.' }, { status: 400 })
+      if (body.content.length > MAX_SECTION_CONTENT_LENGTH)
         return NextResponse.json(
           { error: `Section content is too long (max ${MAX_SECTION_CONTENT_LENGTH.toLocaleString()} characters).` },
-          { status: 400 }
-        )
-      }
-      const safeContent = sanitizeRichText(body.content)
-      newSections = newSections.map((s: any) =>
-        s.id === body.sectionId ? { ...s, content: safeContent } : s
-      )
-    } else if (body.sectionId && body.visible !== undefined) {
-      // FIX (section-9 audit, 9-G10 + 9-B10): the server never enforced
-      // REQUIRED_SECTIONS at all — that list only existed in the editor
-      // component, so a direct PATCH could hide Signatures or Governing
-      // Law. Refuse explicitly rather than silently ignoring it, so the
-      // client gets a real error to surface instead of a false "Saved".
-      if (REQUIRED_SECTION_IDS.includes(body.sectionId))
-        return NextResponse.json(
-          { error: 'This section is required and can\'t be hidden.' },
-          { status: 400 }
-        )
-      newSections = newSections.map((s: any) =>
-        s.id === body.sectionId ? { ...s, visible: body.visible } : s
-      )
+          { status: 400 })
+      patch = { content: sanitizeRichText(body.content) }
+    } else if (body.visible !== undefined) {
+      if (typeof body.visible !== 'boolean')
+        return NextResponse.json({ error: 'visible must be true or false' }, { status: 400 })
+      if (REQUIRED_SECTION_IDS.includes(body.sectionId) && body.visible === false)
+        return NextResponse.json({ error: 'This section is required and can\'t be hidden.' }, { status: 400 })
+      patch = { visible: body.visible }
     } else {
-      // FIX (section-9 audit, 9-B10 follow-on): an unrecognized body shape
-      // used to fall through to the update below and return { ok: true },
-      // so a malformed save reported success having changed nothing.
       return NextResponse.json({ error: 'Nothing to update' }, { status: 400 })
     }
 
-    const { error } = await (service as any)
-      .from('sow_documents')
-      .update({ sections: newSections, updated_at: new Date().toISOString() })
-      .eq('id', id)
-
-    if (error) throw new Error(error.message)
-
+    // Atomic single-section merge (migration 057). Falls back to a guarded whole-array
+    // write only if the function isn't installed yet or the section predates the stored
+    // array (hydrated in memory above).
+    const storedHasSection = Array.isArray(sow.sections) && sow.sections.some((s: any) => s?.id === body.sectionId)
+    if (storedHasSection) {
+      const { data: applied, error: rpcErr } = await (service as any)
+        .rpc('sow_apply_section_patch', { p_sow_id: id, p_section_id: body.sectionId, p_patch: patch })
+      if (!rpcErr) {
+        if (!applied) return NextResponse.json({ error: LOCKED_MSG }, { status: 409 })
+        return NextResponse.json({ ok: true })
+      }
+      console.error('sow_apply_section_patch unavailable, falling back to guarded array write:', rpcErr.message)
+    }
+    const merged = hydrated.map((s: any) => (s.id === body.sectionId ? { ...s, ...patch } : s))
+    const ok = await guardedUpdate({ sections: merged })
+    if (!ok) return NextResponse.json({ error: LOCKED_MSG }, { status: 409 })
     return NextResponse.json({ ok: true })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('SOW PATCH error:', err)
+    return NextResponse.json({ error: 'Could not save this section. Please try again.' }, { status: 500 })
   }
 }
 
@@ -222,8 +216,11 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         sections: hydrateSections(sow.sections || [], sow.metadata),
         // Flattened for the editor — it needs these to show the Payment
         // Schedule running total (9-G6).
-        contractValue: sow.projects?.contract_value ?? null,
+        contractValue: hasPermission(session, 'VIEW_FINANCIALS') ? (sow.projects?.contract_value ?? null) : null,
         currency:      sow.projects?.currency ?? null,
+        // The nested join is only for the flattened fields above — never ship the raw
+        // contract value to a member who can't view financials.
+        projects:      undefined,
       },
       permissions: {
         canEdit: hasPermission(session, 'EDIT_SOW'),

@@ -5,7 +5,9 @@ import { useRouter } from 'next/navigation'
 import { formatCurrency } from '@/lib/utils/format'
 import { nanoid } from 'nanoid'
 
-interface LineItem { id: string; description: string; quantity: number; rate: number; total: number }
+// `kind: 'adjustment'` marks a system-written negotiation line ("Negotiated discount…") from an accepted
+// counter-offer: it may be negative, and its quantity is fixed at 1.
+interface LineItem { id: string; description: string; quantity: number; rate: number; total: number; kind?: 'adjustment' }
 
 interface Props {
   projId: string
@@ -27,6 +29,10 @@ export default function CoEditor({ projId, coId }: Props) {
   const [taxInclusive, setTaxInclusive] = useState(false)
   const [currency,     setCurrency]     = useState('USD')
   const [status,       setStatus]       = useState('draft')
+  // Set when this draft is sitting in an approval chain: it is still status 'draft' in the database, but
+  // the server refuses edits and a second send until the request is decided or cancelled.
+  const [pendingApproval, setPendingApproval] = useState(false)
+  const [saveError,   setSaveError]    = useState('')
   const [isRetainerRenewal, setIsRetainerRenewal] = useState(false)
   // FIX (doc-quality audit round 3, migration 018): optional Impact
   // Analysis fields — timelineImpactDays as a signed string so the input
@@ -90,6 +96,7 @@ export default function CoEditor({ projId, coId }: Props) {
           setTaxInclusive(co.tax_inclusive || false)
           setCurrency(co.currency || 'USD')
           setStatus(co.status || 'draft')
+          setPendingApproval(!!json.pendingApproval)
           setIsRetainerRenewal(co.is_retainer_renewal || false)
           setTimelineImpactDays(co.timeline_impact_days != null ? String(co.timeline_impact_days) : '')
           setScopeImpactNote(co.scope_impact_note || '')
@@ -138,7 +145,15 @@ export default function CoEditor({ projId, coId }: Props) {
 
   // Autosave triggered by field changes when editing an existing draft
   useEffect(() => {
-    if (!savedCoId.current || status !== 'draft') return
+    if (pendingApproval) return
+    // A brand-new CO has no server copy (and no autosave) until "Save draft"/"Send" — but leaving the
+    // tab used to discard everything typed with no warning, because pendingSave was only ever set on the
+    // autosave path below.
+    if (!savedCoId.current) {
+      pendingSave.current = !!(title.trim() || note.trim() || lineItems.some(l => l.description.trim() || l.rate))
+      return
+    }
+    if (status !== 'draft') return
     if (saveTimer.current) clearTimeout(saveTimer.current)
     pendingSave.current = true
     setSaveStatus('saving')
@@ -194,6 +209,7 @@ export default function CoEditor({ projId, coId }: Props) {
         const json = await res.json()
         if (!res.ok) throw new Error(json.error)
         savedCoId.current = json.coId
+        pendingSave.current = false
         if (navigate) router.replace(`/projects/${projId}/co/${json.coId}`)
         return json.coId
       }
@@ -219,18 +235,24 @@ export default function CoEditor({ projId, coId }: Props) {
       const id = await doSave(false, false)
       if (!id) throw new Error('Failed to save CO before sending')
       const res  = await fetch(`/api/co/${id}/send`, { method: 'POST' })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error)
+      const json = await res.json().catch(() => ({} as any))
+      if (!res.ok) throw new Error(json.error || 'Send failed')
+      if (json.pendingApproval) alert(json.message || 'Sent for approval — this change order will go to the client once it is signed off.')
+      else if (json.emailSent === false)
+        alert(`The change order is marked as sent, but the email to the client could not be delivered (${json.emailError || 'provider error'}).\n\nOpen the project's Change orders tab and use "Copy link" to send it to them yourself.`)
       router.push(`/projects/${projId}?tab=co`)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Send failed')
     } finally { setSending(false) }
   }
 
-  const isLocked = status !== 'draft'
+  const isLocked = status !== 'draft' || pendingApproval
 
   async function draftWithAi() {
     if (!aiText.trim()) { setAiError('Describe what the client is asking for first.'); return }
+    // The draft REPLACES the title, note and every line item. Priced rows were silently reset to 0.
+    const hasWork = title.trim() || note.trim() || lineItems.some(l => l.description.trim() || l.rate > 0)
+    if (hasWork && !confirm('AI drafting will replace your current title, notes and line items (rates reset to 0). Continue?')) return
     setAiDrafting(true); setAiError('')
     try {
       const res  = await fetch('/api/co/draft', {
@@ -279,7 +301,7 @@ export default function CoEditor({ projId, coId }: Props) {
           <span className={`save-status ${saveStatus}`} style={{ fontSize: 11 }}>
             {saveStatus === 'saving' && <><span className="spin spin-dark" style={{ width: 10, height: 10 }} /> Saving</>}
             {saveStatus === 'saved' && <><i className="ti ti-check" style={{ fontSize: 11, color: 'var(--green)' }} /> Saved</>}
-            {saveStatus === 'error' && <><i className="ti ti-alert-circle" style={{ fontSize: 11, color: 'var(--red)' }} /> Save failed</>}
+            {saveStatus === 'error' && <><span title={saveError}><i className="ti ti-alert-circle" style={{ fontSize: 11, color: 'var(--red)' }} /> Save failed{saveError ? ` — ${saveError}` : ''}</span></>}
           </span>
         </div>
 
@@ -294,9 +316,15 @@ export default function CoEditor({ projId, coId }: Props) {
             actually works: Revise & resend, on the project's CO tab. */}
         {isLocked && (
           <div className="banner banner-info" style={{ marginBottom: 14 }}>
-            {['declined', 'withdrawn', 'closed', 'countered'].includes(status)
-              ? <>This change order is {status} and can no longer be edited. Use <strong>Revise &amp; resend</strong> on the project&rsquo;s Change orders tab to continue from it in a new draft.</>
-              : <>This change order has been sent to the client and is locked while you wait on their response.</>}
+            {pendingApproval && status === 'draft'
+              ? <>This change order is waiting on an approval request and can&rsquo;t be edited. Decide or cancel the request from <strong>Approvals</strong> to unlock it.</>
+              : ['declined', 'withdrawn', 'closed', 'countered', 'expired'].includes(status)
+                ? <>This change order is {status} and can no longer be edited. Use <strong>Revise &amp; resend</strong> on the project&rsquo;s Change orders tab to continue from it in a new draft.</>
+                : status === 'accepted'
+                  ? <>This change order has been accepted and signed. It is part of the agreement and can&rsquo;t be edited.</>
+                  : status === 'awaiting_countersignature'
+                    ? <>The client is confirming the negotiated amount. The change order is locked until they countersign.</>
+                    : <>This change order has been sent to the client and is locked while you wait on their response.</>}
           </div>
         )}
 
@@ -385,7 +413,7 @@ export default function CoEditor({ projId, coId }: Props) {
                 disabled={isLocked} placeholder={`Item ${idx + 1}`}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateLineItem(item.id, 'description', e.target.value)} />
               <input type="number" className="finp" style={{ width: 64, fontSize: 12, textAlign: 'center' }}
-                value={item.quantity} min={1} disabled={isLocked}
+                value={item.quantity} min={1} disabled={isLocked || item.kind === 'adjustment'}
                 // FIX (section-10 audit, 10-B9): `min` is a browser hint
                 // only and `parseFloat(v) || 1` let a typed negative
                 // straight through to a negative line total. The API
@@ -393,8 +421,12 @@ export default function CoEditor({ projId, coId }: Props) {
                 // immediately rather than at save time.
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateLineItem(item.id, 'quantity', Math.max(0, parseFloat(e.target.value) || 0))} />
               <input type="number" className="finp" style={{ width: 100, fontSize: 12, textAlign: 'right' }}
-                value={item.rate} min={0} step="0.01" disabled={isLocked}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateLineItem(item.id, 'rate', Math.max(0, parseFloat(e.target.value) || 0))} />
+                value={item.rate} min={item.kind === 'adjustment' ? undefined : 0} step="0.01" disabled={isLocked}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                  const v = parseFloat(e.target.value) || 0
+                  // Only a system-written negotiation line may go negative.
+                  updateLineItem(item.id, 'rate', item.kind === 'adjustment' ? v : Math.max(0, v))
+                }} />
               <div style={{ width: 100, textAlign: 'right', fontSize: 13, fontFamily: 'IBM Plex Mono, monospace', color: 'var(--text-2)' }}>
                 {formatCurrency(item.total, currency)}
               </div>

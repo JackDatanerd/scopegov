@@ -3,9 +3,10 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { sendEscalationEmail } from '@/lib/email/templates'
-import { sanitizePlainText } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
 import { filterByNotificationPreference } from '@/lib/utils/permissions-query'
+import { cleanTextField } from '@/lib/utils/sanitize'
+import { checkedSend } from '@/lib/email/delivery'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -18,8 +19,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!hasPermission(session, 'SEND_CHANGE_ORDERS'))
       return NextResponse.json({ error: 'Missing permission: SEND_CHANGE_ORDERS' }, { status: 403 })
 
-    const { escalateTo, escalationNote } = await request.json()
-    if (!escalationNote || escalationNote.trim().length < 10)
+    const reqBody = await request.json().catch(() => ({} as any))
+    const escalateTo = reqBody?.escalateTo
+    if (escalateTo !== undefined && escalateTo !== null && typeof escalateTo !== 'string')
+      return NextResponse.json({ error: 'escalateTo must be a team member id' }, { status: 400 })
+    // Plain text, decoded (sanitizePlainText no longer HTML-escapes, so "R&D" is stored — and later
+    // emailed — as "R&D", not "R&amp;D" / "R&amp;amp;D").
+    const safeNote = cleanTextField(reqBody?.escalationNote, 2000)
+    if (safeNote === null || safeNote.length < 10)
       return NextResponse.json({ error: 'Escalation note must be at least 10 characters' }, { status: 400 })
 
     const service = createServiceClient()
@@ -84,11 +91,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       if (member?.users) {
         resolvedEscalateTo = member.users.id
         assignee = { name: member.users.name, email: member.users.email }
+      } else {
+        // Silently assigning the escalation to the person who clicked (and reporting success) meant a
+        // removed or deactivated team member turned "escalate to Jane" into a note-to-self that
+        // nobody else ever saw.
+        return NextResponse.json({ error: 'That team member is no longer available. Pick someone else.' }, { status: 400 })
       }
     }
 
     const now = new Date().toISOString()
-    const safeNote = sanitizePlainText(escalationNote.trim())
 
     // FIX (section-10 audit, 10-G5): escalated_to/escalation_note are a
     // single overwritable slot — a second escalation silently replaced
@@ -136,8 +147,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       )
 
       if (inAppAllowed) {
-        try {
-          await (service as any).from('notifications').insert({
+        {
+          const { error: notifErr } = await (service as any).from('notifications').insert({
             workspace_id: session.workspaceId,
             recipient_id: resolvedEscalateTo,
             // FIX (deep audit round 3, notifications section): see the
@@ -151,21 +162,20 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
             entity_type:  'project',
             entity_id:    co.project_id,
           })
-        } catch { /* never let a notification failure break escalation */ }
+          if (notifErr) console.error('CO escalation notification insert failed:', notifErr.message)
+        }
       }
 
       if (emailAllowed) {
-        try {
-          await sendEscalationEmail({
-            to:          assignee.email,
-            assigneeName: assignee.name,
-            agencyName:  session.agencyName,
-            entityType:  'change order',
-            entityName:  co.projects?.name || '',
-            note:        safeNote,
-            url:         `${process.env.NEXT_PUBLIC_APP_URL}/projects/${co.project_id}?tab=co`,
-          })
-        } catch (e) { console.error('Escalation email failed:', e) }
+        await checkedSend(() => sendEscalationEmail({
+          to:          assignee!.email,
+          assigneeName: assignee!.name,
+          agencyName:  session.agencyName,
+          entityType:  'change order',
+          entityName:  co.projects?.name || '',
+          note:        safeNote,
+          url:         `${process.env.NEXT_PUBLIC_APP_URL}/projects/${co.project_id}?tab=co`,
+        }), 'CO escalation email')
       }
     }
 
@@ -184,6 +194,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     return NextResponse.json({ ok: true })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('CO escalate error:', err)
+    return NextResponse.json({ error: 'Could not escalate this change order. Please try again.' }, { status: 500 })
   }
 }

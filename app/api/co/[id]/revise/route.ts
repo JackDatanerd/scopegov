@@ -5,6 +5,9 @@ import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
 import { cancelApprovalRequest } from '@/lib/approvals/engine'
 import { insertNextCoVersion } from '@/lib/documents/co-version'
+import { sendDocumentCancelledEmail } from '@/lib/email/templates'
+import { checkedSend } from '@/lib/email/delivery'
+import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
 
 // FIX (section-10 audit, 10-G2 + 10-G3 + 10-G4):
 //
@@ -45,6 +48,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { data: co } = await (service as any)
       .from('change_orders')
       .select(`id, title, note, status, version, project_id, flag_id, root_co_id,
+        projects(name, client_id, clients(name, email, cc_emails), workspaces(agency_name, brand_colour)),
         line_items, subtotal, tax_rate, tax_inclusive, total,
         counter_amount, counter_note, is_retainer_renewal,
         timeline_impact_days, scope_impact_note`)
@@ -62,6 +66,23 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     // line_items has been written both ways historically (see the
     // JSON.stringify note in app/api/co/route.ts) — handle both.
+    // Only the newest version of a lineage can be revised, and never while another version is
+    // live. Revising v1 twice, or revising a superseded v1 while v2 is out, produced sibling COs
+    // that could BOTH be accepted (the same extra work billed twice).
+    const rootId = co.root_co_id || co.id
+    const { data: siblings } = await (service as any)
+      .from('change_orders').select('id, version, status')
+      .or(`id.eq.${rootId},root_co_id.eq.${rootId}`).neq('id', co.id)
+    const others: any[] = siblings || []
+    const openDraft = others.find(o => o.status === 'draft')
+    if (openDraft) return NextResponse.json({ coId: openDraft.id, version: openDraft.version, existing: true })
+    const newer = others.find(o => o.version > co.version)
+    if (newer)
+      return NextResponse.json({ error: `A newer version (v${newer.version}) of this change order exists — revise that one instead.` }, { status: 409 })
+    const live = others.find(o => ['awaiting_response', 'stalled', 'awaiting_countersignature', 'accepted'].includes(o.status))
+    if (live)
+      return NextResponse.json({ error: `Version ${live.version} of this change order is ${String(live.status).replace(/_/g, ' ')}.` }, { status: 409 })
+
     const lineItems = typeof co.line_items === 'string'
       ? JSON.parse(co.line_items)
       : (co.line_items || [])
@@ -75,7 +96,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // same project happens to be at. insertNextCoVersion scopes the
     // query and the uniqueness constraint (migration 037) to this CO's
     // own lineage, and retries on a version collision instead of racing.
-    const rootCoId = co.root_co_id || co.id
+    const rootCoId = rootId
     const result = await insertNextCoVersion(service, rootCoId, {
       project_id:   co.project_id,
       workspace_id: session.workspaceId,
@@ -157,6 +178,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       }
     }
 
+    // The flag was released back to 'open' when the earlier version was declined/withdrawn/closed;
+    // re-claim it for this revision, otherwise the same flag can be converted into a second CO.
+    if (co.flag_id) {
+      await (service as any).from('guardian_flags')
+        .update({ status: 'converted_to_co', change_order_id: revision.id, updated_at: new Date().toISOString() })
+        .eq('id', co.flag_id).eq('status', 'open')
+    }
+
     await logAudit(service, {
       workspaceId: session.workspaceId, actorId: session.id,
       actorEmail: session.email, actorName: session.name,
@@ -172,6 +201,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ coId: revision.id, version: revision.version })
   } catch (err) {
     console.error('CO revise error:', err)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    return NextResponse.json({ error: 'Could not create a revision. Please try again.' }, { status: 500 })
   }
 }

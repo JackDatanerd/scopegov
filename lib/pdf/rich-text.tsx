@@ -36,14 +36,16 @@ interface InlineRun {
   href?: string
 }
 
+// `&amp;` must be decoded LAST: decoding it first turned the literal text
+// "&lt;" (stored as "&amp;lt;") into "<".
 function decodeEntities(s: string): string {
   return s
     .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
+    .replace(/&#0*39;/g, "'")
+    .replace(/&amp;/g, '&')
 }
 
 // Capture the whole opening tag so an <a>'s href survives into the run.

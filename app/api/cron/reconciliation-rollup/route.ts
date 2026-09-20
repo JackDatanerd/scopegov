@@ -92,7 +92,7 @@ export async function POST(request: NextRequest) {
           // same "at risk (pending COs)" definition already shown on the
           // project overview page, rolled here so it's comparable over time.
           (service as any).from('change_orders').select('total').eq('project_id', project.id)
-            .in('status', ['awaiting_response', 'countered']),
+            .in('status', ['awaiting_response', 'stalled', 'countered', 'awaiting_countersignature']),
         ])
 
         const amendmentTotal = (amendmentsRes.data || []).reduce((s: number, a: any) => s + (a.financial_impact || 0), 0)

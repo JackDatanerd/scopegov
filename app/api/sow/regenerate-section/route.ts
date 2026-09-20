@@ -8,7 +8,8 @@ import { sanitizeRichText } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
 import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
 import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
-import { AI_SECTION_IDS } from '@/lib/ai/sow-content'
+import { AI_SECTION_IDS, SOW_LANGUAGE_NAMES, sectionTitle as canonicalSectionTitle } from '@/lib/ai/sow-content'
+import { MAX_SECTION_CONTENT_LENGTH } from '@/lib/sow/sections'
 import Anthropic from '@anthropic-ai/sdk'
 
 // FIX (re-audit — build-blocking): was constructed at module scope, so an
@@ -28,7 +29,18 @@ export async function POST(request: NextRequest) {
     if (!hasPermission(session, 'EDIT_SOW'))
       return NextResponse.json({ error: 'Missing permission: EDIT_SOW' }, { status: 403 })
 
-    const { sowId, sectionId, sectionTitle, currentContent, instruction, projectContext } = await request.json()
+    const reqBody = await request.json().catch(() => null)
+    if (!reqBody || typeof reqBody !== 'object')
+      return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+    const { sowId, sectionId } = reqBody as any
+    // Free-text inputs go straight into the model prompt: type-check and cap them (they were
+    // unbounded, so one request could burn arbitrary tokens).
+    const asText = (v: unknown, max: number) => (typeof v === 'string' ? v.slice(0, max) : '')
+    const currentContent = asText(reqBody.currentContent, MAX_SECTION_CONTENT_LENGTH)
+    const instruction    = asText(reqBody.instruction, 500).trim()
+    const projectContext = asText(reqBody.projectContext, 500).trim()
+    if (typeof sowId !== 'string' || typeof sectionId !== 'string')
+      return NextResponse.json({ error: 'sowId and sectionId are required' }, { status: 400 })
 
     // FIX (section-9 re-pass): sectionId was never checked against
     // anything — a request for a table-only section id (deliverables,
@@ -43,7 +55,7 @@ export async function POST(request: NextRequest) {
 
     const service = createServiceClient()
     const { data: sow } = await (service as any)
-      .from('sow_documents').select('id, sent_at, project_id').eq('id', sowId)
+      .from('sow_documents').select('id, sent_at, project_id, metadata').eq('id', sowId)
       .eq('workspace_id', session.workspaceId).single()
 
     if (!sow) return NextResponse.json({ error: 'SOW not found' }, { status: 404 })
@@ -69,18 +81,27 @@ export async function POST(request: NextRequest) {
     const limited = await checkAiRateLimit(service, session.id, 'sow.regenerateSection')
     if (!limited.allowed) return NextResponse.json({ error: limited.message }, { status: 429 })
 
-    // BUG-032: hard word ceiling — never grow beyond current length
+    // Word ceiling. The model now sees the WHOLE current section (it used to see the first 800
+    // characters while the ceiling was computed from the full length, so any section over
+    // ~130 words was rewritten from its opening alone and the rest silently deleted — and then
+    // autosaved). A modest 20% allowance applies only when the user gave an instruction, since
+    // "add two more items" is impossible under a hard no-growth rule.
     const currentWords = countWords(currentContent || '')
-    const wordLimit    = Math.max(currentWords, 60) // no +20 growth, min 60
+    const wordLimit    = instruction
+      ? Math.max(Math.ceil(currentWords * 1.2), 60)
+      : Math.max(currentWords, 60)
+    const title = canonicalSectionTitle(sectionId, (sow as any).metadata?.language)
+    const langName = SOW_LANGUAGE_NAMES[(sow as any).metadata?.language as string]
+    const languageLine = langName ? `\nWrite the section in ${langName}, the language this document is drafted in.` : ''
 
     const prompt = `You are rewriting one section of a professional Statement of Work.
 
-Section: ${sectionTitle}
+Section: ${title}
 ${projectContext ? `Project context: ${projectContext}` : ''}
-${instruction ? `Instruction: ${instruction}` : 'Improve clarity and professionalism.'}
+${instruction ? `Instruction: ${instruction}` : 'Improve clarity and professionalism.'}${languageLine}
 
-Current content (plain text for reference):
-${stripHtml(currentContent || '').slice(0, 800)}
+Current content (plain text for reference — this is the COMPLETE section; keep every item unless the instruction says to remove it):
+${stripHtml(currentContent || '')}
 
 HARD LIMIT: ${wordLimit} words maximum. Do NOT exceed this under any circumstances.
 If you cannot improve within the word limit, return the current version verbatim.
@@ -89,10 +110,19 @@ Return ONLY the new section content as valid HTML (use <p>, <ul>, <li>, <strong>
 No preamble, no explanation, no markdown fences. Just the HTML content.`
 
     const msg = await anthropicClient().messages.create({
-      model:       'claude-haiku-4-5-20251001',
-      max_tokens:  600,                            // BUG-032: 600 not 800
+      model:       process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001',
+      max_tokens:  Math.min(4000, Math.ceil(wordLimit * 2.5) + 300),
       messages:    [{ role: 'user', content: prompt }],
     })
+
+    // A cut-off answer is a partial section. Never hand that back to be autosaved over the
+    // real one — keep the current content and say so.
+    if (msg.stop_reason === 'max_tokens') {
+      await recordAiUsage(service, session.workspaceId, session.id, 'sow.regenerateSection')
+      return NextResponse.json({
+        content: sanitizeRichText(currentContent || ''), wordCount: currentWords, truncated: true,
+      })
+    }
 
     let raw = msg.content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('')
 

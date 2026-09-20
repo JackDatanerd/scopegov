@@ -18,6 +18,12 @@ import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
 import { SignJWT } from 'jose'
 import { nanoid } from 'nanoid'
+import { checkedSend } from '@/lib/email/delivery'
+import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
+import { computeContentHash, storeExecutedPdf } from '@/lib/documents/executed-pdf'
+import { isAdjustmentLine } from '@/lib/utils/rescale-line-items'
+import { getContractValueBefore } from '@/lib/documents/co-contract-value'
+import { createHash } from 'node:crypto'
 
 export async function finalizeCoAcceptance(service: any, params: {
   co: any                 // change_orders row joined with projects/clients/workspaces, plus resolved `total`
@@ -44,7 +50,9 @@ export async function finalizeCoAcceptance(service: any, params: {
   // the UPDATE below to still match that expected status turns the
   // whole finalize into a compare-and-swap: only the request that
   // actually flips the row proceeds past it.
-  expectedStatus: string
+  // A CO the client answers while it is 'stalled' (agency-side attention flag, not a client lock) is
+  // accepted from that state too.
+  expectedStatus: string | string[]
 }) {
   const { co, signerName, signatureData, source, signerIp, expectedStatus } = params
   const project = co.projects
@@ -54,7 +62,7 @@ export async function finalizeCoAcceptance(service: any, params: {
 
   const { data: signedSow } = await (service as any)
     .from('sow_documents')
-    .select('id')
+    .select('id, document_number')
     .eq('project_id', co.project_id)
     .eq('status', 'signed')
     .order('version', { ascending: false })
@@ -67,7 +75,16 @@ export async function finalizeCoAcceptance(service: any, params: {
   // caller observed. A concurrent request that already flipped it (or beat
   // us here) makes this match zero rows — `data` comes back empty, not an
   // error — which is the race-loser signal checked right below.
-  const { data: updatedCo, error: updateErr } = await (service as any)
+  // The rate a retainer renewal REPLACES has to be read before anything overwrites it.
+  const isRenewal = !!co.is_retainer_renewal && project.type === 'retainer'
+  let previousContractValue: number | null = project.contract_value != null ? Number(project.contract_value) : null
+  if (isRenewal) {
+    const { data: freshProject } = await (service as any)
+      .from('projects').select('contract_value').eq('id', co.project_id).single()
+    if (freshProject?.contract_value != null) previousContractValue = Number(freshProject.contract_value)
+  }
+
+  const casUpdate = (service as any)
     .from('change_orders')
     .update({
       status:                'accepted',
@@ -79,8 +96,10 @@ export async function finalizeCoAcceptance(service: any, params: {
       updated_at:            now,
     })
     .eq('id', co.id)
-    .eq('status', expectedStatus)
-    .select('id')
+  const { data: updatedCo, error: updateErr } = await (Array.isArray(expectedStatus)
+    ? casUpdate.in('status', expectedStatus)
+    : casUpdate.eq('status', expectedStatus)
+  ).select('id')
 
   if (updateErr)
     return { ok: false as const, error: 'Failed to record acceptance', status: 500 }
@@ -108,7 +127,7 @@ export async function finalizeCoAcceptance(service: any, params: {
   // line item), not a delta on top of the old one — consistent with how
   // the checkbox reads and with there being no separate "increase by"
   // field anywhere in the CO editor.
-  if (co.is_retainer_renewal && project.type === 'retainer') {
+  if (isRenewal) {
     const { error: renewalErr } = await (service as any)
       .from('projects')
       .update({ contract_value: co.total, updated_at: now })
@@ -133,34 +152,49 @@ export async function finalizeCoAcceptance(service: any, params: {
   }
 
   const lineItems    = typeof co.line_items === 'string' ? JSON.parse(co.line_items) : (co.line_items || [])
-  const deliverables = lineItems.map((l: any) => l.description).filter(Boolean)
+  // Scope deliverables come from real work lines only. The system-written "Negotiated discount…" line
+  // (counter-offers) and a retainer renewal's rate line are pricing, not scope — they were being
+  // appended to the Guardian baseline as if they were deliverables.
+  const deliverables: string[] = isRenewal
+    ? []
+    : lineItems.filter((l: any) => !isAdjustmentLine(l)).map((l: any) => l.description).filter(Boolean)
 
-  const { error: amendErr } = await (service as any).from('amendments').insert({
+  // A renewal REPLACES the monthly rate (contract_value above); recording its total as a financial
+  // impact as well double-counted it — effective value is contract_value + Σ amendments, so every
+  // renewal counted twice everywhere that total is used (project page, reconciliation, the CO's
+  // own "before" value). Its impact is therefore zero; the old rate is kept for the record.
+  const amendmentRow: Record<string, unknown> = {
     project_id:           co.project_id,
     workspace_id:         co.workspace_id,
     change_order_id:      co.id,
     signed_sow_id:        signedSow.id,
-    title:                source === 'countersignature' ? `Amendment — ${co.title} (counter accepted)` : `Amendment — ${co.title}`,
+    title:                isRenewal
+      ? `Amendment — ${co.title} (retainer rate renewal)`
+      : source === 'countersignature' ? `Amendment — ${co.title} (counter accepted)` : `Amendment — ${co.title}`,
     added_deliverables:   deliverables,
     removed_deliverables: [],
-    financial_impact:     co.total,
+    financial_impact:     isRenewal ? 0 : co.total,
     effective_at:         now,
-    // Note: no async job ever populated this (see doc-completeness audit
-    // finding #9) — left as '' deliberately. The durable, always-current
-    // copy of this CO is available on demand via /api/pdf/co/[id]
-    // (agency) and /api/portal/co/[token]/pdf (client), both rendered
-    // fresh from the DB rather than a stored file that could go stale.
     pdf_path:             '',
+  }
+  let { error: amendErr } = await (service as any).from('amendments').insert({
+    ...amendmentRow, ...(isRenewal ? { previous_contract_value: previousContractValue } : {}),
   })
-  if (amendErr) console.error('Amendment insert failed after CO accept:', amendErr, { coId: co.id })
+  // Deployments that have not applied migration 061 yet lack previous_contract_value — retry without it.
+  if (amendErr && isRenewal) {
+    ;({ error: amendErr } = await (service as any).from('amendments').insert(amendmentRow))
+  }
+  if (amendErr) {
+    console.error('Amendment insert failed after CO accept:', amendErr, { coId: co.id })
+    // The client has signed and the CO is 'accepted', but the amendment (which feeds the effective
+    // contract value) is missing. Leave an explicit, findable record instead of a console line.
+    await logAudit(service, {
+      workspaceId: co.workspace_id, actorId: null, actorEmail: 'system@scopegov.app', actorName: 'ScopeGov',
+      eventType: 'co.amendment_failed', entityType: 'change_order', entityId: co.id, entityName: co.title,
+      metadata: { project_id: co.project_id, total: co.total, error: amendErr.message || String(amendErr) },
+    })
+  }
 
-  // FIX (re-audit, portal section): the accept token expires a flat 30
-  // days from when the CO was *sent* (send-co.ts) and, unlike
-  // accept-counter, direct acceptance never reissued it — so the PDF
-  // redownload link below (which reuses the same token) went dead a fixed
-  // 30 days post-send regardless of how close to that deadline the client
-  // actually accepted. Reissuing a fresh, long-lived token here brings
-  // direct-accept to parity with accept-counter's existing behavior.
   let coToken = co.token
   try {
     const jwtSecret = await getWorkspaceJwtSecret(service, co.workspace_id)
@@ -223,6 +257,16 @@ export async function finalizeCoAcceptance(service: any, params: {
     }).eq('id', co.flag_id)
   }
 
+  const contentHash = computeContentHash({
+    kind: 'co', coId: co.id, version: co.version ?? null, projectId: co.project_id,
+    title: co.title, note: co.note || null, lineItems, subtotal: co.subtotal,
+    taxRate: co.tax_rate, taxInclusive: co.tax_inclusive, total: co.total, currency: project.currency || 'USD',
+    timelineImpactDays: co.timeline_impact_days ?? null, scopeImpactNote: co.scope_impact_note || null,
+    isRetainerRenewal: isRenewal, previousContractValue,
+    acceptedBy: signerName.trim(), acceptedAt: now, source, signerEmail: client.email,
+    signatureSha256: createHash('sha256').update(signatureData).digest('hex'),
+  })
+
   await logAudit(service, {
     // FIX (build, Reports & Audit re-pass): actor_id is `uuid REFERENCES
     // users(id)` — client.email is not a valid uuid, so this insert
@@ -234,11 +278,12 @@ export async function finalizeCoAcceptance(service: any, params: {
     actorEmail: client.email, actorName: signerName.trim(),
     eventType: 'co.accepted', entityType: 'change_order',
     entityId: co.id, entityName: co.title,
-    metadata: { total: co.total, signer: signerName.trim(), flag_resolved: !!co.flag_id, source, signer_ip: signerIp || 'unknown' },
+    metadata: { total: co.total, signer: signerName.trim(), flag_resolved: !!co.flag_id, source, signer_ip: signerIp || 'unknown', content_hash: contentHash, ...(isRenewal ? { retainer_renewal: true, previous_monthly_amount: previousContractValue } : {}) },
   })
 
   // Build the accepted-CO PDF once, reused for both the agency and client
   // confirmation emails — same pattern as the SOW sign route.
+  let pdfBuffer: Buffer | null = null
   let pdfAttachment: { filename: string; content: string } | undefined
   try {
     let logoUrl: string | null = null
@@ -246,7 +291,13 @@ export async function finalizeCoAcceptance(service: any, params: {
       const { data: u } = await (service as any).storage.from('logos').getPublicUrl(ws.logo_storage_path)
       logoUrl = u?.publicUrl || null
     }
-    const pdfBuffer = await renderCoPdf({
+    // Same inputs the downloadable copy uses, so the executed original and every later download are
+    // the same document. (This copy used to omit the SOW number and the Value-impact block.)
+    const revisedContractValue = isRenewal ? Number(co.total) : null
+    const contractValueBefore = isRenewal
+      ? previousContractValue
+      : await getContractValueBefore(service, co.project_id, co.id, project.contract_value != null ? Number(project.contract_value) : null)
+    pdfBuffer = await renderCoPdf({
       agencyName:    ws.agency_name,
       logoUrl,
       brandColour:   ws.brand_colour || '#1A5C3A',
@@ -274,60 +325,52 @@ export async function finalizeCoAcceptance(service: any, params: {
       documentNumber: co.document_number || null,
       timelineImpactDays: co.timeline_impact_days ?? null,
       scopeImpactNote:    co.scope_impact_note || null,
+      sowNumber:          signedSow.document_number || null,
+      contractValueBefore,
+      isRetainerRenewal:  isRenewal,
+      revisedContractValue,
     })
     pdfAttachment = { filename: `CO-${project.name.replace(/[^a-z0-9]/gi, '-')}.pdf`, content: pdfBuffer.toString('base64') }
   } catch (e) { console.error('CO PDF generation for email failed (emails will send without attachment):', e) }
 
-  try {
-    const emails = await getMemberEmailsWithPermission(service, co.workspace_id, 'SEND_CHANGE_ORDERS', 25, 'co_accepted', co.project_id)
-    if (emails.length) {
-      // FIX (re-audit, notifications section): pdfAttachment was already
-      // generated above (used for the client email 20 lines below) but
-      // was never passed here — the client got a PDF copy of the executed
-      // change order, the agency team that just closed the deal didn't,
-      // and had to go find it in the app separately.
-      await sendCoAcceptedEmail({
-        to: emails,
-        clientName: client.name, projectName: project.name,
-        coTitle: co.title, total: co.total, currency: project.currency || 'USD',
-        acceptedBy: signerName.trim(),
-        projectUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects/${co.project_id}?tab=co`,
-        attachments: pdfAttachment ? [pdfAttachment] : undefined,
-      })
+  // Freeze the executed copy + fingerprint (see lib/documents/executed-pdf.ts). Separate updates so a
+  // deployment without migration 061 still degrades gracefully.
+  if (pdfBuffer) {
+    const storedPath = await storeExecutedPdf(service, { workspaceId: co.workspace_id, kind: 'co', id: co.id, buffer: pdfBuffer })
+    if (storedPath) {
+      const { error: pathErr } = await (service as any).from('change_orders').update({ pdf_path: storedPath }).eq('id', co.id)
+      if (pathErr) console.error('CO accept: pdf_path update failed (is migration 061 applied?):', pathErr.message)
+      await (service as any).from('amendments').update({ pdf_path: storedPath }).eq('change_order_id', co.id)
     }
-  } catch (e) { console.error('CO accepted agency email failed:', e) }
+  }
+  const { error: hashErr } = await (service as any).from('change_orders').update({ content_hash: contentHash }).eq('id', co.id)
+  if (hashErr) console.error('CO accept: content_hash update failed (is migration 061 applied?):', hashErr.message)
 
-  // FIX (portal audit, section 18 — closing pass): this used to point the
-  // client CTA straight at the raw /pdf endpoint, reasoning that the
-  // ORIGINAL accept token is marked 'superseded' the moment it's used and
-  // would show a generic "link deactivated" screen on the ordinary portal
-  // page. That reasoning doesn't apply to the token actually used here:
-  // `coToken` (above) is the FRESH, non-revoked token reissued at the top
-  // of this function — the exact same mechanism the SOW sign route uses,
-  // which correctly links its own client confirmation email to the real
-  // portal page, not a raw PDF. app/api/portal/co/[token]/route.ts's
-  // GET handler has a dedicated `state === 'accepted'` branch — "built for
-  // exactly this case" per its own comment — that renders a branded
-  // thank-you with the captured signature AND a Download PDF button, i.e.
-  // a strict superset of what the raw PDF link offered. Linking straight
-  // to the PDF skipped that confirmation experience for every CO client,
-  // unlike every SOW client. Point at the portal page (same URL shape
-  // send-co.ts/accept-co-counter.ts already use for their own links);
-  // the page itself offers the PDF download.
-  try {
-    if (client?.email) {
-      const portalBase = process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL
-      const portalUrl  = `${portalBase}/portal/co/${coToken || ''}`
-      await sendCoAcceptedClientEmail({
-        to: client.email, cc: client.cc_emails || [],
-        clientName: client.name, agencyName: ws.agency_name,
-        projectName: project.name, coTitle: co.title,
-        total: co.total, currency: project.currency || 'USD',
-        portalUrl,
-        attachments: pdfAttachment ? [pdfAttachment] : undefined,
-      })
-    }
-  } catch (e) { console.error('CO accepted client email failed:', e) }
+  const emails = await getMemberEmailsWithPermission(service, co.workspace_id, 'SEND_CHANGE_ORDERS', 25, 'co_accepted', co.project_id).catch(() => [] as string[])
+  if (emails.length) {
+    await checkedSend(() => sendCoAcceptedEmail({
+      to: emails,
+      clientName: client.name, projectName: project.name,
+      coTitle: co.title, total: co.total, currency: project.currency || 'USD',
+      acceptedBy: signerName.trim(),
+      projectUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects/${co.project_id}?tab=co`,
+      attachments: pdfAttachment ? [pdfAttachment] : undefined,
+    }), 'CO accepted (agency) email')
+  }
+
+  if (client?.email) {
+    const portalBase = process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL
+    const portalUrl  = `${portalBase}/portal/co/${coToken || ''}`
+    const acceptedCc = await withPrimaryContactCc(service, project.client_id, client.email, client.cc_emails)
+    await checkedSend(() => sendCoAcceptedClientEmail({
+      to: client.email, cc: acceptedCc,
+      clientName: client.name, agencyName: ws.agency_name,
+      projectName: project.name, coTitle: co.title,
+      total: co.total, currency: project.currency || 'USD',
+      portalUrl,
+      attachments: pdfAttachment ? [pdfAttachment] : undefined,
+    }), 'CO accepted (client) email')
+  }
 
   await notifyMembersWithPermission(service, {
     workspaceId: co.workspace_id, permission: 'SEND_CHANGE_ORDERS', eventType: 'co_accepted',

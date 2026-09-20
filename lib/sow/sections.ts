@@ -4,7 +4,7 @@
 // app/api/sow/[id]/route.ts: a Next.js route module may only export route
 // handlers, so these helpers could not live there.
 
-import { sanitizeRichText, sanitizePlainText } from '@/lib/utils/sanitize'
+import { sanitizeRichText, sanitizePlainText, decodeHtmlEntities } from '@/lib/utils/sanitize'
 import { isTableSection, SOW_TABLE_SCHEMAS, type SowTableSectionId } from '@/lib/sow/table-schema'
 import { SOW_SECTION_DEFS, sectionTitle } from '@/lib/ai/sow-content'
 
@@ -22,6 +22,7 @@ import { SOW_SECTION_DEFS, sectionTitle } from '@/lib/ai/sow-content'
 // goal is a sane ceiling, not a workflow constraint.
 export const MAX_SECTION_CONTENT_LENGTH = 50_000 // raw HTML chars, pre-sanitize
 export const MAX_TABLE_CELL_LENGTH      = 2_000  // raw chars, pre-sanitize
+export const MAX_TABLE_ROWS             = 200    // rows per table section
 
 // Table rows are plain-text cells (rendered on the public portal page same
 // as prose content) — sanitizePlainText, not sanitizeRichText, since a
@@ -31,7 +32,7 @@ export const MAX_TABLE_CELL_LENGTH      = 2_000  // raw chars, pre-sanitize
 export function sanitizeTableRows(sectionId: string, rows: unknown): Array<Record<string, string>> {
   if (!isTableSection(sectionId) || !Array.isArray(rows)) return []
   const schema = SOW_TABLE_SCHEMAS[sectionId as SowTableSectionId]
-  return rows.map((row: any) => {
+  return rows.slice(0, MAX_TABLE_ROWS).map((row: any) => {
     const clean: Record<string, string> = {}
     for (const col of schema.columns)
       clean[col.key] = sanitizePlainText(String(row?.[col.key] ?? '').slice(0, MAX_TABLE_CELL_LENGTH))
@@ -65,7 +66,22 @@ export function hydrateSections(stored: any[], metadata: any): any[] {
   const lang = metadata?.language
   return SOW_SECTION_DEFS.map(def => {
     const existing = byId.get(def.id)
-    if (existing) return { ...existing, title: sectionTitle(def.id, lang), order: def.order }
+    if (existing) {
+      const hydrated: any = { ...existing, title: sectionTitle(def.id, lang), order: def.order }
+      // `visible` is stored JSON — coerce anything that isn't a real boolean.
+      if (typeof hydrated.visible !== 'boolean') hydrated.visible = true
+      // Table cells are plain text. Rows saved before sanitizePlainText stopped
+      // HTML-escaping hold literal "&amp;" / "&lt;" — decode them on read so
+      // old documents display (and print) correctly without a data migration.
+      if (isTableSection(def.id)) {
+        hydrated.table = (Array.isArray(existing.table) ? existing.table : []).map((row: any) => {
+          const fixed: Record<string, string> = {}
+          for (const [k, v] of Object.entries(row || {})) fixed[k] = typeof v === 'string' ? decodeHtmlEntities(v) : String(v ?? '')
+          return fixed
+        })
+      }
+      return hydrated
+    }
     return {
       id: def.id,
       title: sectionTitle(def.id, lang),

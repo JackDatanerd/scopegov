@@ -30,6 +30,8 @@ export interface CoLineItem {
   quantity: number
   rate: number
   total: number
+  /** System-written negotiation line — may be negative; see rescale-line-items.ts. */
+  kind?: 'adjustment'
 }
 
 export interface CoTotals {
@@ -70,7 +72,11 @@ export function computeCoTotals(
     if (description.length > MAX_DESCRIPTION_LEN)
       return { ok: false, error: `Line item descriptions must be under ${MAX_DESCRIPTION_LEN} characters` }
 
-    const quantity = Number(raw?.quantity)
+    // A counter-offer that lands below the original price is reconciled by a system-written
+    // negative "Negotiated discount" line (rescale-line-items.ts). It must round-trip through
+    // here — otherwise a revision cloned from such a CO could never be saved again.
+    const isAdjustment = raw?.kind === 'adjustment'
+    const quantity = isAdjustment ? 1 : Number(raw?.quantity)
     const rate     = Number(raw?.rate)
 
     if (!Number.isFinite(quantity) || !Number.isFinite(rate))
@@ -80,17 +86,23 @@ export function computeCoTotals(
     // reads as an addition, and the Impact Analysis block prints the CO
     // total with a hardcoded "+" (10-B4). A reduction belongs in its own
     // explicitly-worded change order, not a negative line hidden in one.
-    if (quantity < 0 || rate < 0)
+    if (!isAdjustment && (quantity < 0 || rate < 0))
       return { ok: false, error: `Line item "${description || 'untitled'}" can't have a negative quantity or rate` }
-    if (quantity > MAX_QUANTITY || rate > MAX_RATE)
+    if (quantity > MAX_QUANTITY || Math.abs(rate) > MAX_RATE)
       return { ok: false, error: `Line item "${description || 'untitled'}" has an implausibly large quantity or rate` }
 
+    // Round the inputs FIRST and derive the total from the rounded values, so the row the
+    // client reads (qty × rate) always equals the total printed beside it. (Rounding qty to
+    // 2dp but multiplying the unrounded qty showed 1.33 × 90 = 119.97.)
+    const q = roundCurrency(quantity)
+    const r = roundCurrency(rate)
     lineItems.push({
       ...(typeof raw?.id === 'string' ? { id: raw.id } : {}),
       description,
-      quantity: roundCurrency(quantity),
-      rate:     roundCurrency(rate),
-      total:    roundCurrency(quantity * rate),
+      quantity: q,
+      rate:     r,
+      total:    roundCurrency(q * r),
+      ...(isAdjustment ? { kind: 'adjustment' as const } : {}),
     })
   }
 

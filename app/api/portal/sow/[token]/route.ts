@@ -1,5 +1,6 @@
 export const runtime = 'nodejs'
 
+import { hydrateSections } from '@/lib/sow/sections'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { formatAddress } from '@/lib/utils/format'
@@ -177,7 +178,10 @@ async function buildSowResponse(sow: any, service: any) {
       clientCompany: client?.company_name || null,
       clientBillingAddress: formatAddress(client?.billing_address) || null,
       clientVatNumber:      client?.vat_number || null,
-      sections:      sow.sections || [],
+      // Hidden sections are the agency's decision NOT to show this text to the client — never ship
+      // their content over the wire (it was returned with visible:false and only hidden by the
+      // page). hydrateSections also repairs legacy HTML-escaped table cells.
+      sections:      hydrateSections(sow.sections || [], sow.metadata).filter((sec: any) => sec.visible !== false),
       paymentSchedule: (milestones || []).map((m: any) => ({
         title: m.title, amount: m.amount, percentage: m.percentage,
         trigger: m.trigger, dueDate: m.due_date, status: m.status,

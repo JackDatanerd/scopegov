@@ -14,6 +14,7 @@ import { SowTable } from '@/lib/pdf/sow-table'
 import { isTableSection, type SowTableRow } from '@/lib/sow/table-schema'
 import { formatAddressLines, type LegalAddress } from '@/lib/utils/format'
 import { PDF_FONT, sanitizeForPdf } from '@/lib/pdf/fonts'
+import { mapPdfSymbols } from '@/lib/pdf/pdf-symbols'
 
 // Phase 11: the ScopeGov credit in the footer of every document is a real
 // hyperlink now, not plain text — same URL everywhere so it's one place to
@@ -115,6 +116,10 @@ export interface CoPdfData {
   // assumed contract_value itself already accumulated prior COs, which it
   // never has — that's tracked in the separate `amendments` table instead).
   contractValueBefore?: number | null
+  // Retainer renewal: the CO REPLACES the monthly rate rather than adding to a contract value, so the
+  // Impact block shows current → new rate instead of "original + this change order".
+  isRetainerRenewal?: boolean
+  revisedContractValue?: number | null
   // Scope/Timeline impact rows (doc-quality audit round 3, migration
   // 018) — Meridian's Impact Analysis shows Scope / Timeline / Value as
   // three before-and-after rows; this was value-only until now. Both
@@ -216,9 +221,14 @@ function fmtDate(iso: string) {
   return new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
 }
 
+// Whole amounts print without decimals ("1,500"); anything with cents always prints BOTH digits
+// ("1,500.50", not "1,500.5" — a contract figure reading as 1,500.5 looks like a typo).
 function fmtMoney(n: number) {
-  return n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
+  const whole = Math.round(n * 100) % 100 === 0
+  return n.toLocaleString('en-US', { minimumFractionDigits: whole ? 0 : 2, maximumFractionDigits: 2 })
 }
+
+const hasRichText = (html?: string | null) => !!html && html.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim().length > 0
 
 // ── SOW PDF ──────────────────────────────────────────────────
 
@@ -295,7 +305,12 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
   // statuses), and suppress the now-redundant section table in that case —
   // otherwise show the section table, so an unsigned SOW still presents
   // its schedule to the client.
-  const hasMilestoneBlock = !!(data.paymentSchedule && data.paymentSchedule.length > 0)
+  // Only when the agreement itself carries a schedule section. A 50/50 or lump-sum SOW keeps its
+  // payment_schedule section hidden; the tracked milestone rows created at signing used to add a
+  // "Payment Schedule" section anyway — one the client never reviewed — and shifted every later
+  // section number in the signed copy.
+  const scheduleSectionVisible = data.sections.find(sec => sec.id === 'payment_schedule')?.visible !== false
+  const hasMilestoneBlock = !!(data.paymentSchedule && data.paymentSchedule.length > 0) && scheduleSectionVisible
   const sections = data.sections
     .filter(sec => sec.visible && !['parties','signature'].includes(sec.id))
     .filter(sec => !(hasMilestoneBlock && sec.id === 'payment_schedule'))
@@ -369,6 +384,17 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
           </View>
         </View>
 
+        {/* The Parties section's own text (the "entered into between…" preamble, or any special
+            party terms the agency wrote). The boxed block above is generated from data; the
+            authored prose used to be filtered out of the document entirely although the editor
+            presents it as a required, editable section. */}
+        {(() => {
+          const partiesSec = data.sections.find(sec => sec.id === 'parties' && sec.visible)
+          return partiesSec && hasRichText(partiesSec.content)
+            ? <View style={{ marginBottom: 16 }}><RichText html={partiesSec.content} style={s.body} /></View>
+            : null
+        })()}
+
         {/* Sections — numbered in document order, same convention as a
             traditional firm-issued SOW (1. Project Overview, 2.
             Deliverables, …). Deliverables/Timeline/Roles render as
@@ -427,6 +453,16 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
             next, followed by a mostly-blank page. The one section of a
             signed document that has to render as a single visual unit
             was the one section not guarded against that. */}
+        {/* The agreement clause ("By signing below, both parties agree…") the agency can edit under
+            the Signature section — previously never printed, so the signed document contained no
+            express statement of assent. */}
+        {(() => {
+          const sigSec = data.sections.find(sec => sec.id === 'signature' && sec.visible)
+          return sigSec && hasRichText(sigSec.content)
+            ? <View style={{ marginTop: 20 }} wrap={false}><RichText html={sigSec.content} style={s.body} /></View>
+            : null
+        })()}
+
         <View style={s.sigBlock} wrap={false}>
           <View style={s.sigCol}>
             <Text style={s.sigLabel}>Agency — {data.agencyName}</Text>
@@ -569,7 +605,10 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
   const hasTimelineImpact = data.timelineImpactDays != null && data.timelineImpactDays !== 0
   const hasValueImpact    = data.contractValueBefore != null
   const impactSecNum = (hasScopeImpact || hasTimelineImpact || hasValueImpact) ? ++secN : null
-  const revisedValue = data.contractValueBefore != null ? data.contractValueBefore + data.total : null
+  const revisedValue = data.revisedContractValue != null
+    ? data.revisedContractValue
+    : data.contractValueBefore != null ? data.contractValueBefore + data.total : null
+  const isRenewalDoc = !!data.isRetainerRenewal
 
   return (
     <Document>
@@ -691,11 +730,11 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
               {hasValueImpact && revisedValue != null && (
                 <View style={(hasScopeImpact || hasTimelineImpact) ? { marginTop: 6, paddingTop: 6, borderTop: '1 solid #F2F0EA' } : undefined}>
                   <View style={s.impactRow}>
-                    <Text style={{ color: '#909090' }}>Original Contract Value</Text>
+                    <Text style={{ color: '#909090' }}>{isRenewalDoc ? 'Current Monthly Rate' : 'Original Contract Value'}</Text>
                     <Text style={s.mono}>{data.currency} {fmtMoney(data.contractValueBefore!)}</Text>
                   </View>
                   <View style={s.impactRow}>
-                    <Text style={{ color: '#909090' }}>This Change Order</Text>
+                    <Text style={{ color: '#909090' }}>{isRenewalDoc ? 'Rate Change' : 'This Change Order'}</Text>
                     {/* FIX (section-10 audit, 10-B4): the '+' was
                         hardcoded, so a CO with a negative total printed
                         "+USD -5,000". Negative line items are refused at
@@ -704,11 +743,14 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
                         "Negotiated discount" line, so the sign has to be
                         derived rather than assumed. */}
                     <Text style={s.mono}>
-                      {data.total < 0 ? '−' : '+'}{data.currency} {fmtMoney(Math.abs(data.total))}
+                      {(() => {
+                        const delta = isRenewalDoc ? revisedValue - data.contractValueBefore! : data.total
+                        return `${delta < 0 ? '−' : '+'}${data.currency} ${fmtMoney(Math.abs(delta))}`
+                      })()}
                     </Text>
                   </View>
                   <View style={s.impactGrand}>
-                    <Text>Revised Contract Value</Text>
+                    <Text>{isRenewalDoc ? 'New Monthly Rate' : 'Revised Contract Value'}</Text>
                     <Text style={{ fontFamily: 'Courier-Bold', color: c }}>{data.currency} {fmtMoney(revisedValue)}</Text>
                   </View>
                 </View>
@@ -1010,15 +1052,15 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
 
 export async function renderSowPdf(data: SowPdfData): Promise<Buffer> {
   const logo = await resolveLogoDataUri(data.agencyLogoUrl)
-  return renderToBuffer(<SowDocument data={sanitizeForPdf(data)} logo={logo} />)
+  return renderToBuffer(<SowDocument data={sanitizeForPdf(mapPdfSymbols(data))} logo={logo} />)
 }
 
 export async function renderCoPdf(data: CoPdfData): Promise<Buffer> {
   const logo = await resolveLogoDataUri(data.logoUrl)
-  return renderToBuffer(<CoDocument data={sanitizeForPdf(data)} logo={logo} />)
+  return renderToBuffer(<CoDocument data={sanitizeForPdf(mapPdfSymbols(data))} logo={logo} />)
 }
 
 export async function renderInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
   const logo = await resolveLogoDataUri(data.logoUrl)
-  return renderToBuffer(<InvoiceDocument data={sanitizeForPdf(data)} logo={logo} />)
+  return renderToBuffer(<InvoiceDocument data={sanitizeForPdf(mapPdfSymbols(data))} logo={logo} />)
 }

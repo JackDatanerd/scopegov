@@ -5,6 +5,7 @@ import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
 import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
 import { computeCoTotals } from '@/lib/documents/co-totals'
+import { parseCoFields } from '@/lib/documents/co-input'
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -48,8 +49,11 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     // was pure over-exposure: a low-permission viewer could lift it and
     // act as the client directly against /api/portal/co/[token]/*.
     // Stripped the same way guardian_flags already is.
-    const { guardian_flags, token, ...coRest } = co
-    return NextResponse.json({ co: { ...coRest, currency: co.projects?.currency, flagRequestText } })
+    // token is a credential; the client's signature image and IP are evidence, not editor data — they
+    // were shipped (up to ~500 KB of base64) to every member who could open the draft.
+    const { guardian_flags, token, client_signature_data, signer_ip, ...coRest } = co
+    const pendingApproval = co.status === 'draft' ? !!(await getPendingApprovalForDocument(service, 'co', id)) : false
+    return NextResponse.json({ co: { ...coRest, currency: co.projects?.currency, flagRequestText }, pendingApproval })
   } catch {
     return NextResponse.json({ error: 'Error' }, { status: 500 })
   }
@@ -65,7 +69,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     const service = createServiceClient()
     const { data: co } = await (service as any)
-      .from('change_orders').select('id,status,project_id').eq('id', id).eq('workspace_id', session.workspaceId).single()
+      .from('change_orders')
+      .select('id,status,project_id,line_items,tax_rate,tax_inclusive')
+      .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!co) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (!(await canReadProject(service, session, co.project_id)))
@@ -73,12 +79,6 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (co.status !== 'draft')
       return NextResponse.json({ error: 'Only draft COs can be edited' }, { status: 409 })
 
-    // FIX (re-audit, critical finding): same gate-bypass gap fixed in
-    // api/sow/[id]/route.ts — a CO gated by an approval workflow never
-    // leaves status:'draft' until the chain clears, so this route's only
-    // lock condition (status !== 'draft') never applied to a gated draft.
-    // Nothing stopped the document being edited out from under the
-    // snapshot the approvers were actually reviewing.
     if (await getPendingApprovalForDocument(service, 'co', id)) {
       return NextResponse.json(
         { error: 'This change order has a pending approval request — cancel it before editing.' },
@@ -86,46 +86,55 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       )
     }
 
-    const body = await request.json()
-    const { title, note, lineItems, taxRate, taxInclusive, isRetainerRenewal, timelineImpactDays, scopeImpactNote } = body
+    const body = await request.json().catch(() => null)
+    if (!body || typeof body !== 'object')
+      return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+    const { note, lineItems, taxRate, taxInclusive, isRetainerRenewal } = body
 
-    // FIX (CO-logic fix round): POST /api/co requires a non-empty title;
-    // this route never did — `title?.trim()` happily wrote an empty string
-    // over an existing one. CoEditor's Save/Send buttons are disabled while
-    // `!title.trim()`, so this was unreachable through the normal UI, but
-    // a direct call could blank out a CO's title with no error, same class
-    // of gap as everywhere else in this codebase that validates
-    // server-side even though the client already does.
-    if (!title || !title.trim())
-      return NextResponse.json({ error: 'Title required' }, { status: 400 })
+    const parsedFields = parseCoFields(body)
+    if (!parsedFields.ok) return NextResponse.json({ error: parsedFields.error }, { status: 400 })
+    if (note !== undefined && note !== null && typeof note !== 'string')
+      return NextResponse.json({ error: 'note must be text' }, { status: 400 })
+    if (isRetainerRenewal !== undefined && typeof isRetainerRenewal !== 'boolean')
+      return NextResponse.json({ error: 'isRetainerRenewal must be true or false' }, { status: 400 })
+    if (lineItems !== undefined && !Array.isArray(lineItems))
+      return NextResponse.json({ error: 'lineItems must be a list' }, { status: 400 })
 
-    // FIX (section-10 audit, 10-B3 + 10-B9): same unvalidated arithmetic
-    // and same wrong tax-inclusive subtotal as POST /api/co — both now go
-    // through the one shared implementation. See lib/documents/co-totals.ts.
-    const totals = computeCoTotals(lineItems || [], taxRate ?? 0, taxInclusive)
-    if (!totals.ok) return NextResponse.json({ error: totals.error }, { status: 400 })
-    const { lineItems: items, subtotal, total } = totals.totals
+    // Partial update: only fields that are present change. This route used to behave like PUT —
+    // a body that left out `note`, `lineItems` or `isRetainerRenewal` silently blanked them
+    // (an omitted list saved as an EMPTY list, an omitted flag un-marked a retainer renewal).
+    const update: Record<string, unknown> = { updated_at: new Date().toISOString() }
+    if (parsedFields.fields.title !== undefined)              update.title = parsedFields.fields.title
+    if (parsedFields.fields.scopeImpactNote !== undefined)    update.scope_impact_note = parsedFields.fields.scopeImpactNote
+    if (parsedFields.fields.timelineImpactDays !== undefined) update.timeline_impact_days = parsedFields.fields.timelineImpactDays
+    if (note !== undefined)               update.note = sanitizeRichTextOrNull(note)
+    if (isRetainerRenewal !== undefined)  update.is_retainer_renewal = isRetainerRenewal
 
-    await (service as any).from('change_orders').update({
-      title:               title.trim(),
-      note:                sanitizeRichTextOrNull(note),
-      // FIX (section-10 audit): see app/api/co/route.ts for the full
-      // explanation — line_items is jsonb; storing JSON.stringify(items)
-      // wrote a string, not a native array. accept-counter/route.ts
-      // already writes the array directly; matched that here.
-      line_items:          items,
-      subtotal,
-      tax_rate:            totals.totals.taxRate,
-      tax_inclusive:       totals.totals.taxInclusive,
-      total,
-      is_retainer_renewal: isRetainerRenewal || false,
-      timeline_impact_days: timelineImpactDays != null && timelineImpactDays !== '' ? parseInt(timelineImpactDays, 10) : null,
-      scope_impact_note:    scopeImpactNote?.trim() || null,
-      updated_at:          new Date().toISOString(),
-    }).eq('id', id)
+    if (lineItems !== undefined || taxRate !== undefined || taxInclusive !== undefined) {
+      const totals = computeCoTotals(
+        lineItems ?? co.line_items ?? [],
+        taxRate ?? co.tax_rate ?? 0,
+        taxInclusive ?? co.tax_inclusive,
+      )
+      if (!totals.ok) return NextResponse.json({ error: totals.error }, { status: 400 })
+      update.line_items    = totals.totals.lineItems
+      update.subtotal      = totals.totals.subtotal
+      update.tax_rate      = totals.totals.taxRate
+      update.tax_inclusive = totals.totals.taxInclusive
+      update.total         = totals.totals.total
+    }
+
+    // Guarded on the write itself: a send that lands between the checks above and this update
+    // must not be overwritten by a stale edit.
+    const { data: written, error: updateErr } = await (service as any)
+      .from('change_orders').update(update).eq('id', id).eq('status', 'draft').select('id')
+    if (updateErr) throw new Error(updateErr.message)
+    if (!written || written.length === 0)
+      return NextResponse.json({ error: 'This change order was sent and can no longer be edited.' }, { status: 409 })
 
     return NextResponse.json({ ok: true })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('CO PATCH error:', err)
+    return NextResponse.json({ error: 'Could not save this change order. Please try again.' }, { status: 500 })
   }
 }

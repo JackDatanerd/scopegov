@@ -6,6 +6,9 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
 import { sendDocumentCancelledEmail } from '@/lib/email/templates'
+import { cleanTextField } from '@/lib/utils/sanitize'
+import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
+import { checkedSend } from '@/lib/email/delivery'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -16,7 +19,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
 
     const body = await request.json().catch(() => ({}))
-    const reason: string | undefined = body?.reason?.trim()
+    const cleanedReason = cleanTextField(body?.reason, 1000)
+    if (cleanedReason === null)
+      return NextResponse.json({ error: 'reason must be text' }, { status: 400 })
+    const reason = cleanedReason || undefined
 
     const service = createServiceClient()
     // FIX (doc-completeness audit): added client/workspace so we can
@@ -24,7 +30,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { data: sow } = await (service as any)
       .from('sow_documents')
       .select(`id,status,token,version,project_id,
-        projects(id,name,status,clients(name,email,cc_emails),workspaces(agency_name,brand_colour))`)
+        projects(id,name,status,client_id,clients(name,email,cc_emails),workspaces(agency_name,brand_colour))`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!sow) return NextResponse.json({ error: 'Not found' }, { status: 404 })
@@ -64,12 +70,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // a losing race against a client action) never revokes a token that's
     // still legitimately in play.
     if (sow.token) {
-      try {
-        await (service as any).from('revoked_tokens').insert({
-          token: sow.token, token_type: 'sow', reason: 'withdrawn',
-          revoked_by: session.id,
-        })
-      } catch (e) { console.error('Token revoke insert failed (non-fatal):', e) }
+      // supabase-js returns errors rather than throwing, so this must read `error` itself.
+      const { error: revokeErr } = await (service as any).from('revoked_tokens').insert({
+        token: sow.token, token_type: 'sow', reason: 'withdrawn',
+        revoked_by: session.id, document_id: id,
+      })
+      if (revokeErr) console.error('SOW withdraw: token revoke insert failed (non-fatal):', revokeErr.message)
     }
 
     // Revert project to Intake
@@ -83,28 +89,30 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       actorId: session.id, actorEmail: session.email, actorName: session.name,
       eventType: 'sow.withdrawn', entityType: 'sow',
       entityId: id, entityName: sow.projects?.name,
-      metadata: { version: sow.version },
+      metadata: { version: sow.version, ...(reason ? { reason } : {}) },
     })
 
     // FIX (doc-completeness audit): 'awaiting_signature' / 'changes_requested'
     // are only reachable after the SOW was actually sent to the client, so
     // if we got here they have a live link/email — tell them it's dead.
     const client = sow.projects?.clients
+    let emailed = true
     if (client?.email) {
-      try {
-        await sendDocumentCancelledEmail({
-          to: client.email, cc: client.cc_emails || [],
-          clientName: client.name, agencyName: sow.projects?.workspaces?.agency_name,
-          projectName: sow.projects?.name, documentLabel: 'Statement of Work',
-          documentTitle: `${sow.projects?.name} — SOW v${sow.version}`,
-          action: 'withdrawn', reason: reason || null,
-          brandColour: sow.projects?.workspaces?.brand_colour,
-        })
-      } catch (e) { console.error('SOW withdrawn client email failed:', e) }
+      const cc = await withPrimaryContactCc(service, sow.projects?.client_id, client.email, client.cc_emails)
+      const delivery = await checkedSend(() => sendDocumentCancelledEmail({
+        to: client.email, cc,
+        clientName: client.name, agencyName: sow.projects?.workspaces?.agency_name,
+        projectName: sow.projects?.name, documentLabel: 'Statement of Work',
+        documentTitle: `${sow.projects?.name} — SOW v${sow.version}`,
+        action: 'withdrawn', reason: reason || null,
+        brandColour: sow.projects?.workspaces?.brand_colour,
+      }), 'SOW withdrawn email')
+      emailed = delivery.ok
     }
 
-    return NextResponse.json({ ok: true })
+    return NextResponse.json({ ok: true, clientNotified: emailed })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('SOW withdraw error:', err)
+    return NextResponse.json({ error: 'Could not withdraw this SOW. Please try again.' }, { status: 500 })
   }
 }

@@ -15,6 +15,12 @@ import { getWorkspaceJwtSecret, isWorkspaceDeleted } from '@/lib/utils/workspace
 import { checkRevokedToken, verifySowJwt } from '../_shared'
 import { checkPortalRateLimit, recordPortalAction } from '@/lib/utils/portal-rate-limit'
 import { getClientIp } from '@/lib/utils/request-ip'
+import { cleanTextField, decodeHtmlEntities } from '@/lib/utils/sanitize'
+import { isValidSignatureImage } from '@/lib/utils/signature'
+import { checkedSend } from '@/lib/email/delivery'
+import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
+import { computeContentHash, storeExecutedPdf } from '@/lib/documents/executed-pdf'
+import { createHash } from 'node:crypto'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
@@ -27,17 +33,21 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!rl.allowed) return NextResponse.json({ error: rl.message }, { status: 429 })
     await recordPortalAction(service, clientIp, 'sow.sign')
 
-    const { signerName, signatureData } = await request.json()
-    const ip             = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown'
+    const reqBody = await request.json().catch(() => null)
+    if (!reqBody || typeof reqBody !== 'object')
+      return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
+    const signerName = cleanTextField((reqBody as any).signerName, 120)
+    const signatureData = (reqBody as any).signatureData
+    // The audit trail records where the signature came from: the real client hop, not the raw
+    // x-forwarded-for chain (which can carry several comma-separated addresses).
+    const ip = clientIp || 'unknown'
 
-    if (!signerName || signerName.trim().length < 3)
+    if (!signerName || signerName.length < 3)
       return NextResponse.json({ error: 'Full name required to sign' }, { status: 400 })
-    if (!signatureData || typeof signatureData !== 'string' || !signatureData.startsWith('data:image/'))
+    // Only genuine PNG/JPEG data: an SVG or corrupt image would be stored and then make every
+    // later render of this executed document throw. See lib/utils/signature.ts.
+    if (!isValidSignatureImage(signatureData))
       return NextResponse.json({ error: 'Please draw your signature to sign' }, { status: 400 })
-    // FIX (audit round 3): same missing size cap as the CO accept route —
-    // see that file for the full note.
-    if (signatureData.length > 500_000)
-      return NextResponse.json({ error: 'Signature data is too large' }, { status: 400 })
 
     // Check revoked
     const { revoked } = await checkRevokedToken(service, token)
@@ -46,8 +56,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // Fetch SOW
     const { data: sow } = await (service as any)
       .from('sow_documents')
-      .select(`id, version, status, sections, metadata, expires_at, project_id, workspace_id,
-        projects(id, name, disc, currency, contract_value, client_id, created_by,
+      .select(`id, version, status, sections, metadata, expires_at, project_id, workspace_id, document_number,
+        projects(id, name, disc, currency, contract_value, client_id, created_by, guardian_email,
           clients(name, email, cc_emails, company_name, billing_address, vat_number),
           workspaces(id, agency_name, brand_colour, logo_storage_path, agency_signature_data,
             first_sow_signed_at, legal_address, tax_id, phone, website))`)
@@ -77,6 +87,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const client  = project.clients
     const ws      = project.workspaces
 
+    // One executed SOW per project. A second signature would create a second set of payment
+    // milestones (double billing) and re-point the Guardian address; scope changes to a signed
+    // agreement go through change orders.
+    const { data: otherSigned } = await (service as any)
+      .from('sow_documents').select('id').eq('project_id', project.id).neq('id', sow.id).eq('status', 'signed').limit(1)
+    if (otherSigned && otherSigned.length > 0)
+      return NextResponse.json({ error: 'This project already has a signed agreement.' }, { status: 409 })
+
     // ── 1. Mark SOW signed ───────────────────────────────────
     // FIX (re-audit, race-condition finding): the status check above
     // (`sow.status !== 'awaiting_signature'`) reads then this writes —
@@ -95,7 +113,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .update({
         status:      'signed',
         signed_at:   now,
-        signed_by:   signerName.trim(),
+        signed_by:   signerName,
         signer_email: client.email,
         signer_ip:   ip,
         client_signature_data: signatureData,
@@ -154,11 +172,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         // missing entirely. Non-fatal: on failure the client just falls
         // back to the same "invalid" experience that existed before this
         // fix, not a broken signing flow.
-        try {
-          await (service as any).from('revoked_tokens').insert({
-            token, token_type: 'sow', reason: 'superseded', document_id: sow.id,
-          })
-        } catch (e) { console.error('SOW original-token supersede record failed (non-fatal):', e) }
+        const { error: supersedeErr } = await (service as any).from('revoked_tokens').insert({
+          token, token_type: 'sow', reason: 'superseded', document_id: sow.id,
+        })
+        if (supersedeErr) console.error('SOW original-token supersede record failed (non-fatal):', supersedeErr.message)
       }
     } catch (e) { console.error('SOW post-signature token reissue failed (original link stays in effect):', e) }
 
@@ -179,11 +196,33 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       updated_at:    now,
     }).eq('id', project.id).neq('status', 'Active')
 
-    // ── 3. Set guardian email ─────────────────────────────────
-    // Format: proj-{8chars of sowId}@guard.scopegov.app (carry-forward §2.4)
+    // ── 3. Guardian email ──────────────────────────────────────
+    // Stable for the life of the project. It used to be rebuilt from THIS SOW's id on every
+    // signature, so a later re-sign changed the address and mail the client had already been
+    // told to forward to it was silently dropped ("No matching project"). Only generated when
+    // the project has none, derived from the project id, and checked for collisions (the
+    // inbound handler resolves a project with .single() on this value).
     const guardianDomain = process.env.NEXT_PUBLIC_GUARDIAN_EMAIL_DOMAIN || 'guard.scopegov.app'
-    const guardianEmail  = `proj-${sow.id.replace(/-/g,'').slice(0,8)}@${guardianDomain}`
-    await (service as any).from('projects').update({ guardian_email: guardianEmail }).eq('id', project.id)
+    let guardianEmail: string = project.guardian_email || ''
+    if (!guardianEmail) {
+      const compact = String(project.id).replace(/-/g, '')
+      for (const len of [8, 12, 16, 20, 32]) {
+        const candidate = `proj-${compact.slice(0, len)}@${guardianDomain}`
+        const { data: clash } = await (service as any)
+          .from('projects').select('id').ilike('guardian_email', candidate).neq('id', project.id).limit(1)
+        if (!clash || clash.length === 0) { guardianEmail = candidate; break }
+      }
+      if (guardianEmail) {
+        const { error: gErr } = await (service as any).from('projects').update({ guardian_email: guardianEmail }).eq('id', project.id)
+        if (gErr) {
+          console.error('SOW sign: could not set guardian_email:', gErr.message)
+          await logAudit(service, {
+            workspaceId: sow.workspace_id, actorId: null, actorEmail: 'system@scopegov.app', actorName: 'ScopeGov',
+            eventType: 'sow.guardian_email_failed', entityType: 'sow', entityId: sow.id, metadata: { project_id: project.id, error: gErr.message },
+          })
+        }
+      }
+    }
 
     // ── 4. Create scope snapshot (spec §0.13 — in same transaction) ─
     // FIX (re-audit): the 'deliverables' section moved from prose `content`
@@ -212,33 +251,54 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // and its write: version matched the stale value it read, the write
     // "succeeded", and it silently clobbered the just-re-signed scope.
     const { data: existingSnap } = await (service as any)
-      .from('project_scope_snapshot').select('id,version').eq('project_id', project.id).single()
+      .from('project_scope_snapshot').select('id,version').eq('project_id', project.id).maybeSingle()
 
-    if (existingSnap) {
-      await (service as any).from('project_scope_snapshot').update({
-        deliverables, out_of_scope: outOfScope,
-        last_updated_at: now, last_updated_by: 'signing',
-        version: (existingSnap.version || 1) + 1,
-      }).eq('project_id', project.id)
-    } else {
-      await (service as any).from('project_scope_snapshot').insert({
-        project_id:      project.id,
-        deliverables,
-        out_of_scope:    outOfScope,
-        last_updated_at: now,
-        last_updated_by: 'signing',
+    // supabase-js returns errors instead of throwing — an unchecked failure here left a signed
+    // SOW with NO Guardian baseline and no record that anything had gone wrong.
+    const snapResult = existingSnap
+      ? await (service as any).from('project_scope_snapshot').update({
+          deliverables, out_of_scope: outOfScope,
+          last_updated_at: now, last_updated_by: 'signing',
+          version: (existingSnap.version || 1) + 1,
+        }).eq('project_id', project.id)
+      : await (service as any).from('project_scope_snapshot').insert({
+          project_id:      project.id,
+          deliverables,
+          out_of_scope:    outOfScope,
+          last_updated_at: now,
+          last_updated_by: 'signing',
+        })
+    if (snapResult.error) {
+      console.error('SOW sign: scope snapshot write failed:', snapResult.error.message)
+      await logAudit(service, {
+        workspaceId: sow.workspace_id, actorId: null, actorEmail: 'system@scopegov.app', actorName: 'ScopeGov',
+        eventType: 'sow.snapshot_failed', entityType: 'sow', entityId: sow.id,
+        metadata: { project_id: project.id, error: snapResult.error.message },
       })
     }
 
     // ── 5. Mark firstSowSignedAt if null ─────────────────────
     if (!ws.first_sow_signed_at) {
-      await (service as any).from('workspaces').update({
+      const { error: fsErr } = await (service as any).from('workspaces').update({
         first_sow_signed_at: now,
       }).eq('id', sow.workspace_id)
+      if (fsErr) console.error('SOW sign: first_sow_signed_at update failed:', fsErr.message)
     }
 
     // ── 6. Create payment milestones from SOW metadata ────────
     await createMilestones(service, project.id, sow.id, sow.workspace_id, sow.metadata, project.contract_value, project.currency, sow.sections || [])
+
+    // ── 6b. Fingerprint what was agreed ───────────────────────
+    // SHA-256 over the exact content the client signed (sections incl. tables, metadata,
+    // contract value, signer, and a digest of the signature image). Stored on the SOW and in
+    // the audit trail so a later dispute can show the record was not altered after signing.
+    const contentHash = computeContentHash({
+      kind: 'sow', sowId: sow.id, version: sow.version, projectId: project.id,
+      sections: sow.sections || [], metadata: sow.metadata || {},
+      contractValue: project.contract_value, currency: project.currency,
+      signedBy: signerName, signedAt: now, signerEmail: client.email,
+      signatureSha256: createHash('sha256').update(signatureData).digest('hex'),
+    })
 
     // ── 7. Audit log ──────────────────────────────────────────
     await logAudit(service, {
@@ -250,15 +310,17 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       // non-platform-user actor; actorEmail/actorName already carry the
       // real identity.
       workspaceId: sow.workspace_id, actorId: null,
-      actorEmail: client.email, actorName: signerName.trim(),
+      actorEmail: client.email, actorName: signerName,
       eventType: 'sow.signed', entityType: 'sow',
       entityId: sow.id, entityName: project.name,
-      metadata: { version: sow.version, signer_ip: ip, guardian_email: guardianEmail },
+      metadata: { version: sow.version, signer_ip: ip, guardian_email: guardianEmail, content_hash: contentHash },
     })
 
-    // ── 8. Build the signed PDF once, attach to both confirmation emails ──
-    // FIX: both email templates already claimed "A PDF copy is attached"
-    // in their copy — nothing ever actually generated or attached one.
+    // ── 8. Render the executed PDF ONCE, freeze it, attach it to both emails ──
+    // The rendered buffer is stored (private `pdfs` bucket) and served for every later download,
+    // so the executed document can no longer drift when live rows change (agency signature,
+    // addresses, retainer renewals rewriting contract_value, monthly retainer milestones).
+    let pdfBuffer: Buffer | null = null
     let pdfAttachment: { filename: string; content: string } | undefined
     try {
       let logoUrl: string | null = null
@@ -271,7 +333,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         .select('title, amount, percentage, trigger, due_date, status')
         .eq('sow_id', sow.id)
         .order('due_date', { ascending: true, nullsFirst: false })
-      const pdfBuffer = await renderSowPdf({
+      pdfBuffer = await renderSowPdf({
         agencyName:    ws.agency_name,
         agencyLogoUrl: logoUrl,
         brandColour:   ws.brand_colour || '#1A5C3A',
@@ -287,99 +349,100 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         contractValue: project.contract_value || 0,
         currency:      project.currency || 'USD',
         sections:      sow.sections || [],
-        // FIX (section-9 audit, 9-G7 / 9-G4): drafting language (so
-        // schema-driven table headers localize) and the MSA
-        // cross-reference, which SowPdfData has declared and rendered all
-        // along while no route ever passed it.
         language:      sow.metadata?.language || 'en',
         msaReference:  sow.metadata?.msaReference || null,
         paymentSchedule: (milestones || []).map((m: any) => ({
           title: m.title, amount: m.amount, percentage: m.percentage,
           trigger: m.trigger, dueDate: m.due_date, status: m.status,
         })),
-        signedBy:      signerName.trim(),
+        signedBy:      signerName,
         signedAt:      now,
         agencySignatureData: ws.agency_signature_data || null,
         clientSignatureData: signatureData,
         version:       sow.version,
+        // The emailed executed copy omitted the document number that every later download of the
+        // same SOW carries.
+        documentNumber: sow.document_number || null,
       })
       pdfAttachment = { filename: `SOW-${project.name.replace(/[^a-z0-9]/gi, '-')}.pdf`, content: pdfBuffer.toString('base64') }
-    } catch (e) { console.error('SOW PDF generation for email failed (emails will send without attachment):', e) }
+    } catch (e) { console.error('SOW PDF generation failed (emails will send without attachment):', e) }
+
+    // Freeze. Two separate updates so a deployment that hasn't applied migration 061 yet still
+    // gets the stored PDF path (pdf_path is an original column; content_hash is new).
+    if (pdfBuffer) {
+      const storedPath = await storeExecutedPdf(service, { workspaceId: sow.workspace_id, kind: 'sow', id: sow.id, buffer: pdfBuffer })
+      if (storedPath) {
+        const { error: pathErr } = await (service as any).from('sow_documents').update({ pdf_path: storedPath }).eq('id', sow.id)
+        if (pathErr) console.error('SOW sign: pdf_path update failed:', pathErr.message)
+      }
+    }
+    const { error: hashErr } = await (service as any).from('sow_documents').update({ content_hash: contentHash }).eq('id', sow.id)
+    if (hashErr) console.error('SOW sign: content_hash update failed (is migration 061 applied?):', hashErr.message)
 
     // ── 9. Notify SEND_SOW holders (Event 3) — awaited ───────
-    try {
-      const agencyEmails = await getMemberEmailsWithPermission(service, sow.workspace_id, 'SEND_SOW', 25, 'sow_signed', project.id)
-      if (agencyEmails.length) {
-        await sendSowSignedAgencyEmail({
-          to:          agencyEmails,
-          agencyName:  ws.agency_name,
-          clientName:  client.name,
-          projectName: project.name + (project.disc ? ` — ${project.disc}` : ''),
-          signedBy:    signerName.trim(),
-          portalUrl:   `${process.env.NEXT_PUBLIC_APP_URL}/projects/${project.id}?tab=sow`,
-          attachments: pdfAttachment ? [pdfAttachment] : undefined,
-        })
-      }
-    } catch (e) { console.error('Agency signed email failed:', e) }
+    const agencyEmails = await getMemberEmailsWithPermission(service, sow.workspace_id, 'SEND_SOW', 25, 'sow_signed', project.id).catch(() => [] as string[])
+    if (agencyEmails.length) {
+      await checkedSend(() => sendSowSignedAgencyEmail({
+        to:          agencyEmails,
+        agencyName:  ws.agency_name,
+        clientName:  client.name,
+        projectName: project.name + (project.disc ? ` — ${project.disc}` : ''),
+        signedBy:    signerName,
+        portalUrl:   `${process.env.NEXT_PUBLIC_APP_URL}/projects/${project.id}?tab=sow`,
+        attachments: pdfAttachment ? [pdfAttachment] : undefined,
+      }), 'SOW signed (agency) email')
+    }
     await notifyMembersWithPermission(service, {
       workspaceId: sow.workspace_id, permission: 'SEND_SOW', eventType: 'sow_signed',
       type: 'sow_signed', title: `SOW signed — ${project.name}`,
-      body: `${signerName.trim()} signed the Statement of Work.`,
+      body: `${signerName} signed the Statement of Work.`,
       entityType: 'project', entityId: project.id, projectId: project.id,
     })
 
     // ── 10. Confirm to client (Event 4) ───────────────────────
-    try {
-      // FIX (portal audit, section 18 — closing pass): every other portal-
-      // link construction site in the codebase (send-sow.ts, send-co.ts,
-      // send-invoice.ts, accept-co-counter.ts, finalize-co.ts, and all
-      // three /remind routes) uses `NEXT_PUBLIC_PORTAL_URL ||
-      // NEXT_PUBLIC_APP_URL` — the client portal is deployed on its own
-      // domain (see README §2.1: sign.scopegov.app, same Vercel
-      // deployment as app.scopegov.app but a distinct configured domain).
-      // This one site — arguably the single most important client-facing
-      // link in the app, since it's the confirmation the client gets
-      // immediately after signing — hardcoded NEXT_PUBLIC_APP_URL only,
-      // silently dropping the dedicated portal-domain routing whenever
-      // the two env vars differ in production.
-      const portalBase = process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL
-      await sendSowSignedClientEmail({
-        to:          client.email,
-        cc:          client.cc_emails || [],
-        clientName:  client.name,
-        agencyName:  ws.agency_name,
-        projectName: project.name,
-        portalUrl:   `${portalBase}/portal/sow/${clientToken}`,
-        attachments: pdfAttachment ? [pdfAttachment] : undefined,
-      })
-    } catch (e) { console.error('Client confirm email failed:', e) }
+    // Portal links use NEXT_PUBLIC_PORTAL_URL || NEXT_PUBLIC_APP_URL everywhere else.
+    const portalBase = process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL
+    const confirmCc = await withPrimaryContactCc(service, project.client_id, client.email, client.cc_emails)
+    await checkedSend(() => sendSowSignedClientEmail({
+      to:          client.email,
+      cc:          confirmCc,
+      clientName:  client.name,
+      agencyName:  ws.agency_name,
+      projectName: project.name,
+      portalUrl:   `${portalBase}/portal/sow/${clientToken}`,
+      attachments: pdfAttachment ? [pdfAttachment] : undefined,
+    }), 'SOW signed (client) email')
 
     return NextResponse.json({ ok: true, guardianEmail, token: clientToken })
   } catch (err) {
     console.error('SOW sign error:', err)
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    return NextResponse.json({ error: 'Could not complete signing. Please try again.' }, { status: 500 })
   }
 }
 
+// Pulls plain-text items out of a rich-text section: <li> items, falling back to paragraphs.
+// `[\s\S]*?` (not `.`) so an item that spans lines is not silently dropped, entities are decoded
+// (Guardian classifies client messages against this text, so "R&amp;D" must read "R&D"), and the
+// cap is generous — an out-of-scope list past 50 items used to be cut off without a word.
 function extractDeliverables(html: string): Array<{ title: string }> {
   if (!html) return []
-  // Extract list items from HTML
+  const clean = (fragment: string) =>
+    decodeHtmlEntities(fragment.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim()
   const items: Array<{ title: string }> = []
-  const liRegex = /<li[^>]*>(.*?)<\/li>/gi
+  const liRegex = /<li[^>]*>([\s\S]*?)<\/li>/gi
   let match
   while ((match = liRegex.exec(html)) !== null) {
-    const text = match[1].replace(/<[^>]+>/g, '').trim()
+    const text = clean(match[1])
     if (text) items.push({ title: text })
   }
-  // Fallback: extract paragraphs
   if (!items.length) {
-    const pRegex = /<p[^>]*>(.*?)<\/p>/gi
+    const pRegex = /<p[^>]*>([\s\S]*?)<\/p>/gi
     while ((match = pRegex.exec(html)) !== null) {
-      const text = match[1].replace(/<[^>]+>/g, '').trim()
+      const text = clean(match[1])
       if (text && text.length > 3) items.push({ title: text })
     }
   }
-  return items.slice(0, 50)
+  return items.slice(0, 200)
 }
 
 // FIX (re-audit): this used to (a) insert milestones one at a time in a
@@ -431,7 +494,7 @@ async function createMilestones(
       // the 1st of the signing month gives the cron the same key it
       // computes for itself, closing that gap.
       const signedOn = new Date()
-      const firstOfSigningMonth = `${signedOn.getFullYear()}-${String(signedOn.getMonth() + 1).padStart(2, '0')}-01`
+      const firstOfSigningMonth = `${signedOn.getUTCFullYear()}-${String(signedOn.getUTCMonth() + 1).padStart(2, '0')}-01`
       milestones.push({ title: 'Monthly retainer', amount: roundCurrency(contractValue), trigger: 'Monthly — first of month', type: 'retainer_monthly', percentage: null, dueDate: firstOfSigningMonth })
     } else if (structure === 'milestones') {
       // FIX (section-9 audit, real bug — now genuinely fixed): 'milestones'

@@ -6,7 +6,9 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
 import { checkReminderCooldown } from '@/lib/utils/reminder-cooldown'
-import { escapeHtml } from '@/lib/utils/sanitize'
+import { escapeHtml, sanitizeDisplayName } from '@/lib/utils/sanitize'
+import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
+import { checkedSend } from '@/lib/email/delivery'
 import { formatCurrency } from '@/lib/utils/format'
 import { Resend } from 'resend'
 
@@ -30,7 +32,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { data: co } = await (service as any)
       .from('change_orders')
       .select(`id, title, status, token, total, counter_amount, expires_at, project_id,
-        projects(id, name, currency,
+        projects(id, name, currency, client_id,
           clients(name, email, cc_emails),
           workspaces(agency_name, brand_colour))`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
@@ -120,10 +122,17 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const clientHtml  = escapeHtml(client?.name)
     const projectHtml = escapeHtml(project?.name)
 
-    await resendClient().emails.send({
-      from:    `${ws?.agency_name} via ScopeGov <${process.env.RESEND_FROM_EMAIL}>`,
-      to:      client?.email,
-      cc:      client?.cc_emails?.filter(Boolean) || [],
+    if (!client?.email)
+      return NextResponse.json({ error: 'This client has no email address on file.' }, { status: 400 })
+    const cc = await withPrimaryContactCc(service, project?.client_id, client.email, client.cc_emails)
+
+    // resend.emails.send() resolves with { error } on API failures instead of throwing. The cooldown
+    // claim above is recorded BEFORE sending; a failed send logs 'reminder.failed', which
+    // checkReminderCooldown treats as "nothing went out", so the agency is not locked out for 24h.
+    const delivery = await checkedSend(() => resendClient().emails.send({
+      from:    `${sanitizeDisplayName(ws?.agency_name)} via ScopeGov <${process.env.RESEND_FROM_EMAIL}>`,
+      to:      client.email,
+      cc,
       subject: isCountersign
         ? `Reminder: Please confirm your change order — ${co.title}`
         : `Reminder: Change order awaiting your response — ${co.title}`,
@@ -150,20 +159,22 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         <a href="https://scopegov.app" style="color:#1A5C3A;">ScopeGov</a>
       </p>
       </body></html>`,
-    })
+    }), 'CO reminder')
 
-    // FIX (section-10 re-pass): this un-stall used to run BEFORE the
-    // Resend call above, alongside the cooldown-protecting audit log
-    // write. That log write is a deliberate, documented trade-off
-    // (narrows a double-click race) — but the status flip isn't the same
-    // kind of thing: if the send throws (network blip, provider hiccup),
-    // the outer catch below returns a 500, yet the CO had already been
-    // moved out of 'stalled' into 'awaiting_response' with a fresh
-    // sent_at, looking actively followed-up-on even though the client
-    // got nothing. Worse, the cooldown this same request just logged
-    // blocks an immediate retry of the actual send. Doing this only once
-    // the send has actually gone out keeps 'stalled' an honest signal
-    // that no reminder is currently in flight.
+    if (!delivery.ok) {
+      await logAudit(service, {
+        workspaceId: session.workspaceId, actorId: session.id,
+        actorEmail: session.email, actorName: session.name,
+        eventType: 'reminder.failed', entityType: 'change_order',
+        entityId: id, entityName: co.title,
+        metadata: { type: 'co', error: delivery.error },
+      })
+      return NextResponse.json({
+        error: 'The reminder email could not be delivered. You can copy the response link and send it yourself.',
+        detail: delivery.error,
+      }, { status: 502 })
+    }
+
     if (wasStalled) {
       await (service as any).from('change_orders').update({
         status: 'awaiting_response', sent_at: new Date().toISOString(), updated_at: new Date().toISOString(),
@@ -172,6 +183,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     return NextResponse.json({ ok: true })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('CO remind error:', err)
+    return NextResponse.json({ error: 'Could not send the reminder. Please try again.' }, { status: 500 })
   }
 }

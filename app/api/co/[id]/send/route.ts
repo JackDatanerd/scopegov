@@ -3,7 +3,7 @@ export const runtime = 'nodejs'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
-import { sendCoDocument } from '@/lib/documents/send-co'
+import { sendCoDocument, validateCoForSend } from '@/lib/documents/send-co'
 import { evaluateApprovalGate } from '@/lib/approvals/engine'
 import { canReadProject } from '@/lib/utils/project-access'
 import { isTerminalStatus } from '@/lib/utils/project-status'
@@ -52,22 +52,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // previously stopped an empty or $0 change order from being sent —
     // the client would be asked to accept/decline/sign a document that
     // describes no actual work.
-    const lineItems = typeof co.line_items === 'string' ? JSON.parse(co.line_items) : (co.line_items || [])
-    if (lineItems.length === 0)
-      return NextResponse.json({ error: 'Add at least one line item before sending this change order.' }, { status: 400 })
-    if (!co.total || co.total <= 0)
-      return NextResponse.json({ error: 'This change order has no value — add line item amounts before sending.' }, { status: 400 })
-    // FIX (CO-logic fix round): this pair of checks confirmed the CO had
-    // *some* value but never confirmed any individual line item said what
-    // that value was for. computeCoTotals validates quantity/rate/length
-    // but never required description — a line item with a real rate and a
-    // blank description passed both checks above and reached the client
-    // (and the PDF) as a billed amount with nothing describing it. Kept
-    // here rather than in computeCoTotals so a draft can still be saved
-    // mid-edit with an item that has a rate but no description yet — this
-    // only blocks it from being sent to the client in that state.
-    if (lineItems.some((li: any) => (li.total || 0) > 0 && !String(li.description || '').trim()))
-      return NextResponse.json({ error: 'Every line item with a value needs a description.' }, { status: 400 })
+    // Shared with the approval chain's auto-send (sendCoDocument re-runs it).
+    const invalid = validateCoForSend({ total: co.total, lineItems: co.line_items })
+    if (invalid) return NextResponse.json({ error: invalid }, { status: 400 })
 
     const project = co.projects
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
@@ -116,14 +103,19 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       })
     }
 
+    const reqBody = await request.json().catch(() => ({} as any))
     const result = await sendCoDocument(service, {
       coId: id,
       workspaceId: session.workspaceId,
       actorId: session.id, actorEmail: session.email, actorName: session.name,
+      expiresInDays: reqBody?.expiresInDays,
     })
 
     if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status })
-    return NextResponse.json({ ok: true, token: result.token, portalUrl: result.portalUrl, documentNumber: result.documentNumber })
+    return NextResponse.json({
+      ok: true, token: result.token, portalUrl: result.portalUrl, documentNumber: result.documentNumber,
+      emailSent: result.emailSent, ...(result.emailError ? { emailError: result.emailError } : {}),
+    })
   } catch (err) {
     console.error('CO send error:', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

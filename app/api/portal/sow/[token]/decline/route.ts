@@ -10,6 +10,10 @@ import { checkRevokedToken, verifySowJwt } from '../_shared'
 import { isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
 import { checkPortalRateLimit, recordPortalAction } from '@/lib/utils/portal-rate-limit'
 import { getClientIp } from '@/lib/utils/request-ip'
+import { cleanTextField } from '@/lib/utils/sanitize'
+import { checkedSend } from '@/lib/email/delivery'
+import { sendClientResponseReceivedEmail } from '@/lib/email/templates'
+import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
@@ -21,14 +25,20 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!rl.allowed) return NextResponse.json({ error: rl.message }, { status: 429 })
     await recordPortalAction(service, clientIp, 'sow.decline')
 
-    const { reason } = await request.json().catch(() => ({ reason: null }))
+    const reqBody = await request.json().catch(() => ({} as any))
+    // Free text from an unauthenticated visitor: type-checked, stripped of markup and capped (it
+    // used to be stored, audited and pushed into notifications verbatim, at any length).
+    const cleanedReason = cleanTextField(reqBody?.reason, 2000)
+    if (cleanedReason === null)
+      return NextResponse.json({ error: 'reason must be text' }, { status: 400 })
+    const reason = cleanedReason || undefined
 
     const { revoked } = await checkRevokedToken(service, token)
     if (revoked) return NextResponse.json({ error: 'Link no longer active' }, { status: 410 })
 
     const { data: sow } = await (service as any)
       .from('sow_documents')
-      .select('id,version,status,project_id,workspace_id,projects(id,name,workspaces(agency_name),clients(name,email))')
+      .select('id,version,status,project_id,workspace_id,projects(id,name,client_id,workspaces(agency_name,brand_colour),clients(name,email,cc_emails))')
       .eq('token', token).single()
 
     if (!sow) return NextResponse.json({ error: 'Not found' }, { status: 404 })
@@ -76,9 +86,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'This SOW was already responded to' }, { status: 409 })
 
     // Revoke token — reason: 'declined' (spec §4.3)
-    await (service as any).from('revoked_tokens').insert({
-      token, token_type: 'sow', reason: 'declined',
+    const { error: revokeErr } = await (service as any).from('revoked_tokens').insert({
+      token, token_type: 'sow', reason: 'declined', document_id: sow.id,
     })
+    if (revokeErr) console.error('SOW decline: token revoke insert failed (non-fatal):', revokeErr.message)
 
     // FIX (re-audit, cron/portal section): if sow-stall's cron already
     // flipped this project to status='Stalled'/stall_reason='sow_unsigned'
@@ -107,28 +118,36 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       actorEmail: client.email, actorName: client.name,
       eventType: 'sow.declined', entityType: 'sow',
       entityId: sow.id, entityName: project.name,
-      metadata: { version: sow.version, reason },
+      metadata: { version: sow.version, ...(reason ? { reason } : {}) },
     })
 
     // Notify agency (Event 5) — awaited
-    try {
-      const emails = await getMemberEmailsWithPermission(service, sow.workspace_id, 'SEND_SOW', 25, 'sow_declined', project.id)
-      if (emails.length) {
-        await sendSowDeclinedEmail({
-          to: emails, agencyName: project.workspaces.agency_name,
-          clientName: client.name, projectName: project.name, reason,
-        })
-      }
-    } catch (e) { console.error('SOW declined email failed:', e) }
+    const emails = await getMemberEmailsWithPermission(service, sow.workspace_id, 'SEND_SOW', 25, 'sow_declined', project.id).catch(() => [] as string[])
+    if (emails.length) {
+      await checkedSend(() => sendSowDeclinedEmail({
+        to: emails, agencyName: project.workspaces.agency_name,
+        clientName: client.name, projectName: project.name, reason, projectId: project.id,
+      }), 'SOW declined (agency) email')
+    }
+    // Confirm receipt to the client — they previously got nothing back after declining.
+    if (client.email) {
+      const cc = await withPrimaryContactCc(service, project.client_id, client.email, client.cc_emails)
+      await checkedSend(() => sendClientResponseReceivedEmail({
+        to: client.email, cc, clientName: client.name, agencyName: project.workspaces.agency_name,
+        projectName: project.name, documentLabel: 'Statement of Work', response: 'declined',
+        note: reason ? reason.slice(0, 500) : null, brandColour: project.workspaces.brand_colour,
+      }), 'SOW declined (client receipt)')
+    }
     await notifyMembersWithPermission(service, {
       workspaceId: sow.workspace_id, permission: 'SEND_SOW', eventType: 'sow_declined',
       type: 'sow_declined', title: `SOW declined — ${project.name}`,
-      body: reason ? `${client.name} declined: ${reason}` : `${client.name} declined the Statement of Work.`,
+      body: reason ? `${client.name} declined: ${reason.slice(0, 200)}` : `${client.name} declined the Statement of Work.`,
       entityType: 'project', entityId: project.id, projectId: project.id,
     })
 
     return NextResponse.json({ ok: true })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('SOW decline error:', err)
+    return NextResponse.json({ error: 'Could not record your response. Please try again.' }, { status: 500 })
   }
 }

@@ -81,7 +81,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     })
 
     if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status })
-    return NextResponse.json({ ok: true, awaitingCountersignature: true })
+    return NextResponse.json({
+      ok: true, awaitingCountersignature: true,
+      emailSent: result.emailSent, ...(result.emailError ? { emailError: result.emailError } : {}),
+    })
   } catch (err) {
     console.error('CO accept-counter error:', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

@@ -6,6 +6,7 @@ import { getSession } from '@/lib/auth/session'
 import { renderCoPdf } from '@/lib/pdf/renderer'
 import { canReadProject } from '@/lib/utils/project-access'
 import { getContractValueBefore } from '@/lib/documents/co-contract-value'
+import { fetchExecutedPdf } from '@/lib/documents/executed-pdf'
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -16,10 +17,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const service = createServiceClient()
     const { data: co } = await (service as any)
       .from('change_orders')
-      .select(`id, title, note, version, status, document_number, line_items, subtotal, tax_rate, tax_inclusive, total,
+      .select(`id, title, note, version, status, document_number, pdf_path, is_retainer_renewal, line_items, subtotal, tax_rate, tax_inclusive, total,
         timeline_impact_days, scope_impact_note,
         accepted_at, accepted_by, client_signature_data, project_id,
-        projects(id, name, currency, contract_value,
+        projects(id, name, type, currency, contract_value,
           clients(name, company_name, billing_address, vat_number),
           workspaces(agency_name, brand_colour, logo_storage_path, agency_signature_data,
             legal_address, tax_id, phone, website))`)
@@ -31,6 +32,23 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     // FIX (audit round 3): see lib/utils/project-access.ts.
     if (!(await canReadProject(service, session, co.project_id)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
+    const fileName = `CO-${String(co.title).replace(/[^a-z0-9]/gi, '-')}.pdf`
+    // An accepted CO is served from the copy frozen at acceptance (lib/documents/executed-pdf.ts), so it
+    // cannot drift when live rows do. Older accepted COs fall through to a live render.
+    if (co.status === 'accepted') {
+      const frozen = await fetchExecutedPdf(service, co.pdf_path)
+      if (frozen) {
+        return new NextResponse(new Uint8Array(frozen), {
+          headers: {
+            'Content-Type': 'application/pdf',
+            'Content-Disposition': `attachment; filename="${fileName}"`,
+            'Content-Length': String(frozen.length),
+            'Cache-Control': 'private, no-cache',
+          },
+        })
+      }
+    }
 
     const ws = co.projects?.workspaces
     let logoUrl: string | null = null
@@ -105,11 +123,14 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       documentNumber: co.document_number || null,
       sowNumber:   sow?.document_number || null,
       contractValueBefore,
+      // A retainer renewal replaces the monthly rate; it is not "original value + this CO".
+      isRetainerRenewal: !!co.is_retainer_renewal && co.projects?.type === 'retainer',
+      revisedContractValue: (!!co.is_retainer_renewal && co.projects?.type === 'retainer') ? Number(co.total || 0) : null,
       timelineImpactDays: co.timeline_impact_days ?? null,
       scopeImpactNote:    co.scope_impact_note || null,
     })
 
-    const filename = `CO-${co.title.replace(/[^a-z0-9]/gi, '-')}.pdf`
+    const filename = fileName
 
     // BUG-008: Uint8Array for NextResponse BodyInit
     return new NextResponse(new Uint8Array(pdfBuffer), {

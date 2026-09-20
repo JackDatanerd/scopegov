@@ -6,6 +6,7 @@ import { jwtVerify } from 'jose'
 import { renderCoPdf } from '@/lib/pdf/renderer'
 import { getWorkspaceJwtSecret, isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
 import { getContractValueBefore } from '@/lib/documents/co-contract-value'
+import { fetchExecutedPdf } from '@/lib/documents/executed-pdf'
 
 // FIX (doc-completeness audit, finding #9): no portal-scoped PDF route
 // existed for change orders at all — a client who accepted a CO had no
@@ -30,8 +31,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
     const CO_PDF_COLUMNS = `id,title,note,status,line_items,subtotal,tax_rate,tax_inclusive,total,
         timeline_impact_days,scope_impact_note,
-        document_number,accepted_by,accepted_at,client_signature_data,workspace_id,project_id,
-        projects(id,name,currency,contract_value,clients(name,email,company_name,billing_address,vat_number),
+        document_number,accepted_by,accepted_at,client_signature_data,workspace_id,project_id,pdf_path,is_retainer_renewal,
+        projects(id,name,type,currency,contract_value,clients(name,email,company_name,billing_address,vat_number),
           workspaces(id,agency_name,brand_colour,logo_storage_path,agency_signature_data,
             legal_address,tax_id,phone,website))`
 
@@ -76,6 +77,21 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         await jwtVerify(token, secret)
       } catch {
         return NextResponse.json({ error: 'Invalid or expired link' }, { status: 401 })
+      }
+    }
+
+    // Frozen executed copy (lib/documents/executed-pdf.ts); older acceptances fall back to a live render.
+    {
+      const frozen = await fetchExecutedPdf(service, co.pdf_path)
+      if (frozen) {
+        return new NextResponse(new Uint8Array(frozen), {
+          headers: {
+            'Content-Type': 'application/pdf',
+            'Content-Disposition': `attachment; filename="${co.document_number || 'CO'}.pdf"`,
+            'Content-Length': String(frozen.length),
+            'Cache-Control': 'private, no-cache',
+          },
+        })
       }
     }
 
@@ -133,6 +149,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       documentNumber: co.document_number || null,
       sowNumber:     sow?.document_number || null,
       contractValueBefore,
+      isRetainerRenewal: !!co.is_retainer_renewal && project?.type === 'retainer',
+      revisedContractValue: (!!co.is_retainer_renewal && project?.type === 'retainer') ? Number(co.total || 0) : null,
       timelineImpactDays: co.timeline_impact_days ?? null,
       scopeImpactNote:    co.scope_impact_note || null,
     })

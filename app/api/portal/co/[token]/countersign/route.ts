@@ -7,6 +7,8 @@ import { getWorkspaceJwtSecret, isWorkspaceDeleted } from '@/lib/utils/workspace
 import { finalizeCoAcceptance } from '@/lib/documents/finalize-co'
 import { checkPortalRateLimit, recordPortalAction } from '@/lib/utils/portal-rate-limit'
 import { getClientIp } from '@/lib/utils/request-ip'
+import { cleanTextField } from '@/lib/utils/sanitize'
+import { isValidSignatureImage } from '@/lib/utils/signature'
 
 // FIX (doc-completeness audit, migration 014): new endpoint — the client's
 // signing step for a CO that reached 'awaiting_countersignature' after the
@@ -23,17 +25,17 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!rl.allowed) return NextResponse.json({ error: rl.message }, { status: 429 })
     await recordPortalAction(service, clientIp, 'co.countersign')
 
-    const { signerName, signatureData } = await request.json()
-    // FIX (doc-completeness audit, finding #2): same capture pattern as
-    // the direct-accept route and the SOW sign route — see migration 015.
-    const ip         = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown'
+    const reqBody = await request.json().catch(() => null)
+    if (!reqBody || typeof reqBody !== 'object')
+      return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
+    const signerName = cleanTextField((reqBody as any).signerName, 120)
+    const signatureData = (reqBody as any).signatureData
+    const ip = clientIp || 'unknown'
 
-    if (!signerName || signerName.trim().length < 3)
+    if (!signerName || signerName.length < 3)
       return NextResponse.json({ error: 'Full name required' }, { status: 400 })
-    if (!signatureData || typeof signatureData !== 'string' || !signatureData.startsWith('data:image/'))
+    if (!isValidSignatureImage(signatureData))
       return NextResponse.json({ error: 'Please draw your signature to confirm' }, { status: 400 })
-    if (signatureData.length > 500_000)
-      return NextResponse.json({ error: 'Signature data is too large' }, { status: 400 })
 
     const { data: revoked } = await (service as any)
       .from('revoked_tokens').select('id').eq('token', token).single()
@@ -44,7 +46,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .select(`id,title,note,status,version,line_items,subtotal,tax_rate,tax_inclusive,total,flag_id,
         timeline_impact_days,scope_impact_note,is_retainer_renewal,
         token,document_number,project_id,workspace_id,
-        projects(id,name,type,currency,clients(name,email,cc_emails,company_name,billing_address,vat_number),
+        projects(id,name,type,currency,contract_value,client_id,clients(name,email,cc_emails,company_name,billing_address,vat_number),
           workspaces(id,agency_name,brand_colour,logo_storage_path,agency_signature_data,
             legal_address,tax_id,phone,website))`)
       .eq('token', token).single()
@@ -68,7 +70,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'This link is no longer active' }, { status: 410 })
 
     const result = await finalizeCoAcceptance(service, {
-      co, signerName: signerName.trim(), signatureData, source: 'countersignature', signerIp: ip,
+      co, signerName, signatureData, source: 'countersignature', signerIp: ip,
       // FIX (re-audit, race-condition finding): see finalize-co.ts —
       // this is the compare-and-swap guard, not just a pre-check.
       expectedStatus: 'awaiting_countersignature',
@@ -78,19 +80,18 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // FIX (portal audit, section 18): document_id added so a client who
     // revisits the ORIGINAL (pre-countersignature) email link can still be
     // routed to their now-confirmed CO — see migration 029.
-    try {
-      await (service as any).from('revoked_tokens').insert({
-        token, token_type: 'co', reason: 'superseded', document_id: co.id,
-      })
-    } catch (e) { console.error('Token revoke insert failed (non-fatal):', e) }
+    const { error: supersedeErr } = await (service as any).from('revoked_tokens').insert({
+      token, token_type: 'co', reason: 'superseded', document_id: co.id,
+    })
+    if (supersedeErr) console.error('CO countersign: token supersede insert failed (non-fatal):', supersedeErr.message)
 
     return NextResponse.json({
       ok: true,
-      message: `Thank you, ${signerName.trim()}. The change order is confirmed. ${result.agencyName} has been notified.`,
+      message: `Thank you, ${signerName}. The change order is confirmed. ${result.agencyName} has been notified.`,
       token: result.token,
     })
   } catch (err) {
     console.error('CO countersign error:', err)
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    return NextResponse.json({ error: 'Could not record your confirmation. Please try again.' }, { status: 500 })
   }
 }

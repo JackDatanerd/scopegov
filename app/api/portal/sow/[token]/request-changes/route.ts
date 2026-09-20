@@ -6,7 +6,10 @@ import { logAudit } from '@/lib/utils/audit'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { insertNextSowVersion } from '@/lib/documents/sow-version'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
-import { escapeHtml } from '@/lib/utils/sanitize'
+import { escapeHtml, cleanTextField, sanitizeDisplayName } from '@/lib/utils/sanitize'
+import { checkedSend } from '@/lib/email/delivery'
+import { sendClientResponseReceivedEmail } from '@/lib/email/templates'
+import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
 import { checkRevokedToken, verifySowJwt } from '../_shared'
 import { isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
 import { checkPortalRateLimit, recordPortalAction } from '@/lib/utils/portal-rate-limit'
@@ -22,18 +25,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!rl.allowed) return NextResponse.json({ error: rl.message }, { status: 429 })
     await recordPortalAction(service, clientIp, 'sow.requestChanges')
 
-    const { note }  = await request.json()
-
-    if (!note || note.trim().length < 20)
+    const reqBody = await request.json().catch(() => ({} as any))
+    // Type-checked and stripped of markup BEFORE the length rules, so a non-string body can't
+    // crash `.trim()` and tag-padding can't satisfy the 20-character minimum.
+    const note = cleanTextField(reqBody?.note, 4000)
+    if (note === null || note.length < 20)
       return NextResponse.json({ error: 'Please describe the changes needed (minimum 20 characters)' }, { status: 400 })
-    // FIX (build, cron/portal audit round): a minimum length existed but
-    // no maximum — every other free-form field a client can submit
-    // through this portal is capped (signature data at 500KB, CO
-    // title/trigger via .slice()) precisely because this is an
-    // unauthenticated, token-only form. This note is written into
-    // audit_log, a notification body, and an inline email verbatim, with
-    // nothing else in the codebase bounding its size before that happens.
-    if (note.trim().length > 4000)
+    if (typeof reqBody?.note === 'string' && reqBody.note.trim().length > 4000)
       return NextResponse.json({ error: 'Please keep your feedback under 4000 characters' }, { status: 400 })
 
     const { revoked } = await checkRevokedToken(service, token)
@@ -41,7 +39,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const { data: sow } = await (service as any)
       .from('sow_documents')
-      .select('id,version,status,sections,metadata,project_id,workspace_id,projects(id,name,disc,workspaces(agency_name),clients(name,email))')
+      .select('id,version,status,sections,metadata,project_id,workspace_id,projects(id,name,disc,client_id,workspaces(agency_name,brand_colour),clients(name,email,cc_emails))')
       .eq('token', token).single()
 
     if (!sow) return NextResponse.json({ error: 'Not found' }, { status: 404 })
@@ -97,25 +95,37 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // opened the new draft to act on it had no record inside the document
     // of what was actually asked for. Carry it on the new version's
     // metadata so the editor can show it (see components/sow/SowEditor.tsx).
-    const created = await insertNextSowVersion(service, project.id, {
-      workspace_id:        sow.workspace_id,
-      status:              'draft',
-      sections:            sow.sections,
-      metadata:            {
-        ...(sow.metadata || {}),
-        changeRequest: {
-          note,
-          fromVersion: sow.version,
-          requestedBy: client.name || client.email,
-          requestedAt: now,
-        },
-      },
-      previous_version_id: sow.id,
-    })
-    const newSow = created.ok ? { id: created.id } : null
+    const changeRequest = {
+      note,
+      fromVersion: sow.version,
+      requestedBy: client.name || client.email,
+      requestedAt: now,
+    }
+    // If the agency already has an open draft for this project, attach the request to THAT draft
+    // instead of stacking a second one (only one draft per project is allowed — migration 061).
+    let newSow: { id: string; version: number } | null = null
+    const { data: openDraft } = await (service as any)
+      .from('sow_documents').select('id, version, metadata')
+      .eq('project_id', project.id).eq('status', 'draft')
+      .order('version', { ascending: false }).limit(1).maybeSingle()
+    if (openDraft) {
+      const { error: attachErr } = await (service as any).from('sow_documents')
+        .update({ metadata: { ...(openDraft.metadata || {}), changeRequest }, updated_at: now })
+        .eq('id', openDraft.id).eq('status', 'draft')
+      if (!attachErr) newSow = { id: openDraft.id, version: openDraft.version }
+    } else {
+      const created = await insertNextSowVersion(service, project.id, {
+        workspace_id:        sow.workspace_id,
+        status:              'draft',
+        sections:            sow.sections,
+        metadata:            { ...(sow.metadata || {}), changeRequest },
+        previous_version_id: sow.id,
+      })
+      if (created.ok) newSow = { id: created.id!, version: created.version ?? sow.version + 1 }
+      else console.error('request-changes: new draft version insert failed', created.error)
+    }
 
     if (!newSow) {
-      console.error('request-changes: new draft version insert failed', created.error)
       await (service as any).from('sow_documents')
         .update({ status: 'awaiting_signature', updated_at: new Date().toISOString() })
         .eq('id', sow.id).eq('status', 'changes_requested')
@@ -128,7 +138,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // reads stall_reason off a non-Stalled project, but stale otherwise.
     await (service as any).from('projects').update({
       status: 'Changes Requested', stall_reason: null, updated_at: now,
-    }).eq('id', project.id)
+    }).eq('id', project.id).in('status', ['Awaiting Signature', 'Stalled', 'Changes Requested'])
 
     await logAudit(service, {
       // FIX (build, Reports & Audit re-pass): actor_id is `uuid REFERENCES
@@ -141,48 +151,37 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       actorEmail: client.email, actorName: client.name,
       eventType: 'sow.changes_requested', entityType: 'sow',
       entityId: sow.id, entityName: project.name,
-      metadata: { note, new_version: sow.version + 1, new_sow_id: newSow?.id },
+      metadata: { note, new_version: newSow.version, new_sow_id: newSow.id },
     })
 
     // Notify agency members with SEND_SOW permission (Event 6)
-    try {
-      // FIX (deep audit, notifications section): this passed `undefined`
-      // for eventType, unlike every sibling portal notification (SOW
-      // sign/decline, CO decline/counter) which pass their real event
-      // type — see the identical bug already caught and fixed for CO
-      // counter-offers in app/api/portal/co/[token]/_actions.ts. Skipping
-      // eventType here skipped preference filtering entirely, so muting
-      // 'sow_changes_requested' email had no effect on this one path.
-      const emails = await getMemberEmailsWithPermission(service, sow.workspace_id, 'SEND_SOW', 25, 'sow_changes_requested', project.id)
-      if (emails.length) {
-        const { Resend } = await import('resend')
-        const resend = new Resend(process.env.RESEND_API_KEY)
-        // FIX (audit round 4, finding #7): client.name, project.name, and
-        // note are all interpolated raw into an inline HTML email here —
-        // note especially is typed directly into an unauthenticated
-        // portal form by whoever holds the signing link, making this a
-        // directly attacker-reachable injection point into an email your
-        // own team reads and trusts. See lib/utils/sanitize.ts's
-        // escapeHtml (same helper already used for this exact purpose in
-        // app/api/portal/co/[token]/_actions.ts).
-        await resend.emails.send({
-          from: `${escapeHtml(project.workspaces.agency_name)} via ScopeGov <${process.env.RESEND_FROM_EMAIL}>`,
-          to: emails,
-          subject: `${escapeHtml(client.name)} requested changes on the ${escapeHtml(project.name)} SOW`,
-          html: `<p><strong>${escapeHtml(client.name)}</strong> has requested changes on the <strong>${escapeHtml(project.name)}</strong> SOW (v${sow.version}).</p>
+    const emails = await getMemberEmailsWithPermission(service, sow.workspace_id, 'SEND_SOW', 25, 'sow_changes_requested', project.id).catch(() => [] as string[])
+    if (emails.length) {
+      const { Resend } = await import('resend')
+      const resend = new Resend(process.env.RESEND_API_KEY)
+      const appUrl = process.env.NEXT_PUBLIC_APP_URL
+      await checkedSend(() => resend.emails.send({
+        // Header values are plain text: sanitised for header injection, NOT HTML-escaped (escaping
+        // turned "Tom & Co" into the literal "Tom &amp; Co" in the From name and subject line).
+        from: `${sanitizeDisplayName(project.workspaces.agency_name)} via ScopeGov <${process.env.RESEND_FROM_EMAIL}>`,
+        to: emails,
+        subject: `${client.name} requested changes on the ${project.name} SOW`.replace(/[\r\n]+/g, ' '),
+        html: `<p><strong>${escapeHtml(client.name)}</strong> has requested changes on the <strong>${escapeHtml(project.name)}</strong> SOW (v${sow.version}).</p>
           <p><strong>Feedback:</strong> ${escapeHtml(note)}</p>
-          <p>A new draft (v${sow.version + 1}) has been created in ScopeGov for you to edit and resend.</p>
-          <p><a href="${process.env.NEXT_PUBLIC_APP_URL}/projects/${project.id}?tab=sow">Open project in ScopeGov →</a></p>
-          <p style="font-size:11px;color:#909090;margin-top:20px;"><a href="${process.env.NEXT_PUBLIC_APP_URL}/settings?tab=notifications" style="color:#909090;">Manage notification preferences</a></p>`,
-          // FIX (deep audit round 2, notifications section — feature gap):
-          // same gap as every baseTemplate-based notification email (see
-          // lib/email/templates.ts's APP_URL/showPreferencesLink comment) —
-          // this is the one internal notification in the whole 'sow_changes_
-          // requested' family that bypasses the shared template entirely, so
-          // it needed the manage-preferences link added by hand.
-        })
-      }
-    } catch (e) { console.error('Changes requested email failed:', e) }
+          <p>A new draft (v${newSow.version}) is ready in ScopeGov for you to edit and resend.</p>
+          <p><a href="${appUrl}/projects/${project.id}?tab=sow">Open project in ScopeGov →</a></p>
+          <p style="font-size:11px;color:#909090;margin-top:20px;"><a href="${appUrl}/settings?tab=notifications" style="color:#909090;">Manage notification preferences</a></p>`,
+      }), 'SOW changes requested (agency) email')
+    }
+    // Confirm receipt to the client.
+    if (client.email) {
+      const cc = await withPrimaryContactCc(service, project.client_id, client.email, client.cc_emails)
+      await checkedSend(() => sendClientResponseReceivedEmail({
+        to: client.email, cc, clientName: client.name, agencyName: project.workspaces.agency_name,
+        projectName: project.name, documentLabel: 'Statement of Work', response: 'requested changes to',
+        note: note.slice(0, 500), brandColour: project.workspaces.brand_colour,
+      }), 'SOW changes requested (client receipt)')
+    }
     await notifyMembersWithPermission(service, {
       workspaceId: sow.workspace_id, permission: 'SEND_SOW', eventType: 'sow_changes_requested',
       type: 'sow_changes_requested', title: `Changes requested — ${project.name}`,
@@ -192,6 +191,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     return NextResponse.json({ ok: true })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('SOW request-changes error:', err)
+    return NextResponse.json({ error: 'Could not submit your request. Please try again.' }, { status: 500 })
   }
 }

@@ -5,6 +5,8 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession } from '@/lib/auth/session'
 import { renderSowPdf, resolveLogoDataUri } from '@/lib/pdf/renderer'
 import { canReadProject } from '@/lib/utils/project-access'
+import { fetchExecutedPdf } from '@/lib/documents/executed-pdf'
+import { hydrateSections } from '@/lib/sow/sections'
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -16,7 +18,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
     const { data: sow } = await (service as any)
       .from('sow_documents')
-      .select(`id, version, document_number, sections, metadata, status, signed_at, signed_by, client_signature_data, project_id,
+      .select(`id, version, document_number, sections, metadata, status, signed_at, signed_by, client_signature_data, project_id, pdf_path,
         projects(id, name, disc, contract_value, currency,
           clients(name, company_name, billing_address, vat_number),
           workspaces(agency_name, brand_colour, logo_storage_path, agency_signature_data,
@@ -29,6 +31,24 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     // FIX (audit round 3): see lib/utils/project-access.ts.
     if (!(await canReadProject(service, session, sow.project_id)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
+    const respond = (buf: Buffer, name: string) => new NextResponse(new Uint8Array(buf), {
+      headers: {
+        'Content-Type':        'application/pdf',
+        'Content-Disposition': `attachment; filename="${name}"`,
+        'Content-Length':      String(buf.length),
+        'Cache-Control':       'private, no-cache',
+      },
+    })
+    const fileName = `SOW-${sow.projects?.name?.replace(/[^a-z0-9]/gi, '-')}-v${sow.version}.pdf`
+
+    // A signed SOW is served from the copy frozen at signing (lib/documents/executed-pdf.ts) so it
+    // cannot change when live rows do. Documents signed before that shipped fall through to a
+    // live render.
+    if (sow.status === 'signed') {
+      const frozen = await fetchExecutedPdf(service, sow.pdf_path)
+      if (frozen) return respond(frozen, fileName)
+    }
 
     const ws = sow.projects?.workspaces
 
@@ -43,10 +63,15 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     // project/SOW and drives the in-app milestone tracker, but was never
     // read for the SOW PDF itself. Ordered by due_date so it reads as a
     // schedule, not an arbitrary list.
-    const { data: milestones } = await (service as any)
+    // For a signed SOW (live-render fallback) only the schedule that existed at signing — later
+    // retainer-cron rows are billing state, not part of the agreement.
+    let milestonesQuery = (service as any)
       .from('payment_milestones')
       .select('title, amount, percentage, trigger, due_date, status')
       .eq('sow_id', id)
+    if (sow.status === 'signed' && sow.signed_at)
+      milestonesQuery = milestonesQuery.lte('created_at', new Date(new Date(sow.signed_at).getTime() + 10 * 60 * 1000).toISOString())
+    const { data: milestones } = await milestonesQuery
       .order('due_date', { ascending: true, nullsFirst: false })
 
     const pdfBuffer = await renderSowPdf({
@@ -64,7 +89,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       projectName:   sow.projects?.name + (sow.projects?.disc ? ` — ${sow.projects.disc}` : ''),
       contractValue: sow.projects?.contract_value || 0,
       currency:      sow.projects?.currency || 'USD',
-      sections:      sow.sections || [],
+      sections:      hydrateSections(sow.sections || [], sow.metadata),
       // FIX (section-9 audit, 9-G7): the document's drafting language,
       // so schema-driven table headers render in it (section titles are
       // already stored localized).
@@ -93,17 +118,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       documentNumber: sow.document_number || null,
     })
 
-    const filename = `SOW-${sow.projects?.name?.replace(/[^a-z0-9]/gi, '-')}-v${sow.version}.pdf`
-
-    // BUG-008: return Uint8Array to satisfy NextResponse BodyInit
-    return new NextResponse(new Uint8Array(pdfBuffer), {
-      headers: {
-        'Content-Type':        'application/pdf',
-        'Content-Disposition': `attachment; filename="${filename}"`,
-        'Content-Length':      String(pdfBuffer.length),
-        'Cache-Control':       'private, no-cache',
-      },
-    })
+    return respond(pdfBuffer, fileName)
   } catch (err) {
     console.error('SOW PDF error:', err)
     return NextResponse.json({ error: 'PDF generation failed' }, { status: 500 })

@@ -109,7 +109,9 @@ async function getCoByToken(token: string, service: any) {
   if (co.status === 'accepted') {
     return { state: 'accepted', acceptedBy: co.accepted_by, clientSignatureData: co.client_signature_data || null }
   }
-  if (['declined','withdrawn','closed','stalled','countered'].includes(co.status)) return { state: co.status }
+  // 'stalled' deliberately falls through: it is an agency-side attention flag (no reply for 5 days), the
+  // offer is still live until it expires, and the client must still be able to answer it.
+  if (['declined','withdrawn','closed','countered'].includes(co.status)) return { state: co.status }
 
   // FEATURE (portal audit, section 18): first time this document is
   // actually opened while still awaiting a client response — mirrors the

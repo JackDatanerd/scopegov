@@ -32,11 +32,20 @@ export async function getContractValueBefore(
 ): Promise<number | null> {
   if (baseContractValue == null) return null
 
-  const { data: ownAmendment } = await service
-    .from('amendments')
-    .select('created_at')
-    .eq('change_order_id', coId)
-    .maybeSingle()
+  // previous_contract_value (migration 061) is the monthly rate a retainer-renewal CO replaced — it can
+  // no longer be recomputed once projects.contract_value has been overwritten. Older deployments
+  // without the column fall back to the plain select.
+  let ownAmendment: any = null
+  {
+    const withPrev = await service
+      .from('amendments').select('created_at, previous_contract_value')
+      .eq('change_order_id', coId).maybeSingle()
+    if (withPrev.error) {
+      const plain = await service.from('amendments').select('created_at').eq('change_order_id', coId).maybeSingle()
+      ownAmendment = plain.data
+    } else ownAmendment = withPrev.data
+  }
+  if (ownAmendment?.previous_contract_value != null) return Number(ownAmendment.previous_contract_value)
 
   // FIX (section-10 audit, 10-B1): this returned the bare base value for
   // any CO without an amendment row — which is EVERY CO the client is

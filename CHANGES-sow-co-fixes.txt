@@ -1,0 +1,66 @@
+SOW lifecycle (section 9) + CO logic (section 10) — fix round
+==============================================================
+
+APPLY MIGRATION FIRST:  supabase/migrations/061_sow_co_executed_documents_and_integrity.sql
+  - sow_documents.content_hash, change_orders.pdf_path/content_hash, amendments.previous_contract_value
+  - private `pdfs` storage bucket (executed PDFs)
+  - sow_apply_section_patch() — atomic single-section SOW patch (service_role only)
+  - one draft SOW per project (partial unique index). Older duplicate drafts are marked 'withdrawn'
+    first (never sent to anyone) — review with:  SELECT id, project_id, version FROM sow_documents
+    WHERE status='withdrawn' AND updated_at > now() - interval '1 minute';  right after running.
+  - unique guardian_email (only created if no duplicates exist today; otherwise a NOTICE is raised)
+  - section 6 of the file documents (commented out) the SQL to correct retainer-renewal amendments
+    that were double-counted BEFORE this fix. Review the SELECT, then run the UPDATE deliberately.
+The code degrades gracefully if the migration is missing (errors are logged) but the frozen PDFs,
+hashes and atomic patch need it.
+
+SHARED
+  * sanitizePlainText now returns real plain text (it returned HTML-escaped text: "Design &amp; Build"
+    showed literally in the PDF, portal and editor, and was escaped a second time in emails).
+    Old table cells are decoded on read (hydrateSections) — no data migration needed.
+  * New: lib/email/delivery.ts (Resend resolves {error} instead of throwing — every "try/catch around a
+    send" was blind to API failures), lib/documents/executed-pdf.ts (content hash + frozen PDF storage),
+    lib/utils/signature.ts (real PNG/JPEG only), lib/pdf/pdf-symbols.ts (✓ etc. → text the embedded
+    font can draw), lib/sow/validate-send.ts, lib/documents/co-input.ts.
+  * parseTableAmount: EU/US number formats; ambiguous cells are unreadable instead of glued together.
+
+SOW
+  * PATCH /api/sow/[id]: atomic per-section merge, guarded writes (no edits after a send), strict
+    validation, contract value redacted without VIEW_FINANCIALS.
+  * generate: refuses when a SOW is signed/out for signature; guarded draft overwrite; applies the
+    agency's workspace_defaults (standard exclusions/assumptions/revision + payment wording — the
+    columns were editable but never read); guarantees Payment Terms states the contract value.
+  * send / approval auto-send share one validation (deliverables, Out of Scope, Payment Terms, milestone
+    footing; payment text vs contract value is a confirmable warning). Optional expiresInDays.
+    Email failure is reported (emailSent/emailError). Project status no longer regresses.
+  * reopen / withdraw / remind / regenerate-section / request-changes / decline: see route comments.
+    "Improve" now sees the WHOLE section (it saw 800 chars and deleted the rest) and reports truncation.
+  * sign: one signed SOW per project; validated signature; stable Guardian address; checked snapshot
+    writes; executed PDF rendered once, stored, hashed; document number on the emailed copy.
+  * PDFs: signed SOW served from the frozen copy; pre-signature watermarked review copy for the
+    client; later retainer milestone rows no longer accumulate in a signed PDF; Parties/Signature
+    prose now printed (PDF + portal); money prints 1,500.50.
+  * New: GET /api/sow/[id]/link (copy signing link); version history can open every version.
+  * Editor: ordered autosave with retry, flush-before-send, visible AI errors + Undo.
+
+CO
+  * Create/edit validated; edit is a partial update (omitted fields no longer wiped); guarded writes.
+  * send: shared validation with the approval auto-send; one live version per lineage; expiry option.
+  * revise: newest version only, no stacked drafts, client told when their counter is superseded,
+    Guardian flag re-claimed. withdraw now works from 'stalled'. close/escalate/remind hardened.
+  * Retainer renewal no longer double-counts (amendment impact 0, replaced rate recorded).
+  * Counter acceptance: tax-inclusive subtotal is net; system "Negotiated discount" lines are flagged,
+    may be negative, never become Guardian deliverables, and can be saved in a later revision.
+  * A 'stalled' CO can still be answered by the client (stalled is an agency-side flag, not a lock).
+  * Executed CO PDF is frozen + hashed and now matches the downloadable copy (SOW number, value block).
+  * New: GET /api/co/[id]/link. CoEditor: approval-pending state, correct locked messages,
+    unsaved-new-CO warning, AI-draft overwrite confirmation.
+
+TESTS (new): sow-amounts-and-validation, co-totals-and-input, text-integrity. Updated:
+rescale-line-items (tax-inclusive subtotal is net; adjustment flag).
+
+DECISIONS FOR YOU
+  * A retainer renewal still sets contract_value to the CO's gross total (unchanged). Whether the new
+    monthly rate should be net of tax is a billing-semantics call — not changed here.
+NOT BUILT (deliberately): credit/descoping change orders (needs credit-note support in invoicing),
+SOW/CO attachments, SOW templates. document_edit_locks stays unused — the atomic patch replaces it.

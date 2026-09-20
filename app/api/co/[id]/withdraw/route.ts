@@ -5,6 +5,9 @@ import { logAudit } from '@/lib/utils/audit'
 import { cancelApprovalRequest } from '@/lib/approvals/engine'
 import { canReadProject } from '@/lib/utils/project-access'
 import { sendDocumentCancelledEmail } from '@/lib/email/templates'
+import { cleanTextField } from '@/lib/utils/sanitize'
+import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
+import { checkedSend } from '@/lib/email/delivery'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -20,7 +23,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Missing permission: SEND_CHANGE_ORDERS' }, { status: 403 })
 
     const body = await request.json().catch(() => ({}))
-    const reason: string | undefined = body?.reason?.trim()
+    const cleanedReason = cleanTextField(body?.reason, 1000)
+    if (cleanedReason === null)
+      return NextResponse.json({ error: 'reason must be text' }, { status: 400 })
+    const reason: string | undefined = cleanedReason || undefined
 
     const service = createServiceClient()
     // FIX (doc-completeness audit): added client/workspace so we can
@@ -28,7 +34,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { data: co } = await (service as any)
       .from('change_orders')
       .select(`id,title,status,flag_id,token,project_id,
-        projects(name,clients(name,email,cc_emails),workspaces(agency_name,brand_colour))`)
+        projects(name,client_id,clients(name,email,cc_emails),workspaces(agency_name,brand_colour))`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!co) return NextResponse.json({ error: 'Not found' }, { status: 404 })
@@ -37,7 +43,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // FIX (doc-completeness audit, migration 014): the agency should be
     // able to cancel a CO that's waiting on the client to countersign the
     // negotiated amount, same as any other open state.
-    const WITHDRAWABLE_FROM = ['awaiting_response', 'draft', 'awaiting_countersignature']
+    // 'stalled' is a live, sent CO (awaiting_response that the agency has not heard back on) — it had
+    // no way out except Close.
+    const WITHDRAWABLE_FROM = ['awaiting_response', 'stalled', 'draft', 'awaiting_countersignature']
     if (!WITHDRAWABLE_FROM.includes(co.status))
       return NextResponse.json({ error: 'Cannot withdraw CO in current status' }, { status: 400 })
 
@@ -73,11 +81,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     // Revoke token
     if (co.token) {
-      try {
-        await (service as any).from('revoked_tokens').insert({
-          token: co.token, token_type: 'co', reason: 'withdrawn', revoked_by: session.id,
-        })
-      } catch (e) { console.error('Token revoke insert failed (non-fatal):', e) }
+      const { error: revokeErr } = await (service as any).from('revoked_tokens').insert({
+        token: co.token, token_type: 'co', reason: 'withdrawn', revoked_by: session.id, document_id: id,
+      })
+      if (revokeErr) console.error('CO withdraw: token revoke insert failed (non-fatal):', revokeErr.message)
     }
 
     // BUG-048: revert linked flag on withdraw
@@ -102,27 +109,29 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       workspaceId: session.workspaceId, actorId: session.id,
       actorEmail: session.email, actorName: session.name,
       eventType: 'co.withdrawn', entityType: 'change_order',
-      entityId: id, entityName: co.title, metadata: {},
+      entityId: id, entityName: co.title, metadata: reason ? { reason } : {},
     })
 
     // FIX (doc-completeness audit): notify the client if this CO had ever
     // actually reached them — a draft never had a token sent, so nothing
     // to warn them about in that case.
     const client = co.projects?.clients
+    let clientNotified = true
     if (wasSentToClient && client?.email) {
-      try {
-        await sendDocumentCancelledEmail({
-          to: client.email, cc: client.cc_emails || [],
-          clientName: client.name, agencyName: co.projects?.workspaces?.agency_name,
-          projectName: co.projects?.name, documentLabel: 'Change Order',
-          documentTitle: co.title, action: 'withdrawn', reason: reason || null,
-          brandColour: co.projects?.workspaces?.brand_colour,
-        })
-      } catch (e) { console.error('CO withdrawn client email failed:', e) }
+      const cc = await withPrimaryContactCc(service, co.projects?.client_id, client.email, client.cc_emails)
+      const delivery = await checkedSend(() => sendDocumentCancelledEmail({
+        to: client.email, cc,
+        clientName: client.name, agencyName: co.projects?.workspaces?.agency_name,
+        projectName: co.projects?.name, documentLabel: 'Change Order',
+        documentTitle: co.title, action: 'withdrawn', reason: reason || null,
+        brandColour: co.projects?.workspaces?.brand_colour,
+      }), 'CO withdrawn (client) email')
+      clientNotified = delivery.ok
     }
 
-    return NextResponse.json({ ok: true })
+    return NextResponse.json({ ok: true, clientNotified })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('CO withdraw error:', err)
+    return NextResponse.json({ error: 'Could not withdraw this change order. Please try again.' }, { status: 500 })
   }
 }

@@ -9,11 +9,35 @@ import { logAudit } from '@/lib/utils/audit'
 import { assignDocumentNumber } from '@/lib/utils/document-number'
 import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
+import { checkedSend } from '@/lib/email/delivery'
 import { isTerminalStatus } from '@/lib/utils/project-status'
 
 export type SendCoResult =
-  | { ok: true; token: string; portalUrl: string; projectId: string; coTitle: string; documentNumber: string }
+  | {
+      ok: true; token: string; portalUrl: string; projectId: string; coTitle: string; documentNumber: string
+      // Resend reports a rejected send by RESOLVING with an error — surfaced so the agency can
+      // copy the link and send it by hand instead of assuming the client has it.
+      emailSent: boolean; emailError?: string
+    }
   | { ok: false; error: string; status: number }
+
+export const DEFAULT_CO_EXPIRY_DAYS = 30
+export const MAX_CO_EXPIRY_DAYS = 90
+
+/**
+ * What must hold before a CO is put in front of a client. Shared by the send route (which runs it
+ * before the approval gate) and sendCoDocument (the approval chain's auto-send calls that
+ * directly, and used to skip every one of these checks).
+ */
+export function validateCoForSend(input: { total: unknown; lineItems: unknown }): string | null {
+  const items: any[] = typeof input.lineItems === 'string' ? JSON.parse(input.lineItems) : (Array.isArray(input.lineItems) ? input.lineItems : [])
+  if (items.length === 0) return 'Add at least one line item before sending this change order.'
+  const total = Number(input.total)
+  if (!Number.isFinite(total) || total <= 0) return 'This change order has no value — add line item amounts before sending.'
+  if (items.some(li => Math.abs(Number(li?.total) || 0) > 0 && !String(li?.description || '').trim()))
+    return 'Every line item with a value needs a description.'
+  return null
+}
 
 export async function sendCoDocument(service: any, params: {
   coId: string
@@ -22,16 +46,21 @@ export async function sendCoDocument(service: any, params: {
   actorEmail: string
   actorName: string
   approvalRequestId?: string
+  expiresInDays?: number
 }): Promise<SendCoResult> {
   const { coId, workspaceId, actorId, actorEmail, actorName, approvalRequestId } = params
+  const requestedDays = Number(params.expiresInDays)
+  const expiryDays = Number.isFinite(requestedDays) && requestedDays >= 1
+    ? Math.min(Math.trunc(requestedDays), MAX_CO_EXPIRY_DAYS)
+    : DEFAULT_CO_EXPIRY_DAYS
 
   const { data: co, error: coFetchErr } = await (service as any)
     .from('change_orders')
     // FIX (carried forward): 'currency' isn't a column on change_orders —
     // it lives on projects. Selecting it here makes PostgREST reject the
     // whole query (42703), which silently surfaces as "CO not found".
-    .select(`id,title,status,note,total,version,document_number,
-      projects(id,name,status,currency,client_id,
+    .select(`id,title,status,note,total,line_items,version,document_number,root_co_id,project_id,
+      projects(id,name,status,currency,client_id,deleted_at,
         clients(name,email,cc_emails),
         workspaces(id,agency_name,brand_colour))`)
     .eq('id', coId).eq('workspace_id', workspaceId).single()
@@ -66,6 +95,25 @@ export async function sendCoDocument(service: any, params: {
   }
 
   if (!client?.email) return { ok: false, error: 'Client email required', status: 400 }
+  if (project?.deleted_at) return { ok: false, error: 'This project has been deleted', status: 404 }
+
+  const invalid = validateCoForSend({ total: co.total, lineItems: co.line_items })
+  if (invalid) return { ok: false, error: invalid, status: 400 }
+
+  const { data: signedSow } = await (service as any)
+    .from('sow_documents').select('id').eq('project_id', co.project_id).eq('status', 'signed').limit(1).maybeSingle()
+  if (!signedSow)
+    return { ok: false, status: 409, error: 'This project has no signed SOW yet — a change order can only be sent once the original scope of work is signed.' }
+
+  // One live version per change-order lineage. Two live siblings (e.g. two revisions of the same
+  // declined CO) could both be accepted — billing the same extra work twice.
+  const rootId = co.root_co_id || co.id
+  const { data: liveSiblings } = await (service as any)
+    .from('change_orders').select('id, version, status')
+    .or(`id.eq.${rootId},root_co_id.eq.${rootId}`).neq('id', coId)
+    .in('status', ['awaiting_response', 'stalled', 'countered', 'awaiting_countersignature', 'accepted']).limit(1)
+  if (liveSiblings && liveSiblings.length > 0)
+    return { ok: false, status: 409, error: `Version ${liveSiblings[0].version} of this change order is still open (${String(liveSiblings[0].status).replace(/_/g, ' ')}). Withdraw or close it before sending another version.` }
 
   // FIX (deep audit, section 14 — flagship finding): see
   // lib/utils/client-contacts.ts — CC the client's designated primary
@@ -78,7 +126,7 @@ export async function sendCoDocument(service: any, params: {
   const jwtSecret = await getWorkspaceJwtSecret(service, workspaceId)
   if (!jwtSecret) return { ok: false, error: 'Workspace signing secret not found', status: 500 }
   const secret    = new TextEncoder().encode(jwtSecret)
-  const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+  const expiresAt = new Date(Date.now() + expiryDays * 24 * 60 * 60 * 1000)
   const token     = await new SignJWT({
     coId,
     workspaceId,
@@ -95,7 +143,15 @@ export async function sendCoDocument(service: any, params: {
 
   // Phase 0: assign sequential document number at send (not on draft
   // creation). Never re-assign if already numbered.
-  const documentNumber = co.document_number || await assignDocumentNumber(service, workspaceId, 'co')
+  let documentNumber: string
+  try {
+    documentNumber = co.document_number || await assignDocumentNumber(service, workspaceId, 'co')
+  } catch (e) {
+    // Thrown, not returned — without this the approval chain's auto-send had no failure result to
+    // record, leaving the request "approved" with nothing sent.
+    console.error('CO send: could not assign a document number', e)
+    return { ok: false, error: 'Could not assign a document number. Please try again.', status: 500 }
+  }
 
   // FIX (re-audit, race-condition finding): same missing CAS as
   // send-sow.ts — see that file's comment for the full rationale. Two
@@ -117,21 +173,19 @@ export async function sendCoDocument(service: any, params: {
   }
 
   const portalUrl = `${process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL}/portal/co/${token}`
-  try {
-    await sendCoEmail({
-      to:          client.email,
-      cc:          ccEmails,
-      clientName:  client.name,
-      agencyName:  workspace.agency_name,
-      projectName: project.name,
-      coTitle:     co.title,
-      total:       co.total,
-      currency:    project.currency || 'USD',
-      portalUrl,
-      brandColour: workspace.brand_colour,
-      note:        co.note,
-    })
-  } catch (e) { console.error('CO email failed:', e) }
+  const delivery = await checkedSend(() => sendCoEmail({
+    to:          client.email,
+    cc:          ccEmails,
+    clientName:  client.name,
+    agencyName:  workspace.agency_name,
+    projectName: project.name,
+    coTitle:     co.title,
+    total:       co.total,
+    currency:    project.currency || 'USD',
+    portalUrl,
+    brandColour: workspace.brand_colour,
+    note:        co.note,
+  }), 'CO send email')
 
   await logAudit(service, {
     workspaceId, actorId,
@@ -140,9 +194,14 @@ export async function sendCoDocument(service: any, params: {
     entityId: coId, entityName: co.title,
     metadata: {
       total: co.total, document_number: documentNumber,
+      expires_in_days: expiryDays, email_delivered: delivery.ok,
+      ...(delivery.ok ? {} : { email_error: delivery.error }),
       ...(approvalRequestId ? { auto_sent_via_approval: approvalRequestId } : {}),
     },
   })
 
-  return { ok: true, token, portalUrl, projectId: project.id, coTitle: co.title, documentNumber }
+  return {
+    ok: true, token, portalUrl, projectId: project.id, coTitle: co.title, documentNumber,
+    emailSent: delivery.ok, ...(delivery.ok ? {} : { emailError: delivery.error }),
+  }
 }

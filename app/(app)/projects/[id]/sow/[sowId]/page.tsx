@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import SowEditor from '@/components/sow/SowEditor'
 import { sowStatusLabel, sowStatusColour, formatDate } from '@/lib/utils/format'
@@ -15,6 +15,9 @@ export default function SowEditorPage() {
   const [sending,  setSending]  = useState(false)
   const [error,    setError]    = useState('')
   const [isLocked, setIsLocked] = useState(false)
+  // The editor registers a function that writes every outstanding edit and reports success.
+  const flushRef = useRef<null | (() => Promise<boolean>)>(null)
+  const registerFlush = useCallback((fn: () => Promise<boolean>) => { flushRef.current = fn }, [])
   const [perms,    setPerms]    = useState<{ canEdit: boolean; canSend: boolean }>({ canEdit: false, canSend: false })
 
   useEffect(() => {
@@ -34,9 +37,36 @@ export default function SowEditorPage() {
   async function handleSend() {
     setSending(true); setError('')
     try {
-      const res  = await fetch(`/api/sow/${sowId}/send`, { method: 'POST' })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error)
+      // Everything typed in the last moments must be stored BEFORE the server snapshots the
+      // document for sending — otherwise those edits were silently left out of what the client got
+      // (and the late autosave then bounced off the now-locked document).
+      if (flushRef.current) {
+        const saved = await flushRef.current()
+        if (!saved) throw new Error('Some of your latest edits could not be saved. Resolve the "Save failed" notice above the editor, then send again.')
+      }
+      const post = async (acknowledgeWarnings: boolean) => {
+        const res  = await fetch(`/api/sow/${sowId}/send`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ acknowledgeWarnings }),
+        })
+        return { res, json: await res.json().catch(() => ({} as any)) }
+      }
+      let { res, json } = await post(false)
+      if (res.status === 409 && json.needsAcknowledgement) {
+        const list: string[] = Array.isArray(json.warnings) && json.warnings.length ? json.warnings : [json.error]
+        if (!confirm(`${list.join('\n\n')}\n\nSend it anyway?`)) return
+        ;({ res, json } = await post(true))
+      }
+      if (!res.ok) throw new Error(json.error || 'Failed to send')
+      if (json.pendingApproval) {
+        // Not sent yet: it is waiting on an approval chain, so the document is NOT locked.
+        alert(json.message || 'Sent for approval — the client will be notified once it clears.')
+        router.push(`/projects/${projId}?tab=sow`)
+        return
+      }
+      if (json.emailSent === false) {
+        alert(`The SOW is marked as sent, but the email to the client could not be delivered (${json.emailError || 'provider error'}).\n\nOpen the project's SOW tab and use "Copy signing link" to send it to them yourself.`)
+      }
       setIsLocked(true) // immediate — no reload (carry-forward §3.3)
       router.push(`/projects/${projId}?tab=sow`)
     } catch (err: unknown) {
@@ -154,6 +184,7 @@ export default function SowEditorPage() {
           language={sow.metadata?.language}
           changeRequest={sow.metadata?.changeRequest || null}
           msaReference={sow.metadata?.msaReference || null}
+          registerFlush={registerFlush}
         />
       </div>
     </div>

@@ -37,6 +37,7 @@
 // malformed it's dropped, not fatal to the whole document.
 
 import { escapeHtml, sanitizePlainText } from '@/lib/utils/sanitize'
+import { amountsMentioned } from '@/lib/sow/validate-send'
 import { SOW_TABLE_SCHEMAS, type SowTableSectionId, type SowTableRow } from '@/lib/sow/table-schema'
 import { roundCurrency } from '@/lib/utils/format'
 
@@ -106,6 +107,78 @@ export interface SowContentInput {
   // through to generation. Defaults to English so every existing caller
   // that doesn't pass this keeps behaving exactly as before.
   language?: string
+  // The agency's saved standard terms (workspace_defaults, edited under Settings →
+  // Defaults). The columns existed and were editable, but generation never read them, so
+  // an agency's own standard exclusions / assumptions / revision and payment wording
+  // never reached a SOW unless the model happened to repeat them.
+  standards?: AgencyStandards | null
+}
+
+export interface AgencyStandards {
+  revisionPolicy?: string | null
+  paymentTerms?: string | null
+  outOfScopeClauses?: string[] | null
+  assumptions?: string[] | null
+}
+
+const norm = (t: string) => t.replace(/<[^>]*>/g, ' ').replace(/&[a-z#0-9]+;/gi, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
+
+function cleanClauses(list: string[] | null | undefined): string[] {
+  return (Array.isArray(list) ? list : [])
+    .map(c => sanitizePlainText(String(c ?? '')).slice(0, 500))
+    .filter(Boolean)
+    .slice(0, 30)
+}
+
+/** Prompt text telling the model which agency-standard terms must appear. */
+export function standardsPromptBlock(standards: AgencyStandards | null | undefined): string {
+  if (!standards) return ''
+  const lines: string[] = []
+  const oos = cleanClauses(standards.outOfScopeClauses)
+  const assumptions = cleanClauses(standards.assumptions)
+  if (oos.length) lines.push(`- The agency's standard exclusions — include EACH of these in the Out of Scope section as its own item, in addition to the project-specific ones:\n${oos.map(c => `    • ${c}`).join('\n')}`)
+  if (assumptions.length) lines.push(`- The agency's standard assumptions — include EACH in the Assumptions section:\n${assumptions.map(c => `    • ${c}`).join('\n')}`)
+  const rp = sanitizePlainText(standards.revisionPolicy || '').slice(0, 1500)
+  if (rp) lines.push(`- The agency's standard revision-policy wording — reflect it in the Revision Policy section: "${rp}"`)
+  const pt = sanitizePlainText(standards.paymentTerms || '').slice(0, 1500)
+  if (pt) lines.push(`- The agency's standard payment-terms wording — reflect it in the Payment section without changing any amount: "${pt}"`)
+  return lines.length ? `\n${lines.join('\n')}` : ''
+}
+
+/**
+ * Guarantees the agency's standard terms are present after generation, whether the text came
+ * from the model or the deterministic fallback: any clause not already in the section is
+ * appended. Pure and idempotent.
+ */
+export function applyAgencyStandards(content: Record<string, string>, standards: AgencyStandards | null | undefined): Record<string, string> {
+  if (!standards) return content
+  const out = { ...content }
+  const addList = (id: string, clauses: string[]) => {
+    const existing = norm(out[id] || '')
+    const missing = clauses.filter(c => !existing.includes(norm(c)))
+    if (missing.length) out[id] = `${out[id] || ''}<ul>${missing.map(c => `<li>${escapeHtml(c)}</li>`).join('')}</ul>`
+  }
+  const addParagraph = (id: string, text: string) => {
+    if (text && !norm(out[id] || '').includes(norm(text).slice(0, 80))) out[id] = `${out[id] || ''}<p>${escapeHtml(text)}</p>`
+  }
+  addList('oos', cleanClauses(standards.outOfScopeClauses))
+  addList('assumptions', cleanClauses(standards.assumptions))
+  addParagraph('revisions', sanitizePlainText(standards.revisionPolicy || '').slice(0, 1500))
+  addParagraph('payment', sanitizePlainText(standards.paymentTerms || '').slice(0, 1500))
+  return out
+}
+
+/**
+ * The Payment Terms prose is model-written, but the contract value is data. If the prose does
+ * not state the agreed value (the model paraphrased, skipped it, or the value changed after
+ * drafting), append one deterministic sentence so the document can never disagree with itself.
+ */
+export function ensureContractValueStated(paymentHtml: string, contractValue: number, currency: string): string {
+  if (!Number.isFinite(contractValue) || contractValue <= 0) return paymentHtml
+  const stated = amountsMentioned(norm(paymentHtml)).some(n => Math.abs(n - contractValue) < 0.01)
+  if (stated) return paymentHtml
+  const pretty = contractValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  return `${paymentHtml}<p><strong>${escapeHtml(currency)} ${pretty}</strong></p>`
 }
 
 // Supported SOW languages and the model-facing name used in the prompt
@@ -114,7 +187,7 @@ export interface SowContentInput {
 // server-side validation in app/api/workspace/settings/route.ts — each
 // entry needs a matching translation below, so this is deliberately a
 // closed set rather than accepting arbitrary language codes.
-const SOW_LANGUAGE_NAMES: Record<string, string> = {
+export const SOW_LANGUAGE_NAMES: Record<string, string> = {
   en: 'English', es: 'Spanish', fr: 'French', pt: 'Portuguese', de: 'German', sw: 'Swahili',
 }
 
@@ -325,7 +398,7 @@ Rules:
 - Deliverables table rows must cover every item in the deliverables brief above — one row per deliverable, not grouped.
 - Roles table must reflect that ${input.agencyName} is the Provider and ${input.clientName} is the Client.
 - Write with professional, authoritative language appropriate for a legal document.
-- Never add a "late fee rate" or "revision fee" unless explicitly provided.${wantsPaymentSchedule ? '\n- Payment Schedule table: propose sensible milestone titles and trigger conditions based on the deliverables/timeline above. Amount must be exactly 0 on every row — never write a dollar figure or percentage there.' : ''}${languageInstruction}${reminder}`
+- Never add a "late fee rate" or "revision fee" unless explicitly provided.${standardsPromptBlock(input.standards)}${wantsPaymentSchedule ? '\n- Payment Schedule table: propose sensible milestone titles and trigger conditions based on the deliverables/timeline above. Amount must be exactly 0 on every row — never write a dollar figure or percentage there.' : ''}${languageInstruction}${reminder}`
 }
 
 // ── 3. Parsers — tolerant of anything except the markers themselves ────

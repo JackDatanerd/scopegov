@@ -53,10 +53,51 @@ export function sanitizeRichTextOrNull(html: string | null | undefined): string 
   return clean.replace(/<[^>]+>/g, '').trim() ? clean : null
 }
 
-/** Strip ALL markup — for fields that must be plain text but are still rendered raw on a portal page (e.g. titles, internal notes). CO `note` and Invoice `paymentInstructions` moved to sanitizeRichText/sanitizeRichTextOrNull — see RichTextField. */
+/**
+ * Decode the small set of HTML entities sanitize-html (and TipTap) emit.
+ * `&amp;` is decoded LAST so `&amp;lt;` becomes the literal text `&lt;`, not `<`.
+ */
+export function decodeHtmlEntities(text: string | null | undefined): string {
+  if (!text) return ''
+  return text
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#0*39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&')
+}
+
+/**
+ * Strip ALL markup and return PLAIN TEXT.
+ *
+ * sanitize-html always returns an HTML-escaped string (`Tom & Jerry` comes back as
+ * `Tom &amp; Jerry`). That is correct for HTML output but wrong for a plain-text
+ * field: React, react-pdf and the audit/notification tables all print the string
+ * verbatim, so every ampersand or angle bracket showed up as a literal entity, and
+ * the outbound emails (which call escapeHtml themselves) escaped it a second time.
+ * We therefore decode after stripping. The result contains no tags (they were
+ * removed before decoding); every sink for these fields escapes on output
+ * (React text nodes, react-pdf <Text>, escapeHtml in the email templates) — none
+ * of them is a dangerouslySetInnerHTML sink. Rich-text fields use sanitizeRichText.
+ */
 export function sanitizePlainText(text: string | null | undefined): string {
   if (!text) return ''
-  return sanitizeHtml(text, { allowedTags: [], allowedAttributes: {} }).trim()
+  const stripped = sanitizeHtml(text, { allowedTags: [], allowedAttributes: {} })
+  return decodeHtmlEntities(stripped).trim()
+}
+
+/**
+ * Validate + clean an untrusted free-text request field: returns '' for a
+ * missing value, null when the value is present but not a string (so the caller
+ * can answer 400 instead of crashing on `.trim()`), otherwise the sanitized,
+ * length-capped plain text.
+ */
+export function cleanTextField(value: unknown, maxLen: number): string | null {
+  if (value === undefined || value === null) return ''
+  if (typeof value !== 'string') return null
+  return sanitizePlainText(value).slice(0, maxLen)
 }
 
 /** Escape text for safe interpolation into an HTML email body (outbound notification emails, not stored). */

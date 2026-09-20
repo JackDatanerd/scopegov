@@ -32,6 +32,20 @@ export interface RescaleLineItem {
   quantity: number
   rate: number
   total: number
+  /**
+   * 'adjustment' marks a line the system wrote to reconcile a negotiated counter-offer
+   * ("Negotiated discount…"). Adjustment lines may be negative, are never a
+   * deliverable, and must survive a save/revise round-trip (see co-totals.ts).
+   */
+  kind?: 'adjustment'
+}
+
+const ADJUSTMENT_DESCRIPTION_RE = /^Negotiated (discount|increase|total)\b/i
+
+/** True for a system-written negotiation line (flagged, or — for rows written before the flag existed — recognised by its fixed wording). */
+export function isAdjustmentLine(li: { kind?: string; description?: string } | null | undefined): boolean {
+  if (!li) return false
+  return li.kind === 'adjustment' || ADJUSTMENT_DESCRIPTION_RE.test(String(li.description || '').trim())
 }
 
 export interface RescaleResult {
@@ -60,6 +74,13 @@ export function rescaleLineItemsToTotal(
     ? newTotal
     : newTotal / (1 + safeTaxRate / 100)
   const roundedSubtotal = round2(newSubtotal)
+  // The stored `subtotal` is always NET of tax (what the PDF's "Subtotal" row means and
+  // what co-totals.ts stores). For a tax-inclusive total the line items are gross, so the
+  // net has to be back-solved — storing the gross here printed "Subtotal 10,000 / Tax
+  // included (16%) / Total 10,000" on every counter-accepted inclusive CO.
+  const netSubtotal = taxInclusive && safeTaxRate > 0
+    ? round2(newTotal / (1 + safeTaxRate / 100))
+    : roundedSubtotal
 
   const oldSubtotal = round2(lineItems.reduce((s, li) => s + (li.quantity * li.rate), 0))
 
@@ -75,8 +96,9 @@ export function rescaleLineItemsToTotal(
         quantity: 1,
         rate: roundedSubtotal,
         total: roundedSubtotal,
+        kind: 'adjustment',
       }],
-      subtotal: roundedSubtotal,
+      subtotal: netSubtotal,
       total: round2(newTotal),
     }
   }
@@ -91,8 +113,9 @@ export function rescaleLineItemsToTotal(
       quantity: 1,
       rate: drift,
       total: drift,
+      kind: 'adjustment',
     })
   }
 
-  return { lineItems: lineItemsOut, subtotal: roundedSubtotal, total: round2(newTotal) }
+  return { lineItems: lineItemsOut, subtotal: netSubtotal, total: round2(newTotal) }
 }

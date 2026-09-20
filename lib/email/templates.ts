@@ -303,8 +303,10 @@ export async function sendSowSignedClientEmail(params: {
 export async function sendSowDeclinedEmail(params: {
   to: string[]; agencyName: string; clientName: string
   projectName: string; reason?: string
+  // Deep-links the CTA to the project's SOW tab instead of the bare projects list.
+  projectId?: string
 }) {
-  const { to, agencyName: agencyNameRaw, clientName: clientNameRaw, projectName: projectNameRaw, reason: reasonRaw } = params
+  const { to, agencyName: agencyNameRaw, clientName: clientNameRaw, projectName: projectNameRaw, reason: reasonRaw, projectId } = params
   const agencyName  = escapeHtml(agencyNameRaw)
   const clientName  = escapeHtml(clientNameRaw)
   const projectName = escapeHtml(projectNameRaw)
@@ -330,7 +332,7 @@ export async function sendSowDeclinedEmail(params: {
       </p>
     `,
     cta: 'Open project in ScopeGov',
-    ctaUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects`,
+    ctaUrl: projectId ? `${process.env.NEXT_PUBLIC_APP_URL}/projects/${projectId}?tab=sow` : `${process.env.NEXT_PUBLIC_APP_URL}/projects`,
     showPreferencesLink: true,
   })
 
@@ -1217,6 +1219,49 @@ export async function sendDocumentCancelledEmail(params: {
     to,
     cc:      cc?.filter(Boolean) || [],
     subject: `${documentLabel} ${verb}: ${documentTitleRaw} — ${projectNameRaw}`,
+    html,
+  })
+}
+
+/**
+ * Confirmation to the CLIENT that their response to a document (decline, change request, counter)
+ * was received. Until now the client got nothing back after pressing those buttons.
+ */
+export async function sendClientResponseReceivedEmail(params: {
+  to: string; cc?: string[]; clientName: string; agencyName: string; projectName: string
+  documentLabel: string
+  response: 'declined' | 'requested changes to' | 'countered'
+  note?: string | null; brandColour?: string
+}) {
+  const { to, cc, clientName: clientNameRaw, agencyName: agencyNameRaw, projectName: projectNameRaw,
+    documentLabel, response, note: noteRaw, brandColour } = params
+  const clientName  = escapeHtml(clientNameRaw)
+  const agencyName  = escapeHtml(agencyNameRaw)
+  const projectName = escapeHtml(projectNameRaw)
+  const note        = noteRaw ? escapeHtml(noteRaw) : null
+
+  const html = baseTemplate({
+    agencyName,
+    headerColour: brandColour || C.green,
+    label: 'Response received',
+    headline: `We\u2019ve recorded your response`,
+    body: `
+      <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${clientName},</p>
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        This confirms that you ${response} the ${documentLabel.toLowerCase()} for
+        <strong>${projectName}</strong>, and <strong>${agencyName}</strong> has been notified.
+        They will follow up with you directly.
+      </p>
+      ${note ? `<p style="font-size:13px;color:${C.text2};"><strong>What you sent:</strong> ${note}</p>` : ''}
+      <p style="font-size:12px;color:${C.text3};">If this wasn\u2019t you, please contact ${agencyName} right away.</p>
+    `,
+  })
+
+  return resendClient().emails.send({
+    from:    `${BRAND_FROM(agencyNameRaw)} <${FROM}>`,
+    to,
+    cc:      cc?.filter(Boolean) || [],
+    subject: `We received your response — ${projectNameRaw}`,
     html,
   })
 }

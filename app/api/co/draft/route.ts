@@ -8,6 +8,8 @@ import { canReadProject } from '@/lib/utils/project-access'
 import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
 import { isTerminalStatus } from '@/lib/utils/project-status'
 import Anthropic from '@anthropic-ai/sdk'
+import { sanitizePlainText } from '@/lib/utils/sanitize'
+import { MIN_CO_TIMELINE_DAYS, MAX_CO_TIMELINE_DAYS } from '@/lib/documents/co-input'
 
 // Forced tool call instead of "return only JSON" + string parsing (BUG-027's
 // stripAndParse route): a schema the model MUST fill in is reliable in a way
@@ -70,9 +72,12 @@ export async function POST(request: NextRequest) {
     if (!hasPermission(session, 'CREATE_CHANGE_ORDERS'))
       return NextResponse.json({ error: 'Missing permission: CREATE_CHANGE_ORDERS' }, { status: 403 })
 
-    const { projectId, request: askText, flagId } = await request.json()
-    if (!projectId) return NextResponse.json({ error: 'projectId required' }, { status: 400 })
-    if (!askText?.trim()) return NextResponse.json({ error: 'Describe what the client is asking for' }, { status: 400 })
+    const reqBody = await request.json().catch(() => null)
+    const { projectId, request: askRaw, flagId } = (reqBody || {}) as any
+    if (!projectId || typeof projectId !== 'string') return NextResponse.json({ error: 'projectId required' }, { status: 400 })
+    if (typeof askRaw !== 'string' || !askRaw.trim()) return NextResponse.json({ error: 'Describe what the client is asking for' }, { status: 400 })
+    if (flagId !== undefined && flagId !== null && typeof flagId !== 'string') return NextResponse.json({ error: 'flagId must be an id' }, { status: 400 })
+    const askText: string = askRaw
 
     const service = createServiceClient()
 
@@ -140,12 +145,16 @@ Rules:
 - scopeImpact should name the specific deliverable or SOW section this falls outside of, not just restate the note.`
 
     const msg = await anthropicClient().messages.create({
-      model:       'claude-haiku-4-5-20251001',
+      model:       process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001',
       max_tokens:  1200,
       tools:       [DRAFT_CO_TOOL],
       tool_choice: { type: 'tool', name: 'draft_change_order' },
       messages:    [{ role: 'user', content: prompt }],
     })
+
+    // The model call has been paid for whether or not its answer is usable — count it, so retries of
+    // an unusable draft cannot run past the rate limit for free.
+    await recordAiUsage(service, session.workspaceId, session.id, 'co.draft')
 
     const toolUse = msg.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use')
     if (!toolUse) {
@@ -161,18 +170,28 @@ Rules:
 
     // Defensive: force every rate to 0 regardless of what the model returned —
     // pricing must always come from the agency, never be silently invented.
-    const lineItems = (parsed.lineItems || []).map(l => ({ ...l, rate: 0 }))
+    // Tool output is untrusted structure: clamp everything before it reaches the editor (the model can
+    // return strings for numbers, negative or absurd quantities, or missing fields). Rate is always 0 —
+    // pricing comes from the agency, never the model.
+    const lineItems = (Array.isArray(parsed.lineItems) ? parsed.lineItems : []).slice(0, 6).map(l => {
+      const q = Number(l?.quantity)
+      return {
+        description: sanitizePlainText(String(l?.description ?? '')).slice(0, 500),
+        quantity: Number.isFinite(q) && q > 0 && q <= 10_000 ? q : 1,
+        rate: 0,
+      }
+    }).filter(l => l.description)
+    const days = Number(parsed.timelineImpactDays)
 
-    await recordAiUsage(service, session.workspaceId, session.id, 'co.draft')
     return NextResponse.json({
-      title:              parsed.title || '',
-      note:               parsed.note || '',
-      scopeImpact:        parsed.scopeImpact || null,
-      timelineImpactDays: typeof parsed.timelineImpactDays === 'number' ? parsed.timelineImpactDays : null,
+      title:              sanitizePlainText(String(parsed.title ?? '')).slice(0, 200),
+      note:               sanitizePlainText(String(parsed.note ?? '')).slice(0, 2000),
+      scopeImpact:        parsed.scopeImpact ? sanitizePlainText(String(parsed.scopeImpact)).slice(0, 1000) : null,
+      timelineImpactDays: Number.isInteger(days) && days >= MIN_CO_TIMELINE_DAYS && days <= MAX_CO_TIMELINE_DAYS ? days : null,
       lineItems,
     })
   } catch (err) {
     console.error('CO draft error:', err)
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    return NextResponse.json({ error: 'Could not draft the change order. Please try again or write it manually.' }, { status: 500 })
   }
 }

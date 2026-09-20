@@ -5,6 +5,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
 import { computeCoTotals } from '@/lib/documents/co-totals'
+import { parseCoFields } from '@/lib/documents/co-input'
 import { isTerminalStatus } from '@/lib/utils/project-status'
 
 export async function POST(request: NextRequest) {
@@ -14,10 +15,20 @@ export async function POST(request: NextRequest) {
     if (!hasPermission(session, 'CREATE_CHANGE_ORDERS'))
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
 
-    const body    = await request.json()
+    const body    = await request.json().catch(() => null)
+    if (!body || typeof body !== 'object')
+      return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
     const { projectId, title, note, lineItems, taxRate, taxInclusive, flagId, timelineImpactDays, scopeImpactNote, isRetainerRenewal } = body
-    if (!projectId || !title)
+    if (!projectId || typeof projectId !== 'string' || title === undefined || title === null || title === '')
       return NextResponse.json({ error: 'projectId and title required' }, { status: 400 })
+    const parsedFields = parseCoFields(body)
+    if (!parsedFields.ok) return NextResponse.json({ error: parsedFields.error }, { status: 400 })
+    if (note !== undefined && note !== null && typeof note !== 'string')
+      return NextResponse.json({ error: 'note must be text' }, { status: 400 })
+    if (isRetainerRenewal !== undefined && typeof isRetainerRenewal !== 'boolean')
+      return NextResponse.json({ error: 'isRetainerRenewal must be true or false' }, { status: 400 })
+    if (lineItems !== undefined && !Array.isArray(lineItems))
+      return NextResponse.json({ error: 'lineItems must be a list' }, { status: 400 })
 
     const service = createServiceClient()
 
@@ -117,7 +128,7 @@ export async function POST(request: NextRequest) {
         project_id:   projectId,
         workspace_id: session.workspaceId,
         flag_id:      validatedFlagId,
-        title:        title.trim(),
+        title:        parsedFields.fields.title!,
         note:         sanitizeRichTextOrNull(note),
         status:       'draft',
         // FIX (section-10 audit): line_items is a jsonb column — writing
@@ -143,8 +154,8 @@ export async function POST(request: NextRequest) {
         // alongside the rest of the CO at creation, same as note/line
         // items — see the PDF renderer's Impact Analysis section for
         // where this surfaces to the client.
-        timeline_impact_days: timelineImpactDays != null && timelineImpactDays !== '' ? parseInt(timelineImpactDays, 10) : null,
-        scope_impact_note:    scopeImpactNote?.trim() || null,
+        timeline_impact_days: parsedFields.fields.timelineImpactDays ?? null,
+        scope_impact_note:    parsedFields.fields.scopeImpactNote ?? null,
         created_by:   session.id,
       })
       .select('id').single()
@@ -155,12 +166,13 @@ export async function POST(request: NextRequest) {
       workspaceId: session.workspaceId, actorId: session.id,
       actorEmail: session.email, actorName: session.name,
       eventType: 'co.created', entityType: 'change_order',
-      entityId: co.id, entityName: title,
+      entityId: co.id, entityName: parsedFields.fields.title,
       metadata: { project_id: projectId, total },
     })
 
     return NextResponse.json({ coId: co.id })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('CO create error:', err)
+    return NextResponse.json({ error: 'Could not create the change order. Please try again.' }, { status: 500 })
   }
 }

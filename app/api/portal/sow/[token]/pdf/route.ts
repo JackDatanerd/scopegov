@@ -5,9 +5,11 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { jwtVerify } from 'jose'
 import { renderSowPdf } from '@/lib/pdf/renderer'
 import { getWorkspaceJwtSecret, isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
+import { fetchExecutedPdf } from '@/lib/documents/executed-pdf'
+import { hydrateSections } from '@/lib/sow/sections'
 
 const SOW_PDF_COLUMNS = `id, version, document_number, sections, metadata, status, signed_at, signed_by,
-  client_signature_data, workspace_id,
+  client_signature_data, workspace_id, pdf_path,
   projects(id, name, disc, contract_value, currency,
     clients(name, company_name, billing_address, vat_number),
     workspaces(agency_name, brand_colour, logo_storage_path, agency_signature_data,
@@ -54,8 +56,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     }
 
     if (!sow) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-    if (sow.status !== 'signed')
-      return NextResponse.json({ error: 'This SOW has not been signed yet' }, { status: 409 })
+    // A signed SOW serves its frozen executed copy. A SOW still awaiting signature serves a
+    // watermarked, unsigned REVIEW copy — clients routinely need to pass the document to counsel
+    // or a finance team before anyone signs, and the portal offered no way to get a file.
+    const isSigned = sow.status === 'signed'
+    if (!isSigned && sow.status !== 'awaiting_signature')
+      return NextResponse.json({ error: 'This SOW is not available as a PDF' }, { status: 409 })
 
     // FIX (portal audit, section 18 re-pass): every other portal route
     // (GET/route.ts, sign, decline, request-changes) checks isWorkspaceDeleted
@@ -78,6 +84,23 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       }
     }
 
+    const respond = (buf: Buffer, label: string) => new NextResponse(new Uint8Array(buf), {
+      headers: {
+        'Content-Type':        'application/pdf',
+        'Content-Disposition': `attachment; filename="${label}"`,
+        'Content-Length':      String(buf.length),
+        'Cache-Control':       'private, no-cache',
+      },
+    })
+    const baseName = `SOW-${(sow.projects?.name || 'document').replace(/[^a-z0-9]/gi, '-')}-v${sow.version}`
+
+    // Executed copy, rendered once at signing (see sign route / lib/documents/executed-pdf.ts).
+    if (isSigned) {
+      const frozen = await fetchExecutedPdf(service, sow.pdf_path)
+      if (frozen) return respond(frozen, `${baseName}.pdf`)
+      // Signed before executed copies were stored: fall through to a live render (below).
+    }
+
     const project = sow.projects
     const client  = project?.clients
     const ws      = project?.workspaces
@@ -88,11 +111,20 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       logoUrl = u?.publicUrl || null
     }
 
-    const { data: milestones } = await (service as any)
-      .from('payment_milestones')
-      .select('title, amount, percentage, trigger, due_date, status')
-      .eq('sow_id', sow.id)
-      .order('due_date', { ascending: true, nullsFirst: false })
+    // Only the schedule that existed when the SOW was signed. Rows the retainer cron adds every
+    // month (and anything else attached later) are billing state, not part of the agreement, and
+    // used to pile up inside the "signed" PDF.
+    let milestones: any[] | null = []
+    if (isSigned) {
+      const cutoff = new Date(new Date(sow.signed_at).getTime() + 10 * 60 * 1000).toISOString()
+      const res = await (service as any)
+        .from('payment_milestones')
+        .select('title, amount, percentage, trigger, due_date, status')
+        .eq('sow_id', sow.id)
+        .lte('created_at', cutoff)
+        .order('due_date', { ascending: true, nullsFirst: false })
+      milestones = res.data
+    }
 
     const pdfBuffer = await renderSowPdf({
       agencyName:    ws?.agency_name || 'Agency',
@@ -109,7 +141,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       projectName:   (project?.name || '') + (project?.disc ? ` — ${project.disc}` : ''),
       contractValue: project?.contract_value || 0,
       currency:      project?.currency || 'USD',
-      sections:      sow.sections || [],
+      sections:      hydrateSections(sow.sections || [], sow.metadata),
       // FIX (section-9 audit, 9-G7): the document's drafting language,
       // so schema-driven table headers render in it (section titles are
       // already stored localized).
@@ -124,24 +156,16 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         title: m.title, amount: m.amount, percentage: m.percentage,
         trigger: m.trigger, dueDate: m.due_date, status: m.status,
       })),
-      signedBy:      sow.signed_by || undefined,
-      signedAt:      sow.signed_at || undefined,
+      signedBy:      isSigned ? (sow.signed_by || undefined) : undefined,
+      signedAt:      isSigned ? (sow.signed_at || undefined) : undefined,
       agencySignatureData: ws?.agency_signature_data || null,
-      clientSignatureData: sow.client_signature_data || null,
+      clientSignatureData: isSigned ? (sow.client_signature_data || null) : null,
       version:       sow.version,
-      isWatermarked: false,
+      isWatermarked: !isSigned,
       documentNumber: sow.document_number || null,
     })
 
-    const filename = `SOW-${(project?.name || 'document').replace(/[^a-z0-9]/gi, '-')}-v${sow.version}.pdf`
-    return new NextResponse(new Uint8Array(pdfBuffer), {
-      headers: {
-        'Content-Type':        'application/pdf',
-        'Content-Disposition': `attachment; filename="${filename}"`,
-        'Content-Length':      String(pdfBuffer.length),
-        'Cache-Control':       'private, no-cache',
-      },
-    })
+    return respond(pdfBuffer, isSigned ? `${baseName}.pdf` : `${baseName}-for-review.pdf`)
   } catch (err) {
     console.error('Portal SOW PDF error:', err)
     return NextResponse.json({ error: 'PDF generation failed' }, { status: 500 })

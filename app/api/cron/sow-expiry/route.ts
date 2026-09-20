@@ -40,7 +40,7 @@ export async function POST(request: NextRequest) {
     // has already reached a terminal state.
     const { data: expiring } = await (service as any)
       .from('sow_documents')
-      .select('id, version, workspace_id, project_id, expires_at, token, projects(id, name, status, clients(name))')
+      .select('id, version, status, workspace_id, project_id, expires_at, token, projects(id, name, status, clients(name))')
       .in('status', ['awaiting_signature', 'changes_requested'])
       .not('expires_at', 'is', null)
       .lt('expires_at', now)
@@ -68,9 +68,13 @@ export async function POST(request: NextRequest) {
         // exactly, just with reason: 'expired'. Read the pre-update token
         // from `sow` (the row fetched above, before this UPDATE nulled it)
         // since that's the value clients actually have in hand.
-        await (service as any).from('revoked_tokens').insert({
-          token: sow.token, token_type: 'sow', reason: 'expired', document_id: sow.id,
-        })
+        // supabase-js returns errors rather than throwing; read it so a failed revoke is visible.
+        if (sow.token) {
+          const { error: revokeErr } = await (service as any).from('revoked_tokens').insert({
+            token: sow.token, token_type: 'sow', reason: 'expired', document_id: sow.id,
+          })
+          if (revokeErr) console.error('SOW expiry: token revoke insert failed:', revokeErr.message)
+        }
 
         await insertAuditRow(service, {
           workspace_id: sow.workspace_id,
@@ -83,6 +87,11 @@ export async function POST(request: NextRequest) {
           entity_name:  sow.projects?.name,
           metadata:     { version: sow.version, expired_at: sow.expires_at },
         })
+
+        // A 'changes_requested' version was already answered by the client and superseded by a
+        // newer draft — its link expiring is bookkeeping, not news. Announcing "signing link
+        // expired, start a new version" for it told the team to redo work already in progress.
+        if (sow.status === 'changes_requested') { expired++; continue }
 
         const projectName = sow.projects?.name || 'Untitled project'
         await notifyMembersWithPermission(service, {

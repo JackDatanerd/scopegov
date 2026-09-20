@@ -695,28 +695,50 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
   // step as a standalone modal for an already-existing project.
   const [briefOpen, setBriefOpen] = useState(false)
 
+  const [notice, setNotice] = useState('')
+
   async function handleSendSow() {
-    setSending(true); setError(''); setSentForApproval(false)
+    setSending(true); setError(''); setNotice(''); setSentForApproval(false)
     try {
-      const res  = await fetch(`/api/sow/${currentSow.id}/send`, { method: 'POST' })
-      const json = await res.json()
+      const post = async (acknowledgeWarnings: boolean) => {
+        const res = await fetch(`/api/sow/${currentSow.id}/send`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ acknowledgeWarnings }),
+        })
+        return { res, json: await res.json().catch(() => ({} as any)) }
+      }
+      let { res, json } = await post(false)
+      // Soft warnings (e.g. Payment Terms text doesn't state the contract value) need a human "yes".
+      if (res.status === 409 && json.needsAcknowledgement) {
+        const list: string[] = Array.isArray(json.warnings) && json.warnings.length ? json.warnings : [json.error]
+        if (!confirm(`${list.join('\n\n')}\n\nSend it anyway?`)) return
+        ;({ res, json } = await post(true))
+      }
       if (!res.ok) throw new Error(json.error || 'Failed to send')
       if (json.pendingApproval) setSentForApproval(true)
+      // The mail provider can reject a send without the request failing; say so instead of
+      // implying the client has the link.
+      if (json.emailSent === false)
+        setNotice(`Marked as sent, but the email to the client could not be delivered (${json.emailError || 'provider error'}). Use "Copy signing link" and send it to them yourself.`)
       router.refresh()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to send SOW')
     } finally { setSending(false) }
   }
 
-  // FIX (SOW-lifecycle fix round): this was the one action on this tab
-  // with no res.ok check — handleSendSow and handleRemind right below it
-  // both surface a failure, but this called router.refresh() unconditionally
-  // regardless of outcome, exactly the bug already described and fixed for
-  // the standalone SOW editor page's own withdraw handler (see
-  // app/(app)/projects/[id]/sow/[sowId]/page.tsx). A failed withdraw here —
-  // permission lapsed, already signed, network error — looked identical to
-  // a successful one, with no error shown and the client possibly still
-  // holding a live signing link.
+  async function handleCopyLink() {
+    setError(''); setNotice('')
+    try {
+      const res  = await fetch(`/api/sow/${currentSow.id}/link`)
+      const json = await res.json().catch(() => ({} as any))
+      if (!res.ok) throw new Error(json.error || 'Could not get the signing link')
+      try { await navigator.clipboard.writeText(json.portalUrl); setNotice('Signing link copied to your clipboard.') }
+      catch { window.prompt('Copy this signing link:', json.portalUrl) }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not get the signing link')
+    }
+  }
+
   async function handleWithdraw() {
     if (!confirm('Withdraw this SOW? The client link will be deactivated.')) return
     setError('')
@@ -759,7 +781,7 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
     setReminding(true); setError('')
     try {
       const res  = await fetch(`/api/sow/${currentSow.id}/remind`, { method: 'POST' })
-      const json = await res.json()
+      const json = await res.json().catch(() => ({} as any))
       if (!res.ok) throw new Error(json.error || 'Failed to send reminder')
       router.refresh()
     } catch (err: unknown) {
@@ -770,6 +792,7 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
   return (
     <div>
       {error && <div className="auth-error" style={{ marginBottom: 14 }}>{error}</div>}
+      {notice && <div className="surface surface-p" style={{ marginBottom: 14, borderLeft: '3px solid var(--amber)', fontSize: 13, color: 'var(--text-2)' }}>{notice}</div>}
       {sentForApproval && (
         <div className="surface surface-p" style={{ marginBottom: 14, borderLeft: '3px solid var(--amber)', display: 'flex', alignItems: 'center', gap: 10 }}>
           <i className="ti ti-shield-check" style={{ fontSize: 16, color: 'var(--amber)' }} />
@@ -844,6 +867,9 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
                       <button className="btn btn-ghost btn-sm" onClick={handleRemind} disabled={reminding}>
                         {reminding ? <span className="spin" /> : <><i className="ti ti-refresh" style={{ fontSize: 12 }} /> Remind</>}
                       </button>
+                      {permissions.sendSow && (
+                        <button className="btn btn-ghost btn-sm" onClick={handleCopyLink}><i className="ti ti-link" style={{ fontSize: 12 }} /> Copy signing link</button>
+                      )}
                       <button className="btn btn-ghost btn-sm" onClick={handleWithdraw}><i className="ti ti-x" style={{ fontSize: 12 }} /> Withdraw</button>
                     </>
                   )}
@@ -874,9 +900,11 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
                   </div>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                     <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{formatDate(s.created_at)}</span>
-                    {s.signed_at && (
-                      <a href={`/api/pdf/sow/${s.id}`} target="_blank" className="btn btn-ghost btn-xs"><i className="ti ti-download" style={{ fontSize: 11 }} /> PDF</a>
-                    )}
+                    {/* Every version can be opened and downloaded (unsigned ones are watermarked) —
+                        a declined or withdrawn version is the record of what the client actually saw,
+                        and had no way to be viewed. */}
+                    <Link href={`/projects/${project.id}/sow/${s.id}`} className="btn btn-ghost btn-xs"><i className="ti ti-eye" style={{ fontSize: 11 }} /> View</Link>
+                    <a href={`/api/pdf/sow/${s.id}`} target="_blank" className="btn btn-ghost btn-xs"><i className="ti ti-download" style={{ fontSize: 11 }} /> PDF</a>
                   </div>
                 </div>
               ))}
@@ -1876,6 +1904,7 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
   // for 'send', so accepting a counter that trips a co_counter workflow
   // looked identical to one that went straight to the client.
   const [actionError, setActionError] = useState('')
+  const [actionNotice, setActionNotice] = useState('')
   // FIX (fix round, section-11 flagship finding): same gap as the SOW
   // tab's matching fix — a CO or CO-counter approval that fully cleared
   // but failed to auto-send had no retry path anywhere on this card.
@@ -1892,7 +1921,7 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
     } finally { setRetrying(false) }
   }
   async function doAction(action: string) {
-    setActing(true); setActionError('')
+    setActing(true); setActionError(''); setActionNotice('')
     try {
       const res  = await fetch(`/api/co/${co.id}/${action}`, { method: 'POST' })
       const json = await res.json().catch(() => ({}))
@@ -1902,10 +1931,27 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
           ? 'Sent for approval — the client will be asked to countersign the negotiated amount once it\u2019s signed off.'
           : 'Sent for approval — this CO will go to the client automatically once it\u2019s signed off.')
       }
+      // The mail provider can reject a message without the request failing — say so rather than imply
+      // the client has been told.
+      if (json?.emailSent === false)
+        setActionNotice(`Done, but the email to the client could not be delivered (${json.emailError || 'provider error'}). Use "Copy link" and send it to them yourself.`)
+      else if (json?.clientNotified === false)
+        setActionNotice('Done, but the notification email to the client could not be delivered — you may want to let them know directly.')
       router.refresh()
     } catch {
       setActionError('That action failed. Please try again.')
     } finally { setActing(false) }
+  }
+
+  async function copyLink() {
+    setActionError(''); setActionNotice('')
+    try {
+      const res  = await fetch(`/api/co/${co.id}/link`)
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) { setActionError(json?.error || 'Could not get the response link.'); return }
+      try { await navigator.clipboard.writeText(json.portalUrl); setActionNotice('Response link copied to your clipboard.') }
+      catch { window.prompt('Copy this response link:', json.portalUrl) }
+    } catch { setActionError('Could not get the response link.') }
   }
 
   // Revise creates a NEW draft CO and we want to land the user in it, so
@@ -1975,8 +2021,14 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
           {co.status === 'draft' && pendingApproval && !pendingApproval.sendFailed && (
             <Link href="/approvals"><button className="btn btn-ghost btn-xs">Awaiting approval</button></Link>
           )}
-          {co.status === 'awaiting_response' && (
+          {/* 'stalled' is a live, sent CO (no reply for 5 days) and could previously only be Closed. */}
+          {(co.status === 'awaiting_response' || co.status === 'stalled') && (
             <button className="btn btn-ghost btn-xs" onClick={() => doAction('withdraw')} disabled={acting}>Withdraw</button>
+          )}
+          {['awaiting_response', 'stalled', 'awaiting_countersignature'].includes(co.status) && permissions.sendCo && (
+            <button className="btn btn-ghost btn-xs" onClick={copyLink} disabled={acting} title="Copy the client's response link">
+              <i className="ti ti-link" style={{ fontSize: 12 }} /> Copy link
+            </button>
           )}
           {/* FIX (doc-completeness audit, migration 014): CO is waiting on
               the client's countersignature at the negotiated total — the
@@ -2088,6 +2140,9 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
           {co.status === 'declined' ? 'Client declined: ' : 'Closed: '}
           <span style={{ color: 'var(--text-2)' }}>{co.declined_reason || co.close_reason}</span>
         </div>
+      )}
+      {actionNotice && !actionError && (
+        <div style={{ marginTop: 10, fontSize: 12.5, color: 'var(--text-2)', borderLeft: '3px solid var(--amber)', paddingLeft: 10 }}>{actionNotice}</div>
       )}
       {actionError && (
         <div style={{ marginTop: 10, fontSize: 12.5, color: 'var(--red)' }}>{actionError}</div>

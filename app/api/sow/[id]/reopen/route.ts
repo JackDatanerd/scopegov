@@ -72,6 +72,24 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ sowId: existingDraft.id, existing: true })
     }
 
+    // Reopening only makes sense for the newest version of a project with no live SOW. Cloning
+    // an old declined v1 while v2 is signed (or out for signature) produced a stale draft that,
+    // once sent, would sit next to the real agreement.
+    const { data: newerOrLive } = await (service as any)
+      .from('sow_documents').select('id, status, version')
+      .eq('project_id', sow.project_id).neq('id', sow.id)
+      .or(`version.gt.${sow.version},status.in.(awaiting_signature,signed)`).limit(1)
+    if (newerOrLive && newerOrLive.length > 0) {
+      const n = newerOrLive[0]
+      return NextResponse.json({
+        error: n.status === 'signed'
+          ? 'This project already has a signed SOW. Use a change order to change the agreed scope.'
+          : n.status === 'awaiting_signature'
+            ? `SOW v${n.version} is out for signature. Withdraw it before reopening an older version.`
+            : `A newer version (v${n.version}) exists — reopen that one instead.`,
+      }, { status: 409 })
+    }
+
     // Clone content forward. Deliberately NOT copied: token, sent_at,
     // expires_at, document_number, signature/decline fields — the new
     // draft has to earn all of those through a real send.
@@ -79,12 +97,22 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       workspace_id:        session.workspaceId,
       status:              'draft',
       sections:            sow.sections,
-      metadata:            sow.metadata,
+      // The previous round's change-request note describes a different draft; carrying it forward
+      // showed a stale "client requested changes" banner on an unrelated new version.
+      metadata:            (({ changeRequest: _cr, ...rest }) => rest)(sow.metadata || {}),
       previous_version_id: sow.id,
     })
 
-    if (!result.ok)
-      return NextResponse.json({ error: result.error || 'Could not create a new version' }, { status: 500 })
+    if (!result.ok) {
+      // Lost a race with another reopen: the one-draft-per-project index (migration 061) refused ours.
+      if (/one_draft_per_project|duplicate key/i.test(result.error || '')) {
+        const { data: winner } = await (service as any)
+          .from('sow_documents').select('id').eq('project_id', sow.project_id).eq('status', 'draft').maybeSingle()
+        if (winner) return NextResponse.json({ sowId: winner.id, existing: true })
+      }
+      console.error('SOW reopen: could not create version', result.error)
+      return NextResponse.json({ error: 'Could not create a new version' }, { status: 500 })
+    }
 
     // Bring the project back to a working state. Only move it out of the
     // statuses this SOW's own terminal state put it in — a project
@@ -105,6 +133,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ sowId: result.id, version: result.version })
   } catch (err) {
     console.error('SOW reopen error:', err)
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    return NextResponse.json({ error: 'Could not reopen this SOW. Please try again.' }, { status: 500 })
   }
 }

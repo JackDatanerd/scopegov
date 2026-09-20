@@ -6,7 +6,9 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
 import { checkReminderCooldown } from '@/lib/utils/reminder-cooldown'
-import { escapeHtml } from '@/lib/utils/sanitize'
+import { escapeHtml, sanitizeDisplayName } from '@/lib/utils/sanitize'
+import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
+import { checkedSend } from '@/lib/email/delivery'
 import { Resend } from 'resend'
 
 // FIX (re-audit — build-blocking): module-scope instantiation, same class
@@ -29,7 +31,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { data: sow } = await (service as any)
       .from('sow_documents')
       .select(`id, version, token, status, expires_at, project_id,
-        projects(id, name, disc,
+        projects(id, name, disc, client_id,
           clients(name, email, cc_emails),
           workspaces(agency_name, brand_colour))`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
@@ -93,11 +95,16 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const projectHtml = escapeHtml(project?.name)
     const agencyHtml  = escapeHtml(ws?.agency_name)
 
-    // Event 2: SOW reminder — awaited (carry-forward §4.4)
-    await resendClient().emails.send({
-      from:    `${ws?.agency_name} via ScopeGov <${process.env.RESEND_FROM_EMAIL}>`,
-      to:      client?.email,
-      cc:      client?.cc_emails?.filter(Boolean) || [],
+    if (!client?.email)
+      return NextResponse.json({ error: 'This client has no email address on file.' }, { status: 400 })
+    const cc = await withPrimaryContactCc(service, project?.client_id, client.email, client.cc_emails)
+
+    // resend.emails.send() RESOLVES with { error } on API failures instead of throwing — so this
+    // used to report success (and burn the 24h cooldown) for reminders that never left.
+    const delivery = await checkedSend(() => resendClient().emails.send({
+      from:    `${sanitizeDisplayName(ws?.agency_name)} via ScopeGov <${process.env.RESEND_FROM_EMAIL}>`,
+      to:      client.email,
+      cc,
       subject: `Reminder: Please review and sign the ${project?.name} agreement`,
       html: `<!DOCTYPE html><html><body style="font-family:-apple-system,sans-serif;background:#F2F0EA;margin:0;padding:40px 20px;">
       <div style="max-width:580px;margin:0 auto;background:#FFF;border:1px solid #E5E1D8;border-radius:8px;overflow:hidden;">
@@ -126,10 +133,25 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         Scope governance by <a href="https://scopegov.app" style="color:#1A5C3A;">ScopeGov</a>
       </p>
       </body></html>`,
-    })
+    }), 'SOW reminder')
+
+    if (!delivery.ok) {
+      await logAudit(service, {
+        workspaceId: session.workspaceId, actorId: session.id,
+        actorEmail: session.email, actorName: session.name,
+        eventType: 'reminder.failed', entityType: 'sow',
+        entityId: id, entityName: project?.name,
+        metadata: { type: 'sow', version: sow.version, error: delivery.error },
+      })
+      return NextResponse.json({
+        error: 'The reminder email could not be delivered. You can copy the signing link and send it yourself.',
+        detail: delivery.error,
+      }, { status: 502 })
+    }
 
     return NextResponse.json({ ok: true })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('SOW remind error:', err)
+    return NextResponse.json({ error: 'Could not send the reminder. Please try again.' }, { status: 500 })
   }
 }

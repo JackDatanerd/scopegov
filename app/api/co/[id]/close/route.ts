@@ -5,6 +5,9 @@ import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
 import { cancelApprovalRequest } from '@/lib/approvals/engine'
 import { sendDocumentCancelledEmail } from '@/lib/email/templates'
+import { cleanTextField } from '@/lib/utils/sanitize'
+import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
+import { checkedSend } from '@/lib/email/delivery'
 
 // FIX (section-10 audit): this was documented and typed as a "shared
 // handler for terminal non-accepted CO states: close, withdraw, decline"
@@ -30,8 +33,15 @@ async function handleTerminalCoState(
   const { data: co } = await (service as any)
     .from('change_orders')
     .select(`id,title,status,flag_id,token,project_id,
-      projects(id,name,clients(name,email,cc_emails),workspaces(agency_name,brand_colour))`)
+      projects(id,name,client_id,clients(name,email,cc_emails),workspaces(agency_name,brand_colour))`)
     .eq('id', id).eq('workspace_id', session.workspaceId).single()
+
+  // The reason goes into the database, the audit trail and an email to the client: type-check it,
+  // strip markup and cap it (it was stored verbatim at any length, and a non-string became jsonb junk).
+  const cleanedReason = cleanTextField(body?.reason, 1000)
+  if (cleanedReason === null)
+    return NextResponse.json({ error: 'reason must be text' }, { status: 400 })
+  const reason: string | null = cleanedReason || null
 
   if (!co) return NextResponse.json({ error: 'CO not found' }, { status: 404 })
   // FIX (audit round 3): see lib/utils/project-access.ts.
@@ -78,7 +88,7 @@ async function handleTerminalCoState(
   const wasSentToClient = co.status !== 'draft'
 
   const now = new Date().toISOString()
-  const updates: Record<string, unknown> = { status: newStatus, updated_at: now, close_reason: body.reason || null }
+  const updates: Record<string, unknown> = { status: newStatus, updated_at: now, close_reason: reason }
 
   // FIX (section-10 audit, cross-cutting with withdraw): same missing CAS
   // — this wrote unconditionally on `.eq('id', id)` after only reading
@@ -152,23 +162,24 @@ async function handleTerminalCoState(
     actorEmail: session.email, actorName: session.name,
     eventType: `co.${newStatus}`, entityType: 'change_order',
     entityId: id, entityName: co.title,
-    metadata: { reason: body.reason, from_status: co.status },
+    metadata: { ...(reason ? { reason } : {}), from_status: co.status },
   })
 
   const client = co.projects?.clients
+  let clientNotified = true
   if (wasSentToClient && client?.email) {
-    try {
-      await sendDocumentCancelledEmail({
-        to: client.email, cc: client.cc_emails || [],
-        clientName: client.name, agencyName: co.projects?.workspaces?.agency_name,
-        projectName: co.projects?.name, documentLabel: 'Change Order',
-        documentTitle: co.title, action: 'closed', reason: body.reason || null,
-        brandColour: co.projects?.workspaces?.brand_colour,
-      })
-    } catch (e) { console.error('CO closed client email failed:', e) }
+    const cc = await withPrimaryContactCc(service, co.projects?.client_id, client.email, client.cc_emails)
+    const delivery = await checkedSend(() => sendDocumentCancelledEmail({
+      to: client.email, cc,
+      clientName: client.name, agencyName: co.projects?.workspaces?.agency_name,
+      projectName: co.projects?.name, documentLabel: 'Change Order',
+      documentTitle: co.title, action: 'closed', reason,
+      brandColour: co.projects?.workspaces?.brand_colour,
+    }), 'CO closed (client) email')
+    clientNotified = delivery.ok
   }
 
-  return NextResponse.json({ ok: true })
+  return NextResponse.json({ ok: true, clientNotified })
 }
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -188,6 +199,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const service = createServiceClient()
     return handleTerminalCoState(id, 'closed', session, service, body)
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('CO close error:', err)
+    return NextResponse.json({ error: 'Could not close this change order. Please try again.' }, { status: 500 })
   }
 }

@@ -18,10 +18,12 @@ import { logAudit } from '@/lib/utils/audit'
 import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
 import { sendCoCountersignatureRequestEmail } from '@/lib/email/templates'
 import { rescaleLineItemsToTotal } from '@/lib/utils/rescale-line-items'
+import { checkedSend } from '@/lib/email/delivery'
+import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
 import { isTerminalStatus } from '@/lib/utils/project-status'
 
 export type AcceptCoCounterResult =
-  | { ok: true; awaitingCountersignature: true }
+  | { ok: true; awaitingCountersignature: true; emailSent: boolean; emailError?: string }
   | { ok: false; error: string; status: number }
 
 export async function acceptCoCounter(service: any, params: {
@@ -37,7 +39,7 @@ export async function acceptCoCounter(service: any, params: {
   const { data: co } = await (service as any)
     .from('change_orders')
     .select(`id,title,status,flag_id,counter_amount,counter_note,line_items,subtotal,tax_rate,tax_inclusive,total,project_id,workspace_id,token,
-      projects(id,name,status,currency,clients(name,email,cc_emails),workspaces(id,agency_name,brand_colour))`)
+      projects(id,name,status,currency,client_id,clients(name,email,cc_emails),workspaces(id,agency_name,brand_colour))`)
     .eq('id', coId).eq('workspace_id', workspaceId).single()
 
   if (!co) return { ok: false, error: 'CO not found', status: 404 }
@@ -117,25 +119,10 @@ export async function acceptCoCounter(service: any, params: {
     return { ok: false, error: 'This counter-offer was already responded to', status: 409 }
 
   if (co.token) {
-    try {
-      // FIX (section-10 re-pass): app/api/portal/co/[token]/accept/route.ts
-      // and countersign/route.ts both include document_id on this exact
-      // insert — that's what lets the portal GET route resolve a
-      // 'superseded' token back to the live CO by id instead of showing
-      // a dead "link no longer active" page (see the comment in
-      // app/api/portal/co/[token]/route.ts). This was the one token
-      // rotation in the CO lifecycle that left it out: the client's very
-      // first "please respond to this change order" email (token T1)
-      // stays live and un-rotated all the way through the 'countered'
-      // stage (counter/route.ts never touches the token), so it's this
-      // rotation — accepting their counter — that retires it. Without
-      // document_id, a client who goes back to that original email after
-      // their counter is accepted hits a dead end instead of being
-      // routed to their now-almost-finalized CO.
-      await (service as any).from('revoked_tokens').insert({
-        token: co.token, token_type: 'co', reason: 'superseded', document_id: coId,
-      })
-    } catch (e) { console.error('revoked_tokens insert for superseded counter token failed:', e) }
+    const { error: supersedeErr } = await (service as any).from('revoked_tokens').insert({
+      token: co.token, token_type: 'co', reason: 'superseded', document_id: coId,
+    })
+    if (supersedeErr) console.error('revoked_tokens insert for superseded counter token failed:', supersedeErr.message)
   }
 
   await logAudit(service, {
@@ -149,15 +136,14 @@ export async function acceptCoCounter(service: any, params: {
   })
 
   const portalUrl = `${process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL}/portal/co/${newToken}`
-  try {
-    await sendCoCountersignatureRequestEmail({
-      to: client.email, cc: client.cc_emails || [],
-      clientName: client.name, agencyName: ws?.agency_name,
-      projectName: project?.name, coTitle: co.title,
-      total: rescaledTotal, currency: project?.currency || 'USD',
-      portalUrl, brandColour: ws?.brand_colour,
-    })
-  } catch (e) { console.error('CO countersignature request email failed:', e) }
+  const cc = await withPrimaryContactCc(service, project?.client_id, client.email, client.cc_emails)
+  const delivery = await checkedSend(() => sendCoCountersignatureRequestEmail({
+    to: client.email, cc,
+    clientName: client.name, agencyName: ws?.agency_name,
+    projectName: project?.name, coTitle: co.title,
+    total: rescaledTotal, currency: project?.currency || 'USD',
+    portalUrl, brandColour: ws?.brand_colour,
+  }), 'CO countersignature request email')
 
-  return { ok: true, awaitingCountersignature: true }
+  return { ok: true, awaitingCountersignature: true, emailSent: delivery.ok, ...(delivery.ok ? {} : { emailError: delivery.error }) }
 }

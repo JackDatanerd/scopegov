@@ -151,10 +151,51 @@ export type SowTableRow = Record<string, string>
 export function parseTableAmount(raw: unknown): number | null {
   if (typeof raw === 'number') return Number.isFinite(raw) ? raw : null
   if (typeof raw !== 'string') return null
-  const cleaned = raw.replace(/[^0-9.\-]/g, '')
-  if (!cleaned || cleaned === '-' || cleaned === '.') return null
-  const n = Number(cleaned)
-  return Number.isFinite(n) ? n : null
+
+  // Find every numeric token ("1.500,00", "1 500,00", "$2,500", "12"). A cell that
+  // holds more than one ("Net 30: 500", "10-15", "1e3") is ambiguous, so it is
+  // reported as unreadable instead of being silently concatenated into one number.
+  const tokens = raw.match(/\d[\d.,\s'\u2019\u00a0\u202f]*/g)
+  if (!tokens) return null
+  const cleanedTokens = tokens.map(t => t.replace(/[\s'\u2019\u00a0\u202f]+$/g, ''))
+  if (cleanedTokens.length !== 1) return null
+  let token = cleanedTokens[0].replace(/[\s'\u2019\u00a0\u202f]/g, '')
+
+  // Work out which separator is the decimal point.
+  const lastDot = token.lastIndexOf('.')
+  const lastComma = token.lastIndexOf(',')
+  let decimalSep: '.' | ',' | null = null
+  if (lastDot !== -1 && lastComma !== -1) {
+    // Both present: whichever comes last is the decimal ("1.500,00" / "1,500.00").
+    decimalSep = lastDot > lastComma ? '.' : ','
+  } else if (lastDot !== -1 || lastComma !== -1) {
+    const sep = (lastDot !== -1 ? '.' : ',') as '.' | ','
+    const parts = token.split(sep)
+    const tail = parts[parts.length - 1]
+    // Repeated separator ("1.500.000") or exactly three digits after a single one
+    // ("1.500", "1,500") is a thousands grouping; one or two digits is a decimal.
+    if (parts.length === 2 && tail.length !== 3) decimalSep = sep
+    else if (parts.length === 2 && tail.length === 3 && parts[0] === '0') decimalSep = sep // "0.500"
+  }
+
+  let normalized: string
+  if (decimalSep) {
+    const thousandsSep = decimalSep === '.' ? ',' : '.'
+    normalized = token.split(thousandsSep).join('').replace(decimalSep, '.')
+  } else {
+    normalized = token.replace(/[.,]/g, '')
+  }
+  let n = Number(normalized)
+  if (!Number.isFinite(n)) return null
+
+  // "1.5k" / "2K" shorthand.
+  const after = raw.slice(raw.indexOf(tokens[0]) + tokens[0].length)
+  if (/^\s*k\b/i.test(after)) n *= 1000
+
+  // Accounting-style negatives: "(500)" or a leading minus.
+  const before = raw.slice(0, raw.indexOf(tokens[0]))
+  if (/-\s*[^\d]*$/.test(before) && !/\d/.test(before)) n = -n
+  return n
 }
 
 /** A blank row matching a section's schema, for the "+ Add row" editor action. */

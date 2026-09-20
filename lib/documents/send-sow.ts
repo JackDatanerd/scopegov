@@ -19,11 +19,22 @@ import { logAudit } from '@/lib/utils/audit'
 import { assignDocumentNumber } from '@/lib/utils/document-number'
 import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
+import { validateSowForSend } from '@/lib/sow/validate-send'
+import { checkedSend } from '@/lib/email/delivery'
 import { isTerminalStatus } from '@/lib/utils/project-status'
 
 export type SendSowResult =
-  | { ok: true; token: string; portalUrl: string; projectId: string; projectName: string; documentNumber: string }
-  | { ok: false; error: string; status: number }
+  | {
+      ok: true; token: string; portalUrl: string; projectId: string; projectName: string; documentNumber: string
+      // The Resend SDK reports rejected sends by RESOLVING with an error, never throwing, so a
+      // "successful" send used to be reported even when nothing left the building. Callers
+      // surface this (and the portalUrl) so the agency can copy the link by hand.
+      emailSent: boolean; emailError?: string
+    }
+  | { ok: false; error: string; status: number; warnings?: string[] }
+
+export const DEFAULT_SOW_EXPIRY_DAYS = 30
+export const MAX_SOW_EXPIRY_DAYS = 90
 
 export async function sendSowDocument(service: any, params: {
   sowId: string
@@ -34,13 +45,23 @@ export async function sendSowDocument(service: any, params: {
   // Present when this send was triggered by an approval chain clearing,
   // rather than a direct user click — carried into the audit metadata.
   approvalRequestId?: string
+  // Interactive sends pass true so a human sees soft warnings (e.g. Payment Terms text that
+  // doesn't state the contract value) before the document goes out; the unattended
+  // approval-chain auto-send leaves it off and only hard errors block.
+  enforceWarnings?: boolean
+  acknowledgeWarnings?: boolean
+  expiresInDays?: number
 }): Promise<SendSowResult> {
   const { sowId, workspaceId, actorId, actorEmail, actorName, approvalRequestId } = params
+  const requestedDays = Number(params.expiresInDays)
+  const expiryDays = Number.isFinite(requestedDays) && requestedDays >= 1
+    ? Math.min(Math.trunc(requestedDays), MAX_SOW_EXPIRY_DAYS)
+    : DEFAULT_SOW_EXPIRY_DAYS
 
   const { data: sow } = await (service as any)
     .from('sow_documents')
-    .select(`id, version, status, project_id, document_number,
-      projects(id, name, disc, status, contract_value, currency, client_id,
+    .select(`id, version, status, project_id, document_number, sections, metadata,
+      projects(id, name, disc, status, contract_value, currency, client_id, deleted_at,
         clients(name, email, cc_emails),
         workspaces(id, agency_name, brand_colour, logo_storage_path))`)
     .eq('id', sowId).eq('workspace_id', workspaceId).single()
@@ -68,6 +89,29 @@ export async function sendSowDocument(service: any, params: {
   }
 
   if (!client?.email) return { ok: false, error: 'Client email is required to send SOW', status: 400 }
+  if (project?.deleted_at) return { ok: false, error: 'This project has been deleted', status: 404 }
+
+  // Same validation the interactive route runs — kept HERE as well because the approval
+  // chain's auto-send calls this function directly, possibly days after the request was
+  // made, and the contract value or schedule can have changed in between.
+  const validation = validateSowForSend({ sections: sow.sections, metadata: sow.metadata, contractValue: project.contract_value })
+  if (validation.errors.length > 0)
+    return { ok: false, error: validation.errors[0], status: 400 }
+  if (params.enforceWarnings && !params.acknowledgeWarnings && validation.warnings.length > 0)
+    return { ok: false, error: validation.warnings[0], status: 409, warnings: validation.warnings }
+
+  // One live SOW per project: refuse while another version is out for signature or signed.
+  const { data: liveOthers } = await (service as any)
+    .from('sow_documents').select('id, status, version')
+    .eq('project_id', project.id).neq('id', sowId).in('status', ['awaiting_signature', 'signed']).limit(1)
+  if (liveOthers && liveOthers.length > 0) {
+    return {
+      ok: false, status: 409,
+      error: liveOthers[0].status === 'signed'
+        ? 'This project already has a signed SOW. Use a change order to change the agreed scope.'
+        : `SOW v${liveOthers[0].version} for this project is still out for signature. Withdraw it before sending another version.`,
+    }
+  }
 
   // FIX (deep audit, section 14 — flagship finding): see
   // lib/utils/client-contacts.ts — CC the client's designated primary
@@ -80,7 +124,7 @@ export async function sendSowDocument(service: any, params: {
   const jwtSecret = await getWorkspaceJwtSecret(service, workspaceId)
   if (!jwtSecret) return { ok: false, error: 'Workspace signing secret not found', status: 500 }
   const secret    = new TextEncoder().encode(jwtSecret)
-  const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) // 30 days
+  const expiresAt = new Date(Date.now() + expiryDays * 24 * 60 * 60 * 1000)
   const token     = await new SignJWT({
     sowId,
     workspaceId,
@@ -98,7 +142,15 @@ export async function sendSowDocument(service: any, params: {
   // Phase 0: assign the SOW its sequential document number now — send is
   // the point of no return for numbering (a draft that never gets sent
   // shouldn't burn a number). Never re-assign if one already exists.
-  const documentNumber = sow.document_number || await assignDocumentNumber(service, workspaceId, 'sow')
+  let documentNumber: string
+  try {
+    documentNumber = sow.document_number || await assignDocumentNumber(service, workspaceId, 'sow')
+  } catch (e) {
+    // Thrown (not returned) — without this the approval-chain caller had no result to record
+    // as a failed send, leaving the request "approved" with nothing sent and no retry path.
+    console.error('SOW send: could not assign a document number', e)
+    return { ok: false, error: 'Could not assign a document number. Please try again.', status: 500 }
+  }
 
   // Update SOW: draft → awaiting_signature. Note: 'sent' is NOT a status (spec §1.3)
   // FIX (re-audit, race-condition finding): every client-portal action
@@ -125,29 +177,26 @@ export async function sendSowDocument(service: any, params: {
     return { ok: false, error: 'This SOW was already sent by another action', status: 409 }
   }
 
+  // Only move projects that are still pre-signature. An Active/Complete/Archived project
+  // must not be dragged back to "Awaiting Signature" by sending another version.
   await (service as any).from('projects').update({
     status:     'Awaiting Signature',
     updated_at: now,
-  }).eq('id', project.id)
+  }).eq('id', project.id).in('status', ['Draft', 'Intake', 'Changes Requested', 'Stalled', 'Awaiting Signature'])
 
   const portalUrl = `${process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL}/portal/sow/${token}`
-  try {
-    await sendSowEmail({
-      to:            client.email,
-      cc:            ccEmails,
-      clientName:    client.name,
-      agencyName:    workspace.agency_name,
-      projectName:   project.name + (project.disc ? ` — ${project.disc}` : ''),
-      contractValue: project.contract_value,
-      currency:      project.currency,
-      portalUrl,
-      brandColour:   workspace.brand_colour,
-      expiresAt:     expiresAt.toISOString(),
-    })
-  } catch (emailErr) {
-    console.error('SOW send email failed:', emailErr)
-    // Email failure is non-fatal for the operation — SOW is still sent
-  }
+  const delivery = await checkedSend(() => sendSowEmail({
+    to:            client.email,
+    cc:            ccEmails,
+    clientName:    client.name,
+    agencyName:    workspace.agency_name,
+    projectName:   project.name + (project.disc ? ` — ${project.disc}` : ''),
+    contractValue: project.contract_value,
+    currency:      project.currency,
+    portalUrl,
+    brandColour:   workspace.brand_colour,
+    expiresAt:     expiresAt.toISOString(),
+  }), 'SOW send email')
 
   await logAudit(service, {
     workspaceId,
@@ -156,9 +205,14 @@ export async function sendSowDocument(service: any, params: {
     entityId: sowId, entityName: project.name,
     metadata: {
       version: sow.version, client_email: client.email, document_number: documentNumber,
+      expires_in_days: expiryDays, email_delivered: delivery.ok,
+      ...(delivery.ok ? {} : { email_error: delivery.error }),
       ...(approvalRequestId ? { auto_sent_via_approval: approvalRequestId } : {}),
     },
   })
 
-  return { ok: true, token, portalUrl, projectId: project.id, projectName: project.name, documentNumber }
+  return {
+    ok: true, token, portalUrl, projectId: project.id, projectName: project.name, documentNumber,
+    emailSent: delivery.ok, ...(delivery.ok ? {} : { emailError: delivery.error }),
+  }
 }

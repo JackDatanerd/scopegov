@@ -15,6 +15,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
 import { logAudit } from '@/lib/utils/audit'
 import { sanitizeRichText } from '@/lib/utils/sanitize'
+import { applyAgencyStandards, ensureContractValueStated, type AgencyStandards } from '@/lib/ai/sow-content'
 import { canReadProject } from '@/lib/utils/project-access'
 import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
 import Anthropic from '@anthropic-ai/sdk'
@@ -103,11 +104,29 @@ export async function POST(request: NextRequest) {
     // Fetch project + client + workspace for context
     const { data: project } = await (service as any)
       .from('projects')
-      .select('id,name,disc,contract_value,currency,clients(name,email,company_name),workspaces(agency_name,governing_law,sow_language)')
-      .eq('id', projectId).eq('workspace_id', session.workspaceId).single()
+      .select('id,name,disc,type,contract_value,currency,clients(name,email,company_name),workspaces(agency_name,governing_law,sow_language)')
+      .eq('id', projectId).eq('workspace_id', session.workspaceId).is('deleted_at', null).single()
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
     if (!(await canReadProject(service, session, projectId)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
+    // One live SOW per project. A SOW that is out for signature, or already signed, is the
+    // agreement — generating another version next to it left two signable documents for one
+    // project (double milestones on signing, a project flipped back to "Awaiting Signature"
+    // while active, an executed SOW hidden behind a newer draft in the UI). Changes to a
+    // signed scope go through a change order; changes to one awaiting signature go through
+    // Withdraw first. Checked BEFORE the rate limit and the model call so a refused request
+    // costs nothing.
+    const { data: liveSows } = await (service as any)
+      .from('sow_documents').select('id, status, version')
+      .eq('project_id', projectId).in('status', ['awaiting_signature', 'signed']).limit(1)
+    if (liveSows && liveSows.length > 0) {
+      return NextResponse.json({
+        error: liveSows[0].status === 'signed'
+          ? 'This project already has a signed SOW. Use a change order to change the agreed scope.'
+          : 'A SOW for this project is out for signature. Withdraw it before generating a new one.',
+      }, { status: 409 })
+    }
 
     // FIX (audit round 3): no rate limiting existed on this route.
     const limited = await checkAiRateLimit(service, session.id, 'sow.generate')
@@ -160,6 +179,22 @@ export async function POST(request: NextRequest) {
     // a valid response, buildFallbackSections() guarantees a complete,
     // usable SOW anyway — this endpoint can no longer hard-fail the
     // user for reasons outside their control.
+    // The agency's saved standard terms for this kind of project (falls back to their
+    // workspace-wide row). Best effort: a failed lookup just means no standards are applied.
+    let standards: AgencyStandards | null = null
+    try {
+      const { data: defaultRows } = await (service as any)
+        .from('workspace_defaults')
+        .select('project_type, revision_policy, payment_terms, out_of_scope_clauses, assumptions')
+        .eq('workspace_id', session.workspaceId)
+      const rows: any[] = Array.isArray(defaultRows) ? defaultRows : []
+      const row = rows.find(r => r.project_type === project.type) || rows.find(r => !r.project_type)
+      if (row) standards = {
+        revisionPolicy: row.revision_policy, paymentTerms: row.payment_terms,
+        outOfScopeClauses: row.out_of_scope_clauses, assumptions: row.assumptions,
+      }
+    } catch (e) { console.error('SOW generate: workspace_defaults lookup failed', e) }
+
     const contentInput: SowContentInput = {
       agencyName, clientName, projectName: project.name, projectDisc: project.disc,
       projectType, contractValue, currency: curr, objective, deliverables,
@@ -170,6 +205,7 @@ export async function POST(request: NextRequest) {
       // reached generation. See lib/ai/sow-content.ts for the prompt
       // instruction and translated boilerplate this now drives.
       language: project.workspaces?.sow_language || 'en',
+      standards,
     }
 
     const MAX_ATTEMPTS = 3
@@ -241,7 +277,9 @@ export async function POST(request: NextRequest) {
     }
 
     const boilerplate = buildBoilerplateSections(contentInput)
-    const allContent: Record<string, string> = { ...boilerplate, ...aiSections }
+    const allContent: Record<string, string> = applyAgencyStandards({ ...boilerplate, ...aiSections }, standards)
+    // The contract value is data, the payment prose is model-written: never let them disagree.
+    allContent.payment = ensureContractValueStated(allContent.payment || '', contractValue, curr)
 
     const parsed: { sections: any[]; metadata: any } = {
       sections: SOW_SECTION_DEFS.map(def => ({
@@ -308,7 +346,7 @@ export async function POST(request: NextRequest) {
       // components/sow/SowEditor.tsx) and metadata.changeRequest (9-G8)
       // are both like this. Overwriting metadata wholesale silently
       // discarded them on every regenerate. Carry them forward.
-      await (service as any).from('sow_documents')
+      const { data: overwritten, error: overwriteErr } = await (service as any).from('sow_documents')
         .update({
           sections: parsed.sections,
           metadata: {
@@ -318,7 +356,14 @@ export async function POST(request: NextRequest) {
           },
           updated_at: new Date().toISOString(),
         })
-        .eq('id', existingSow.id)
+        // Guarded on the write itself: if the draft was sent while the model was thinking
+        // (this route can take 20+ seconds), overwriting it would replace the content of a
+        // document already in front of the client.
+        .eq('id', existingSow.id).eq('status', 'draft').is('sent_at', null)
+        .select('id')
+      if (overwriteErr) throw new Error(overwriteErr.message)
+      if (!overwritten || overwritten.length === 0)
+        return NextResponse.json({ error: 'This SOW was sent while it was being regenerated, so nothing was changed.' }, { status: 409 })
       sowId = existingSow.id
     } else {
       // FIX (section-9 audit, 9-B12): the old read-max-then-insert had no
@@ -331,7 +376,12 @@ export async function POST(request: NextRequest) {
         sections:     parsed.sections,
         metadata:     parsed.metadata,
       })
-      if (!created.ok) throw new Error(created.error || 'Could not create SOW')
+      if (!created.ok) {
+        // The one-draft-per-project index (migration 061) rejects a concurrent second draft.
+        if (/one_draft_per_project|duplicate key/i.test(created.error || ''))
+          return NextResponse.json({ error: 'A draft SOW was just created for this project. Refresh and open it.' }, { status: 409 })
+        throw new Error(created.error || 'Could not create SOW')
+      }
       sowId = created.id!
     }
 
@@ -353,6 +403,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ sowId })
   } catch (err) {
     console.error('SOW generate error:', err)
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Internal error' }, { status: 500 })
+    return NextResponse.json({ error: 'Could not generate the SOW. Please try again.' }, { status: 500 })
   }
 }

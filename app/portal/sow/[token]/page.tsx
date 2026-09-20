@@ -161,6 +161,13 @@ export default function SowPortalPage() {
   const visibleSections = sow?.sections
     .filter(s => s.visible && !['parties', 'signature'].includes(s.id))
     .sort((a, b) => a.order - b.order) || []
+  // The Parties and Signature sections are excluded from the generic loop (their data-driven blocks
+  // replace the boilerplate heading), but the TEXT the agency wrote in them — the "entered into
+  // between…" preamble and the "by signing below, both parties agree…" clause — is part of the
+  // agreement and must reach the signer. Rendered once, in place. Content is sanitised server-side.
+  const hasText = (html?: string) => !!html && html.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim().length > 0
+  const partiesProse   = sow?.sections.find(s => s.id === 'parties' && s.visible && hasText(s.content))?.content || ''
+  const signatureProse = sow?.sections.find(s => s.id === 'signature' && s.visible && hasText(s.content))?.content || ''
 
   // ── Static states ─────────────────────────────────────────
   if (state === 'loading') return <PortalShell><Loading /></PortalShell>
@@ -262,6 +269,11 @@ export default function SowPortalPage() {
                   {sow.currency} {sow.contractValue.toLocaleString()}
                 </div>
                 <div style={{ fontSize: 11, color: '#909090', marginTop: 2 }}>Contract value</div>
+                {/* A watermarked, unsigned copy for the signer's own review (counsel, finance).
+                    Until now the PDF was only available after signing. */}
+                <a href={`/api/portal/sow/${token}/pdf`} style={{ display: 'inline-block', marginTop: 10, fontSize: 12, color: accent }}>
+                  <i className="ti ti-download" style={{ fontSize: 13, marginRight: 4 }} />Download a copy to review (PDF)
+                </a>
               </div>
             </div>
           </div>
@@ -296,6 +308,13 @@ export default function SowPortalPage() {
               </div>
             </div>
           </div>
+
+          {partiesProse && (
+            <div className="portal-doc-body" style={{ paddingTop: 0, paddingBottom: 0 }}>
+              <div className="portal-section-body" style={{ fontSize: 14, color: '#333', lineHeight: 1.75, marginBottom: 24 }}
+                dangerouslySetInnerHTML={{ __html: partiesProse }} />
+            </div>
+          )}
 
           {sow.paymentSchedule.length > 0 && (
             <div className="portal-doc-body" style={{ paddingTop: 0, paddingBottom: 0 }}>
@@ -340,6 +359,12 @@ export default function SowPortalPage() {
               </div>
             ))}
           </div>
+          {signatureProse && (
+            <div className="portal-doc-body" style={{ paddingTop: 0 }}>
+              <div className="portal-section-body" style={{ fontSize: 14, color: '#333', lineHeight: 1.75 }}
+                dangerouslySetInnerHTML={{ __html: signatureProse }} />
+            </div>
+          )}
         </div>
 
         {/* Action card */}

@@ -10,6 +10,17 @@ import { sendCoDeclinedEmail, sendCoCounteredEmail } from '@/lib/email/templates
 import { getWorkspaceJwtSecret, isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
 import { checkPortalRateLimit, recordPortalAction } from '@/lib/utils/portal-rate-limit'
 import { getClientIp } from '@/lib/utils/request-ip'
+import { cleanTextField } from '@/lib/utils/sanitize'
+import { checkedSend } from '@/lib/email/delivery'
+import { sendClientResponseReceivedEmail } from '@/lib/email/templates'
+import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
+import { parseTableAmount } from '@/lib/sow/table-schema'
+
+// 'stalled' is set by the co-stall cron after 5 days without a reply. It is an AGENCY-side attention
+// flag, but the portal used to treat it as a lock: the client's still-valid link answered Accept /
+// Decline / Counter with "cannot be responded to", and the send email never mentioned a 5-day deadline.
+// A stalled CO is still a live offer until it expires, so the client can answer it.
+export const CLIENT_RESPONDABLE_STATUSES = ['awaiting_response', 'stalled']
 
 async function resolveCoAndToken(token: string, service: any) {
   const { data: revoked } = await (service as any)
@@ -19,7 +30,7 @@ async function resolveCoAndToken(token: string, service: any) {
   const { data: co } = await (service as any)
     .from('change_orders')
     .select(`id,title,status,flag_id,project_id,workspace_id,
-      projects(id,name,currency,clients(name,email),workspaces(agency_name))`)
+      projects(id,name,currency,client_id,clients(name,email,cc_emails),workspaces(agency_name,brand_colour))`)
     .eq('token', token).single()
 
   if (!co) return { error: 'Not found', status: 404 }
@@ -83,12 +94,16 @@ export async function POST_DECLINE(request: NextRequest, token: string) {
   if (!rl.allowed) return NextResponse.json({ error: rl.message }, { status: 429 })
   await recordPortalAction(service, clientIp, 'co.decline')
 
-  const { reason } = await request.json().catch(() => ({ reason: null }))
+  const declineBody = await request.json().catch(() => ({} as any))
+  // Free text from an unauthenticated link holder: type-checked, markup-stripped and capped.
+  const cleanedReason = cleanTextField(declineBody?.reason, 2000)
+  if (cleanedReason === null) return NextResponse.json({ error: 'reason must be text' }, { status: 400 })
+  const reason: string | undefined = cleanedReason || undefined
   const result     = await resolveCoAndToken(token, service)
   if ('error' in result) return NextResponse.json({ error: result.error }, { status: result.status })
 
   const { co } = result
-  if (!['awaiting_response'].includes(co.status))
+  if (!CLIENT_RESPONDABLE_STATUSES.includes(co.status))
     return NextResponse.json({ error: 'CO cannot be declined in current status' }, { status: 409 })
 
   const now = new Date().toISOString()
@@ -109,7 +124,7 @@ export async function POST_DECLINE(request: NextRequest, token: string) {
       responded_at: now, updated_at: now,
     })
     .eq('id', co.id)
-    .eq('status', 'awaiting_response')
+    .in('status', CLIENT_RESPONDABLE_STATUSES)
     .select('id')
 
   if (updateErr) return NextResponse.json({ error: 'Failed to decline' }, { status: 500 })
@@ -117,11 +132,10 @@ export async function POST_DECLINE(request: NextRequest, token: string) {
     return NextResponse.json({ error: 'This change order was already responded to' }, { status: 409 })
 
   // Revoke token
-  try {
-    await (service as any).from('revoked_tokens').insert({
-      token, token_type: 'co', reason: 'declined',
-    })
-  } catch (e) { console.error('Token revoke insert failed (non-fatal):', e) }
+  const { error: declineRevokeErr } = await (service as any).from('revoked_tokens').insert({
+    token, token_type: 'co', reason: 'declined', document_id: co.id,
+  })
+  if (declineRevokeErr) console.error('CO decline: token revoke insert failed (non-fatal):', declineRevokeErr.message)
 
   // BUG-048: revert linked flag on decline
   await revertFlagIfLinked(service, co, 'CO declined by client', null)
@@ -166,7 +180,7 @@ export async function POST_DECLINE(request: NextRequest, token: string) {
   await notifyMembersWithPermission(service, {
     workspaceId: co.workspace_id, permission: 'SEND_CHANGE_ORDERS', eventType: 'co_declined',
     type: 'co_declined', title: `CO declined — ${co.title}`,
-    body: reason ? `${co.projects?.clients?.name}: ${reason}` : `${co.projects?.clients?.name} declined this change order.`,
+    body: reason ? `${co.projects?.clients?.name}: ${reason.slice(0, 200)}` : `${co.projects?.clients?.name} declined this change order.`,
     entityType: 'project', entityId: co.project_id, projectId: co.project_id,
   })
 
@@ -200,7 +214,7 @@ export async function POST_COUNTER(request: NextRequest, token: string) {
   if ('error' in result) return NextResponse.json({ error: result.error }, { status: result.status })
 
   const { co } = result
-  if (!['awaiting_response'].includes(co.status))
+  if (!CLIENT_RESPONDABLE_STATUSES.includes(co.status))
     return NextResponse.json({ error: 'CO cannot be countered in current status' }, { status: 409 })
 
   const now = new Date().toISOString()
@@ -218,7 +232,7 @@ export async function POST_COUNTER(request: NextRequest, token: string) {
       updated_at:    now,
     })
     .eq('id', co.id)
-    .eq('status', 'awaiting_response')
+    .in('status', CLIENT_RESPONDABLE_STATUSES)
     .select('id')
 
   if (updateErr) return NextResponse.json({ error: 'Failed to submit counter offer' }, { status: 500 })
@@ -241,22 +255,15 @@ export async function POST_COUNTER(request: NextRequest, token: string) {
     actorName: co.projects?.clients?.name || 'Client',
     eventType: 'co.countered', entityType: 'change_order',
     entityId: co.id, entityName: co.title,
-    metadata: { counter_amount: parsedAmount, note: counterNote },
+    metadata: { counter_amount: parsedAmount, ...(counterNote ? { note: counterNote } : {}) },
   })
 
   // Notify agency (Event 14)
-  try {
-    // FIX (portal audit, section 18): this used to pass `undefined` for
-    // eventType — unlike the decline path just above, which correctly
-    // passes 'co_declined' — so counter-offer emails ignored notification
-    // preferences entirely. Members who'd opted out of 'co_countered'
-    // still got these.
-    // FIX (deep audit, notifications section): hand-rolled Resend call
-    // with no shared branding/footer — see sendCoCounteredEmail.
-    const emails = await getMemberEmailsWithPermission(service, co.workspace_id, 'SEND_CHANGE_ORDERS', 25, 'co_countered', co.project_id)
+  {
+    const emails = await getMemberEmailsWithPermission(service, co.workspace_id, 'SEND_CHANGE_ORDERS', 25, 'co_countered', co.project_id).catch(() => [] as string[])
+    const client = co.projects?.clients
     if (emails.length) {
-      const client = co.projects?.clients
-      await sendCoCounteredEmail({
+      await checkedSend(() => sendCoCounteredEmail({
         to: emails,
         clientName: client?.name || 'Client',
         coTitle: co.title,
@@ -264,9 +271,18 @@ export async function POST_COUNTER(request: NextRequest, token: string) {
         currency: co.projects?.currency || 'USD',
         counterNote,
         projectUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects/${co.project_id}?tab=co`,
-      })
+      }), 'CO countered (agency) email')
     }
-  } catch (e) { console.error('CO counter email failed:', e) }
+    if (client?.email) {
+      const cc = await withPrimaryContactCc(service, co.projects?.client_id, client.email, client.cc_emails)
+      await checkedSend(() => sendClientResponseReceivedEmail({
+        to: client.email, cc, clientName: client.name, agencyName: co.projects?.workspaces?.agency_name || '',
+        projectName: co.projects?.name || '', documentLabel: 'Change Order', response: 'countered',
+        note: `${co.projects?.currency || 'USD'} ${parsedAmount.toLocaleString()}${counterNote ? ` — ${counterNote.slice(0, 400)}` : ''}`,
+        brandColour: co.projects?.workspaces?.brand_colour,
+      }), 'CO countered (client receipt)')
+    }
+  }
   await notifyMembersWithPermission(service, {
     workspaceId: co.workspace_id, permission: 'SEND_CHANGE_ORDERS', eventType: 'co_countered',
     type: 'co_countered', title: `Counter offer — ${co.title}`,
