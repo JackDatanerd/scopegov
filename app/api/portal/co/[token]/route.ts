@@ -107,6 +107,16 @@ async function getCoByToken(token: string, service: any, userAgent: string | nul
   // BUG: 'closed', 'stalled', and 'countered' were never included here, so
   // revisiting the link for a CO in any of those states fell through to the
   // default case below and re-served the full accept/decline/counter form.
+  // FIX (cron/portal audit round 2): a 'superseded' token is resolved by id WITHOUT a JWT check, and
+  // accept-co-counter.ts supersedes the client's ORIGINAL link the moment the agency accepts their counter
+  // (the CO moves to awaiting_countersignature under a NEW token). Serving that CO through the old link
+  // rendered the countersign form — whose submit then hit the revoked-token check and 410'd, a dead end.
+  // While the CO is still actionable, send the holder of the old link to the live one instead (same
+  // recipient, same proof of possession); terminal states below stay readable through the old link.
+  if (skipJwtVerify && ['awaiting_response', 'stalled', 'awaiting_countersignature'].includes(co.status)) {
+    const { data: live } = await (service as any).from('change_orders').select('token').eq('id', co.id).maybeSingle()
+    return live?.token ? { state: 'redirect', token: live.token } : { state: 'revoked' }
+  }
   if (co.status === 'accepted') {
     return { state: 'accepted', acceptedBy: co.accepted_by, clientSignatureData: co.client_signature_data || null }
   }
@@ -144,6 +154,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       state: result.state,
       acceptedBy: (result as any).acceptedBy,
       clientSignatureData: (result as any).clientSignatureData,
+      ...((result as any).token ? { token: (result as any).token } : {}),
     })
 
     const co  = result.co!

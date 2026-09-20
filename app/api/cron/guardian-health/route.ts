@@ -5,6 +5,8 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
 import { sendEmail } from '@/lib/email/send'
 import { systemFrom } from '@/lib/email/from'
+import { alertCronFailure } from '@/lib/utils/cron-alert'
+import { recordCronHeartbeat } from '@/lib/utils/cron-heartbeat'
 
 // FIX (audit round 3): local copy replaced with the shared,
 // null-safe helper — see lib/utils/verify-cron.ts.
@@ -77,11 +79,12 @@ export async function POST(request: NextRequest) {
     const service  = createServiceClient()
     const since15m = new Date(Date.now() - 15 * 60000).toISOString()
 
-    const { data: recent } = await (service as any)
+    const { data: recent, error: recentErr } = await (service as any)
       .from('guardian_checks')
       .select('id, classification_failed')
       .gte('created_at', since15m)
       .eq('is_duplicate', false)
+    if (recentErr) throw new Error(`guardian-health select: ${recentErr.message}`)
 
     const total  = (recent || []).length
     const failed = (recent || []).filter((c: any) => c.classification_failed).length
@@ -114,9 +117,11 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    await recordCronHeartbeat(service, 'guardian-health', { total, failed })
     return NextResponse.json({ ok: true, total, failed, rate: rate.toFixed(3) })
   } catch (err) {
     console.error('Guardian health check error:', err)
+    await alertCronFailure(createServiceClient(), 'guardian-health', err).catch(() => {})
     return NextResponse.json({ error: 'Cron failed' }, { status: 500 })
   }
 }

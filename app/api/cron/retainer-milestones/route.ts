@@ -1,9 +1,6 @@
 export const runtime = 'nodejs'
-// FEATURE (cron audit, section 17 — feature gap, closing pass): per-project
-// backfill loop (up to `retainer_duration_months` iterations, each with its
-// own dedup SELECT) with no pagination across projects — same unbounded
-// shape payment-overdue and reconciliation-rollup already carry this
-// override for.
+// Per-project backfill loop with no pagination across projects — same unbounded shape
+// payment-overdue and reconciliation-rollup carry this override for.
 export const maxDuration = 300
 
 import { createServiceClient } from '@/lib/supabase/server'
@@ -12,70 +9,142 @@ import { verifyCronSecret } from '@/lib/utils/verify-cron'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { sendRetainerEndingEmail } from '@/lib/email/templates'
-import { alertCronFailure } from '@/lib/utils/cron-alert'
-import { recordCronHeartbeat } from '@/lib/utils/cron-heartbeat'
-
 import { insertAuditRow } from '@/lib/utils/audit'
-// FIX (audit round 3): local copy replaced with the shared,
-// null-safe helper — see lib/utils/verify-cron.ts.
+import { CronRun, fetchAll } from '@/lib/utils/cron-run'
 
+// Daily. Generates one 'retainer_monthly' payment milestone per month for every Active retainer,
+// and tells the team once when a retainer's term has run out.
+//
+// All date arithmetic is UTC (the sign route stamps signed_at in UTC; mixing in the server's local
+// zone made "which month is this" depend on where the function happened to run).
 export async function POST(request: NextRequest) {
   if (!verifyCronSecret(request))
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  try {
-    const service = createServiceClient()
-    const now     = new Date()
-    const month   = now.getMonth() + 1
-    const year    = now.getFullYear()
+  const service = createServiceClient()
+  const run = new CronRun(service, 'retainer-milestones')
+  let generated = 0, endedNotified = 0, skippedNoValue = 0
 
-    // Active retainer projects within their duration
-    const { data: retainers } = await (service as any)
-      .from('projects')
-      .select('id, workspace_id, name, contract_value, currency, retainer_duration_months, created_at, sow_documents(id, status, signed_at), clients(name)')
-      .eq('type', 'retainer')
-      .eq('status', 'Active')
-      .not('retainer_duration_months', 'is', null)
+  await run.step('generate retainer milestones', async () => {
+    const now   = new Date()
+    const month = now.getUTCMonth() + 1
+    const year  = now.getUTCFullYear()
+    const currentKey = `${year}-${String(month).padStart(2, '0')}`
 
-    let generated = 0
-    let endedNotified = 0
-    for (const p of (retainers || [])) {
+    const retainers = await fetchAll<any>('retainer-milestones select', (from, to) =>
+      (service as any)
+        .from('projects')
+        .select('id, workspace_id, name, contract_value, currency, retainer_duration_months, created_at, sow_documents(id, status, signed_at), clients(name)')
+        .eq('type', 'retainer')
+        .eq('status', 'Active')
+        .not('retainer_duration_months', 'is', null)
+        .is('deleted_at', null)
+        .order('id')
+        .range(from, to))
+
+    for (const p of retainers) {
       try {
         const signedSow = (p.sow_documents || []).find((s: any) => s.status === 'signed')
         if (!signedSow?.signed_at) continue
 
+        const duration     = p.retainer_duration_months || 12
         const signedDate   = new Date(signedSow.signed_at)
-        const monthsSigned = (year - signedDate.getFullYear()) * 12 + (month - (signedDate.getMonth() + 1))
+        const signedYear   = signedDate.getUTCFullYear()
+        const signedMonth0 = signedDate.getUTCMonth()
+        const monthsSigned = (year - signedYear) * 12 + (month - (signedMonth0 + 1))
 
-        // Stop generating past retainer duration
-        if (monthsSigned >= (p.retainer_duration_months || 12)) {
-          // FEATURE (cron audit, section 17): this used to just stop
-          // generating milestones with zero signal to the team — the exact
-          // "let something go silently stale" gap this product's other
-          // stall crons (approval/co/sow) all exist to prevent, just
-          // applied to its own billing engine instead of a client
-          // interaction. Notify once, the moment the retainer's final
-          // milestone month has passed, so the team knows to renew or
-          // wind the contract down rather than discovering it later from
-          // an invoice that never got generated.
-          const { data: alreadyNotified } = await (service as any)
+        // ── 1. Generate (and backfill) milestones ─────────────────────────────────────────
+        // Runs BEFORE the "term ended" check. It used to sit after it, behind a `continue`, so a
+        // retainer whose final month(s) were missed (cron outage, or the project not being
+        // Active) went straight to "ended" and the missing months were never billed.
+        // Every month from signing through min(current month, last term month) is a candidate;
+        // months that already exist are skipped, so this only ever fills genuine gaps.
+        if (!(Number(p.contract_value) > 0)) {
+          // A zero/NULL contract value used to produce zero-dollar "milestones" (and a
+          // payment.milestone_generated audit row for each). Nothing billable to generate.
+          skippedNoValue++
+        } else {
+          // ONE query for the project's existing retainer months. A month counts as present if any
+          // retainer_monthly row has a due_date inside it: the sign route stamps the signing month's
+          // row with the signing DAY, the cron stamps the 1st, and matching on the exact date let the
+          // two disagree (a second full-amount row for the same month).
+          const { data: existingRows, error: existingErr } = await (service as any)
+            .from('payment_milestones').select('due_date')
+            .eq('project_id', p.id).eq('type', 'retainer_monthly')
+          if (existingErr) throw new Error(`existing milestones lookup: ${existingErr.message}`)
+          const have = new Set<string>((existingRows || []).filter((r: any) => r.due_date).map((r: any) => String(r.due_date).slice(0, 7)))
+
+          const lastIndex = Math.min(monthsSigned, duration - 1)
+          for (let i = 0; i <= lastIndex; i++) {
+            const target      = new Date(Date.UTC(signedYear, signedMonth0 + i, 1))
+            const targetYear  = target.getUTCFullYear()
+            const targetMonth = target.getUTCMonth() + 1
+            const monthKey    = `${targetYear}-${String(targetMonth).padStart(2, '0')}`
+            if (have.has(monthKey)) continue
+            const dueDate    = `${monthKey}-01`
+            const monthLabel = target.toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' })
+
+            // The insert's result used to be ignored: a failed insert still wrote a
+            // "payment.milestone_generated" audit row and bumped the counter. Migration 063 adds a
+            // unique index per (project, month) — 23505 means another run/signing got there first.
+            const { error: insErr } = await (service as any).from('payment_milestones').insert({
+              project_id:   p.id,
+              sow_id:       signedSow.id,
+              title:        `Monthly retainer — ${monthLabel}`,
+              type:         'retainer_monthly',
+              amount:       p.contract_value,
+              percentage:   null,
+              trigger:      `Monthly retainer payment — ${monthLabel}`,
+              tax_rate:     0,
+              tax_inclusive: false,
+              due_date:     dueDate,
+              status:       'pending',
+            })
+            if (insErr) {
+              if ((insErr as any).code === '23505') continue
+              throw new Error(`insert ${monthKey}: ${insErr.message}`)
+            }
+
+            await insertAuditRow(service, {
+              workspace_id: p.workspace_id, actor_id: null,
+              actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
+              event_type: 'payment.milestone_generated', entity_type: 'project',
+              entity_id: p.id, entity_name: monthLabel,
+              metadata: { month: monthKey, amount: p.contract_value, backfilled: monthKey !== currentKey },
+            })
+            generated++
+          }
+        }
+
+        // ── 2. Term ended → tell the team once per term ───────────────────────────────────
+        if (monthsSigned >= duration) {
+          // Dedup is per TERM LENGTH, not per project: when a retainer is extended (renewal CO or a
+          // manual edit) and later runs out again, that second ending must be announced too. The old
+          // (workspace, event, project) key found the first ending's audit row and stayed silent.
+          const { data: alreadyNotified, error: dedupErr } = await (service as any)
             .from('audit_log').select('id')
             .eq('workspace_id', p.workspace_id).eq('event_type', 'retainer.ended')
-            .eq('entity_id', p.id).limit(1).maybeSingle()
+            .eq('entity_id', p.id).eq('metadata->>duration_months', String(duration))
+            .limit(1).maybeSingle()
+          if (dedupErr) throw new Error(`retainer.ended dedup lookup: ${dedupErr.message}`)
           if (alreadyNotified) continue
 
-          await insertAuditRow(service, {
+          // The audit row IS the dedup marker, so it must land before anyone is told. If it can't be
+          // written, skip and retry tomorrow — the old code notified anyway and then re-notified on
+          // every daily run while audit_log kept failing.
+          const marked = await insertAuditRow(service, {
             workspace_id: p.workspace_id, actor_id: null,
             actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
             event_type: 'retainer.ended', entity_type: 'project',
             entity_id: p.id, entity_name: p.name,
-            metadata: { duration_months: p.retainer_duration_months, months_completed: monthsSigned },
+            metadata: { duration_months: duration, months_completed: monthsSigned },
           })
+          if (!marked) throw new Error(`could not record retainer.ended for project ${p.id}`)
 
           await notifyMembersWithPermission(service, {
             workspaceId: p.workspace_id, permission: 'VIEW_FINANCIALS', eventType: 'retainer_ending',
             type: 'retainer_ending', title: `Retainer term ended — ${p.name}`,
-            body: `The ${p.retainer_duration_months}-month retainer for ${p.clients?.name || 'this client'} on ${p.name} has run its course. No further monthly milestones will be generated.`,
+            body: `The ${duration}-month retainer for ${p.clients?.name || 'this client'} on ${p.name} has run its course. No further monthly milestones will be generated unless the term is extended (a retainer-renewal change order extends it automatically).`,
             entityType: 'project', entityId: p.id, projectId: p.id,
           })
 
@@ -86,114 +155,22 @@ export async function POST(request: NextRequest) {
                 to: emails,
                 clientName: p.clients?.name || 'Client',
                 projectName: p.name,
-                durationMonths: p.retainer_duration_months,
+                durationMonths: duration,
                 projectUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects/${p.id}?tab=billing`,
               })
             }
           } catch (e) { console.error('Retainer ending email failed:', e) }
 
           endedNotified++
-          continue
         }
-
-        // FIX (build, cron/portal audit round): this used to only ever
-        // generate the CURRENT month's milestone. Every other cron in
-        // this directory is heavily guarded against silently losing work
-        // (races, timeouts, partial failures) — this one wasn't: if the
-        // cron didn't run for a stretch (a bad deploy, an outage), that
-        // month's milestone was gone forever, with nothing else ever
-        // looking backward to catch it up. That's silent under-billing,
-        // exactly the kind of "let something go stale with zero signal"
-        // gap the ended-retainer notification just above exists to
-        // prevent, just for a skipped month instead of a finished
-        // contract. Loop over every month from signing through the
-        // current one (capped at the retainer's duration) instead of just
-        // "this month" — the existing per-month dedup check below means
-        // already-generated months are simply skipped, so this only ever
-        // fills genuine gaps, never duplicates.
-        const monthsToGenerate = Math.min(monthsSigned, (p.retainer_duration_months || 12) - 1)
-        for (let i = 0; i <= monthsToGenerate; i++) {
-          const targetDate  = new Date(signedDate.getFullYear(), signedDate.getMonth() + i, 1)
-          const targetYear  = targetDate.getFullYear()
-          const targetMonth = targetDate.getMonth() + 1
-          const monthKey    = `${targetYear}-${String(targetMonth).padStart(2, '0')}`
-          const dueDate     = `${targetYear}-${String(targetMonth).padStart(2, '0')}-01`
-
-          // FIX (re-audit, cron section): the old check searched for
-          // monthKey ("2026-12") *inside the title string*, but the title
-          // is generated below as "Monthly retainer — December 2026" — a
-          // completely different format with zero textual overlap. That
-          // `.like()` could never match, so this dedup check silently
-          // never worked: any re-run in the same month (retry, redeploy,
-          // manual trigger) created a second real-money milestone, and
-          // `.single()` on a lookup that could match 0+ rows compounded
-          // it further by erroring (not throwing — supabase-js returns an
-          // error object, which was also never checked) instead of ever
-          // returning `null` cleanly. due_date is always set
-          // deterministically to the 1st of the target month by this same
-          // function, so matching on it (alongside project + type) is an
-          // exact, format-independent key — and now also the key that
-          // makes the backfill loop above safe to re-run every day.
-          const { data: existing, error: existingErr } = await (service as any)
-            .from('payment_milestones')
-            .select('id')
-            .eq('project_id', p.id)
-            .eq('type', 'retainer_monthly')
-            .eq('due_date', dueDate)
-
-          if (existingErr) { console.error('Retainer milestone dedup check failed for project:', p.id, existingErr); continue }
-          if (existing?.length) continue
-
-          const monthLabel = targetDate.toLocaleString('en-US', { month: 'long', year: 'numeric' })
-
-          await (service as any).from('payment_milestones').insert({
-            project_id:   p.id,
-            sow_id:       signedSow.id,
-            title:        `Monthly retainer — ${monthLabel}`,
-            type:         'retainer_monthly',
-            amount:       p.contract_value || 0,
-            percentage:   null,
-            trigger:      `Monthly retainer payment — ${monthLabel}`,
-            tax_rate:     0,
-            tax_inclusive: false,
-            due_date:     dueDate,
-            status:       'pending',
-          })
-
-          await insertAuditRow(service, {
-            workspace_id: p.workspace_id,
-            actor_id:     null,
-            actor_email:  'cron@scopegov.app',
-            actor_name:   'ScopeGov',
-            event_type:   'payment.milestone_generated',
-            entity_type:  'project',
-            entity_id:    p.id,
-            entity_name:  monthLabel,
-            metadata:     { month: monthKey, amount: p.contract_value, backfilled: monthKey !== `${year}-${String(month).padStart(2, '0')}` },
-          })
-          generated++
-        }
-      } catch (e) { console.error('Retainer milestone error for project:', p.id, e) }
+      } catch (e) { run.rowError(`retainer ${p.id}`, e) }
     }
+    Object.assign(run.result, { generated, endedNotified, skippedNoValue })
+  })
 
-    await recordCronHeartbeat(service, 'retainer-milestones', { generated, endedNotified })
-    return NextResponse.json({ ok: true, generated, endedNotified })
-  } catch (err) {
-    console.error('Retainer milestone cron error:', err)
-    await alertCronFailure(createServiceClient(), 'retainer-milestones', err).catch(() => {})
-    return NextResponse.json({ error: 'Cron failed' }, { status: 500 })
-  }
+  const { body, status } = await run.finish()
+  return NextResponse.json(body, { status })
 }
 
-// FIX (cron): Vercel Cron Jobs invoke the configured path with a GET
-// request, not POST — every route here only exported POST, so all 6 jobs
-// wired up in vercel.json would 405 the moment Vercel actually triggered
-// them. Exporting GET as an alias makes both invocation paths work.
-//
-// FIX (build, cron/portal audit round): the 3 sub-hourly jobs (sow-stall,
-// co-stall, guardian-health) are now scheduled directly in vercel.json
-// AND kept in .github/workflows/vercel-crons.yml as a redundant trigger
-// (see that file's own comment for why both are kept intentionally) —
-// this comment previously implied GitHub Actions was the only path,
-// which stopped being true once vercel.json picked these three up too.
+// Vercel Cron invokes the configured path with GET; the GitHub Actions backup uses POST.
 export const GET = POST

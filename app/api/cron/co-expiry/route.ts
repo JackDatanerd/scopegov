@@ -3,6 +3,8 @@ export const runtime = 'nodejs'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
+import { alertCronFailure } from '@/lib/utils/cron-alert'
+import { recordCronHeartbeat } from '@/lib/utils/cron-heartbeat'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { sendCoExpiredEmail } from '@/lib/email/templates'
@@ -35,12 +37,13 @@ export async function POST(request: NextRequest) {
     const now     = new Date().toISOString()
     const EXPIRABLE_FROM = ['awaiting_response', 'awaiting_countersignature', 'stalled']
 
-    const { data: expiring } = await (service as any)
+    const { data: expiring, error: expiringErr } = await (service as any)
       .from('change_orders')
       .select('id, title, workspace_id, project_id, expires_at, token, projects(id, name, clients(name))')
       .in('status', EXPIRABLE_FROM)
       .not('expires_at', 'is', null)
       .lt('expires_at', now)
+    if (expiringErr) throw new Error(`co-expiry select: ${expiringErr.message}`) // was silently treated as "nothing to expire"
 
     let expired = 0
     for (const co of (expiring || [])) {
@@ -103,9 +106,11 @@ export async function POST(request: NextRequest) {
       } catch (e) { console.error('CO expiry error:', e) }
     }
 
+    await recordCronHeartbeat(service, 'co-expiry', { expired })
     return NextResponse.json({ ok: true, expired })
   } catch (err) {
     console.error('CO expiry cron error:', err)
+    await alertCronFailure(createServiceClient(), 'co-expiry', err).catch(() => {})
     return NextResponse.json({ error: 'Cron failed' }, { status: 500 })
   }
 }

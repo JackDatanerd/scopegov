@@ -110,6 +110,16 @@ export default async function SettingsPage() {
       .from('workspaces').select('reply_to_email').eq('id', session.workspaceId).maybeSingle()
     if (!rtErr) replyToEmail = rt?.reply_to_email ?? null
   }
+  // FEATURE (cron/portal audit round 2): the automatic-client-reminder columns (migration 063) are read the same
+  // tolerant, separate way — one missing column must not take the whole Settings page down on a deploy that
+  // runs ahead of the migration.
+  let clientReminders: { auto_client_reminders?: boolean; client_reminder_after_days?: number; client_reminder_max?: number } = {}
+  if (canManageWorkspace) {
+    const { data: cr, error: crErr } = await (service as any)
+      .from('workspaces').select('auto_client_reminders,client_reminder_after_days,client_reminder_max')
+      .eq('id', session.workspaceId).maybeSingle()
+    if (!crErr && cr) clientReminders = cr
+  }
   const workspace = wsRes.data && !canManageWorkspace
     ? {
         ...wsRes.data,
@@ -118,7 +128,7 @@ export default async function SettingsPage() {
         legal_address: null,
         default_payment_instructions: null,
       }
-    : (wsRes.data ? { ...wsRes.data, reply_to_email: replyToEmail } : wsRes.data)
+    : (wsRes.data ? { ...wsRes.data, reply_to_email: replyToEmail, ...clientReminders } : wsRes.data)
 
   // FIX (deep audit, Auth+MFA re-pass): SettingsClient's AccountTab used to
   // compute this itself via permissionsRequireMfa(session.permissions) —

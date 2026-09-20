@@ -1,71 +1,67 @@
 name: Vercel Sub-Hourly Crons
 
-# FEATURE (cron audit, section 17): this workflow used to be the *only*
-# way sow-stall, co-stall, and guardian-health ever ran — vercel.json only
-# covered the 9 daily-or-slower jobs, since Vercel Cron on this plan can
-# schedule sub-hourly too (see vercel.json). GitHub's own docs say
-# `schedule`-triggered workflows can be delayed under platform load and
-# are auto-disabled after 60 days with no repo activity — a real gap for
-# a health check meant to run every 15 minutes, or a stall check central
-# to this product's whole pitch. All 3 endpoints are now also registered
-# directly in vercel.json as the reliable primary trigger; this workflow
-# stays wired up purely as a redundant backup. Running both is safe:
-# sow-stall/co-stall each guard their write with an optimistic-lock check
-# (a double-fire just loses the race harmlessly on whichever invocation
-# runs second), and guardian-health's ops alerts are now cooldown-guarded
-# (see ops_alert_state, migration 025) so a double-fire there doesn't mean
-# a double email either.
+# Redundant backup trigger for the frequent crons. The primary scheduler is now scopegov-cron-worker on
+# Cloudflare (vercel.json no longer carries any crons).
+#
+# GitHub `schedule` runs are routinely delayed (minutes, sometimes far more at peak times) and are
+# auto-disabled after 60 days without repository activity — so this is a backup, not the primary.
+# Running both is safe: sow-stall / co-stall guard their writes with an optimistic status check (a
+# double-fire just loses the race harmlessly), guardian-health's ops alerts are cooldown-guarded, and the
+# heartbeat watchdog only reads.
+#
+# FIX (cron audit round 2): this used to decide WHICH endpoint to call from the wall-clock minute at the
+# moment the job started (`date -u +%M` == "00"/"30"/...). A delayed run — the normal case, not the
+# exception — started at e.g. :07 or :41, matched none of the checks, called nothing, and still finished
+# green. It now routes on `github.event.schedule`, the cron expression that triggered the run, which is
+# the same no matter how late the run actually starts.
+#
+# NOTE: any NEW cron route also has to be registered in the Cloudflare worker — nothing in this repo
+# schedules it. cron-heartbeat-watchdog will flag one that never runs.
 
 on:
   schedule:
-    # sow-stall: hourly, on the hour
-    - cron: '0 * * * *'
-    # co-stall: hourly, offset 30 minutes
-    - cron: '30 * * * *'
-    # guardian-health: every 15 minutes
-    - cron: '*/15 * * * *'
-  workflow_dispatch: {} # allows manual trigger from the Actions tab for testing
+    - cron: '0 * * * *'      # sow-stall (hourly)
+    - cron: '30 * * * *'     # co-stall (hourly, offset)
+    - cron: '*/15 * * * *'   # guardian-health (every 15 minutes)
+    - cron: '45 * * * *'     # cron-heartbeat-watchdog (hourly) — redundant with the Cloudflare worker
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Which cron to trigger manually'
+        required: true
+        default: 'sow-stall'
+        type: choice
+        options:
+          - sow-stall
+          - co-stall
+          - guardian-health
+          - cron-heartbeat-watchdog
 
 jobs:
   trigger-cron:
     runs-on: ubuntu-latest
     steps:
-      - name: Determine which endpoint(s) to call
-        id: route
+      - name: Call the endpoint for this schedule
+        env:
+          SCHEDULE: ${{ github.event.schedule }}
+          TARGET: ${{ github.event.inputs.target }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
         run: |
-          MIN=$(date -u +%M)
-          HOUR_MARK=false
-          HALF_HOUR_MARK=false
-          QUARTER_MARK=false
-
-          if [ "$MIN" = "00" ]; then HOUR_MARK=true; fi
-          if [ "$MIN" = "30" ]; then HALF_HOUR_MARK=true; fi
-          if [ "$MIN" = "00" ] || [ "$MIN" = "15" ] || [ "$MIN" = "30" ] || [ "$MIN" = "45" ]; then QUARTER_MARK=true; fi
-
-          echo "hour_mark=$HOUR_MARK" >> "$GITHUB_OUTPUT"
-          echo "half_hour_mark=$HALF_HOUR_MARK" >> "$GITHUB_OUTPUT"
-          echo "quarter_mark=$QUARTER_MARK" >> "$GITHUB_OUTPUT"
-
-      - name: Call sow-stall (hourly)
-        if: steps.route.outputs.hour_mark == 'true'
-        run: |
-          curl -sS -o /dev/null -w "sow-stall: %{http_code}\n" --fail \
+          set -euo pipefail
+          if [ -n "${TARGET:-}" ]; then
+            NAME="$TARGET"
+          else
+            case "$SCHEDULE" in
+              "0 * * * *")     NAME="sow-stall" ;;
+              "30 * * * *")    NAME="co-stall" ;;
+              "*/15 * * * *")  NAME="guardian-health" ;;
+              "45 * * * *")    NAME="cron-heartbeat-watchdog" ;;
+              *) echo "Unrecognised schedule '$SCHEDULE' — nothing to call"; exit 1 ;;
+            esac
+          fi
+          # Two retries: a cold start or a transient 5xx should not cost a whole hour.
+          curl -sS -o /dev/null -w "$NAME: %{http_code}\n" --fail --retry 2 --retry-delay 5 --retry-all-errors \
             -X POST \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            "${{ secrets.APP_BASE_URL }}/api/cron/sow-stall"
-
-      - name: Call co-stall (hourly, :30)
-        if: steps.route.outputs.half_hour_mark == 'true'
-        run: |
-          curl -sS -o /dev/null -w "co-stall: %{http_code}\n" --fail \
-            -X POST \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            "${{ secrets.APP_BASE_URL }}/api/cron/co-stall"
-
-      - name: Call guardian-health (every 15 min)
-        if: steps.route.outputs.quarter_mark == 'true'
-        run: |
-          curl -sS -o /dev/null -w "guardian-health: %{http_code}\n" --fail \
-            -X POST \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            "${{ secrets.APP_BASE_URL }}/api/cron/guardian-health"
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_BASE_URL}/api/cron/${NAME}"

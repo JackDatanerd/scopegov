@@ -3,6 +3,8 @@ export const runtime = 'nodejs'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
+import { alertCronFailure } from '@/lib/utils/cron-alert'
+import { recordCronHeartbeat } from '@/lib/utils/cron-heartbeat'
 import { renewInvoiceTokenIfExpired } from '@/lib/documents/renew-invoice-token'
 
 import { insertAuditRow } from '@/lib/utils/audit'
@@ -33,12 +35,13 @@ export async function POST(request: NextRequest) {
 
     // Only invoices actually out with a client can have a dead link —
     // draft has no token yet, paid/void are terminal and don't need one.
-    const { data: candidates } = await (service as any)
+    const { data: candidates, error: candErr } = await (service as any)
       .from('invoices')
       .select('id, workspace_id, status, expires_at')
       .in('status', ['sent', 'partially_paid', 'overdue'])
       .not('expires_at', 'is', null)
       .lt('expires_at', now)
+    if (candErr) throw new Error(`invoice-expiry select: ${candErr.message}`)
 
     let renewed = 0
     for (const inv of (candidates || [])) {
@@ -64,9 +67,11 @@ export async function POST(request: NextRequest) {
       } catch (e) { console.error('Invoice token renewal error:', e) }
     }
 
+    await recordCronHeartbeat(service, 'invoice-expiry', { renewed })
     return NextResponse.json({ ok: true, renewed })
   } catch (err) {
     console.error('Invoice expiry cron error:', err)
+    await alertCronFailure(createServiceClient(), 'invoice-expiry', err).catch(() => {})
     return NextResponse.json({ error: 'Cron failed' }, { status: 500 })
   }
 }

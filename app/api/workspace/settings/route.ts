@@ -53,6 +53,10 @@ export async function PATCH(request: NextRequest) {
       guardianSensitivityTier:    'guardian_sensitivity_tier',
       proactiveRiskAlertsEnabled: 'proactive_risk_alerts_enabled',
       proactiveRiskThreshold:     'proactive_risk_threshold',
+      // Automatic client reminders (cron/client-reminders) — opt-in, migration 062.
+      autoClientReminders:        'auto_client_reminders',
+      clientReminderAfterDays:    'client_reminder_after_days',
+      clientReminderMax:          'client_reminder_max',
       // Document billing identity (Phase 11) — printed on SOW/CO/Invoice PDFs.
       // All optional: a workspace that hasn't filled these in yet still
       // generates documents fine, the renderer just omits the block.
@@ -120,6 +124,19 @@ export async function PATCH(request: NextRequest) {
         return NextResponse.json({ error: 'Risk threshold must be a number of 0 or more' }, { status: 400 })
       }
       updates.proactive_risk_threshold = parsed
+    }
+    // Automatic client reminders: a boolean and two small bounded integers (the columns have matching CHECKs).
+    if (updates.auto_client_reminders !== undefined && typeof updates.auto_client_reminders !== 'boolean')
+      return NextResponse.json({ error: 'Automatic client reminders must be true or false' }, { status: 400 })
+    for (const [col, label, min, max] of [
+      ['client_reminder_after_days', 'Days between reminders', 1, 30],
+      ['client_reminder_max', 'Maximum reminders', 1, 10],
+    ] as const) {
+      if (updates[col] === undefined) continue
+      const n = typeof updates[col] === 'number' ? (updates[col] as number) : Number(String(updates[col]).trim())
+      if (!Number.isInteger(n) || n < min || n > max)
+        return NextResponse.json({ error: `${label} must be a whole number from ${min} to ${max}` }, { status: 400 })
+      updates[col] = n
     }
     if (updates.proactive_risk_alerts_enabled !== undefined &&
         typeof updates.proactive_risk_alerts_enabled !== 'boolean') {

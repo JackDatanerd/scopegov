@@ -140,6 +140,20 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
     finally { setBusyId(null) }
   }
 
+  async function resolveDispute(id: string) {
+    const note = window.prompt('Reply to the client (optional). They will be emailed this and shown it on the invoice page.')
+    if (note === null) return // cancelled
+    setBusyId(id); setError('')
+    try {
+      const res = await fetch(`/api/invoices/${id}/dispute-resolve`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ note }),
+      })
+      if (!res.ok) { const j = await res.json(); throw new Error(j.error) }
+      await refresh()
+    } catch (err: unknown) { setError(err instanceof Error ? err.message : 'Failed to resolve the dispute') }
+    finally { setBusyId(null) }
+  }
+
   async function deleteInvoice(id: string) {
     if (!confirm('Delete this draft invoice? This cannot be undone.')) return
     setBusyId(id); setError('')
@@ -211,9 +225,14 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
                           in the agency's own UI ever showed disputed_at
                           again. Same visibility pattern as the
                           pending-approval pill right above. */}
-                      {inv.disputed_at && (
+                      {inv.disputed_at && !inv.dispute_resolved_at && (
                         <span className="pill pill-red" title={inv.dispute_note || undefined}>
                           <i className="ti ti-alert-triangle" style={{ fontSize: 10 }} /> Client disputed {formatDate(inv.disputed_at)}
+                        </span>
+                      )}
+                      {inv.disputed_at && inv.dispute_resolved_at && (
+                        <span className="pill pill-green" title={inv.dispute_resolution_note || undefined}>
+                          <i className="ti ti-circle-check" style={{ fontSize: 10 }} /> Dispute resolved {formatDate(inv.dispute_resolved_at)}
                         </span>
                       )}
                     </div>
@@ -223,8 +242,13 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
                       {inv.due_date && <> · Due {formatDate(inv.due_date)}</>}
                     </div>
                     {inv.disputed_at && inv.dispute_note && (
-                      <div style={{ fontSize: 12, color: 'var(--red)', marginTop: 4 }}>
+                      <div style={{ fontSize: 12, color: inv.dispute_resolved_at ? 'var(--text-3)' : 'var(--red)', marginTop: 4 }}>
                         &ldquo;{inv.dispute_note}&rdquo;
+                      </div>
+                    )}
+                    {inv.disputed_at && inv.dispute_resolved_at && inv.dispute_resolution_note && (
+                      <div style={{ fontSize: 12, color: 'var(--green)', marginTop: 2 }}>
+                        Your response: &ldquo;{inv.dispute_resolution_note}&rdquo;
                       </div>
                     )}
                   </div>
@@ -282,6 +306,11 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
                       {permissions.sendInvoices && (
                         <button className="btn btn-ghost btn-sm" onClick={() => setPayingId(inv.id)}>
                           <i className="ti ti-cash" style={{ fontSize: 11 }} /> Record payment
+                        </button>
+                      )}
+                      {permissions.sendInvoices && inv.disputed_at && !inv.dispute_resolved_at && (
+                        <button className="btn btn-ghost btn-sm" disabled={busyId === inv.id} onClick={() => resolveDispute(inv.id)}>
+                          {busyId === inv.id ? <span className="spin spin-dark" /> : <><i className="ti ti-circle-check" style={{ fontSize: 11 }} /> Resolve dispute</>}
                         </button>
                       )}
                       {permissions.sendInvoices && (

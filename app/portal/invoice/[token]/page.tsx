@@ -46,6 +46,8 @@ interface InvoiceData {
   // flagged this" instead of re-offering the dispute form.
   disputedAt: string | null
   disputeNote: string | null
+  disputeResolvedAt?: string | null
+  disputeResolutionNote?: string | null
 }
 
 interface Payment {
@@ -111,7 +113,7 @@ export default function InvoicePortalPage() {
       })
       const json = await res.json()
       if (!res.ok) { setDisputeError(json.error || 'Something went wrong'); return }
-      setInvoice(inv => inv ? { ...inv, disputedAt: new Date().toISOString(), disputeNote: disputeNote.trim() } : inv)
+      setInvoice(inv => inv ? { ...inv, disputedAt: new Date().toISOString(), disputeNote: disputeNote.trim(), disputeResolvedAt: null, disputeResolutionNote: null } : inv)
       setDisputeOpen(false)
     } catch {
       setDisputeError('Something went wrong — please try again.')
@@ -351,18 +353,28 @@ export default function InvoicePortalPage() {
             {/* FEATURE (portal audit, section 18): the invoice portal's only
                 client-facing action. Shows "already flagged" once disputed
                 rather than re-offering the form. */}
-            {invoice.disputedAt ? (
+            {invoice.disputedAt && !invoice.disputeResolvedAt ? (
               <span style={{ fontSize: 12.5, color: '#B45309', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                 <i className="ti ti-flag" style={{ fontSize: 13 }} /> You flagged this on {fmtDate(invoice.disputedAt)}
               </span>
             ) : !disputeOpen ? (
               <button type="button" className="btn btn-ghost" onClick={() => setDisputeOpen(true)}>
-                <i className="ti ti-flag" style={{ fontSize: 13 }} /> Question about this invoice?
+                <i className="ti ti-flag" style={{ fontSize: 13 }} /> {invoice.disputedAt ? 'Still have a question?' : 'Question about this invoice?'}
               </button>
             ) : null}
           </div>
 
-          {disputeOpen && !invoice.disputedAt && (
+          {/* The agency has answered the client's earlier question (api/invoices/[id]/dispute-resolve). */}
+          {invoice.disputedAt && invoice.disputeResolvedAt && (
+            <div style={{ marginTop: 14, padding: '12px 14px', background: '#F0F7F3', border: '1px solid #CFE3D7', borderRadius: 6, fontSize: 13, color: '#2F5D45' }}>
+              <strong>Your question was marked resolved on {fmtDate(invoice.disputeResolvedAt)}.</strong>
+              {invoice.disputeResolutionNote && (
+                <div style={{ marginTop: 6, whiteSpace: 'pre-line', color: '#3F3F3F' }}>{invoice.disputeResolutionNote}</div>
+              )}
+            </div>
+          )}
+
+          {disputeOpen && (!invoice.disputedAt || !!invoice.disputeResolvedAt) && (
             <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid #F0F0EA' }}>
               <div className="portal-section-title">What&apos;s the issue?</div>
               <textarea

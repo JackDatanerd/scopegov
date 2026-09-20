@@ -14,8 +14,8 @@ import { resolveReplyTo } from '@/lib/email/reply-to'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
-import { jwtVerify } from 'jose'
-import { getWorkspaceJwtSecret, isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
+import { cleanTextField } from '@/lib/utils/sanitize'
+import { resolveInvoiceToken } from '@/lib/documents/invoice-token'
 import { logAudit } from '@/lib/utils/audit'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
@@ -33,48 +33,18 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!rl.allowed) return NextResponse.json({ error: rl.message }, { status: 429 })
     await recordPortalAction(service, clientIp, 'invoice.dispute')
 
-    const { note } = await request.json()
-    if (!note || note.trim().length < 10)
+    const body = await request.json().catch(() => ({} as any))
+    // Free text from an unauthenticated link holder: type-checked, markup-stripped and capped. (A non-string
+    // note used to throw on `.trim()` and surface as a 500.)
+    const cleaned = cleanTextField(body?.note, 4000)
+    if (cleaned === null) return NextResponse.json({ error: 'note must be text' }, { status: 400 })
+    const note = cleaned.trim()
+    if (note.length < 10)
       return NextResponse.json({ error: 'Please describe the issue (minimum 10 characters)' }, { status: 400 })
-    // FIX (build, cron/portal audit round): no maximum length existed —
-    // same gap as SOW request-changes (see that route's identical fix).
-    // This note is written into invoices.dispute_note, audit_log, a
-    // notification body, and an email, unbounded.
-    if (note.trim().length > 4000)
-      return NextResponse.json({ error: 'Please keep your description under 4000 characters' }, { status: 400 })
 
-    const { data: revoked } = await (service as any)
-      .from('revoked_tokens').select('id').eq('token', token).single()
-    if (revoked) return NextResponse.json({ error: 'Link no longer active' }, { status: 410 })
-
-    const { data: invoice } = await (service as any)
-      .from('invoices')
-      .select('id, title, invoice_number, status, workspace_id, project_id, projects(id, name, client_id, clients(name, email, cc_emails), workspaces(agency_name, brand_colour))')
-      .eq('token', token).single()
-
-    if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
-    if (invoice.status === 'draft' || invoice.status === 'void')
-      return NextResponse.json({ error: 'This invoice is no longer available' }, { status: 409 })
-
-    try {
-      const jwtSecret = await getWorkspaceJwtSecret(service, invoice.workspace_id)
-      if (!jwtSecret) throw new Error('no secret')
-      const secret = new TextEncoder().encode(jwtSecret)
-      await jwtVerify(token, secret)
-    } catch {
-      return NextResponse.json({ error: 'Invalid or expired link' }, { status: 401 })
-    }
-
-    // FIX (portal audit, section 18 — closing pass): every other client-
-    // mutating portal action (SOW decline/request-changes, CO decline/
-    // counter/accept/countersign) checks isWorkspaceDeleted right after
-    // JWT verification — see that function's own comment in
-    // workspace-secret.ts, which already names this route by name as part
-    // of that fix. It never actually landed here: a client could still
-    // submit a dispute (writing disputed_at/dispute_note and an audit_log
-    // row) against a workspace the agency has deleted.
-    if (await isWorkspaceDeleted(service, invoice.workspace_id))
-      return NextResponse.json({ error: 'This link is no longer active' }, { status: 410 })
+    const resolved = await resolveInvoiceToken(service, token, `id, title, invoice_number, status, workspace_id, project_id, projects(id, name, client_id, clients(name, email, cc_emails), workspaces(agency_name, brand_colour))`)
+    if (!resolved.ok) return NextResponse.json({ error: resolved.error }, { status: resolved.status })
+    const invoice = resolved.invoice
 
     const now = new Date().toISOString()
     const project = invoice.projects
@@ -83,9 +53,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // Not a CAS-guarded lifecycle transition — status is untouched, this
     // just stamps when + what. A client can re-flag with an updated note
     // any time; last write wins, same as any other informational field.
-    await (service as any).from('invoices')
-      .update({ disputed_at: now, dispute_note: note.trim() })
+    // A fresh dispute re-opens the thread: clear any earlier agency resolution.
+    const { error: disputeErr } = await (service as any).from('invoices')
+      .update({ disputed_at: now, dispute_note: note, dispute_resolved_at: null, dispute_resolution_note: null, dispute_resolved_by: null })
       .eq('id', invoice.id)
+    if (disputeErr) {
+      console.error('Invoice dispute: update failed:', disputeErr)
+      return NextResponse.json({ error: 'Could not record your message — please try again.' }, { status: 500 })
+    }
 
     await logAudit(service, {
       // FIX (build, Reports & Audit re-pass): actor_id is `uuid REFERENCES
@@ -107,13 +82,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       actorEmail: client?.email || 'portal@client', actorName: client?.name || 'Client',
       eventType: 'invoice.disputed', entityType: 'invoice',
       entityId: invoice.id, entityName: invoice.title,
-      metadata: { note: note.trim() },
+      metadata: { note: note },
     })
 
     await notifyMembersWithPermission(service, {
       workspaceId: invoice.workspace_id, permission: 'VIEW_FINANCIALS', eventType: 'invoice_disputed',
       type: 'invoice_disputed', title: `Invoice question — ${project?.name || invoice.title}`,
-      body: `${client?.name || 'The client'}: ${note.trim()}`.slice(0, 160),
+      body: `${client?.name || 'The client'}: ${note}`.slice(0, 160),
       entityType: 'project', entityId: project?.id, projectId: project?.id,
     })
 
@@ -125,7 +100,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           clientName: client?.name || 'Client',
           projectName: project?.name || invoice.title,
           invoiceNumber: invoice.invoice_number,
-          note: note.trim(),
+          note: note,
           projectUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects/${project?.id}?tab=billing`,
         })
       }

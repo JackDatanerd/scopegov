@@ -50,7 +50,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .select(`id, title, note, status, version, project_id, flag_id, root_co_id,
         projects(name, client_id, clients(name, email, cc_emails), workspaces(agency_name, brand_colour)),
         line_items, subtotal, tax_rate, tax_inclusive, total,
-        counter_amount, counter_note, is_retainer_renewal,
+        counter_amount, counter_note, is_retainer_renewal, renewal_term_months,
         timeline_impact_days, scope_impact_note`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
@@ -111,6 +111,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       tax_inclusive: co.tax_inclusive,
       total:        co.total,
       is_retainer_renewal:  co.is_retainer_renewal,
+      renewal_term_months:  co.renewal_term_months,
       timeline_impact_days: co.timeline_impact_days,
       scope_impact_note:    co.scope_impact_note,
       created_by:   session.id,

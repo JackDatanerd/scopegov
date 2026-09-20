@@ -4,7 +4,7 @@ import { useParams, useRouter } from 'next/navigation'
 import SignaturePad, { type SignaturePadHandle } from '@/components/ui/SignaturePad'
 import PortalShell from '@/components/portal/PortalShell'
 
-type CoState = 'loading' | 'invalid' | 'revoked' | 'expired' | 'accepted' | 'declined' | 'withdrawn' | 'closed' | 'stalled' | 'countered' | 'ready' | 'done'
+type CoState = 'loading' | 'invalid' | 'revoked' | 'expired' | 'accepted' | 'declined' | 'withdrawn' | 'closed' | 'stalled' | 'countered' | 'ready' | 'done' | 'redirect'
 type CoMode  = 'view' | 'accept' | 'decline' | 'counter'
 
 interface CoData {
@@ -56,6 +56,11 @@ export default function CoPortalPage() {
     fetch(`/api/portal/co/${token}`)
       .then(r => r.json())
       .then(json => {
+        if (json.state === 'redirect' && json.token) {
+          // Old emailed link for a CO that has since moved to a new step under a new link.
+          router.replace(`/portal/co/${json.token}`)
+          return
+        }
         if (json.state) {
           setState(json.state as CoState)
           if (json.state === 'accepted') setAcceptedInfo({ acceptedBy: json.acceptedBy, clientSignatureData: json.clientSignatureData })

@@ -34,6 +34,7 @@ export default function CoEditor({ projId, coId }: Props) {
   const [pendingApproval, setPendingApproval] = useState(false)
   const [saveError,   setSaveError]    = useState('')
   const [isRetainerRenewal, setIsRetainerRenewal] = useState(false)
+  const [renewalTermMonths, setRenewalTermMonths] = useState('')
   // FIX (doc-quality audit round 3, migration 018): optional Impact
   // Analysis fields — timelineImpactDays as a signed string so the input
   // can hold '-5' mid-typing without parseInt fighting the user, cast to
@@ -98,6 +99,7 @@ export default function CoEditor({ projId, coId }: Props) {
           setStatus(co.status || 'draft')
           setPendingApproval(!!json.pendingApproval)
           setIsRetainerRenewal(co.is_retainer_renewal || false)
+          setRenewalTermMonths(co.renewal_term_months != null ? String(co.renewal_term_months) : '')
           setTimelineImpactDays(co.timeline_impact_days != null ? String(co.timeline_impact_days) : '')
           setScopeImpactNote(co.scope_impact_note || '')
           setFlagId(co.flag_id || null)
@@ -171,7 +173,7 @@ export default function CoEditor({ projId, coId }: Props) {
         pendingSave.current = false
       }
     }, 1500)
-  }, [title, note, lineItems, taxRate, taxInclusive, isRetainerRenewal, timelineImpactDays, scopeImpactNote])
+  }, [title, note, lineItems, taxRate, taxInclusive, isRetainerRenewal, renewalTermMonths, timelineImpactDays, scopeImpactNote])
 
   // FIX (CO send "not found" on a brand-new CO): doSave() used to always
   // call router.replace() to the new CO's own URL immediately after
@@ -193,6 +195,7 @@ export default function CoEditor({ projId, coId }: Props) {
         taxRate:   parseFloat(taxRate) || 0,
         taxInclusive,
         isRetainerRenewal,
+        renewalTermMonths: isRetainerRenewal && renewalTermMonths.trim() !== '' ? parseInt(renewalTermMonths, 10) : null,
         timelineImpactDays: timelineImpactDays.trim() !== '' ? timelineImpactDays.trim() : null,
         scopeImpactNote:    scopeImpactNote.trim() || null,
       }
@@ -483,6 +486,17 @@ export default function CoEditor({ projId, coId }: Props) {
             style={{ accentColor: 'var(--green)' }} />
           This is a retainer renewal
         </label>
+        {isRetainerRenewal && (
+          <div className="fgrp" style={{ marginTop: -8, marginBottom: 20 }}>
+            <label className="flbl">Extends the retainer by <span className="fhint">— months, counted from the current end date</span></label>
+            <input type="number" className="finp" style={{ maxWidth: 160 }} min={1} max={120} step={1}
+              value={renewalTermMonths} disabled={isLocked}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRenewalTermMonths(e.target.value)} placeholder="e.g. 12" />
+            <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 5 }}>
+              Required to send. Without it the new rate would apply but monthly billing would still stop on the original end date.
+            </p>
+          </div>
+        )}
 
         {!isLocked && (
           <div style={{ display: 'flex', gap: 10 }}>

@@ -4,7 +4,7 @@ export const maxDuration = 60
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
-import { alertCronMissedHeartbeat } from '@/lib/utils/cron-alert'
+import { alertCronMissedHeartbeat, alertCronFailure } from '@/lib/utils/cron-alert'
 
 // FEATURE (cron audit, section 17 — feature gap, closing pass): nothing in
 // this codebase previously noticed a cron that simply didn't run — an
@@ -44,6 +44,16 @@ const EXPECTATIONS: Record<string, number> = {
   'reconciliation-rollup': 27,
   'approval-stall':       27,
   'workspace-purge':      192, // weekly (Sun 04:00) + ~1 day buffer
+  // Heartbeats added in cron audit round 2 (these seven previously had no heartbeat and no failure alert):
+  'billing-reconcile':    27,
+  'co-expiry':            27,
+  'sow-expiry':           27,
+  'invoice-expiry':       27,
+  'guardian-flag-stall':  27,
+  'scope-health-rollup':  27,
+  'guardian-health':      2,  // every 15 minutes
+  'client-reminders':     27, // daily; opt-in per workspace, but the run itself always records a heartbeat
+  'notification-cleanup': 27, // daily; heartbeat added with the cron in the Notifications & email round
 }
 
 export async function POST(request: NextRequest) {
@@ -52,9 +62,12 @@ export async function POST(request: NextRequest) {
 
   const service = createServiceClient()
   try {
-    const { data: heartbeats } = await (service as any)
+    const { data: heartbeats, error: hbErr } = await (service as any)
       .from('cron_heartbeats')
       .select('cron_name, last_ok_at')
+    // A failed read used to look like "no heartbeats recorded" (every cron 'never recorded') or, worse,
+    // was ignored — the one job whose whole purpose is noticing silence must not fail silently itself.
+    if (hbErr) throw new Error(`cron_heartbeats read failed: ${hbErr.message}`)
 
     const seen = new Map<string, string>((heartbeats || []).map((h: any) => [h.cron_name, h.last_ok_at]))
     const now  = Date.now()
@@ -81,6 +94,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: true, checked: Object.keys(EXPECTATIONS).length, stale })
   } catch (err) {
     console.error('Cron heartbeat watchdog error:', err)
+    await alertCronFailure(service, 'cron-heartbeat-watchdog', err).catch(() => {})
     return NextResponse.json({ error: 'Watchdog failed' }, { status: 500 })
   }
 }

@@ -1,6 +1,7 @@
 User-agent: *
 Allow: /
 Disallow: /api/
+Disallow: /portal/
 Disallow: /dashboard
 Disallow: /projects
 Disallow: /clients

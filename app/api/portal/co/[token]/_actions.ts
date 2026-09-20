@@ -201,7 +201,14 @@ export async function POST_COUNTER(request: NextRequest, token: string) {
   if (!rl.allowed) return NextResponse.json({ error: rl.message }, { status: 429 })
   await recordPortalAction(service, clientIp, 'co.counter')
 
-  const { counterAmount, counterNote } = await request.json()
+  // Free text + a number from an unauthenticated link holder. This body was parsed with no catch (bad JSON -> a
+  // bare 500) and counterNote was stored, audited and emailed verbatim at any length — into an append-only
+  // audit_log. Type-checked, markup-stripped and capped like the sibling decline reason.
+  const counterBody = await request.json().catch(() => ({} as any))
+  const counterAmount = counterBody?.counterAmount
+  const cleanedNote = cleanTextField(counterBody?.counterNote, 2000)
+  if (cleanedNote === null) return NextResponse.json({ error: 'counterNote must be text' }, { status: 400 })
+  const counterNote: string | undefined = cleanedNote || undefined
   // FIX (audit round 3): `!counterAmount` is false for any non-empty
   // string, and a NaN comparison (`NaN <= 0`) is always false too — so a
   // non-numeric counterAmount like "abc" slipped past this check entirely.
@@ -211,6 +218,9 @@ export async function POST_COUNTER(request: NextRequest, token: string) {
   const parsedAmount = parseFloat(counterAmount)
   if (!counterAmount || !Number.isFinite(parsedAmount) || parsedAmount <= 0)
     return NextResponse.json({ error: 'Counter amount must be greater than zero' }, { status: 400 })
+  // Upper bound: an absurd figure (1e20) overflowed the numeric column and surfaced as an opaque 500.
+  if (parsedAmount > 999_999_999.99)
+    return NextResponse.json({ error: 'Counter amount is too large' }, { status: 400 })
 
   const result  = await resolveCoAndToken(token, service)
   if ('error' in result) return NextResponse.json({ error: result.error }, { status: result.status })

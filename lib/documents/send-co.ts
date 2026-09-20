@@ -60,8 +60,8 @@ export async function sendCoDocument(service: any, params: {
     // FIX (carried forward): 'currency' isn't a column on change_orders —
     // it lives on projects. Selecting it here makes PostgREST reject the
     // whole query (42703), which silently surfaces as "CO not found".
-    .select(`id,title,status,note,total,line_items,version,document_number,root_co_id,project_id,
-      projects(id,name,status,currency,client_id,deleted_at,
+    .select(`id,title,status,note,total,line_items,version,document_number,root_co_id,project_id,is_retainer_renewal,renewal_term_months,
+      projects(id,name,status,currency,type,client_id,deleted_at,
         clients(name,email,cc_emails),
         workspaces(id,agency_name,brand_colour))`)
     .eq('id', coId).eq('workspace_id', workspaceId).single()
@@ -96,6 +96,10 @@ export async function sendCoDocument(service: any, params: {
   }
 
   if (!client?.email) return { ok: false, error: 'Client email required', status: 400 }
+  // A renewal that doesn't say how long it runs would replace the rate but leave the retainer ending on its
+  // original date — refuse to send it.
+  if (co.is_retainer_renewal && project?.type === 'retainer' && !co.renewal_term_months)
+    return { ok: false, error: 'A retainer renewal needs its term — enter how many months it extends the retainer for.', status: 400 }
   if (project?.deleted_at) return { ok: false, error: 'This project has been deleted', status: 404 }
 
   const invalid = validateCoForSend({ total: co.total, lineItems: co.line_items })

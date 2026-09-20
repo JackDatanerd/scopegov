@@ -1,4 +1,5 @@
 import { createServiceClient } from '@/lib/supabase/server'
+import { parseRenewalTerm } from '@/lib/documents/renewal-term'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
@@ -18,7 +19,7 @@ export async function POST(request: NextRequest) {
     const body    = await request.json().catch(() => null)
     if (!body || typeof body !== 'object')
       return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
-    const { projectId, title, note, lineItems, taxRate, taxInclusive, flagId, timelineImpactDays, scopeImpactNote, isRetainerRenewal } = body
+    const { projectId, title, note, lineItems, taxRate, taxInclusive, flagId, timelineImpactDays, scopeImpactNote, isRetainerRenewal, renewalTermMonths } = body
     if (!projectId || typeof projectId !== 'string' || title === undefined || title === null || title === '')
       return NextResponse.json({ error: 'projectId and title required' }, { status: 400 })
     const parsedFields = parseCoFields(body)
@@ -27,6 +28,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'note must be text' }, { status: 400 })
     if (isRetainerRenewal !== undefined && typeof isRetainerRenewal !== 'boolean')
       return NextResponse.json({ error: 'isRetainerRenewal must be true or false' }, { status: 400 })
+    const renewalTerm = parseRenewalTerm(renewalTermMonths)
+    if (!renewalTerm.ok) return NextResponse.json({ error: renewalTerm.error }, { status: 400 })
     if (lineItems !== undefined && !Array.isArray(lineItems))
       return NextResponse.json({ error: 'lineItems must be a list' }, { status: 400 })
 
@@ -150,6 +153,7 @@ export async function POST(request: NextRequest) {
         // isRetainerRenewal but POST didn't, so a CO could never be
         // created as one — it could only become one on a later save.
         is_retainer_renewal: isRetainerRenewal === true,
+        renewal_term_months: isRetainerRenewal === true ? renewalTerm.value : null,
         // FIX (doc-quality audit round 3, migration 018): captured
         // alongside the rest of the CO at creation, same as note/line
         // items — see the PDF renderer's Impact Analysis section for

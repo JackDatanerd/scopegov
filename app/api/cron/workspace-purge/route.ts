@@ -38,6 +38,8 @@ export async function POST(request: NextRequest) {
       .select('id, logo_storage_path')
       .not('deleted_at', 'is', null)
       .lt('deleted_at', cutoff7yr)
+      .order('deleted_at', { ascending: true })
+      .limit(50) // oldest first; each purge is heavy, the remainder is picked up on the next weekly run
 
     if (findErr) {
       console.error('Workspace purge candidate lookup failed:', findErr)
@@ -114,6 +116,13 @@ export async function POST(request: NextRequest) {
     }
 
     console.log(`[WORKSPACE PURGE] Hard-deleted ${purgedCount}/${(candidates || []).length} workspaces older than 7 years`)
+    // A purge that fails (an unexpected FK, a storage error) used to surface only as a 207 body that
+    // nobody reads, then retry silently every day. Page ops instead (cooldown-limited by alertCronFailure).
+    if (failures.length > 0) {
+      await alertCronFailure(service, 'workspace-purge', new Error(
+        `Workspace purge: ${failures.length} item(s) failed — ` + failures.slice(0, 10).map(f => `${f.id}: ${f.error}`).join(' | '),
+      )).catch(() => {})
+    }
     await recordCronHeartbeat(service, 'workspace-purge', { purged: purgedCount, failed: failures.length })
     return NextResponse.json({
       ok: failures.length === 0,

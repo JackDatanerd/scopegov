@@ -136,6 +136,27 @@ export async function finalizeCoAcceptance(service: any, params: {
     if (renewalErr) {
       console.error('Retainer renewal contract_value update failed after CO accept:', renewalErr, { coId: co.id })
     } else {
+      // FEATURE (cron/portal audit round 2): extend the retainer's term by the renewal's stated months (see
+      // lib/documents/renewal-term.ts). Compare-and-set on the value we read so two renewals accepted at the same
+      // moment can't overwrite each other's extension. The renewal has already been accepted and the rate already
+      // replaced, so a failure here is logged loudly, not returned as an error to the client.
+      let termExtension: { from: number; to: number } | null = null
+      const termMonths = Number((co as any).renewal_term_months) || 0
+      if (termMonths > 0) {
+        for (let attempt = 0; attempt < 3 && !termExtension; attempt++) {
+          const { data: fresh } = await (service as any)
+            .from('projects').select('retainer_duration_months').eq('id', co.project_id).single()
+          const current = fresh?.retainer_duration_months
+          if (current == null) break // no fixed term to extend
+          const next = Number(current) + termMonths
+          const { data: bumped, error: bumpErr } = await (service as any).from('projects')
+            .update({ retainer_duration_months: next, updated_at: now })
+            .eq('id', co.project_id).eq('retainer_duration_months', current).select('id')
+          if (bumpErr) { console.error('Retainer term extension failed after CO accept:', bumpErr, { coId: co.id }); break }
+          if (bumped?.length) termExtension = { from: Number(current), to: next }
+        }
+        if (!termExtension) console.error('Retainer renewal accepted but the term was not extended — check the project by hand', { coId: co.id, termMonths })
+      }
       await logAudit(service, {
         // FIX (build, Reports & Audit re-pass): actor_id is `uuid
         // REFERENCES users(id)` — client.email is not a valid uuid, so
@@ -147,7 +168,10 @@ export async function finalizeCoAcceptance(service: any, params: {
         actorEmail: client.email, actorName: signerName.trim(),
         eventType: 'project.retainer_renewed', entityType: 'project',
         entityId: co.project_id, entityName: project.name,
-        metadata: { change_order_id: co.id, new_monthly_amount: co.total, currency: project.currency || 'USD' },
+        metadata: {
+          change_order_id: co.id, new_monthly_amount: co.total, currency: project.currency || 'USD',
+          renewal_term_months: termMonths || null, term_extended_from: termExtension?.from ?? null, term_extended_to: termExtension?.to ?? null,
+        },
       })
     }
   }

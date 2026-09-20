@@ -47,7 +47,7 @@ export default async function InvoicesPage() {
 
   let invoicesQuery = (service as any)
     .from('invoices')
-    .select(`id, invoice_number, title, amount, amount_paid, currency, status, due_date, sent_at, paid_at, created_at, disputed_at,
+    .select(`id, invoice_number, title, amount, amount_paid, currency, status, due_date, sent_at, paid_at, created_at, disputed_at, dispute_resolved_at,
       projects(id, name, clients(name))`)
     .eq('workspace_id', session.workspaceId)
     .order('created_at', { ascending: false })
@@ -262,7 +262,7 @@ export default async function InvoicesPage() {
                         BillingTab.tsx — a client dispute previously had
                         no visible trace anywhere in the agency's own UI
                         once the one-time notification was dismissed. */}
-                    {inv.disputed_at && (
+                    {inv.disputed_at && !inv.dispute_resolved_at && (
                       <span className="pill pill-red pill-sm" style={{ marginLeft: 4 }} title={`Disputed ${formatDate(inv.disputed_at)}`}>
                         Disputed
                       </span>

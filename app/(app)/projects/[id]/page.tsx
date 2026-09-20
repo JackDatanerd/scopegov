@@ -225,7 +225,7 @@ export default async function ProjectPage({ params, searchParams }: Props) {
         // a SOW/CO (the cumulative over-billing fix), disputed_at/dispute_note
         // so a client's portal dispute is actually visible somewhere in the
         // agency's own UI instead of only firing a one-time notification.
-        .select('id, milestone_id, sow_id, co_id, invoice_number, title, amount, amount_paid, subtotal, currency, status, due_date, sent_at, paid_at, voided_at, disputed_at, dispute_note, token, created_at')
+        .select('id, milestone_id, sow_id, co_id, invoice_number, title, amount, amount_paid, subtotal, currency, status, due_date, sent_at, paid_at, voided_at, disputed_at, dispute_note, dispute_resolved_at, dispute_resolution_note, token, created_at')
         .eq('project_id', id)
         .order('created_at', { ascending: false })
     : { data: [] }

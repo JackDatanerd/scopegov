@@ -29,6 +29,8 @@ export async function POST(request: NextRequest) {
       .select('id')
       .not('deleted_at', 'is', null)
       .lt('deleted_at', cutoff)
+      .order('deleted_at', { ascending: true })
+      .limit(500) // oldest first; the remainder is picked up on the next daily run
 
     if (findErr) {
       console.error('Project purge candidate lookup failed:', findErr)
@@ -87,6 +89,13 @@ export async function POST(request: NextRequest) {
     }
 
     console.log(`[PROJECT PURGE] Hard-deleted ${purgedCount}/${(candidates || []).length} projects soft-deleted > 30 days ago`)
+    // A purge that fails (an unexpected FK, a storage error) used to surface only as a 207 body that
+    // nobody reads, then retry silently every day. Page ops instead (cooldown-limited by alertCronFailure).
+    if (failures.length > 0) {
+      await alertCronFailure(service, 'project-purge', new Error(
+        `Project purge: ${failures.length} item(s) failed — ` + failures.slice(0, 10).map(f => `${f.id}: ${f.error}`).join(' | '),
+      )).catch(() => {})
+    }
     await recordCronHeartbeat(service, 'project-purge', { purged: purgedCount, failed: failures.length })
     return NextResponse.json({
       ok: failures.length === 0,

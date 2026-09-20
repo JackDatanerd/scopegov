@@ -1,10 +1,12 @@
 export const runtime = 'nodejs'
 
+import { computeContractPosition } from '@/lib/reports/contract-position'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
-import { jwtVerify } from 'jose'
 import { renderInvoicePdf } from '@/lib/pdf/renderer'
-import { getWorkspaceJwtSecret, isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
+import { checkPortalRateLimit, recordPortalAction } from '@/lib/utils/portal-rate-limit'
+import { getClientIp } from '@/lib/utils/request-ip'
+import { resolveInvoiceToken } from '@/lib/documents/invoice-token'
 
 // GET /api/portal/invoice/[token]/pdf — same document as /api/pdf/invoice/[id],
 // but gated by the client's portal token instead of an internal session, since
@@ -13,47 +15,22 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   try {
     const { token } = await params
     const service = createServiceClient()
+    // Read-only but CPU-heavy: throttle per IP so a loop of PDF requests can't burn function time.
+    const clientIp = getClientIp(request)
+    const rl = await checkPortalRateLimit(service, clientIp, 'invoice.pdf')
+    if (!rl.allowed) return NextResponse.json({ error: rl.message }, { status: 429 })
+    await recordPortalAction(service, clientIp, 'invoice.pdf')
 
-    const { data: revoked } = await (service as any)
-      .from('revoked_tokens').select('id').eq('token', token).single()
-    if (revoked) return NextResponse.json({ error: 'Link no longer active' }, { status: 410 })
-
-    const { data: invoice } = await (service as any)
-      .from('invoices')
-      .select(`id, title, amount, amount_paid, currency, status, due_date, sent_at,
+    const resolved = await resolveInvoiceToken(service, token, `id, title, amount, amount_paid, currency, status, due_date, sent_at,
         payment_instructions, invoice_number, po_number, project_id, milestone_id, sow_id, co_id, workspace_id,
         subtotal, tax_rate, tax_inclusive, line_items,
         projects(id, name, clients(name, company_name, billing_address, vat_number),
           workspaces(agency_name, brand_colour, logo_storage_path,
             legal_address, tax_id, phone, website)),
         sow_documents(document_number), change_orders(document_number, title)`)
-      .eq('token', token).single()
-
-    if (!invoice) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-    if (invoice.status === 'draft' || invoice.status === 'void')
-      return NextResponse.json({ error: 'This invoice is no longer available' }, { status: 409 })
-
-    // FIX (portal audit, section 18 re-pass): every other invoice portal
-    // route (GET/route.ts, dispute) checks isWorkspaceDeleted right after
-    // the document's workspace_id is known — see that function's own
-    // comment in workspace-secret.ts, which already names this route by
-    // name as covered. It never actually landed here: a client could still
-    // download a live invoice PDF for a workspace the agency has deleted.
-    // Checked before JWT verify, same order the GET route uses.
-    if (await isWorkspaceDeleted(service, invoice.workspace_id))
-      return NextResponse.json({ error: 'Link no longer active' }, { status: 410 })
-
+    if (!resolved.ok) return NextResponse.json({ error: resolved.error }, { status: resolved.status })
+    const invoice = resolved.invoice
     const workspace = invoice.projects?.workspaces
-    // jwt_secret lives in workspace_secrets now, not on workspaces itself —
-    // see migration 013.
-    try {
-      const jwtSecret = await getWorkspaceJwtSecret(service, invoice.workspace_id)
-      if (!jwtSecret) throw new Error('no secret')
-      const secret = new TextEncoder().encode(jwtSecret)
-      await jwtVerify(token, secret)
-    } catch {
-      return NextResponse.json({ error: 'Invalid or expired link' }, { status: 401 })
-    }
 
     let logoUrl: string | null = null
     if (workspace?.logo_storage_path) {
@@ -77,22 +54,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       milestoneTrigger = milestone?.trigger || null
     }
 
+    // Computed LIVE (lib/reports/contract-position.ts), not read from the nightly snapshot: the snapshot
+    // can never include the invoice being rendered right now, and mis-stated retainers.
     let contractPosition: { contractedValue: number; invoicedToDate: number; paidToDate: number } | null = null
     if (invoice.project_id) {
-      const { data: snapshot } = await (service as any)
-        .from('contract_reconciliation_snapshots')
-        .select('contracted_value, invoiced_to_date, paid_to_date')
-        .eq('project_id', invoice.project_id)
-        .order('snapshot_date', { ascending: false })
-        .limit(1)
-        .maybeSingle()
-      if (snapshot) {
-        contractPosition = {
-          contractedValue: snapshot.contracted_value || 0,
-          invoicedToDate:  snapshot.invoiced_to_date || 0,
-          paidToDate:      snapshot.paid_to_date || 0,
-        }
-      }
+      const position = await computeContractPosition(service, invoice.project_id)
+      if (position) contractPosition = { contractedValue: position.contractedValue, invoicedToDate: position.invoicedToDate, paidToDate: position.paidToDate }
     }
 
     const pdfBuffer = await renderInvoicePdf({

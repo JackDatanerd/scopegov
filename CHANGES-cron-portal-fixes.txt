@@ -1,0 +1,88 @@
+scopegov — Section 17 (Cron jobs) + Section 18 (Public token / portal routes) — audit round 2 fixes
+====================================================================================================
+Independent cold audit of both sections, then a fix round. Applied against HEAD f37847a.
+Both sections ship in ONE tarball because the fixes cross the boundary (contract position, invoice
+links, retainer renewal, account erasure) — applying half of it leaves the other half inconsistent.
+
+DEPLOY ORDER
+  1. Run supabase/migrations/063_cron_portal_audit_round2.sql (idempotent). It de-duplicates PENDING,
+     never-invoiced duplicate retainer months and adds a unique index; if an already-invoiced/paid
+     duplicate exists it leaves the data alone, skips the index and prints a NOTICE.
+  2. Deploy the code.
+  3. Register cron/client-reminders (daily) in the scopegov-cron-worker on Cloudflare. Nothing in this
+     repo schedules it; cron-heartbeat-watchdog will alert once it has been missing >27h.
+  4. Optional: the SQL in the footer of 063 removes OAuth identity rows of anonymized accounts.
+
+SECTION 17 — CRON
+  Systemic
+  - NEW lib/utils/fetch-all.ts + lib/utils/cron-run.ts. Every main SELECT used to discard its error, so a
+    failed query looked like "nothing to do" and still wrote a healthy heartbeat; and every unpaginated
+    scan silently stopped at PostgREST's 1000-row cap. Reads now throw on error and page past the cap;
+    steps are isolated (a failure in one no longer skips the rest); a failed step alerts and withholds the
+    heartbeat. Applied to approval-stall, co-stall, sow-stall, retainer-milestones, payment-overdue,
+    reconciliation-rollup, invite-cleanup, trial-warning. Purge crons now alert when a purge fails.
+  - Heartbeats + failure alerts added to the 7 crons that had none (billing-reconcile, co-expiry,
+    sow-expiry, invoice-expiry, guardian-health, guardian-flag-stall, scope-health-rollup); watchdog
+    expectations added (also notification-cleanup, client-reminders); watchdog now alerts on its own failure.
+  - .github/workflows/vercel-crons.yml routed on the wall-clock minute at job start, so any delayed
+    schedule (the normal case) called nothing and still went green. Now routes on github.event.schedule,
+    retries, and also backs up the watchdog.
+  Bugs
+  - Account deletion never touched auth.users, so a "deleted" person could sign back in, and day 30
+    anonymized live members. Deletion now bans the auth user and signs out; getSession rejects deleted_at
+    accounts; invite-cleanup bans stragglers, skips anyone with an active membership, and anonymizes the
+    AUTH record (email, password, metadata, MFA factors) before the profile row. (lib/utils/account-erasure.ts)
+  - payment-overdue §5 (cancelled subscriptions): claimed the billing row, then downgraded with an unchecked
+    write — a failed downgrade left a workspace on a paid plan forever. Now restores the row and retries.
+  - payment-overdue: retainer milestones get a 7-day invoicing grace before being flagged overdue.
+  - retainer-milestones: backfill now runs BEFORE the term-end check (missed final months were never billed);
+    a month counts as present if ANY retainer row falls in it; insert errors are checked (no false audit rows);
+    23505 from the new unique index is treated as "already generated"; zero-value contracts are skipped; the
+    "term ended" notice is deduplicated per TERM LENGTH and never repeats if its marker can't be written.
+  - reconciliation-rollup: batched (was 3 queries per project, unpaginated); retainer maths corrected.
+  - invite-cleanup: revoked_tokens retention was 60 days for everything, which turned every superseded
+    original emailed link into "invalid". superseded rows are now kept 800 days, the rest 400.
+  - trial-warning: recipients = billing holders + workspace creator; dead-address guard; upstream's
+    calendar-day dedupe and delivery check kept.
+  Features
+  - NEW cron/client-reminders + Settings → Workspace → "Client reminders" (opt-in, default OFF): automatic
+    nudges for unsigned SOWs, unanswered COs and overdue invoices (skipped while a client dispute is open),
+    every N days, capped per document. lib/utils/client-reminder-schedule.ts holds the rules.
+  - co-stall / sow-stall now say whether the client ever opened the document.
+  - Retainer renewal COs now state a term (migration 063: change_orders.renewal_term_months); accepting one
+    extends projects.retainer_duration_months. A renewal can't be sent without it.
+
+SECTION 18 — PORTAL
+  - Invoice "Contract position" on every client-facing invoice came from the last NIGHTLY snapshot, so
+    "Invoiced to date (incl. this invoice)" never included this invoice, the emailed and portal PDFs
+    disagreed, and retainers showed one month's fee as the contract. NEW lib/reports/contract-position.ts
+    computes it live for all four render paths; the nightly rollup uses the same code.
+  - Invoice links: renewing an expired token orphaned the client's emailed link (404) and nobody sent the
+    new one. Old tokens are now recorded as superseded and resolved by id; an expired-only JWT is tolerated
+    for a live invoice. NEW lib/documents/invoice-token.ts, used by portal GET, PDF and dispute routes.
+  - invoices/[id]/void inserted an invalid revoked_tokens row (token_type 'invoice' and free-text reason
+    both violated CHECKs) — silently. Fixed (migration widens token_type; reason is 'manual').
+  - CO portal: a superseded (old) link to a CO awaiting countersignature rendered a form that could never
+    submit (410). It now redirects to the live link.
+  - CO counter-offer: JSON parse guarded, note capped/cleaned, amount upper-bounded.
+  - Retainer signing milestone is stamped with the signing DAY (was the 1st = the past, so it went "overdue"
+    the morning after signing).
+  - PDF routes (SOW/CO/invoice) rate-limited per IP.
+  - Security headers for the whole app (nosniff, frame, referrer, permissions, HSTS) and no-referrer /
+    noindex / no-store / DENY on /portal and /api/portal; robots.txt disallows /portal/; portal layout
+    sets robots+referrer metadata.
+  - NEW invoice dispute lifecycle: agency "Resolve dispute" (optional note, emailed to the client, shown on
+    the portal page); client can dispute again. Dispute no longer chases: an invoice under open dispute is
+    skipped by client-reminders and the internal overdue alert says so.
+
+NOT DONE / KNOWN LIMITS
+  - No Content-Security-Policy (needs a report-only rollout; the app loads CDN icons/fonts and Paystack).
+  - Approval reminders still repeat every N days without escalation.
+  - "Viewed" badges in the agency UI are not built (the first-view NOTIFICATION landed upstream in
+    lib/utils/client-viewed.ts); stall messages now use first_viewed_at.
+  - OAuth identity rows in auth.identities need the optional SQL (the admin API cannot delete them).
+  - payment-overdue §4 claims the billing row before downgrading; a hard function kill between the two
+    statements (not an error) still cannot be recovered without a transaction/RPC.
+  - A retainer renewal accepted AFTER the term ended extends from the original end date, so the gap months are
+    backfilled at the new rate on the next run.
+  - X-Frame-Options SAMEORIGIN is global; if any page is meant to be embedded on another origin, exempt it.

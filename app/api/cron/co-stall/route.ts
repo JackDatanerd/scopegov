@@ -1,7 +1,5 @@
 export const runtime = 'nodejs'
-// FEATURE (cron audit, section 17 — feature gap, closing pass): unbounded
-// per-row fan-out with no pagination, same shape payment-overdue and
-// reconciliation-rollup already carry this override for.
+// Unbounded per-row fan-out — same override payment-overdue and reconciliation-rollup carry.
 export const maxDuration = 300
 
 import { createServiceClient } from '@/lib/supabase/server'
@@ -10,54 +8,45 @@ import { verifyCronSecret } from '@/lib/utils/verify-cron'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { sendCoStalledEmail } from '@/lib/email/templates'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
-import { alertCronFailure } from '@/lib/utils/cron-alert'
-import { recordCronHeartbeat } from '@/lib/utils/cron-heartbeat'
-
 import { insertAuditRow } from '@/lib/utils/audit'
-// FIX (audit round 3): local copy replaced with the shared,
-// null-safe helper — see lib/utils/verify-cron.ts.
+import { CronRun, fetchAll } from '@/lib/utils/cron-run'
+import { viewedNote } from '@/lib/utils/viewed'
 
+// Hourly. Marks an unanswered change order 'stalled' after 5 days and tells the team.
+// (A stalled CO stays respondable by the client — 'stalled' is an agency-side attention flag.)
 export async function POST(request: NextRequest) {
   if (!verifyCronSecret(request))
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  try {
-    const service   = createServiceClient()
+  const service = createServiceClient()
+  const run = new CronRun(service, 'co-stall')
+  let stalled = 0
+
+  await run.step('stall unanswered change orders', async () => {
     const now       = new Date()
     const threshold = 5 // days — spec default
     const cutoff    = new Date(now.getTime() - threshold * 86400000).toISOString()
 
-    // BUG-055: ONLY awaiting_response. 'countered' COs do NOT auto-stall.
-    // A countered CO has an active negotiation — stalling it makes no sense.
-    // FIX (build, cron section): joined project/client here — stalling a
-    // CO used to be a pure status flip with zero outbound signal (no email,
-    // no in-app notification), just an audit-log row nobody would see
-    // unless they happened to check the dashboard. For a product whose
-    // whole premise is not letting things go silently stale, that was a
-    // real gap. Need project name + client name for the new notification.
-    // FIX (re-audit): change_orders has no `deleted_at` column — it was
-    // never added in any migration. Filtering on it made PostgREST reject
-    // the query outright (42703, column does not exist) on every single
-    // run; since only `data` was destructured (error silently discarded),
-    // this cron has been returning `{ok:true, stalled:0}` while doing
-    // nothing at all, every time it's run since the feature shipped —
-    // including the notification wiring added just above, which has
-    // therefore never actually fired either.
-    const { data: staleCOs } = await (service as any)
-      .from('change_orders')
-      .select('id, title, project_id, workspace_id, sent_at, projects(name, clients(name))')
-      .eq('status', 'awaiting_response')  // NOT countered
-      .lt('sent_at', cutoff)
+    // ONLY awaiting_response — a 'countered' CO is an active negotiation and must not auto-stall.
+    // (change_orders has no `deleted_at`; filtering on it made every run a silent no-op once.)
+    // fetchAll throws on a query error instead of reporting "0 stalled" and a green heartbeat.
+    const staleCOs = await fetchAll<any>('co-stall select', (from, to) =>
+      (service as any)
+        .from('change_orders')
+        .select('id, title, project_id, workspace_id, sent_at, first_viewed_at, projects(name, clients(name))')
+        .eq('status', 'awaiting_response')
+        .lt('sent_at', cutoff)
+        .order('id')
+        .range(from, to))
 
-    let stalled = 0
-    for (const co of (staleCOs || [])) {
+    for (const co of staleCOs) {
       try {
-        const { data: updated } = await (service as any).from('change_orders').update({
+        const { data: updated, error: updErr } = await (service as any).from('change_orders').update({
           status:     'stalled',
           updated_at: now.toISOString(),
-        }).eq('id', co.id).eq('status', 'awaiting_response').select('id') // double-check status hasn't changed
-
-        if (!updated?.length) continue // lost the race to a concurrent status change — nothing else to do
+        }).eq('id', co.id).eq('status', 'awaiting_response').select('id') // status hasn't changed underneath us
+        if (updErr) throw new Error(updErr.message)
+        if (!updated?.length) continue // lost the race to a concurrent status change
 
         await insertAuditRow(service, {
           workspace_id: co.workspace_id,
@@ -68,17 +57,18 @@ export async function POST(request: NextRequest) {
           entity_type:  'change_order',
           entity_id:    co.id,
           entity_name:  co.title,
-          metadata:     { days_since_sent: threshold },
+          metadata:     { days_since_sent: threshold, viewed: !!co.first_viewed_at },
         })
 
         const projectName = co.projects?.name || 'Untitled project'
         const clientName  = co.projects?.clients?.name || 'Client'
         const projectUrl  = `${process.env.NEXT_PUBLIC_APP_URL}/projects/${co.project_id}?tab=co`
+        const seen        = viewedNote(co.first_viewed_at)
 
         await notifyMembersWithPermission(service, {
           workspaceId: co.workspace_id, permission: 'SEND_CHANGE_ORDERS', eventType: 'co_stalled',
           type: 'co_stalled', title: `Change order stalled — ${co.title}`,
-          body: `${clientName} hasn't responded to "${co.title}" on ${projectName} in ${threshold}+ days.`,
+          body: `${clientName} hasn't responded to "${co.title}" on ${projectName} in ${threshold}+ days. ${seen}`.trim(),
           entityType: 'project', entityId: co.project_id, projectId: co.project_id,
         })
 
@@ -87,33 +77,20 @@ export async function POST(request: NextRequest) {
           if (emails.length) {
             await sendCoStalledEmail({
               to: emails, clientName, projectName, coTitle: co.title,
-              daysSinceSent: threshold, projectUrl,
+              daysSinceSent: threshold, projectUrl, viewedNote: seen,
             })
           }
         } catch (e) { console.error('CO stalled email failed:', e) }
 
         stalled++
-      } catch (e) { console.error('CO stall error:', e) }
+      } catch (e) { run.rowError(`co ${co.id}`, e) }
     }
+    run.result.stalled = stalled
+  })
 
-    await recordCronHeartbeat(service, 'co-stall', { stalled })
-    return NextResponse.json({ ok: true, stalled })
-  } catch (err) {
-    console.error('CO stall cron error:', err)
-    await alertCronFailure(createServiceClient(), 'co-stall', err).catch(() => {})
-    return NextResponse.json({ error: 'Cron failed' }, { status: 500 })
-  }
+  const { body, status } = await run.finish()
+  return NextResponse.json(body, { status })
 }
 
-// FIX (cron): Vercel Cron Jobs invoke the configured path with a GET
-// request, not POST — every route here only exported POST, so all 6 jobs
-// wired up in vercel.json would 405 the moment Vercel actually triggered
-// them. Exporting GET as an alias makes both invocation paths work.
-//
-// FIX (build, cron/portal audit round): the 3 sub-hourly jobs (sow-stall,
-// co-stall, guardian-health) are now scheduled directly in vercel.json
-// AND kept in .github/workflows/vercel-crons.yml as a redundant trigger
-// (see that file's own comment for why both are kept intentionally) —
-// this comment previously implied GitHub Actions was the only path,
-// which stopped being true once vercel.json picked these three up too.
+// Vercel Cron invokes the configured path with GET; the GitHub Actions backup uses POST.
 export const GET = POST

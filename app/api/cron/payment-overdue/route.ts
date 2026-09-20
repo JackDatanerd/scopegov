@@ -1,19 +1,6 @@
 export const runtime = 'nodejs'
-
-// FIX (cron audit, section 17 — closing pass): this is the one full-scan
-// cron with no maxDuration override, unlike reconciliation-rollup and
-// scope-health-rollup, which both got this exact fix for the exact same
-// reason — per-row fan-out with no pagination. This route runs SIX
-// separate full-table-ish scans in one invocation (overdue milestones,
-// overdue invoices, trial expiry, grace reminder, grace enforcement,
-// cancelled subscriptions), and unlike the other two crons, several of
-// these sections send a real outbound email per row — network I/O, not
-// just DB writes, so the per-row cost here is higher, not lower. Without
-// an override this is capped at Vercel's platform default, which a
-// growing set of overdue items can exceed well before this loop finishes
-// — silently truncating that day's enforcement/reminder pass with no
-// catchable error. 300s matches the cap already used by this file's two
-// full-scan siblings.
+// Runs six independent scans and loops over every match — same unbounded shape
+// reconciliation-rollup carries this override for.
 export const maxDuration = 300
 
 import { createServiceClient } from '@/lib/supabase/server'
@@ -24,65 +11,64 @@ import { getBillingRecipients as getBillingRecipientsShared } from '@/lib/billin
 import { GRACE_DAYS, GRACE_REMINDER_DAYS_LEFT } from '@/lib/billing/plans'
 import { cancelPaystackSubscription } from '@/lib/integrations/paystack'
 import { alertBillingOps } from '@/lib/billing/ops-alert'
-import { alertCronFailure } from '@/lib/utils/cron-alert'
-import { recordCronHeartbeat } from '@/lib/utils/cron-heartbeat'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
-
 import { insertAuditRow } from '@/lib/utils/audit'
-// FIX (audit round 3): local copy replaced with the shared,
-// null-safe helper — see lib/utils/verify-cron.ts.
+import { CronRun, fetchAll } from '@/lib/utils/cron-run'
 
-// FIX (Billing re-pass #3): the recipient lookup that lived here asked for
-// members holding MANAGE_WORKSPACE_SETTINGS and claimed that was "the
-// permission that gates acting on billing" — but every billing action
-// (upgrade, cancel, resume, history) is gated on MANAGE_BILLING. It now
-// lives in lib/billing/recipients.ts (shared with the webhook and the
-// cancel/resume routes) and looks up MANAGE_BILLING holders. The rest of the
-// earlier rationale stands: the workspace creator alone is a single point of
-// failure once they can leave and anonymise their account, so the creator is
-// still included when reachable, deduplicated by email.
+// A monthly-retainer milestone is generated on the 1st and is the agency's own billing reminder —
+// the agency still has to raise the invoice. Flagging it "overdue" the next morning (and, for a
+// retainer signed mid-month, immediately after signing) was a false alarm. Only flag once the
+// agency has had this long to bill it.
+const RETAINER_INVOICE_GRACE_DAYS = 7
+
+const WS_EMBED = 'workspaces(id,agency_name,plan_tier,deleted_at,created_by,creator:users!workspaces_created_by_fkey(name,email))'
+
 async function getBillingRecipients(
   service: any, workspaceId: string, creator: { name?: string; email?: string } | null | undefined
 ): Promise<Array<{ name: string; email: string }>> {
   return getBillingRecipientsShared(service, workspaceId, [creator])
 }
 
+// Daily. Each numbered section below is an independent step: a failure in one (a bad query, a
+// provider outage) is recorded and alerted, but no longer stops the sections after it — before this,
+// the least important scan (milestones) ran first and its failure skipped billing enforcement for
+// the whole day. Main SELECT errors are thrown (not swallowed) and every scan is paginated.
 export async function POST(request: NextRequest) {
   if (!verifyCronSecret(request))
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  try {
-    const service = createServiceClient()
-    const now     = new Date()
+  const service = createServiceClient()
+  const run = new CronRun(service, 'payment-overdue')
+  const now = new Date()
+  const today = now.toISOString().split('T')[0]
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL
 
-    // ── 1. Mark overdue payment milestones ─────────────────
-    // FIX (cron audit, section 17 — closing pass): this used to be a
-    // single bulk `.update(...).in('id', ids)` with no re-check that each
-    // row was still 'pending' at write time — every other mutating step in
-    // this file guards its write against the row moving between the
-    // SELECT and the write (a payment/invoice being recorded is a real,
-    // regular, independent event), except this one. It also never told
-    // anyone: no audit_log entry, no notification, no email — unlike its
-    // sibling step 1b immediately below, which does all three for overdue
-    // invoices. Both gaps closed together: guard each milestone's write
-    // individually, and only log/notify the ones that actually flipped.
-    const { data: overdueMilestones } = await (service as any)
-      .from('payment_milestones')
-      .select(`id, title, amount, project_id,
-        projects(id, name, workspace_id, currency, clients(name))`)
-      .eq('status', 'pending')
-      .not('due_date', 'is', null)
-      .lt('due_date', now.toISOString().split('T')[0])
+  let milestonesMarkedOverdue = 0
+  let invoicesMarkedOverdue = 0
+  let trialsExpiredCount = 0
+  let cancelledSubscriptionsEndedCount = 0
 
-    let milestonesMarkedOverdue = 0
-    for (const m of (overdueMilestones || [])) {
+  // ── 1. Mark overdue payment milestones ──────────────────────────────────────────────────
+  await run.step('1 milestones overdue', async () => {
+    const retainerGraceDate = new Date(now.getTime() - RETAINER_INVOICE_GRACE_DAYS * 86400000).toISOString().split('T')[0]
+    const overdueMilestones = await fetchAll<any>('overdue milestones select', (from, to) =>
+      (service as any).from('payment_milestones')
+        .select(`id, title, amount, project_id, projects(id, name, workspace_id, currency, clients(name))`)
+        .eq('status', 'pending')
+        .not('due_date', 'is', null)
+        .lt('due_date', today)
+        .or(`type.is.null,type.neq.retainer_monthly,due_date.lt.${retainerGraceDate}`)
+        .order('id')
+        .range(from, to))
+
+    for (const m of overdueMilestones) {
       try {
-        const { data: updated } = await (service as any).from('payment_milestones')
+        const { data: updated, error: updErr } = await (service as any).from('payment_milestones')
           .update({ status: 'overdue' })
-          .eq('id', m.id).eq('status', 'pending') // guard against a payment/invoice landing between select and update
+          .eq('id', m.id).eq('status', 'pending') // a payment/invoice may have landed since the select
           .select('id')
-
+        if (updErr) throw new Error(updErr.message)
         if (!updated || updated.length === 0) continue // lost the race — already moved on
 
         const project = m.projects
@@ -113,133 +99,102 @@ export async function POST(request: NextRequest) {
               milestoneTitle: m.title,
               amount: m.amount,
               currency: project.currency || 'USD',
-              projectUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects/${project.id}?tab=billing`,
+              projectUrl: `${appUrl}/projects/${project.id}?tab=billing`,
             })
           }
         } catch (e) { console.error('Milestone overdue email failed:', e) }
 
         milestonesMarkedOverdue++
-      } catch (e) { console.error('Milestone overdue processing error:', e) }
+      } catch (e) { run.rowError(`milestone ${m.id}`, e) }
     }
+  })
 
-    // ── 1b. Mark overdue invoices (Phase 4a) ────────────────
-    // Purely date-driven — no gateway dependency either way, since
-    // ScopeGov never processes the payment, only tracks its status.
-    // Selecting only 'sent'/'partially_paid' means once flagged
-    // 'overdue' an invoice won't be re-selected on the next run, so
-    // this also naturally prevents duplicate reminder emails.
-    const { data: overdueInvoices } = await (service as any)
-      .from('invoices')
-      .select(`id, title, amount, amount_paid, currency, invoice_number, workspace_id,
-        projects(id, name, clients(name))`)
-      .in('status', ['sent', 'partially_paid'])
-      .not('due_date', 'is', null)
-      .lt('due_date', now.toISOString().split('T')[0])
+  // ── 1b. Mark overdue invoices ───────────────────────────────────────────────────────────
+  await run.step('1b invoices overdue', async () => {
+    const overdueInvoices = await fetchAll<any>('overdue invoices select', (from, to) =>
+      (service as any).from('invoices')
+        .select(`id, title, amount, amount_paid, currency, invoice_number, workspace_id, disputed_at, dispute_resolved_at,
+          projects(id, name, clients(name))`)
+        .in('status', ['sent', 'partially_paid'])
+        .not('due_date', 'is', null)
+        .lt('due_date', today)
+        .order('id')
+        .range(from, to))
 
-    // FIX (cron audit, section 17 — closing pass): counted below only for
-    // rows that actually won the guarded UPDATE — see the note at the
-    // return statement for why the raw fetched-row count was wrong.
-    let invoicesMarkedOverdue = 0
-    for (const inv of (overdueInvoices || [])) {
+    for (const inv of overdueInvoices) {
       try {
-        // FIX (re-audit): same false-audit-entry-on-race gap already fixed
-        // in sow-stall/co-stall — the guarded UPDATE was correct, but its
-        // result was never checked before unconditionally logging + firing
-        // "invoice overdue" notifications to the whole finance team. If a
-        // payment landed between the SELECT above and this UPDATE (a real
-        // possibility — payments and this cron are both independent,
-        // regular events), the invoice is correctly left alone in the DB
-        // but the team still gets told it's overdue.
-        const { data: updated } = await (service as any).from('invoices')
+        const { data: updated, error: updErr } = await (service as any).from('invoices')
           .update({ status: 'overdue', updated_at: now.toISOString() })
-          .eq('id', inv.id).in('status', ['sent', 'partially_paid']) // guard against a payment landing between select and update
+          .eq('id', inv.id).in('status', ['sent', 'partially_paid']) // a payment may have landed since the select
           .select('id')
-
+        if (updErr) throw new Error(updErr.message)
         if (!updated || updated.length === 0) continue
         invoicesMarkedOverdue++
 
         const balanceDue = Number(inv.amount) - Number(inv.amount_paid)
+        const underDispute = !!inv.disputed_at && !inv.dispute_resolved_at
 
         await insertAuditRow(service, {
           workspace_id: inv.workspace_id, actor_id: null,
           actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
           event_type: 'invoice.overdue', entity_type: 'invoice',
-          entity_id: inv.id, entity_name: inv.title, metadata: { balance_due: balanceDue },
+          entity_id: inv.id, entity_name: inv.title, metadata: { balance_due: balanceDue, under_dispute: underDispute },
         })
 
         await notifyMembersWithPermission(service, {
           workspaceId: inv.workspace_id, permission: 'VIEW_FINANCIALS',
           eventType: 'invoice_overdue', type: 'invoice_overdue',
           title: `Invoice overdue — ${inv.projects?.name}`,
-          body: `${inv.projects?.clients?.name || 'Client'} has ${inv.currency} ${balanceDue.toLocaleString()} overdue on "${inv.title}"`,
+          // A disputed invoice is a conversation to have, not just a chase — say so.
+          body: `${inv.projects?.clients?.name || 'Client'} has ${inv.currency} ${balanceDue.toLocaleString()} overdue on "${inv.title}"${underDispute ? ' — the client has disputed this invoice' : ''}`,
           entityType: 'project', entityId: inv.projects?.id, projectId: inv.projects?.id,
         })
 
-        const emails = await getMemberEmailsWithPermission(service, inv.workspace_id, 'VIEW_FINANCIALS', 10, 'invoice_overdue', inv.projects?.id)
-        if (emails.length) {
-          await sendInvoiceOverdueInternalEmail({
-            to: emails,
-            clientName: inv.projects?.clients?.name || 'Client',
-            projectName: inv.projects?.name,
-            invoiceNumber: inv.invoice_number,
-            balanceDue, currency: inv.currency,
-            projectUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects/${inv.projects?.id}?tab=billing`,
-          })
-        }
-      } catch (e) { console.error('Invoice overdue processing error:', e) }
+        try {
+          const emails = await getMemberEmailsWithPermission(service, inv.workspace_id, 'VIEW_FINANCIALS', 10, 'invoice_overdue', inv.projects?.id)
+          if (emails.length) {
+            await sendInvoiceOverdueInternalEmail({
+              to: emails,
+              clientName: inv.projects?.clients?.name || 'Client',
+              projectName: inv.projects?.name,
+              invoiceNumber: inv.invoice_number,
+              balanceDue, currency: inv.currency,
+              projectUrl: `${appUrl}/projects/${inv.projects?.id}?tab=billing`,
+            })
+          }
+        } catch (e) { console.error('Invoice overdue email failed:', e) }
+      } catch (e) { run.rowError(`invoice ${inv.id}`, e) }
     }
+  })
 
-    // ── 2. Trial expiry enforcement ────────────────────────
-    // FIX (cron audit, section 17 — closing pass): `creator:users!workspaces_created_by_fkey`
-    // replaces the old `workspace_members!inner(...)` embed — the embed only
-    // ever existed to derive a recipient, and "owner" below used to mean
-    // "whichever active member happened to come back first," not the actual
-    // workspace owner. See the same fix in sections 4 and 5 below.
-    const { data: expiredTrials } = await (service as any)
-      .from('workspaces')
-      .select(`id, agency_name, plan_tier, trial_ends_at, created_by,
-        creator:users!workspaces_created_by_fkey(name, email),
-        billing(paystack_subscription_code)`)
-      .eq('plan_tier', 'trial')
-      .lt('trial_ends_at', now.toISOString())
-      .is('deleted_at', null)
+  // ── 2. Trial expiry enforcement ─────────────────────────────────────────────────────────
+  // There is no grace period here: a trial past trial_ends_at is downgraded on the first run after
+  // it. (An older comment claimed "3-day grace already passed"; nothing implements one, and the
+  // trial-warning emails count down to zero.) Data is never deleted — only the plan changes.
+  await run.step('2 trial expiry', async () => {
+    const expiredTrials = await fetchAll<any>('expired trials select', (from, to) =>
+      (service as any).from('workspaces')
+        .select(`id, agency_name, plan_tier, trial_ends_at, created_by,
+          creator:users!workspaces_created_by_fkey(name, email),
+          billing(paystack_subscription_code)`)
+        .eq('plan_tier', 'trial')
+        .lt('trial_ends_at', now.toISOString())
+        .is('deleted_at', null)
+        .order('id')
+        .range(from, to))
 
-    // FIX (cron audit, section 17 — closing pass): counted below only for
-    // workspaces actually downgraded by this run — see the note at the
-    // return statement. The raw fetched-row count over-reports here in
-    // three distinct ways: rows skipped for already having a subscription
-    // on file, rows skipped for grace-period math, and rows that lost the
-    // race to a concurrent invocation.
-    let trialsExpiredCount = 0
-    for (const ws of (expiredTrials || [])) {
+    for (const ws of expiredTrials) {
       try {
-        if (ws.billing?.paystack_subscription_code) {
-          // Has payment on file → convert to paid plan (handled by webhook)
-          continue
-        }
+        // A trial workspace that already has a Paystack subscription is mid-conversion to a paid plan
+        // (the billing webhook owns that transition) — never downgrade someone who is paying.
+        if (ws.billing?.paystack_subscription_code) continue
 
-        // Downgrade to solo (3-day grace already passed)
-        const trialExpired = new Date(ws.trial_ends_at)
-        const graceDays    = Math.floor((now.getTime() - trialExpired.getTime()) / 86400000)
-        if (graceDays < 0) continue
-
-        // FIX (cron audit, section 17 — closing pass): the old "already
-        // logged?" pre-check was a read-then-act race — two overlapping
-        // invocations (a retry, a manual trigger landing next to the
-        // scheduled one) could both pass it before either inserted the
-        // audit_log row, then both proceed to downgrade-and-notify. This
-        // is exactly the class of gap sections 4 and 5 below already guard
-        // against and section 2 never did. Guarding the UPDATE itself with
-        // `.eq('plan_tier','trial')` and only continuing past it if it
-        // actually matched a row makes the write itself the idempotency
-        // check — a second, losing invocation sees zero rows updated and
-        // stops here, before ever logging or emailing.
-        const { data: updatedWs } = await (service as any).from('workspaces')
+        const { data: updatedWs, error: updErr } = await (service as any).from('workspaces')
           .update({ plan_tier: 'solo', updated_at: now.toISOString() })
           .eq('id', ws.id).eq('plan_tier', 'trial')
           .select('id')
-
-        if (!updatedWs || updatedWs.length === 0) continue // already downgraded concurrently — lost the race
+        if (updErr) throw new Error(updErr.message)
+        if (!updatedWs || updatedWs.length === 0) continue // downgraded concurrently
         trialsExpiredCount++
 
         await insertAuditRow(service, {
@@ -250,183 +205,103 @@ export async function POST(request: NextRequest) {
           metadata: { converted_to: 'solo' },
         })
 
-        // FIX (cron audit, section 17 — closing pass): notify the actual
-        // workspace owner (workspaces.created_by) — trial-warning.ts
-        // already caught and fixed this exact "first active member, not
-        // the owner" anti-pattern for its own advance-warning email; this
-        // downgrade-consequence email, arguably the more important of the
-        // two, never got the same fix. In any multi-member workspace the
-        // owner responsible for billing could go without ever being told
-        // their workspace was downgraded.
-        //
-        // FIX (deep audit, section 17 follow-up): owner-only was itself a
-        // single point of failure once a creator can leave — see
-        // getBillingRecipients above for the full writeup.
         const recipients = await getBillingRecipients(service, ws.id, ws.creator)
         for (const r of recipients) {
           try {
             await sendTrialWarningEmail({
               to: r.email, name: r.name, agencyName: ws.agency_name,
               daysLeft: 0,
-              upgradeUrl: `${process.env.NEXT_PUBLIC_APP_URL}/settings?tab=billing`,
+              upgradeUrl: `${appUrl}/settings?tab=billing`,
             })
           } catch (e) { console.error('Trial expiry email failed for', r.email, e) }
         }
-      } catch (e) { console.error('Trial expiry error:', e) }
+      } catch (e) { run.rowError(`trial ${ws.id}`, e) }
     }
+  })
 
-    // ── 3. Grace period reminder (2 days in, before day-5 enforcement) ──
-    // FEATURE (cron audit, section 17): trial expiry gets escalating day-3/
-    // 2/1 warnings (cron/trial-warning). Payment-failure grace period only
-    // ever got a day-0 email (billing/webhook, the moment the charge
-    // failed) and the day-5 downgrade email below — nothing in between, so
-    // a customer who missed the first email had no further signal until
-    // they were already downgraded. One midpoint nudge, reusing the same
-    // template the other two grace-period emails already use.
+  // ── 3. Grace-period reminder (before the day-GRACE_DAYS enforcement) ────────────────────
+  // The window is exactly 24h wide, so each workspace lands in it on exactly one daily run; the
+  // audit-log check makes a manual re-run in the same window a no-op.
+  await run.step('3 grace reminder', async () => {
     const reminderDaysIn = GRACE_DAYS - GRACE_REMINDER_DAYS_LEFT
-    const graceReminderWindowStart = new Date(now.getTime() - (reminderDaysIn + 1) * 86400000).toISOString()
-    const graceReminderWindowEnd   = new Date(now.getTime() - reminderDaysIn * 86400000).toISOString()
-    const { data: graceReminderDue } = await (service as any)
-      .from('billing')
-      .select('workspace_id, workspaces(id,agency_name,plan_tier,deleted_at,created_by,creator:users!workspaces_created_by_fkey(name,email))')
-      .not('grace_period_started_at', 'is', null)
-      .lt('grace_period_started_at', graceReminderWindowEnd)
-      .gte('grace_period_started_at', graceReminderWindowStart)
+    const windowStart = new Date(now.getTime() - (reminderDaysIn + 1) * 86400000).toISOString()
+    const windowEnd   = new Date(now.getTime() - reminderDaysIn * 86400000).toISOString()
+    const graceReminderDue = await fetchAll<any>('grace reminder select', (from, to) =>
+      (service as any).from('billing')
+        .select(`workspace_id, ${WS_EMBED}`)
+        .not('grace_period_started_at', 'is', null)
+        .lt('grace_period_started_at', windowEnd)
+        .gte('grace_period_started_at', windowStart)
+        .order('workspace_id')
+        .range(from, to))
 
-    for (const b of (graceReminderDue || [])) {
+    for (const b of graceReminderDue) {
       try {
         const ws = b.workspaces
-        // FIX (build, cron/portal audit round): unlike section 2 (trial
-        // expiry), which filters `.is('deleted_at', null)` directly on
-        // workspaces, sections 3/4/5 here query `billing` and only embed
-        // workspaces — a soft-deleted workspace's billing row isn't
-        // excluded by any filter above, and deleting a workspace doesn't
-        // clear grace_period_started_at/cancels_at_period_end (those only
-        // change via the Paystack webhook, asynchronously, and can
-        // continue arriving well after deletion — see cancelPaystackSubscription
-        // in workspace/delete). Without this check, a workspace someone
-        // deleted weeks ago could still get "downgraded" and its former
-        // owner could still get emailed about a subscription change on a
-        // workspace that no longer exists.
-        //
-        // FIX (Billing re-pass #4 — HIGH): this used to also skip
-        // `ws.plan_tier === 'solo'`, on the assumption that solo is always
-        // "the floor a higher tier falls to, nothing left to enforce." But
-        // `plan_tier` is dual-purpose: PLAN_LIMITS.solo is a real,
-        // separately-billed Paystack plan a customer can subscribe to
-        // directly (its own PAYSTACK_PLAN_SOLO_* codes), not only the
-        // no-subscription state a trial converts to when it expires with no
-        // card on file. Sections 3/4/5 all query `billing` rows that already
-        // have `grace_period_started_at` or `cancels_at_period_end` set —
-        // fields ONLY ever written by a real Paystack webhook for a real
-        // subscription — so a workspace that reached trial→solo with no
-        // card never appears in these result sets regardless of this check.
-        // The old exclusion therefore had no legitimate case to protect and
-        // only ever fired for a genuine paying Solo subscriber: their card
-        // failing got no day-2 reminder, no day-5 downgrade/Paystack-cancel,
-        // ever — and a Solo subscriber who explicitly cancelled kept full
-        // paid access forever, with their subscription/customer codes never
-        // cleared, because there was no lower tier for "downgrade" to move
-        // them to. Enforcement now applies to every tier equally; a Solo
-        // customer already at the floor still gets disabled/cleaned up, it
-        // just has nowhere further to fall.
         if (!ws || ws.deleted_at) continue
-
-        // Dedup so a daily-scheduled cron only ever sends this once per
-        // grace period, even though the window above spans a full day.
         const { data: alreadySent } = await (service as any)
           .from('audit_log').select('id')
           .eq('workspace_id', ws.id).eq('event_type', 'billing.payment_failed_grace_reminder')
-          .gte('created_at', graceReminderWindowStart)
+          .gte('created_at', windowStart)
           .limit(1).maybeSingle()
         if (alreadySent) continue
 
-        // FIX (deep audit, section 17 follow-up): owner-only was a single
-        // point of failure — see getBillingRecipients above.
         const recipients = await getBillingRecipients(service, ws.id, ws.creator)
         for (const r of recipients) {
           try {
             await sendPaymentFailedEmail({
               to: r.email, name: r.name, agencyName: ws.agency_name,
-              upgradeUrl: `${process.env.NEXT_PUBLIC_APP_URL}/settings?tab=billing`,
+              upgradeUrl: `${appUrl}/settings?tab=billing`,
               graceDaysLeft: GRACE_REMINDER_DAYS_LEFT,
             })
           } catch (e) { console.error('Grace reminder email failed for', r.email, e) }
         }
-
         await insertAuditRow(service, {
           workspace_id: ws.id, actor_id: null,
           actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
           event_type: 'billing.payment_failed_grace_reminder', entity_type: 'workspace',
           entity_id: ws.id, entity_name: ws.agency_name, metadata: { grace_days_left: GRACE_REMINDER_DAYS_LEFT },
         })
-      } catch (e) { console.error('Grace reminder error:', e) }
+      } catch (e) { run.rowError(`grace reminder ${b.workspace_id}`, e) }
     }
+  })
 
-    // ── 4. Grace period enforcement (5 days after payment failure) ─
+  // ── 4. Grace-period enforcement ─────────────────────────────────────────────────────────
+  await run.step('4 grace enforcement', async () => {
     const graceCutoff = new Date(now.getTime() - GRACE_DAYS * 86400000).toISOString()
-    const { data: graceExpired } = await (service as any)
-      .from('billing')
-      .select('workspace_id, grace_period_started_at, paystack_subscription_code, paystack_email_token, workspaces(id,agency_name,plan_tier,deleted_at,created_by,creator:users!workspaces_created_by_fkey(name,email))')
-      .not('grace_period_started_at', 'is', null)
-      .lt('grace_period_started_at', graceCutoff)
+    const graceExpired = await fetchAll<any>('grace enforcement select', (from, to) =>
+      (service as any).from('billing')
+        .select(`workspace_id, grace_period_started_at, paystack_subscription_code, paystack_email_token, ${WS_EMBED}`)
+        .not('grace_period_started_at', 'is', null)
+        .lt('grace_period_started_at', graceCutoff)
+        .order('workspace_id')
+        .range(from, to))
 
-    for (const b of (graceExpired || [])) {
+    for (const b of graceExpired) {
       try {
         const ws = b.workspaces
-        // FIX (build, cron/portal audit round): see the identical note on
-        // section 3 above — a soft-deleted workspace's billing row isn't
-        // otherwise excluded here.
-        // FIX (Billing re-pass #4): see section 3 above for why the old
-        // `|| ws.plan_tier === 'solo'` skip is gone — this reached here only
-        // because a real subscription's grace period actually expired, and a
-        // Solo subscriber's failed card needs disabling exactly like any
-        // other tier's, not a permanent pass because there's no lower tier
-        // to fall to.
         if (!ws || ws.deleted_at) continue
 
-        // FIX (cron audit, section 17): this used to update `workspaces`
-        // unconditionally on whatever was fetched by the select above, with
-        // no re-check that grace_period_started_at was still set (and still
-        // past cutoff) at write time — unlike every other mutating step in
-        // this same file (invoice overdue, trial expiry), which all guard
-        // their update with an .eq() on the condition that qualified the
-        // row. If a payment cleared the grace period in the gap between
-        // select and update, this would still downgrade a customer who'd
-        // just paid. Guarding the billing update itself first — and only
-        // proceeding to downgrade the workspace if that guarded update
-        // actually matched a row — closes the same race the other steps
-        // already close.
-        // FIX (Billing re-pass #3): this used to null paystack_subscription_code
-        // here WITHOUT ever disabling the Paystack subscription. Paystack does
-        // not cancel a subscription because a charge failed — it can retry, and
-        // a customer who fixes their card can succeed — so a workspace that had
-        // just been downgraded could still be charged for the plan it no
-        // longer had, with the only pointer we had to that subscription (and
-        // so cancel/resume in the UI) erased. The claim below now leaves the
-        // code in place; the subscription is disabled first, and only a
-        // confirmed disable clears it. If Paystack can't be reached the code
-        // stays and needs_paystack_cancel makes step 4b retry on every run.
-        const { data: guardedBilling } = await (service as any).from('billing')
+        // Claim the row first (clears the grace clock) so a concurrent run/webhook can't double-process.
+        const { data: guardedBilling, error: claimErr } = await (service as any).from('billing')
           .update({ grace_period_started_at: null })
           .eq('workspace_id', b.workspace_id)
           .not('grace_period_started_at', 'is', null)
           .lt('grace_period_started_at', graceCutoff)
           .select('workspace_id')
+        if (claimErr) throw new Error(claimErr.message)
+        if (!guardedBilling?.length) continue // cleared concurrently
 
-        if (!guardedBilling?.length) continue // grace period cleared concurrently — lost the race, nothing to do
-
-        // The write's error was never read: a failed downgrade after the claim
-        // above left the workspace on its paid plan with the grace clock gone,
-        // so nothing would ever retry it. Put the clock back instead.
         const { error: downgradeErr } = await (service as any).from('workspaces')
           .update({ plan_tier: 'solo', updated_at: now.toISOString() })
           .eq('id', ws.id)
         if (downgradeErr) {
+          // Put the clock back so tomorrow's run retries instead of the workspace keeping paid features
+          // forever with nothing left to trigger the downgrade.
           console.error('Grace enforcement: downgrade failed, restoring grace clock:', downgradeErr.message)
           await (service as any).from('billing')
             .update({ grace_period_started_at: b.grace_period_started_at }).eq('workspace_id', b.workspace_id)
-          continue
+          throw new Error(`downgrade failed for ${ws.id}: ${downgradeErr.message}`)
         }
 
         let paystackCancelled = true
@@ -439,6 +314,7 @@ export async function POST(request: NextRequest) {
             await (service as any).from('billing')
               .update({ paystack_subscription_code: null, needs_paystack_cancel: false }).eq('workspace_id', b.workspace_id)
           } else {
+            // Leave the code in place and flag it so step 4b retries — the customer must not keep being charged.
             await (service as any).from('billing')
               .update({ needs_paystack_cancel: true }).eq('workspace_id', b.workspace_id)
             await alertBillingOps(service, `billing:orphan-sub:${b.workspace_id}`, 'Downgraded workspace still has a live Paystack subscription', [
@@ -455,44 +331,30 @@ export async function POST(request: NextRequest) {
           entity_id: ws.id, entity_name: ws.agency_name, metadata: { paystack_subscription_disabled: paystackCancelled },
         })
 
-        // FIX (cron audit, section 17 — closing pass): notify the actual
-        // workspace owner (workspaces.created_by) — see the identical fix
-        // and rationale in section 2 above.
-        //
-        // FIX (build, cron/portal audit round): this used to call
-        // sendPaymentFailedEmail({ graceDaysLeft: 0 }) — but that template
-        // is written entirely in future/prescriptive tense ("You have a
-        // 0-day grace period... if not resolved within 0 days, your plan
-        // will be downgraded"), sent AFTER the downgrade two blocks above
-        // has already happened. sendSubscriptionEndedEmail exists
-        // specifically for "the downgrade already happened, tell them
-        // calmly" (see its own comment) and is already used for the
-        // parallel cancelled-subscription case in section 5 below — this
-        // is the same outcome (nonpayment vs. cancellation), so it gets
-        // the same past-tense email instead of a reused pre-downgrade
-        // warning that no longer makes sense once it's already too late.
-        // FIX (deep audit, section 17 follow-up): owner-only was a single
-        // point of failure — see getBillingRecipients above.
         const recipients = await getBillingRecipients(service, ws.id, ws.creator)
         for (const r of recipients) {
           try {
             await sendSubscriptionEndedEmail({
               to: r.email, name: r.name, agencyName: ws.agency_name,
-              upgradeUrl: `${process.env.NEXT_PUBLIC_APP_URL}/settings?tab=billing`,
+              upgradeUrl: `${appUrl}/settings?tab=billing`,
             })
           } catch (e) { console.error('Grace enforcement email failed for', r.email, e) }
         }
-      } catch (e) { console.error('Grace enforcement error:', e) }
+      } catch (e) { run.rowError(`grace enforcement ${b.workspace_id}`, e) }
     }
+  })
 
-    // ── 4b. Retry Paystack cancellations that failed during downgrade ──
-    // (billing.needs_paystack_cancel — see step 4.)
-    const { data: pendingCancels } = await (service as any).from('billing')
-      .select('workspace_id, paystack_subscription_code, paystack_email_token')
-      .eq('needs_paystack_cancel', true)
-      .not('paystack_subscription_code', 'is', null)
-      .limit(50)
-    for (const b of (pendingCancels || [])) {
+  // ── 4b. Retry Paystack cancellations that failed during a downgrade ──────────────────────
+  await run.step('4b paystack cancel retry', async () => {
+    const pendingCancels = await fetchAll<any>('pending paystack cancels select', (from, to) =>
+      (service as any).from('billing')
+        .select('workspace_id, paystack_subscription_code, paystack_email_token')
+        .eq('needs_paystack_cancel', true)
+        .not('paystack_subscription_code', 'is', null)
+        .order('workspace_id')
+        .range(from, to))
+
+    for (const b of pendingCancels) {
       try {
         const r = await cancelPaystackSubscription({
           paystack_subscription_code: b.paystack_subscription_code, paystack_email_token: b.paystack_email_token,
@@ -505,66 +367,52 @@ export async function POST(request: NextRequest) {
             `workspace: ${b.workspace_id}`, `subscription: ${b.paystack_subscription_code}`, `error: ${r.error}`,
           ], 24 * 3600_000)
         }
-      } catch (e) { console.error('Pending Paystack cancel retry error:', e) }
+      } catch (e) { run.rowError(`paystack retry ${b.workspace_id}`, e) }
     }
+  })
 
-    // ── 5. Cancelled subscriptions past their paid period end ──────
-    // FIX (build, cron section): app/api/billing/cancel/route.ts sets
-    // cancels_at_period_end=true and app/api/billing/webhook/route.ts's
-    // subscription.disable handler does the same, but nothing ever
-    // checked "has this cancelled subscription's period actually ended
-    // yet?" current_period_end was stored and then never read anywhere
-    // except display. A workspace that cancelled and simply stopped
-    // paying (no charge is ever attempted, so no charge.success /
-    // invoice.payment_failed webhook fires either way) kept full paid
-    // access indefinitely. This is the missing enforcement step.
-    const { data: cancelledExpired } = await (service as any)
-      .from('billing')
-      .select('workspace_id, current_period_end, workspaces(id,agency_name,plan_tier,deleted_at,created_by,creator:users!workspaces_created_by_fkey(name,email))')
-      .eq('cancels_at_period_end', true)
-      .not('current_period_end', 'is', null)
-      .lt('current_period_end', now.toISOString())
+  // ── 5. Cancelled subscriptions past their paid period end ────────────────────────────────
+  await run.step('5 cancelled subscriptions', async () => {
+    const cancelledExpired = await fetchAll<any>('cancelled subscriptions select', (from, to) =>
+      (service as any).from('billing')
+        .select(`workspace_id, current_period_end, paystack_subscription_code, paystack_customer_code, ${WS_EMBED}`)
+        .eq('cancels_at_period_end', true)
+        .not('current_period_end', 'is', null)
+        .lt('current_period_end', now.toISOString())
+        .order('workspace_id')
+        .range(from, to))
 
-    // FIX (cron audit, section 17 — closing pass): same over-reporting
-    // fix as trialsExpiredCount above — see the note at the return
-    // statement.
-    let cancelledSubscriptionsEndedCount = 0
-    for (const b of (cancelledExpired || [])) {
+    for (const b of cancelledExpired) {
       try {
         const ws = b.workspaces
-        // FIX (build, cron/portal audit round): see the identical note on
-        // section 3 above — this is the exact path that surfaced the gap:
-        // deleting a workspace cancels its Paystack subscription, whose
-        // async subscription.disable webhook then sets
-        // cancels_at_period_end=true — which is precisely what this query
-        // looks for, with no awareness the workspace is already gone.
-        // FIX (Billing re-pass #4): see section 3 above for why the old
-        // `|| ws.plan_tier === 'solo'` skip is gone — a Solo subscriber who
-        // cancels and lets their paid period lapse needs the same
-        // subscription/customer-code cleanup below as any other tier;
-        // without it they kept full paid Solo access indefinitely with a
-        // cancelled subscription nothing ever finished tearing down.
         if (!ws || ws.deleted_at) continue
 
-        // FIX (cron audit, section 17): same missing guard as the grace-
-        // period step above — no re-check that cancels_at_period_end was
-        // still true (and current_period_end still passed) at write time.
-        // A reactivation landing between select and update would still get
-        // downgraded. Guard the billing update itself and only downgrade
-        // the workspace if it actually matched.
-        const { data: guardedBilling } = await (service as any).from('billing')
+        // Claim first (only one run/webhook proceeds; also guards a reactivation landing in between)...
+        const { data: guardedBilling, error: claimErr } = await (service as any).from('billing')
           .update({ cancels_at_period_end: false, paystack_subscription_code: null, paystack_customer_code: null })
           .eq('workspace_id', b.workspace_id)
           .eq('cancels_at_period_end', true)
           .lt('current_period_end', now.toISOString())
           .select('workspace_id')
-
-        if (!guardedBilling?.length) continue // reactivated concurrently — lost the race, nothing to do
+        if (claimErr) throw new Error(claimErr.message)
+        if (!guardedBilling?.length) continue // reactivated concurrently
         cancelledSubscriptionsEndedCount++
 
-        await (service as any).from('workspaces')
+        // ...then downgrade. This write's error used to be ignored: if it failed, the claim above had
+        // already wiped cancels_at_period_end, so nothing would ever select this workspace again and it
+        // kept its paid plan for free indefinitely. (Section 4 had the same fix; this section never got it.)
+        const { error: downgradeErr } = await (service as any).from('workspaces')
           .update({ plan_tier: 'solo', updated_at: now.toISOString() })
           .eq('id', ws.id)
+        if (downgradeErr) {
+          await (service as any).from('billing').update({
+            cancels_at_period_end: true,
+            paystack_subscription_code: b.paystack_subscription_code ?? null,
+            paystack_customer_code: b.paystack_customer_code ?? null,
+          }).eq('workspace_id', b.workspace_id)
+          cancelledSubscriptionsEndedCount--
+          throw new Error(`downgrade failed for ${ws.id}: ${downgradeErr.message}`)
+        }
 
         await insertAuditRow(service, {
           workspace_id: ws.id, actor_id: null,
@@ -574,72 +422,38 @@ export async function POST(request: NextRequest) {
           metadata: { converted_to: 'solo', period_end: b.current_period_end },
         })
 
-        // FIX (cron audit, section 17 — closing pass): notify the actual
-        // workspace owner (workspaces.created_by) — see the identical fix
-        // and rationale in section 2 above.
-        //
-        // FIX (deep audit, section 17 follow-up): owner-only was a single
-        // point of failure — see getBillingRecipients above.
         const recipients = await getBillingRecipients(service, ws.id, ws.creator)
         for (const r of recipients) {
           try {
             await sendSubscriptionEndedEmail({
               to: r.email, name: r.name, agencyName: ws.agency_name,
-              upgradeUrl: `${process.env.NEXT_PUBLIC_APP_URL}/settings?tab=billing`,
+              upgradeUrl: `${appUrl}/settings?tab=billing`,
             })
           } catch (e) { console.error('Cancelled-subscription email failed for', r.email, e) }
         }
-      } catch (e) { console.error('Cancelled-subscription enforcement error:', e) }
+      } catch (e) { run.rowError(`cancelled subscription ${b.workspace_id}`, e) }
     }
+  })
 
-    // ── 6. Housekeeping ────────────────────────────────────
-    // processed_webhook_events and billing_checkouts only ever grew. A
-    // redelivery window is days, not months, so 90 days of finished events
-    // and 7 days of checkouts (the webhook only trusts ones under 24h old)
-    // is generous.
-    {
-      const { error: pruneEventsErr } = await (service as any).from('processed_webhook_events').delete()
-        .eq('status', 'done').lt('processed_at', new Date(now.getTime() - 90 * 86400000).toISOString())
-      if (pruneEventsErr) console.error('Prune processed_webhook_events failed:', pruneEventsErr.message)
-      const { error: pruneCheckoutsErr } = await (service as any).from('billing_checkouts').delete()
-        .lt('created_at', new Date(now.getTime() - 7 * 86400000).toISOString())
-      if (pruneCheckoutsErr) console.error('Prune billing_checkouts failed:', pruneCheckoutsErr.message)
-    }
+  // ── 6. Housekeeping (best-effort) ────────────────────────────────────────────────────────
+  await run.step('6 housekeeping', async () => {
+    const { error: pruneEventsErr } = await (service as any).from('processed_webhook_events').delete()
+      .eq('status', 'done').lt('processed_at', new Date(now.getTime() - 90 * 86400000).toISOString())
+    if (pruneEventsErr) console.error('Prune processed_webhook_events failed:', pruneEventsErr.message)
+    const { error: pruneCheckoutsErr } = await (service as any).from('billing_checkouts').delete()
+      .lt('created_at', new Date(now.getTime() - 7 * 86400000).toISOString())
+    if (pruneCheckoutsErr) console.error('Prune billing_checkouts failed:', pruneCheckoutsErr.message)
+  })
 
-    // FIX (cron audit, section 17 — closing pass): all three counters
-    // below used to report raw fetched-row counts — invoicesOverdue/
-    // trialsExpired/cancelledSubscriptionsEnded counted every row the
-    // initial SELECT matched, including ones later skipped for a payment
-    // landing mid-run, a subscription already on file, grace-period math,
-    // or losing a race to a concurrent invocation. milestonesMarkedOverdue
-    // already counted correctly; reporting what this run actually did
-    // for the other three, not what it merely looked at.
-    await recordCronHeartbeat(service, 'payment-overdue', {
-      milestonesMarkedOverdue, invoicesMarkedOverdue, trialsExpiredCount, cancelledSubscriptionsEndedCount,
-    })
-    return NextResponse.json({
-      ok: true,
-      milestonesMarkedOverdue,
-      invoicesOverdue: invoicesMarkedOverdue,
-      trialsExpired: trialsExpiredCount,
-      cancelledSubscriptionsEnded: cancelledSubscriptionsEndedCount,
-    })
-  } catch (err) {
-    console.error('Payment overdue cron error:', err)
-    await alertCronFailure(createServiceClient(), 'payment-overdue', err).catch(() => {})
-    return NextResponse.json({ error: 'Cron failed' }, { status: 500 })
-  }
+  Object.assign(run.result, {
+    milestonesMarkedOverdue,
+    invoicesOverdue: invoicesMarkedOverdue,
+    trialsExpired: trialsExpiredCount,
+    cancelledSubscriptionsEnded: cancelledSubscriptionsEndedCount,
+  })
+  const { body, status } = await run.finish()
+  return NextResponse.json(body, { status })
 }
 
-// FIX (cron): Vercel Cron Jobs invoke the configured path with a GET
-// request, not POST — every route here only exported POST, so all 6 jobs
-// wired up in vercel.json would 405 the moment Vercel actually triggered
-// them. Exporting GET as an alias makes both invocation paths work.
-//
-// FIX (build, cron/portal audit round): the 3 sub-hourly jobs (sow-stall,
-// co-stall, guardian-health) are now scheduled directly in vercel.json
-// AND kept in .github/workflows/vercel-crons.yml as a redundant trigger
-// (see that file's own comment for why both are kept intentionally) —
-// this comment previously implied GitHub Actions was the only path,
-// which stopped being true once vercel.json picked these three up too.
+// Vercel Cron invokes the configured path with GET; the GitHub Actions backup uses POST.
 export const GET = POST

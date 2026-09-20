@@ -24,6 +24,8 @@ import { isTerminalStatus } from '@/lib/utils/project-status'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
+import { alertCronFailure } from '@/lib/utils/cron-alert'
+import { recordCronHeartbeat } from '@/lib/utils/cron-heartbeat'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { sendGuardianFlagStalledEmail } from '@/lib/email/templates'
@@ -47,11 +49,12 @@ export async function POST(request: NextRequest) {
     // forward on any status change and gets bumped here after a reminder,
     // so a flag that was just touched (or just reminded) won't be picked
     // up again until it's been quiet for the full window again.
-    const { data: stale } = await (service as any)
+    const { data: stale, error: staleErr } = await (service as any)
       .from('guardian_flags')
       .select('id, workspace_id, project_id, status, severity, description, sow_reference, projects(id, name, status, deleted_at, clients(name))')
       .in('status', ['open', 'borderline_review'])
       .lt('updated_at', cutoff)
+    if (staleErr) throw new Error(`guardian-flag-stall select: ${staleErr.message}`)
 
     let reminded = 0
     for (const flag of (stale || [])) {
@@ -112,9 +115,11 @@ export async function POST(request: NextRequest) {
       } catch (e) { console.error('Guardian flag stall error:', e) }
     }
 
+    await recordCronHeartbeat(service, 'guardian-flag-stall', { reminded })
     return NextResponse.json({ ok: true, reminded })
   } catch (err) {
     console.error('Guardian flag stall cron error:', err)
+    await alertCronFailure(createServiceClient(), 'guardian-flag-stall', err).catch(() => {})
     return NextResponse.json({ error: 'Cron failed' }, { status: 500 })
   }
 }

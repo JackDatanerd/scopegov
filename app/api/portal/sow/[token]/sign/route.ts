@@ -496,9 +496,15 @@ async function createMilestones(
       // "Monthly retainer" row for the same month. Setting due_date to
       // the 1st of the signing month gives the cron the same key it
       // computes for itself, closing that gap.
+      // FIX (cron/portal audit round 2): this stamped the FIRST of the signing month. Signed on the 20th, that is a
+      // due date 19 days in the past — payment-overdue then flagged the brand-new milestone "overdue" (and
+      // notified/emailed finance) the next morning, for a contract signed a day earlier. Stamp the signing DAY
+      // instead. The retainer cron no longer keys on the exact date: it counts a month as present when ANY
+      // retainer_monthly row's due_date falls inside it (and migration 063's unique index is per month), so
+      // this row still suppresses a second one for the same month.
       const signedOn = new Date()
-      const firstOfSigningMonth = `${signedOn.getUTCFullYear()}-${String(signedOn.getUTCMonth() + 1).padStart(2, '0')}-01`
-      milestones.push({ title: 'Monthly retainer', amount: roundCurrency(contractValue), trigger: 'Monthly — first of month', type: 'retainer_monthly', percentage: null, dueDate: firstOfSigningMonth })
+      const signingDay = `${signedOn.getUTCFullYear()}-${String(signedOn.getUTCMonth() + 1).padStart(2, '0')}-${String(signedOn.getUTCDate()).padStart(2, '0')}`
+      milestones.push({ title: 'Monthly retainer', amount: roundCurrency(contractValue), trigger: 'Monthly — first of month', type: 'retainer_monthly', percentage: null, dueDate: signingDay })
     } else if (structure === 'milestones') {
       // FIX (section-9 audit, real bug — now genuinely fixed): 'milestones'
       // is a selectable payment structure (the SOW boilerplate literally

@@ -1,10 +1,10 @@
 export const runtime = 'nodejs'
 
 import { markFirstViewed } from '@/lib/utils/client-viewed'
+import { computeContractPosition } from '@/lib/reports/contract-position'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
-import { jwtVerify } from 'jose'
-import { getWorkspaceJwtSecret, isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
+import { resolveInvoiceToken } from '@/lib/documents/invoice-token'
 import { formatAddress } from '@/lib/utils/format'
 
 // GET /api/portal/invoice/[token] — read-only. No pay button, no checkout
@@ -14,67 +14,16 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const { token } = await params
     const service = createServiceClient()
 
-    const { data: revoked } = await (service as any)
-      .from('revoked_tokens').select('id').eq('token', token).single()
-    if (revoked) return NextResponse.json({ error: 'Link no longer active' }, { status: 410 })
-
-    // FIX (doc-completeness audit, finding #3): this query never selected
-    // agency legal_address/tax_id/phone/website, client
-    // billing_address/vat_number, po_number, or milestone_id — so the
-    // page a client actually views (and would file this invoice from) was
-    // missing details the PDF (generated from a separate, more complete
-    // query in app/api/pdf/invoice/[id]/route.ts) already had. Mirrors the
-    // fix already applied to the SOW and CO portal routes.
-    // FIX (section-12 audit, flagship finding): sow_id/co_id/line_items
-    // weren't selected here either — this is the page a client actually
-    // lands on when they open their invoice link (before ever reaching
-    // the PDF), and it never showed the itemized breakdown for an
-    // itemized invoice, nor which SOW/CO the invoice was billed against.
-    // Both /api/pdf/invoice/[id] and /api/portal/invoice/[token]/pdf
-    // already select and render all three; this on-screen view was the
-    // one place that document was less complete than its own PDF.
-    const { data: invoice } = await (service as any)
-      .from('invoices')
-      .select(`id, title, amount, amount_paid, currency, status, due_date, sent_at,
+    const resolved = await resolveInvoiceToken(service, token, `id, title, amount, amount_paid, currency, status, due_date, sent_at,
         payment_instructions, invoice_number, po_number, project_id, milestone_id, workspace_id,
-        subtotal, tax_rate, tax_inclusive, line_items, sow_id, co_id, first_viewed_at, disputed_at, dispute_note,
+        subtotal, tax_rate, tax_inclusive, line_items, sow_id, co_id, first_viewed_at, disputed_at, dispute_note, dispute_resolved_at, dispute_resolution_note,
         projects(id, name, clients(name, company_name, billing_address, vat_number),
           workspaces(agency_name, brand_colour, logo_storage_path,
             legal_address, tax_id, phone, website)),
         sow_documents(document_number), change_orders(document_number, title)`)
-      .eq('token', token).single()
-
-    if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
-    if (invoice.status === 'draft' || invoice.status === 'void')
-      return NextResponse.json({ error: 'This invoice is no longer available' }, { status: 409 })
-
-    // FIX (portal audit, section 18 — closing pass): every SOW and CO
-    // portal route (both the GET/route.ts view and every mutating action)
-    // checks isWorkspaceDeleted right after the document's workspace_id is
-    // known — see that function's own comment in workspace-secret.ts,
-    // which already names "invoice route/dispute/pdf" as covered by that
-    // fix. The invoice GET route never actually got it: a client could
-    // still view live balance/payment-instruction data for a workspace the
-    // agency has deleted. Reuses the same 410 the revoked-token branch
-    // above already returns, matching how sow/co's GET routes reuse their
-    // 'revoked' bucket for the same case — the client doesn't need to be
-    // told specifically that the workspace was deleted, just that the
-    // link isn't live. Checked before JWT verify, same order sow/co's GET
-    // routes use.
-    if (await isWorkspaceDeleted(service, invoice.workspace_id))
-      return NextResponse.json({ error: 'Link no longer active' }, { status: 410 })
-
+    if (!resolved.ok) return NextResponse.json({ error: resolved.error }, { status: resolved.status })
+    const invoice = resolved.invoice
     const workspace = invoice.projects?.workspaces
-    // jwt_secret lives in workspace_secrets now, not on workspaces itself —
-    // see migration 013.
-    try {
-      const jwtSecret = await getWorkspaceJwtSecret(service, invoice.workspace_id)
-      if (!jwtSecret) throw new Error('no secret')
-      const secret = new TextEncoder().encode(jwtSecret)
-      await jwtVerify(token, secret)
-    } catch {
-      return NextResponse.json({ error: 'Invalid or expired link' }, { status: 401 })
-    }
 
     // FEATURE (portal audit, section 18): first time this invoice is
     // actually opened — mirrors the identical fix on the SOW and CO portal
@@ -103,22 +52,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       milestoneTrigger = milestone?.trigger || null
     }
 
+    // Computed LIVE (lib/reports/contract-position.ts), not read from the nightly snapshot: the snapshot
+    // can never include the invoice being rendered right now, and mis-stated retainers.
     let contractPosition: { contractedValue: number; invoicedToDate: number; paidToDate: number } | null = null
     if (invoice.project_id) {
-      const { data: snapshot } = await (service as any)
-        .from('contract_reconciliation_snapshots')
-        .select('contracted_value, invoiced_to_date, paid_to_date')
-        .eq('project_id', invoice.project_id)
-        .order('snapshot_date', { ascending: false })
-        .limit(1)
-        .maybeSingle()
-      if (snapshot) {
-        contractPosition = {
-          contractedValue: snapshot.contracted_value || 0,
-          invoicedToDate:  snapshot.invoiced_to_date || 0,
-          paidToDate:      snapshot.paid_to_date || 0,
-        }
-      }
+      const position = await computeContractPosition(service, invoice.project_id)
+      if (position) contractPosition = { contractedValue: position.contractedValue, invoicedToDate: position.invoicedToDate, paidToDate: position.paidToDate }
     }
 
     const { data: payments } = await (service as any)
@@ -156,6 +95,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         // of re-offering the dispute form.
         disputedAt: invoice.disputed_at || null,
         disputeNote: invoice.dispute_note || null,
+        disputeResolvedAt: invoice.dispute_resolved_at || null,
+        disputeResolutionNote: invoice.dispute_resolution_note || null,
         lineItems: typeof invoice.line_items === 'string' ? JSON.parse(invoice.line_items) : (invoice.line_items || []),
         projectName: invoice.projects?.name,
         clientName: invoice.projects?.clients?.name,

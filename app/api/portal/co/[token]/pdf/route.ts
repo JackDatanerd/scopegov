@@ -1,5 +1,7 @@
 export const runtime = 'nodejs'
 
+import { checkPortalRateLimit, recordPortalAction } from '@/lib/utils/portal-rate-limit'
+import { getClientIp } from '@/lib/utils/request-ip'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { jwtVerify } from 'jose'
@@ -25,6 +27,11 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   try {
     const { token } = await params
     const service = createServiceClient()
+    // Read-only but CPU-heavy: throttle per IP so a loop of PDF requests can't burn function time.
+    const clientIp = getClientIp(request)
+    const rl = await checkPortalRateLimit(service, clientIp, 'co.pdf')
+    if (!rl.allowed) return NextResponse.json({ error: rl.message }, { status: 429 })
+    await recordPortalAction(service, clientIp, 'co.pdf')
 
     const { data: revoked } = await (service as any)
       .from('revoked_tokens').select('reason, document_id').eq('token', token).single()

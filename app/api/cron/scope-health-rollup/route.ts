@@ -5,6 +5,8 @@ export const maxDuration = 300
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
+import { alertCronFailure } from '@/lib/utils/cron-alert'
+import { recordCronHeartbeat } from '@/lib/utils/cron-heartbeat'
 import { computeScopeHealth } from '@/lib/reports/scope-health'
 
 // Persists the day's scope-health snapshot (history / trend). The numbers
@@ -51,12 +53,18 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    if (errors.length > 0) {
+      await alertCronFailure(service, 'scope-health-rollup', new Error(
+        `${errors.length} workspace(s) failed: ` + errors.slice(0, 10).map(e => `${e.workspaceId}: ${e.error}`).join(' | '))).catch(() => {})
+    }
+    await recordCronHeartbeat(service, 'scope-health-rollup', { processed, failed: errors.length })
     return NextResponse.json(
       { ok: errors.length === 0, processed, failed: errors.length, errors },
       { status: errors.length ? 207 : 200 },
     )
   } catch (err) {
     console.error('Scope-health rollup cron error:', err)
+    await alertCronFailure(createServiceClient(), 'scope-health-rollup', err).catch(() => {})
     return NextResponse.json({ error: 'Cron failed' }, { status: 500 })
   }
 }

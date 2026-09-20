@@ -26,6 +26,8 @@ export const maxDuration = 300
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
+import { alertCronFailure } from '@/lib/utils/cron-alert'
+import { recordCronHeartbeat } from '@/lib/utils/cron-heartbeat'
 import { fetchPaystackSubscription } from '@/lib/integrations/paystack'
 import { alertBillingOps } from '@/lib/billing/ops-alert'
 import { insertAuditRow } from '@/lib/utils/audit'
@@ -103,9 +105,11 @@ export async function POST(request: NextRequest) {
       await alertBillingOps(service, 'billing:reconcile-anomalies', `${anomalies.length} billing anomal${anomalies.length === 1 ? 'y' : 'ies'} found by reconciliation`, anomalies, 23 * 3600_000)
     }
 
+    await recordCronHeartbeat(service, 'billing-reconcile', { checked, repaired, anomalies: anomalies.length, readErrors })
     return NextResponse.json({ ok: true, checked, repaired, anomalies: anomalies.length, readErrors })
   } catch (err) {
     console.error('Billing reconcile cron error:', err)
+    await alertCronFailure(createServiceClient(), 'billing-reconcile', err).catch(() => {})
     return NextResponse.json({ error: 'Cron failed' }, { status: 500 })
   }
 }

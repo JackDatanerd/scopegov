@@ -359,8 +359,10 @@ export async function sendSowDeclinedEmail(params: {
 export async function sendSowStalledEmail(params: {
   to: string[]; clientName: string; projectName: string
   daysSinceSent: number; projectUrl: string
+  /** e.g. "They have not opened it yet." / "They opened it on 3 Mar 2026." (from first_viewed_at) */
+  viewedNote?: string
 }) {
-  const { to, clientName: clientNameRaw, projectName: projectNameRaw, daysSinceSent, projectUrl } = params
+  const { to, clientName: clientNameRaw, projectName: projectNameRaw, daysSinceSent, projectUrl, viewedNote } = params
   const clientName  = escapeHtml(clientNameRaw)
   const projectName = escapeHtml(projectNameRaw)
 
@@ -372,7 +374,7 @@ export async function sendSowStalledEmail(params: {
     body: `
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
         The Statement of Work for <strong>${projectName}</strong> has been awaiting <strong>${clientName}</strong>'s
-        signature for over ${daysSinceSent} days with no response.
+        signature for over ${daysSinceSent} days with no response.${viewedNote ? ` <strong>${escapeHtml(viewedNote)}</strong>` : ''}
       </p>
       <p style="font-size:13px;color:${C.text2};margin:0;">
         Worth a follow-up — you can send a reminder or check in directly from the project page.
@@ -825,8 +827,10 @@ export async function sendCoEmail(params: {
 export async function sendCoStalledEmail(params: {
   to: string[]; clientName: string; projectName: string; coTitle: string
   daysSinceSent: number; projectUrl: string
+  /** e.g. "They have not opened it yet." / "They opened it on 3 Mar 2026." (from first_viewed_at) */
+  viewedNote?: string
 }) {
-  const { to, clientName: clientNameRaw, projectName: projectNameRaw, coTitle: coTitleRaw, daysSinceSent, projectUrl } = params
+  const { to, clientName: clientNameRaw, projectName: projectNameRaw, coTitle: coTitleRaw, daysSinceSent, projectUrl, viewedNote } = params
   const clientName  = escapeHtml(clientNameRaw)
   const projectName = escapeHtml(projectNameRaw)
   const coTitle     = escapeHtml(coTitleRaw)
@@ -839,7 +843,7 @@ export async function sendCoStalledEmail(params: {
     body: `
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
         The change order <strong>${coTitle}</strong> on <strong>${projectName}</strong> has been awaiting
-        <strong>${clientName}</strong>'s response for over ${daysSinceSent} days with no reply.
+        <strong>${clientName}</strong>'s response for over ${daysSinceSent} days with no reply.${viewedNote ? ` <strong>${escapeHtml(viewedNote)}</strong>` : ''}
       </p>
       <p style="font-size:13px;color:${C.text2};margin:0;">
         Worth a follow-up — you can send a reminder or escalate directly from the project page.
@@ -2092,4 +2096,106 @@ export async function sendProjectAssignedEmail(params: {
     cta: 'Open project →',
   })
   return deliver({ from: systemFrom(), to, subject: `You were added to ${projectRaw}`, html })
+}
+
+// ── Cron/portal audit round 2 ─────────────────────────────────────
+
+// Client-facing automatic nudge for an unsigned SOW or an unanswered change order (cron/client-reminders).
+// (Invoices reuse sendInvoiceReminderEmail.) Mirrors the wording of the manual "Remind" buttons.
+export async function sendClientDocumentReminderEmail(params: {
+  replyTo?: string | null; log?: EmailLogContext
+  kind: 'sow' | 'co'
+  to: string; cc?: string[]; clientName: string; agencyName: string
+  projectName: string; documentTitle?: string | null
+  portalUrl: string; brandColour?: string; expiresAt?: string | null
+  /** 'awaiting_countersignature' COs need a signature on the agreed counter amount, not a first answer. */
+  needsCountersignature?: boolean
+}) {
+  const { kind, to, cc, clientName: clientNameRaw, agencyName: agencyNameRaw, projectName: projectNameRaw,
+    documentTitle: documentTitleRaw, portalUrl, brandColour, expiresAt, needsCountersignature } = params
+  const clientName    = escapeHtml(clientNameRaw)
+  const agencyName    = escapeHtml(agencyNameRaw)
+  const projectName   = escapeHtml(projectNameRaw)
+  const documentTitle = escapeHtml(documentTitleRaw)
+
+  const isSow = kind === 'sow'
+  const headline = isSow ? 'Your agreement is waiting to be signed'
+    : needsCountersignature ? 'A change order needs your signature' : 'A change order is waiting for your response'
+  const what = isSow
+    ? `your Statement of Work for <strong>${projectName}</strong>`
+    : `the change order${documentTitle ? ` <strong>${documentTitle}</strong>` : ''} on <strong>${projectName}</strong>`
+  const status = isSow ? 'is still awaiting your signature'
+    : needsCountersignature ? 'is ready for your signature' : 'is still awaiting your response'
+
+  const html = baseTemplate({
+    agencyName,
+    headerColour: brandColour || C.green,
+    label: 'Reminder',
+    headline,
+    body: `
+      <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${clientName},</p>
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        A friendly reminder from <strong>${agencyName}</strong> that ${what} ${status}.
+      </p>
+      ${expiresAt ? `<p style="font-size:12px;color:${C.text3};margin:0 0 16px;">This link expires ${new Date(expiresAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}.</p>` : ''}
+    `,
+    cta: isSow ? 'Review & sign →' : needsCountersignature ? 'Review & sign →' : 'Review & respond →',
+    ctaUrl: portalUrl,
+  })
+
+  return deliver({
+    from:    formatFrom(agencyNameRaw),
+    replyTo: params.replyTo,
+    to,
+    cc:      cc?.filter(Boolean) || [],
+    subject: `Reminder: ${isSow ? `please review and sign the ${projectNameRaw} agreement`
+      : `${documentTitleRaw || 'change order'} — ${projectNameRaw}`}`,
+    html,
+  }, params.log)
+}
+
+// Sent to the client when the agency closes out an invoice dispute (api/invoices/[id]/dispute-resolve).
+export async function sendInvoiceDisputeResolvedEmail(params: {
+  replyTo?: string | null; log?: EmailLogContext
+  to: string; cc?: string[]; clientName: string; agencyName: string
+  projectName: string; invoiceNumber?: string | null; note?: string | null
+  portalUrl: string; brandColour?: string
+}) {
+  const { to, cc, clientName: clientNameRaw, agencyName: agencyNameRaw, projectName: projectNameRaw,
+    invoiceNumber, note: noteRaw, portalUrl, brandColour } = params
+  const clientName  = escapeHtml(clientNameRaw)
+  const agencyName  = escapeHtml(agencyNameRaw)
+  const projectName = escapeHtml(projectNameRaw)
+  const note        = escapeHtml(noteRaw)
+
+  const html = baseTemplate({
+    agencyName,
+    headerColour: brandColour || C.green,
+    label: 'Invoice query',
+    headline: 'Your invoice question has been answered',
+    body: `
+      <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${clientName},</p>
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        <strong>${agencyName}</strong> has reviewed the question you raised on invoice${invoiceNumber ? ` ${invoiceNumber}` : ''}
+        for <strong>${projectName}</strong> and marked it resolved.
+      </p>
+      ${note ? `
+      <div style="background:${C.bg};border:1px solid ${C.border};border-radius:6px;padding:14px 16px;margin:16px 0;">
+        <p style="font-size:11px;color:${C.text3};text-transform:uppercase;letter-spacing:.05em;margin:0 0 6px;">Their response</p>
+        <p style="font-size:13px;color:${C.text2};margin:0;line-height:1.6;white-space:pre-line;">${note}</p>
+      </div>` : ''}
+      <p style="font-size:13px;color:${C.text2};margin:0;">If anything is still unclear you can raise it again from the invoice page.</p>
+    `,
+    cta: 'View invoice →',
+    ctaUrl: portalUrl,
+  })
+
+  return deliver({
+    from:    formatFrom(agencyNameRaw),
+    replyTo: params.replyTo,
+    to,
+    cc:      cc?.filter(Boolean) || [],
+    subject: `Your question on invoice${invoiceNumber ? ` ${invoiceNumber}` : ''} — ${projectNameRaw}`,
+    html,
+  }, params.log)
 }

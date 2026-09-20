@@ -43,6 +43,10 @@ export async function renewInvoiceTokenIfExpired(
 
   const jwtSecret = await getWorkspaceJwtSecret(service, workspaceId)
   if (!jwtSecret) return { renewed: false }
+
+  // The token the client's emailed link actually contains — about to be overwritten below.
+  const { data: before } = await (service as any).from('invoices').select('token').eq('id', invoiceId).maybeSingle()
+  const oldToken: string | null = before?.token ?? null
   const secret    = new TextEncoder().encode(jwtSecret)
   const expiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000)
   const token     = await new SignJWT({
@@ -64,5 +68,17 @@ export async function renewInvoiceTokenIfExpired(
     .select('id')
 
   if (!updated?.length) return { renewed: false }
+
+  // FIX (cron/portal audit round 2): the old token used to simply vanish, so the client's emailed link
+  // 404'd forever and nothing ever delivered them the new one — "the portal link keeps working" was only
+  // true for a link nobody had. Record the old token as superseded (document_id = this invoice) so
+  // lib/documents/invoice-token.ts keeps resolving it to the same live invoice.
+  if (oldToken && oldToken !== token) {
+    const { error: revokeErr } = await (service as any).from('revoked_tokens').insert({
+      token: oldToken, token_type: 'invoice', reason: 'superseded', document_id: invoiceId,
+    })
+    if (revokeErr && (revokeErr as any).code !== '23505')
+      console.error('Invoice token renewal: could not record superseded token (old link will 404):', revokeErr.message)
+  }
   return { renewed: true, token }
 }

@@ -1,129 +1,136 @@
 export const runtime = 'nodejs'
-// FEATURE (cron audit, section 17 — feature gap, closing pass): the
-// anonymization loop below has no pagination — bringing this to parity
-// with payment-overdue/reconciliation-rollup rather than waiting for a
-// large deleted-user backlog to actually hit the platform default first.
+// Anonymization is one sequential auth-admin round trip per user — same unbounded shape
+// payment-overdue carries this override for.
 export const maxDuration = 300
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
-import { alertCronFailure } from '@/lib/utils/cron-alert'
-import { recordCronHeartbeat } from '@/lib/utils/cron-heartbeat'
+import { CronRun, fetchAll } from '@/lib/utils/cron-run'
+import { anonymizeAuthUser, anonymizedEmail, banAuthUser, isAuthUserBanned } from '@/lib/utils/account-erasure'
 
-// FIX (audit round 3): local copy replaced with the shared,
-// null-safe helper — see lib/utils/verify-cron.ts.
+const DAY = 86400000
 
+// Daily housekeeping: invite expiry/purge, token + rate-limit retention, and the 30-day account-erasure
+// sweep. (Notification retention lives in cron/notification-cleanup.) Each part is an independent step (see lib/utils/cron-run.ts).
 export async function POST(request: NextRequest) {
   if (!verifyCronSecret(request))
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  try {
-    const service  = createServiceClient()
-    const now      = new Date()
-    const d30ago   = new Date(now.getTime() - 30 * 86400000).toISOString()
+  const service = createServiceClient()
+  const run = new CronRun(service, 'invite-cleanup')
+  const now = new Date()
+  const iso = (daysAgo: number) => new Date(now.getTime() - daysAgo * DAY).toISOString()
+  let purgedInvites = 0, anonymized = 0, bannedLegacy = 0, skippedActive = 0
 
-    // FIX (re-audit, cron section): the previous fix here claimed to flip
-    // status to 'expired' "the moment the 7-day token window closes" but
-    // actually compared invite_token_expires_at against d7ago (now minus
-    // 7 days) instead of now. Since invite_token_expires_at is itself
-    // already created_at + 7 days (team/invite/route.ts), that comparison
-    // only tripped once created_at + 7 days < now - 7 days — i.e.
-    // created_at < now - 14 days. Invites sat at status='invited' for a
-    // full 14 days after creation (double the intended 7) before this
-    // ever ran, still showing "Pending" in the team UI and still blocking
-    // a re-invite of the same email for a week longer than intended,
-    // since the pending-invite uniqueness check in team/invite/route.ts
-    // only looks at status='invited' with no expiry awareness of its own.
-    // Comparing directly against `now` (the token's own actual expiry)
-    // is what "the moment the window closes" actually requires.
-    const { error: expireErr } = await (service as any)
-      .from('workspace_members')
+  // 1. Expire invites whose token has lapsed.
+  await run.step('expire invites', async () => {
+    const { error } = await (service as any).from('workspace_members')
       .update({ status: 'expired' })
       .eq('status', 'invited')
       .lt('invite_token_expires_at', now.toISOString())
-    if (expireErr) console.error('Invite expiry transition failed:', expireErr)
+    if (error) throw new Error(error.message)
+  })
 
-    // Hard-delete invite rows (invited or already-expired) older than 30 days
-    const { data: purged, error: purgeErr } = await (service as any)
-      .from('workspace_members')
+  // 2. Hard-delete invites that expired more than 30 days ago (nothing references an invited-only row).
+  await run.step('purge stale invites', async () => {
+    const { data, error } = await (service as any).from('workspace_members')
       .delete()
       .in('status', ['invited', 'expired'])
-      .lt('invite_token_expires_at', d30ago)
+      .lt('invite_token_expires_at', iso(30))
       .select('id')
-    if (purgeErr) console.error('Invite purge failed:', purgeErr)
+    if (error) throw new Error(error.message)
+    purgedInvites = data?.length || 0
+  })
 
-    // revoked_tokens cleanup (purge rows older than 60 days)
-    const d60ago = new Date(now.getTime() - 60 * 86400000).toISOString()
-    const { error: revokedErr } = await (service as any).from('revoked_tokens')
-      .delete()
-      .lt('revoked_at', d60ago)
-    if (revokedErr) console.error('revoked_tokens cleanup failed:', revokedErr)
+  // 3. Revoked-token retention. These rows are not just a blocklist: a 'superseded' row is what lets a
+  // client's ORIGINAL emailed link keep resolving to their finished document (the live token was
+  // rotated on signing), and 'declined'/'expired'/'withdrawn' rows are the only source of the precise
+  // state once the token column is nulled. The old blanket 60-day purge turned every such link into
+  // "invalid" two months after the fact. Signed-document links are meant to last (post-signing tokens
+  // live 2 years), so 'superseded' rows are kept well past that; the rest for ~13 months.
+  await run.step('prune revoked_tokens', async () => {
+    const a = await (service as any).from('revoked_tokens').delete()
+      .eq('reason', 'superseded').lt('revoked_at', iso(800))
+    if (a.error) throw new Error(a.error.message)
+    const b = await (service as any).from('revoked_tokens').delete()
+      .neq('reason', 'superseded').lt('revoked_at', iso(400))
+    if (b.error) throw new Error(b.error.message)
+  })
 
-    // FEATURE (portal audit, section 18 — traced into section 17): migration
-    // 030 added portal_action_log with an index on created_at clearly meant
-    // for exactly this kind of housekeeping, but nothing ever purged it —
-    // every portal sign/decline/accept/counter attempt (successful or not)
-    // accumulated forever. Same 60-day window as revoked_tokens just above;
-    // the rate limiter itself only ever looks back 10 minutes, so nothing
-    // past a couple of days old still matters for its own purpose.
-    const { error: portalLogErr } = await (service as any).from('portal_action_log')
-      .delete()
-      .lt('created_at', d60ago)
-    if (portalLogErr) console.error('portal_action_log cleanup failed:', portalLogErr)
+  // 4. Rate-limit log (windows are minutes-to-hours; 30 days is generous).
+  await run.step('prune portal_action_log', async () => {
+    const { error } = await (service as any).from('portal_action_log').delete().lt('created_at', iso(30))
+    if (error) throw new Error(error.message)
+  })
 
-    // User anonymization (deletedAt < now - 30 days)
-    // FIX (cron audit, section 17 — closing pass): this had no exclusion for
-    // users already anonymized — every run re-selected and re-wrote every
-    // deleted-30-days-plus user forever, since deleted_at is never cleared
-    // and nothing marked a row as already processed. Idempotent (the same
-    // values get written again), so harmless in effect, but the query and
-    // update set grow without bound for as long as the product exists, for
-    // zero benefit. Excluding rows whose email already matches the
-    // anonymized pattern this same function writes stops the re-processing
-    // without needing a new column.
-    const { data: toAnonymize } = await (service as any)
-      .from('users')
-      .select('id')
-      .not('deleted_at', 'is', null)
-      .lt('deleted_at', d30ago)
-      .not('email', 'like', 'deleted-%@deleted.scopegov.app')
-
-    let anonymized = 0
-    for (const u of (toAnonymize || [])) {
+  // 5a. Accounts deleted BEFORE deletion started banning the auth user are still able to sign in for
+  // the rest of their 30-day window. Ban any that aren't (idempotent; only newly-banned are counted).
+  await run.step('ban recently-deleted accounts', async () => {
+    const recent = await fetchAll<any>('recently deleted users select', (from, to) =>
+      (service as any).from('users').select('id')
+        .not('deleted_at', 'is', null)
+        .gte('deleted_at', iso(30))
+        .order('id').range(from, to))
+    for (const u of recent) {
       try {
-        await (service as any).from('users').update({
-          email:        `deleted-${u.id}@deleted.scopegov.app`,
+        const banned = await isAuthUserBanned(service, u.id)
+        if (banned !== false) continue // already banned, or couldn't tell — leave it
+        const r = await banAuthUser(service, u.id)
+        if (!r.ok) throw new Error(r.error)
+        bannedLegacy++
+      } catch (e) { run.rowError(`ban ${u.id}`, e) }
+    }
+  })
+
+  // 5b. Erasure at day 30: auth record first, then the profile row. If the auth step fails the profile
+  // row is left untouched so tomorrow's run retries (the row still matches the query).
+  await run.step('anonymize deleted accounts', async () => {
+    const candidates = await fetchAll<any>('anonymization candidates select', (from, to) =>
+      (service as any).from('users').select('id')
+        .not('deleted_at', 'is', null)
+        .lt('deleted_at', iso(30))
+        .not('email', 'like', 'deleted-%@deleted.scopegov.app')
+        .order('id').range(from, to))
+
+    // Never scrub someone who is currently an active member of a workspace: that is a live person whose
+    // stale deleted_at was never cleared, and anonymizing them turns their name into "[Deleted user]" and
+    // their notification/billing email into a dead address. Skip and log — a human should look.
+    const active = new Set<string>()
+    for (let i = 0; i < candidates.length; i += 100) {
+      const ids = candidates.slice(i, i + 100).map((c: any) => c.id)
+      const rows = await fetchAll<any>('active memberships select', (from, to) =>
+        (service as any).from('workspace_members').select('id, user_id')
+          .in('user_id', ids).eq('status', 'active').order('id').range(from, to))
+      rows.forEach((r: any) => active.add(r.user_id))
+    }
+
+    for (const u of candidates) {
+      try {
+        if (active.has(u.id)) {
+          skippedActive++
+          console.warn(`[invite-cleanup] user ${u.id} has deleted_at set but is an active workspace member — NOT anonymized; review manually`)
+          continue
+        }
+        const auth = await anonymizeAuthUser(service, u.id)
+        if (!auth.ok) throw new Error(`auth anonymization failed: ${auth.error}`)
+
+        const { error } = await (service as any).from('users').update({
+          email:        anonymizedEmail(u.id),
           name:         '[Deleted user]',
           avatar_url:   null,
           updated_at:   now.toISOString(),
         }).eq('id', u.id)
+        if (error) throw new Error(error.message)
         anonymized++
-      } catch (e) { console.error('Anonymization failed for:', u.id, e) }
+      } catch (e) { run.rowError(`anonymize ${u.id}`, e) }
     }
+  })
 
-    await recordCronHeartbeat(service, 'invite-cleanup', { purgedInvites: purged?.length || 0, anonymizedUsers: anonymized })
-    return NextResponse.json({
-      ok: true,
-      purgedInvites: purged?.length || 0,
-      anonymizedUsers: anonymized,
-    }, { status: (expireErr || purgeErr || revokedErr || portalLogErr) ? 207 : 200 })
-  } catch (err) {
-    console.error('Cleanup cron error:', err)
-    await alertCronFailure(createServiceClient(), 'invite-cleanup', err).catch(() => {})
-    return NextResponse.json({ error: 'Cron failed' }, { status: 500 })
-  }
+  Object.assign(run.result, { purgedInvites, anonymizedUsers: anonymized, bannedLegacy, skippedActiveMembers: skippedActive })
+  const { body, status } = await run.finish()
+  return NextResponse.json(body, { status })
 }
 
-// FIX (cron): Vercel Cron Jobs invoke the configured path with a GET
-// request, not POST — every route here only exported POST, so all 6 jobs
-// wired up in vercel.json would 405 the moment Vercel actually triggered
-// them. Exporting GET as an alias makes both invocation paths work.
-//
-// FIX (build, cron/portal audit round): the 3 sub-hourly jobs (sow-stall,
-// co-stall, guardian-health) are now scheduled directly in vercel.json
-// AND kept in .github/workflows/vercel-crons.yml as a redundant trigger
-// (see that file's own comment for why both are kept intentionally) —
-// this comment previously implied GitHub Actions was the only path,
-// which stopped being true once vercel.json picked these three up too.
+// Vercel Cron invokes the configured path with GET; the GitHub Actions backup uses POST.
 export const GET = POST

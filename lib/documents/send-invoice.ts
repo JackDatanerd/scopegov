@@ -15,6 +15,7 @@
 // checks, no approval-gate logic, no due-date/payment-instructions
 // completeness validation. Callers are responsible for all of that.
 
+import { computeContractPosition } from '@/lib/reports/contract-position'
 import { SignJWT } from 'jose'
 import { nanoid } from 'nanoid'
 import { sendInvoiceEmail, sendInvoiceSentInternalEmail } from '@/lib/email/templates'
@@ -116,22 +117,12 @@ export async function sendInvoiceDocument(service: any, params: {
 
   const portalUrl = `${process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL}/portal/invoice/${token}`
 
+  // Computed LIVE (lib/reports/contract-position.ts), not read from the nightly snapshot: the snapshot
+  // can never include the invoice being rendered right now, and mis-stated retainers.
   let contractPosition: { contractedValue: number; invoicedToDate: number; paidToDate: number } | null = null
   if (invoice.project_id) {
-    const { data: snapshot } = await (service as any)
-      .from('contract_reconciliation_snapshots')
-      .select('contracted_value, invoiced_to_date, paid_to_date')
-      .eq('project_id', invoice.project_id)
-      .order('snapshot_date', { ascending: false })
-      .limit(1)
-      .maybeSingle()
-    if (snapshot) {
-      contractPosition = {
-        contractedValue: snapshot.contracted_value || 0,
-        invoicedToDate:  snapshot.invoiced_to_date || 0,
-        paidToDate:      snapshot.paid_to_date || 0,
-      }
-    }
+    const position = await computeContractPosition(service, invoice.project_id)
+    if (position) contractPosition = { contractedValue: position.contractedValue, invoicedToDate: position.invoicedToDate, paidToDate: position.paidToDate }
   }
 
   let pdfAttachment: { filename: string; content: string } | undefined

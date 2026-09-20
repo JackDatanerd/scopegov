@@ -22,7 +22,12 @@ export async function getSession(): Promise<SessionUser | null> {
     // that membership; fall back to the oldest active membership if it's
     // unset or stale (e.g. points to a workspace they're no longer in).
     const { data: userRow } = await (service as any)
-      .from('users').select('active_workspace_id').eq('id', user.id).maybeSingle()
+      .from('users').select('active_workspace_id, deleted_at').eq('id', user.id).maybeSingle()
+
+    // FIX (cron/portal audit round 2): a soft-deleted account is never a valid session. Nothing used to
+    // check deleted_at anywhere, so a deleted user's still-valid JWT (or, before deletion started banning
+    // the auth user, their password) kept working. Belt-and-braces with the ban in account/delete.
+    if (userRow?.deleted_at) return null
 
     // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — defense
     // in depth): neither query below used to select workspaces.deleted_at

@@ -44,6 +44,7 @@
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { logAudit } from '@/lib/utils/audit'
+import { banAuthUser } from '@/lib/utils/account-erasure'
 
 const LEAVE_ERROR_MESSAGES: Record<string, string> = {
   // Same copy as app/api/workspace/leave/route.ts's per-code messages —
@@ -126,9 +127,22 @@ export async function DELETE(request: NextRequest) {
       }, { status: 409 })
     }
 
-    await (service as any).from('users')
+    const { error: markErr } = await (service as any).from('users')
       .update({ deleted_at: new Date().toISOString(), active_workspace_id: null })
       .eq('id', user.id)
+    if (markErr) {
+      console.error('Account deletion: could not mark user deleted:', markErr)
+      return NextResponse.json({ error: 'Could not delete your account — please try again.' }, { status: 500 })
+    }
+
+    // FIX (cron/portal audit round 2): the auth record used to be left completely intact — the "deleted"
+    // person could sign straight back in with the same credentials (nothing checks deleted_at at login)
+    // and even create/join a workspace, after which the day-30 sweep anonymized a live member. Ban the
+    // auth user now so the account really is closed, and end every session. (cron/invite-cleanup also
+    // bans any account that slipped through here, then anonymizes the auth record itself at day 30.)
+    const banned = await banAuthUser(service, user.id)
+    if (!banned.ok) console.error('Account deletion: auth ban failed (cron sweep will retry):', banned.error)
+    try { await supabase.auth.signOut({ scope: 'global' }) } catch (e) { console.error('Account deletion: sign-out failed:', e) }
 
     return NextResponse.json({ ok: true })
   } catch (err) {

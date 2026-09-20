@@ -1,4 +1,5 @@
 import { createServiceClient } from '@/lib/supabase/server'
+import { parseRenewalTerm } from '@/lib/documents/renewal-term'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
@@ -89,7 +90,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const body = await request.json().catch(() => null)
     if (!body || typeof body !== 'object')
       return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
-    const { note, lineItems, taxRate, taxInclusive, isRetainerRenewal } = body
+    const { note, lineItems, taxRate, taxInclusive, isRetainerRenewal, renewalTermMonths } = body
 
     const parsedFields = parseCoFields(body)
     if (!parsedFields.ok) return NextResponse.json({ error: parsedFields.error }, { status: 400 })
@@ -97,6 +98,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       return NextResponse.json({ error: 'note must be text' }, { status: 400 })
     if (isRetainerRenewal !== undefined && typeof isRetainerRenewal !== 'boolean')
       return NextResponse.json({ error: 'isRetainerRenewal must be true or false' }, { status: 400 })
+    const renewalTerm = parseRenewalTerm(renewalTermMonths)
+    if (!renewalTerm.ok) return NextResponse.json({ error: renewalTerm.error }, { status: 400 })
     if (lineItems !== undefined && !Array.isArray(lineItems))
       return NextResponse.json({ error: 'lineItems must be a list' }, { status: 400 })
 
@@ -109,6 +112,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (parsedFields.fields.timelineImpactDays !== undefined) update.timeline_impact_days = parsedFields.fields.timelineImpactDays
     if (note !== undefined)               update.note = sanitizeRichTextOrNull(note)
     if (isRetainerRenewal !== undefined)  update.is_retainer_renewal = isRetainerRenewal
+    // The term only means something on a renewal: un-ticking the box clears it.
+    if (isRetainerRenewal === false)      update.renewal_term_months = null
+    else if (renewalTermMonths !== undefined) update.renewal_term_months = renewalTerm.value
 
     if (lineItems !== undefined || taxRate !== undefined || taxInclusive !== undefined) {
       const totals = computeCoTotals(

@@ -84,9 +84,16 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // Revoke the portal token, same pattern as SOW/CO withdraw — the client
     // link should stop resolving once an invoice is voided.
     if (invoice.token) {
-      await (service as any).from('revoked_tokens').insert({
-        token: invoice.token, token_type: 'invoice', revoked_by: session.id, reason: reason || 'voided',
+      // FIX (cron/portal audit round 2): this used `reason: reason || 'voided'` — the agency's FREE TEXT (or
+      // 'voided'), which the table's CHECK constraint (withdrawn/declined/superseded/manual/expired) rejects,
+      // and token_type 'invoice' was rejected too (migration 063 allows it). The insert failed on every void
+      // and the error was never read. 'manual' is the correct revocation reason; the agency's own reason is
+      // already in the invoice/audit record.
+      const { error: revokeErr } = await (service as any).from('revoked_tokens').insert({
+        token: invoice.token, token_type: 'invoice', revoked_by: session.id, reason: 'manual', document_id: invoice.id,
       })
+      if (revokeErr && (revokeErr as any).code !== '23505')
+        console.error('Invoice void: could not revoke the portal token (status check still blocks the link):', revokeErr.message)
     }
 
     // If this invoice had put the milestone in 'invoiced', revert it to

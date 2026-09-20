@@ -1,10 +1,6 @@
 export const runtime = 'nodejs'
-// FEATURE (cron audit, section 17 — feature gap, closing pass): this loops
-// per stale approval request with no pagination, the same unbounded-fan-
-// out shape payment-overdue and reconciliation-rollup already carry an
-// explicit override for — see either file's own comment for the full
-// reasoning. Brought to parity rather than waiting for this one to
-// actually time out first.
+// Loops per stale approval request — same unbounded-fan-out shape payment-overdue and
+// reconciliation-rollup carry this override for.
 export const maxDuration = 300
 
 import { createServiceClient } from '@/lib/supabase/server'
@@ -13,76 +9,59 @@ import { sendApprovalReminder, documentLabelFor } from '@/lib/approvals/engine'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { APPROVAL_STALL_DAYS } from '@/lib/utils/attention'
-import { alertCronFailure } from '@/lib/utils/cron-alert'
-import { recordCronHeartbeat } from '@/lib/utils/cron-heartbeat'
-
 import { insertAuditRow } from '@/lib/utils/audit'
-// FIX (audit round 3): local copy replaced with the shared,
-// null-safe helper — see lib/utils/verify-cron.ts.
+import { CronRun, fetchAll } from '@/lib/utils/cron-run'
 
 export async function POST(request: NextRequest) {
   if (!verifyCronSecret(request))
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  try {
-    const service   = createServiceClient()
-    const now       = new Date()
-    // Shorter window than co-stall's 5 days — an approval gate is blocking
-    // a send that's otherwise ready to go out, not an open client
-    // negotiation, so it's worth nudging sooner. Shared with
-    // lib/utils/attention.ts so the dashboard's "needs attention" register
-    // and this cron's reminder cadence can't silently drift apart.
-    const threshold = APPROVAL_STALL_DAYS // days
-    const cutoff    = new Date(now.getTime() - threshold * 86400000).toISOString()
+  const service = createServiceClient()
+  const run = new CronRun(service, 'approval-stall')
+  const now = new Date()
+  // Shorter window than co-stall's 5 days — an approval gate blocks a send that's otherwise ready
+  // to go, so it's worth nudging sooner. Shared with lib/utils/attention.ts so the dashboard's
+  // "needs attention" register and this cron can't drift apart.
+  const threshold = APPROVAL_STALL_DAYS // days
+  const cutoff    = new Date(now.getTime() - threshold * 86400000).toISOString()
+  let reminded = 0, escalated = 0, sendFailureEscalated = 0
 
-    // updated_at doubles as "last activity on this request" — it moves
-    // forward on step-advance and gets bumped here after a reminder, so
-    // a request that just changed step (or was just reminded) won't be
-    // picked up again until it's been quiet for the full window again.
-    const { data: stale } = await (service as any)
-      .from('approval_requests')
-      .select('id, workspace_id')
-      .eq('status', 'pending')
-      .lt('updated_at', cutoff)
+  // Step 1 — pending decisions that have gone quiet.
+  // updated_at doubles as "last activity on this request": it moves on step-advance and is bumped
+  // here after a reminder, so a request only comes back after a full quiet window.
+  // (A request with no reachable approver is deliberately NOT bumped so it keeps surfacing; the
+  // old unpaginated query let those rows fill the first page forever and starve everything after
+  // them — fetchAll pages through all of them.)
+  await run.step('remind pending approvals', async () => {
+    const stale = await fetchAll<any>('approval-stall pending select', (from, to) =>
+      (service as any).from('approval_requests')
+        .select('id, workspace_id')
+        .eq('status', 'pending')
+        .lt('updated_at', cutoff)
+        .order('id')
+        .range(from, to))
 
-    let reminded = 0
-    let escalated = 0
-    for (const r of (stale || [])) {
+    for (const r of stale) {
       try {
         const result = await sendApprovalReminder(service, r.id)
         if (result === 'sent') {
           await (service as any).from('approval_requests')
             .update({ updated_at: now.toISOString() }).eq('id', r.id)
           await insertAuditRow(service, {
-            workspace_id: r.workspace_id,
-            actor_id:     null,
-            actor_email:  'cron@scopegov.app',
-            actor_name:   'ScopeGov',
-            event_type:   'approval.reminder_sent',
-            entity_type:  'approval_request',
-            entity_id:    r.id,
-            metadata:     { days_pending: threshold },
+            workspace_id: r.workspace_id, actor_id: null,
+            actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
+            event_type: 'approval.reminder_sent', entity_type: 'approval_request', entity_id: r.id,
+            metadata: { days_pending: threshold },
           })
           reminded++
         } else if (result === 'no_recipients') {
-          // FIX (cron audit, section 17): sendApprovalReminder used to
-          // report success here regardless of whether anyone was actually
-          // reachable — see the fix note there. A broken approver
-          // assignment (role with no active holder, or a specific user no
-          // longer active in this workspace) needs a human to fix the
-          // assignment itself, not another silent retry. Tell whoever can
-          // fix it (MANAGE_ROLES holders) and leave updated_at untouched
-          // so this keeps surfacing daily — at this cron's own cadence,
-          // not a spammier one — until the assignment is corrected.
+          // A broken approver assignment (role with no active holder, or a user no longer active)
+          // needs a human to fix the assignment, not another silent retry.
           await insertAuditRow(service, {
-            workspace_id: r.workspace_id,
-            actor_id:     null,
-            actor_email:  'cron@scopegov.app',
-            actor_name:   'ScopeGov',
-            event_type:   'approval.no_reachable_approver',
-            entity_type:  'approval_request',
-            entity_id:    r.id,
-            metadata:     { days_pending: threshold },
+            workspace_id: r.workspace_id, actor_id: null,
+            actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
+            event_type: 'approval.no_reachable_approver', entity_type: 'approval_request', entity_id: r.id,
+            metadata: { days_pending: threshold },
           })
           await notifyMembersWithPermission(service, {
             // FIX (Notifications & email fix round): this went to MANAGE_ROLES holders, but the fix
@@ -99,33 +78,23 @@ export async function POST(request: NextRequest) {
           })
           escalated++
         }
-        // 'not_found' means the request/step/requester lookup itself came
-        // back empty — an orphaned or already-resolved row race; nothing
-        // to remind or escalate.
-      } catch (e) { console.error('Approval reminder error:', e) }
+        // 'not_found': orphaned / already-resolved row race — nothing to do.
+      } catch (e) { run.rowError(`approval ${r.id}`, e) }
     }
+  })
 
-    // FIX (fix round, section-11 flagship finding): this cron only ever
-    // looked at status='pending' requests — a request that fully cleared
-    // approval but then failed to auto-send (status='approved',
-    // send_failed_at set — migration 053) got zero automated reminders or
-    // escalation, no matter how long it sat, unlike every other stall
-    // pattern in this app. The dashboard, project pages, Sidebar badge and
-    // Approvals page were all fixed elsewhere this round to surface it —
-    // but all of those still require someone to go looking. This closes
-    // the remaining gap: a proactive nudge, on the same cadence as an
-    // ordinary stalled decision, to the people actually authorized to act
-    // on it (the requester, or a MANAGE_WORKSPACE_SETTINGS admin — see
-    // retry-send/route.ts's own authorization model).
-    const { data: staleSendFailures } = await (service as any)
-      .from('approval_requests')
-      .select('id, workspace_id, project_id, requested_by, document_type, send_failed_reason, updated_at')
-      .eq('status', 'approved')
-      .not('send_failed_at', 'is', null)
-      .lt('updated_at', cutoff)
+  // Step 2 — approved documents that failed to auto-send and were never retried.
+  await run.step('escalate stale send failures', async () => {
+    const staleSendFailures = await fetchAll<any>('approval-stall send-failure select', (from, to) =>
+      (service as any).from('approval_requests')
+        .select('id, workspace_id, project_id, requested_by, document_type, send_failed_reason, updated_at')
+        .eq('status', 'approved')
+        .not('send_failed_at', 'is', null)
+        .lt('updated_at', cutoff)
+        .order('id')
+        .range(from, to))
 
-    let sendFailureEscalated = 0
-    for (const r of (staleSendFailures || [])) {
+    for (const r of staleSendFailures) {
       try {
         await notifyMembersWithPermission(service, {
           workspaceId: r.workspace_id, permission: 'MANAGE_WORKSPACE_SETTINGS',
@@ -137,34 +106,20 @@ export async function POST(request: NextRequest) {
         await (service as any).from('approval_requests')
           .update({ updated_at: now.toISOString() }).eq('id', r.id)
         await insertAuditRow(service, {
-          workspace_id: r.workspace_id,
-          actor_id:     null,
-          actor_email:  'cron@scopegov.app',
-          actor_name:   'ScopeGov',
-          event_type:   'approval.send_failure_escalated',
-          entity_type:  'approval_request',
-          entity_id:    r.id,
-          metadata:     { days_stale: threshold },
+          workspace_id: r.workspace_id, actor_id: null,
+          actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
+          event_type: 'approval.send_failure_escalated', entity_type: 'approval_request', entity_id: r.id,
+          metadata: { days_stale: threshold },
         })
         sendFailureEscalated++
-      } catch (e) { console.error('Approval send-failure escalation error:', e) }
+      } catch (e) { run.rowError(`send-failure ${r.id}`, e) }
     }
+  })
 
-    // FEATURE (cron audit, section 17 — feature gap, closing pass): see
-    // migration 058 / lib/utils/cron-heartbeat.ts — recorded on success
-    // only, so the watchdog can't be fooled by a cron that's merely
-    // erroring on every run into thinking it's healthy.
-    await recordCronHeartbeat(service, 'approval-stall', { reminded, escalated, sendFailureEscalated })
-    return NextResponse.json({ ok: true, reminded, escalated, sendFailureEscalated })
-  } catch (err) {
-    console.error('Approval stall cron error:', err)
-    // FEATURE (cron audit, section 17 — feature gap, closing pass): see
-    // lib/utils/cron-alert.ts — this used to be console.error-only.
-    await alertCronFailure(createServiceClient(), 'approval-stall', err).catch(() => {})
-    return NextResponse.json({ error: 'Cron failed' }, { status: 500 })
-  }
+  Object.assign(run.result, { reminded, escalated, sendFailureEscalated })
+  const { body, status } = await run.finish()
+  return NextResponse.json(body, { status })
 }
 
-// Vercel Cron invokes the configured path with GET, not POST (see
-// co-stall/route.ts for the full explanation) — alias so both work.
+// Vercel Cron invokes the configured path with GET; the GitHub Actions backup uses POST.
 export const GET = POST

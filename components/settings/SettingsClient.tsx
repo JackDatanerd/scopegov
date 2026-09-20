@@ -230,6 +230,9 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
     website:                    workspace?.website || '',
     replyToEmail:               workspace?.reply_to_email || '',
     defaultPaymentInstructions: workspace?.default_payment_instructions || '',
+    autoClientReminders:        workspace?.auto_client_reminders ?? false,
+    clientReminderAfterDays:    String(workspace?.client_reminder_after_days ?? 3),
+    clientReminderMax:          String(workspace?.client_reminder_max ?? 3),
     legalAddress: {
       line1:      workspace?.legal_address?.line1 || '',
       line2:      workspace?.legal_address?.line2 || '',
@@ -246,10 +249,20 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
   // Sends replyToEmail only when it differs from what was loaded, so a save never touches the
   // column (or fails before migration 062 adds it) unless the user actually edited the field.
   const initialReplyTo = workspace?.reply_to_email || ''
+  // Same rule for the automatic-client-reminder fields (migration 063): only sent when the user changed them.
+  const initialReminders = {
+    autoClientReminders:     workspace?.auto_client_reminders ?? false,
+    clientReminderAfterDays: String(workspace?.client_reminder_after_days ?? 3),
+    clientReminderMax:       String(workspace?.client_reminder_max ?? 3),
+  }
   const patchWorkspace = (url: string, body: any) => {
-    const { replyToEmail, ...rest } = body
+    const { replyToEmail, autoClientReminders, clientReminderAfterDays, clientReminderMax, ...rest } = body
     const next = typeof replyToEmail === 'string' ? replyToEmail.trim() : initialReplyTo
-    return patch(url, next !== initialReplyTo ? { ...rest, replyToEmail: next } : rest)
+    const out: any = next !== initialReplyTo ? { ...rest, replyToEmail: next } : { ...rest }
+    if (autoClientReminders !== undefined && autoClientReminders !== initialReminders.autoClientReminders) out.autoClientReminders = autoClientReminders
+    if (clientReminderAfterDays !== undefined && clientReminderAfterDays !== initialReminders.clientReminderAfterDays) out.clientReminderAfterDays = clientReminderAfterDays
+    if (clientReminderMax !== undefined && clientReminderMax !== initialReminders.clientReminderMax) out.clientReminderMax = clientReminderMax
+    return patch(url, out)
   }
   const [brandColour, setBrandColour] = useState(() => workspace?.brand_colour || '#1A5C3A')
   const [logoPreview, setLogoPreview] = useState<string | null>(logoUrl)
@@ -668,7 +681,7 @@ function AccountTab({ session, supabase, router, mfaMandatory }: any) {
 function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugLocked }: any) {
   if (!permissions.manageWorkspace) return <Restricted />
 
-  function set<K extends string>(key: K, value: string) {
+  function set<K extends string>(key: K, value: string | boolean) {
     setForm((f: any) => ({ ...f, [key]: value }))
   }
   function setAddr(key: string, value: string) {
@@ -749,6 +762,34 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugLocked }
           </select>
           <span className="fhint">The language every new SOW is drafted in — the client-facing content, and the standard clauses (parties, governing law, signature block).</span>
         </div>
+        <div className="settings-section-title" style={{ marginTop: 24 }}>
+          Client reminders <span className="fhint" style={{ fontWeight: 400 }}>— nudge clients automatically</span>
+        </div>
+        <div className="settings-row">
+          <div>
+            <div className="settings-row-key">Send automatic reminders</div>
+            <div className="settings-row-desc">
+              Emails your client about an unsigned SOW, an unanswered change order or an overdue invoice, so you
+              don&apos;t have to remember to chase. Off by default; the manual Remind buttons keep working either way.
+            </div>
+          </div>
+          <button type="button" className={`toggle ${form.autoClientReminders ? 'on' : 'off'}`}
+            onClick={() => set('autoClientReminders', !form.autoClientReminders)} />
+        </div>
+        {form.autoClientReminders && (
+          <div className="f2" style={{ marginTop: 12 }}>
+            <div className="fgrp">
+              <label className="flbl">Remind after / every <span className="fhint">— days</span></label>
+              <input type="number" className="finp" min={1} max={30} step={1} value={form.clientReminderAfterDays}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('clientReminderAfterDays', e.target.value)} />
+            </div>
+            <div className="fgrp">
+              <label className="flbl">At most <span className="fhint">— reminders per document</span></label>
+              <input type="number" className="finp" min={1} max={10} step={1} value={form.clientReminderMax}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('clientReminderMax', e.target.value)} />
+            </div>
+          </div>
+        )}
         <button className="btn btn-primary btn-sm" disabled={saving}
           onClick={() => onSave('/api/workspace/settings', form)}>
           {saving ? <span className="spin" /> : 'Save changes'}
