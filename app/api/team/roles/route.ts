@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { permissionsBeyondCeiling } from '@/lib/utils/permission-ceiling'
+import { parsePermissionMap } from '@/lib/utils/permission-map'
 
 // Mirrors the same constant in components/team/TeamClient.tsx — the
 // allowlist and the copy that describes it must not drift apart again.
@@ -23,7 +24,7 @@ export async function POST(request: NextRequest) {
     if (!CUSTOM_ROLE_PLANS.includes(session.planTier))
       return NextResponse.json({ error: 'Custom roles require Pro, Agency, or an active trial' }, { status: 403 })
 
-    const { name, description, permissions, isDefault } = await request.json()
+    const { name, description, permissions: rawPermissions, isDefault } = await request.json()
     if (typeof name !== 'string' || !name.trim())
       return NextResponse.json({ error: 'Role name required' }, { status: 400 })
     // FIX (deep audit, Team & Invites section): no length cap existed at
@@ -31,8 +32,17 @@ export async function POST(request: NextRequest) {
     // users.name; sanitizeDisplayName caps agency/workspace names).
     if (name.trim().length > 60)
       return NextResponse.json({ error: 'Role name must be under 60 characters' }, { status: 400 })
-    if (permissions !== undefined && (permissions === null || typeof permissions !== 'object' || Array.isArray(permissions)))
-      return NextResponse.json({ error: 'Invalid permissions payload' }, { status: 400 })
+    // FIX (build — RLS + permissions independent audit, HIGH): the payload was only
+    // checked for "is an object" and stored verbatim, so {DELETE_PROJECTS: 1}
+    // slipped under the ceiling (which only counted `=== true`) and was then
+    // granted by getSession()'s truthiness filter. Every value must be a real
+    // boolean; unknown keys are dropped. See lib/utils/permission-map.ts.
+    let permissions: Record<string, boolean> | undefined = undefined
+    if (rawPermissions !== undefined) {
+      const parsed = parsePermissionMap(rawPermissions)
+      if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 })
+      permissions = parsed.value
+    }
     // FIX (build, Team & Invites section — validation gap): description had
     // no type check or length cap at all, unlike `name` right above it (60
     // chars) and unlike every comparable free-text field elsewhere in the

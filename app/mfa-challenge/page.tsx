@@ -34,12 +34,31 @@ function MfaChallengeInner() {
   const [error, setError] = useState('')
 
   useEffect(() => {
-    supabase.auth.mfa.listFactors().then(({ data }) => {
-      const verified = data?.totp?.find(f => f.status === 'verified')
-      setFactorId(verified?.id || null)
+    // FIX (build — Auth independent audit, MEDIUM): a session whose cached user
+    // still listed a factor that had since been removed (backup-code recovery, or
+    // MFA disabled on another device) landed here with nothing to verify against
+    // and hit a dead-end "no authenticator found" page until its token refreshed
+    // an hour later. Re-issue the session once to pick up the live factor list; if
+    // there really is no verified factor, there is nothing to challenge — carry on
+    // to where the person was going (the middleware sends mandatory-MFA accounts
+    // to setup from there).
+    let cancelled = false
+    async function load() {
+      let { data } = await supabase.auth.mfa.listFactors()
+      let verified = data?.totp?.find(f => f.status === 'verified')
+      if (!verified) {
+        await supabase.auth.refreshSession().catch(() => {})
+        ;({ data } = await supabase.auth.mfa.listFactors())
+        verified = data?.totp?.find(f => f.status === 'verified')
+      }
+      if (cancelled) return
+      if (!verified) { router.replace(next); return }
+      setFactorId(verified.id)
       setLoadingFactor(false)
-    })
-  }, [supabase])
+    }
+    load()
+    return () => { cancelled = true }
+  }, [supabase, router, next])
 
   async function handleVerify(e: React.FormEvent) {
     e.preventDefault()

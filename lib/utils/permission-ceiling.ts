@@ -27,11 +27,23 @@ import { hasPermission } from '@/lib/auth/session'
 // `permissions` objects in this codebase are jsonb — arbitrary string
 // keys, not guaranteed to be valid Permission values (a stale role from
 // before a permission was renamed/removed, or a client sending garbage).
-// Only the TRUE keys matter for the ceiling check: a `false` entry never
-// grants anything, so it's not something the actor needs to already hold.
+// Only keys that could GRANT something matter for the ceiling check: an
+// explicit `false` (or null/undefined) never grants anything, so it's not
+// something the actor needs to already hold.
+//
+// FIX (build — RLS + permissions independent audit, HIGH): this used to
+// count only `=== true`, while lib/auth/session.ts granted on plain
+// truthiness. A payload like { DELETE_PROJECTS: 1 } therefore looked empty
+// here and was stored, then granted by getSession(). Every value other than
+// false / null / undefined is now treated as a grant attempt (fail closed),
+// so a non-boolean value can never slip under the ceiling even if some
+// future write path forgets to run parsePermissionMap().
 function grantedKeys(permissions: Record<string, unknown> | null | undefined): string[] {
   if (!permissions) return []
-  return Object.keys(permissions).filter(k => permissions[k] === true)
+  return Object.keys(permissions).filter(k => {
+    const v = permissions[k]
+    return v !== false && v !== null && v !== undefined
+  })
 }
 
 // Returns the subset of `permissions`'s true keys that the actor does NOT

@@ -1,36 +1,59 @@
 export const runtime = 'nodejs'
 
-import { notifySecurityEvent } from '@/lib/utils/notify'
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
 import { logAudit } from '@/lib/utils/audit'
+import { notifySecurityEvent } from '@/lib/utils/notify'
 import { hashBackupCode } from '@/lib/utils/backup-codes'
 import { sendMfaDisabledEmail } from '@/lib/email/templates'
 import { resolveActiveWorkspaceId, resolveActorName } from '@/lib/auth/session'
+import {
+  checkAuthAttemptLimit, recordAuthFailure, clearAuthFailures, lockoutMessage, AUTH_ATTEMPT_LIMIT,
+} from '@/lib/auth/attempt-limit'
 
-// Recovery path for a user at aal1 who has lost their authenticator device.
-// Supabase's AAL is controlled entirely by its own auth server — we cannot
-// forge an aal2 session from here. What we *can* do, with the service
-// role, is remove the user's TOTP factor outright once they prove
-// ownership of a valid single-use backup code. That drops the requirement
-// back to aal1 (unblocking them immediately) and — because
-// lib/auth/mfa-policy still applies — middleware will walk them straight
-// into forced re-enrollment on the very next request if their role
-// requires it. This is a deliberately blunt recovery tool: it trades "the
-// old factor" for "immediate access + forced re-setup," never for a
-// silent, permanent MFA bypass.
+// POST /api/auth/mfa/recover — sign in with a one-time backup code when the
+// authenticator is lost. Deliberately blunt: a successful recovery REMOVES the
+// user's TOTP factor(s) and every remaining backup code, revokes all other
+// sessions, and sends them back through MFA setup.
+//
+// FIX (build — Auth independent audit): several gaps closed here —
+//  - throttled per user (5 failures / 5 min) and failed attempts are audited;
+//  - the code is claimed with a conditional UPDATE, so two concurrent requests
+//    can't both spend the same code;
+//  - factor deletion errors used to be ignored: the code was burned, the audit
+//    row said `factor_removed`, and the user was left with the factor still in
+//    place and no code to get in. A failure now restores the code and reports it;
+//  - the session's cached user is refreshed after the factors are removed, so
+//    nothing keeps demanding a challenge no factor can satisfy;
+
 export async function POST(request: Request) {
   try {
     const supabase = await createServerSupabaseClient()
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-    const body = await request.json().catch(() => ({}))
-    const { code } = body as { code?: string }
-    if (!code) return NextResponse.json({ error: 'Backup code is required' }, { status: 400 })
+    const body = await request.json().catch(() => null) as { code?: unknown } | null
+    if (typeof body?.code !== 'string' || !body.code.trim()) {
+      return NextResponse.json({ error: 'Backup code is required' }, { status: 400 })
+    }
+    if (body.code.length > 40) {
+      return NextResponse.json({ error: 'That backup code is invalid or has already been used.' }, { status: 400 })
+    }
 
     const service = createServiceClient()
-    const hash = hashBackupCode(code)
+
+    const limit = await checkAuthAttemptLimit(service, user.id, 'mfa_recover')
+    if (!limit.allowed) {
+      return NextResponse.json(
+        { error: lockoutMessage(limit.retryAfterSeconds), code: 'locked', retryAfterSeconds: limit.retryAfterSeconds },
+        { status: 429, headers: { 'Retry-After': String(limit.retryAfterSeconds) } }
+      )
+    }
+
+    const workspaceId = await resolveActiveWorkspaceId(service, user.id)
+    const actorName = await resolveActorName(service, user.id, user.user_metadata?.name || user.email!)
+
+    const hash = hashBackupCode(body.code)
     const { data: match } = await (service as any)
       .from('user_mfa_backup_codes')
       .select('id')
@@ -39,48 +62,59 @@ export async function POST(request: Request) {
       .is('used_at', null)
       .maybeSingle()
 
-    if (!match) return NextResponse.json({ error: 'That backup code is invalid or has already been used.' }, { status: 400 })
-
-    // Consume the code first — if the factor deletion below fails partway,
-    // we fail closed (code burned, user stays locked out and can retry
-    // with another code) rather than fail open (code reusable).
-    await (service as any).from('user_mfa_backup_codes').update({ used_at: new Date().toISOString() }).eq('id', match.id)
-
-    const { data: factors } = await supabase.auth.mfa.listFactors()
-    for (const f of (factors?.totp || [])) {
-      await (service as any).auth.admin.mfa.deleteFactor({ id: f.id, userId: user.id })
+    // Claim it atomically: only the request whose UPDATE actually flips
+    // used_at from NULL gets to proceed.
+    let claimed = false
+    if (match) {
+      const { data: claimRows } = await (service as any)
+        .from('user_mfa_backup_codes')
+        .update({ used_at: new Date().toISOString() })
+        .eq('id', match.id).is('used_at', null)
+        .select('id')
+      claimed = (claimRows || []).length === 1
     }
-    // Any other unused backup codes from this generation are now moot —
-    // the factor they recovered access from is gone either way.
-    await (service as any).from('user_mfa_backup_codes')
+
+    if (!claimed) {
+      await recordAuthFailure(service, user.id, 'mfa_recover')
+      const after = await checkAuthAttemptLimit(service, user.id, 'mfa_recover')
+      try {
+        await logAudit(service, {
+          workspaceId: workspaceId || '',
+          actorId: user.id, actorEmail: user.email!, actorName,
+          eventType: 'security.mfa_recovery_failed', entityType: 'user', entityId: user.id, entityName: user.email!,
+          metadata: { failures_in_window: after.failures, locked: !after.allowed, window_seconds: AUTH_ATTEMPT_LIMIT.windowSeconds },
+        })
+      } catch (e) { console.error('MFA recovery-failure audit log failed (non-fatal):', e) }
+      return NextResponse.json({ error: 'That backup code is invalid or has already been used.' }, { status: 400 })
+    }
+
+    // Remove every factor (verified or half-enrolled) via the admin API.
+    const { data: factorList } = await supabase.auth.mfa.listFactors()
+    for (const f of (factorList?.all || [])) {
+      const { error: delErr } = await (service as any).auth.admin.mfa.deleteFactor({ id: f.id, userId: user.id })
+      if (delErr) {
+        console.error('MFA recovery: could not delete factor', f.id, delErr.message)
+        // Give the code back — otherwise the user is locked out with a burned code.
+        await (service as any).from('user_mfa_backup_codes').update({ used_at: null }).eq('id', match.id)
+        return NextResponse.json({ error: 'Recovery could not be completed. Your backup code was not used — please try again.' }, { status: 500 })
+      }
+    }
+
+    await clearAuthFailures(service, user.id, 'mfa_recover')
+
+    const { error: retireErr } = await (service as any).from('user_mfa_backup_codes')
       .update({ used_at: new Date().toISOString() })
       .eq('user_id', user.id).is('used_at', null)
+    if (retireErr) console.error('MFA recovery: could not retire remaining codes:', retireErr.message)
 
-    // FIX (deep audit, Auth+MFA re-pass — session revocation): this route's
-    // whole premise is "the authenticator device is lost or stolen" —
-    // the single strongest assume-compromise signal anywhere in this
-    // file — yet it never revoked anything beyond the one factor. Any
-    // other session/refresh token (e.g. on the lost device itself, still
-    // logged in) survived untouched. Scoped to 'others': the caller is
-    // actively regaining access through the very session making this
-    // call, so that one session must survive the revocation.
-    await supabase.auth.signOut({ scope: 'others' }).catch(e => console.error('MFA recovery session revocation failed (non-fatal):', e))
+    const { error: othersErr } = await supabase.auth.signOut({ scope: 'others' })
+    if (othersErr) console.error('MFA recovery session revocation failed (non-fatal):', othersErr.message)
 
-    // FIX (deep audit, RLS+permissions section, independent re-pass): this
-    // was still the old bare `.select('active_workspace_id')` with no
-    // fallback — every sibling MFA route (verify, factors DELETE, backup-
-    // codes) and the password routes were already migrated to
-    // resolveActiveWorkspaceId(), but this one route was missed. Since
-    // audit_log.workspace_id is NOT NULL, an unset/stale
-    // active_workspace_id meant the 'security.mfa_backup_code_used' entry
-    // below — logged at exactly the "assume compromise" moment this
-    // route's own top comment describes — silently failed to insert
-    // (logAudit swallows its own errors), and the accompanying
-    // notification was dropped too.
-    const workspaceId = await resolveActiveWorkspaceId(service, user.id)
-    // FIX (deep audit, Auth+MFA section — actor-name staleness): see
-    // resolveActorName's own comment in lib/auth/session.ts.
-    const actorName = await resolveActorName(service, user.id, user.user_metadata?.name || user.email!)
+    // Re-issue this session's tokens so its cached user no longer lists the
+    // factor(s) that were just deleted.
+    const { error: refreshErr } = await supabase.auth.refreshSession()
+    if (refreshErr) console.error('MFA recovery session refresh failed (non-fatal):', refreshErr.message)
+
     try {
       await logAudit(service, {
         workspaceId: workspaceId || '',
@@ -89,22 +123,11 @@ export async function POST(request: Request) {
         metadata: { result: 'factor_removed' },
       })
     } catch (e) { console.error('MFA recovery audit log failed (non-fatal):', e) }
-    // FIX (Notifications & email fix round): this insert used a single, possibly-null
-    // workspace id (NOT NULL column → silent failure) and only showed in that one
-    // workspace's bell. One row per active membership, with the error actually read.
+
+    // One row per active membership, with the error actually read (upstream helper).
     await notifySecurityEvent(service, user.id, 'Signed in with a backup code',
       'Two-factor authentication was reset using a backup code. Set it up again to keep your account protected.')
-    // BUG (fixed): `.catch(() => {})` chained directly on the Supabase
-    // insert builder above used to throw `TypeError: insert(...).catch is
-    // not a function` in this runtime instead of being swallowed — see
-    // verify/route.ts for the full writeup and commit fa95fe0 for the
-    // established fix pattern this now follows.
-    // FIX (re-audit): fire-and-forget email — not awaited — is unsafe in
-    // serverless (the function can freeze/terminate right after the
-    // response is sent, before the send completes). Same rule as
-    // everywhere else in this codebase: await email sends, even inside a
-    // .catch(). This one tells the user their MFA factor was just reset
-    // via a backup code — a real security event they need to see.
+
     await sendMfaDisabledEmail({ to: user.email!, name: actorName, via: 'backup_code_recovery' })
       .catch(e => console.error('MFA recovery email failed (non-fatal):', e))
 

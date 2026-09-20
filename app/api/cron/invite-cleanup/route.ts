@@ -64,6 +64,13 @@ export async function POST(request: NextRequest) {
     if (error) throw new Error(error.message)
   })
 
+  // 4b. Auth-attempt failure ledger (lib/auth/attempt-limit.ts, migration 064). Only the last five
+  // minutes ever decide a lockout; a week is kept for investigations.
+  await run.step('prune auth_attempts', async () => {
+    const { error } = await (service as any).from('auth_attempts').delete().lt('created_at', iso(7))
+    if (error) throw new Error(error.message)
+  })
+
   // 5a. Accounts deleted BEFORE deletion started banning the auth user are still able to sign in for
   // the rest of their 30-day window. Ban any that aren't (idempotent; only newly-banned are counted).
   await run.step('ban recently-deleted accounts', async () => {

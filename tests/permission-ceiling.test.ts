@@ -96,4 +96,24 @@ describe('permission-ceiling — privilege escalation guard', () => {
     const targetCurrentPermissions = { MANAGE_ROLES: true, DELETE_PROJECTS: true }
     expect(permissionsBeyondActorForTarget(a, targetCurrentPermissions)).toEqual([])
   })
+
+  // FIX (build — RLS + permissions independent audit, HIGH): the ceiling used to
+  // count only `=== true`, while getSession() granted on plain truthiness — so a
+  // truthy NON-boolean value slipped under the ceiling and was then granted.
+  // Pin the fail-closed behaviour: anything other than false/null/undefined is a
+  // grant attempt.
+  it('treats truthy NON-boolean values as grant attempts (type-confusion escalation)', () => {
+    const a = actor(['MANAGE_ROLES'])
+    const payload: any = { DELETE_PROJECTS: 1, MANAGE_BILLING: 'yes', APPROVE_DOCUMENTS: 'false', GRANT_EXCEPTIONS: {} }
+    expect(permissionsBeyondCeiling(a, payload).sort()).toEqual(
+      ['APPROVE_DOCUMENTS', 'DELETE_PROJECTS', 'GRANT_EXCEPTIONS', 'MANAGE_BILLING']
+    )
+    expect(withinPermissionCeiling(a, payload)).toBe(false)
+  })
+
+  it('still ignores false / null / undefined entries', () => {
+    const a = actor(['MANAGE_ROLES'])
+    const payload: any = { DELETE_PROJECTS: false, MANAGE_BILLING: null, APPROVE_DOCUMENTS: undefined }
+    expect(permissionsBeyondCeiling(a, payload)).toEqual([])
+  })
 })

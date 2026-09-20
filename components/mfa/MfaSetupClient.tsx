@@ -34,6 +34,7 @@ export default function MfaSetupClient({ mandatory, next, recovered, userName }:
   const [secret, setSecret] = useState<string | null>(null)
   const [code, setCode] = useState('')
   const [backupCodes, setBackupCodes] = useState<string[]>([])
+  const [generatingCodes, setGeneratingCodes] = useState(false)
   const [confirmedSaved, setConfirmedSaved] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -73,6 +74,23 @@ export default function MfaSetupClient({ mandatory, next, recovered, userName }:
       setError(err instanceof Error ? err.message : 'Verification failed')
       setCode('')
     } finally { setLoading(false) }
+  }
+
+  // FIX (build — Auth independent audit): if the verify response was lost and the
+  // request retried, the retry is (correctly) treated as an ordinary challenge and
+  // returns no codes — the user used to be told to go find a Settings page. The
+  // session is aal2 by now, so the same regenerate endpoint Settings uses works
+  // right here.
+  async function handleGenerateCodes() {
+    setGeneratingCodes(true); setError('')
+    try {
+      const res = await fetch('/api/auth/mfa/backup-codes', { method: 'POST' })
+      const json = await res.json().catch(() => ({} as { error?: string; backupCodes?: string[] }))
+      if (!res.ok) throw new Error(json.error || 'Could not generate backup codes')
+      if (json.backupCodes && json.backupCodes.length > 0) setBackupCodes(json.backupCodes)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not generate backup codes')
+    } finally { setGeneratingCodes(false) }
   }
 
   function handleContinue() {
@@ -187,8 +205,16 @@ export default function MfaSetupClient({ mandatory, next, recovered, userName }:
                 </>
               ) : (
                 <div className="auth-error" style={{ marginBottom: 16 }}>
-                  Two-factor authentication is on, but backup codes weren&apos;t shown here. Generate a set from
-                  Settings → Account → Two-factor authentication before you rely on this login.
+                  Two-factor authentication is on, but backup codes weren&apos;t shown here.
+                  Generate a set now, or later from Settings → Account → Two-factor authentication,
+                  before you rely on this login.
+                  <div style={{ marginTop: 10 }}>
+                    <button type="button" className="btn btn-ghost" disabled={generatingCodes}
+                      style={{ padding: '7px 12px' }} onClick={handleGenerateCodes}>
+                      {generatingCodes ? 'Generating…' : 'Generate backup codes'}
+                    </button>
+                  </div>
+                  {error && <div style={{ marginTop: 8 }}>{error}</div>}
                 </div>
               )}
               {backupCodes.length > 0 && (

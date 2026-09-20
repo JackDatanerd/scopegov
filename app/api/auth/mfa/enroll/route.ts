@@ -19,20 +19,33 @@ export async function POST() {
     // want one active TOTP factor per user for a single, unambiguous
     // enrollment state in the UI.
     const { data: existing } = await supabase.auth.mfa.listFactors()
-    const unverified = (existing?.all || []).find(f => f.factor_type === 'totp' && f.status === 'unverified')
-    if (unverified) {
-      await supabase.auth.mfa.unenroll({ factorId: unverified.id })
+    // FIX (build — Auth independent audit, LOW): only the FIRST stale factor was
+    // cleaned up and the result was never checked. A leftover half-enrolled
+    // factor blocks the next enrol with GoTrue's "friendly name already exists"
+    // conflict, leaving the user stuck on the setup screen.
+    const staleFactors = (existing?.all || []).filter(f => f.factor_type === 'totp' && f.status === 'unverified')
+    for (const stale of staleFactors) {
+      const { error: cleanupErr } = await supabase.auth.mfa.unenroll({ factorId: stale.id })
+      if (cleanupErr) console.error('MFA enroll: could not remove stale factor', stale.id, cleanupErr.message)
     }
     const alreadyVerified = (existing?.totp || [])[0]
     if (alreadyVerified) {
       return NextResponse.json({ error: 'Two-factor authentication is already enabled. Disable it first to re-enroll.' }, { status: 409 })
     }
 
-    const { data, error } = await supabase.auth.mfa.enroll({
+    let { data, error } = await supabase.auth.mfa.enroll({
       factorType: 'totp',
       friendlyName: 'Authenticator app',
     })
-    if (error) return NextResponse.json({ error: error.message }, { status: 400 })
+    if (error && ((error as any).code === 'mfa_factor_name_conflict' || /friendly name/i.test(error.message))) {
+      // A stale factor we couldn't remove still holds the default name — enrol
+      // under a unique one rather than failing the whole setup.
+      ;({ data, error } = await supabase.auth.mfa.enroll({
+        factorType: 'totp',
+        friendlyName: `Authenticator app ${Math.random().toString(36).slice(2, 8)}`,
+      }))
+    }
+    if (error || !data) return NextResponse.json({ error: error?.message || 'Could not start enrollment' }, { status: 400 })
 
     return NextResponse.json({
       factorId: data.id,

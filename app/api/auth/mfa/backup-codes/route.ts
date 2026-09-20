@@ -3,7 +3,7 @@ export const runtime = 'nodejs'
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
 import { logAudit } from '@/lib/utils/audit'
-import { generateBackupCodes } from '@/lib/utils/backup-codes'
+import { issueBackupCodes } from '@/lib/auth/backup-code-store'
 import { sendMfaBackupCodesRegeneratedEmail } from '@/lib/email/templates'
 import { resolveActiveWorkspaceId, resolveActorName } from '@/lib/auth/session'
 
@@ -22,23 +22,11 @@ export async function POST() {
     }
 
     const service = createServiceClient()
-    const { plaintext, hashes } = generateBackupCodes()
-
-    await (service as any).from('user_mfa_backup_codes')
-      .update({ used_at: new Date().toISOString() })
-      .eq('user_id', user.id).is('used_at', null)
-    // FIX (section-by-section re-audit): this insert's error was never
-    // checked, unlike the identical insert in mfa/verify/route.ts's
-    // first-enrollment path ("don't hand plaintext codes to the user for
-    // a set that doesn't exist server-side"). A failed insert here still
-    // invalidated the user's OLD codes (the update above already ran) and
-    // then returned brand-new plaintext codes that were never persisted —
-    // the user would believe they have valid backup codes when in fact
-    // they have none. Same guard, applied here too.
-    const { error: insertErr } = await (service as any).from('user_mfa_backup_codes').insert(
-      hashes.map(code_hash => ({ user_id: user.id, code_hash }))
-    )
-    if (insertErr) throw insertErr
+    // FIX (build — Auth independent audit): the new set is inserted BEFORE the
+    // previously-unused codes are retired (lib/auth/backup-code-store.ts). The
+    // old order retired first and inserted second, so a failure in between left
+    // the user with no usable codes at all.
+    const plaintext = await issueBackupCodes(service, user.id)
 
     // FIX (deep audit, RLS+permissions section): was a bare
     // `.select('active_workspace_id')` with no fallback to the oldest

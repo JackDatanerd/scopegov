@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { permissionsBeyondCeiling, permissionsBeyondActorForTarget } from '@/lib/utils/permission-ceiling'
+import { parsePermissionMap } from '@/lib/utils/permission-map'
 import { mergePermissions, protectedPermissionsOrphanedBy, describeProtectedPermission, PROTECTED_PERMISSIONS } from '@/lib/utils/admin-floor'
 import { logAudit } from '@/lib/utils/audit'
 
@@ -18,13 +19,21 @@ export async function PATCH(
     if (!hasPermission(session, 'MANAGE_ROLES'))
       return NextResponse.json({ error: 'Missing permission: MANAGE_ROLES' }, { status: 403 })
 
-    const { permissions, name, description, isDefault } = await request.json()
+    const { permissions: rawPermissions, name, description, isDefault } = await request.json()
 
     // A null/non-object `permissions` reached `permissions['MANAGE_ROLES']`
     // below and threw a TypeError into the catch-all, surfacing as a 500
     // where a 400 belongs. Not client-reachable; still the wrong answer.
-    if (permissions !== undefined && (permissions === null || typeof permissions !== 'object' || Array.isArray(permissions))) {
-      return NextResponse.json({ error: 'Invalid permissions payload' }, { status: 400 })
+    // FIX (build — RLS + permissions independent audit, HIGH): values must be real
+    // booleans (see lib/utils/permission-map.ts). A truthy non-boolean such as
+    // {DELETE_PROJECTS: 1} used to pass the ceiling and be granted by getSession();
+    // a string like "maybe" made update_role_permissions_atomic's ::boolean cast
+    // raise for every later edit in the workspace.
+    let permissions: Record<string, boolean> | undefined = undefined
+    if (rawPermissions !== undefined) {
+      const parsed = parsePermissionMap(rawPermissions)
+      if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 })
+      permissions = parsed.value
     }
     // FIX (deep audit, Team & Invites section): PATCH applied `if (name)`
     // with no trim and no length cap at all — unlike POST, which at least

@@ -11,6 +11,7 @@ import type { EmailOtpType } from '@supabase/supabase-js'
 import { safeRedirectPath } from '@/lib/utils/safe-redirect'
 import { logAudit } from '@/lib/utils/audit'
 import { resolveActorName } from '@/lib/auth/session'
+import { TERMS_VERSION_PATTERN } from '@/lib/auth/terms'
 
 // FIX (deep audit, Auth+MFA independent re-pass — CRITICAL): this used to
 // resolve "the" member row via a bare
@@ -87,98 +88,98 @@ async function logLoginEvent(
   })
 }
 
+// Types this route will complete. FIX (build — Auth independent audit, LOW):
+// `type` was passed to verifyOtp() unvalidated, so a link could complete a
+// 'recovery' or 'invite' OTP here and be logged as an email confirmation. Password
+// recovery is resolved on /reset-password (never here), and invites go through
+// /invite/[token].
+const CALLBACK_OTP_TYPES: EmailOtpType[] = ['signup', 'email', 'magiclink', 'email_change']
+
 export async function GET(request: NextRequest) {
   const { searchParams, origin } = new URL(request.url)
   const code       = searchParams.get('code')
   const tokenHash  = searchParams.get('token_hash')
-  const type       = searchParams.get('type') as EmailOtpType | null
-  // FIX (audit round 3, item #7): 'next' is attacker-controllable (it
-  // originates from the public /login page's own query string) and was
-  // concatenated directly into a Location header — see
-  // lib/utils/safe-redirect.ts for the exact open-redirect payload this
-  // allowed and why the origin+next concatenation didn't actually
-  // protect against it.
+  const rawType    = searchParams.get('type')
+  const type       = (CALLBACK_OTP_TYPES as string[]).includes(rawType || '') ? (rawType as EmailOtpType) : null
+  // 'next' is attacker-controllable (it originates from the public /login page's
+  // query string) — see lib/utils/safe-redirect.ts.
   const next       = safeRedirectPath(searchParams.get('next'))
-  // FIX (deep audit, Team & Invites section): both branches below send a
-  // user with no workspace membership to /onboarding, which is right for
-  // an ordinary signup and wrong for an invitee — a pending invite has
-  // user_id NULL until it's accepted, so resolveOnboardingMember returns
-  // null for exactly the person who is mid-acceptance. Before this, a
-  // Google-authenticating invitee was diverted into workspace-CREATION
-  // onboarding and the invite was silently dropped; they'd have to find
-  // the email again, and would land back here in the same loop.
   // An invite path is the one destination that is legitimate without a
-  // membership, so honour it ahead of the onboarding redirect. `next` has
-  // already been through safeRedirectPath, so this can only ever be a
-  // same-app relative path.
+  // membership: a pending invite has user_id NULL until accepted, so a
+  // brand-new invitee must not be diverted into workspace-creation onboarding.
   const isInviteDestination = next.startsWith('/invite/')
   const error      = searchParams.get('error')
-  const errorDescription = searchParams.get('error_description')
+  // The terms version the person saw on the Google sign-up button (see
+  // /signup). Stored server-side with a server timestamp.
+  const termsParam = searchParams.get('terms')
+  const termsVersion = termsParam && TERMS_VERSION_PATTERN.test(termsParam) ? termsParam : null
 
+  // FIX (build — Auth independent audit, LOW): Supabase's `error_description`
+  // used to be reflected into the login page's success box, so anyone could craft
+  // a link that displayed arbitrary text on the real domain. Only a fixed code
+  // is passed on now (see lib/auth/login-messages.ts).
   if (error) {
-    return NextResponse.redirect(
-      `${origin}/login?message=${encodeURIComponent(errorDescription || error)}`
-    )
+    return NextResponse.redirect(`${origin}/login?m=oauth_failed`)
   }
 
   const supabase = await createServerSupabaseClient()
 
-  if (code) {
-    const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code)
+  // Shared by the two success branches: mark the address verified, record terms
+  // acceptance, refuse deleted accounts, and log the sign-in — unless a second
+  // factor is still owed, in which case /api/auth/mfa/verify logs it once the
+  // challenge passes (logging here would record "login succeeded" for attempts
+  // that then fail MFA).
+  async function finishSignIn(method: 'google' | 'email_confirmation'): Promise<NextResponse> {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return NextResponse.redirect(`${origin}${next}`)
 
-    if (!exchangeError) {
-      const { data: { user } } = await supabase.auth.getUser()
+    const serviceClient = createServiceClient()
 
-      if (user) {
-        const serviceClient = createServiceClient()
-        await (serviceClient as any)
-          .from('users')
-          .update({ email_verified_at: new Date().toISOString() })
-          .eq('id', user.id)
-          .is('email_verified_at', null)
-
-        const member = await resolveOnboardingMember(serviceClient, user.id)
-
-        if (!member) {
-          return NextResponse.redirect(`${origin}${isInviteDestination ? next : '/onboarding'}`)
-        }
-        await logLoginEvent(serviceClient, user, member.workspaceId, 'google')
-        if (!member.onboardingCompletedAt && !isInviteDestination) {
-          return NextResponse.redirect(`${origin}/onboarding`)
-        }
-      }
-
-      return NextResponse.redirect(`${origin}${next}`)
+    const { data: userRow } = await (serviceClient as any)
+      .from('users').select('deleted_at').eq('id', user.id).maybeSingle()
+    if (userRow?.deleted_at) {
+      await supabase.auth.signOut()
+      return NextResponse.redirect(`${origin}/login?m=account_deleted`)
     }
-  } else if (tokenHash && type) {
-    // token_hash flow — used by email confirmation links
-    const { error: verifyError } = await supabase.auth.verifyOtp({ token_hash: tokenHash, type })
 
-    if (!verifyError) {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (user) {
-        const serviceClient = createServiceClient()
-        await (serviceClient as any)
-          .from('users')
-          .update({ email_verified_at: new Date().toISOString() })
-          .eq('id', user.id)
-          .is('email_verified_at', null)
+    await (serviceClient as any)
+      .from('users')
+      .update({ email_verified_at: new Date().toISOString() })
+      .eq('id', user.id)
+      .is('email_verified_at', null)
 
-        const member = await resolveOnboardingMember(serviceClient, user.id)
-
-        if (!member) {
-          return NextResponse.redirect(`${origin}${isInviteDestination ? next : '/onboarding'}`)
-        }
-        await logLoginEvent(serviceClient, user, member.workspaceId, 'email_confirmation')
-        if (!member.onboardingCompletedAt && !isInviteDestination) {
-          return NextResponse.redirect(`${origin}/onboarding`)
-        }
-      }
-      return NextResponse.redirect(`${origin}${next}`)
+    if (termsVersion) {
+      await (serviceClient as any)
+        .from('users')
+        .update({ terms_accepted_at: new Date().toISOString(), terms_version: termsVersion })
+        .eq('id', user.id)
+        .is('terms_accepted_at', null)
     }
+
+    const member = await resolveOnboardingMember(serviceClient, user.id)
+    if (!member) {
+      return NextResponse.redirect(`${origin}${isInviteDestination ? next : '/onboarding'}`)
+    }
+
+    const mfaPending = ((user as any).factors as Array<{ status: string }> | undefined || [])
+      .some(f => f.status === 'verified')
+    if (!mfaPending) {
+      await logLoginEvent(serviceClient, user, member.workspaceId, method)
+    }
+
+    if (!member.onboardingCompletedAt && !isInviteDestination) {
+      return NextResponse.redirect(`${origin}/onboarding`)
+    }
+    return NextResponse.redirect(`${origin}${next}`)
   }
 
-  return NextResponse.redirect(
-    `${origin}/login?message=Link+expired+or+invalid.+Please+try+again.`
-  )
+  if (code) {
+    const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code)
+    if (!exchangeError) return finishSignIn('google')
+  } else if (tokenHash && type) {
+    const { error: verifyError } = await supabase.auth.verifyOtp({ token_hash: tokenHash, type })
+    if (!verifyError) return finishSignIn('email_confirmation')
+  }
+
+  return NextResponse.redirect(`${origin}/login?m=link_invalid`)
 }

@@ -1,31 +1,74 @@
 import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 import { sharedCookieOptions, domainScopedCookieOptions } from './lib/supabase/cookie-options'
-import { permissionsRequireMfa } from './lib/auth/mfa-policy'
+import { MFA_REQUIRED_PERMISSIONS } from './lib/auth/mfa-policy'
+
+// State the middleware needs about the signed-in user, from ONE SECURITY DEFINER
+// RPC (migration 064). Replaces five session-bound reads of `workspace_members`
+// that migration 041's REVOKE had made fail with "permission denied" — which
+// bounced every onboarded user into a /dashboard <-> /onboarding redirect loop
+// and made the forced-MFA-enrolment check fail open.
+interface GateState {
+  deleted: boolean
+  has_workspace: boolean
+  onboarding_complete: boolean
+  must_enroll_mfa: boolean
+}
 
 export async function middleware(request: NextRequest) {
-  const { pathname, searchParams } = request.nextUrl
+  const { pathname, searchParams, search } = request.nextUrl
+  const isApi = pathname.startsWith('/api/')
   const refCode = searchParams.get('ref')
 
-  // ── Build a mutable response ─────────────────────────────────────────────
-  let response = NextResponse.next({ request })
+  // Create a response we can attach refreshed session cookies to.
+  const response = NextResponse.next({ request })
 
-  // ── Capture referral cookie on every path ─────────────────────────────────
-  // BUG-009 carry-forward §9: attach to EVERY response path
   const existingRef = request.cookies.get('ss_ref')?.value
-  function withRef<T extends NextResponse>(res: T): T {
+
+  // Every return path goes through finalize():
+  //  - attribution cookie (first-touch ?ref=)
+  //  - the session cookies supabase just refreshed. FIX (build — Auth
+  //    independent audit): redirects and 401 JSON responses used to be
+  //    returned as fresh responses WITHOUT the rotated tokens setAll() had
+  //    written to `response`, so a refresh that happened on a request that then
+  //    redirected was lost and the browser kept re-presenting the consumed
+  //    refresh token (only saved by GoTrue's 10s reuse window).
+  //  - expiry of legacy `Domain=` session cookies (see below).
+  const legacyCookieNames = duplicatedSessionCookieNames(request)
+  function finalize<T extends NextResponse>(res: T): T {
+    if (res !== (response as NextResponse)) {
+      response.cookies.getAll().forEach(c => res.cookies.set(c))
+    }
     if (refCode && !existingRef) {
-      res.cookies.set('ss_ref', refCode, {
+      res.cookies.set('ss_ref', refCode.slice(0, 64), {
         maxAge: 60 * 60 * 24 * 30,
         path: '/',
         httpOnly: true,
         sameSite: 'lax',
+        secure: process.env.NODE_ENV === 'production',
       })
+    }
+    // Appended raw AFTER every cookies.set() (ResponseCookies is keyed by name
+    // and would collapse this with the host-only cookie of the same name).
+    const domain = process.env.NEXT_PUBLIC_COOKIE_DOMAIN
+    if (domain) {
+      for (const name of legacyCookieNames) {
+        res.headers.append(
+          'Set-Cookie',
+          `${name}=; Path=/; Domain=${domain}; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Secure; SameSite=Lax`
+        )
+      }
     }
     return res
   }
 
-  // ── Supabase client that reads/writes cookies on this request ─────────────
+  function unavailable(): NextResponse {
+    const headers = { 'Retry-After': '5' }
+    return isApi
+      ? NextResponse.json({ error: 'Service temporarily unavailable. Please retry.' }, { status: 503, headers })
+      : new NextResponse('Service temporarily unavailable. Please retry in a moment.', { status: 503, headers })
+  }
+
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -38,11 +81,6 @@ export async function middleware(request: NextRequest) {
         setAll(cookiesToSet: Array<{ name: string; value: string; options?: CookieOptions }>) {
           cookiesToSet.forEach(({ name, value, options }) => {
             request.cookies.set(name, value)
-            // FIX (deep audit, Auth+MFA independent re-pass): see
-            // domainScopedCookieOptions()'s own comment — only the PKCE
-            // code_verifier cookie needs the cross-subdomain scope; the
-            // session cookie middleware refreshes on every request should
-            // stay host-only.
             response.cookies.set(name, value, domainScopedCookieOptions(name, options) as CookieOptions)
           })
         },
@@ -50,15 +88,9 @@ export async function middleware(request: NextRequest) {
     }
   )
 
-  // Refresh session — required by @supabase/ssr
+  // Validates the JWT with Supabase Auth (and refreshes it when near expiry).
   const { data: { user } } = await supabase.auth.getUser()
 
-  // FIX (deep audit, Auth+MFA independent re-pass): '/verify-email' was
-  // listed here but no such page exists anywhere in the app (grep
-  // confirms it) — dead reference to an email-verification flow that was
-  // apparently never built (or renamed and never cleaned up here).
-  // Removed rather than left as a foot-gun implying a route that isn't
-  // actually reachable.
   const isAuthRoute = pathname.startsWith('/login') ||
     pathname.startsWith('/signup') ||
     pathname.startsWith('/reset-password') ||
@@ -67,23 +99,9 @@ export async function middleware(request: NextRequest) {
   const isPublicRoute =
     pathname.startsWith('/portal/') ||
     pathname.startsWith('/invite/') ||
-    // Marketing site's legal pages (Privacy, Terms, DPA, Security, Cookies) —
-    // must be reachable by logged-out visitors, and by anyone (e.g. App
-    // Store / procurement reviewers) without an account.
     pathname.startsWith('/legal/') ||
-    // BUG: the pages above were public but the APIs behind them were not.
-    // An unauthenticated visitor's fetch('/api/portal/...') or
-    // fetch('/api/team/invite/{token}') was silently redirected to /login
-    // (HTML, not JSON) by the block below — breaking SOW signing, CO
-    // responses, and invite acceptance for every real, logged-out recipient.
-    // Trailing slash on '/api/team/invite/' deliberately excludes the bare
-    // POST /api/team/invite (create) endpoint, which still requires auth.
     pathname.startsWith('/api/portal/') ||
     pathname.startsWith('/api/team/invite/') ||
-    // BUG: /api/auth/callback exchanges a signup-confirmation/OAuth/recovery
-    // code for a session — the request is *by definition* unauthenticated
-    // when it arrives. It was being redirected to /login before the route
-    // handler ever ran, breaking every fresh email signup and OAuth login.
     pathname.startsWith('/api/auth/callback') ||
     pathname.startsWith('/api/guardian/inbound') ||
     pathname.startsWith('/api/billing/webhook') ||
@@ -94,227 +112,161 @@ export async function middleware(request: NextRequest) {
 
   const isOnboarding = pathname === '/onboarding'
 
-  // Routes for the MFA challenge/setup flows themselves, plus the handful
-  // of auth endpoints a partially-authenticated (aal1-only) user must
-  // still be able to reach — sign out, and the mfa API namespace that
-  // powers the /mfa-challenge and /mfa-setup pages.
+  // Routes that must stay reachable while a session is still at aal1 with a
+  // second factor pending (or not yet enrolled). Each of these enforces its
+  // own checks; everything else waits behind the aal2 gate below.
+  //
+  // FIX (build — Auth independent audit, MEDIUM): `/api/auth/signout` was a
+  // startsWith() match, which also exempted /api/auth/signout-others — so a
+  // password-only session (second factor still pending) could revoke every
+  // other session on the account. The sign-out exemption is now an exact match.
+  // (/api/auth/password-changed is retired: the DB audits password changes itself.)
   const isMfaFlowRoute =
     pathname.startsWith('/mfa-challenge') ||
     pathname.startsWith('/mfa-setup') ||
     pathname.startsWith('/api/auth/mfa/') ||
-    pathname.startsWith('/api/auth/signout') ||
-    // FIX (deep audit, Auth+MFA re-pass): a password-recovery-link session
-    // is aal1 with nextLevel 'aal2' for any account with a verified TOTP
-    // factor — the recovery link only proves email access, never runs the
-    // user through a TOTP challenge. reset-password/page.tsx fires this
-    // route (fire-and-forget, before signOut()) purely to log the
-    // security.password_changed audit_log entry and send the "your
-    // password was changed" email — by the time it's called,
-    // supabase.auth.updateUser() has already succeeded directly against
-    // Supabase (that call bypasses this middleware entirely, so gating it
-    // here changes nothing about whether the password change itself
-    // requires MFA). Without this, the pending-aal2 block below returned a
-    // 401 here every time, and because the caller's fetch(...).catch(() =>
-    // {}) only catches network failures (never a resolved non-2xx
-    // response, which it never even inspects), the failure was completely
-    // silent — no audit trail and no security email for the exact accounts
-    // (MFA-enrolled ones) where a password-reset notification matters most.
-    pathname.startsWith('/api/auth/password-changed') ||
-    // FIX (deep audit, Auth+MFA re-pass — login audit trail): same
-    // reasoning as /api/auth/password-changed just above. LoginForm.tsx
-    // calls this immediately after signInWithPassword() succeeds, which
-    // for an MFA-enrolled account is still aal1 with nextLevel 'aal2' —
-    // the user hasn't reached /mfa-challenge yet. Without this, the
-    // aal1-pending-aal2 block below would 401 the very login-event call
-    // meant to record that password verification just succeeded, for
-    // exactly the governance-sensitive, MFA-mandatory accounts this audit
-    // trail matters most for.
+    pathname === '/api/auth/signout' ||
     pathname.startsWith('/api/auth/login-event')
 
-  // ── Not authenticated → redirect to login ─────────────────────────────────
+  // Unauthenticated: API callers get a JSON 401 (a redirect to the login page
+  // made fetch() clients try to parse HTML), pages get the login redirect —
+  // keeping the query string so deep links survive the round trip.
   if (!user && !isAuthRoute && !isPublicRoute && !isOnboarding) {
+    if (isApi) {
+      return finalize(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
+    }
     const loginUrl = new URL('/login', request.url)
-    loginUrl.searchParams.set('next', pathname)
-    return withRef(NextResponse.redirect(loginUrl))
+    loginUrl.searchParams.set('next', pathname + search)
+    return finalize(NextResponse.redirect(loginUrl))
   }
 
-  // ── Authenticated, but MFA challenge not yet completed this session ──────
-  // AAL is read straight off the session's JWT claims (no network round
-  // trip), so this check is cheap on every request. currentLevel === aal1
-  // with nextLevel === aal2 means: this user has a verified TOTP factor,
-  // but hasn't entered a code yet in this particular session — e.g. they
-  // just signed in with a password, or an old session cookie survived
-  // from before enrollment. Supabase's own guidance is to route these
-  // users to a challenge screen rather than hard-401 them, since it's a
-  // routine, expected state (not necessarily an attack) — but note this
-  // still runs for /api/* routes below, just returning JSON instead of a
-  // redirect, because a stolen session cookie without the authenticator
-  // app must not be enough to read data through the API either.
-  if (user && !isPublicRoute && !isMfaFlowRoute) {
+  // Memoised gate lookup — at most one RPC per request, and only on the paths
+  // that actually need it.
+  let gatePromise: Promise<GateState | null> | null = null
+  function loadGate(): Promise<GateState | null> {
+    if (!gatePromise) {
+      gatePromise = (async () => {
+        const { data, error } = await (supabase as any).rpc('middleware_gate_state', {
+          p_mfa_permissions: MFA_REQUIRED_PERMISSIONS,
+        })
+        if (error || !data) {
+          console.error('middleware_gate_state failed:', error?.message ?? 'no data')
+          return null
+        }
+        return data as GateState
+      })()
+    }
+    return gatePromise
+  }
+
+  // A deleted account never gets past here (signed out, sent to login).
+  async function rejectIfDeleted(): Promise<NextResponse | null> {
+    const gate = await loadGate()
+    if (!gate?.deleted) return null
+    await supabase.auth.signOut()
+    if (isApi) return finalize(NextResponse.json({ error: 'Account deleted.' }, { status: 401 }))
+    return finalize(NextResponse.redirect(new URL('/login?m=account_deleted', request.url)))
+  }
+
+  // ── MFA gate: a session that is aal1 while a verified factor exists must
+  // complete the challenge before touching the app.
+  //
+  // FIX (build — Auth independent audit, MEDIUM): "is a second factor required"
+  // was read from getAuthenticatorAssuranceLevel().nextLevel, which supabase-js
+  // derives from the user object CACHED IN THE COOKIE, not from the JWT (the old
+  // comment claimed otherwise). That cache is only refreshed when the token is,
+  // so after backup-code recovery deleted the factor the middleware kept
+  // demanding a challenge no factor could satisfy for up to an hour. The
+  // getUser() call above already fetched the live user from Supabase Auth, so
+  // its factor list is authoritative — the JWT `aal` claim still supplies the
+  // CURRENT level.
+  let currentLevel: string | null = null
+  let nextLevel: string | null = null
+  if (user) {
     const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
-    if (aal?.currentLevel === 'aal1' && aal?.nextLevel === 'aal2') {
-      if (pathname.startsWith('/api/')) {
-        return NextResponse.json({ error: 'Two-factor verification required.' }, { status: 401 })
+    currentLevel = aal?.currentLevel ?? null
+    const liveFactors = (user as any).factors as Array<{ status: string }> | undefined
+    nextLevel = liveFactors
+      ? (liveFactors.some(f => f.status === 'verified') ? 'aal2' : 'aal1')
+      : (aal?.nextLevel ?? null)
+  }
+
+  if (user && !isPublicRoute && !isMfaFlowRoute) {
+    if (currentLevel === 'aal1' && nextLevel === 'aal2') {
+      if (isApi) {
+        return finalize(NextResponse.json({ error: 'Two-factor verification required.' }, { status: 401 }))
       }
       const url = new URL('/mfa-challenge', request.url)
-      url.searchParams.set('next', pathname)
-      return withRef(NextResponse.redirect(url))
+      url.searchParams.set('next', pathname + search)
+      return finalize(NextResponse.redirect(url))
     }
   }
 
-  // ── Authenticated → redirect away from auth pages ─────────────────────────
-  // BUG (password reset): /reset-password is intentionally reachable with an
-  // authenticated session — clicking a recovery link signs the user in via a
-  // temporary session so they can set a new password. This block used to
-  // treat that as "already logged in" and bounce them to /dashboard or
-  // /onboarding before they ever saw the reset form. Exclude it here.
+  // Already signed in: bounce away from the auth pages (the reset-password page
+  // is the exception — a recovery link lands there with a live session).
   if (user && isAuthRoute && pathname !== '/reset-password') {
-    // FIX (deep audit, Auth+MFA independent re-pass): this used to decide
-    // dashboard-vs-onboarding off a bare "does ANY active
-    // workspace_members row exist" query — no deleted_at check, no
-    // preference for active_workspace_id, and no onboarding_completed_at
-    // check at all. workspace/switch/route.ts's own comment says this
-    // exact file was part of the sweep that hardened every one of these
-    // gaps elsewhere ("session.ts, middleware.ts, onboarding-status, and
-    // workspace/list were all explicitly hardened... this route was the
-    // one missed") — but that hardening only reached the onboarding-check
-    // block below, not this one. Self-healed in practice (the very next
-    // request hits that correctly-hardened block and corrects course),
-    // but it's a real, reproducible extra redirect hop for the ordinary
-    // case of a user who hasn't finished onboarding revisiting /login
-    // while still authenticated — not just the rarer deleted-workspace
-    // edge case. Resolve the SAME way getSession() and the onboarding
-    // gate below do, so this decides correctly in one hop instead of
-    // bouncing through /dashboard first.
-    const { data: userRow } = await (supabase as any)
-      .from('users').select('active_workspace_id').eq('id', user.id).maybeSingle()
-
-    let member: any = null
-    if (userRow?.active_workspace_id) {
-      const { data } = await (supabase as any)
-        .from('workspace_members')
-        .select('workspace:workspaces(onboarding_completed_at, deleted_at)')
-        .eq('user_id', user.id)
-        .eq('workspace_id', userRow.active_workspace_id)
-        .eq('status', 'active')
-        .maybeSingle()
-      member = data?.workspace?.deleted_at ? null : data
-    }
-    if (!member) {
-      const { data } = await (supabase as any)
-        .from('workspace_members')
-        .select('workspace:workspaces(onboarding_completed_at, deleted_at)')
-        .eq('user_id', user.id)
-        .eq('status', 'active')
-        .order('created_at', { ascending: true })
-        .limit(5)
-      member = (data || []).find((m: any) => m.workspace && !m.workspace.deleted_at) || null
-    }
-
-    const dest = (member && member.workspace?.onboarding_completed_at) ? '/dashboard' : '/onboarding'
-    return withRef(NextResponse.redirect(new URL(dest, request.url)))
+    const deleted = await rejectIfDeleted()
+    if (deleted) return deleted
+    const gate = await loadGate()
+    const dest = (gate?.has_workspace && gate.onboarding_complete) ? '/dashboard' : (gate ? '/onboarding' : '/dashboard')
+    return finalize(NextResponse.redirect(new URL(dest, request.url)))
   }
 
-  // ── Authenticated → check onboarding ─────────────────────────────────────
-  // BUG-001: onboarding page is OUTSIDE (app)/ group to prevent redirect loops
-  if (user && !isOnboarding && !isPublicRoute && !isAuthRoute) {
-    // We check onboarding status via the workspace — only for non-API routes
-    if (!pathname.startsWith('/api/')) {
-      // FIX (deep audit, Auth+MFA section): this used to check the OLDEST
-      // workspace_members row (order by created_at, limit 1), while
-      // lib/auth/session.ts — and everything the app actually renders —
-      // resolves "the" workspace via users.active_workspace_id, falling back
-      // to oldest only when active_workspace_id is unset/stale. A user who
-      // completed onboarding on their first (oldest) workspace and then
-      // created a second one (workspace/create sets active_workspace_id to
-      // the NEW workspace, which starts un-onboarded) could pass this gate
-      // on the old workspace's completed status while actually active in a
-      // workspace that never finished onboarding — missing e.g. governingLaw,
-      // which SOW generation hard-blocks on. app/(app)/layout.tsx's own
-      // session-based check (correct) was catching this in practice, but
-      // this gate should reflect the same workspace it's meant to gate.
-      const { data: userRow } = await (supabase as any)
-        .from('users').select('active_workspace_id').eq('id', user.id).maybeSingle()
+  // Onboarding gate for app pages (API routes enforce their own workspace
+  // checks via getSession()). The onboarding page itself only needs the
+  // deleted-account check.
+  if (user && !isPublicRoute && !isAuthRoute && !isApi) {
+    const deleted = await rejectIfDeleted()
+    if (deleted) return deleted
 
-      // FIX (deep audit, Workspace lifecycle + Onboarding re-pass —
-      // defense in depth): neither query here checked workspaces.deleted_at
-      // — same gap as lib/auth/session.ts (see its own comment for the
-      // full story). A membership row pointing at a soft-deleted workspace
-      // should never be treated as a valid gate here either.
-      let member: any = null
-      if (userRow?.active_workspace_id) {
-        const { data } = await (supabase as any)
-          .from('workspace_members')
-          .select('workspace:workspaces(onboarding_completed_at, deleted_at)')
-          .eq('user_id', user.id)
-          .eq('workspace_id', userRow.active_workspace_id)
-          .eq('status', 'active')
-          .maybeSingle()
-        member = data?.workspace?.deleted_at ? null : data
+    if (!isOnboarding && !isMfaFlowRoute) {
+      const gate = await loadGate()
+      // Fail closed on a lookup error: a redirect to /onboarding here would send
+      // already-onboarded users into a loop, and letting the request through
+      // would skip the gate — an explicit, retryable 503 is the honest answer.
+      if (!gate) return finalize(unavailable())
+      if (!gate.has_workspace || !gate.onboarding_complete) {
+        return finalize(NextResponse.redirect(new URL('/onboarding', request.url)))
       }
-      if (!member) {
-        const { data } = await (supabase as any)
-          .from('workspace_members')
-          .select('workspace:workspaces(onboarding_completed_at, deleted_at)')
-          .eq('user_id', user.id)
-          .eq('status', 'active')
-          .order('created_at', { ascending: true })
-          .limit(5)
-        member = (data || []).find((m: any) => m.workspace && !m.workspace.deleted_at) || null
-      }
+    }
+  }
 
-      // No workspace_members row at all → user signed up but never completed
-      // onboarding. Redirect to /onboarding instead of falling through to the
-      // app (which would call getSession() → null → redirect to /login → loop).
-      if (!member) {
-        return withRef(NextResponse.redirect(new URL('/onboarding', request.url)))
-      }
-
-      if (member && !member.workspace?.onboarding_completed_at) {
-        if (pathname !== '/onboarding') {
-          return withRef(NextResponse.redirect(new URL('/onboarding', request.url)))
+  // ── Mandatory MFA enrolment: an account that holds governance-critical
+  // permissions but has no verified factor may only reach the setup flow.
+  if (user && !isPublicRoute && !isMfaFlowRoute && !isAuthRoute && !isOnboarding) {
+    if (currentLevel === 'aal1' && nextLevel === 'aal1') {
+      const gate = await loadGate()
+      // Fail CLOSED (this check used to fail open whenever the lookup errored).
+      if (!gate) return finalize(unavailable())
+      if (gate.must_enroll_mfa) {
+        if (isApi) {
+          return finalize(NextResponse.json({ error: 'Two-factor enrollment required for this account.' }, { status: 401 }))
         }
+        return finalize(NextResponse.redirect(new URL('/mfa-setup', request.url)))
       }
     }
   }
 
-  // ── Authenticated, onboarded → forced MFA enrollment for governance roles ──
-  // Only reached once we already know the challenge-pending case above
-  // doesn't apply, so aal here is either "aal2" (already enrolled and
-  // verified — nothing to do) or "aal1/aal1" (zero verified factors at
-  // all).
-  //
-  // FIX (audit round 3): this used to skip /api/* entirely, on the theory
-  // that the aal1→aal2 block above was the only security boundary that
-  // mattered and this one was "just" a UI nudge. That was wrong — a user
-  // who simply never enrolls stays at aal1/aal1 forever, and the block
-  // above never fires for them (nextLevel only becomes 'aal2' once a
-  // factor exists). So a governance-permission holder who skips
-  // enrollment could always call the API directly (curl/Postman, no
-  // browser) and act with zero MFA, permanently. Now enforced for both
-  // pages and APIs, mirroring the pattern immediately above.
-  if (
-    user && !isPublicRoute && !isMfaFlowRoute && !isAuthRoute && !isOnboarding
-  ) {
-    const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
-    if (aal?.currentLevel === 'aal1' && aal?.nextLevel === 'aal1') {
-      const { data: memberships } = await (supabase as any)
-        .from('workspace_members')
-        .select('effective_permissions')
-        .eq('user_id', user.id)
-        .eq('status', 'active')
+  return finalize(response)
+}
 
-      const mustEnroll = (memberships || []).some((m: any) => permissionsRequireMfa(m.effective_permissions))
-      if (mustEnroll) {
-        if (pathname.startsWith('/api/')) {
-          return NextResponse.json({ error: 'Two-factor enrollment required for this account.' }, { status: 401 })
-        }
-        return withRef(NextResponse.redirect(new URL('/mfa-setup', request.url)))
-      }
+// Session cookies (`sb-…`, excluding the PKCE verifier which is intentionally
+// domain-scoped) that arrive TWICE in one request: the host-only cookie the
+// current code writes plus a legacy `Domain=` cookie written before the
+// domain-scoping change. Deletes are host-only, so the legacy copy could never
+// be removed — sign-out left it behind and it shadowed fresh logins. Detected
+// from the raw Cookie header (the parsed cookie map collapses duplicates).
+function duplicatedSessionCookieNames(request: NextRequest): string[] {
+  const raw = request.headers.get('cookie')
+  if (!raw || !process.env.NEXT_PUBLIC_COOKIE_DOMAIN) return []
+  const counts = new Map<string, number>()
+  for (const part of raw.split(';')) {
+    const name = part.split('=')[0].trim()
+    if (/^sb-[\w.-]+$/.test(name) && !name.endsWith('-code-verifier')) {
+      counts.set(name, (counts.get(name) || 0) + 1)
     }
   }
-
-  return withRef(response)
+  return Array.from(counts.entries()).filter(([, n]) => n > 1).map(([name]) => name)
 }
 
 export const config = {

@@ -1,0 +1,155 @@
+scopegov — Auth + MFA  and  RLS + permissions — independent audit round: fixes + feature gaps
+==============================================================================================
+Independent cold audit of both sections (earlier comments treated as if they did not exist), then a
+fix/build round. Applied against the live tarball snapshot uploaded 2026-09-20 (migrations through 063).
+Both sections ship in ONE tarball because the fixes cross the boundary (the middleware depends on a new
+RPC; the permission-map validation spans routes, triggers and session).
+
+DEPLOY ORDER  (order matters)
+  1. Run supabase/migrations/064_auth_rls_independent_pass_fixes.sql (idempotent). It is required BEFORE the
+     new middleware: middleware.ts calls public.middleware_gate_state(); until that function exists every
+     page request answers 503 (deliberately fail-closed rather than redirecting or skipping the MFA check).
+     The migration also normalises stored non-boolean permission values to false (deny), then adds CHECK
+     constraints, so it is safe to run on a database that already holds bad values.
+  2. Deploy the code.
+  3. Supabase dashboard (README §1.3): Secure password change ON, minimum password length >= 8, TOTP MFA
+     enabled, and (optional but recommended) the token-hash email templates for cross-device links.
+  4. Storage: DROP any INSERT/UPDATE policies on the `logos` bucket for `authenticated` (README §1.2).
+  5. Verify (SQL editor):
+       select has_function_privilege('authenticated','public.middleware_gate_state(text[])','EXECUTE');  -- t
+       select has_table_privilege('authenticated','public.workspace_members','SELECT');                  -- f (041 intact)
+       select conname from pg_constraint where conname like '%boolean_map';                              -- 3 rows
+
+AUTH + MFA
+  Bugs fixed
+  - HIGH (cross-section)  middleware.ts read workspace_members with the session-bound client in five places,
+    but migration 041 had revoked ALL on that table from `authenticated` ("no session-bound code path reads
+    it" — the grep missed `(supabase as any)` + newline + `.from(`). With 041 applied every onboarded user
+    was bounced /dashboard <-> /onboarding forever and the forced-MFA-enrolment check failed OPEN. Now one
+    SECURITY DEFINER RPC (middleware_gate_state), 041 left intact, lookup errors fail CLOSED (503).
+  - MEDIUM  /api/auth/signout-others was exempt from the aal2 gate (startsWith('/api/auth/signout')): a
+    password-only session could revoke every other session. Exact-match exemption now.
+  - MEDIUM  /api/auth/password-changed accepted any session (even one pending MFA) and, on each call,
+    forged a security.password_changed audit row and emailed the owner. Now a 410 stub (safe to delete the file). The reset flow now goes
+    through NEW /api/auth/reset-password (server-side updateUser), and the audit row is written by a DATABASE
+    trigger on auth.users.encrypted_password (migration 064) so it also covers a direct supabase.auth
+    .updateUser() from the browser console, which bypasses every check in /api/auth/change-password.
+  - MEDIUM  "Recent sign-in" (first-password rule in change-password, freshness in login-event) used the
+    access token `iat`, which Supabase resets on every refresh — a stolen cookie replayed later passed, a
+    legitimate user 16-60 minutes into a token failed. Now the JWT `amr` authentication timestamp
+    (lib/auth/auth-time.ts); token_refresh entries are ignored.
+  - MEDIUM  The MFA gate read "is a second factor required" from getAuthenticatorAssuranceLevel().nextLevel,
+    which supabase-js derives from the user object CACHED in the cookie. After backup-code recovery removed
+    the factor, the middleware kept demanding a challenge no factor could satisfy for up to an hour. Now the
+    live factor list from getUser(); recover / factors-disable also refreshSession(); the challenge page
+    re-reads factors and continues when there is truly none.
+  - MEDIUM  mfa/verify decided "first enrolment" from "user has zero unused backup codes", so a user who had
+    used every code got a hidden new set + a false mfa_enabled audit/notification/email on an ordinary
+    login, and the "safe to retry" claim was false. Enrolment is now decided by the factor's own status
+    before verification; the setup screen offers "Generate backup codes" when none come back.
+  - MEDIUM  mfa/recover burned the backup code before checking that the factor delete worked (locking the
+    user out on failure) and two concurrent requests could spend one code. Conditional claim, code restored
+    on failure.
+  - LOW-MED reset-password page: `linkInvalid` beat `ready` and was never cleared (a slow exchange showed
+    "expired" for good); errors in the URL are shown at once; MFA-enrolled users are sent to the challenge and
+    back.
+  - LOW-MED Middleware early returns (redirects / 401 JSON) dropped the session cookies supabase had just
+    refreshed; now copied onto every response. Legacy `Domain=` session cookies (left by the earlier
+    domain-scoping change) are detected as duplicates in the Cookie header and expired.
+  - LOW     Unauthenticated API calls got an HTML redirect; now JSON 401. `next` kept its path but lost its
+    query string; now preserved.
+  - LOW     mfa/verify reported every upstream failure as "Incorrect code" (rate limit, expired challenge,
+    network) and threw a 500 on a non-string code. Errors are classified; input validated.
+  - LOW     client.ts getAll() threw URIError on any cookie with a stray '%' (took down every browser auth
+    call). The cookie `Secure` flag was tied to NEXT_PUBLIC_COOKIE_DOMAIN being set. /login rendered any
+    `?message=` text in the green success box (spoofing) and the OAuth callback reflected Supabase's
+    error_description into it — now fixed code-keyed messages (lib/auth/login-messages.ts; the exact legacy
+    strings still work). Callback accepted any OTP `type`; now signup/email/magiclink/email_change only.
+  - LOW     Backup-code regeneration retired the old codes BEFORE inserting the new set; enroll only cleaned
+    up the first stale factor and ignored the result; notification inserts wrapped in try/catch never saw
+    failures (the builder does not throw) — three routes.
+  - LOW     workspace/create authenticated with getUser() alone, so a soft-deleted account could still create a
+    workspace. Refused. (getSession's deleted_at check and the account-delete ban landed upstream in the
+    cron/portal round; the middleware gate now signs a deleted account out as well.)
+  Feature gaps built
+  - Resend verification email: /login ("Email not confirmed") and the sign-up "check your email" screen, with
+    a 60 s cooldown and an answer that does not reveal whether an address is registered.
+  - Per-user throttle + audit for failed attempts: NEW public.auth_attempts ledger, 5 failures / 5 minutes
+    for /mfa/verify, /mfa/recover and the current-password check in /change-password (429 + Retry-After),
+    failures audited (security.mfa_challenge_failed, security.mfa_recovery_failed,
+    security.password_verify_failed). Fails open on a ledger error. Pruned by cron/invite-cleanup.
+  - A login is audited once per authentication and only once it has SUCCEEDED: login-event skips a sign-in that
+    still owes a second factor; mfa/verify records security.login_succeeded (method + mfa:'totp') when the
+    challenge passes. The Google callback does the same.
+  - Enabling MFA revokes every other session (mirrors disabling it).
+  - Cross-device password reset: /reset-password accepts ?token_hash=&type=recovery (README template).
+  - Terms acceptance recorded: users.terms_accepted_at (server time) + terms_version, from signup metadata
+    (handle_new_user) and, for Google, /api/auth/callback?terms= (lib/auth/terms.ts TERMS_VERSION).
+  - public.users.email now follows a GoTrue email change (no UPDATE trigger existed).
+  - README §1.3 / .env.local.example: the server-side auth settings the code relies on; NEXT_PUBLIC_COOKIE_DOMAIN.
+
+RLS + PERMISSIONS
+  Bugs fixed
+  - HIGH  Permission-ceiling bypass by type confusion. roles.permissions / permission_overrides were accepted
+    as any JSON and read with four rules: ceiling and MFA policy `=== true`, getSession() plain truthiness,
+    SQL `->> key)::boolean` ('1'/'yes' true, 'maybe' raises). A MANAGE_ROLES holder could POST
+    {DELETE_PROJECTS: 1, MANAGE_BILLING: "yes"}: the ceiling saw nothing, the role was stored, getSession()
+    granted every key, and the holder was never forced into MFA. A value like "maybe" also made every later
+    update_*_atomic call in the workspace raise (role management bricked). Fixed at every layer:
+      routes   lib/utils/permission-map.ts parsePermissionMap() on POST /team/roles, PATCH /team/roles/[id],
+               PATCH /team/[id] (400 on any non-boolean; unknown keys dropped)
+      ceiling  any value other than false/null/undefined counts as a grant attempt (fail closed)
+      session  getSession() grants only `=== true`
+      database is_valid_permission_map() + 3 CHECK constraints; merge_permission_maps() coerces to strict
+               booleans in both triggers; both *_atomic functions use `-> perm = 'true'`; existing bad rows are
+               normalised to false first
+  - LOW  compute_effective_permissions / propagate_role_permissions were SECURITY DEFINER without a pinned
+    search_path (now pinned). `authenticated` held INSERT/TRUNCATE/REFERENCES/TRIGGER on public.users it never
+    uses (revoked; inert users_insert_own policy dropped).
+  - MEDIUM (docs) README §1.2 still told deployers to create INSERT/UPDATE storage policies on `logos`
+    for any authenticated user — the direct-upload path the logo route was rewritten to close (live-script SVG
+    on the public storage origin). Replaced with "service role only" + DROP statements.
+  Tests / guards added
+  - tests/rls-contract.test.ts: (a) no code reads or writes a TABLE through the session-bound client, (b) every
+    session-bound RPC is EXECUTE-granted to authenticated, (c) the only functions executable via the public
+    anon key are the two reviewed caller-bound ones, (d) no exposed SECURITY DEFINER without a pinned
+    search_path, (e) migration 064 invariants. It fails against the previous snapshot for exactly the defect
+    that shipped (verified).
+  - tests/permission-map, permission-ceiling (non-boolean cases), auth-time, attempt-limit, login-messages,
+    password-policy.
+
+FILES
+  New:  supabase/migrations/064_auth_rls_independent_pass_fixes.sql
+        app/api/auth/reset-password/route.ts
+        lib/auth/{auth-time,attempt-limit,backup-code-store,login-messages,password-policy,terms}.ts
+        lib/utils/permission-map.ts
+        tests/{permission-map,auth-time,attempt-limit,login-messages,password-policy,rls-contract}.test.ts
+  Retired (now a 410 stub; safe to delete): app/api/auth/password-changed/route.ts
+  Modified: middleware.ts, lib/auth/session.ts, lib/supabase/{client,cookie-options}.ts,
+        lib/utils/permission-ceiling.ts, app/api/auth/{callback,change-password,login-event}/route.ts,
+        app/api/auth/mfa/{verify,recover,factors,enroll,backup-codes}/route.ts, app/api/cron/invite-cleanup/route.ts,
+        app/api/team/roles/route.ts, app/api/team/roles/[id]/route.ts, app/api/team/[id]/route.ts,
+        app/api/workspace/create/route.ts, app/(auth)/{login/LoginForm,signup/page,reset-password/page}.tsx,
+        app/mfa-challenge/page.tsx, components/mfa/MfaSetupClient.tsx, tests/permission-ceiling.test.ts,
+        README.md, .env.local.example
+
+NOT DONE / KNOWN LIMITS
+  - VERIFICATION: no Postgres was available where this was written, so migration 064 was reviewed by hand, not
+    executed; run it on a scratch database first (and the real role-switching replay). TypeScript was checked
+    differentially against stubbed third-party types and the unit tests ran under a shim, not the real
+    vitest/tsc toolchain — run `npm test` and `next build` before merging.
+  - GoTrue behaviours relied on but not exercised here: supabase-js getUser() returning `factors`, error
+    codes (mfa_verification_failed, insufficient_aal, over_request_rate_limit), and `amr` timestamps.
+  - A direct supabase.auth.updateUser({ password }) from the browser still succeeds unless "Secure password
+    change" is enabled in Supabase; the trigger audits it, it cannot stop it. Same for a direct
+    supabase.auth.mfa.unenroll() at aal2 (non-mandatory accounts): only the route audits/emails it.
+  - Password-change audit rows written by the trigger carry no IP or `via` (the database cannot see them); GoTrue
+    re-hashing a password (bcrypt cost change) would also look like a change.
+  - Enrolling MFA does not ask for the password (a hijacked session could enrol its own TOTP; the email
+    notice and other-session revocation are the mitigations). Backup codes are still unsalted SHA-256 of
+    ~50-bit codes (protected by the column-level grant lockdown, not by the hash).
+  - Sign-up remains a direct browser -> Supabase call, so its server-side password rule is the dashboard setting.
+  - SettingsClient still emits the legacy `?message=` form for three redirects (honoured via the exact-match
+    legacy table); lib/email/templates.ts has one stale comment naming the deleted /api/auth/password-changed.
+  - public.immutable_unaccent() (063 region) is created inside a DO block and is not covered by the contract
+    test's function scan; it is a pure, non-definer function.

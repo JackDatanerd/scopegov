@@ -29,6 +29,14 @@
 # Execute via Supabase SQL editor or CLI
 ```
 
+> The list above is abbreviated — apply **every** file in `supabase/migrations/` in numeric order.
+> **Migration `064_auth_rls_independent_pass_fixes.sql` must be applied BEFORE deploying the matching
+> app build.** `middleware.ts` now reads its onboarding / MFA-enrolment state from the
+> `middleware_gate_state()` function that migration creates; until it exists every page request
+> answers 503 (deliberately fail-closed). 064 also normalises any non-boolean permission values already
+> stored (to `false`), adds CHECK constraints on `roles.permissions` / `workspace_members.permission_overrides`,
+> installs the password-change audit trigger on `auth.users`, and creates `auth_attempts`.
+
 **Required checks after migration:**
 - [ ] `handle_new_user` trigger exists with SECURITY DEFINER
 - [ ] Verify: `SELECT count(*) FROM auth.users` = `SELECT count(*) FROM public.users`
@@ -43,20 +51,18 @@
 ### 1.2 Storage Buckets (MANUAL — not in migrations)
 Create in Supabase Dashboard → Storage:
 
-1. **`logos`** — Public bucket
-   - Toggle: Public ON
-   - Add RLS policies (from `001_initial_schema.sql` comments):
+1. **`logos`** — Public bucket (also holds profile avatars)
+   - Toggle: Public ON (public bucket = objects are readable at their public URL; **no SELECT policy needed**)
+   - **Do NOT add any INSERT / UPDATE policy for `authenticated`.** Logos and avatars are uploaded ONLY by
+     `app/api/workspace/branding/logo/route.ts` and `app/api/workspace/profile/avatar/route.ts` through the
+     service client, which validate type, size and (for SVG) refuse script-capable content. An INSERT policy
+     lets any signed-in user call the Storage API directly and host arbitrary files — including live-script
+     SVGs — on your public storage origin, bypassing every check in those routes.
+   - If an earlier version of this README had you create them, remove them:
    ```sql
-   CREATE POLICY "Users can upload their own logo" ON storage.objects
-     FOR INSERT TO authenticated
-     WITH CHECK (bucket_id = 'logos' AND auth.uid()::text = (storage.foldername(name))[1]);
-
-   CREATE POLICY "Users can update their own logo" ON storage.objects
-     FOR UPDATE TO authenticated
-     USING (bucket_id = 'logos' AND auth.uid()::text = (storage.foldername(name))[1]);
-
-   CREATE POLICY "Public can read logos" ON storage.objects
-     FOR SELECT TO public USING (bucket_id = 'logos');
+   DROP POLICY IF EXISTS "Users can upload their own logo" ON storage.objects;
+   DROP POLICY IF EXISTS "Users can update their own logo" ON storage.objects;
+   -- (the old public SELECT policy is harmless but unnecessary on a public bucket)
    ```
 
 2. **`pdfs`** — Private bucket
@@ -76,7 +82,23 @@ Create in Supabase Dashboard → Storage:
 - [ ] **Custom SMTP:** Settings → Auth → SMTP → configure with Resend
   - Host: `smtp.resend.com`, Port: 465, User: `resend`, Pass: your Resend API key
   - From: `noreply@mail.scopegov.app`
-- [ ] **Email templates:** Customize confirm signup, reset password (Settings → Auth → Email Templates)
+- [ ] **Email templates:** Customize confirm signup, reset password (Settings → Auth → Email Templates).
+  For links that also work when opened on a different device than the one that requested them (the default
+  PKCE `?code=` links only work in the requesting browser), use the token-hash form:
+  - Confirm signup: `{{ .SiteURL }}/api/auth/callback?token_hash={{ .TokenHash }}&type=signup&next=/onboarding`
+  - Reset password: `{{ .SiteURL }}/reset-password?token_hash={{ .TokenHash }}&type=recovery`
+- [ ] **Confirm email: ON** (Auth → Sign In / Providers → Email). Sign-up sends people to "check your email".
+- [ ] **Minimum password length ≥ 8** (Auth → Sign In / Providers → Email). Sign-up talks to Supabase Auth
+  directly from the browser, so THIS setting — not the form — is the server-side rule for new accounts.
+  (`/api/auth/change-password` and `/api/auth/reset-password` enforce 8 characters / 72 bytes themselves.)
+- [ ] **Secure password change: ON** (and "require current password" where your plan offers it). Without it,
+  any signed-in browser can call `supabase.auth.updateUser({ password })` directly and skip the current-password,
+  recent-sign-in and MFA checks in `/api/auth/change-password`. (The database trigger from migration 064 still
+  audits such a change, but it cannot prevent it.)
+- [ ] **Multi-factor (TOTP): enabled** (Auth → Multi Factor). Required for two-factor sign-in and for the
+  mandatory-MFA policy on governance roles.
+- [ ] **JWT expiry:** leave at the default (3600 s). Session cookies are re-issued on refresh; shortening it
+  increases refresh traffic, lengthening it lengthens how long a revoked session's access token stays valid.
 - [ ] **Google OAuth:** Enable in Settings → Auth → Providers → Google
   - Set redirect URL: `https://app.scopegov.app/api/auth/callback`
 - [ ] **Site URL:** Settings → Auth → URL Configuration → `https://app.scopegov.app`
@@ -92,6 +114,7 @@ NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_ANON_KEY=
 SUPABASE_SERVICE_ROLE_KEY=           ← CRITICAL (BUG-033)
 NEXT_PUBLIC_APP_URL=https://app.scopegov.app
+NEXT_PUBLIC_COOKIE_DOMAIN=.scopegov.app      ← optional: share the PKCE code-verifier cookie across app./www. hosts
 NEXT_PUBLIC_PORTAL_URL=https://sign.scopegov.app
 ANTHROPIC_API_KEY=
 ANTHROPIC_MODEL=claude-sonnet-4-6

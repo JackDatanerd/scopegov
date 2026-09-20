@@ -6,6 +6,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { permissionsBeyondCeiling, permissionsBeyondActorForTarget, roleWithinCeiling } from '@/lib/utils/permission-ceiling'
+import { parsePermissionMap } from '@/lib/utils/permission-map'
 import { mergePermissions, protectedPermissionsOrphanedBy, describeProtectedPermission, PROTECTED_PERMISSIONS } from '@/lib/utils/admin-floor'
 import { checkSeatLimit } from '@/lib/utils/seat-limit'
 
@@ -242,9 +243,16 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (body.roleId === undefined && body.permissionOverrides === undefined) {
       return NextResponse.json({ error: 'Nothing to update' }, { status: 400 })
     }
-    if (body.permissionOverrides !== undefined && body.permissionOverrides !== null &&
-        (typeof body.permissionOverrides !== 'object' || Array.isArray(body.permissionOverrides))) {
-      return NextResponse.json({ error: 'Invalid permission overrides payload' }, { status: 400 })
+    // FIX (build — RLS + permissions independent audit, HIGH): overrides must be a
+    // strict { PERMISSION: boolean } map (null clears them). Anything else — 1,
+    // "yes", nested objects — used to be stored as-is and granted by getSession()'s
+    // truthiness filter while the ceiling ignored it. See lib/utils/permission-map.ts.
+    if (body.permissionOverrides !== undefined && body.permissionOverrides !== null) {
+      const parsed = parsePermissionMap(body.permissionOverrides)
+      if (!parsed.ok) {
+        return NextResponse.json({ error: parsed.error.replace('permissions payload', 'permission overrides payload') }, { status: 400 })
+      }
+      body.permissionOverrides = parsed.value
     }
 
     // FIX (section-by-section re-audit, RLS+permissions Finding 2 —

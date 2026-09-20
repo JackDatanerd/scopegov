@@ -103,7 +103,12 @@ export async function getSession(): Promise<SessionUser | null> {
       planTier:             ws?.plan_tier || 'trial',
       trialEndsAt:          ws?.trial_ends_at || null,
       onboardingCompletedAt: ws?.onboarding_completed_at || null,
-      permissions:          Object.keys(perms).filter(k => perms[k]) as Permission[],
+      // FIX (build — RLS + permissions independent audit, HIGH): was a plain
+      // truthiness filter (`perms[k]`), so a stored 1 / "yes" / {} granted the
+      // permission while the ceiling and the MFA policy (`=== true`) ignored
+      // it. Only a real JSON `true` grants anything now, matching every other
+      // reader of this column.
+      permissions:          Object.keys(perms || {}).filter(k => perms[k] === true) as Permission[],
       // C2: fall back to Supabase auth email_confirmed_at so existing sessions
       // aren't blocked by a stale null in public.users
       emailVerifiedAt:      u?.email_verified_at || user.email_confirmed_at || null,

@@ -103,14 +103,21 @@ export async function DELETE(request: Request) {
     // legitimate user doesn't recognize as theirs). Same gap and same fix
     // as change-password: 'others' scope only — the caller just proved
     // aal2 in this session, nothing to revoke here.
-    await supabase.auth.signOut({ scope: 'others' }).catch(e => console.error('MFA disable session revocation failed (non-fatal):', e))
+    const { error: othersErr } = await supabase.auth.signOut({ scope: 'others' })
+    if (othersErr) console.error('MFA disable session revocation failed (non-fatal):', othersErr.message)
+
+    // FIX (build — Auth independent audit): re-issue this session's tokens so its
+    // cached user stops listing the factor that was just removed.
+    const { error: refreshErr } = await supabase.auth.refreshSession()
+    if (refreshErr) console.error('MFA disable session refresh failed (non-fatal):', refreshErr.message)
 
     // Consume any remaining backup codes — they were tied to the factor
     // that no longer exists; leaving them active would let a leaked code
     // silently persist as a route back into an account.
-    await (service as any).from('user_mfa_backup_codes')
+    const { error: retireErr } = await (service as any).from('user_mfa_backup_codes')
       .update({ used_at: new Date().toISOString() })
       .eq('user_id', user.id).is('used_at', null)
+    if (retireErr) console.error('MFA disable: could not retire backup codes:', retireErr.message)
 
     try {
       await logAudit(service, {

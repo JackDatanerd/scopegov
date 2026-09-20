@@ -1,9 +1,10 @@
 'use client'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { safeRedirectPath } from '@/lib/utils/safe-redirect'
+import { resolveLoginMessage } from '@/lib/auth/login-messages'
 
 export default function LoginForm() {
   const router = useRouter()
@@ -12,20 +13,58 @@ export default function LoginForm() {
   // read, not just at the final server-side redirect — see
   // lib/utils/safe-redirect.ts.
   const next = safeRedirectPath(searchParams.get('next'))
-  const message = searchParams.get('message')
+  // FIX (build — Auth independent audit, LOW): messages come from a fixed,
+  // code-keyed table (lib/auth/login-messages.ts). Arbitrary `?message=` text used
+  // to be rendered in the green success box — a phishing/spoofing surface.
+  const message = resolveLoginMessage(searchParams.get('m'), searchParams.get('message'))
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [googleLoading, setGoogleLoading] = useState(false)
   const [error, setError] = useState('')
+  // FIX (build — Auth independent audit, feature gap): a person who never got (or
+  // lost) the verification email had no way to ask for another one — login just
+  // showed Supabase's raw "Email not confirmed".
+  const [needsConfirm, setNeedsConfirm] = useState(false)
+  const [resendCooldown, setResendCooldown] = useState(0)
+  const [resendNotice, setResendNotice] = useState('')
   const supabase = createClient()
+
+  useEffect(() => {
+    if (resendCooldown <= 0) return
+    const t = setTimeout(() => setResendCooldown(c => c - 1), 1000)
+    return () => clearTimeout(t)
+  }, [resendCooldown])
+
+  async function handleResend() {
+    if (!email || resendCooldown > 0) return
+    setResendNotice('')
+    // Same answer whether or not the address has an account waiting for
+    // verification, so this can't be used to probe which emails are registered.
+    await supabase.auth.resend({
+      type: 'signup', email,
+      options: { emailRedirectTo: `${window.location.origin}/api/auth/callback?next=${encodeURIComponent(next)}` },
+    }).catch(() => {})
+    setResendCooldown(60)
+    setResendNotice('If that address is waiting for verification, a new link is on its way. Check your spam folder too.')
+  }
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault()
-    setLoading(true); setError('')
+    setLoading(true); setError(''); setNeedsConfirm(false); setResendNotice('')
     try {
       const { error: err } = await supabase.auth.signInWithPassword({ email, password })
-      if (err) { setError(err.message.includes('Invalid') ? 'Incorrect email or password.' : err.message); return }
+      if (err) {
+        if ((err as any).code === 'email_not_confirmed' || /email not confirmed/i.test(err.message)) {
+          setNeedsConfirm(true)
+          setError('Please confirm your email address before signing in. We sent you a verification link when you signed up.')
+        } else if ((err as any).status === 429) {
+          setError('Too many sign-in attempts. Please wait a few minutes and try again.')
+        } else {
+          setError(err.message.includes('Invalid') ? 'Incorrect email or password.' : err.message)
+        }
+        return
+      }
 
       // FIX (deep audit, Auth+MFA re-pass — login audit trail): the browser
       // session cookie is already set by the call above, so this reflects
@@ -96,8 +135,18 @@ export default function LoginForm() {
         <div className="auth-form-wrap">
           <h2 className="auth-form-title">Sign in</h2>
           <p className="auth-form-sub">Welcome back to your workspace</p>
-          {message && <div className="auth-success">{message}</div>}
+          {message && <div className={message.tone === 'error' ? 'auth-error' : 'auth-success'}>{message.text}</div>}
           {error && <div className="auth-error">{error}</div>}
+          {needsConfirm && (
+            <div style={{ marginBottom: 14, fontSize: 12 }}>
+              <button type="button" className="auth-link" onClick={handleResend}
+                disabled={resendCooldown > 0}
+                style={{ background: 'none', border: 'none', padding: 0, cursor: resendCooldown > 0 ? 'default' : 'pointer' }}>
+                {resendCooldown > 0 ? `Resend verification email (${resendCooldown}s)` : 'Resend verification email'}
+              </button>
+              {resendNotice && <div className="auth-success" style={{ marginTop: 8 }}>{resendNotice}</div>}
+            </div>
+          )}
           <button className="oauth-btn" onClick={handleGoogle} disabled={googleLoading}
             style={{ marginBottom: 16, width: '100%' }}>
             {googleLoading ? <span className="spin spin-dark" /> : (

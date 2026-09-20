@@ -20,6 +20,14 @@ export async function POST(request: NextRequest) {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+    // FIX (build — Auth independent audit, MEDIUM): this route authenticates with
+    // getUser() alone (a brand-new user has no membership, so getSession() can't
+    // be used), which meant a soft-deleted account could still create a workspace
+    // and carry on. A deleted account is refused here.
+    const { data: deletedCheck } = await (createServiceClient() as any)
+      .from('users').select('deleted_at').eq('id', user.id).maybeSingle()
+    if (deletedCheck?.deleted_at) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
     const { agencyName: agencyNameRaw, industry, currency, timezone } = await request.json()
     const agencyName = sanitizeDisplayName(agencyNameRaw)
     if (!agencyName || !industry) {

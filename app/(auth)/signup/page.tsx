@@ -1,8 +1,9 @@
 'use client'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { TERMS_VERSION } from '@/lib/auth/terms'
 
 export default function SignupPage() {
   const router = useRouter()
@@ -13,7 +14,29 @@ export default function SignupPage() {
   const [googleLoading, setGoogleLoading] = useState(false)
   const [error, setError] = useState('')
   const [emailSent, setEmailSent] = useState(false)
+  // Resend of the verification email (feature gap): the "check your email" screen
+  // only offered "try a different address", so a lost/never-arrived link was a
+  // dead end.
+  const [resendCooldown, setResendCooldown] = useState(0)
+  const [resendNotice, setResendNotice] = useState('')
   const supabase = createClient()
+
+  useEffect(() => {
+    if (resendCooldown <= 0) return
+    const t = setTimeout(() => setResendCooldown(c => c - 1), 1000)
+    return () => clearTimeout(t)
+  }, [resendCooldown])
+
+  async function handleResend() {
+    if (!email || resendCooldown > 0) return
+    setResendNotice('')
+    await supabase.auth.resend({
+      type: 'signup', email,
+      options: { emailRedirectTo: `${window.location.origin}/api/auth/callback?next=/onboarding` },
+    }).catch(() => {})
+    setResendCooldown(60)
+    setResendNotice('A new verification link is on its way.')
+  }
 
   async function handleSignup(e: React.FormEvent) {
     e.preventDefault()
@@ -33,7 +56,10 @@ export default function SignupPage() {
       const { data, error: err } = await supabase.auth.signUp({
         email, password,
         options: {
-          data: { name: trimmedName },
+          // terms_version: which Terms/Privacy text was on screen. handle_new_user()
+          // (migration 064) stores it with a SERVER timestamp — the client never
+          // supplies the time of acceptance.
+          data: { name: trimmedName, terms_version: TERMS_VERSION },
           emailRedirectTo: `${window.location.origin}/api/auth/callback?next=/onboarding`,
         },
       })
@@ -66,7 +92,8 @@ export default function SignupPage() {
     try {
       const { error: err } = await supabase.auth.signInWithOAuth({
         provider: 'google',
-        options: { redirectTo: `${window.location.origin}/api/auth/callback?next=/onboarding` },
+        // `terms` = the version shown on this page; /api/auth/callback records it.
+        options: { redirectTo: `${window.location.origin}/api/auth/callback?next=/onboarding&terms=${encodeURIComponent(TERMS_VERSION)}` },
       })
       if (err) { setError(err.message); setGoogleLoading(false) }
     } catch { setError('Google sign-up failed.'); setGoogleLoading(false) }
@@ -100,12 +127,18 @@ export default function SignupPage() {
               Click it to activate your account and get started.
             </p>
             <p style={{ fontSize: 12, color: 'var(--text-3)', lineHeight: 1.6 }}>
-              Didn&apos;t receive it? Check spam, or{' '}
+              Didn&apos;t receive it? Check spam,{' '}
+              <button onClick={handleResend} disabled={resendCooldown > 0}
+                style={{ background: 'none', border: 'none', color: 'var(--green)', cursor: resendCooldown > 0 ? 'default' : 'pointer', fontSize: 12, fontFamily: 'inherit', fontWeight: 500 }}>
+                {resendCooldown > 0 ? `resend the email (${resendCooldown}s)` : 'resend the email'}
+              </button>
+              {' '}or{' '}
               <button onClick={() => setEmailSent(false)}
                 style={{ background: 'none', border: 'none', color: 'var(--green)', cursor: 'pointer', fontSize: 12, fontFamily: 'inherit', fontWeight: 500 }}>
                 try a different email address
               </button>.
             </p>
+            {resendNotice && <p style={{ fontSize: 12, color: 'var(--green)', marginTop: 10 }}>{resendNotice}</p>}
           </div>
         </div>
       </div>

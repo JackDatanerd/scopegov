@@ -19,9 +19,20 @@
 // that use the real domain). Leave it unset for local dev — localhost
 // cookies must NOT have a Domain attribute or the browser will reject them
 // outright.
+// FIX (build — Auth independent audit, LOW): `secure` used to be tied to
+// NEXT_PUBLIC_COOKIE_DOMAIN being set — the whole options object was
+// `undefined` without it, so a deployment missing that one variable (a new
+// Vercel project, a preview environment promoted to production) silently
+// issued session cookies without the Secure flag. Secure now follows the
+// build mode; the cookie domain stays optional.
 export function sharedCookieOptions() {
   const domain = process.env.NEXT_PUBLIC_COOKIE_DOMAIN
-  return domain ? { domain, sameSite: 'lax' as const, secure: true, path: '/' } : undefined
+  return {
+    ...(domain ? { domain } : {}),
+    sameSite: 'lax' as const,
+    secure: process.env.NODE_ENV === 'production',
+    path: '/',
+  }
 }
 
 // FIX (deep audit, Auth+MFA independent re-pass): sharedCookieOptions()

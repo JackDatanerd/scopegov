@@ -21,9 +21,17 @@ export function createClient() {
       cookies: {
         getAll() {
           if (typeof document === 'undefined') return []
-          return document.cookie.split('; ').filter(Boolean).map(pair => {
+          // FIX (build — Auth independent audit, LOW): decodeURIComponent()
+          // throws URIError on a stray '%' — any third-party cookie on the
+          // domain (analytics, marketing) with such a value made getAll() throw
+          // from EVERY supabase.auth call in the browser. Fall back to the raw
+          // string per cookie, like the `cookie` package @supabase/ssr uses by
+          // default, and ignore fragments with no name.
+          return document.cookie.split(';').map(p => p.trim()).filter(Boolean).flatMap(pair => {
             const idx = pair.indexOf('=')
-            return { name: decodeURIComponent(pair.slice(0, idx)), value: decodeURIComponent(pair.slice(idx + 1)) }
+            if (idx <= 0) return []
+            const safeDecode = (v: string) => { try { return decodeURIComponent(v) } catch { return v } }
+            return [{ name: safeDecode(pair.slice(0, idx)), value: safeDecode(pair.slice(idx + 1)) }]
           })
         },
         setAll(cookiesToSet: Array<{ name: string; value: string; options?: CookieOptions }>) {

@@ -1,83 +1,145 @@
 export const runtime = 'nodejs'
 
-import { notifySecurityEvent } from '@/lib/utils/notify'
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
 import { logAudit } from '@/lib/utils/audit'
-import { generateBackupCodes } from '@/lib/utils/backup-codes'
+import { notifySecurityEvent } from '@/lib/utils/notify'
+import { issueBackupCodes } from '@/lib/auth/backup-code-store'
 import { sendMfaEnabledEmail } from '@/lib/email/templates'
 import { resolveActiveWorkspaceId, resolveActorName } from '@/lib/auth/session'
+import { decodeJwtPayload, loginMethodFromAmr } from '@/lib/auth/auth-time'
+import {
+  checkAuthAttemptLimit, recordAuthFailure, clearAuthFailures, lockoutMessage, AUTH_ATTEMPT_LIMIT,
+} from '@/lib/auth/attempt-limit'
 
-// Single endpoint for both flows:
-//  - Enrollment confirmation: no backup codes exist for this user yet →
-//    on success we generate them, log it, email the user, and return the
-//    codes once (they are never retrievable again).
-//  - Login challenge / any repeat call: backup codes already exist → on
-//    success the session is simply upgraded to aal2, nothing more to do.
+// POST /api/auth/mfa/verify — two callers share this endpoint:
+//   1. FIRST ENROLMENT: the factor being verified is still `unverified`. On
+//      success we issue backup codes (returned once), audit + notify + email,
+//      and revoke every other session.
+//   2. LOGIN CHALLENGE: the factor is already `verified`. On success the
+//      session becomes aal2 and the sign-in is recorded in the audit trail.
 //
-// Whether to issue codes is decided from a DB read done AFTER verification
-// succeeds — "does this user already have backup codes on file" — rather
-// than from the TOTP factor's pre-verify status. That status check is
-// racy against exactly the failure mode this endpoint used to hit: a
-// request that verifies successfully server-side but then errors on its
-// way back to the client (see the notifications-insert fix below) leaves
-// the factor already 'verified' by the time a retry arrives, so a
-// status-based check silently skips code generation on the retry — the
-// codes exist in the database, but were never actually shown to the user.
-// Checking DB existence instead makes this endpoint safe to retry.
+// FIX (build — Auth independent audit, MEDIUM): "is this the first enrolment?"
+// used to be inferred from "the user has zero unused backup codes". That
+// conflates "never enrolled" with "used every code": such a user got a brand
+// new, never-displayed code set plus a false `mfa_enabled` audit row, email and
+// notification on an ordinary login. The header comment's claim that the DB
+// check made the endpoint "safe to retry" was also wrong — a retry after a lost
+// response finds the codes already stored and returns none (the same hidden-
+// codes failure it was meant to fix). Enrolment is now decided by the factor's
+// OWN status before verification, which is exactly the thing that changes on
+// success; a retry is treated as a normal challenge and the setup screen offers
+// to regenerate codes when none came back.
+//
+// Other fixes here: every upstream failure used to be reported as "Incorrect
+// code" (rate limits, expired challenge, network) which invites retries into a
+// rate limit; `code` wasn't type-checked (a numeric code threw a 500); there was
+// no throttle and failed challenges left no audit trail.
+
 export async function POST(request: Request) {
   try {
     const supabase = await createServerSupabaseClient()
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-    const body = await request.json().catch(() => ({}))
-    const { factorId, code } = body as { factorId?: string; code?: string }
-    if (!factorId || !code) return NextResponse.json({ error: 'factorId and code are required' }, { status: 400 })
+    const body = await request.json().catch(() => null) as { factorId?: unknown; code?: unknown } | null
+    if (typeof body?.factorId !== 'string' || !body.factorId || typeof body?.code !== 'string') {
+      return NextResponse.json({ error: 'factorId and code are required' }, { status: 400 })
+    }
+    const factorId = body.factorId
+    // Authenticator apps often display the code as "123 456".
+    const code = body.code.replace(/\s+/g, '')
+    if (!/^\d{6}$/.test(code)) {
+      return NextResponse.json({ error: 'Enter the 6-digit code from your authenticator app.' }, { status: 400 })
+    }
 
-    const { error } = await supabase.auth.mfa.challengeAndVerify({ factorId, code: code.trim() })
-    if (error) return NextResponse.json({ error: 'Incorrect code. Check your authenticator app and try again.' }, { status: 400 })
-
-    // Verified — session is now aal2 regardless of which branch runs below.
     const service = createServiceClient()
 
-    const { count: existingCodes } = await (service as any)
-      .from('user_mfa_backup_codes')
-      .select('id', { count: 'exact', head: true })
-      .eq('user_id', user.id)
-      .is('used_at', null)
+    const limit = await checkAuthAttemptLimit(service, user.id, 'mfa_verify')
+    if (!limit.allowed) {
+      return NextResponse.json(
+        { error: lockoutMessage(limit.retryAfterSeconds), code: 'locked', retryAfterSeconds: limit.retryAfterSeconds },
+        { status: 429, headers: { 'Retry-After': String(limit.retryAfterSeconds) } }
+      )
+    }
 
-    if ((existingCodes || 0) > 0) {
-      // Already has live backup codes — this was a login challenge, or a
-      // retry of a completed enrollment. Nothing more to issue.
+    // Live factor list (from Supabase Auth, not a cookie cache).
+    const { data: factorList } = await supabase.auth.mfa.listFactors()
+    const factor = (factorList?.all || []).find(f => f.id === factorId)
+    if (!factor) {
+      return NextResponse.json({
+        error: 'That authenticator is no longer registered on this account. Refresh the page and try again.',
+        code: 'factor_not_found',
+      }, { status: 400 })
+    }
+    const isEnrolment = factor.status !== 'verified'
+
+    const { error } = await supabase.auth.mfa.challengeAndVerify({ factorId, code })
+    if (error) {
+      const status = (error as any).status as number | undefined
+      const errCode = (error as any).code as string | undefined
+      const message = String((error as any).message || '')
+
+      if (status === 429 || errCode === 'over_request_rate_limit') {
+        return NextResponse.json(
+          { error: 'Too many attempts right now. Wait a minute and try again.', code: 'rate_limited' },
+          { status: 429, headers: { 'Retry-After': '60' } }
+        )
+      }
+
+      const wrongCode = errCode === 'mfa_verification_failed' || /invalid totp|incorrect|verification failed/i.test(message)
+      if (!wrongCode) {
+        // Expired challenge, factor gone, network trouble: not the user's typo, so
+        // it isn't a strike and shouldn't be reported as one.
+        console.error('MFA challengeAndVerify failed:', errCode, message)
+        return NextResponse.json({ error: 'We couldn\u2019t verify that code right now. Please try again.', code: 'verify_unavailable' }, { status: 502 })
+      }
+
+      await recordAuthFailure(service, user.id, 'mfa_verify')
+      if (!isEnrolment) {
+        // A failed login challenge is a security-relevant event; a typo while
+        // setting up an authenticator is not. Bounded: the limiter stops us
+        // after AUTH_ATTEMPT_LIMIT.maxFailures rows per window.
+        const after = await checkAuthAttemptLimit(service, user.id, 'mfa_verify')
+        try {
+          await logAudit(service, {
+            workspaceId: (await resolveActiveWorkspaceId(service, user.id)) || '',
+            actorId: user.id, actorEmail: user.email!,
+            actorName: await resolveActorName(service, user.id, user.user_metadata?.name || user.email!),
+            eventType: 'security.mfa_challenge_failed', entityType: 'user', entityId: user.id, entityName: user.email!,
+            metadata: { failures_in_window: after.failures, locked: !after.allowed, window_seconds: AUTH_ATTEMPT_LIMIT.windowSeconds },
+          })
+        } catch (e) { console.error('MFA failure audit log failed (non-fatal):', e) }
+      }
+      return NextResponse.json({ error: 'Incorrect code. Check your authenticator app and try again.', code: 'incorrect_code' }, { status: 400 })
+    }
+
+    await clearAuthFailures(service, user.id, 'mfa_verify')
+
+    const workspaceId = await resolveActiveWorkspaceId(service, user.id)
+    const actorName = await resolveActorName(service, user.id, user.user_metadata?.name || user.email!)
+
+    // ── Login challenge ──────────────────────────────────────────────────
+    if (!isEnrolment) {
+      // /api/auth/login-event deliberately does not log a sign-in while the
+      // second factor is still pending, so this is where it gets recorded —
+      // once the sign-in has actually succeeded.
+      const { data: { session } } = await supabase.auth.getSession()
+      const method = loginMethodFromAmr(decodeJwtPayload(session?.access_token))
+      try {
+        await logAudit(service, {
+          workspaceId: workspaceId || '',
+          actorId: user.id, actorEmail: user.email!, actorName,
+          eventType: 'security.login_succeeded', entityType: 'user', entityId: user.id, entityName: user.email!,
+          metadata: { method, mfa: 'totp' },
+        })
+      } catch (e) { console.error('Login audit log failed (non-fatal):', e) }
       return NextResponse.json({ ok: true })
     }
 
-    // ── First-ever verification for this account — issue backup codes ────
-    const { plaintext, hashes } = generateBackupCodes()
-    const { error: insertErr } = await (service as any).from('user_mfa_backup_codes').insert(
-      hashes.map(code_hash => ({ user_id: user.id, code_hash }))
-    )
-    // If we can't actually store the codes, don't hand plaintext ones to
-    // the user for a set that doesn't exist server-side — surface a real
-    // error instead of a false success.
-    if (insertErr) throw insertErr
+    // ── First enrolment ──────────────────────────────────────────────────
+    const backupCodes = await issueBackupCodes(service, user.id)
 
-    const workspaceId = await resolveActiveWorkspaceId(service, user.id)
-    // FIX (deep audit, Auth+MFA section — actor-name staleness): see
-    // resolveActorName's own comment in lib/auth/session.ts.
-    const actorName = await resolveActorName(service, user.id, user.user_metadata?.name || user.email!)
-
-    // Everything below is best-effort (log/notify/email) — none of it
-    // should cost the user their backup codes if it fails. BUG (fixed):
-    // `.catch(() => {})` chained directly on a Supabase query builder
-    // throws `TypeError: insert(...).catch is not a function` in this
-    // runtime rather than swallowing the rejection — the exact same
-    // failure class already fixed elsewhere for CO accept/close/withdraw
-    // (commit fa95fe0). That crash was silently eating the backup-code
-    // response on this route: codes got generated and stored just above,
-    // then the request 500'd right after, so the client never received
-    // them even though they existed in the database.
     try {
       await logAudit(service, {
         workspaceId: workspaceId || '',
@@ -87,35 +149,22 @@ export async function POST(request: Request) {
       })
     } catch (e) { console.error('MFA enable audit log failed (non-fatal):', e) }
 
-    // FIX (Notifications & email fix round): this insert used a single, possibly-null
-    // workspace id (NOT NULL column → silent failure) and only showed in that one
-    // workspace's bell. One row per active membership, with the error actually read.
+    // One row per active membership, with the error actually read (upstream helper).
     await notifySecurityEvent(service, user.id, 'Two-factor authentication enabled',
       'Your account now requires an authenticator code to sign in.')
 
-    // FIX (re-audit): fire-and-forget email — not awaited — is unsafe in
-    // serverless (the function can freeze/terminate right after the
-    // response is sent, before the send completes). Same rule as
-    // everywhere else in this codebase: await email sends, even inside a
-    // .catch().
     await sendMfaEnabledEmail({ to: user.email!, name: actorName })
       .catch(e => console.error('MFA enable email failed (non-fatal):', e))
 
-    return NextResponse.json({ ok: true, backupCodes: plaintext })
+    // Turning MFA on invalidates every OTHER session (mirrors what disabling it
+    // does): a session that predates MFA — including one an attacker holds —
+    // must not simply carry on at aal1.
+    const { error: othersErr } = await supabase.auth.signOut({ scope: 'others' })
+    if (othersErr) console.error('MFA enable: could not revoke other sessions (non-fatal):', othersErr.message)
+
+    return NextResponse.json({ ok: true, backupCodes })
   } catch (err) {
     console.error('MFA verify error:', err)
     return NextResponse.json({ error: 'Verification failed' }, { status: 500 })
   }
 }
-
-// audit_log.workspace_id is NOT NULL (it's a per-workspace record), but MFA
-// is a user-level, cross-workspace action. We attribute the audit row to
-// whichever workspace the user currently has active — reasonable, since
-// that's the workspace context they were in when they made the change —
-// without requiring workspace_id to be nullable and weakening every other
-// query against a table whose whole job is being trustworthy.
-//
-// FIX (deep audit, RLS+permissions section): moved to lib/auth/session.ts
-// and exported so change-password, DELETE /api/auth/mfa/factors,
-// mfa/backup-codes, and password-changed can share the same fallback
-// instead of each reimplementing (or, as it turned out, omitting) it.

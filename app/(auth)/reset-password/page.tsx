@@ -31,16 +31,49 @@ export default function ResetPasswordPage() {
   // exists already).
   useEffect(() => {
     let settled = false
+    const markReady = () => {
+      settled = true
+      // FIX (build — Auth independent audit, LOW): `linkInvalid` used to win over
+      // `ready` in the render order and was never cleared, so a slow exchange
+      // (> 5 s on a bad connection) showed "link expired" permanently even though
+      // the session was established a moment later — with the single-use code
+      // already spent.
+      setLinkInvalid(false)
+      setReady(true)
+    }
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === 'PASSWORD_RECOVERY' || event === 'SIGNED_IN') {
-        settled = true
-        setReady(true)
+        markReady()
       } else if (event === 'INITIAL_SESSION' && session) {
-        settled = true
-        setReady(true)
+        markReady()
       }
     })
+
+    // A link that Supabase already rejected says so in the URL — show that at
+    // once instead of making the person wait out the timeout.
+    const query = new URLSearchParams(window.location.search)
+    const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''))
+    if (query.get('error') || query.get('error_code') || hash.get('error') || hash.get('error_code')) {
+      settled = true
+      setLinkInvalid(true)
+    }
+
+    // Token-hash links (feature gap): when the Supabase "Reset password" email
+    // template points at /reset-password?token_hash=…&type=recovery (README §1.3)
+    // the link verifies on ANY device. The default PKCE `?code=` link only works
+    // in the browser that requested the reset, because the code verifier lives in
+    // that browser's cookies.
+    const tokenHash = query.get('token_hash')
+    if (tokenHash && query.get('type') === 'recovery') {
+      settled = true
+      supabase.auth.verifyOtp({ token_hash: tokenHash, type: 'recovery' }).then(({ error: otpErr }) => {
+        if (otpErr) setLinkInvalid(true)
+        else markReady()
+        // Never leave a live token in the address bar / history.
+        window.history.replaceState({}, '', '/reset-password')
+      })
+    }
 
     // Give the SDK's own exchange a moment to finish before giving up.
     const t = setTimeout(() => {
@@ -56,17 +89,29 @@ export default function ResetPasswordPage() {
     if (password.length < 8) { setError('Password must be at least 8 characters.'); return }
     setLoading(true); setError('')
     try {
-      const { error: err } = await supabase.auth.updateUser({ password })
-      if (err) { setError(err.message); return }
-      // FIX (deep audit, Auth+MFA section): this flow previously left no
-      // trail — no audit_log entry, no "your password was changed" email —
-      // unlike every other sensitive account action. Must happen before
-      // signOut() below, while the recovery session that proves this was
-      // legitimate is still active. Best-effort: a notify failure must
-      // never block the user from finishing their reset.
-      await fetch('/api/auth/password-changed', { method: 'POST' }).catch(() => {})
-      // Spec §16.2: all sessions invalidated on success
-      await supabase.auth.signOut()
+      // FIX (build — Auth independent audit, MEDIUM): the password used to be set
+      // straight from the browser with supabase.auth.updateUser(), followed by a
+      // POST to /api/auth/password-changed that proved nothing (any signed-in
+      // session could call it to forge audit rows and email the owner). The change
+      // is made server-side now; the audit row is written by the database.
+      const res = await fetch('/api/auth/reset-password', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password }),
+      })
+      const body = await res.json().catch(() => ({} as { error?: string; code?: string }))
+      if (!res.ok) {
+        // Accounts with two-factor authentication must pass the challenge before
+        // the password can change: send them there and bring them straight back.
+        if (body.code === 'mfa_required' || (res.status === 401 && /two-factor/i.test(body.error || ''))) {
+          router.push('/mfa-challenge?next=' + encodeURIComponent('/reset-password'))
+          return
+        }
+        if (body.code === 'no_session' || body.code === 'stale_session') setLinkInvalid(true)
+        setError(body.error || 'Could not reset your password.')
+        return
+      }
+      // The server already ended every session; clear this tab's local copy too.
+      await supabase.auth.signOut({ scope: 'local' }).catch(() => {})
       setDone(true)
     } catch { setError('Something went wrong.') } finally { setLoading(false) }
   }
