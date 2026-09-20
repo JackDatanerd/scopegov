@@ -2,6 +2,9 @@
 
 export const runtime = 'nodejs'
 
+import { sendProjectAssignedEmail } from '@/lib/email/templates'
+import { filterByNotificationPreference } from '@/lib/utils/permissions-query'
+import { notifyUsers } from '@/lib/utils/notify'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
@@ -40,7 +43,7 @@ export async function POST(
     // lib/utils/project-access.ts). Verify the project up front.
     const { data: project } = await (service as any)
       .from('projects')
-      .select('id')
+      .select('id, name')
       .eq('id', projectId)
       .eq('workspace_id', session.workspaceId)
       .is('deleted_at', null)
@@ -51,13 +54,19 @@ export async function POST(
     // Verify the member belongs to this workspace
     const { data: member } = await (service as any)
       .from('workspace_members')
-      .select('id, users!workspace_members_user_id_fkey(name, email)')
+      .select('id, user_id, users!workspace_members_user_id_fkey(name, email)')
       .eq('id', memberId)
       .eq('workspace_id', session.workspaceId)
       .eq('status', 'active')
       .single()
 
     if (!member) return NextResponse.json({ error: 'Member not found' }, { status: 404 })
+
+    // The upsert below also "succeeds" for someone who is already on the project — only tell a
+    // person they were added when they actually were.
+    const { data: alreadyOn } = await (service as any)
+      .from('project_members').select('member_id')
+      .eq('project_id', projectId).eq('member_id', memberId).maybeSingle()
 
     const { error } = await (service as any)
       .from('project_members')
@@ -81,6 +90,29 @@ export async function POST(
       entityId: projectId, entityName: member.users?.name || member.users?.email || 'Unknown',
       metadata: { member_id: memberId },
     })
+
+    // FEATURE (Notifications & email fix round): nobody was told they'd been added to a project —
+    // and for a member limited to their own projects that is the ONLY way a project appears for
+    // them. In-app always (unless muted); email if they haven't opted out.
+    if (!alreadyOn && member.user_id && member.user_id !== session.id) {
+      try {
+        await notifyUsers(service, {
+          workspaceId: session.workspaceId, recipientIds: [member.user_id],
+          type: 'project_assigned', eventType: 'project_assigned',
+          title: `You were added to ${project.name}`, body: `${session.name} added you to this project.`,
+          entityType: 'project', entityId: projectId, projectId,
+        })
+        const [emailOn] = await filterByNotificationPreference(
+          service, session.workspaceId, 'project_assigned', [{ id: member.user_id }], 'email'
+        )
+        if (emailOn && member.users?.email) {
+          await sendProjectAssignedEmail({
+            to: [member.users.email], projectName: project.name, assignedByName: session.name,
+            agencyName: session.agencyName, projectUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects/${projectId}`,
+          })
+        }
+      } catch (e) { console.error('Project-assigned notification failed (non-fatal):', e) }
+    }
 
     return NextResponse.json({ ok: true })
   } catch (err) {
@@ -117,7 +149,7 @@ export async function DELETE(
       return NextResponse.json({ error: 'Project not found' }, { status: 404 })
 
     const { data: project } = await (service as any)
-      .from('projects').select('id')
+      .from('projects').select('id, name')
       .eq('id', projectId).eq('workspace_id', session.workspaceId).is('deleted_at', null).single()
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
 
@@ -126,7 +158,7 @@ export async function DELETE(
     // path does above.
     const { data: member } = await (service as any)
       .from('workspace_members')
-      .select('id, users!workspace_members_user_id_fkey(name, email)')
+      .select('id, user_id, users!workspace_members_user_id_fkey(name, email)')
       .eq('id', memberId).eq('workspace_id', session.workspaceId).maybeSingle()
 
     // Read the result: the delete's error was ignored and a project.member
@@ -146,6 +178,15 @@ export async function DELETE(
       entityId: projectId, entityName: member?.users?.name || member?.users?.email || 'Unknown',
       metadata: { member_id: memberId },
     })
+
+    // No entity link: they can no longer open the project this refers to.
+    if (member?.user_id && member.user_id !== session.id) {
+      await notifyUsers(service, {
+        workspaceId: session.workspaceId, recipientIds: [member.user_id],
+        type: 'project_removed', eventType: 'project_assigned',
+        title: `Removed from ${project.name}`, body: `${session.name} removed you from this project.`,
+      })
+    }
 
     return NextResponse.json({ ok: true })
   } catch (err) {

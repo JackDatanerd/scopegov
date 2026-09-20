@@ -1,5 +1,6 @@
 export const runtime = 'nodejs'
 
+import { markFirstViewed } from '@/lib/utils/client-viewed'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { jwtVerify } from 'jose'
@@ -79,11 +80,11 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     // actually opened — mirrors the identical fix on the SOW and CO portal
     // routes. Must never block the response below if the write fails.
     if (!invoice.first_viewed_at) {
-      try {
-        await (service as any).from('invoices')
-          .update({ first_viewed_at: new Date().toISOString() })
-          .eq('id', invoice.id).is('first_viewed_at', null)
-      } catch (e) { console.error('Invoice first-view tracking failed (non-fatal):', e) }
+      await markFirstViewed(service, {
+        kind: 'invoice', id: invoice.id, workspaceId: invoice.workspace_id, projectId: invoice.projects?.id,
+        projectName: invoice.projects?.name || '', clientName: invoice.projects?.clients?.name || '',
+        userAgent: request.headers.get('user-agent'),
+      })
     }
 
     let logoUrl: string | null = null

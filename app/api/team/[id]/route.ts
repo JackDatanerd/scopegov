@@ -1,3 +1,6 @@
+import { sendMemberAccessChangedEmail, sendMemberRoleChangedEmail } from '@/lib/email/templates'
+import { checkedSend } from '@/lib/email/delivery'
+import { notifyUsers } from '@/lib/utils/notify'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
@@ -121,6 +124,15 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
       metadata: affectedWorkflowNames.length ? { orphaned_approval_workflows: affectedWorkflowNames } : {},
     })
 
+    // FEATURE (Notifications & email fix round): being deactivated only ever surfaced as a login
+    // that stopped working. Sent regardless of notification preferences — it concerns their own access.
+    if (!wasInvite && member.user_id && member.users?.email) {
+      await checkedSend(() => sendMemberAccessChangedEmail({
+        to: member.users.email, name: member.users.name || '', agencyName: session.agencyName,
+        change: 'deactivated', changedByName: session.name,
+      }), 'Member deactivated email')
+    }
+
     return NextResponse.json({
       ok: true,
       ...(affectedWorkflowNames.length ? {
@@ -162,7 +174,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
       const { data: member } = await (service as any)
         .from('workspace_members')
-        .select('id,status,user_id,effective_permissions,users!workspace_members_user_id_fkey(email)')
+        .select('id,status,user_id,effective_permissions,users!workspace_members_user_id_fkey(name,email)')
         .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
       if (!member) return NextResponse.json({ error: 'Member not found' }, { status: 404 })
       if (member.status !== 'deactivated')
@@ -209,6 +221,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         entityId: id, entityName: member.users?.email || '',
         metadata: {},
       })
+
+      if (member.users?.email) {
+        await checkedSend(() => sendMemberAccessChangedEmail({
+          to: member.users.email, name: member.users.name || '', agencyName: session.agencyName,
+          change: 'reactivated', changedByName: session.name,
+        }), 'Member reactivated email')
+      }
 
       return NextResponse.json({ ok: true })
     }
@@ -289,15 +308,17 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // with no workspace check either, so an unscoped roleId here could
     // pull in a completely different workspace's role permissions. Same
     // fix shape as app/api/team/invite/route.ts already applies.
+    let newRoleName: string | null = null
     let newRolePermissions: Record<string, unknown> | null | undefined = undefined // undefined = role_id not changing
     if (body.roleId !== undefined) {
       if (body.roleId) {
         const { data: role } = await (service as any)
-          .from('roles').select('id,permissions').eq('id', body.roleId).eq('workspace_id', session.workspaceId).maybeSingle()
+          .from('roles').select('id,name,permissions').eq('id', body.roleId).eq('workspace_id', session.workspaceId).maybeSingle()
         if (!role) return NextResponse.json({ error: 'Invalid role for this workspace' }, { status: 400 })
         if (!roleWithinCeiling(session, role))
           return NextResponse.json({ error: 'Cannot assign a role with permissions you don\u2019t hold yourself' }, { status: 403 })
         newRolePermissions = role.permissions
+        newRoleName = role.name || null
       } else {
         newRolePermissions = null
       }
@@ -418,6 +439,24 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       entityType: 'workspace_member', entityId: id, entityName: targetMember?.users?.name || targetMember?.users?.email || '',
       metadata: affectedWorkflowNames.length ? { ...body, orphaned_approval_workflows: affectedWorkflowNames } : body,
     })
+
+    // FEATURE (Notifications & email fix round): a role or permission change used to be silent — the
+    // person only found out when something stopped working. Always sent (not a preference).
+    if (targetMember?.user_id && targetMember.user_id !== session.id) {
+      await notifyUsers(service, {
+        workspaceId: session.workspaceId, recipientIds: [targetMember.user_id],
+        type: 'member_role_changed', title: 'Your access changed',
+        body: newRoleName ? `${session.name} changed your role to ${newRoleName}.` : `${session.name} adjusted your permissions.`,
+        entityType: 'team',
+      })
+      const email = (targetMember as any).users?.email
+      if (email) {
+        await checkedSend(() => sendMemberRoleChangedEmail({
+          to: email, name: (targetMember as any).users?.name || '', agencyName: session.agencyName,
+          roleName: newRoleName, changedByName: session.name,
+        }), 'Member role changed email')
+      }
+    }
 
     return NextResponse.json({
       ok: true,

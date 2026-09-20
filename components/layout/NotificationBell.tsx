@@ -2,87 +2,11 @@
 'use client'
 import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
+import { notificationHref, timeAgo, type AppNotification } from '@/lib/utils/notification-links'
 
-interface Notification {
-  id: string
-  type: string
-  title: string
-  body: string
-  entity_type: string | null
-  entity_id: string | null
-  // FIX (re-audit, notifications section): needed to deep-link
-  // flag/exception-comment notifications, which point at the flag/exception
-  // itself (entity_type) rather than the project — see migration 028.
-  project_id: string | null
-  read: boolean
-  created_at: string
-}
-
-function entityHref(n: Notification): string | null {
-  // FIX (audit): invoice_paid / invoice_payment_received / invoice_overdue
-  // notifications point at a project (see notify call sites) — route them
-  // straight to the Billing tab instead of Overview.
-  //
-  // FIX (deep audit round 3, notifications section): the invoice_* prefix
-  // check missed two other billing-shaped event types that were added
-  // later — payment_milestone_overdue and retainer_ending (both from
-  // cron/payment-overdue and cron/retainer-milestones, both entity_type
-  // 'project') — neither starts with 'invoice_', so both fell all the way
-  // through to the bare Overview link below despite being exactly the
-  // kind of thing this fix already exists to route correctly.
-  if (n.entity_type === 'project' && n.entity_id &&
-      (n.type.startsWith('invoice_') || n.type === 'payment_milestone_overdue' || n.type === 'retainer_ending'))
-    return `/projects/${n.entity_id}?tab=billing`
-  // FIX (re-audit, notifications section): the invoice fix above was
-  // never generalized — guardian_flag notifications landed on plain
-  // Overview instead of the Guardian tab, and co_*/sow_* notifications
-  // landed on Overview instead of their respective tabs, even though the
-  // *email* for every one of these events already deep-links correctly
-  // (see sendGuardianFlagEmail's path param, and the ?tab=co/?tab=sow
-  // URLs built into every co-stall/sow-stall/co_accepted/sow_signed etc.
-  // notify call site). The in-app bell just never matched that.
-  //
-  // FIX (deep audit round 3, notifications section): 'escalation' had the
-  // identical gap, but couldn't be fixed with a startsWith prefix like the
-  // others — guardian/flags/[id]/escalate and co/[id]/escalate both wrote
-  // the exact same `type: 'escalation'` with no way to tell which kind of
-  // escalation it was from the row alone, so it always fell through to
-  // Overview no matter the source. Split into 'escalation_flag' /
-  // 'escalation_co' at the two write sites (the shared 'escalation'
-  // notification-preference toggle is untouched — same "one preference
-  // key, multiple type values" shape already used for
-  // approval_approved/approval_rejected under 'approval_decision').
-  if (n.entity_type === 'project' && n.entity_id && (n.type.startsWith('guardian_') || n.type === 'escalation_flag'))
-    return `/projects/${n.entity_id}?tab=guardian`
-  if (n.entity_type === 'project' && n.entity_id && (n.type.startsWith('co_') || n.type === 'escalation_co'))
-    return `/projects/${n.entity_id}?tab=co`
-  if (n.entity_type === 'project' && n.entity_id && n.type.startsWith('sow_'))
-    return `/projects/${n.entity_id}?tab=sow`
-  if (n.entity_type === 'project' && n.entity_id) return `/projects/${n.entity_id}`
-  if (n.entity_type === 'project_message' && n.entity_id) return `/projects/${n.entity_id}?tab=discussion`
-  if (n.entity_type === 'approval_request' && n.entity_id) return `/approvals?highlight=${n.entity_id}`
-  // FIX (re-audit, notifications section): flag_comment_added notifications
-  // point at the flag/exception itself (entity_type='flag'|'exception',
-  // entity_id=<that row's id>), not at a project — every prior condition
-  // above needs entity_type === 'project' to match, so these fell through
-  // to the `return null` below and were a dead click: no case here, and
-  // (before migration 028) no project_id on the row to build a link from
-  // even if there had been one. There's no per-flag deep link on the
-  // Guardian tab yet, so this lands on the tab, same as guardian_* events.
-  if ((n.entity_type === 'flag' || n.entity_type === 'exception') && n.project_id)
-    return `/projects/${n.project_id}?tab=guardian`
-  return null
-}
-
-function timeAgo(iso: string): string {
-  const diffMs = Date.now() - new Date(iso).getTime()
-  const mins = Math.floor(diffMs / 60000)
-  if (mins < 1) return 'just now'
-  if (mins < 60) return `${mins}m ago`
-  const hrs = Math.floor(mins / 60)
-  if (hrs < 24) return `${hrs}h ago`
-  return `${Math.floor(hrs / 24)}d ago`
-}
+type Notification = AppNotification
+const entityHref = notificationHref
 
 export default function NotificationBell() {
   const router = useRouter()
@@ -92,45 +16,62 @@ export default function NotificationBell() {
   const [unreadCount, setUnreadCount] = useState(0)
   const ref = useRef<HTMLDivElement>(null)
 
+  const [loadError, setLoadError] = useState(false)
+
+  // FIX (Notifications & email fix round): load() never looked at res.ok. A 401 (expired session)
+  // or 500 parsed as JSON with no `notifications`, so the list and the unread badge were
+  // replaced with "empty" — indistinguishable from having no notifications. A failed refresh
+  // now keeps what was already showing and says so only if there is nothing to show.
   async function load() {
     try {
       const res = await fetch('/api/notifications')
+      if (!res.ok) throw new Error(String(res.status))
       const json = await res.json()
       setItems(json.notifications || [])
-      // FIX (re-audit, notifications section): unreadCount now comes from
-      // the server's own unbounded count query, not items.filter(!read)
-      // over the client-side 50-row list — see api/notifications/route.ts.
       setUnreadCount(json.unreadCount ?? (json.notifications || []).filter((n: Notification) => !n.read).length)
-    } catch { /* fail silently — not worth surfacing an error for this */ }
+      setLoadError(false)
+    } catch { setLoadError(true) }
     finally { setLoaded(true) }
   }
 
   useEffect(() => {
     load()
-    // Lightweight polling — no websocket infra in this app, and a 60s
-    // interval is plenty responsive for this without adding real-time
-    // infrastructure for what's still a fairly low-frequency event stream.
-    const interval = setInterval(load, 60000)
-    return () => clearInterval(interval)
+    // Lightweight polling — no websocket infra in this app. FIX: it used to keep polling every
+    // 60s in background tabs and did not refresh when the user came back to the tab, so the badge
+    // could be up to a minute stale on return. Poll only while visible, and refresh on return.
+    const tick = () => { if (document.visibilityState === 'visible') load() }
+    const interval = setInterval(tick, 60000)
+    document.addEventListener('visibilitychange', tick)
+    window.addEventListener('focus', tick)
+    return () => {
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', tick)
+      window.removeEventListener('focus', tick)
+    }
   }, [])
 
   useEffect(() => {
     function handler(e: MouseEvent) {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
     }
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setOpen(false) }
     document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
+    document.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', handler); document.removeEventListener('keydown', onKey) }
   }, [])
 
+  // Optimistic updates, but a failed write resyncs from the server instead of leaving the badge
+  // claiming everything is read while the next poll quietly brings the unread rows back.
   async function markAllRead() {
     setItems(prev => prev.map(n => ({ ...n, read: true })))
     setUnreadCount(0)
     try {
-      await fetch('/api/notifications', {
+      const res = await fetch('/api/notifications', {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ all: true }),
       })
-    } catch { /* optimistic update already applied; a failed sync here isn't worth surfacing */ }
+      if (!res.ok) throw new Error(String(res.status))
+    } catch { load() }
   }
 
   async function handleClick(n: Notification) {
@@ -140,7 +81,7 @@ export default function NotificationBell() {
       fetch('/api/notifications', {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids: [n.id] }),
-      }).catch(() => {})
+      }).then(res => { if (!res.ok) load() }).catch(() => load())
     }
     const href = entityHref(n)
     setOpen(false)
@@ -151,7 +92,9 @@ export default function NotificationBell() {
     <div ref={ref} style={{ position: 'relative' }}>
       <button
         onClick={() => setOpen(o => !o)}
-        aria-label="Notifications"
+        aria-label={unreadCount > 0 ? `Notifications, ${unreadCount} unread` : 'Notifications'}
+        aria-haspopup="dialog"
+        aria-expanded={open}
         style={{
           position: 'relative', width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center',
           background: 'none', border: 'none', borderRadius: 6, cursor: 'pointer',
@@ -172,8 +115,8 @@ export default function NotificationBell() {
       </button>
 
       {open && (
-        <div style={{
-          position: 'absolute', top: '100%', left: 0, marginTop: 6, width: 320, zIndex: 60,
+        <div role="dialog" aria-label="Notifications" style={{
+          position: 'absolute', top: '100%', left: 0, marginTop: 6, width: 320, maxWidth: 'calc(100vw - 24px)', zIndex: 60,
           background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
           boxShadow: '0 8px 24px rgba(0,0,0,0.18)', overflow: 'hidden',
         }}>
@@ -187,7 +130,13 @@ export default function NotificationBell() {
           </div>
           <div style={{ maxHeight: 340, overflowY: 'auto' }}>
             {!loaded && <div style={{ padding: '20px 12px', fontSize: 12, color: 'var(--text-3)', textAlign: 'center' }}>Loading…</div>}
-            {loaded && items.length === 0 && (
+            {loaded && items.length === 0 && loadError && (
+              <div style={{ padding: '24px 12px', fontSize: 12, color: 'var(--text-3)', textAlign: 'center' }}>
+                Couldn&apos;t load notifications.{' '}
+                <button onClick={load} style={{ background: 'none', border: 'none', color: 'var(--green)', cursor: 'pointer', fontSize: 12 }}>Try again</button>
+              </div>
+            )}
+            {loaded && items.length === 0 && !loadError && (
               <div style={{ padding: '28px 12px', fontSize: 12, color: 'var(--text-3)', textAlign: 'center' }}>
                 <i className="ti ti-bell-off" style={{ fontSize: 20, display: 'block', margin: '0 auto 8px', color: 'var(--text-4)' }} />
                 No notifications yet
@@ -203,14 +152,18 @@ export default function NotificationBell() {
                 <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start' }}>
                   {!n.read && <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--green)', marginTop: 5, flexShrink: 0 }} />}
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--text-1)' }}>{n.title}</div>
-                    <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 2, lineHeight: 1.4 }}>{n.body}</div>
+                    <div style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--text-1)', overflowWrap: 'anywhere' }}>{n.title}</div>
+                    <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 2, lineHeight: 1.4, overflowWrap: 'anywhere' }}>{n.body}</div>
                     <div style={{ fontSize: 10, color: 'var(--text-4)', marginTop: 4 }}>{timeAgo(n.created_at)}</div>
                   </div>
                 </div>
               </button>
             ))}
           </div>
+          <Link href="/notifications" onClick={() => setOpen(false)}
+            style={{ display: 'block', padding: '9px 12px', textAlign: 'center', fontSize: 11.5, color: 'var(--green)', borderTop: '1px solid var(--surface-2)', textDecoration: 'none' }}>
+            View all notifications
+          </Link>
         </div>
       )}
     </div>

@@ -145,7 +145,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         })
 
         if (!isBorderline) {
-          const emails = await getMemberEmailsWithPermission(service, session.workspaceId, 'APPROVE_FLAGS', 25, 'guardian_flag', project.id)
+          const emails = await getMemberEmailsWithPermission(service, session.workspaceId, 'APPROVE_FLAGS', 25, 'guardian_flag', project.id, session.id)
           if (emails.length) {
             try {
               await sendGuardianFlagEmail({

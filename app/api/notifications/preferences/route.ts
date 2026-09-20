@@ -2,83 +2,10 @@
 import { getSession } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
+import { ALL_EVENT_TYPES, IN_APP_ONLY_EVENT_TYPES as IN_APP_ONLY, isInAppOnly } from '@/lib/constants/notification-events'
 
-const EVENT_TYPES = [
-  'sow_signed', 'sow_declined', 'sow_changes_requested', 'co_accepted', 'co_declined', 'co_countered',
-  'guardian_flag', 'escalation', 'trial_ending',
-  // FIX (audit): these three are fully gated through filterByNotificationPreference
-  // in code (invoices/[id]/payments, cron/payment-overdue, approvals/engine) but
-  // were missing from this whitelist — PATCH would 400 on them and the Settings
-  // UI had no toggle, so they were permanently un-mutable.
-  'invoice_payment_received', 'invoice_overdue', 'approval_requested',
-  // FIX (build, cron section): co-stall/sow-stall now actually notify (see
-  // cron/co-stall and cron/sow-stall) — same whitelist requirement as above.
-  'co_stalled', 'sow_stalled',
-  // FIX (section-9 audit, 9-G3): the new sow-expiry cron notifies on this
-  // — same whitelist requirement as every entry above, otherwise PATCH
-  // 400s on it and the toggle can never be saved.
-  'sow_expired',
-  // FIX (deep audit, notifications section): notifyRequester (approval
-  // engine) sends this on every approve/reject decision but had no
-  // whitelist entry at all — same "permanently un-mutable" bug as every
-  // entry above, except this one wasn't even gated in code (see that
-  // function's fix comment). Covers both 'approval_approved' and
-  // 'approval_rejected' notification types under one toggle, since both
-  // tell the same person (the requester) about the outcome of their own
-  // request.
-  'approval_decision',
-  // FIX (deep audit, notifications section): migration 004 seeded
-  // workspace_notification_defaults with 'invoice_sent' as a third sibling
-  // alongside 'invoice_payment_received' and 'invoice_overdue' — those two
-  // got full wiring (notify call, email template, this whitelist); this one
-  // never did, so an invoice going out told the client and nobody on the
-  // internal team. See sendInvoiceSentInternalEmail and its call site in
-  // app/api/invoices/[id]/send/route.ts.
-  'invoice_sent',
-  // FIX (section-10 audit, feature gap — CO expiry): mirrors 'sow_expired'
-  // above — cron/co-expiry (migration 042) now notifies on this, same
-  // whitelist requirement as every entry in this list.
-  'co_expired',
-  // FIX (cron audit, section 17 — closing pass): all four of these are
-  // newly wired (cron/payment-overdue's milestone-overdue step,
-  // cron/retainer-milestones' end-of-term notice, the new
-  // cron/guardian-flag-stall, and the new portal invoice-dispute action)
-  // and each has a real email counterpart — same "wire it server-side,
-  // add the toggle in the same change" requirement as every entry above,
-  // so none of these become permanently-on-and-unmutable the way so many
-  // entries in this list already had to be retroactively fixed.
-  'payment_milestone_overdue', 'retainer_ending', 'guardian_flag_stalled', 'invoice_disputed',
-]
-
-// FIX (re-audit, notifications section): `approval_no_reachable_approver`
-// (cron/approval-stall) and `flag_comment_added` (scope-governance comments)
-// are both filtered through filterByNotificationPreference the same way the
-// nine EVENT_TYPES above are, and had the exact same "missing from the
-// whitelist, permanently un-mutable" bug this file has already been patched
-// for three times. But neither has an email counterpart at all —
-// notifyMembersWithPermission only ever creates in-app rows; nothing calls a
-// sendXxxEmail template for these two event types. Bolting them onto
-// EVENT_TYPES (which the UI renders under "Email notifications" and which
-// PATCH writes to `email_enabled`) would produce a toggle that visibly does
-// nothing — there's no email being gated by that column for these events.
-// They're mutable through the `in_app_enabled` column instead, which is
-// otherwise hardcoded true everywhere in this file. Kept as a separate list
-// so GET/PATCH can read and write the correct column per event type instead
-// of assuming every mutable event is an email event.
-// FIX (deep audit, notifications section): 'project_message_mention' had
-// the identical "seeded in a migration, never added to this whitelist"
-// gap as flag_comment_added above — see migration 009's own comment,
-// which describes this exact bug and says it's "harmless today" because
-// nothing reads workspace_notification_defaults for it. That stopped
-// being true the moment filterByNotificationPreference became the real
-// choke point (see lib/utils/permissions-query.ts and
-// lib/utils/project-messages.ts), so mentions need the same whitelist
-// entry flag_comment_added already has, for the same reason: no email
-// counterpart exists for either, so both belong here rather than in
-// EVENT_TYPES.
-const IN_APP_ONLY_EVENT_TYPES = ['approval_no_reachable_approver', 'flag_comment_added', 'project_message_mention']
-
-const ALL_EVENT_TYPES = [...EVENT_TYPES, ...IN_APP_ONLY_EVENT_TYPES]
+// Event lists live in lib/constants/notification-events.ts (they were hand-synced in four places).
+const IN_APP_ONLY_EVENT_TYPES: string[] = [...IN_APP_ONLY]
 
 export async function GET() {
   try {
@@ -112,22 +39,27 @@ export async function GET() {
     // otherwise — mirror filterByNotificationPreference's resolution here
     // so the UI matches what actually happens.
     const prefs: Record<string, boolean> = {}
+    // FEATURE (Notifications & email fix round): the bell side of an EMAIL event could never be
+    // muted — every write pinned in_app_enabled to true. `inAppPrefs` carries that second channel
+    // for the email events (in-app-only events use `prefs` for their single channel).
+    const inAppPrefs: Record<string, boolean> = {}
     const locked: Record<string, boolean> = {}
     for (const key of ALL_EVENT_TYPES) {
       const column = inAppOnly.has(key) ? 'in_app_enabled' : 'email_enabled'
       const def = defaultsByType.get(key) as any
       prefs[key] = def ? def[column] : true
+      if (!inAppOnly.has(key)) inAppPrefs[key] = def ? def.in_app_enabled : true
       locked[key] = !!def?.locked
     }
     for (const row of rows || []) {
-      // A locked default is authoritative — an individual's stored row
-      // (even a stale one from before an admin locked this event) never
-      // takes effect once locked, matching the read side exactly.
+      // A locked default is authoritative — a stored row (even a stale one from before an admin
+      // locked this event) never takes effect once locked, matching the read side exactly.
       if (locked[row.event_type]) continue
       prefs[row.event_type] = inAppOnly.has(row.event_type) ? row.in_app_enabled : row.email_enabled
+      if (!inAppOnly.has(row.event_type)) inAppPrefs[row.event_type] = row.in_app_enabled
     }
 
-    return NextResponse.json({ prefs, locked, inAppOnlyEventTypes: IN_APP_ONLY_EVENT_TYPES })
+    return NextResponse.json({ prefs, inAppPrefs, locked, inAppOnlyEventTypes: IN_APP_ONLY_EVENT_TYPES })
   } catch (err) {
     // FIX (deep audit, Settings re-pass): this returned err.message straight
     // to the client — same info-disclosure pattern already fixed for every
@@ -144,39 +76,47 @@ export async function PATCH(request: NextRequest) {
   try {
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    const { eventType, enabled } = await request.json()
-    if (!ALL_EVENT_TYPES.includes(eventType)) return NextResponse.json({ error: 'Unknown event type' }, { status: 400 })
+    const body = await request.json().catch(() => null)
+    const { eventType, enabled, channel } = (body || {}) as { eventType?: string; enabled?: unknown; channel?: unknown }
+    if (!eventType || !ALL_EVENT_TYPES.includes(eventType)) return NextResponse.json({ error: 'Unknown event type' }, { status: 400 })
+    // FIX (Notifications & email fix round): `!!enabled` turned a missing / non-boolean value into
+    // `false`, silently DISABLING the notification; require a real boolean.
+    if (typeof enabled !== 'boolean') return NextResponse.json({ error: '`enabled` must be true or false' }, { status: 400 })
+    if (channel !== undefined && channel !== 'email' && channel !== 'in_app')
+      return NextResponse.json({ error: 'Unknown channel' }, { status: 400 })
 
     const service = createServiceClient()
 
-    // FIX (deep audit, notifications section — flagship finding): a
-    // member could otherwise write a preference row for an event an
-    // admin has locked — the row would simply never take effect (see
-    // filterByNotificationPreference), but the toggle would look saved,
-    // silently lying to whoever clicked it.
-    const { data: lockedRow } = await (service as any)
+    const { data: defaultRow } = await (service as any)
       .from('workspace_notification_defaults')
-      .select('locked')
+      .select('locked, email_enabled, in_app_enabled')
       .eq('workspace_id', session.workspaceId)
       .eq('event_type', eventType)
       .maybeSingle()
-    if (lockedRow?.locked) {
+    if (defaultRow?.locked) {
       return NextResponse.json({ error: 'This notification is required by your workspace administrator' }, { status: 403 })
     }
 
-    // In-app-only event types toggle `in_app_enabled`; every other event type
-    // keeps the existing behaviour of toggling `email_enabled` while
-    // `in_app_enabled` stays pinned true. Both columns are NOT NULL, so a
-    // value has to be supplied either way — the one not being toggled is set
-    // to its harmless default (nothing reads it for that half of the split).
-    const isInAppOnly = IN_APP_ONLY_EVENT_TYPES.includes(eventType)
+    const inAppOnly = isInAppOnly(eventType)
+    const targetChannel: 'email' | 'in_app' = inAppOnly ? 'in_app' : (channel === 'in_app' ? 'in_app' : 'email')
+
+    // Preserve the channel being left alone. It used to be overwritten with `true` on every write,
+    // so toggling one channel silently re-enabled the other.
+    const { data: existing } = await (service as any)
+      .from('notification_preferences')
+      .select('email_enabled, in_app_enabled')
+      .eq('user_id', session.id).eq('workspace_id', session.workspaceId).eq('event_type', eventType)
+      .maybeSingle()
+    const currentEmail = existing ? existing.email_enabled  : (defaultRow ? defaultRow.email_enabled  : true)
+    const currentInApp = existing ? existing.in_app_enabled : (defaultRow ? defaultRow.in_app_enabled : true)
+
     const { error } = await (service as any)
       .from('notification_preferences')
       .upsert(
         {
           user_id: session.id, workspace_id: session.workspaceId, event_type: eventType,
-          email_enabled:  isInAppOnly ? true : !!enabled,
-          in_app_enabled: isInAppOnly ? !!enabled : true,
+          email_enabled:  inAppOnly ? true : (targetChannel === 'email'  ? enabled : currentEmail),
+          in_app_enabled: inAppOnly ? enabled : (targetChannel === 'in_app' ? enabled : currentInApp),
         },
         { onConflict: 'user_id,workspace_id,event_type' }
       )

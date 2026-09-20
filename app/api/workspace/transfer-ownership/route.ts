@@ -15,6 +15,9 @@
 // re-checks everything this route pre-checks; the RPC is the actual
 // authority, this route just turns its exceptions into readable errors.
 
+import { sendOwnershipTransferredEmail } from '@/lib/email/templates'
+import { checkedSend } from '@/lib/email/delivery'
+import { notifyUsers } from '@/lib/utils/notify'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth/session'
@@ -102,6 +105,22 @@ export async function POST(req: Request) {
         new_owner_id: newOwnerUserId, new_owner_email: newOwner?.email || '',
       },
     }).catch(() => {})
+
+    // FEATURE (Notifications & email fix round): the new owner was never told, and the previous
+    // owner got no confirmation. Both are emailed regardless of preferences (a security event);
+    // the new owner also gets a bell entry.
+    await notifyUsers(service, {
+      workspaceId: session.workspaceId, recipientIds: [newOwnerUserId],
+      type: 'ownership_transferred', title: 'You are now the workspace owner',
+      body: `${session.name} transferred ownership of ${session.workspaceName} to you.`, entityType: 'team',
+    })
+    const ownerEmails = [session.email, newOwner?.email].filter((e): e is string => !!e)
+    if (ownerEmails.length) {
+      await checkedSend(() => sendOwnershipTransferredEmail({
+        to: ownerEmails, agencyName: session.workspaceName,
+        newOwnerName: newOwner?.name || newOwner?.email || 'the new owner', formerOwnerName: session.name,
+      }), 'Ownership transferred email')
+    }
 
     return NextResponse.json({ ok: true })
   } catch (err) {

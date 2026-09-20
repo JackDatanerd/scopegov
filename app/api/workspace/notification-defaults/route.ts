@@ -18,37 +18,12 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { logAudit } from '@/lib/utils/audit'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
+import { ALL_EVENT_TYPES as ALL_EVENTS, EMAIL_EVENT_TYPES as EMAIL_EVENTS, IN_APP_ONLY_EVENT_TYPES as IN_APP_ONLY } from '@/lib/constants/notification-events'
 
-const EMAIL_EVENT_TYPES = [
-  'sow_signed', 'sow_declined', 'sow_changes_requested', 'co_accepted', 'co_declined', 'co_countered',
-  'guardian_flag', 'escalation', 'trial_ending',
-  'invoice_payment_received', 'invoice_overdue', 'approval_requested',
-  'co_stalled', 'sow_stalled', 'sow_expired', 'approval_decision',
-  // FIX (deep audit, notifications section): kept in sync with the same
-  // addition in app/api/notifications/preferences/route.ts — see that
-  // file's comment for why 'invoice_sent' belongs here now.
-  'invoice_sent',
-  // FIX (section-10 audit, feature gap — CO expiry): kept in sync with
-  // the same addition in app/api/notifications/preferences/route.ts.
-  'co_expired',
-  // FIX (deep audit round 2, notifications section — closing pass): this
-  // file's own header comment claims these lists are "kept in sync the
-  // same manual way" as EVENT_TYPES in app/api/notifications/preferences/
-  // route.ts — they weren't, for these four. All four were added there in
-  // the "cron audit, section 17" pass (payment_milestone_overdue,
-  // retainer_ending, guardian_flag_stalled, invoice_disputed all have real
-  // notify calls and email templates — see that file's comment), but never
-  // added here. SettingsClient.tsx's WorkspaceNotificationDefaultsSection
-  // renders a toggle+lock row for every entry in NOTIF_ITEMS regardless of
-  // what this route recognizes, so an admin could see and click a
-  // lock/default control for any of these four — and every save 400'd on
-  // "Unknown event type" and silently reverted, with no indication why.
-  'payment_milestone_overdue', 'retainer_ending', 'guardian_flag_stalled', 'invoice_disputed',
-]
-// FIX (deep audit, notifications section): kept in sync with the same
-// addition in app/api/notifications/preferences/route.ts.
-const IN_APP_ONLY_EVENT_TYPES = ['approval_no_reachable_approver', 'flag_comment_added', 'project_message_mention']
-const ALL_EVENT_TYPES = [...EMAIL_EVENT_TYPES, ...IN_APP_ONLY_EVENT_TYPES]
+// Lists live in lib/constants/notification-events.ts (they were hand-synced in four places).
+const EMAIL_EVENT_TYPES: string[] = [...EMAIL_EVENTS]
+const IN_APP_ONLY_EVENT_TYPES: string[] = [...IN_APP_ONLY]
+const ALL_EVENT_TYPES: string[] = [...ALL_EVENTS]
 
 export async function GET() {
   try {

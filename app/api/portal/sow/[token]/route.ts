@@ -1,5 +1,6 @@
 export const runtime = 'nodejs'
 
+import { markFirstViewed } from '@/lib/utils/client-viewed'
 import { hydrateSections } from '@/lib/sow/sections'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
@@ -34,7 +35,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       if (revokedReason === 'superseded' && documentId) {
         const { data: sow } = await (service as any)
           .from('sow_documents').select(SOW_COLUMNS).eq('id', documentId).single()
-        if (sow) return NextResponse.json(await buildSowResponse(sow, service))
+        if (sow) return NextResponse.json(await buildSowResponse(sow, service, request.headers.get('user-agent')))
       }
       return NextResponse.json({
         state: revokedReason === 'declined' ? 'declined'
@@ -86,14 +87,14 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       return NextResponse.json({ state: 'invalid' })
     }
 
-    return NextResponse.json(await buildSowResponse(sow, service))
+    return NextResponse.json(await buildSowResponse(sow, service, request.headers.get('user-agent')))
   } catch (err) {
     console.error('Portal SOW fetch error:', err)
     return NextResponse.json({ state: 'invalid' })
   }
 }
 
-async function buildSowResponse(sow: any, service: any) {
+async function buildSowResponse(sow: any, service: any, userAgent: string | null) {
   if (sow.status === 'signed') {
     return {
       state: 'signed',
@@ -116,11 +117,11 @@ async function buildSowResponse(sow: any, service: any) {
   // the same timestamp value is harmless), and failure here must never
   // block the client from actually seeing the document.
   if (!sow.first_viewed_at) {
-    try {
-      await (service as any).from('sow_documents')
-        .update({ first_viewed_at: new Date().toISOString() })
-        .eq('id', sow.id).is('first_viewed_at', null)
-    } catch (e) { console.error('SOW first-view tracking failed (non-fatal):', e) }
+    await markFirstViewed(service, {
+      kind: 'sow', id: sow.id, workspaceId: sow.projects?.workspaces?.id, projectId: sow.projects?.id,
+      projectName: sow.projects?.name || '', clientName: sow.projects?.clients?.name || '',
+      userAgent,
+    })
   }
 
   // Build logo URL if exists

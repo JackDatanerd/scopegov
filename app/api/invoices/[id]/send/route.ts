@@ -82,7 +82,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     })
 
     if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status })
-    return NextResponse.json({ ok: true, token: result.token, portalUrl: result.portalUrl, invoiceNumber: result.invoiceNumber })
+    return NextResponse.json({
+      ok: true, token: result.token, portalUrl: result.portalUrl, invoiceNumber: result.invoiceNumber,
+      emailSent: result.emailSent, ...(result.emailError ? { emailError: result.emailError } : {}),
+    })
   } catch (err) {
     console.error('Invoice send error:', err)
     console.error('Invoice send error:', err)

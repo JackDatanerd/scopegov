@@ -1,6 +1,6 @@
 // components/approvals/ApprovalsClient.tsx
 'use client'
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import type { SessionUser } from '@/lib/supabase/types'
@@ -157,12 +157,29 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
   }
 
   // Auto-open the request linked from a notification.
+  // FIX (Notifications & email fix round): ?highlight= only searched the tab that happened to be
+  // loaded ("Assigned to me"), so a link to a request you SUBMITTED (approved / rejected / send
+  // failed) or one you can only see under "All" opened the page and then did nothing. It now checks
+  // the loaded tab, then requests you submitted, then (if you may) everything — once.
+  const highlightTried = useRef<string | null>(null)
   useEffect(() => {
-    if (highlight && items.length > 0) {
-      const match = items.find(r => r.id === highlight)
-      if (match) setSelected(match)
-    }
-  }, [highlight, items])
+    if (!highlight || loading) return
+    const local = items.find(r => r.id === highlight) || needsRetry.find(r => r.id === highlight)
+    if (local) { setSelected(local); return }
+    if (highlightTried.current === highlight) return
+    highlightTried.current = highlight
+    ;(async () => {
+      for (const scope of (canViewAll ? ['submitted', 'all'] : ['submitted'])) {
+        try {
+          const res  = await fetch(`/api/approvals?scope=${scope}`)
+          const json = await res.json()
+          if (!res.ok) continue
+          const found = (json.requests || []).find((r: ApprovalRequest) => r.id === highlight)
+          if (found) { setSelected(found); return }
+        } catch { /* try the next scope */ }
+      }
+    })()
+  }, [highlight, items, needsRetry, loading, canViewAll])
 
   function myEligibleStep(r: ApprovalRequest): Step | null {
     const step = r.approval_steps.find(s => s.step_order === r.current_step)

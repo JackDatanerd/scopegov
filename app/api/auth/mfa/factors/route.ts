@@ -1,5 +1,6 @@
 export const runtime = 'nodejs'
 
+import { notifySecurityEvent } from '@/lib/utils/notify'
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
 import { logAudit } from '@/lib/utils/audit'
@@ -119,13 +120,11 @@ export async function DELETE(request: Request) {
         metadata: { via: 'user' },
       })
     } catch (e) { console.error('MFA disable audit log failed (non-fatal):', e) }
-    try {
-      await (service as any).from('notifications').insert({
-        workspace_id: activeWorkspaceId, recipient_id: user.id,
-        type: 'security', title: 'Two-factor authentication disabled',
-        body: 'Your account no longer requires an authenticator code to sign in.',
-      })
-    } catch (e) { console.error('MFA disable notification insert failed (non-fatal):', e) }
+    // FIX (Notifications & email fix round): this insert used a single, possibly-null
+    // workspace id (NOT NULL column → silent failure) and only showed in that one
+    // workspace's bell. One row per active membership, with the error actually read.
+    await notifySecurityEvent(service, user.id, 'Two-factor authentication disabled',
+      'Your account no longer requires an authenticator code to sign in.')
     // BUG (fixed): `.catch(() => {})` chained directly on the Supabase
     // insert builder above used to throw `TypeError: insert(...).catch is
     // not a function` in this runtime instead of being swallowed — see

@@ -8,13 +8,8 @@
 // cooldown table as the guardian-health cron (OPS_ALERT_EMAIL +
 // ops_alert_state); degrades to console-only when OPS_ALERT_EMAIL is unset.
 
-import { Resend } from 'resend'
-
-let _resend: Resend | null = null
-function client() {
-  if (!_resend) _resend = new Resend(process.env.RESEND_API_KEY)
-  return _resend
-}
+import { sendEmail } from '@/lib/email/send'
+import { systemFrom } from '@/lib/email/from'
 
 const escapeHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
@@ -27,14 +22,19 @@ export async function alertBillingOps(
   try {
     const { data } = await service.from('ops_alert_state').select('last_sent_at').eq('key', key).maybeSingle()
     if (data && Date.now() - new Date(data.last_sent_at).getTime() < cooldownMs) return false
-    await client().emails.send({
-      from: `ScopeGov Ops <${process.env.RESEND_FROM_EMAIL}>`,
+    // FIX (Notifications & email fix round): see lib/utils/cron-alert.ts — the
+    // Resend SDK reports failure by resolving `{ error }`, never by throwing,
+    // so this used to arm the cooldown after a page that was never sent.
+    const res = await sendEmail({
+      from: systemFrom('ScopeGov Ops'),
       to,
       subject: `[Billing] ${subject}`,
       html: `<div style="font-family:monospace;white-space:pre-wrap;">${lines.map(escapeHtml).join('\n')}</div>`,
     })
-    // Mark only after a successful send so a failed delivery is retried on
-    // the next occurrence instead of silently consuming the cooldown.
+    if (!res.ok) {
+      console.error('Billing ops alert email failed:', res.error)
+      return false
+    }
     await service.from('ops_alert_state').upsert({ key, last_sent_at: new Date().toISOString() })
     return true
   } catch (e) {

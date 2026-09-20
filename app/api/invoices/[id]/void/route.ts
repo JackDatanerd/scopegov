@@ -1,5 +1,6 @@
 export const runtime = 'nodejs'
 
+import { resolveReplyTo } from '@/lib/email/reply-to'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
@@ -106,7 +107,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         // withPrimaryContactCc call as invoices/[id]/remind — see that
         // route's comment.
         const cc = await withPrimaryContactCc(service, invoice.projects?.client_id, client.email, client.cc_emails)
+        const replyTo = await resolveReplyTo(service, session.workspaceId, session.email)
         await sendDocumentCancelledEmail({
+          replyTo,
           to: client.email, cc,
           clientName: client.name, agencyName: invoice.projects?.workspaces?.agency_name,
           projectName: invoice.projects?.name, documentLabel: 'Invoice',

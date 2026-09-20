@@ -6,6 +6,7 @@
 // management, not self-removal). This is what the workspace switcher's
 // "Leave" action calls.
 
+import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { logAudit } from '@/lib/utils/audit'
@@ -106,6 +107,13 @@ export async function POST(request: NextRequest) {
       eventType: 'member.left', entityType: 'workspace_member', entityId: member.id,
       entityName: member.workspaces?.name || '', metadata: {},
     }).catch(() => {})
+
+    await notifyMembersWithPermission(service, {
+      workspaceId: workspaceId, permission: 'INVITE_MEMBERS', eventType: 'member_joined',
+      type: 'member_left', title: 'A teammate left',
+      body: `${leavingUserRow?.name || user.user_metadata?.name || user.email} left the workspace.`,
+      entityType: 'team', excludeUserId: user.id,
+    })
 
     return NextResponse.json({ ok: true })
   } catch (err) {

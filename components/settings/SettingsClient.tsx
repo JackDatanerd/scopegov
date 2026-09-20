@@ -138,6 +138,7 @@ const NOTIF_ITEMS = [
   { key: 'retainer_ending',       label: 'Retainer term ended',     desc: "When a retainer's contracted duration runs out and billing stops" },
   { key: 'guardian_flag_stalled', label: 'Scope flag stalled',      desc: "When an open scope flag hasn't been actioned in 5+ days" },
   { key: 'invoice_disputed',      label: 'Invoice disputed',        desc: 'When a client flags a question or concern about an invoice from the portal' },
+  { key: 'project_assigned',      label: 'Added to a project',      desc: 'When a teammate adds you to a project' },
 ]
 
 // FIX (re-audit, notifications section): both of these are fully wired
@@ -150,12 +151,14 @@ const NOTIF_ITEMS = [
 // api/notifications/preferences/route.ts.
 const IN_APP_NOTIF_ITEMS = [
   { key: 'flag_comment_added',            label: 'Comments on scope flags', desc: 'When someone comments on a flag or exception you can act on' },
-  { key: 'approval_no_reachable_approver', label: 'Approval stuck — no approver', desc: "When a pending approval's assigned role or user can't be reached (requires MANAGE_ROLES)" },
+  { key: 'approval_no_reachable_approver', label: 'Approval stuck — no approver', desc: "When a pending approval's assigned role or user can't be reached (requires managing workspace settings)" },
   // FIX (deep audit, notifications section): same "wired server-side,
   // never got a toggle" gap as the two above — see
   // lib/utils/project-messages.ts. No email counterpart exists for
   // mentions, so this belongs here rather than in NOTIF_ITEMS.
   { key: 'project_message_mention',       label: '@-mentions in project discussion', desc: 'When someone @-mentions you in a project message' },
+  { key: 'member_joined',                 label: 'Teammate joined',         desc: 'When someone you invited accepts and joins the workspace (requires managing team roles)' },
+  { key: 'client_viewed',                 label: 'Client opened a document', desc: 'The first time a client opens a SOW, change order or invoice you sent' },
 ]
 
 interface Props {
@@ -225,6 +228,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
     taxId:                      workspace?.tax_id || '',
     phone:                      workspace?.phone || '',
     website:                    workspace?.website || '',
+    replyToEmail:               workspace?.reply_to_email || '',
     defaultPaymentInstructions: workspace?.default_payment_instructions || '',
     legalAddress: {
       line1:      workspace?.legal_address?.line1 || '',
@@ -239,6 +243,14 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
   // working backend support (including the once-only change lock).
   const slugLocked = !!workspace?.slug_changed_at
 
+  // Sends replyToEmail only when it differs from what was loaded, so a save never touches the
+  // column (or fails before migration 062 adds it) unless the user actually edited the field.
+  const initialReplyTo = workspace?.reply_to_email || ''
+  const patchWorkspace = (url: string, body: any) => {
+    const { replyToEmail, ...rest } = body
+    const next = typeof replyToEmail === 'string' ? replyToEmail.trim() : initialReplyTo
+    return patch(url, next !== initialReplyTo ? { ...rest, replyToEmail: next } : rest)
+  }
   const [brandColour, setBrandColour] = useState(() => workspace?.brand_colour || '#1A5C3A')
   const [logoPreview, setLogoPreview] = useState<string | null>(logoUrl)
 
@@ -332,7 +344,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
         {tab === 'account' && <AccountTab session={session} supabase={supabase} router={router} mfaMandatory={mfaMandatory} />}
 
         {tab === 'workspace' && (
-          <WorkspaceTab form={wsForm} setForm={setWsForm} permissions={permissions} onSave={patch} saving={saving} slugLocked={slugLocked} />
+          <WorkspaceTab form={wsForm} setForm={setWsForm} permissions={permissions} onSave={patchWorkspace} saving={saving} slugLocked={slugLocked} />
         )}
 
         {tab === 'branding' && (
@@ -792,6 +804,10 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugLocked }
         <div className="fgrp">
           <label className="flbl">Website <span className="fhint">— optional</span></label>
           <input className="finp" value={form.website} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('website', e.target.value)} placeholder="acme.com" />
+        </div>
+        <div className="fgrp">
+          <label className="flbl">Reply-to email <span className="fhint">— optional; where a client&apos;s reply to a SOW, change order or invoice email is delivered. Leave blank and replies go to the person who sent it.</span></label>
+          <input className="finp" type="email" value={form.replyToEmail} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('replyToEmail', e.target.value)} placeholder="billing@youragency.com" />
         </div>
         <div className="fgrp">
           <label className="flbl">Default payment instructions <span className="fhint">— pre-fills new invoices; wire/ACH details, &ldquo;per PO terms&rdquo;, etc.</span></label>
@@ -1642,6 +1658,8 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
 // ── NOTIFICATIONS ─────────────────────────────────────────────
 function NotificationsTab({ permissions }: { permissions: { manageWorkspace: boolean } }) {
   const [prefs,   setPrefs]   = useState<Record<string, boolean> | null>(null)
+  // The bell channel of the EMAIL events (each can now be muted independently of its email).
+  const [inAppPrefs, setInAppPrefs] = useState<Record<string, boolean>>({})
   const [locked,  setLocked]  = useState<Record<string, boolean>>({})
   const [saving,  setSaving]  = useState<string | null>(null)
   const [loadErr, setLoadErr] = useState('')
@@ -1652,24 +1670,29 @@ function NotificationsTab({ permissions }: { permissions: { manageWorkspace: boo
       .then(json => {
         if (json.error) throw new Error(json.error)
         setPrefs(json.prefs)
+        setInAppPrefs(json.inAppPrefs || {})
         setLocked(json.locked || {})
       })
       .catch(() => setLoadErr('Could not load notification preferences.'))
   }, [])
 
-  async function toggle(key: string) {
+  async function toggle(key: string, channel: 'email' | 'in_app' = 'email') {
     if (!prefs || locked[key]) return
-    const next = !prefs[key]
-    setPrefs(p => ({ ...(p || {}), [key]: next })) // optimistic
-    setSaving(key)
+    const isBell = channel === 'in_app'
+    const next = isBell ? !inAppPrefs[key] : !prefs[key]
+    const set = (v: boolean) => isBell
+      ? setInAppPrefs(p => ({ ...p, [key]: v }))
+      : setPrefs(p => ({ ...(p || {}), [key]: v }))
+    set(next) // optimistic
+    setSaving(`${key}:${channel}`)
     try {
       const res = await fetch('/api/notifications/preferences', {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ eventType: key, enabled: next }),
+        body: JSON.stringify({ eventType: key, enabled: next, channel }),
       })
       if (!res.ok) throw new Error()
     } catch {
-      setPrefs(p => ({ ...(p || {}), [key]: !next })) // revert on failure
+      set(!next) // revert on failure
     } finally { setSaving(null) }
   }
 
@@ -1694,12 +1717,28 @@ function NotificationsTab({ permissions }: { permissions: { manageWorkspace: boo
                 {locked[item.key] && <span style={{ color: 'var(--text-3)' }}> — required by your workspace admin</span>}
               </div>
             </div>
-            <button
-              className={`toggle ${prefs[item.key] ? 'on' : 'off'}`}
-              disabled={saving === item.key || locked[item.key]}
-              style={locked[item.key] ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
-              onClick={() => toggle(item.key)}
-            />
+            <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexShrink: 0 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10.5, color: 'var(--text-3)' }}>
+                Email
+                <button
+                  className={`toggle ${prefs[item.key] ? 'on' : 'off'}`}
+                  aria-label={`${item.label}: email`}
+                  disabled={saving === `${item.key}:email` || locked[item.key]}
+                  style={locked[item.key] ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
+                  onClick={() => toggle(item.key, 'email')}
+                />
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10.5, color: 'var(--text-3)' }}>
+                Bell
+                <button
+                  className={`toggle ${inAppPrefs[item.key] !== false ? 'on' : 'off'}`}
+                  aria-label={`${item.label}: in-app`}
+                  disabled={saving === `${item.key}:in_app` || locked[item.key]}
+                  style={locked[item.key] ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
+                  onClick={() => toggle(item.key, 'in_app')}
+                />
+              </label>
+            </div>
           </div>
         ))}
       </div>
@@ -1721,9 +1760,9 @@ function NotificationsTab({ permissions }: { permissions: { manageWorkspace: boo
               </div>
               <button
                 className={`toggle ${prefs[item.key] ? 'on' : 'off'}`}
-                disabled={saving === item.key || locked[item.key]}
+                disabled={saving === `${item.key}:email` || saving === `${item.key}:in_app` || locked[item.key]}
                 style={locked[item.key] ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
-                onClick={() => toggle(item.key)}
+                onClick={() => toggle(item.key, 'in_app')}
               />
             </div>
           ))}

@@ -152,7 +152,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     })
 
     try {
-      const emails = await getMemberEmailsWithPermission(service, session.workspaceId, 'VIEW_FINANCIALS', 10, 'invoice_payment_received', invoice.project_id)
+      const emails = await getMemberEmailsWithPermission(service, session.workspaceId, 'VIEW_FINANCIALS', 10, 'invoice_payment_received', invoice.project_id, session.id)
       if (emails.length) {
         await sendInvoicePaymentRecordedEmail({
           to: emails,

@@ -22,6 +22,7 @@
 // out to be wrong for how agencies actually work, this is the one place
 // to change it — everything downstream just checks the return value.
 
+import { insertNotificationRows } from '@/lib/utils/notify'
 import { logAudit } from '@/lib/utils/audit'
 import { getMembersWithRole, filterByNotificationPreference, filterToProjectAccess } from '@/lib/utils/permissions-query'
 import { sendApprovalRequestedEmail, sendApprovalDecisionEmail } from '@/lib/email/templates'
@@ -602,7 +603,7 @@ export async function cancelApprovalRequest(service: any, params: {
       if (stepRecipients.length) {
         const docTitle    = request.context?.title || documentLabelFor(params.documentType)
         const projectName = request.context?.project_name || ''
-        await service.from('notifications').insert(stepRecipients.map(r => ({
+        await insertNotificationRows(service, stepRecipients.map(r => ({
           workspace_id: params.workspaceId,
           recipient_id: r.id,
           type:         'approval_cancelled',
@@ -843,7 +844,7 @@ async function notifyStepApprovers(service: any, args: {
 
   if (inAppRecipients.length) {
     try {
-      await service.from('notifications').insert(inAppRecipients.map(r => ({
+      await insertNotificationRows(service, inAppRecipients.map(r => ({
         workspace_id: args.workspaceId,
         recipient_id: r.id,
         type:         'approval_requested',
@@ -870,6 +871,11 @@ async function notifyStepApprovers(service: any, args: {
   return notifiedIds.size
 }
 
+// FIX (Notifications & email fix round): the three in-app inserts in this file (step
+// cancelled, approval requested, decision to requester) called `service.from('notifications')
+// .insert(...)` inside a try/catch — but supabase-js returns `{ error }` instead of throwing,
+// so a failed insert was never noticed. They now go through insertNotificationRows, which
+// reads the error. (Recipients here are already filtered for project access and preference.)
 async function notifyRequester(service: any, args: {
   workspaceId: string
   requester: { id: string; name: string; email: string }
@@ -897,7 +903,7 @@ async function notifyRequester(service: any, args: {
 
   if (inAppOn) {
     try {
-      await service.from('notifications').insert({
+      await insertNotificationRows(service, [{
         workspace_id: args.workspaceId,
         recipient_id: args.requester.id,
         type:         `approval_${args.decision}`,
@@ -929,7 +935,7 @@ async function notifyRequester(service: any, args: {
         // button, none of which a bare project page ever had.
         entity_type:  'approval_request',
         entity_id:    args.requestId,
-      })
+      }])
     } catch { /* non-fatal */ }
   }
 

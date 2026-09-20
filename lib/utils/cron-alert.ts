@@ -23,13 +23,8 @@
 // watchdog (app/api/cron/cron-heartbeat-watchdog) for a run that appears
 // not to have happened at all — see migration 058.
 
-import { Resend } from 'resend'
-
-let _resend: Resend | null = null
-function resendClient(): Resend {
-  if (!_resend) _resend = new Resend(process.env.RESEND_API_KEY)
-  return _resend
-}
+import { sendEmail } from '@/lib/email/send'
+import { systemFrom } from '@/lib/email/from'
 
 const escapeHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
@@ -47,16 +42,20 @@ async function sendOpsAlert(
     const { data } = await service.from('ops_alert_state').select('last_sent_at').eq('key', key).maybeSingle()
     if (data && Date.now() - new Date(data.last_sent_at).getTime() < cooldownMs) return false
 
-    await resendClient().emails.send({
-      from:    `ScopeGov Ops <${process.env.RESEND_FROM_EMAIL}>`,
+    // FIX (Notifications & email fix round): this "mark only after a
+    // successful send" discipline was written around a send that reports
+    // failure by throwing — the Resend SDK doesn't, so a rejected page still
+    // consumed the cooldown. Check the actual result.
+    const res = await sendEmail({
+      from:    systemFrom('ScopeGov Ops'),
       to,
       subject: `[Cron] ${subject}`,
       html:    `<div style="font-family:monospace;white-space:pre-wrap;">${escapeHtml(message)}</div>`,
     })
-    // Mark only after a successful send — same reasoning as
-    // lib/billing/ops-alert.ts and guardian-health's alertOps: a failed
-    // delivery should be retried on the very next occurrence, not
-    // silently consume the cooldown as if the page had actually gone out.
+    if (!res.ok) {
+      console.error('Cron ops alert email failed:', res.error)
+      return false
+    }
     await service.from('ops_alert_state').upsert({ key, last_sent_at: new Date().toISOString() })
     return true
   } catch (e) {

@@ -6,8 +6,11 @@ import { logAudit } from '@/lib/utils/audit'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { insertNextSowVersion } from '@/lib/documents/sow-version'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
-import { escapeHtml, cleanTextField, sanitizeDisplayName } from '@/lib/utils/sanitize'
+import { escapeHtml, cleanTextField } from '@/lib/utils/sanitize'
 import { checkedSend } from '@/lib/email/delivery'
+import { sendEmail } from '@/lib/email/send'
+import { formatFrom } from '@/lib/email/from'
+import { resolveReplyTo } from '@/lib/email/reply-to'
 import { sendClientResponseReceivedEmail } from '@/lib/email/templates'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
 import { checkRevokedToken, verifySowJwt } from '../_shared'
@@ -157,13 +160,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // Notify agency members with SEND_SOW permission (Event 6)
     const emails = await getMemberEmailsWithPermission(service, sow.workspace_id, 'SEND_SOW', 25, 'sow_changes_requested', project.id).catch(() => [] as string[])
     if (emails.length) {
-      const { Resend } = await import('resend')
-      const resend = new Resend(process.env.RESEND_API_KEY)
       const appUrl = process.env.NEXT_PUBLIC_APP_URL
-      await checkedSend(() => resend.emails.send({
-        // Header values are plain text: sanitised for header injection, NOT HTML-escaped (escaping
-        // turned "Tom & Co" into the literal "Tom &amp; Co" in the From name and subject line).
-        from: `${sanitizeDisplayName(project.workspaces.agency_name)} via ScopeGov <${process.env.RESEND_FROM_EMAIL}>`,
+      await checkedSend(() => sendEmail({
+        // Header values are plain text: formatFrom() builds a valid quoted display name (and applies the
+        // RESEND_FROM_EMAIL fallback this inline string lacked); nothing here is HTML-escaped.
+        from: formatFrom(project.workspaces.agency_name),
         to: emails,
         subject: `${client.name} requested changes on the ${project.name} SOW`.replace(/[\r\n]+/g, ' '),
         html: `<p><strong>${escapeHtml(client.name)}</strong> has requested changes on the <strong>${escapeHtml(project.name)}</strong> SOW (v${sow.version}).</p>
@@ -176,7 +177,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // Confirm receipt to the client.
     if (client.email) {
       const cc = await withPrimaryContactCc(service, project.client_id, client.email, client.cc_emails)
+      const replyTo = await resolveReplyTo(service, sow.workspace_id, null)
       await checkedSend(() => sendClientResponseReceivedEmail({
+        replyTo,
         to: client.email, cc, clientName: client.name, agencyName: project.workspaces.agency_name,
         projectName: project.name, documentLabel: 'Statement of Work', response: 'requested changes to',
         note: note.slice(0, 500), brandColour: project.workspaces.brand_colour,

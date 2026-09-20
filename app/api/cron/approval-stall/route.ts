@@ -85,7 +85,13 @@ export async function POST(request: NextRequest) {
             metadata:     { days_pending: threshold },
           })
           await notifyMembersWithPermission(service, {
-            workspaceId: r.workspace_id, permission: 'MANAGE_ROLES',
+            // FIX (Notifications & email fix round): this went to MANAGE_ROLES holders, but the fix
+            // it asks for ("check the approval workflow's assignment") needs MANAGE_WORKSPACE_SETTINGS —
+            // that is what gates the workflow editor and its API, and what lets someone open this
+            // request in the Approvals "All" tab. A role-manager without it got an alert they
+            // couldn't act on, while the people who could weren't told. (approval_send_failed_stale
+            // below already targets the right permission.)
+            workspaceId: r.workspace_id, permission: 'MANAGE_WORKSPACE_SETTINGS',
             eventType: 'approval_no_reachable_approver', type: 'approval_no_reachable_approver',
             title: 'Approval step has no reachable approver',
             body: `A pending approval has been stalled for ${threshold}+ days and its assigned approver (role or user) can't be reached — check the approval workflow's assignment.`,

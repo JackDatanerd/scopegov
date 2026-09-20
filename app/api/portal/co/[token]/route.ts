@@ -1,5 +1,6 @@
 export const runtime = 'nodejs'
 
+import { markFirstViewed } from '@/lib/utils/client-viewed'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { jwtVerify } from 'jose'
@@ -12,7 +13,7 @@ const CO_COLUMNS = `id,title,note,status,version,line_items,subtotal,tax_rate,ta
     workspaces(id,agency_name,brand_colour,logo_storage_path,agency_signature_data,
       legal_address,tax_id,phone,website))`
 
-async function getCoByToken(token: string, service: any) {
+async function getCoByToken(token: string, service: any, userAgent: string | null = null) {
   const { data: revoked } = await (service as any)
     .from('revoked_tokens').select('reason, document_id').eq('token', token).single()
 
@@ -118,11 +119,11 @@ async function getCoByToken(token: string, service: any) {
   // identical fix in the SOW portal route. Must never block the response
   // below if the write fails.
   if (!co.first_viewed_at) {
-    try {
-      await (service as any).from('change_orders')
-        .update({ first_viewed_at: new Date().toISOString() })
-        .eq('id', co.id).is('first_viewed_at', null)
-    } catch (e) { console.error('CO first-view tracking failed (non-fatal):', e) }
+    await markFirstViewed(service, {
+      kind: 'co', id: co.id, workspaceId: co.workspace_id, projectId: co.projects?.id,
+      projectName: co.projects?.name || '', clientName: co.projects?.clients?.name || '',
+      userAgent,
+    })
   }
 
   // FIX (doc-completeness audit, migration 014): a CO the agency has
@@ -137,7 +138,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   try {
     const { token } = await params
     const service   = createServiceClient()
-    const result    = await getCoByToken(token, service)
+    const result    = await getCoByToken(token, service, request.headers.get('user-agent'))
 
     if (result.state) return NextResponse.json({
       state: result.state,

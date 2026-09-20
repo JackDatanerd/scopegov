@@ -1,5 +1,6 @@
 export const runtime = 'nodejs'
 
+import { notifySecurityEvent } from '@/lib/utils/notify'
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
 import { logAudit } from '@/lib/utils/audit'
@@ -86,14 +87,11 @@ export async function POST(request: Request) {
       })
     } catch (e) { console.error('MFA enable audit log failed (non-fatal):', e) }
 
-    try {
-      await (service as any).from('notifications').insert({
-        workspace_id: workspaceId,
-        recipient_id: user.id,
-        type: 'security', title: 'Two-factor authentication enabled',
-        body: 'Your account now requires an authenticator code to sign in.',
-      })
-    } catch (e) { console.error('MFA enable notification insert failed (non-fatal):', e) }
+    // FIX (Notifications & email fix round): this insert used a single, possibly-null
+    // workspace id (NOT NULL column → silent failure) and only showed in that one
+    // workspace's bell. One row per active membership, with the error actually read.
+    await notifySecurityEvent(service, user.id, 'Two-factor authentication enabled',
+      'Your account now requires an authenticator code to sign in.')
 
     // FIX (re-audit): fire-and-forget email — not awaited — is unsafe in
     // serverless (the function can freeze/terminate right after the

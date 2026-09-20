@@ -8,7 +8,7 @@ export const maxDuration = 300
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { sendTrialWarningEmail } from '@/lib/email/templates'
-import { filterByNotificationPreference } from '@/lib/utils/permissions-query'
+import { getMembersWithPermission } from '@/lib/utils/permissions-query'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
 import { alertCronFailure } from '@/lib/utils/cron-alert'
 import { recordCronHeartbeat } from '@/lib/utils/cron-heartbeat'
@@ -27,15 +27,14 @@ export async function POST(request: NextRequest) {
     const now     = new Date()
 
     // Find trial workspaces expiring in the next 3 days with no subscription on file
+    const today     = now.toISOString().slice(0, 10)
     const soon      = new Date(now.getTime() + 3 * 86400000).toISOString()
     const yesterday = new Date(now.getTime() - 86400000).toISOString()
 
     const { data: workspaces } = await (service as any)
       .from('workspaces')
       .select(`id, agency_name, trial_ends_at,
-        billing(paystack_subscription_code),
-        workspace_members!inner(user_id, status,
-          users!inner(name, email))`)
+        billing(paystack_subscription_code)`)
       .eq('plan_tier', 'trial')
       .is('deleted_at', null)
       .lte('trial_ends_at', soon)
@@ -66,11 +65,15 @@ export async function POST(request: NextRequest) {
       // member (opted in by default), not specifically "the owner" —
       // filterByNotificationPreference already narrows it to whoever
       // hasn't opted out of trial_ending.
-      const members: { id: string; name: string; email: string }[] = (ws.workspace_members || [])
-        .filter((m: any) => m.status === 'active' && m.users)
-        .map((m: any) => ({ id: m.user_id, name: m.users.name, email: m.users.email }))
-
-      const enabledMembers = await filterByNotificationPreference(service, ws.id, 'trial_ending', members)
+      // FIX (Notifications & email fix round): the advance warning went to EVERY active member who
+      // hadn't opted out — a contractor with no billing access got "upgrade your plan" with a link to
+      // a tab they can't open — while the downgrade emails (payment-overdue) already go only to
+      // people who can act on it (lib/billing/recipients.ts). The comment here used to say the
+      // "first active member, not the owner" problem had been fixed; it had only been moved. Recipients
+      // are now the MANAGE_BILLING holders, with the trial_ending preference applied before the cap.
+      const enabledMembers = await getMembersWithPermission(
+        service, ws.id, 'MANAGE_BILLING', 25, undefined, 'trial_ending'
+      )
 
       for (const owner of enabledMembers) {
         try {
@@ -90,19 +93,27 @@ export async function POST(request: NextRequest) {
             .eq('workspace_id', ws.id)
             .eq('event_type', 'billing.trial_ending_soon')
             .eq('metadata->>sent_to', owner.email)
-            .gte('created_at', new Date(now.getTime() - 24 * 3600000).toISOString())
+            // FIX (Notifications & email fix round): this was a rolling `created_at >= now - 24h`
+            // window against a job that runs at a slightly different moment each day. A row written
+            // at 08:00:40 yesterday still counted as "within 24h" for a run that started at 08:00:10
+            // today, so that recipient's warning for the day was silently skipped. A calendar-day
+            // key is what "at most once a day" actually means.
+            .eq('metadata->>day', today)
             .limit(1)
             .maybeSingle()
 
           if (alreadySent) continue
 
-          await sendTrialWarningEmail({
+          const delivery = await sendTrialWarningEmail({
             to:         owner.email,
             name:       owner.name || owner.email,
             agencyName: ws.agency_name,
             daysLeft,
             upgradeUrl: `${process.env.NEXT_PUBLIC_APP_URL}/settings?tab=billing`,
           })
+          // A rejected send used to be recorded as "sent" (the audit row below is also the dedupe key,
+          // so a failure meant no retry that day). Only a delivered warning counts.
+          if (!delivery.ok) { console.error('Trial warning email rejected:', delivery.error); continue }
 
           await insertAuditRow(service, {
             workspace_id: ws.id,
@@ -113,7 +124,7 @@ export async function POST(request: NextRequest) {
             entity_type:  'workspace',
             entity_id:    ws.id,
             entity_name:  ws.agency_name,
-            metadata:     { days_left: daysLeft, sent_to: owner.email },
+            metadata:     { days_left: daysLeft, sent_to: owner.email, day: today },
           })
           sent++
         } catch (e) { console.error('Trial warning email failed:', e) }

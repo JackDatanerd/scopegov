@@ -10,6 +10,7 @@
 // created with a captured client signature. This is now the single place
 // both flows go through so they can't drift apart again.
 
+import { resolveReplyTo } from '@/lib/email/reply-to'
 import { logAudit } from '@/lib/utils/audit'
 import { renderCoPdf } from '@/lib/pdf/renderer'
 import { sendCoAcceptedEmail, sendCoAcceptedClientEmail } from '@/lib/email/templates'
@@ -362,7 +363,9 @@ export async function finalizeCoAcceptance(service: any, params: {
     const portalBase = process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL
     const portalUrl  = `${portalBase}/portal/co/${coToken || ''}`
     const acceptedCc = await withPrimaryContactCc(service, project.client_id, client.email, client.cc_emails)
+    const replyTo = await resolveReplyTo(service, co.workspace_id, null)
     await checkedSend(() => sendCoAcceptedClientEmail({
+      replyTo,
       to: client.email, cc: acceptedCc,
       clientName: client.name, agencyName: ws.agency_name,
       projectName: project.name, coTitle: co.title,

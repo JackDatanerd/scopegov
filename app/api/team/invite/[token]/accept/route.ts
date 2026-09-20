@@ -1,3 +1,4 @@
+import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { logAudit } from '@/lib/utils/audit'
@@ -163,6 +164,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       eventType: 'member.joined', entityType: 'workspace_member',
       entityId: member.id, entityName: user.email!,
       metadata: { workspace_name: member.workspaces?.name },
+    })
+
+    // FEATURE (Notifications & email fix round): the person who invited someone was never told they
+    // had joined. In-app to the people who can manage the team.
+    await notifyMembersWithPermission(service, {
+      workspaceId: member.workspace_id, permission: 'INVITE_MEMBERS', eventType: 'member_joined',
+      type: 'member_joined', title: 'New teammate joined',
+      body: `${existingUserRow?.name || user.user_metadata?.name || user.email} accepted their invite and joined ${member.workspaces?.name || 'the workspace'}.`,
+      entityType: 'team', excludeUserId: user.id,
     })
 
     return NextResponse.json({ ok: true, workspaceId: member.workspace_id })

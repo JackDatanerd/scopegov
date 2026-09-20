@@ -87,6 +87,8 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith('/api/auth/callback') ||
     pathname.startsWith('/api/guardian/inbound') ||
     pathname.startsWith('/api/billing/webhook') ||
+    // Resend delivery webhook — authenticated by its Svix signature, not a session.
+    pathname.startsWith('/api/webhooks/resend') ||
     pathname.startsWith('/api/cron/') ||
     pathname === '/'
 

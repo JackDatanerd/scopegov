@@ -9,6 +9,9 @@ export const runtime = 'nodejs'
 // the agency, the same "make the silence visible" job every other portal
 // action already does.
 
+import { checkedSend } from '@/lib/email/delivery'
+import { resolveReplyTo } from '@/lib/email/reply-to'
+import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { jwtVerify } from 'jose'
@@ -16,7 +19,7 @@ import { getWorkspaceJwtSecret, isWorkspaceDeleted } from '@/lib/utils/workspace
 import { logAudit } from '@/lib/utils/audit'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
-import { sendInvoiceDisputedEmail } from '@/lib/email/templates'
+import { sendInvoiceDisputedEmail, sendClientResponseReceivedEmail } from '@/lib/email/templates'
 import { checkPortalRateLimit, recordPortalAction } from '@/lib/utils/portal-rate-limit'
 import { getClientIp } from '@/lib/utils/request-ip'
 
@@ -46,7 +49,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const { data: invoice } = await (service as any)
       .from('invoices')
-      .select('id, title, invoice_number, status, workspace_id, project_id, projects(id, name, clients(name, email))')
+      .select('id, title, invoice_number, status, workspace_id, project_id, projects(id, name, client_id, clients(name, email, cc_emails), workspaces(agency_name, brand_colour))')
       .eq('token', token).single()
 
     if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
@@ -127,6 +130,20 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         })
       }
     } catch (e) { console.error('Invoice disputed email failed:', e) }
+
+    // FEATURE (Notifications & email fix round): the client got nothing back
+    // after pressing "dispute" — every other client response (SOW decline /
+    // change request, CO decline / counter) already sends a receipt.
+    if (client?.email) {
+      const cc = await withPrimaryContactCc(service, project?.client_id, client.email, client.cc_emails)
+      const replyTo = await resolveReplyTo(service, invoice.workspace_id, null)
+      await checkedSend(() => sendClientResponseReceivedEmail({
+        replyTo,
+        to: client.email, cc, clientName: client.name, agencyName: project?.workspaces?.agency_name || '',
+        projectName: project?.name || invoice.title, documentLabel: 'Invoice', response: 'disputed',
+        note: note.trim().slice(0, 500), brandColour: project?.workspaces?.brand_colour,
+      }), 'Invoice disputed (client receipt)')
+    }
 
     return NextResponse.json({ ok: true })
   } catch (err) {

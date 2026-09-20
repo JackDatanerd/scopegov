@@ -12,6 +12,7 @@
 // with zero sign-off, since the only gate check in the whole CO
 // lifecycle happened at the original send, not at counter-acceptance.
 
+import { resolveReplyTo } from '@/lib/email/reply-to'
 import { SignJWT } from 'jose'
 import { nanoid } from 'nanoid'
 import { logAudit } from '@/lib/utils/audit'
@@ -137,7 +138,9 @@ export async function acceptCoCounter(service: any, params: {
 
   const portalUrl = `${process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL}/portal/co/${newToken}`
   const cc = await withPrimaryContactCc(service, project?.client_id, client.email, client.cc_emails)
+  const replyTo = await resolveReplyTo(service, workspaceId, actorEmail)
   const delivery = await checkedSend(() => sendCoCountersignatureRequestEmail({
+    replyTo,
     to: client.email, cc,
     clientName: client.name, agencyName: ws?.agency_name,
     projectName: project?.name, coTitle: co.title,

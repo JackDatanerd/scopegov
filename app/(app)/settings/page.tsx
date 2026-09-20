@@ -101,6 +101,15 @@ export default async function SettingsPage() {
   // app's own over-fetch into an unprivileged user's browser, matching
   // the redaction pattern already used elsewhere in the app.
   const canManageWorkspace = hasPermission(session, 'MANAGE_WORKSPACE_SETTINGS')
+  // FEATURE (Notifications & email fix round): reply_to_email is read separately and tolerantly. It
+  // is added by migration 062; folding it into the big select above would make the WHOLE Settings
+  // page fail to load on a deploy that runs ahead of the migration.
+  let replyToEmail: string | null = null
+  if (canManageWorkspace) {
+    const { data: rt, error: rtErr } = await (service as any)
+      .from('workspaces').select('reply_to_email').eq('id', session.workspaceId).maybeSingle()
+    if (!rtErr) replyToEmail = rt?.reply_to_email ?? null
+  }
   const workspace = wsRes.data && !canManageWorkspace
     ? {
         ...wsRes.data,
@@ -109,7 +118,7 @@ export default async function SettingsPage() {
         legal_address: null,
         default_payment_instructions: null,
       }
-    : wsRes.data
+    : (wsRes.data ? { ...wsRes.data, reply_to_email: replyToEmail } : wsRes.data)
 
   // FIX (deep audit, Auth+MFA re-pass): SettingsClient's AccountTab used to
   // compute this itself via permissionsRequireMfa(session.permissions) —

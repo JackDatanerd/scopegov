@@ -3,7 +3,8 @@ export const runtime = 'nodejs'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
-import { Resend } from 'resend'
+import { sendEmail } from '@/lib/email/send'
+import { systemFrom } from '@/lib/email/from'
 
 // FIX (audit round 3): local copy replaced with the shared,
 // null-safe helper — see lib/utils/verify-cron.ts.
@@ -17,11 +18,6 @@ import { Resend } from 'resend'
 // normal per-workspace notification system — it needs its own ops
 // recipient. OPS_ALERT_EMAIL is optional; if unset this still degrades to
 // the previous console.error-only behavior rather than crashing the cron.
-let _resend: Resend | null = null
-function resendClient(): Resend {
-  if (!_resend) _resend = new Resend(process.env.RESEND_API_KEY)
-  return _resend
-}
 
 // FIX (cron audit, section 17 — closing pass): returns whether the send
 // actually succeeded. `shouldAlert` below used to mark the cooldown as
@@ -35,15 +31,19 @@ function resendClient(): Resend {
 async function alertOps(subject: string, lines: string[]): Promise<boolean> {
   const to = process.env.OPS_ALERT_EMAIL
   if (!to) return false
-  try {
-    await resendClient().emails.send({
-      from:    `ScopeGov Ops <${process.env.RESEND_FROM_EMAIL}>`,
-      to,
-      subject: `[Guardian Health] ${subject}`,
-      html: `<div style="font-family:monospace;white-space:pre-wrap;">${lines.map(l => l.replace(/</g, '&lt;')).join('\n')}</div>`,
-    })
-    return true
-  } catch (e) { console.error('Guardian health ops alert email failed:', e); return false }
+  // FIX (Notifications & email fix round): the try/catch that used to wrap
+  // this could never fire — Resend's SDK resolves `{ error }` instead of
+  // throwing — so this always returned true and the cooldown above was
+  // consumed by sends that never went out, exactly what the note above says
+  // it prevents. sendEmail() reports the real outcome.
+  const res = await sendEmail({
+    from:    systemFrom('ScopeGov Ops'),
+    to,
+    subject: `[Guardian Health] ${subject}`,
+    html: `<div style="font-family:monospace;white-space:pre-wrap;">${lines.map(l => l.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')).join('\n')}</div>`,
+  })
+  if (!res.ok) console.error('Guardian health ops alert email failed:', res.error)
+  return res.ok
 }
 
 // FIX (cron audit, section 17): this route runs every 15 minutes and had

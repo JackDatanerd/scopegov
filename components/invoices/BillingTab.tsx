@@ -118,7 +118,13 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
     setBusyId(id); setError('')
     try {
       const res = await fetch(`/api/invoices/${id}/send`, { method: 'POST' })
-      if (!res.ok) { const j = await res.json(); throw new Error(j.error) }
+      const j = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(j.error || 'Failed to send invoice')
+      // FIX (Notifications & email fix round): a rejected email used to be
+      // reported as a normal send. The invoice is issued either way; say so
+      // when the client was NOT emailed, like the SOW and CO screens do.
+      if (j.emailSent === false)
+        alert(`The invoice is marked as sent, but the email to the client could not be delivered (${j.emailError || 'provider error'}).\n\nCheck the client's email address, then use Remind to try again.`)
       await refresh()
     } catch (err: unknown) { setError(err instanceof Error ? err.message : 'Failed to send invoice') }
     finally { setBusyId(null) }

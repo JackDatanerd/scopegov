@@ -1,5 +1,6 @@
 export const runtime = 'nodejs'
 
+import { resolveReplyTo } from '@/lib/email/reply-to'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { logAudit } from '@/lib/utils/audit'
@@ -132,7 +133,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // Confirm receipt to the client — they previously got nothing back after declining.
     if (client.email) {
       const cc = await withPrimaryContactCc(service, project.client_id, client.email, client.cc_emails)
+      const replyTo = await resolveReplyTo(service, sow.workspace_id, null)
       await checkedSend(() => sendClientResponseReceivedEmail({
+        replyTo,
         to: client.email, cc, clientName: client.name, agencyName: project.workspaces.agency_name,
         projectName: project.name, documentLabel: 'Statement of Work', response: 'declined',
         note: reason ? reason.slice(0, 500) : null, brandColour: project.workspaces.brand_colour,

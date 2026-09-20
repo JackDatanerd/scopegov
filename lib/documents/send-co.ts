@@ -10,6 +10,7 @@ import { assignDocumentNumber } from '@/lib/utils/document-number'
 import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
 import { checkedSend } from '@/lib/email/delivery'
+import { resolveReplyTo } from '@/lib/email/reply-to'
 import { isTerminalStatus } from '@/lib/utils/project-status'
 
 export type SendCoResult =
@@ -173,6 +174,7 @@ export async function sendCoDocument(service: any, params: {
   }
 
   const portalUrl = `${process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL}/portal/co/${token}`
+  const replyTo = await resolveReplyTo(service, workspaceId, actorEmail)
   const delivery = await checkedSend(() => sendCoEmail({
     to:          client.email,
     cc:          ccEmails,
@@ -185,6 +187,8 @@ export async function sendCoDocument(service: any, params: {
     portalUrl,
     brandColour: workspace.brand_colour,
     note:        co.note,
+    replyTo,
+    log:         { workspaceId, kind: 'co.send', entityType: 'change_order', entityId: coId, projectId: project.id, actorId },
   }), 'CO send email')
 
   await logAudit(service, {

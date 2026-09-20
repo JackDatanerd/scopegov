@@ -1,22 +1,20 @@
 export const runtime = 'nodejs'
 
-import { Resend } from 'resend'
 import { escapeHtml } from '@/lib/utils/sanitize'
+import { sendEmail, type EmailPayload, type EmailLogContext, type SendResult } from '@/lib/email/send'
+import { formatFrom, systemFrom } from '@/lib/email/from'
+import { formatMoney } from '@/lib/utils/money'
+const money = formatMoney
 
-// FIX (re-audit — build-blocking): Resend was constructed at module scope,
-// so simply *importing* this file (which nearly every route does) threw if
-// RESEND_API_KEY was unset — turning a missing env var into a hard build
-// failure at Next.js's "Collecting page data" step instead of a runtime
-// error on the one route that actually sends an email. Same class of bug
-// ScopeShield already fixed for its Anthropic/OpenAI clients (lazy
-// singleton, 8+ sites) — applying it here too.
-let _resend: Resend | null = null
-function resendClient(): Resend {
-  if (!_resend) _resend = new Resend(process.env.RESEND_API_KEY)
-  return _resend
-}
-const FROM = process.env.RESEND_FROM_EMAIL || 'noreply@mail.scopegov.app'
-const BRAND_FROM = (agencyName: string) => `${agencyName} via ScopeGov`
+// FIX (Notifications & email fix round): the lazy Resend singleton, the FROM
+// constant and BRAND_FROM that lived here moved to lib/email/{send,from}.ts.
+// `emails.send()` never throws for an API failure, so every sender below now
+// returns an explicit SendResult (via sendEmail) instead of handing the raw
+// `{ data, error }` to callers that wrapped it in a try/catch that could not
+// fire. lib/email/delivery.ts#checkedSend understands this result shape.
+export type { SendResult, EmailLogContext }
+const deliver = (payload: EmailPayload, log?: EmailLogContext): Promise<SendResult> => sendEmail(payload, log)
+
 // FIX (deep audit round 2, notifications section — feature gap): the app has
 // a full opt-out/lock system for these events (notification_preferences,
 // workspace_notification_defaults, the Settings > Notifications tab), but
@@ -135,7 +133,7 @@ function baseTemplate({
     <div style="text-align:center;margin-top:20px;">
       <p style="font-size:11px;color:${C.text3};margin:0;">
         Sent by <a href="https://scopegov.app" style="color:${C.green};text-decoration:none;">ScopeGov</a>
-        on behalf of ${agencyName} &middot; Scope governance for agencies
+        ${agencyName && agencyName !== 'ScopeGov' ? `on behalf of ${agencyName} ` : ''}&middot; Scope governance for agencies
       </p>
       ${showPreferencesLink ? `
       <p style="font-size:11px;color:${C.text3};margin:6px 0 0;">
@@ -150,6 +148,7 @@ function baseTemplate({
 
 // ── Event 1: SOW sent ─────────────────────────────────────────
 export async function sendSowEmail(params: {
+  replyTo?: string | null; log?: EmailLogContext
   to: string; cc?: string[]; clientName: string; agencyName: string
   projectName: string; contractValue: number; currency: string
   portalUrl: string; brandColour?: string; expiresAt: string
@@ -188,7 +187,7 @@ export async function sendSowEmail(params: {
         </div>
         <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;">
           <span style="color:${C.text2};">Contract value</span>
-          <span style="font-weight:600;color:${C.green};">${currency} ${contractValue.toLocaleString()}</span>
+          <span style="font-weight:600;color:${C.green};">${money(contractValue, currency)}</span>
         </div>
       </div>
       <p style="font-size:12px;color:${C.text3};margin:0;">
@@ -200,22 +199,27 @@ export async function sendSowEmail(params: {
     ctaSecondary: `Or paste this link into your browser:<br><span style="font-family:monospace;font-size:11px;word-break:break-all;">${portalUrl}</span>`,
   })
 
-  return resendClient().emails.send({
-    from:    `${BRAND_FROM(agencyNameRaw)} <${FROM}>`,
+  return deliver({
+    from:    formatFrom(agencyNameRaw),
+    replyTo: params.replyTo,
     to,
     cc:      cc?.filter(Boolean) || [],
     subject: `Action required: Review your ${projectNameRaw} SOW`,
     html,
-  })
+  }, params.log)
 }
 
 // ── Event 3: SOW signed (agency notification) ─────────────────
 export async function sendSowSignedAgencyEmail(params: {
   to: string[]; agencyName: string; clientName: string
   projectName: string; signedBy: string; portalUrl: string
+  // FIX (Notifications & email fix round): this email announced the most
+  // important event in the SOW lifecycle with no link back into the app
+  // (portalUrl was accepted and never used).
+  projectId?: string
   attachments?: Array<{ filename: string; content: string }>
 }) {
-  const { to, agencyName: agencyNameRaw, clientName: clientNameRaw, projectName: projectNameRaw, signedBy: signedByRaw, attachments } = params
+  const { to, agencyName: agencyNameRaw, clientName: clientNameRaw, projectName: projectNameRaw, signedBy: signedByRaw, attachments, projectId } = params
   const agencyName  = escapeHtml(agencyNameRaw)
   const clientName  = escapeHtml(clientNameRaw)
   const projectName = escapeHtml(projectNameRaw)
@@ -241,10 +245,11 @@ export async function sendSowSignedAgencyEmail(params: {
         A signed PDF copy has been attached to this email for your records.
       </p>
     `,
+    ...(projectId ? { cta: 'Open project in ScopeGov', ctaUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects/${projectId}?tab=sow` } : {}),
   })
 
-  return resendClient().emails.send({
-    from:    `ScopeGov <${FROM}>`,
+  return deliver({
+    from:    systemFrom(),
     to,
     subject: `✓ ${clientNameRaw} signed the ${projectNameRaw} SOW`,
     html,
@@ -261,6 +266,7 @@ export async function sendSowSignedAgencyEmail(params: {
 // one email confirming the agreement is actually signed. Matches
 // sendCoAcceptedClientEmail's shape on the CO side, which already had this.
 export async function sendSowSignedClientEmail(params: {
+  replyTo?: string | null; log?: EmailLogContext
   to: string; cc?: string[]; clientName: string; agencyName: string
   projectName: string; portalUrl: string
   attachments?: Array<{ filename: string; content: string }>
@@ -289,14 +295,15 @@ export async function sendSowSignedClientEmail(params: {
     ctaUrl: portalUrl,
   })
 
-  return resendClient().emails.send({
-    from:    `${BRAND_FROM(agencyNameRaw)} <${FROM}>`,
+  return deliver({
+    from:    formatFrom(agencyNameRaw),
+    replyTo: params.replyTo,
     to,
     cc:      cc?.filter(Boolean) || [],
     subject: `Your ${projectNameRaw} agreement is confirmed`,
     html,
     ...(attachments?.length ? { attachments } : {}),
-  })
+  }, params.log)
 }
 
 // ── Event 5: SOW declined ─────────────────────────────────────
@@ -336,8 +343,8 @@ export async function sendSowDeclinedEmail(params: {
     showPreferencesLink: true,
   })
 
-  return resendClient().emails.send({
-    from:    `ScopeGov <${FROM}>`,
+  return deliver({
+    from:    systemFrom(),
     to,
     subject: `Client declined the ${projectNameRaw} SOW`,
     html,
@@ -376,8 +383,8 @@ export async function sendSowStalledEmail(params: {
     showPreferencesLink: true,
   })
 
-  return resendClient().emails.send({
-    from:    `ScopeGov <${FROM}>`,
+  return deliver({
+    from:    systemFrom(),
     to,
     subject: `SOW stalled — ${projectNameRaw} awaiting signature ${daysSinceSent}+ days`,
     html,
@@ -417,8 +424,8 @@ export async function sendSowExpiredEmail(params: {
     showPreferencesLink: true,
   })
 
-  return resendClient().emails.send({
-    from:    `ScopeGov <${FROM}>`,
+  return deliver({
+    from:    systemFrom(),
     to,
     subject: `SOW signing link expired — ${projectNameRaw}`,
     html,
@@ -460,8 +467,8 @@ export async function sendCoExpiredEmail(params: {
     showPreferencesLink: true,
   })
 
-  return resendClient().emails.send({
-    from:    `ScopeGov <${FROM}>`,
+  return deliver({
+    from:    systemFrom(),
     to,
     subject: `Change order link expired — ${projectNameRaw}`,
     html,
@@ -515,8 +522,8 @@ export async function sendGuardianFlagEmail(params: {
     showPreferencesLink: true,
   })
 
-  return resendClient().emails.send({
-    from:    `ScopeGov Guardian <${FROM}>`,
+  return deliver({
+    from:    systemFrom('ScopeGov Guardian'),
     to,
     subject: `[${severity.toUpperCase()}] Scope flag on ${projectNameRaw}`,
     html,
@@ -554,8 +561,8 @@ export async function sendInviteEmail(params: {
     ctaUrl: inviteUrl,
   })
 
-  return resendClient().emails.send({
-    from:    `ScopeGov <${FROM}>`,
+  return deliver({
+    from:    systemFrom(),
     to,
     subject: `${inviterNameRaw} invited you to join ${workspaceNameRaw} on ScopeGov`,
     html,
@@ -594,8 +601,8 @@ export async function sendTrialWarningEmail(params: {
     showPreferencesLink: true,
   })
 
-  return resendClient().emails.send({
-    from:    `ScopeGov <${FROM}>`,
+  return deliver({
+    from:    systemFrom(),
     to,
     subject: daysLeft === 0
       ? `Your ScopeGov trial has ended — upgrade to continue`
@@ -634,8 +641,8 @@ export async function sendEscalationEmail(params: {
     showPreferencesLink: true,
   })
 
-  return resendClient().emails.send({
-    from:    `ScopeGov <${FROM}>`,
+  return deliver({
+    from:    systemFrom(),
     to,
     subject: `Escalated to you: ${entityNameRaw}`,
     html,
@@ -673,7 +680,7 @@ export async function sendApprovalRequestedEmail(params: {
       <div style="background:${C.goldLt};border-left:3px solid ${C.gold};padding:14px 16px;margin:16px 0;border-radius:0 6px 6px 0;">
         <div style="display:flex;justify-content:space-between;font-size:13px;">
           <span style="color:${C.text2};">${documentTitle}</span>
-          <span style="font-weight:600;color:${C.gold};">${currency} ${amount.toLocaleString()}</span>
+          <span style="font-weight:600;color:${C.gold};">${money(amount, currency)}</span>
         </div>
       </div>
     `,
@@ -682,8 +689,8 @@ export async function sendApprovalRequestedEmail(params: {
     showPreferencesLink: true,
   })
 
-  return resendClient().emails.send({
-    from:    `ScopeGov <${FROM}>`,
+  return deliver({
+    from:    systemFrom(),
     to,
     subject: `Approval needed: ${documentTitleRaw} — ${projectNameRaw}`,
     html,
@@ -750,8 +757,8 @@ export async function sendApprovalDecisionEmail(params: {
     showPreferencesLink: true,
   })
 
-  return resendClient().emails.send({
-    from:    `ScopeGov <${FROM}>`,
+  return deliver({
+    from:    systemFrom(),
     to,
     subject: sendFailed
       ? `Action needed: ${documentTitleRaw} approved but not sent — ${projectNameRaw}`
@@ -762,6 +769,7 @@ export async function sendApprovalDecisionEmail(params: {
 
 // ── Event 9: CO sent ──────────────────────────────────────────
 export async function sendCoEmail(params: {
+  replyTo?: string | null; log?: EmailLogContext
   to: string; cc?: string[]; clientName: string; agencyName: string
   projectName: string; coTitle: string; total: number; currency: string
   portalUrl: string; brandColour?: string; note?: string
@@ -793,7 +801,7 @@ export async function sendCoEmail(params: {
       <div style="background:${C.bg};border:1px solid ${C.border};border-radius:6px;padding:14px 16px;margin:16px 0;">
         <div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0;">
           <span style="color:${C.text2};">${coTitle}</span>
-          <span style="font-weight:600;color:${C.green};">${currency} ${total.toLocaleString()}</span>
+          <span style="font-weight:600;color:${C.green};">${money(total, currency)}</span>
         </div>
       </div>
     `,
@@ -801,13 +809,14 @@ export async function sendCoEmail(params: {
     ctaUrl: portalUrl,
   })
 
-  return resendClient().emails.send({
-    from:    `${BRAND_FROM(agencyNameRaw)} <${FROM}>`,
+  return deliver({
+    from:    formatFrom(agencyNameRaw),
+    replyTo: params.replyTo,
     to,
     cc:      cc?.filter(Boolean) || [],
     subject: `Change order: ${coTitleRaw} — ${projectNameRaw}`,
     html,
-  })
+  }, params.log)
 }
 
 // FIX (build, cron section): co-stall's counterpart to sendSowStalledEmail
@@ -841,8 +850,8 @@ export async function sendCoStalledEmail(params: {
     showPreferencesLink: true,
   })
 
-  return resendClient().emails.send({
-    from:    `ScopeGov <${FROM}>`,
+  return deliver({
+    from:    systemFrom(),
     to,
     subject: `Change order stalled — ${coTitleRaw} awaiting response ${daysSinceSent}+ days`,
     html,
@@ -888,8 +897,8 @@ export async function sendCoDeclinedEmail(params: {
     showPreferencesLink: true,
   })
 
-  return resendClient().emails.send({
-    from:    `ScopeGov <${FROM}>`,
+  return deliver({
+    from:    systemFrom(),
     to,
     subject: `${clientNameRaw} declined the change order — ${coTitleRaw}`,
     html,
@@ -917,7 +926,7 @@ export async function sendCoCounteredEmail(params: {
     body: `
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
         <strong>${clientName}</strong> has proposed a counter offer of
-        <strong>${escapeHtml(currency || 'USD')} ${counterAmount.toLocaleString()}</strong> on <strong>${coTitle}</strong>.
+        <strong>${money(counterAmount, currency || 'USD')}</strong> on <strong>${coTitle}</strong>.
       </p>
       ${counterNote ? `
       <div style="background:${C.amberLt};border:1px solid #FDE68A;border-radius:6px;padding:14px 16px;margin:16px 0;">
@@ -934,8 +943,8 @@ export async function sendCoCounteredEmail(params: {
     showPreferencesLink: true,
   })
 
-  return resendClient().emails.send({
-    from:    `ScopeGov <${FROM}>`,
+  return deliver({
+    from:    systemFrom(),
     to,
     subject: `Counter offer received — ${coTitleRaw}`,
     html,
@@ -973,7 +982,7 @@ export async function sendCoAcceptedEmail(params: {
       <div style="background:${C.greenLt};border:1px solid #B7DCC8;border-radius:6px;padding:14px 16px;margin:16px 0;font-size:13px;">
         <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
           <span style="color:${C.green};">Additional value locked in</span>
-          <strong style="color:${C.green};">${currency} ${total.toLocaleString()}</strong>
+          <strong style="color:${C.green};">${money(total, currency)}</strong>
         </div>
         <div style="font-size:12px;color:${C.text3};">Signed by: ${acceptedBy}</div>
       </div>
@@ -986,10 +995,10 @@ export async function sendCoAcceptedEmail(params: {
     showPreferencesLink: true,
   })
 
-  return resendClient().emails.send({
-    from:    `ScopeGov <${FROM}>`,
+  return deliver({
+    from:    systemFrom(),
     to,
-    subject: `✓ Change order accepted — ${projectNameRaw} +${currency} ${total.toLocaleString()}`,
+    subject: `✓ Change order accepted — ${projectNameRaw} +${money(total, currency)}`,
     html,
     ...(attachments?.length ? { attachments } : {}),
   })
@@ -1000,6 +1009,7 @@ export async function sendCoAcceptedEmail(params: {
 // and money — never received any confirmation or document at all. This
 // is the client-facing counterpart, mirroring sendSowSignedClientEmail.
 export async function sendCoAcceptedClientEmail(params: {
+  replyTo?: string | null; log?: EmailLogContext
   to: string; cc?: string[]; clientName: string; agencyName: string
   projectName: string; coTitle: string; total: number; currency: string
   portalUrl: string
@@ -1021,7 +1031,7 @@ export async function sendCoAcceptedClientEmail(params: {
       <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${clientName},</p>
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
         This confirms the change order <strong>${coTitle}</strong> for <strong>${projectName}</strong>
-        with <strong>${agencyName}</strong>, for an additional <strong>${currency} ${total.toLocaleString()}</strong>.
+        with <strong>${agencyName}</strong>, for an additional <strong>${money(total, currency)}</strong>.
         A PDF copy is attached for your records.
       </p>
       <p style="font-size:13px;color:${C.text2};">
@@ -1039,20 +1049,22 @@ export async function sendCoAcceptedClientEmail(params: {
     ctaUrl: portalUrl,
   })
 
-  return resendClient().emails.send({
-    from:    `${BRAND_FROM(agencyNameRaw)} <${FROM}>`,
+  return deliver({
+    from:    formatFrom(agencyNameRaw),
+    replyTo: params.replyTo,
     to,
     cc:      cc?.filter(Boolean) || [],
     subject: `Your ${projectNameRaw} change order is confirmed`,
     html,
     ...(attachments?.length ? { attachments } : {}),
-  })
+  }, params.log)
 }
 
 // FIX (doc-completeness audit): counter-accepted COs now need the client
 // to countersign at the negotiated total before the CO is final (see
 // migration 014) — this is the email carrying that new signing link.
 export async function sendCoCountersignatureRequestEmail(params: {
+  replyTo?: string | null; log?: EmailLogContext
   to: string; cc?: string[]; clientName: string; agencyName: string
   projectName: string; coTitle: string; total: number; currency: string
   portalUrl: string; brandColour?: string
@@ -1074,7 +1086,7 @@ export async function sendCoCountersignatureRequestEmail(params: {
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
         <strong>${agencyName}</strong> has accepted your proposed amount for
         <strong>${coTitle}</strong> on <strong>${projectName}</strong> —
-        <strong>${currency} ${total.toLocaleString()}</strong>. To finalize it,
+        <strong>${money(total, currency)}</strong>. To finalize it,
         please review and sign to confirm.
       </p>
     `,
@@ -1082,13 +1094,14 @@ export async function sendCoCountersignatureRequestEmail(params: {
     ctaUrl: portalUrl,
   })
 
-  return resendClient().emails.send({
-    from:    `${BRAND_FROM(agencyNameRaw)} <${FROM}>`,
+  return deliver({
+    from:    formatFrom(agencyNameRaw),
+    replyTo: params.replyTo,
     to,
     cc:      cc?.filter(Boolean) || [],
     subject: `Please confirm: ${coTitleRaw} — ${projectNameRaw}`,
     html,
-  })
+  }, params.log)
 }
 
 // ── Payment failed / grace period ────────────────────────────
@@ -1120,8 +1133,8 @@ export async function sendPaymentFailedEmail(params: {
     ctaUrl: upgradeUrl,
   })
 
-  return resendClient().emails.send({
-    from:    `ScopeGov <${FROM}>`,
+  return deliver({
+    from:    systemFrom(),
     to,
     subject: `Action needed: Payment failed for ScopeGov — ${graceDaysLeft} days to resolve`,
     html,
@@ -1160,8 +1173,8 @@ export async function sendSubscriptionEndedEmail(params: {
     ctaUrl: upgradeUrl,
   })
 
-  return resendClient().emails.send({
-    from:    `ScopeGov <${FROM}>`,
+  return deliver({
+    from:    systemFrom(),
     to,
     subject: `Your ScopeGov subscription has ended — ${agencyNameRaw} moved to Solo`,
     html,
@@ -1178,6 +1191,7 @@ export async function sendSubscriptionEndedEmail(params: {
 // a voided invoice per its bank details) had nothing in-product warning
 // them. One shared template covers all three document types.
 export async function sendDocumentCancelledEmail(params: {
+  replyTo?: string | null; log?: EmailLogContext
   to: string; cc?: string[]; clientName: string; agencyName: string
   projectName: string; documentLabel: string; documentTitle: string
   // FIX (CO-logic fix round): added 'closed' — see the call site in
@@ -1214,13 +1228,14 @@ export async function sendDocumentCancelledEmail(params: {
     `,
   })
 
-  return resendClient().emails.send({
-    from:    `${BRAND_FROM(agencyNameRaw)} <${FROM}>`,
+  return deliver({
+    from:    formatFrom(agencyNameRaw),
+    replyTo: params.replyTo,
     to,
     cc:      cc?.filter(Boolean) || [],
     subject: `${documentLabel} ${verb}: ${documentTitleRaw} — ${projectNameRaw}`,
     html,
-  })
+  }, params.log)
 }
 
 /**
@@ -1228,9 +1243,10 @@ export async function sendDocumentCancelledEmail(params: {
  * was received. Until now the client got nothing back after pressing those buttons.
  */
 export async function sendClientResponseReceivedEmail(params: {
+  replyTo?: string | null; log?: EmailLogContext
   to: string; cc?: string[]; clientName: string; agencyName: string; projectName: string
   documentLabel: string
-  response: 'declined' | 'requested changes to' | 'countered'
+  response: 'declined' | 'requested changes to' | 'countered' | 'disputed'
   note?: string | null; brandColour?: string
 }) {
   const { to, cc, clientName: clientNameRaw, agencyName: agencyNameRaw, projectName: projectNameRaw,
@@ -1257,16 +1273,18 @@ export async function sendClientResponseReceivedEmail(params: {
     `,
   })
 
-  return resendClient().emails.send({
-    from:    `${BRAND_FROM(agencyNameRaw)} <${FROM}>`,
+  return deliver({
+    from:    formatFrom(agencyNameRaw),
+    replyTo: params.replyTo,
     to,
     cc:      cc?.filter(Boolean) || [],
     subject: `We received your response — ${projectNameRaw}`,
     html,
-  })
+  }, params.log)
 }
 
 export async function sendInvoiceEmail(params: {
+  replyTo?: string | null; log?: EmailLogContext
   to: string; cc?: string[]; clientName: string; agencyName: string
   projectName: string; invoiceNumber?: string | null; title: string
   amount: number; currency: string; dueDate?: string | null
@@ -1299,7 +1317,7 @@ export async function sendInvoiceEmail(params: {
       <div style="background:${C.bg};border:1px solid ${C.border};border-radius:6px;padding:14px 16px;margin:16px 0;">
         <div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0;">
           <span style="color:${C.text2};">${title}</span>
-          <span style="font-weight:600;color:${C.green};">${currency} ${amount.toLocaleString()}</span>
+          <span style="font-weight:600;color:${C.green};">${money(amount, currency)}</span>
         </div>
         ${dueDate ? `<div style="font-size:12px;color:${C.text3};margin-top:6px;">Due ${new Date(dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}</div>` : ''}
       </div>
@@ -1315,18 +1333,20 @@ export async function sendInvoiceEmail(params: {
     footerNote: 'This invoice is issued and tracked via ScopeGov on behalf of the agency above. ScopeGov does not process this payment — pay per the instructions provided by the agency.',
   })
 
-  return resendClient().emails.send({
-    from:    `${BRAND_FROM(agencyNameRaw)} <${FROM}>`,
+  return deliver({
+    from:    formatFrom(agencyNameRaw),
+    replyTo: params.replyTo,
     to,
     cc:      cc?.filter(Boolean) || [],
     subject: `Invoice${invoiceNumber ? ` ${invoiceNumber}` : ''}: ${titleRaw} — ${projectNameRaw}`,
     html,
     ...(attachments?.length ? { attachments } : {}),
-  })
+  }, params.log)
 }
 
 // ── Phase 4a: Invoice reminder (client-facing) ───────────────────
 export async function sendInvoiceReminderEmail(params: {
+  replyTo?: string | null; log?: EmailLogContext
   to: string; cc?: string[]; clientName: string; agencyName: string
   projectName: string; invoiceNumber?: string | null; title: string
   balanceDue: number; currency: string; dueDate?: string | null
@@ -1349,7 +1369,7 @@ export async function sendInvoiceReminderEmail(params: {
     body: `
       <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${clientName},</p>
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
-        A friendly reminder that <strong>${currency} ${balanceDue.toLocaleString()}</strong> is
+        A friendly reminder that <strong>${money(balanceDue, currency)}</strong> is
         ${isOverdue ? 'now overdue' : 'outstanding'} on invoice${invoiceNumber ? ` ${invoiceNumber}` : ''} for
         <strong>${projectName}</strong>.
         ${dueDate ? ` Due date was ${new Date(dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}.` : ''}
@@ -1365,13 +1385,14 @@ export async function sendInvoiceReminderEmail(params: {
     ctaUrl: portalUrl,
   })
 
-  return resendClient().emails.send({
-    from:    `${BRAND_FROM(agencyNameRaw)} <${FROM}>`,
+  return deliver({
+    from:    formatFrom(agencyNameRaw),
+    replyTo: params.replyTo,
     to,
     cc:      cc?.filter(Boolean) || [],
     subject: `${isOverdue ? 'Overdue' : 'Reminder'}: Invoice${invoiceNumber ? ` ${invoiceNumber}` : ''} — ${projectNameRaw}`,
     html,
-  })
+  }, params.log)
 }
 
 // ── Phase 4a: Payment recorded (internal, agency-facing) ─────────
@@ -1393,22 +1414,22 @@ export async function sendInvoicePaymentRecordedEmail(params: {
     headline: isFullyPaid ? `Invoice${invoiceNumber ? ` ${invoiceNumber}` : ''} paid in full` : `Payment received`,
     body: `
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
-        A payment of <strong>${currency} ${amount.toLocaleString()}</strong> from <strong>${clientName}</strong>
+        A payment of <strong>${money(amount, currency)}</strong> from <strong>${clientName}</strong>
         was recorded on <strong>${projectName}</strong>.
       </p>
-      ${!isFullyPaid ? `<p style="font-size:13px;color:${C.text2};">Remaining balance: <strong>${currency} ${balanceRemaining.toLocaleString()}</strong></p>` : ''}
+      ${!isFullyPaid ? `<p style="font-size:13px;color:${C.text2};">Remaining balance: <strong>${money(balanceRemaining, currency)}</strong></p>` : ''}
     `,
     cta: 'View project →',
     ctaUrl: projectUrl,
     showPreferencesLink: true,
   })
 
-  return resendClient().emails.send({
-    from:    `ScopeGov <${FROM}>`,
+  return deliver({
+    from:    systemFrom(),
     to,
     subject: isFullyPaid
-      ? `✓ Invoice paid in full — ${projectNameRaw} (${currency} ${amount.toLocaleString()})`
-      : `Payment received — ${projectNameRaw} (${currency} ${amount.toLocaleString()})`,
+      ? `✓ Invoice paid in full — ${projectNameRaw} (${money(amount, currency)})`
+      : `Payment received — ${projectNameRaw} (${money(amount, currency)})`,
     html,
   })
 }
@@ -1436,7 +1457,7 @@ export async function sendInvoiceSentInternalEmail(params: {
     headline: `Invoice${invoiceNumber ? ` ${invoiceNumber}` : ''} sent to ${clientName}`,
     body: `
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
-        An invoice for <strong>${currency} ${amount.toLocaleString()}</strong> was sent to
+        An invoice for <strong>${money(amount, currency)}</strong> was sent to
         <strong>${clientName}</strong> on <strong>${projectName}</strong>.
       </p>
     `,
@@ -1445,10 +1466,10 @@ export async function sendInvoiceSentInternalEmail(params: {
     showPreferencesLink: true,
   })
 
-  return resendClient().emails.send({
-    from:    `ScopeGov <${FROM}>`,
+  return deliver({
+    from:    systemFrom(),
     to,
-    subject: `Invoice sent — ${projectNameRaw} (${currency} ${amount.toLocaleString()})`,
+    subject: `Invoice sent — ${projectNameRaw} (${money(amount, currency)})`,
     html,
   })
 }
@@ -1471,7 +1492,7 @@ export async function sendInvoiceOverdueInternalEmail(params: {
     body: `
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
         Invoice${invoiceNumber ? ` ${invoiceNumber}` : ''} on <strong>${projectName}</strong> passed its due date
-        with <strong>${currency} ${balanceDue.toLocaleString()}</strong> still outstanding.
+        with <strong>${money(balanceDue, currency)}</strong> still outstanding.
       </p>
     `,
     cta: 'View project →',
@@ -1479,10 +1500,10 @@ export async function sendInvoiceOverdueInternalEmail(params: {
     showPreferencesLink: true,
   })
 
-  return resendClient().emails.send({
-    from:    `ScopeGov <${FROM}>`,
+  return deliver({
+    from:    systemFrom(),
     to,
-    subject: `Overdue: ${clientNameRaw} — ${currency} ${balanceDue.toLocaleString()} (${projectNameRaw})`,
+    subject: `Overdue: ${clientNameRaw} — ${money(balanceDue, currency)} (${projectNameRaw})`,
     html,
   })
 }
@@ -1510,7 +1531,7 @@ export async function sendPaymentMilestoneOverdueEmail(params: {
     body: `
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
         <strong>${milestoneTitle}</strong> on <strong>${projectName}</strong> (${clientName}) passed its due date
-        with <strong>${currency} ${Number(amount).toLocaleString()}</strong> still pending.
+        with <strong>${money(Number(amount), currency)}</strong> still pending.
       </p>
       <p style="font-size:13px;color:${C.text2};margin:0;">
         You may want to invoice it now, or follow up with the client directly.
@@ -1521,8 +1542,8 @@ export async function sendPaymentMilestoneOverdueEmail(params: {
     showPreferencesLink: true,
   })
 
-  return resendClient().emails.send({
-    from:    `ScopeGov <${FROM}>`,
+  return deliver({
+    from:    systemFrom(),
     to,
     subject: `Milestone overdue — ${milestoneTitleRaw} (${projectNameRaw})`,
     html,
@@ -1562,8 +1583,8 @@ export async function sendRetainerEndingEmail(params: {
     showPreferencesLink: true,
   })
 
-  return resendClient().emails.send({
-    from:    `ScopeGov <${FROM}>`,
+  return deliver({
+    from:    systemFrom(),
     to,
     subject: `Retainer ended — ${projectNameRaw}`,
     html,
@@ -1623,8 +1644,8 @@ export async function sendGuardianFlagStalledEmail(params: {
     showPreferencesLink: true,
   })
 
-  return resendClient().emails.send({
-    from:    `ScopeGov <${FROM}>`,
+  return deliver({
+    from:    systemFrom(),
     to,
     subject: isBorderline
       ? `Borderline item awaiting review ${daysOpen}+ days — ${projectNameRaw}`
@@ -1667,8 +1688,8 @@ export async function sendInvoiceDisputedEmail(params: {
     showPreferencesLink: true,
   })
 
-  return resendClient().emails.send({
-    from:    `ScopeGov <${FROM}>`,
+  return deliver({
+    from:    systemFrom(),
     to,
     subject: `Invoice question from ${clientNameRaw} — ${projectNameRaw}`,
     html,
@@ -1704,8 +1725,8 @@ export async function sendSubscriptionCancelScheduledEmail(params: {
     cta: 'Manage subscription →',
     ctaUrl: manageUrl,
   })
-  return resendClient().emails.send({
-    from: `ScopeGov <${FROM}>`, to,
+  return deliver({
+    from: systemFrom(), to,
     subject: `Subscription cancellation scheduled — ${agencyNameRaw}`,
     html,
   })
@@ -1731,8 +1752,8 @@ export async function sendSubscriptionResumedEmail(params: {
     cta: 'View billing →',
     ctaUrl: manageUrl,
   })
-  return resendClient().emails.send({
-    from: `ScopeGov <${FROM}>`, to,
+  return deliver({
+    from: systemFrom(), to,
     subject: `Subscription resumed — ${agencyNameRaw}`,
     html,
   })
@@ -1760,8 +1781,8 @@ export async function sendCardExpiringEmail(params: {
     cta: 'Update payment details →',
     ctaUrl: manageUrl,
   })
-  return resendClient().emails.send({
-    from: `ScopeGov <${FROM}>`, to,
+  return deliver({
+    from: systemFrom(), to,
     subject: `Your card is expiring — ${agencyNameRaw} subscription`,
     html,
   })
@@ -1795,7 +1816,7 @@ export async function sendMfaEnabledEmail(params: { to: string; name: string }) 
       </p>
     `,
   })
-  return resendClient().emails.send({ from: `ScopeGov <${FROM}>`, to, subject: 'Two-factor authentication enabled on your ScopeGov account', html })
+  return deliver({ from: systemFrom(), to, subject: 'Two-factor authentication enabled on your ScopeGov account', html })
 }
 
 // ── Security: MFA disabled ───────────────────────────────────
@@ -1824,7 +1845,7 @@ export async function sendMfaDisabledEmail(params: { to: string; name: string; v
       </p>
     `,
   })
-  return resendClient().emails.send({ from: `ScopeGov <${FROM}>`, to, subject: 'Two-factor authentication was disabled on your ScopeGov account', html })
+  return deliver({ from: systemFrom(), to, subject: 'Two-factor authentication was disabled on your ScopeGov account', html })
 }
 
 // ── Security: backup codes regenerated ───────────────────────
@@ -1848,7 +1869,7 @@ export async function sendMfaBackupCodesRegeneratedEmail(params: { to: string; n
       </p>
     `,
   })
-  return resendClient().emails.send({ from: `ScopeGov <${FROM}>`, to, subject: 'New two-factor backup codes generated', html })
+  return deliver({ from: systemFrom(), to, subject: 'New two-factor backup codes generated', html })
 }
 
 // ── Security: password changed ───────────────────────────────
@@ -1880,7 +1901,7 @@ export async function sendPasswordChangedEmail(params: { to: string; name: strin
       </p>
     `,
   })
-  return resendClient().emails.send({ from: `ScopeGov <${FROM}>`, to, subject: 'Your ScopeGov password was changed', html })
+  return deliver({ from: systemFrom(), to, subject: 'Your ScopeGov password was changed', html })
 }
 
 // ── Workspace deleted ─────────────────────────────────────────
@@ -1913,7 +1934,7 @@ export async function sendWorkspaceDeletedEmail(params: { to: string; name: stri
       </p>
     `,
   })
-  return resendClient().emails.send({ from: `ScopeGov <${FROM}>`, to, subject: `${agencyNameRaw} has been deleted`, html })
+  return deliver({ from: systemFrom(), to, subject: `${agencyNameRaw} has been deleted`, html })
 }
 
 // ── Workspace created ────────────────────────────────────────
@@ -1949,5 +1970,126 @@ export async function sendWorkspaceCreatedEmail(params: { to: string; name: stri
     cta: 'Finish setting up →',
     ctaUrl: `${process.env.NEXT_PUBLIC_APP_URL}/onboarding`,
   })
-  return resendClient().emails.send({ from: `ScopeGov <${FROM}>`, to, subject: `Welcome to ${agencyNameRaw} on ScopeGov`, html })
+  return deliver({ from: systemFrom(), to, subject: `Welcome to ${agencyNameRaw} on ScopeGov`, html })
+}
+
+// ══════════════════════════════════════════════════════════════
+// Notifications & email fix round — team lifecycle senders
+// ══════════════════════════════════════════════════════════════
+
+// FEATURE: ownership transfers, role changes, deactivation/reactivation and project assignment
+// all wrote audit rows but told nobody. The first three concern the person's own access, so they
+// are sent regardless of notification preferences (like the MFA notices).
+// ── Team lifecycle (internal) ─────────────────────────────────
+// FEATURE: ownership transfers, role changes, deactivation and project
+// assignment all wrote audit rows but told nobody. The first three are
+// security-relevant to the person concerned, so they're sent regardless of
+// notification preferences (like the MFA notices).
+export async function sendOwnershipTransferredEmail(params: {
+  to: string[]; agencyName: string; newOwnerName: string; formerOwnerName: string
+}) {
+  const { to, agencyName: agencyNameRaw, newOwnerName: newRaw, formerOwnerName: formerRaw } = params
+  const agencyName = escapeHtml(agencyNameRaw)
+  const newOwner   = escapeHtml(newRaw)
+  const former     = escapeHtml(formerRaw)
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.gold,
+    headerIcon: '🔑',
+    label: 'Security',
+    headline: `Ownership of ${agencyName} was transferred`,
+    body: `
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        <strong>${former}</strong> transferred ownership of the <strong>${agencyName}</strong> workspace
+        to <strong>${newOwner}</strong>. The new owner now controls billing, roles and workspace deletion.
+      </p>
+      <p style="font-size:13px;color:${C.text2};">
+        Wasn't expected? Contact the people involved right away.
+      </p>
+    `,
+    ctaUrl: `${process.env.NEXT_PUBLIC_APP_URL}/team`,
+    cta: 'View team →',
+  })
+  return deliver({ from: systemFrom(), to, subject: `Ownership of ${agencyNameRaw} was transferred`, html })
+}
+
+export async function sendMemberRoleChangedEmail(params: {
+  to: string; name: string; agencyName: string; roleName?: string | null; changedByName: string
+}) {
+  const { to, name: nameRaw, agencyName: agencyNameRaw, roleName: roleRaw, changedByName: byRaw } = params
+  const name = escapeHtml(nameRaw), agencyName = escapeHtml(agencyNameRaw)
+  const role = roleRaw ? escapeHtml(roleRaw) : '', by = escapeHtml(byRaw)
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.green,
+    headerIcon: '🔑',
+    label: 'Your access',
+    headline: role ? `Your role in ${agencyName} changed` : `Your permissions in ${agencyName} changed`,
+    body: `
+      <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${name},</p>
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        ${role
+          ? `<strong>${by}</strong> changed your role in <strong>${agencyName}</strong> to <strong>${role}</strong>.`
+          : `<strong>${by}</strong> adjusted your permissions in <strong>${agencyName}</strong>.`}
+        What you can see and do in the workspace may have changed with it.
+      </p>
+    `,
+    ctaUrl: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard`,
+    cta: 'Open ScopeGov →',
+  })
+  return deliver({ from: systemFrom(), to, subject: roleRaw ? `Your role in ${agencyNameRaw} is now ${roleRaw}` : `Your permissions in ${agencyNameRaw} changed`, html })
+}
+
+export async function sendMemberAccessChangedEmail(params: {
+  to: string; name: string; agencyName: string; change: 'deactivated' | 'reactivated'; changedByName: string
+}) {
+  const { to, name: nameRaw, agencyName: agencyNameRaw, change, changedByName: byRaw } = params
+  const name = escapeHtml(nameRaw), agencyName = escapeHtml(agencyNameRaw), by = escapeHtml(byRaw)
+  const off = change === 'deactivated'
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: off ? C.amber : C.green,
+    headerIcon: '🔑',
+    label: 'Your access',
+    headline: off ? `Your access to ${agencyName} was turned off` : `Your access to ${agencyName} was restored`,
+    body: `
+      <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${name},</p>
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        ${off
+          ? `<strong>${by}</strong> deactivated your account in <strong>${agencyName}</strong>. You can no longer sign in to that workspace. If you think this is a mistake, contact the workspace owner.`
+          : `<strong>${by}</strong> reactivated your account in <strong>${agencyName}</strong>. You can sign in again.`}
+      </p>
+    `,
+    ...(off ? {} : { ctaUrl: `${process.env.NEXT_PUBLIC_APP_URL}/login`, cta: 'Sign in →' }),
+  })
+  return deliver({
+    from: systemFrom(), to,
+    subject: off ? `Your access to ${agencyNameRaw} was turned off` : `Your access to ${agencyNameRaw} was restored`,
+    html,
+  })
+}
+
+export async function sendProjectAssignedEmail(params: {
+  to: string[]; projectName: string; assignedByName: string; agencyName: string; projectUrl: string
+}) {
+  const { to, projectName: projectRaw, assignedByName: byRaw, agencyName: agencyRaw, projectUrl } = params
+  if (to.length === 0) return { ok: true, id: null, skipped: true } as SendResult
+  const projectName = escapeHtml(projectRaw), by = escapeHtml(byRaw)
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.green,
+    headerIcon: '📁',
+    label: 'Project access',
+    headline: `You were added to ${projectName}`,
+    showPreferencesLink: true,
+    body: `
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        <strong>${by}</strong> added you to <strong>${projectName}</strong> in ${escapeHtml(agencyRaw)}.
+        It now appears in your projects list.
+      </p>
+    `,
+    ctaUrl: projectUrl,
+    cta: 'Open project →',
+  })
+  return deliver({ from: systemFrom(), to, subject: `You were added to ${projectRaw}`, html })
 }

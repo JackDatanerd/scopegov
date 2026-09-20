@@ -1,3 +1,4 @@
+import { notifyUsers } from '@/lib/utils/notify'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
@@ -6,7 +7,7 @@ import { getClientIp } from '@/lib/utils/request-ip'
 import { sanitizePlainText } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
 import { sendEscalationEmail } from '@/lib/email/templates'
-import { filterByNotificationPreference } from '@/lib/utils/permissions-query'
+import { filterByNotificationPreference, filterToProjectAccess } from '@/lib/utils/permissions-query'
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -176,15 +177,30 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         if (escalateTo) {
           const { data: member } = await (service as any)
             .from('workspace_members')
-            .select('user_id, users!workspace_members_user_id_fkey!inner(id,name,email)')
+            .select('user_id, effective_permissions, users!workspace_members_user_id_fkey!inner(id,name,email)')
             .eq('workspace_id', session.workspaceId)
             .eq('id', escalateTo)
             .eq('status', 'active')
             .single()
-          if (member?.users) {
-            resolvedEscalateTo = member.users.id
-            assignee = { name: member.users.name, email: member.users.email }
+          // FIX (Notifications & email fix round): an unknown / inactive assignee used to
+          // fall through silently — the flag was escalated to the caller instead and nobody
+          // was told. Reject it so the user knows the escalation didn't go where they chose.
+          if (!member?.users)
+            return NextResponse.json({ error: 'That person is not an active member of this workspace.' }, { status: 400 })
+          // FIX: the assignee's project access was never checked, so the notification and email
+          // (project name + the escalation note) went to someone who then hit a 403 on the link.
+          if (member.users.id !== session.id) {
+            const canOpen = await filterToProjectAccess(
+              service, flag.project_id, [{ id: member.users.id }],
+              new Map([[member.users.id, member.effective_permissions || {}]])
+            )
+            if (canOpen.length === 0)
+              return NextResponse.json({
+                error: `${member.users.name} doesn't have access to this project. Add them to the project first, or choose someone else.`,
+              }, { status: 400 })
           }
+          resolvedEscalateTo = member.users.id
+          assignee = { name: member.users.name, email: member.users.email }
         }
         const safeNote = sanitizePlainText(escalationNote)
 
@@ -205,49 +221,20 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         // this action never sent an email or created an in-app notification
         // for the assignee — the 'escalation' preference toggle in Settings
         // existed and applied to CO escalations only. Same treatment here.
-        if (assignee?.email && resolvedEscalateTo) {
+        // Escalating to yourself (or with no assignee) just records ownership — nothing to announce.
+        if (assignee?.email && resolvedEscalateTo && resolvedEscalateTo !== session.id) {
+          await notifyUsers(service, {
+            workspaceId: session.workspaceId, recipientIds: [resolvedEscalateTo],
+            type: 'escalation_flag', eventType: 'escalation',
+            title: `Escalated — ${projectName}`,
+            body: `${session.name} escalated a scope flag: ${safeNote}`,
+            entityType: 'project', entityId: flag.project_id, projectId: flag.project_id,
+          })
+
           const [emailAllowed] = await filterByNotificationPreference(
             service, session.workspaceId, 'escalation',
             [{ id: resolvedEscalateTo }], 'email'
           )
-          // FIX (deep audit, section 13 — bug, traced into co/[id]/escalate
-          // too): the in-app notification below was inserted unconditionally
-          // — only the email send was gated on filterByNotificationPreference
-          // (which itself only ever checked the 'email' channel column,
-          // never 'in_app'). That contradicts the pattern this exact
-          // preference system establishes everywhere else it's used (see
-          // lib/utils/notify.ts's "single choke point" comment, and
-          // scope-governance/comments's notifyEntityOwner): email and
-          // in-app are independent, separately-opt-out-able channels. A
-          // member who muted in-app escalation pings still got one anyway.
-          // co/[id]/escalate/route.ts had the identical bug — fixed there
-          // too in the same pass.
-          const [inAppAllowed] = await filterByNotificationPreference(
-            service, session.workspaceId, 'escalation',
-            [{ id: resolvedEscalateTo }], 'in_app'
-          )
-
-          if (inAppAllowed) {
-            try {
-              await (service as any).from('notifications').insert({
-                workspace_id: session.workspaceId,
-                recipient_id: resolvedEscalateTo,
-                // FIX (deep audit round 3, notifications section): this and
-                // co/[id]/escalate's identical insert both used the bare
-                // 'escalation' type, so NotificationBell's entityHref
-                // couldn't tell a flag escalation from a CO escalation and
-                // always fell back to Overview — see that file's comment.
-                // The 'escalation' notification-preference key above is
-                // unchanged; only the row's own display/link type splits.
-                type:         'escalation_flag',
-                title:        `Escalated — ${projectName}`,
-                body:         `${session.name} escalated a scope flag: ${safeNote}`,
-                entity_type:  'project',
-                entity_id:    flag.project_id,
-              })
-            } catch { /* never let a notification failure break escalation */ }
-          }
-
           if (emailAllowed) {
             try {
               await sendEscalationEmail({

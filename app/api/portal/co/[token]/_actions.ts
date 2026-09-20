@@ -1,5 +1,7 @@
 export const runtime = 'nodejs'
 
+import { formatMoney } from '@/lib/utils/money'
+import { resolveReplyTo } from '@/lib/email/reply-to'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { jwtVerify } from 'jose'
@@ -275,10 +277,12 @@ export async function POST_COUNTER(request: NextRequest, token: string) {
     }
     if (client?.email) {
       const cc = await withPrimaryContactCc(service, co.projects?.client_id, client.email, client.cc_emails)
+      const replyTo = await resolveReplyTo(service, co.workspace_id, null)
       await checkedSend(() => sendClientResponseReceivedEmail({
+        replyTo,
         to: client.email, cc, clientName: client.name, agencyName: co.projects?.workspaces?.agency_name || '',
         projectName: co.projects?.name || '', documentLabel: 'Change Order', response: 'countered',
-        note: `${co.projects?.currency || 'USD'} ${parsedAmount.toLocaleString()}${counterNote ? ` — ${counterNote.slice(0, 400)}` : ''}`,
+        note: `${formatMoney(parsedAmount, co.projects?.currency)}${counterNote ? ` — ${counterNote.slice(0, 400)}` : ''}`,
         brandColour: co.projects?.workspaces?.brand_colour,
       }), 'CO countered (client receipt)')
     }
@@ -286,7 +290,7 @@ export async function POST_COUNTER(request: NextRequest, token: string) {
   await notifyMembersWithPermission(service, {
     workspaceId: co.workspace_id, permission: 'SEND_CHANGE_ORDERS', eventType: 'co_countered',
     type: 'co_countered', title: `Counter offer — ${co.title}`,
-    body: `${co.projects?.clients?.name} proposed ${co.projects?.currency || 'USD'} ${parsedAmount.toLocaleString()}.`,
+    body: `${co.projects?.clients?.name} proposed ${formatMoney(parsedAmount, co.projects?.currency)}.`,
     entityType: 'project', entityId: co.project_id, projectId: co.project_id,
   })
 

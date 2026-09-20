@@ -25,9 +25,12 @@ import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { renderInvoicePdf } from '@/lib/pdf/renderer'
 import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
+import { resolveReplyTo } from '@/lib/email/reply-to'
+import { checkedSend } from '@/lib/email/delivery'
+import { formatMoney } from '@/lib/utils/money'
 
 export type SendInvoiceResult =
-  | { ok: true; token: string; portalUrl: string; invoiceNumber: string; projectId: string; projectName: string }
+  | { ok: true; token: string; portalUrl: string; invoiceNumber: string; projectId: string; projectName: string; emailSent: boolean; emailError?: string }
   | { ok: false; error: string; status: number }
 
 export async function sendInvoiceDocument(service: any, params: {
@@ -181,24 +184,31 @@ export async function sendInvoiceDocument(service: any, params: {
     pdfAttachment = { filename: `${invoiceNumber || 'Invoice'}-${project.name.replace(/[^a-z0-9]/gi, '-')}.pdf`, content: pdfBuffer.toString('base64') }
   } catch (e) { console.error('Invoice PDF generation for email failed (email will send without attachment):', e) }
 
-  try {
-    await sendInvoiceEmail({
-      to:          client.email,
-      cc:          ccEmails,
-      clientName:  client.name,
-      agencyName:  workspace.agency_name,
-      projectName: project.name,
-      invoiceNumber,
-      title:       invoice.title,
-      amount:      invoice.amount,
-      currency:    invoice.currency,
-      dueDate:     invoice.due_date,
-      portalUrl,
-      brandColour: workspace.brand_colour,
-      paymentInstructions: invoice.payment_instructions,
-      attachments: pdfAttachment ? [pdfAttachment] : undefined,
-    })
-  } catch (e) { console.error('Invoice email failed:', e) }
+  // FIX (Notifications & email fix round): the Resend SDK never throws, so
+  // the old try/catch here could not detect a rejected send and the invoice
+  // was reported as delivered. This now follows the SOW/CO contract
+  // (lib/documents/send-sow.ts): the invoice stays 'sent' — the portal link is
+  // valid and can be copied — and the caller is told the email did not go
+  // out so the UI can say so and offer the link.
+  const replyTo = await resolveReplyTo(service, workspaceId, actorEmail)
+  const delivery = await checkedSend(() => sendInvoiceEmail({
+    to:          client.email,
+    cc:          ccEmails,
+    clientName:  client.name,
+    agencyName:  workspace.agency_name,
+    projectName: project.name,
+    invoiceNumber,
+    title:       invoice.title,
+    amount:      invoice.amount,
+    currency:    invoice.currency,
+    dueDate:     invoice.due_date,
+    portalUrl,
+    brandColour: workspace.brand_colour,
+    paymentInstructions: invoice.payment_instructions,
+    attachments: pdfAttachment ? [pdfAttachment] : undefined,
+    replyTo,
+    log:         { workspaceId, kind: 'invoice.send', entityType: 'invoice', entityId: invoiceId, projectId: project.id, actorId },
+  }), 'Invoice send email')
 
   await logAudit(service, {
     workspaceId, actorId, actorEmail, actorName,
@@ -215,11 +225,11 @@ export async function sendInvoiceDocument(service: any, params: {
     eventType: 'invoice_sent',
     type: 'invoice_sent',
     title: `Invoice sent — ${project.name}`,
-    body: `${client.name} was sent an invoice for ${invoice.currency} ${invoice.amount.toLocaleString()} on "${invoice.title}".`,
+    body: `${client.name} was sent an invoice for ${formatMoney(invoice.amount, invoice.currency)} on "${invoice.title}".`,
     entityType: 'project', entityId: project.id, excludeUserId: actorId, projectId: project.id,
   })
   try {
-    const emails = await getMemberEmailsWithPermission(service, workspaceId, 'VIEW_FINANCIALS', 10, 'invoice_sent', project.id)
+    const emails = await getMemberEmailsWithPermission(service, workspaceId, 'VIEW_FINANCIALS', 10, 'invoice_sent', project.id, actorId)
     if (emails.length) {
       await sendInvoiceSentInternalEmail({
         to: emails, clientName: client.name, projectName: project.name,
@@ -229,5 +239,8 @@ export async function sendInvoiceDocument(service: any, params: {
     }
   } catch (e) { console.error('Invoice sent internal email failed:', e) }
 
-  return { ok: true, token, portalUrl, invoiceNumber, projectId: project.id, projectName: project.name }
+  return {
+    ok: true, token, portalUrl, invoiceNumber, projectId: project.id, projectName: project.name,
+    emailSent: delivery.ok, ...(delivery.ok ? {} : { emailError: delivery.error }),
+  }
 }

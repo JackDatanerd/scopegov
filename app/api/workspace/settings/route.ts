@@ -1,3 +1,4 @@
+import { isDeliverableAddress } from '@/lib/email/send'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
@@ -207,6 +208,18 @@ export async function PATCH(request: NextRequest) {
         }
         updates[col] = trimmed
       }
+    }
+
+    // FEATURE (Notifications & email fix round): Reply-To for client-facing email (SOW, change order,
+    // invoice and their reminders). Blank clears it (replies then go to whoever sent the email). Only
+    // written when the request includes it, so saves from an older client — or before migration 062
+    // adds the column — are unaffected.
+    if (body.replyToEmail !== undefined) {
+      const v = typeof body.replyToEmail === 'string' ? body.replyToEmail.trim() : ''
+      if (v === '') updates.reply_to_email = null
+      else if (v.length > 254 || !isDeliverableAddress(v))
+        return NextResponse.json({ error: 'Enter a valid reply-to email address' }, { status: 400 })
+      else updates.reply_to_email = v
     }
 
     // legalAddress is a structured object (line1/line2/city/region/postalCode/country),

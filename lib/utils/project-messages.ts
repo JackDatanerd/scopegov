@@ -1,5 +1,5 @@
 // lib/utils/project-messages.ts
-import { filterByNotificationPreference } from './permissions-query'
+import { notifyUsers } from './notify'
 
 //
 // Mentions are stored inline in the message body as tokens of the form
@@ -101,47 +101,23 @@ export async function notifyMentionedUsers(
   const candidates = mentions.filter(m => m.userId !== session.id)
   if (!candidates.length) return
 
+  // FIX (Notifications & email fix round): mentions were inserted by hand with no check that
+  // the person is still an ACTIVE member (a deactivated user who was still in project_members
+  // was notified), and someone mentioned twice got two rows. notifyUsers dedupes, requires
+  // active membership + project access, applies the in-app preference / workspace default
+  // (the choke point the older comments here describe), and reads the insert's error.
+  // entity_id stays the project: the bell builds its link from entity_type/entity_id only, and
+  // "open the project's Discussion tab" is the right destination for a mention.
   try {
-    // FIX (deep audit, notifications section): this used to check
-    // notification_preferences directly and treat a missing row as
-    // "notify" — skipping workspace_notification_defaults entirely, so an
-    // admin's org-wide default/lock for 'project_message_mention' (seeded
-    // since migration 009, but that migration's own comment says outright
-    // it was never actually read) had zero effect on mentions. Route
-    // through the same choke point every other event type uses.
-    const allowed = await filterByNotificationPreference(
-      service, session.workspaceId, 'project_message_mention',
-      candidates.map(m => ({ id: m.userId })), 'in_app'
-    )
-    const allowedIds = new Set(allowed.map(r => r.id))
-    const recipients = candidates.filter(m => allowedIds.has(m.userId))
-
     const plain = mentionsToPlainText(rawBody)
     const snippet = plain.length > 120 ? `${plain.slice(0, 117)}…` : plain
-
-    // entity_id points at the project (not the message) — NotificationBell
-    // only has entity_type/entity_id to build a link from (no metadata
-    // column on notifications), and "open the project's Discussion tab"
-    // is a perfectly good destination for a mention notification.
-    const rows = recipients
-      .map(r => ({
-        workspace_id: session.workspaceId,
-        recipient_id: r.userId,
-        type: 'project_message_mention',
-        title: `${session.name} mentioned you in ${projectName}`,
-        body: snippet,
-        entity_type: 'project_message',
-        entity_id: projectId,
-      }))
-
-    if (rows.length) {
-      // FIX (deep audit round 3, notifications section): same unchecked-
-      // insert-error gap as notify.ts's notifyMembersWithPermission (see
-      // that file's comment) — a DB-level failure here vanished with no
-      // trace at all, not even a console.error.
-      const { error } = await service.from('notifications').insert(rows)
-      if (error) console.error('notifyMentionedUsers: notifications insert failed:', error)
-    }
+    await notifyUsers(service, {
+      workspaceId: session.workspaceId, recipientIds: candidates.map(m => m.userId),
+      type: 'project_message_mention', eventType: 'project_message_mention',
+      title: `${session.name} mentioned you in ${projectName}`, body: snippet,
+      entityType: 'project_message', entityId: projectId, projectId,
+      excludeUserId: session.id,
+    })
   } catch (err) {
     console.error('notifyMentionedUsers failed:', err)
   }

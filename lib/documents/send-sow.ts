@@ -21,6 +21,7 @@ import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
 import { validateSowForSend } from '@/lib/sow/validate-send'
 import { checkedSend } from '@/lib/email/delivery'
+import { resolveReplyTo } from '@/lib/email/reply-to'
 import { isTerminalStatus } from '@/lib/utils/project-status'
 
 export type SendSowResult =
@@ -185,6 +186,7 @@ export async function sendSowDocument(service: any, params: {
   }).eq('id', project.id).in('status', ['Draft', 'Intake', 'Changes Requested', 'Stalled', 'Awaiting Signature'])
 
   const portalUrl = `${process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL}/portal/sow/${token}`
+  const replyTo = await resolveReplyTo(service, workspaceId, actorEmail)
   const delivery = await checkedSend(() => sendSowEmail({
     to:            client.email,
     cc:            ccEmails,
@@ -196,6 +198,8 @@ export async function sendSowDocument(service: any, params: {
     portalUrl,
     brandColour:   workspace.brand_colour,
     expiresAt:     expiresAt.toISOString(),
+    replyTo,
+    log:           { workspaceId, kind: 'sow.send', entityType: 'sow', entityId: sowId, projectId: project.id, actorId },
   }), 'SOW send email')
 
   await logAudit(service, {

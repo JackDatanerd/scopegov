@@ -1,10 +1,11 @@
+import { notifyUsers } from '@/lib/utils/notify'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { sendEscalationEmail } from '@/lib/email/templates'
 import { canReadProject } from '@/lib/utils/project-access'
-import { filterByNotificationPreference } from '@/lib/utils/permissions-query'
+import { filterByNotificationPreference, filterToProjectAccess } from '@/lib/utils/permissions-query'
 import { cleanTextField } from '@/lib/utils/sanitize'
 import { checkedSend } from '@/lib/email/delivery'
 
@@ -83,12 +84,25 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (escalateTo) {
       const { data: member } = await (service as any)
         .from('workspace_members')
-        .select('user_id, users!workspace_members_user_id_fkey!inner(id,name,email)')
+        .select('user_id, effective_permissions, users!workspace_members_user_id_fkey!inner(id,name,email)')
         .eq('workspace_id', session.workspaceId)
         .eq('id', escalateTo)
         .eq('status', 'active')
         .single()
       if (member?.users) {
+        // FIX (Notifications & email fix round): the assignee's access to the project was never
+        // checked — the notification and email (project name + note) went to someone who then
+        // hit a 403 on the link.
+        if (member.users.id !== session.id) {
+          const canOpen = await filterToProjectAccess(
+            service, co.project_id, [{ id: member.users.id }],
+            new Map([[member.users.id, member.effective_permissions || {}]])
+          )
+          if (canOpen.length === 0)
+            return NextResponse.json({
+              error: `${member.users.name} doesn't have access to this project. Add them to the project first, or choose someone else.`,
+            }, { status: 400 })
+        }
         resolvedEscalateTo = member.users.id
         assignee = { name: member.users.name, email: member.users.email }
       } else {
@@ -123,48 +137,19 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // preference, and no in-app notification was ever created (so it also
     // never showed up in the bell). Gate the email by preference, same as
     // every other notification type, and add the missing in-app row.
-    if (assignee?.email && resolvedEscalateTo) {
+    // Escalating to yourself just records ownership — nothing to announce.
+    if (assignee?.email && resolvedEscalateTo && resolvedEscalateTo !== session.id) {
       const [emailAllowed] = await filterByNotificationPreference(
         service, session.workspaceId, 'escalation',
         [{ id: resolvedEscalateTo }], 'email'
       )
-      // FIX (deep audit, section 13 — bug traced in from guardian/flags/[id]):
-      // this in-app notification was inserted unconditionally — only the
-      // email above was actually gated by filterByNotificationPreference,
-      // and that call never even passed 'email' explicitly, so it worked by
-      // the default happening to match. filterByNotificationPreference has
-      // always supported an 'in_app' channel too (see its in_app_enabled
-      // column check) but nothing here ever called it that way. That
-      // contradicts the pattern this preference system establishes
-      // everywhere else (lib/utils/notify.ts's "single choke point" comment,
-      // scope-governance/comments's notifyEntityOwner): email and in-app are
-      // independent, separately-opt-out-able channels. guardian/flags/[id]'s
-      // identical escalation insert had the same bug — fixed there too in
-      // the same pass.
-      const [inAppAllowed] = await filterByNotificationPreference(
-        service, session.workspaceId, 'escalation',
-        [{ id: resolvedEscalateTo }], 'in_app'
-      )
-
-      if (inAppAllowed) {
-        {
-          const { error: notifErr } = await (service as any).from('notifications').insert({
-            workspace_id: session.workspaceId,
-            recipient_id: resolvedEscalateTo,
-            // FIX (deep audit round 3, notifications section): see the
-            // matching comment in guardian/flags/[id]/route.ts — this and
-            // that route's insert shared the bare 'escalation' type, making
-            // it impossible for the bell to link to the right tab. The
-            // 'escalation' preference key passed above is unchanged.
-            type:         'escalation_co',
-            title:        `Escalated — ${co.projects?.name || co.title}`,
-            body:         `${session.name} escalated "${co.title}": ${safeNote}`,
-            entity_type:  'project',
-            entity_id:    co.project_id,
-          })
-          if (notifErr) console.error('CO escalation notification insert failed:', notifErr.message)
-        }
-      }
+      await notifyUsers(service, {
+        workspaceId: session.workspaceId, recipientIds: [resolvedEscalateTo],
+        type: 'escalation_co', eventType: 'escalation',
+        title: `Escalated — ${co.projects?.name || co.title}`,
+        body: `${session.name} escalated "${co.title}": ${safeNote}`,
+        entityType: 'project', entityId: co.project_id, projectId: co.project_id,
+      })
 
       if (emailAllowed) {
         await checkedSend(() => sendEscalationEmail({

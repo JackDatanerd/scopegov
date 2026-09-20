@@ -6,18 +6,12 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
 import { checkReminderCooldown } from '@/lib/utils/reminder-cooldown'
-import { escapeHtml, sanitizeDisplayName } from '@/lib/utils/sanitize'
+import { escapeHtml } from '@/lib/utils/sanitize'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
 import { checkedSend } from '@/lib/email/delivery'
-import { Resend } from 'resend'
-
-// FIX (re-audit — build-blocking): module-scope instantiation, same class
-// as lib/email/templates.ts / lib/ai/guardian.ts — lazy singleton instead.
-let _resend: Resend | null = null
-function resendClient(): Resend {
-  if (!_resend) _resend = new Resend(process.env.RESEND_API_KEY)
-  return _resend
-}
+import { sendEmail } from '@/lib/email/send'
+import { formatFrom } from '@/lib/email/from'
+import { resolveReplyTo } from '@/lib/email/reply-to'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -101,8 +95,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     // resend.emails.send() RESOLVES with { error } on API failures instead of throwing — so this
     // used to report success (and burn the 24h cooldown) for reminders that never left.
-    const delivery = await checkedSend(() => resendClient().emails.send({
-      from:    `${sanitizeDisplayName(ws?.agency_name)} via ScopeGov <${process.env.RESEND_FROM_EMAIL}>`,
+    // FIX (Notifications & email fix round): sent through lib/email/send so the From
+    // header is a valid quoted name with the RESEND_FROM_EMAIL fallback (this inline string
+    // produced "<undefined>" when the env var was unset), and with a Reply-To.
+    const replyTo = await resolveReplyTo(service, session.workspaceId, session.email)
+    const delivery = await checkedSend(() => sendEmail({
+      from:    formatFrom(ws?.agency_name),
+      replyTo,
       to:      client.email,
       cc,
       subject: `Reminder: Please review and sign the ${project?.name} agreement`,
@@ -133,7 +132,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         Scope governance by <a href="https://scopegov.app" style="color:#1A5C3A;">ScopeGov</a>
       </p>
       </body></html>`,
-    }), 'SOW reminder')
+    }, { workspaceId: session.workspaceId, kind: 'sow.reminder', entityType: 'sow', entityId: id, projectId: project?.id, actorId: session.id }), 'SOW reminder')
 
     if (!delivery.ok) {
       await logAudit(service, {

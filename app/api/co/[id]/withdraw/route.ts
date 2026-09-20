@@ -1,3 +1,4 @@
+import { resolveReplyTo } from '@/lib/email/reply-to'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
@@ -119,7 +120,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     let clientNotified = true
     if (wasSentToClient && client?.email) {
       const cc = await withPrimaryContactCc(service, co.projects?.client_id, client.email, client.cc_emails)
+      const replyTo = await resolveReplyTo(service, session.workspaceId, session.email)
       const delivery = await checkedSend(() => sendDocumentCancelledEmail({
+        replyTo,
         to: client.email, cc,
         clientName: client.name, agencyName: co.projects?.workspaces?.agency_name,
         projectName: co.projects?.name, documentLabel: 'Change Order',

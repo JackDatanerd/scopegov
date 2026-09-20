@@ -284,7 +284,7 @@ export async function POST(request: NextRequest) {
 
         if (!isBorderline) {
           // Email APPROVE_FLAGS holders (Event 18) — full-confidence flags only
-          const emails = await getMemberEmailsWithPermission(service, session.workspaceId, 'APPROVE_FLAGS', 25, 'guardian_flag', projectId)
+          const emails = await getMemberEmailsWithPermission(service, session.workspaceId, 'APPROVE_FLAGS', 25, 'guardian_flag', projectId, session.id)
 
           if (emails.length) {
             try {

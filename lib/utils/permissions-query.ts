@@ -74,7 +74,14 @@ export async function getMembersWithPermission(
   // that the preferences route always writes as `true`. Now threaded
   // through so each caller filters on the column it's actually delivering
   // through — see filterByNotificationPreference below.
-  channel: 'email' | 'in_app' = 'email'
+  channel: 'email' | 'in_app' = 'email',
+  // FIX (Notifications & email fix round): the actor was excluded from the
+  // in-app row only (notify.ts filtered AFTER the slice, so the exclusion
+  // could also shrink the list below `limit`), while the matching email went
+  // to everyone — the person who just sent an invoice or recorded a payment
+  // got emailed about their own action but had no bell. Excluding here,
+  // before the slice, lets both channels share one rule.
+  excludeUserId?: string
 ): Promise<Array<{ id: string; name: string; email: string }>> {
   // FIX (re-audit, notifications section): `.limit(limit)` used to be
   // applied to the raw active-members query, BEFORE the permission filter
@@ -106,6 +113,7 @@ export async function getMembersWithPermission(
   if (projectId) recipients = await filterToProjectAccess(service, projectId, recipients, permissionMap)
   if (eventType) recipients = await filterByNotificationPreference(service, workspaceId, eventType, recipients, channel)
 
+  if (excludeUserId) recipients = recipients.filter((r: { id: string }) => r.id !== excludeUserId)
   return recipients.slice(0, limit)
 }
 
@@ -268,11 +276,14 @@ export async function getMemberEmailsWithPermission(
   permission: Permission,
   limit = 25,
   eventType?: string,
-  projectId?: string
+  projectId?: string,
+  // See getMembersWithPermission — keeps the email list consistent with the
+  // in-app list (which has always excluded the actor).
+  excludeUserId?: string
 ): Promise<string[]> {
   // FIX (cron audit, section 17): eventType now passed straight into
   // getMembersWithPermission so preference filtering happens before the
   // limit slice, not after it — see the fix note on that function.
-  const members = await getMembersWithPermission(service, workspaceId, permission, limit, projectId, eventType)
+  const members = await getMembersWithPermission(service, workspaceId, permission, limit, projectId, eventType, 'email', excludeUserId)
   return members.map(m => m.email)
 }

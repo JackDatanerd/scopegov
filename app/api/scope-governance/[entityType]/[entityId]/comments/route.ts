@@ -4,8 +4,7 @@ import { getSession } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { resolveEntity, canReadProject, canWriteGovernance, isValidEntityType } from '@/lib/utils/flag-governance'
-import { notifyMembersWithPermission } from '@/lib/utils/notify'
-import { filterByNotificationPreference } from '@/lib/utils/permissions-query'
+import { notifyMembersWithPermission, notifyUsers } from '@/lib/utils/notify'
 
 export async function GET(
   request: NextRequest,
@@ -169,24 +168,15 @@ async function notifyEntityOwner(
     // branch above (via notifyMembersWithPermission) went through the real
     // choke point. Route through the same one so both branches resolve
     // identically.
-    const [recipient] = await filterByNotificationPreference(
-      service, session.workspaceId, 'flag_comment_added', [{ id: ownerId }], 'in_app'
-    )
-    if (!recipient) return
-
-    await service.from('notifications').insert({
-      workspace_id: session.workspaceId,
-      recipient_id: ownerId,
-      type: 'flag_comment_added',
-      title,
-      body: `${session.name} left a comment.`,
-      entity_type: entityType,
-      entity_id: entityId,
-      // FIX (re-audit, notifications section): entity_type here is
-      // 'flag'/'exception', not 'project' — the bell has no href case for
-      // those and, even fixed, has nothing to build a project link from
-      // without this. See migration 028 and NotificationBell.tsx.
-      project_id: projectId,
+    // FIX (Notifications & email fix round): this was a hand-rolled insert whose `{ error }`
+    // was never read, and it never checked that the owner is still an ACTIVE member or can
+    // still open the project (a removed / re-scoped owner kept getting alerts naming the
+    // project). notifyUsers enforces both, honours the in-app preference, and reads the error.
+    await notifyUsers(service, {
+      workspaceId: session.workspaceId, recipientIds: [ownerId],
+      type: 'flag_comment_added', eventType: 'flag_comment_added',
+      title, body: `${session.name} left a comment.`,
+      entityType, entityId, projectId, excludeUserId: session.id,
     })
   } catch {
     // Never let a notification failure break comment creation.

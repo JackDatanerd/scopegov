@@ -9,6 +9,8 @@ import { canReadProject } from '@/lib/utils/project-access'
 import { checkReminderCooldown } from '@/lib/utils/reminder-cooldown'
 import { renewInvoiceTokenIfExpired } from '@/lib/documents/renew-invoice-token'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
+import { resolveReplyTo } from '@/lib/email/reply-to'
+import { checkedSend } from '@/lib/email/delivery'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -69,33 +71,52 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       metadata: { type: 'invoice', client_email: client?.email, balance_due: balanceDue },
     })
 
-    try {
-      // FIX (deep audit, section 14 — traced bug): the initial invoice send
-      // (send-invoice.ts) CCs the client's designated primary contact via
-      // withPrimaryContactCc, but this reminder — arguably the single most
-      // important follow-up email, since it's the one asking to get paid —
-      // used to CC only client.cc_emails directly and silently dropped the
-      // primary contact. Same gap existed on co/sow remind/withdraw/close,
-      // fixed there in the SOW/CO round; this route was outside that
-      // round's scope and still had it.
-      const cc = await withPrimaryContactCc(service, project?.client_id, client?.email, client?.cc_emails)
-      await sendInvoiceReminderEmail({
-        to:          client?.email,
-        cc,
-        clientName:  client?.name,
-        agencyName:  workspace?.agency_name,
-        projectName: project?.name,
-        invoiceNumber: invoice.invoice_number,
-        title:       invoice.title,
-        balanceDue,
-        currency:    invoice.currency,
-        dueDate:     invoice.due_date,
-        portalUrl,
-        brandColour: workspace?.brand_colour,
-        isOverdue:   invoice.status === 'overdue',
-        paymentInstructions: invoice.payment_instructions,
+    // FIX (Notifications & email fix round): a client with no email on file used to be reminded with
+    // `to: undefined`, and the whole send sat in a try/catch that could never fire (Resend's SDK
+    // resolves `{ error }` instead of throwing) — so a rejected reminder returned ok. Same claim-then-send
+    // shape as the SOW and CO reminders: the cooldown claim above stands, and a rejection logs
+    // 'reminder.failed', which checkReminderCooldown treats as "nothing went out" (no lockout).
+    if (!client?.email) {
+      await logAudit(service, {
+        workspaceId: session.workspaceId, actorId: session.id,
+        actorEmail: session.email, actorName: session.name,
+        eventType: 'reminder.failed', entityType: 'invoice', entityId: id, entityName: invoice.title,
+        metadata: { type: 'invoice', error: 'no client email' },
       })
-    } catch (e) { console.error('Invoice reminder email failed:', e) }
+      return NextResponse.json({ error: 'This client has no email address on file.' }, { status: 400 })
+    }
+    const cc = await withPrimaryContactCc(service, project?.client_id, client.email, client.cc_emails)
+    const replyTo = await resolveReplyTo(service, session.workspaceId, session.email)
+    const delivery = await checkedSend(() => sendInvoiceReminderEmail({
+      to:          client.email,
+      cc,
+      clientName:  client.name,
+      agencyName:  workspace?.agency_name,
+      projectName: project?.name,
+      invoiceNumber: invoice.invoice_number,
+      title:       invoice.title,
+      balanceDue,
+      currency:    invoice.currency,
+      dueDate:     invoice.due_date,
+      portalUrl,
+      brandColour: workspace?.brand_colour,
+      isOverdue:   invoice.status === 'overdue',
+      paymentInstructions: invoice.payment_instructions,
+      replyTo,
+      log:         { workspaceId: session.workspaceId, kind: 'invoice.reminder', entityType: 'invoice', entityId: id, projectId: project?.id, actorId: session.id },
+    }), 'Invoice reminder')
+    if (!delivery.ok) {
+      await logAudit(service, {
+        workspaceId: session.workspaceId, actorId: session.id,
+        actorEmail: session.email, actorName: session.name,
+        eventType: 'reminder.failed', entityType: 'invoice', entityId: id, entityName: invoice.title,
+        metadata: { type: 'invoice', error: delivery.error },
+      })
+      return NextResponse.json({
+        error: 'The reminder email could not be delivered. Check the client\'s email address and try again.',
+        detail: delivery.error,
+      }, { status: 502 })
+    }
 
     return NextResponse.json({ ok: true })
   } catch (err) {
