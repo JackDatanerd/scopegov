@@ -136,6 +136,22 @@ export async function computeScopeHealth(
       .range(from, to), { maxRows: MAX_ROWS }),
   ])
 
+  // FIX (Portfolio deep audit): fetchPaged computes `truncated` specifically
+  // so a read that silently hit MAX_ROWS isn't mistaken for a complete one
+  // — but nothing here ever checked it. A truncated read isn't a failed
+  // read, so it slipped past this module's own stated invariant (every
+  // error THROWS; a bad read must never look like nothing's wrong) and
+  // would have quietly undercounted every metric below with no signal to
+  // anyone. Extremely unlikely at MAX_ROWS=50,000 per table, but cheap to
+  // guard properly rather than leave the safety net unused.
+  const truncatedSource = [
+    ['projects', projectsP], ['guardian_flags', flagsP], ['exceptions_log', exceptionsP],
+    ['amendments', amendmentsP], ['change_orders', cosP],
+  ].find(([, p]: any) => p.truncated)
+  if (truncatedSource) {
+    throw new Error(`Scope health computation truncated: ${truncatedSource[0]} exceeded ${MAX_ROWS} rows for this workspace`)
+  }
+
   // Effective contract value = base + signed amendments (same as the project page).
   const amendmentTotal: Record<string, number> = {}
   for (const a of amendmentsP.rows) {

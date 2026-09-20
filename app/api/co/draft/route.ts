@@ -6,6 +6,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { canReadProject } from '@/lib/utils/project-access'
 import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
+import { isTerminalStatus } from '@/lib/utils/project-status'
 import Anthropic from '@anthropic-ai/sdk'
 
 // Forced tool call instead of "return only JSON" + string parsing (BUG-027's
@@ -77,13 +78,21 @@ export async function POST(request: NextRequest) {
 
     const { data: project } = await (service as any)
       .from('projects')
-      .select(`id, name, type, contract_value, currency, workspace_id,
+      .select(`id, name, type, status, contract_value, currency, workspace_id,
         project_scope_snapshot(deliverables, out_of_scope)`)
-      .eq('id', projectId).eq('workspace_id', session.workspaceId).single()
+      .eq('id', projectId).eq('workspace_id', session.workspaceId).is('deleted_at', null).single()
 
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
     if (!(await canReadProject(service, session, projectId)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    // FIX (Projects & Dashboard deep audit): same terminal-status guard as
+    // POST /api/co — no point spending an AI call drafting a change order
+    // that could never be created or sent against a Complete/Archived
+    // project.
+    if (isTerminalStatus(project.status))
+      return NextResponse.json({
+        error: `This project is ${project.status.toLowerCase()} — a change order can no longer be drafted. Reopen the project first.`,
+      }, { status: 409 })
 
     // Optional: grounding from the Guardian flag this draft is for, so the
     // model isn't working from the agency's paraphrase alone. Scoped to

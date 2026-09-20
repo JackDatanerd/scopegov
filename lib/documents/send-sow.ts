@@ -19,6 +19,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { assignDocumentNumber } from '@/lib/utils/document-number'
 import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
+import { isTerminalStatus } from '@/lib/utils/project-status'
 
 export type SendSowResult =
   | { ok: true; token: string; portalUrl: string; projectId: string; projectName: string; documentNumber: string }
@@ -39,7 +40,7 @@ export async function sendSowDocument(service: any, params: {
   const { data: sow } = await (service as any)
     .from('sow_documents')
     .select(`id, version, status, project_id, document_number,
-      projects(id, name, disc, contract_value, currency, client_id,
+      projects(id, name, disc, status, contract_value, currency, client_id,
         clients(name, email, cc_emails),
         workspaces(id, agency_name, brand_colour, logo_storage_path))`)
     .eq('id', sowId).eq('workspace_id', workspaceId).single()
@@ -50,6 +51,21 @@ export async function sendSowDocument(service: any, params: {
   const project   = sow.projects
   const client    = project?.clients
   const workspace = project?.workspaces
+
+  // FIX (Projects & Dashboard deep audit): same terminal-status check added
+  // to send-co.ts — a project that's Complete or Archived has, by
+  // definition, already had its scope of work settled; sending a fresh SOW
+  // to it (a stale draft left over from before completion, or one auto-
+  // sent by an approval chain that clears after the fact) makes no sense
+  // and would generate a real client-facing signing request against a
+  // project the agency considers closed out.
+  if (project && isTerminalStatus(project.status)) {
+    return {
+      ok: false,
+      error: `This project is ${project.status.toLowerCase()} — a SOW can no longer be sent. Reopen the project first.`,
+      status: 409,
+    }
+  }
 
   if (!client?.email) return { ok: false, error: 'Client email is required to send SOW', status: 400 }
 

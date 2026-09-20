@@ -9,6 +9,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { assignDocumentNumber } from '@/lib/utils/document-number'
 import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
+import { isTerminalStatus } from '@/lib/utils/project-status'
 
 export type SendCoResult =
   | { ok: true; token: string; portalUrl: string; projectId: string; coTitle: string; documentNumber: string }
@@ -30,7 +31,7 @@ export async function sendCoDocument(service: any, params: {
     // it lives on projects. Selecting it here makes PostgREST reject the
     // whole query (42703), which silently surfaces as "CO not found".
     .select(`id,title,status,note,total,version,document_number,
-      projects(id,name,currency,client_id,
+      projects(id,name,status,currency,client_id,
         clients(name,email,cc_emails),
         workspaces(id,agency_name,brand_colour))`)
     .eq('id', coId).eq('workspace_id', workspaceId).single()
@@ -44,6 +45,25 @@ export async function sendCoDocument(service: any, params: {
   const project   = co.projects
   const client    = project?.clients
   const workspace = project?.workspaces
+
+  // FIX (Projects & Dashboard deep audit, flagship finding): nothing in this
+  // function — the ONE place that actually fires the client-facing send,
+  // reached both from the route and from recordApprovalDecision()'s
+  // auto-send on final approval — ever checked the project's own status.
+  // Only "does a signed SOW exist" was enforced, which stays true forever
+  // once a project completes. A CO drafted (or already sitting in an
+  // approval chain) before completion could therefore still be sent to the
+  // client well after the agency marked the project Complete or Archived —
+  // an approver deciding on it days later would auto-send it with no
+  // route-level check in the way at all. Checked here, not just in the
+  // route, specifically so the auto-send path is covered too.
+  if (project && isTerminalStatus(project.status)) {
+    return {
+      ok: false,
+      error: `This project is ${project.status.toLowerCase()} — a change order can no longer be sent. Reopen the project first.`,
+      status: 409,
+    }
+  }
 
   if (!client?.email) return { ok: false, error: 'Client email required', status: 400 }
 

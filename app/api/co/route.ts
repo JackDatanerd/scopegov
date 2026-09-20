@@ -5,6 +5,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
 import { computeCoTotals } from '@/lib/documents/co-totals'
+import { isTerminalStatus } from '@/lib/utils/project-status'
 
 export async function POST(request: NextRequest) {
   try {
@@ -33,10 +34,27 @@ export async function POST(request: NextRequest) {
     // VIEW_OWN_PROJECTS-only holder of CREATE_CHANGE_ORDERS shouldn't be
     // able to create a CO against a project they're not assigned to.
     const { data: project } = await (service as any)
-      .from('projects').select('id').eq('id', projectId).eq('workspace_id', session.workspaceId).single()
+      .from('projects').select('id, status').eq('id', projectId).eq('workspace_id', session.workspaceId)
+      .is('deleted_at', null).single()
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
     if (!(await canReadProject(service, session, projectId)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
+    // FIX (Projects & Dashboard deep audit, flagship finding — traced from
+    // section 7 into CO logic): NOTHING in the CO creation/send/auto-send
+    // pipeline ever checked the project's own status — only "does a signed
+    // SOW exist" was enforced, which stays true forever once a project
+    // completes. A brand-new CO could be drafted and even sent (if under
+    // any approval threshold) against a project the agency had already
+    // marked Complete or Archived, completely undermining "Complete" as a
+    // no-more-scope-changes state. Fail fast at creation; the actual send
+    // mechanics (lib/documents/send-co.ts) got the matching guard too, so
+    // the auto-send-on-approval path can't bypass this either.
+    if (isTerminalStatus(project.status)) {
+      return NextResponse.json({
+        error: `This project is ${project.status.toLowerCase()} — a change order can no longer be created. Reopen the project first.`,
+      }, { status: 409 })
+    }
 
     // FIX (CO-logic fix round — headline finding): nothing here, or in
     // send/route.ts, ever checked that the project actually has a signed

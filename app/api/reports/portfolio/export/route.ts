@@ -11,7 +11,7 @@ export const maxDuration = 60
 // scope-governance summary, the exact thing an agency principal would
 // want to hand to a client or forward to a partner who doesn't have a
 // login, had no path out of the browser. Same permission gate as the
-// dashboard itself (VIEW_ALL_PROJECTS) — exporting is a stricter form of
+// dashboard itself (VIEW_PORTFOLIO) — exporting is a stricter form of
 // the same read, not a separate capability, matching the audit-export
 // route's own reasoning for not inventing a new permission.
 

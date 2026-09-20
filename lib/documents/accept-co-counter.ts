@@ -18,6 +18,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
 import { sendCoCountersignatureRequestEmail } from '@/lib/email/templates'
 import { rescaleLineItemsToTotal } from '@/lib/utils/rescale-line-items'
+import { isTerminalStatus } from '@/lib/utils/project-status'
 
 export type AcceptCoCounterResult =
   | { ok: true; awaitingCountersignature: true }
@@ -36,7 +37,7 @@ export async function acceptCoCounter(service: any, params: {
   const { data: co } = await (service as any)
     .from('change_orders')
     .select(`id,title,status,flag_id,counter_amount,counter_note,line_items,subtotal,tax_rate,tax_inclusive,total,project_id,workspace_id,token,
-      projects(id,name,currency,clients(name,email,cc_emails),workspaces(id,agency_name,brand_colour))`)
+      projects(id,name,status,currency,clients(name,email,cc_emails),workspaces(id,agency_name,brand_colour))`)
     .eq('id', coId).eq('workspace_id', workspaceId).single()
 
   if (!co) return { ok: false, error: 'CO not found', status: 404 }
@@ -45,6 +46,20 @@ export async function acceptCoCounter(service: any, params: {
   const project = co.projects
   const client  = project?.clients
   const ws      = project?.workspaces
+
+  // FIX (Projects & Dashboard deep audit): same terminal-status check as
+  // send-co.ts / send-sow.ts. Accepting a client's counter-offer is just as
+  // much a live scope-change action as an original CO send — reachable
+  // here both directly and via recordApprovalDecision()'s auto-finalize on
+  // final approval, so it needs the same guard the direct send path got.
+  if (project && isTerminalStatus(project.status)) {
+    return {
+      ok: false,
+      error: `This project is ${project.status.toLowerCase()} — a change order counter-offer can no longer be accepted. Reopen the project first.`,
+      status: 409,
+    }
+  }
+
   if (!client?.email) return { ok: false, error: 'Client email required', status: 400 }
 
   const jwtSecret = await getWorkspaceJwtSecret(service, workspaceId)

@@ -94,6 +94,15 @@ export async function POST(request: NextRequest) {
       const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
       if (typeof newClient.name !== 'string' || typeof newClient.email !== 'string' || !EMAIL_RE.test(newClient.email.trim()))
         return NextResponse.json({ error: 'Please enter a valid email address for the new client' }, { status: 400 })
+      // FIX (Projects & Dashboard deep audit): this checked newClient.name was
+      // a non-empty string but never `.trim()`ed it first — unlike POST
+      // /api/clients, which requires `name?.trim()`. A whitespace-only name
+      // passed both checks here and was then stored as `''`
+      // (clients.name is NOT NULL with no CHECK on content), silently
+      // producing a client with a blank name in every list/dropdown that
+      // reads it.
+      if (!newClient.name.trim())
+        return NextResponse.json({ error: 'Please enter a name for the new client' }, { status: 400 })
 
       // maybeSingle: `.single()` errors (data:null) on a duplicate, which
       // would fall through to a second insert.

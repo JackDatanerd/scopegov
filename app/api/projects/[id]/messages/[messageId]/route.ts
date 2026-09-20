@@ -128,8 +128,18 @@ export async function DELETE(
     const service = createServiceClient()
     const message = await loadMessage(service, session.workspaceId, projectId, messageId)
     if (!message || message.deleted_at) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-    if (message.author_id !== session.id && !hasPermission(session, 'MANAGE_WORKSPACE_SETTINGS'))
+    const isAuthor = message.author_id === session.id
+    const isAdmin  = hasPermission(session, 'MANAGE_WORKSPACE_SETTINGS')
+    if (!isAuthor && !isAdmin)
       return NextResponse.json({ error: 'Only the author or an admin can delete this message' }, { status: 403 })
+    // FIX (Projects & Dashboard deep audit): PATCH already requires this —
+    // "someone removed from the project must not be able to keep editing
+    // its discussion" — but DELETE never applied the same reasoning to its
+    // author branch. An admin deleting via MANAGE_WORKSPACE_SETTINGS is a
+    // moderation override and doesn't need project visibility; an author
+    // acting purely on authorship does, same as PATCH.
+    if (isAuthor && !isAdmin && !(await canReadProject(service, session, projectId)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
     const now = new Date().toISOString()
     const { error } = await (service as any)

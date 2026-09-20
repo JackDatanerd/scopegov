@@ -3,6 +3,24 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
+import { cancelApprovalRequest } from '@/lib/approvals/engine'
+
+// FIX (Projects & Dashboard deep audit, flagship finding): SOW/CO sends and
+// CO-counter acceptance now refuse outright on a Complete/Archived project
+// (see lib/documents/send-sow.ts, send-co.ts, accept-co-counter.ts) — but a
+// pending approval_requests row created BEFORE completion isn't touched by
+// that; it just sits there until an approver decides it, same shape as the
+// bug DELETE /api/projects/[id] already guards against (see its own
+// approval-cleanup block below). Left alone, an approver deciding on it
+// after completion would call the now-guarded send function, get a
+// rejection, and the request would silently sit in the "approved but
+// failed to send" limbo forever with a confusing reason attached — instead
+// of the approver just never seeing a live request for a project that's
+// already closed out. 'invoice' is deliberately excluded: billing after
+// completion is a normal, legitimate workflow (the final invoice is
+// usually created and sent AFTER delivery), so a pending invoice approval
+// should still resolve normally post-completion.
+const SCOPE_CHANGE_DOCUMENT_TYPES = ['sow', 'co', 'co_counter']
 
 // Change orders that are still live or need a decision. 'expired' is here to
 // match the Complete button in ProjectDetail, which already refused to
@@ -82,12 +100,35 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       }
     }
 
+    // See SCOPE_CHANGE_DOCUMENT_TYPES comment above — cancel any pending
+    // SOW/CO/CO-counter approval requests now that the project is closed
+    // out, mirroring DELETE's own cleanup. Non-fatal: the project has
+    // already moved and flags are already closed by this point.
+    let scopeApprovalsCancelled = 0
+    try {
+      const { data: pending } = await (service as any).from('approval_requests')
+        .select('document_type, document_id')
+        .eq('workspace_id', session.workspaceId).eq('project_id', id).eq('status', 'pending')
+        .in('document_type', SCOPE_CHANGE_DOCUMENT_TYPES)
+      for (const r of (pending || [])) {
+        try {
+          await cancelApprovalRequest(service, {
+            documentType: r.document_type, documentId: r.document_id,
+            workspaceId: session.workspaceId, actorId: session.id,
+            actorEmail: session.email, actorName: session.name,
+            reason: 'Project marked complete',
+          })
+          scopeApprovalsCancelled++
+        } catch (e) { console.error('Project complete: could not cancel approval request:', e) }
+      }
+    } catch (e) { console.error('Project complete: approval cleanup failed (non-fatal):', e) }
+
     await logAudit(service, {
       workspaceId: session.workspaceId, actorId: session.id,
       actorEmail: session.email, actorName: session.name,
       eventType: 'project.completed', entityType: 'project',
       entityId: id, entityName: project.name,
-      metadata: { flags_auto_closed: openFlags.length },
+      metadata: { flags_auto_closed: openFlags.length, scope_approvals_cancelled: scopeApprovalsCancelled },
     })
 
     return NextResponse.json({ ok: true })

@@ -6,6 +6,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { sendCoDocument } from '@/lib/documents/send-co'
 import { evaluateApprovalGate } from '@/lib/approvals/engine'
 import { canReadProject } from '@/lib/utils/project-access'
+import { isTerminalStatus } from '@/lib/utils/project-status'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -25,7 +26,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { data: co, error: coFetchErr } = await (service as any)
       .from('change_orders')
       .select(`id,title,status,total,line_items,version,project_id,
-        projects(id,name,currency)`)
+        projects(id,name,status,currency)`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!co) {
@@ -38,6 +39,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     if (co.status !== 'draft')
       return NextResponse.json({ error: 'Only draft COs can be sent' }, { status: 400 })
+    // FIX (Projects & Dashboard deep audit, flagship finding): checked here
+    // too (not just inside sendCoDocument) so a terminal project fails
+    // fast, before an approval gate even creates a request for a CO that
+    // could never actually be sent.
+    if (isTerminalStatus(co.projects?.status || ''))
+      return NextResponse.json({
+        error: `This project is ${co.projects.status.toLowerCase()} — a change order can no longer be sent. Reopen the project first.`,
+      }, { status: 409 })
 
     // FIX (doc-completeness audit, Group E — hard block): nothing
     // previously stopped an empty or $0 change order from being sent —

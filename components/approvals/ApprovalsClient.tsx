@@ -350,7 +350,7 @@ function ApprovalDetailModal({ request, session, eligibleStep, canManageWorkflow
   // Suppress it client-side and say why.
   const selfApprovalBlocked = isRequester && !!eligibleStep
 
-  async function act(action: 'approve' | 'reject' | 'cancel', body?: Record<string, unknown>) {
+  async function act(action: 'approve' | 'reject' | 'cancel' | 'retry-send', body?: Record<string, unknown>) {
     setActing(action); setError('')
     try {
       const res  = await fetch(`/api/approvals/${request.id}/${action}`, {
