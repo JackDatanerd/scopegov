@@ -1,5 +1,6 @@
 export const runtime = 'nodejs'
 
+import crypto from 'crypto'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { classifyGuardianCheck, getEmbedding, cosineSimilarity, resolveMatchedAmendmentId, type Sensitivity } from '@/lib/ai/guardian'
@@ -10,35 +11,58 @@ import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { checkAiRateLimitByProject, recordAiUsageByProject } from '@/lib/utils/rate-limit'
 
-// BUG-016: verify Postmark webhook signature before processing
-// FIX (audit round 2, item #4): plain `===` on a hex digest is not
-// constant-time — comparison can short-circuit on the first mismatched
-// byte, which is a (low-probability but non-zero) timing side-channel for
-// an attacker trying to forge this webhook's signature. Use
-// crypto.timingSafeEqual, guarding the length check first since it throws
-// on mismatched buffer lengths rather than just returning false.
-function verifyPostmarkSignature(body: string, signature: string | null): boolean {
-  if (!signature) return false
-  const secret = process.env.POSTMARK_INBOUND_WEBHOOK_SECRET
-  if (!secret) return false
-  // Postmark uses HMAC-SHA256
-  const crypto = require('crypto')
-  const expected = crypto.createHmac('sha256', secret).update(body).digest()
-  let provided: Buffer
-  try { provided = Buffer.from(signature, 'hex') } catch { return false }
-  if (provided.length !== expected.length) return false
-  return crypto.timingSafeEqual(expected, provided)
+// BUG-016: verify the Postmark inbound webhook before processing.
+//
+// FIX (deep audit, section 13 — flagship finding): this route used to
+// check an `x-postmark-signature` header against an HMAC-SHA256 digest —
+// a scheme Postmark has never implemented. Postmark's own docs are
+// explicit: "Postmark doesn't sign webhooks with HMAC. Protect the
+// endpoint with HTTP Basic Authentication and IP allowlisting." There is
+// no per-webhook signing secret to "copy" from Postmark's dashboard the
+// way the old comment (and the README) claimed — inbound auth is done by
+// embedding credentials directly in the webhook URL Postmark is
+// configured to POST to (https://<user>:<password>@host/path), which
+// Postmark then sends back as a standard `Authorization: Basic ...`
+// header on every request. Every prior audit round hardened the *compare*
+// (timing-safe equality, escaping the domain regex) without ever
+// verifying the mechanism itself against a real Postmark request — so
+// this route has almost certainly been rejecting 100% of genuine inbound
+// email with a 401 since the feature shipped. Switched to what Postmark
+// actually sends: HTTP Basic Auth, checked with a timing-safe comparison
+// on the password half (the username is caller-chosen and not itself a
+// secret — POSTMARK_INBOUND_WEBHOOK_SECRET is the value that must match).
+// See README §4 for the updated setup steps.
+function verifyPostmarkAuth(request: NextRequest): boolean {
+  const expectedPassword = process.env.POSTMARK_INBOUND_WEBHOOK_SECRET
+  if (!expectedPassword) return false
+
+  const authHeader = request.headers.get('authorization')
+  if (!authHeader?.startsWith('Basic ')) return false
+
+  let decoded: string
+  try { decoded = Buffer.from(authHeader.slice('Basic '.length), 'base64').toString('utf8') }
+  catch { return false }
+
+  // Basic Auth payload is "user:password" — the username is arbitrary
+  // (Postmark just echoes back whatever was in the configured URL), only
+  // the password half is the actual shared secret.
+  const sep = decoded.indexOf(':')
+  const password = sep === -1 ? decoded : decoded.slice(sep + 1)
+
+  const expected = Buffer.from(expectedPassword)
+  const actual   = Buffer.from(password)
+  if (expected.length !== actual.length) return false
+  return crypto.timingSafeEqual(expected, actual)
 }
 
 export async function POST(request: NextRequest) {
   try {
-    const rawBody  = await request.text()
-    const sig      = request.headers.get('x-postmark-signature')
-
-    if (!verifyPostmarkSignature(rawBody, sig)) {
-      console.warn('Postmark signature verification failed')
-      return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
+    if (!verifyPostmarkAuth(request)) {
+      console.warn('Postmark inbound auth failed')
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
+
+    const rawBody  = await request.text()
 
     let payload: any
     try { payload = JSON.parse(rawBody) }

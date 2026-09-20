@@ -7,6 +7,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
 import { sendDocumentCancelledEmail } from '@/lib/email/templates'
 import { cancelApprovalRequest } from '@/lib/approvals/engine'
+import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -27,7 +28,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { data: invoice } = await (service as any)
       .from('invoices')
       .select(`id, title, status, amount_paid, token, milestone_id, project_id, sent_at,
-        projects(name, clients(name, email, cc_emails), workspaces(agency_name, brand_colour))`)
+        projects(name, client_id, clients(name, email, cc_emails), workspaces(agency_name, brand_colour))`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
@@ -101,8 +102,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const client = invoice.projects?.clients
     if (invoice.sent_at && client?.email) {
       try {
+        // FIX (deep audit, section 14 — traced bug): same missing
+        // withPrimaryContactCc call as invoices/[id]/remind — see that
+        // route's comment.
+        const cc = await withPrimaryContactCc(service, invoice.projects?.client_id, client.email, client.cc_emails)
         await sendDocumentCancelledEmail({
-          to: client.email, cc: client.cc_emails || [],
+          to: client.email, cc,
           clientName: client.name, agencyName: invoice.projects?.workspaces?.agency_name,
           projectName: invoice.projects?.name, documentLabel: 'Invoice',
           documentTitle: invoice.title, action: 'voided', reason: reason || null,

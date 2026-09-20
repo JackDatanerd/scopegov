@@ -8,6 +8,7 @@ import { sendInvoiceReminderEmail } from '@/lib/email/templates'
 import { canReadProject } from '@/lib/utils/project-access'
 import { checkReminderCooldown } from '@/lib/utils/reminder-cooldown'
 import { renewInvoiceTokenIfExpired } from '@/lib/documents/renew-invoice-token'
+import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -21,7 +22,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { data: invoice } = await (service as any)
       .from('invoices')
       .select(`id, title, amount, amount_paid, currency, status, due_date, token, expires_at, invoice_number, project_id, payment_instructions,
-        projects(id, name, clients(name, email, cc_emails), workspaces(agency_name, brand_colour))`)
+        projects(id, name, client_id, clients(name, email, cc_emails), workspaces(agency_name, brand_colour))`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
@@ -69,9 +70,18 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     })
 
     try {
+      // FIX (deep audit, section 14 — traced bug): the initial invoice send
+      // (send-invoice.ts) CCs the client's designated primary contact via
+      // withPrimaryContactCc, but this reminder — arguably the single most
+      // important follow-up email, since it's the one asking to get paid —
+      // used to CC only client.cc_emails directly and silently dropped the
+      // primary contact. Same gap existed on co/sow remind/withdraw/close,
+      // fixed there in the SOW/CO round; this route was outside that
+      // round's scope and still had it.
+      const cc = await withPrimaryContactCc(service, project?.client_id, client?.email, client?.cc_emails)
       await sendInvoiceReminderEmail({
         to:          client?.email,
-        cc:          client?.cc_emails || [],
+        cc,
         clientName:  client?.name,
         agencyName:  workspace?.agency_name,
         projectName: project?.name,

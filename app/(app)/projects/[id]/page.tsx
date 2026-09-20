@@ -171,19 +171,49 @@ export default async function ProjectPage({ params, searchParams }: Props) {
   // appeared on a project's Activity tab. audit_log.project_id (migration 056)
   // attaches every one of them to its project.
   //
-  // `metadata` is deliberately NOT selected: the tab never rendered it, but it
-  // still shipped to the browser, and it carries contract-value changes
-  // (project.updated) and amounts — data this page withholds from members
-  // without VIEW_FINANCIALS everywhere else.
-  const { data: activity = [] } = await (service as any)
+  // FIX (deep audit, section 13 — feature gap): `metadata` used to be left
+  // out of the select entirely because most event types' metadata carries
+  // contract-value changes and amounts (project.updated) that this page
+  // withholds from members without VIEW_FINANCIALS everywhere else — so
+  // selecting it unconditionally would have reopened that exact leak. But
+  // that meant EVERY event type lost its detail, including
+  // 'project.scope_adjustment_made' — whose whole reason for existing is a
+  // reviewable "what changed and why" record (see api/guardian/
+  // scope-adjustment's own comment on why write-order guarantees this
+  // entry can never disagree with the real scope-of-record). With no
+  // detail rendered anywhere, that guarantee protected a record nobody
+  // could actually read. Fix: still select metadata (need it to build the
+  // safe view), but extract only the known-safe scope-adjustment fields
+  // (deliverable/field/old value/new value/reason — no dollar amounts) per
+  // row server-side, and never forward the raw `metadata` object itself to
+  // the client component. Every other event type keeps exactly the same
+  // shape as before.
+  const { data: activityRaw = [] } = await (service as any)
     .from('audit_log')
-    .select('id, event_type, entity_name, actor_name, actor_email, created_at')
+    .select('id, event_type, entity_name, actor_name, actor_email, created_at, metadata')
     .eq('project_id', id)
     .eq('workspace_id', session.workspaceId)
     .not('event_type', 'like', 'project_message.%')
     .order('created_at', { ascending: false })
     .order('id', { ascending: false })
     .limit(50)
+
+  const activity = (activityRaw || []).map((a: any) => {
+    const { metadata, ...rest } = a
+    if (a.event_type === 'project.scope_adjustment_made' && metadata) {
+      return {
+        ...rest,
+        adjustment: {
+          field:    metadata.field === 'out_of_scope' ? 'excluded item' : 'deliverable',
+          deliverable: metadata.deliverable ?? null,
+          oldValue: metadata.old_value ?? null,
+          newValue: metadata.new_value ?? null,
+          reason:   metadata.reason ?? null,
+        },
+      }
+    }
+    return rest
+  })
 
   // ── Fetch invoices (Phase 4a) ────────────────────────────────────────
   // FIX (re-audit): gated behind viewFinancials, same as milestones above.

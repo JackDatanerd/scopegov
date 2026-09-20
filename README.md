@@ -99,7 +99,7 @@ OPENAI_API_KEY=                      ← for embeddings
 RESEND_API_KEY=
 RESEND_FROM_EMAIL=noreply@mail.scopegov.app
 RESEND_FROM_NAME=ScopeGov
-POSTMARK_INBOUND_WEBHOOK_SECRET=
+POSTMARK_INBOUND_WEBHOOK_SECRET=     ← Basic Auth password, see §4 (NOT an HMAC secret)
 NEXT_PUBLIC_GUARDIAN_EMAIL_DOMAIN=guard.scopegov.app
 NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY=
 PAYSTACK_SECRET_KEY=
@@ -152,11 +152,27 @@ Value: v=DMARC1; p=quarantine; rua=mailto:dmarc@scopegov.app
 ---
 
 ## 4. Postmark Setup
+
+**Postmark does not sign inbound webhooks with HMAC** — there is no "webhook
+secret" field to copy from its dashboard. Postmark's own recommended
+protection is HTTP Basic Auth (credentials embedded directly in the webhook
+URL) plus IP allowlisting. This app checks Basic Auth on every inbound
+request — set it up as follows:
+
+- [ ] Generate a secret: `openssl rand -hex 32` → set as `POSTMARK_INBOUND_WEBHOOK_SECRET`
 - [ ] Create inbound server in Postmark
-- [ ] Set inbound webhook URL: `https://app.scopegov.app/api/guardian/inbound`
-- [ ] Copy the webhook secret → `POSTMARK_INBOUND_WEBHOOK_SECRET`
+- [ ] Set inbound webhook URL to: `https://postmark:<POSTMARK_INBOUND_WEBHOOK_SECRET>@app.scopegov.app/api/guardian/inbound`
+      (the username can be anything — `postmark` is just a convention; the
+      part after the colon must exactly match the env var above)
 - [ ] MX record configured (step 3.1)
-- [ ] Verify by sending a test email to `proj-test1234@guard.scopegov.app`
+- [ ] Optional, defense-in-depth: allowlist Postmark's published webhook IPs
+      (see postmarkapp.com/support/article/800-ips-for-firewalls) at your
+      firewall/CDN layer — Postmark's own guidance is to combine this with
+      Basic Auth, not to rely on either alone
+- [ ] Verify by sending a real email to `proj-test1234@guard.scopegov.app` and
+      confirming it lands as a `guardian_checks` row, not a 401 in the logs —
+      a curl test against the URL with correct credentials only proves the
+      auth check works, not that Postmark itself is configured to send them
 
 ---
 

@@ -31,15 +31,30 @@ export default async function ClientDetailPage({ params }: Props) {
   // payload for every viewer, regardless of VIEW_CLIENT_DATA — the JSX
   // below only ever hid them, it never withheld them. Redact at the
   // source instead, same as the projects/[id] page.
+  const canEditClientData = hasPermission(session, 'CREATE_PROJECTS')
+
+  // FIX (deep audit, section 14): billing_address/vat_number were redacted
+  // (and the card below hidden) behind VIEW_CLIENT_DATA alongside the real
+  // contact-visibility fields (email/phone/cc_emails/notes) — but
+  // api/clients/[id]/route.ts (see its own comment) deliberately treats
+  // billing fields as CREATE_PROJECTS-only, independent of VIEW_CLIENT_DATA,
+  // precisely because they aren't "contact data" in that sense. The result
+  // was a backend allowance nobody could ever reach: a CREATE_PROJECTS-only
+  // member could never see the current billing address/VAT number to edit
+  // it, because the page redacted both fields and hid the card entirely
+  // whenever VIEW_CLIENT_DATA was absent. Billing visibility now follows
+  // the same either/or the API already grants: visible if the viewer can
+  // see client data OR can edit it.
+  const canSeeBilling = canViewClientData || canEditClientData
   if (!canViewClientData) {
     Object.assign(client, {
       email: null, cc_emails: null, phone: null,
-      vat_number: null, billing_address: null,
       payment_terms_note: null, notes: null,
     })
   }
-
-  const canEditClientData = hasPermission(session, 'CREATE_PROJECTS')
+  if (!canSeeBilling) {
+    Object.assign(client, { vat_number: null, billing_address: null })
+  }
 
   // FEATURE (deep audit, section 14, finding #8): see
   // components/clients/ClientContactsCard.tsx for the full context —
@@ -115,7 +130,17 @@ export default async function ClientDetailPage({ params }: Props) {
 
   // Used to warn before archiving a client that still has active work —
   // see ArchiveClientButton.
-  const activeProjectCount = (projectsAll || []).filter((p: any) => ACTIVE_STATUSES.includes(p.status)).length
+  //
+  // FIX (deep audit, section 14): this used to count against `projectsAll`
+  // (unfiltered), the exact same disclosure this page's own flagship fix
+  // above (canViewAllProjects/accessibleProjectIds) already treats as real
+  // — "a real information disclosure, not a cosmetic one" — and fixes
+  // everywhere else on this page (the table, the currency totals). A
+  // member with CREATE_PROJECTS but only VIEW_OWN_PROJECTS got a
+  // workspace-wide active-project count in the archive-warning dialog
+  // instead of just the count of projects they can actually see. Use the
+  // already-permission-filtered `projectsRaw` instead.
+  const activeProjectCount = (projectsRaw || []).filter((p: any) => ACTIVE_STATUSES.includes(p.status)).length
 
   function pillVariant(status: string): string {
     const m: Record<string, string> = {
@@ -269,8 +294,10 @@ export default async function ClientDetailPage({ params }: Props) {
           )}
 
           {/* Phase 11: billing address + VAT — feeds the "Bill To" block on
-              every Invoice/SOW/CO PDF for this client (lib/pdf/renderer.tsx) */}
-          {canViewClientData && (
+              every Invoice/SOW/CO PDF for this client (lib/pdf/renderer.tsx).
+              Gated on canSeeBilling (VIEW_CLIENT_DATA OR CREATE_PROJECTS),
+              not canViewClientData alone — see the redaction comment above. */}
+          {canSeeBilling && (
             <BillingDetailsCard
               clientId={client.id}
               vatNumber={client.vat_number}

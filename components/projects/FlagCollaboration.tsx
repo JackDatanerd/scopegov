@@ -90,6 +90,22 @@ export default function FlagCollaboration({
     }
   }
 
+  // FEATURE (deep audit, section 13): attachments could be uploaded but
+  // never removed — a wrong file or a file meant for a different flag was
+  // permanent. Gated the same as upload (canWrite — APPROVE_FLAGS or
+  // GRANT_EXCEPTIONS), enforced again server-side.
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  async function deleteAttachment(id: string) {
+    if (!confirm('Remove this attachment? This cannot be undone.')) return
+    setDeletingId(id); setError('')
+    try {
+      const res = await fetch(`${base}/attachments/${id}`, { method: 'DELETE' })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) { setError(json.error || 'Could not remove attachment.'); return }
+      setAttachments(prev => prev.filter(a => a.id !== id))
+    } finally { setDeletingId(null) }
+  }
+
   const activityCount = (loaded ? comments.length + attachments.length : null)
 
   return (
@@ -140,22 +156,35 @@ export default function FlagCollaboration({
               ))}
 
               {attachments.map(a => (
-                <a key={a.id} href={a.downloadUrl || '#'} target="_blank" rel="noreferrer"
+                <div key={a.id}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', marginBottom: 6,
-                    background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)', textDecoration: 'none',
+                    background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)',
                   }}>
-                  <i className={`ti ${fileIcon(a.mimeType)}`} style={{ fontSize: 14, color: 'var(--text-3)' }} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 12, color: 'var(--text-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {a.fileName}
+                  <a href={a.downloadUrl || '#'} target="_blank" rel="noreferrer"
+                    style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0, textDecoration: 'none' }}>
+                    <i className={`ti ${fileIcon(a.mimeType)}`} style={{ fontSize: 14, color: 'var(--text-3)' }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 12, color: 'var(--text-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {a.fileName}
+                      </div>
+                      <div style={{ fontSize: 10.5, color: 'var(--text-4)' }}>
+                        {fileSize(a.fileSize)} · {a.uploadedByName} · {formatRelative(a.uploadedAt)}
+                      </div>
                     </div>
-                    <div style={{ fontSize: 10.5, color: 'var(--text-4)' }}>
-                      {fileSize(a.fileSize)} · {a.uploadedByName} · {formatRelative(a.uploadedAt)}
-                    </div>
-                  </div>
-                  <i className="ti ti-download" style={{ fontSize: 12, color: 'var(--text-3)' }} />
-                </a>
+                    <i className="ti ti-download" style={{ fontSize: 12, color: 'var(--text-3)' }} />
+                  </a>
+                  {canWrite && (
+                    <button
+                      onClick={() => deleteAttachment(a.id)} disabled={deletingId === a.id}
+                      title="Remove attachment"
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, lineHeight: 0, flexShrink: 0 }}>
+                      {deletingId === a.id
+                        ? <span className="spin spin-dark" style={{ width: 11, height: 11 }} />
+                        : <i className="ti ti-trash" style={{ fontSize: 12, color: 'var(--text-3)' }} />}
+                    </button>
+                  )}
+                </div>
               ))}
 
               {error && <p style={{ fontSize: 11.5, color: 'var(--red)', marginBottom: 8 }}>{error}</p>}

@@ -2182,6 +2182,19 @@ function ActivityTab({ activity }: { activity: any[] }) {
                   <strong>{a.actor_name}</strong> · {a.event_type.replace(/\./g, ' ').replace(/_/g, ' ')}
                   {a.entity_name && <> on <em>{a.entity_name}</em></>}
                 </div>
+                {/* FIX (deep audit, section 13 — feature gap): scope
+                    adjustments were recorded in full detail but rendered
+                    identically to every other bare event line — no way to
+                    see what actually changed without querying the DB
+                    directly. See app/(app)/projects/[id]/page.tsx for the
+                    server-side extraction that makes this safe to show
+                    (no financial metadata is ever forwarded here). */}
+                {a.adjustment && (
+                  <div className="feed-text" style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>
+                    Changed {a.adjustment.field} &ldquo;{a.adjustment.oldValue}&rdquo; → &ldquo;{a.adjustment.newValue}&rdquo;
+                    {a.adjustment.reason && <> — {a.adjustment.reason}</>}
+                  </div>
+                )}
                 <div className="feed-time">{formatRelative(a.created_at)}</div>
               </div>
             </div>
