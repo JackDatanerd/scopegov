@@ -2,7 +2,8 @@ export const runtime = 'nodejs'
 
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
-import { logAudit } from '@/lib/utils/audit'
+import { logSecurityAudit } from '@/lib/auth/security-audit'
+import { requireStepUp } from '@/lib/auth/step-up'
 import { issueBackupCodes } from '@/lib/auth/backup-code-store'
 import { sendMfaBackupCodesRegeneratedEmail } from '@/lib/email/templates'
 import { resolveActiveWorkspaceId, resolveActorName } from '@/lib/auth/session'
@@ -37,11 +38,10 @@ export async function POST() {
     // resolveActorName's own comment in lib/auth/session.ts.
     const actorName = await resolveActorName(service, user.id, user.user_metadata?.name || user.email!)
 
-    await logAudit(service, {
-      workspaceId: await resolveActiveWorkspaceId(service, user.id) || '',
+    await logSecurityAudit(service, {
       actorId: user.id, actorEmail: user.email!, actorName,
-      eventType: 'security.mfa_backup_codes_regenerated', entityType: 'user', entityId: user.id, entityName: user.email!,
-      metadata: {},
+      eventType: 'security.mfa_backup_codes_regenerated', entityId: user.id, entityName: user.email!,
+      metadata: {}, fallbackWorkspaceId: await resolveActiveWorkspaceId(service, user.id),
     })
     // FIX (re-audit): fire-and-forget email — not awaited — is unsafe in
     // serverless (the function can freeze/terminate right after the

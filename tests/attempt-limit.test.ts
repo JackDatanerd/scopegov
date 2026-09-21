@@ -1,93 +1,82 @@
 import { describe, it, expect } from 'vitest'
 import {
-  checkAuthAttemptLimit, recordAuthFailure, clearAuthFailures, lockoutMessage, AUTH_ATTEMPT_LIMIT,
+  beginAuthAttempt, releaseAuthAttempt, clearAuthFailures, lockoutMessage, lockedResponseBody, AUTH_ATTEMPT_LIMIT,
 } from '@/lib/auth/attempt-limit'
 
-// Minimal in-memory stand-in for the slice of the supabase-js builder the
-// limiter uses (select/eq/gte/order/limit, insert, delete).
-function fakeService(rows: Array<{ user_id: string; kind: string; succeeded: boolean; created_at: string }>, opts: { failSelect?: boolean } = {}) {
+// The atomicity itself lives in SQL (auth_attempt_begin) and is exercised against a real
+// Postgres in tests/pg-replay/. These tests cover the TypeScript contract around it.
+
+function fakeService(rpcImpl: (name: string, args: any) => { data?: any; error?: any } | Promise<any>) {
+  const calls: Array<{ name: string; args: any }> = []
+  const deletes: Array<Record<string, unknown>> = []
   return {
-    rows,
-    from(_table: string) {
-      const filters: Array<(r: any) => boolean> = []
-      let orderDesc = false
-      let lim = Infinity
-      let mode: 'select' | 'delete' = 'select'
-      const builder: any = {
-        select() { mode = 'select'; return builder },
-        delete() { mode = 'delete'; return builder },
-        insert(row: any) { rows.push({ succeeded: false, created_at: new Date().toISOString(), ...row }); return Promise.resolve({ error: null }) },
-        eq(col: string, v: any) { filters.push(r => r[col] === v); return builder },
-        gte(col: string, v: string) { filters.push(r => r[col] >= v); return builder },
-        order(_c: string, o: { ascending: boolean }) { orderDesc = o.ascending === false; return builder },
-        limit(n: number) { lim = n; return builder },
-        then(resolve: any) {
-          if (opts.failSelect) return resolve({ data: null, error: { message: 'boom' } })
-          let out = rows.filter(r => filters.every(f => f(r)))
-          if (mode === 'delete') { for (const r of out) rows.splice(rows.indexOf(r), 1); return resolve({ error: null }) }
-          if (orderDesc) out = out.sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
-          return resolve({ data: out.slice(0, lim).map(r => ({ created_at: r.created_at })), error: null })
-        },
+    calls, deletes,
+    rpc: async (name: string, args: any) => { calls.push({ name, args }); return rpcImpl(name, args) },
+    from: (_t: string) => {
+      const filters: Record<string, unknown> = {}
+      const q: any = {
+        delete: () => q,
+        eq: (k: string, v: unknown) => { filters[k] = v; return q },
+        then: (res: any) => { deletes.push({ ...filters }); return Promise.resolve({ error: null }).then(res) },
       }
-      return builder
+      return q
     },
   }
 }
 
-const NOW = Date.parse('2026-09-20T12:00:00Z')
-const iso = (msAgo: number) => new Date(NOW - msAgo).toISOString()
-const fail = (user: string, msAgo: number, kind = 'mfa_verify') => ({ user_id: user, kind, succeeded: false, created_at: iso(msAgo) })
-
-describe('checkAuthAttemptLimit', () => {
-  it('allows attempts below the failure limit', async () => {
-    const svc = fakeService([fail('u1', 10_000), fail('u1', 20_000)])
-    const r = await checkAuthAttemptLimit(svc, 'u1', 'mfa_verify', NOW)
-    expect(r).toEqual({ allowed: true, retryAfterSeconds: 0, failures: 2 })
+describe('beginAuthAttempt', () => {
+  it('sends the ledger parameters to the atomic RPC and maps an allowed result', async () => {
+    const svc = fakeService(() => ({ data: { allowed: true, attempt_id: 'a1', failures: 2, retry_after_seconds: 0 } }))
+    const r = await beginAuthAttempt(svc, 'u1', 'mfa_verify')
+    expect(svc.calls[0]).toEqual({ name: 'auth_attempt_begin', args: {
+      p_user: 'u1', p_kind: 'mfa_verify', p_max: AUTH_ATTEMPT_LIMIT.maxFailures, p_window_seconds: AUTH_ATTEMPT_LIMIT.windowSeconds,
+    } })
+    expect(r).toEqual({ allowed: true, retryAfterSeconds: 0, failures: 2, attemptId: 'a1' })
   })
 
-  it('locks after the maximum failures inside the window and reports when it ends', async () => {
-    const { maxFailures, windowSeconds } = AUTH_ATTEMPT_LIMIT
-    const rows = Array.from({ length: maxFailures }, (_, i) => fail('u1', (i + 1) * 30_000))
-    const r = await checkAuthAttemptLimit(fakeService(rows), 'u1', 'mfa_verify', NOW)
+  it('maps a locked result (no attempt id, retry-after present)', async () => {
+    const svc = fakeService(() => ({ data: { allowed: false, attempt_id: null, failures: 5, retry_after_seconds: 240 } }))
+    const r = await beginAuthAttempt(svc, 'u1', 'mfa_recover')
     expect(r.allowed).toBe(false)
-    // oldest counted failure is maxFailures*30s old -> lock ends when it is windowSeconds old
-    expect(r.retryAfterSeconds).toBe(windowSeconds - maxFailures * 30)
-  })
-
-  it('ignores failures that have aged out of the window', async () => {
-    const old = Array.from({ length: 8 }, () => fail('u1', (AUTH_ATTEMPT_LIMIT.windowSeconds + 60) * 1000))
-    const r = await checkAuthAttemptLimit(fakeService(old), 'u1', 'mfa_verify', NOW)
-    expect(r.allowed).toBe(true)
-  })
-
-  it('is per user and per kind', async () => {
-    const rows = Array.from({ length: 6 }, (_, i) => fail('u1', (i + 1) * 1000))
-    const svc = fakeService(rows)
-    expect((await checkAuthAttemptLimit(svc, 'u2', 'mfa_verify', NOW)).allowed).toBe(true)
-    expect((await checkAuthAttemptLimit(svc, 'u1', 'mfa_recover', NOW)).allowed).toBe(true)
-    expect((await checkAuthAttemptLimit(svc, 'u1', 'mfa_verify', NOW)).allowed).toBe(false)
+    expect(r.retryAfterSeconds).toBe(240)
+    expect(r.attemptId).toBeNull()
   })
 
   it('fails OPEN when the ledger errors (GoTrue limits still apply)', async () => {
-    const r = await checkAuthAttemptLimit(fakeService([], { failSelect: true }), 'u1', 'mfa_verify', NOW)
+    const svc = fakeService(() => ({ error: { message: 'db down' } }))
+    const r = await beginAuthAttempt(svc, 'u1', 'password_verify')
     expect(r.allowed).toBe(true)
+    expect(r.attemptId).toBeNull()
+  })
+
+  it('fails OPEN when the RPC throws', async () => {
+    const svc = fakeService(() => { throw new Error('network') })
+    expect((await beginAuthAttempt(svc, 'u1', 'mfa_verify')).allowed).toBe(true)
   })
 })
 
-describe('recordAuthFailure / clearAuthFailures', () => {
-  it('records a failure and a success wipes that kind\'s failures only', async () => {
-    const svc = fakeService([fail('u1', 1000, 'mfa_recover')])
-    await recordAuthFailure(svc, 'u1', 'mfa_verify')
-    expect(svc.rows.filter(r => r.kind === 'mfa_verify')).toHaveLength(1)
+describe('releaseAuthAttempt / clearAuthFailures', () => {
+  it('releases a reservation by id, and does nothing without one', async () => {
+    const svc = fakeService(() => ({ data: null }))
+    await releaseAuthAttempt(svc, 'a1')
+    await releaseAuthAttempt(svc, null)
+    expect(svc.calls).toEqual([{ name: 'auth_attempt_release', args: { p_attempt: 'a1' } }])
+  })
+
+  it('clears only that user + kind\'s failures', async () => {
+    const svc = fakeService(() => ({ data: null }))
     await clearAuthFailures(svc, 'u1', 'mfa_verify')
-    expect(svc.rows.filter(r => r.kind === 'mfa_verify')).toHaveLength(0)
-    expect(svc.rows.filter(r => r.kind === 'mfa_recover')).toHaveLength(1)
+    expect(svc.deletes[0]).toEqual({ user_id: 'u1', kind: 'mfa_verify', succeeded: false })
   })
 })
 
-describe('lockoutMessage', () => {
-  it('rounds up to whole minutes and pluralises', () => {
-    expect(lockoutMessage(1)).toContain('1 minute.')
-    expect(lockoutMessage(61)).toContain('2 minutes.')
+describe('lockout messaging', () => {
+  it('rounds up to whole minutes, singular/plural', () => {
+    expect(lockoutMessage(1)).toBe('Too many incorrect attempts. Try again in 1 minute.')
+    expect(lockoutMessage(61)).toBe('Too many incorrect attempts. Try again in 2 minutes.')
+  })
+  it('builds the standard 429 body', () => {
+    const body = lockedResponseBody({ allowed: false, retryAfterSeconds: 120, failures: 5, attemptId: null })
+    expect(body).toMatchObject({ code: 'locked', retryAfterSeconds: 120 })
   })
 })

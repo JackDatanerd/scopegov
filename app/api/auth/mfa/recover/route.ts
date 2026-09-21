@@ -4,12 +4,13 @@ import { NextResponse } from 'next/server'
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
 import { logAudit } from '@/lib/utils/audit'
 import { notifySecurityEvent } from '@/lib/utils/notify'
-import { hashBackupCode } from '@/lib/utils/backup-codes'
+import { backupCodeCandidateHashes } from '@/lib/utils/backup-codes'
 import { sendMfaDisabledEmail } from '@/lib/email/templates'
 import { resolveActiveWorkspaceId, resolveActorName } from '@/lib/auth/session'
 import {
-  checkAuthAttemptLimit, recordAuthFailure, clearAuthFailures, lockoutMessage, AUTH_ATTEMPT_LIMIT,
+  beginAuthAttempt, releaseAuthAttempt, clearAuthFailures, lockedResponseBody, AUTH_ATTEMPT_LIMIT,
 } from '@/lib/auth/attempt-limit'
+import { logSecurityAudit } from '@/lib/auth/security-audit'
 
 // POST /api/auth/mfa/recover — sign in with a one-time backup code when the
 // authenticator is lost. Deliberately blunt: a successful recovery REMOVES the
@@ -42,25 +43,26 @@ export async function POST(request: Request) {
 
     const service = createServiceClient()
 
-    const limit = await checkAuthAttemptLimit(service, user.id, 'mfa_recover')
-    if (!limit.allowed) {
-      return NextResponse.json(
-        { error: lockoutMessage(limit.retryAfterSeconds), code: 'locked', retryAfterSeconds: limit.retryAfterSeconds },
-        { status: 429, headers: { 'Retry-After': String(limit.retryAfterSeconds) } }
-      )
+    // Atomic reservation — see lib/auth/attempt-limit.ts. It counts as a failure
+    // unless released below or cleared on success.
+    const begin = await beginAuthAttempt(service, user.id, 'mfa_recover')
+    if (!begin.allowed) {
+      return NextResponse.json(lockedResponseBody(begin), { status: 429, headers: { 'Retry-After': String(begin.retryAfterSeconds) } })
     }
 
     const workspaceId = await resolveActiveWorkspaceId(service, user.id)
     const actorName = await resolveActorName(service, user.id, user.user_metadata?.name || user.email!)
 
-    const hash = hashBackupCode(body.code)
-    const { data: match } = await (service as any)
+    // Peppered HMAC (current) OR legacy unsalted sha256 — codes issued before the
+    // change keep working (lib/utils/backup-codes.ts).
+    const { data: matchRows } = await (service as any)
       .from('user_mfa_backup_codes')
       .select('id')
       .eq('user_id', user.id)
-      .eq('code_hash', hash)
+      .in('code_hash', backupCodeCandidateHashes(body.code))
       .is('used_at', null)
-      .maybeSingle()
+      .limit(1)
+    const match = (matchRows || [])[0] || null
 
     // Claim it atomically: only the request whose UPDATE actually flips
     // used_at from NULL gets to proceed.
@@ -75,14 +77,12 @@ export async function POST(request: Request) {
     }
 
     if (!claimed) {
-      await recordAuthFailure(service, user.id, 'mfa_recover')
-      const after = await checkAuthAttemptLimit(service, user.id, 'mfa_recover')
       try {
         await logAudit(service, {
           workspaceId: workspaceId || '',
           actorId: user.id, actorEmail: user.email!, actorName,
           eventType: 'security.mfa_recovery_failed', entityType: 'user', entityId: user.id, entityName: user.email!,
-          metadata: { failures_in_window: after.failures, locked: !after.allowed, window_seconds: AUTH_ATTEMPT_LIMIT.windowSeconds },
+          metadata: { failures_in_window: begin.failures, locked: begin.failures >= AUTH_ATTEMPT_LIMIT.maxFailures, window_seconds: AUTH_ATTEMPT_LIMIT.windowSeconds },
         })
       } catch (e) { console.error('MFA recovery-failure audit log failed (non-fatal):', e) }
       return NextResponse.json({ error: 'That backup code is invalid or has already been used.' }, { status: 400 })
@@ -96,6 +96,7 @@ export async function POST(request: Request) {
         console.error('MFA recovery: could not delete factor', f.id, delErr.message)
         // Give the code back — otherwise the user is locked out with a burned code.
         await (service as any).from('user_mfa_backup_codes').update({ used_at: null }).eq('id', match.id)
+        await releaseAuthAttempt(service, begin.attemptId)
         return NextResponse.json({ error: 'Recovery could not be completed. Your backup code was not used — please try again.' }, { status: 500 })
       }
     }
@@ -115,16 +116,12 @@ export async function POST(request: Request) {
     const { error: refreshErr } = await supabase.auth.refreshSession()
     if (refreshErr) console.error('MFA recovery session refresh failed (non-fatal):', refreshErr.message)
 
-    try {
-      await logAudit(service, {
-        workspaceId: workspaceId || '',
-        actorId: user.id, actorEmail: user.email!, actorName,
-        eventType: 'security.mfa_backup_code_used', entityType: 'user', entityId: user.id, entityName: user.email!,
-        metadata: { result: 'factor_removed' },
-      })
-    } catch (e) { console.error('MFA recovery audit log failed (non-fatal):', e) }
+    await logSecurityAudit(service, {
+      actorId: user.id, actorEmail: user.email!, actorName,
+      eventType: 'security.mfa_backup_code_used', entityId: user.id, entityName: user.email!,
+      metadata: { result: 'factor_removed' }, fallbackWorkspaceId: workspaceId,
+    })
 
-    // One row per active membership, with the error actually read (upstream helper).
     await notifySecurityEvent(service, user.id, 'Signed in with a backup code',
       'Two-factor authentication was reset using a backup code. Set it up again to keep your account protected.')
 

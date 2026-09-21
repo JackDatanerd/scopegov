@@ -76,6 +76,12 @@ function OnboardingWizard() {
 
   // Step 3
   const [inviteEmail, setInviteEmail] = useState('')
+  // Audit round 2: the invite step used to send no role at all, so every teammate
+  // silently received the workspace DEFAULT role — which, as seeded, can see all
+  // projects, financials and client data and is subject to mandatory MFA. The owner
+  // now sees and chooses the role.
+  const [inviteRoles,  setInviteRoles]  = useState<Array<{ id: string; name: string; is_default: boolean }>>([])
+  const [inviteRoleId, setInviteRoleId] = useState('')
 
   const STORAGE_KEY_PREFIX = 'scopegov_onboarding_'
   const [restored, setRestored] = useState(false)
@@ -656,6 +662,19 @@ function OnboardingWizard() {
     setStep(3)
   }
 
+  useEffect(() => {
+    if (step !== 3 || !workspaceId || inviteRoles.length > 0) return
+    fetch('/api/team/roles')
+      .then(r => r.json())
+      .then(json => {
+        if (!Array.isArray(json.roles)) return
+        setInviteRoles(json.roles)
+        const def = json.roles.find((r: any) => r.is_default)
+        if (def) setInviteRoleId(def.id)
+      })
+      .catch(() => { /* non-critical — the invite just falls back to the workspace default role */ })
+  }, [step, workspaceId, inviteRoles.length])
+
   /* ── Step 3: Invite ───────────────────────────────────────── */
   async function submitInvite() {
     setError('')
@@ -665,7 +684,7 @@ function OnboardingWizard() {
         const res  = await fetch('/api/team/invite', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: inviteEmail, workspaceId }),
+          body: JSON.stringify({ email: inviteEmail, workspaceId, ...(inviteRoleId ? { roleId: inviteRoleId } : {}) }),
         })
         const json = await res.json().catch(() => ({}))
         if (!res.ok) {
@@ -1121,6 +1140,18 @@ function OnboardingWizard() {
                 placeholder="colleague@youragency.com"
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setInviteEmail(e.target.value)} />
             </div>
+            {inviteRoles.length > 0 && (
+              <div className="fgrp">
+                <label className="flbl">Role</label>
+                <select className="finp" value={inviteRoleId}
+                  onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setInviteRoleId(e.target.value)}>
+                  {inviteRoles.map(r => (
+                    <option key={r.id} value={r.id}>{r.name}{r.is_default ? ' (default)' : ''}</option>
+                  ))}
+                </select>
+                <p className="fhint" style={{ marginTop: 6 }}>Decides what they can see and do. You can change it later on the Team page.</p>
+              </div>
+            )}
             {error && <div className="auth-error">{error}</div>}
 
             <div className="ob-nav">

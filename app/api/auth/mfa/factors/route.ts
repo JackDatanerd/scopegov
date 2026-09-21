@@ -3,7 +3,8 @@ export const runtime = 'nodejs'
 import { notifySecurityEvent } from '@/lib/utils/notify'
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
-import { logAudit } from '@/lib/utils/audit'
+import { logSecurityAudit } from '@/lib/auth/security-audit'
+import { requireStepUp } from '@/lib/auth/step-up'
 import { sendMfaDisabledEmail } from '@/lib/email/templates'
 import { userHasAnyMfaMandatoryMembership, resolveActiveWorkspaceId, resolveActorName } from '@/lib/auth/session'
 
@@ -119,17 +120,11 @@ export async function DELETE(request: Request) {
       .eq('user_id', user.id).is('used_at', null)
     if (retireErr) console.error('MFA disable: could not retire backup codes:', retireErr.message)
 
-    try {
-      await logAudit(service, {
-        workspaceId: activeWorkspaceId || '',
-        actorId: user.id, actorEmail: user.email!, actorName,
-        eventType: 'security.mfa_disabled', entityType: 'user', entityId: user.id, entityName: user.email!,
-        metadata: { via: 'user' },
-      })
-    } catch (e) { console.error('MFA disable audit log failed (non-fatal):', e) }
-    // FIX (Notifications & email fix round): this insert used a single, possibly-null
-    // workspace id (NOT NULL column → silent failure) and only showed in that one
-    // workspace's bell. One row per active membership, with the error actually read.
+    await logSecurityAudit(service, {
+      actorId: user.id, actorEmail: user.email!, actorName,
+      eventType: 'security.mfa_disabled', entityId: user.id, entityName: user.email!,
+      metadata: { via: 'user' }, fallbackWorkspaceId: activeWorkspaceId,
+    })
     await notifySecurityEvent(service, user.id, 'Two-factor authentication disabled',
       'Your account no longer requires an authenticator code to sign in.')
     // BUG (fixed): `.catch(() => {})` chained directly on the Supabase

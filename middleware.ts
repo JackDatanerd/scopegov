@@ -21,7 +21,18 @@ export async function middleware(request: NextRequest) {
   const refCode = searchParams.get('ref')
 
   // Create a response we can attach refreshed session cookies to.
-  const response = NextResponse.next({ request })
+  //
+  // FIX (Auth+MFA audit round 2): this used to be a `const` built ONCE, before
+  // supabase ran. NextResponse.next({ request }) snapshots the request headers
+  // at construction, so when getUser() refreshed the session and setAll() wrote
+  // the rotated tokens onto `request.cookies`, the route handler / Server
+  // Component running after this middleware STILL received the old cookies — it
+  // then refreshed AGAIN with a refresh token the middleware had just consumed,
+  // surviving only inside GoTrue's reuse window (and failing outright where that
+  // is set to 0). setAll() now REBUILDS the response so downstream code sees the
+  // fresh session, and every rotated cookie is re-applied to the new response.
+  let response = NextResponse.next({ request })
+  const rotatedCookies = new Map<string, { value: string; options: CookieOptions }>()
 
   const existingRef = request.cookies.get('ss_ref')?.value
 
@@ -81,8 +92,10 @@ export async function middleware(request: NextRequest) {
         setAll(cookiesToSet: Array<{ name: string; value: string; options?: CookieOptions }>) {
           cookiesToSet.forEach(({ name, value, options }) => {
             request.cookies.set(name, value)
-            response.cookies.set(name, value, domainScopedCookieOptions(name, options) as CookieOptions)
+            rotatedCookies.set(name, { value, options: domainScopedCookieOptions(name, options) as CookieOptions })
           })
+          response = NextResponse.next({ request })
+          rotatedCookies.forEach(({ value, options }, name) => response.cookies.set(name, value, options))
         },
       },
     }
@@ -111,6 +124,20 @@ export async function middleware(request: NextRequest) {
     pathname === '/'
 
   const isOnboarding = pathname === '/onboarding'
+  // FIX (Auth+MFA audit round 2 — HIGH): the moment /api/workspace/create returns,
+  // the creator is an Owner — an MFA-mandatory role — and the enrolment gate below
+  // starts refusing every API call that isn't an MFA route. The onboarding wizard
+  // still has to save branding, defaults, invites and finally
+  // /api/workspace/complete-onboarding, so EVERY new workspace owner was stranded
+  // on step 1 with "Two-factor enrollment required" and no link to /mfa-setup
+  // (only the /onboarding PAGE was exempt, not the calls it makes). While
+  // onboarding is unfinished these — and only these — API routes stay reachable;
+  // the moment it completes the person is sent to /mfa-setup like anyone else.
+  const isOnboardingApi = isApi && (
+    pathname.startsWith('/api/workspace/') ||
+    pathname === '/api/team/invite' ||
+    pathname === '/api/team/roles'
+  )
 
   // Routes that must stay reachable while a session is still at aal1 with a
   // second factor pending (or not yet enrolled). Each of these enforces its
@@ -238,7 +265,7 @@ export async function middleware(request: NextRequest) {
       const gate = await loadGate()
       // Fail CLOSED (this check used to fail open whenever the lookup errored).
       if (!gate) return finalize(unavailable())
-      if (gate.must_enroll_mfa) {
+      if (gate.must_enroll_mfa && !(isOnboardingApi && !gate.onboarding_complete)) {
         if (isApi) {
           return finalize(NextResponse.json({ error: 'Two-factor enrollment required for this account.' }, { status: 401 }))
         }

@@ -9,6 +9,7 @@
 // state here means it survives tab switches regardless of refresh timing.
 
 'use client'
+import { fetchWithStepUp } from '@/lib/client/step-up'
 import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
@@ -17,6 +18,8 @@ import type { SessionUser } from '@/lib/supabase/types'
 import { PLAN_LABELS, PLAN_LIMITS, PROJECT_TYPE_LABELS, formatDate, formatCurrency, initials, avatarColour } from '@/lib/utils/format'
 import SignaturePad, { type SignaturePadHandle } from '@/components/ui/SignaturePad'
 import MfaSection from '@/components/settings/MfaSection'
+import SessionsSection from '@/components/settings/SessionsSection'
+import ChangeEmailSection from '@/components/settings/ChangeEmailSection'
 // FIX (deep audit, Settings re-pass): WorkspaceTab's currency <select> used
 // to hardcode its own 8-currency list, missing CAD/AUD — both of which
 // onboarding's own currency picker (and server-side validation in
@@ -450,8 +453,6 @@ function AccountTab({ session, supabase, router, mfaMandatory }: any) {
   const [confirmPw,   setConfirmPw]   = useState('')
   const [pwLoading,   setPwLoading]   = useState(false)
   const [nameLoading, setNameLoading] = useState(false)
-  const [sessionsLoading, setSessionsLoading] = useState(false)
-  const [sessionsMsg,     setSessionsMsg]     = useState('')
   const [msg,         setMsg]         = useState('')
   const [err,         setErr]         = useState('')
   // FEATURE (cron audit, section 17 — feature gap): see
@@ -501,7 +502,8 @@ function AccountTab({ session, supabase, router, mfaMandatory }: any) {
     e.preventDefault()
     setNameLoading(true); setMsg(''); setErr('')
     try {
-      await supabase.auth.updateUser({ data: { name } })
+      // Name is written server-side only (sanitised, and mirrored to the auth
+      // profile there) — the browser no longer calls supabase.auth.updateUser().
       const res = await fetch('/api/workspace/profile', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) })
       // FIX (deep audit, Settings re-pass): a non-OK response fell through
       // this `if` doing nothing — no success message, no error message.
@@ -545,18 +547,6 @@ function AccountTab({ session, supabase, router, mfaMandatory }: any) {
     } catch (e: any) { setErr(e.message) } finally { setPwLoading(false) }
   }
 
-  // FEATURE (deep audit, Auth+MFA re-pass — session management): see
-  // api/auth/signout-others/route.ts for the full writeup.
-  async function signOutOtherSessions() {
-    setSessionsLoading(true); setSessionsMsg(''); setErr('')
-    try {
-      const res = await fetch('/api/auth/signout-others', { method: 'POST' })
-      const json = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(json.error || 'Failed to sign out other sessions')
-      setSessionsMsg('Signed out of all other sessions. This device stays signed in.')
-    } catch (e: any) { setErr(e.message) } finally { setSessionsLoading(false) }
-  }
-
   // FEATURE (cron audit, section 17 — feature gap): see
   // app/api/account/delete/route.ts's own header comment for the full
   // story on why this needed building.
@@ -564,7 +554,7 @@ function AccountTab({ session, supabase, router, mfaMandatory }: any) {
     if (deleteConfirm.trim().toLowerCase() !== session.email.toLowerCase()) return
     setDeleteLoading(true); setDeleteErr('')
     try {
-      const res  = await fetch('/api/account/delete', {
+      const res  = await fetchWithStepUp('/api/account/delete', {
         method: 'DELETE', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ confirmEmail: deleteConfirm.trim() }),
       })
@@ -666,16 +656,8 @@ function AccountTab({ session, supabase, router, mfaMandatory }: any) {
           </button>
         </form>
       </div>
-      <div className="settings-section">
-        <div className="settings-section-title">Sessions</div>
-        <p style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 12 }}>
-          Sign out of every other browser or device where you&apos;re currently logged in — this one stays signed in.
-        </p>
-        {sessionsMsg && <div className="auth-success" style={{ marginBottom: 14 }}>{sessionsMsg}</div>}
-        <button type="button" className="btn btn-secondary btn-sm" disabled={sessionsLoading} onClick={signOutOtherSessions}>
-          {sessionsLoading ? <span className="spin" /> : 'Sign out of all other sessions'}
-        </button>
-      </div>
+      <ChangeEmailSection currentEmail={session.email} />
+      <SessionsSection />
       {/* FIX (deep audit, Auth+MFA re-pass): was permissionsRequireMfa(
           session.permissions) — checks only the ACTIVE workspace's
           permissions, the same narrow check userHasAnyMfaMandatoryMembership
@@ -1539,7 +1521,7 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
     if (!confirm('Cancel your subscription? You\u2019ll keep access until the end of the current billing period, then the workspace will be downgraded.')) return
     setCancelling(true); setCancelError('')
     try {
-      const res  = await fetch('/api/billing/cancel', { method: 'POST' })
+      const res  = await fetchWithStepUp('/api/billing/cancel', { method: 'POST' })
       const json = await res.json().catch(() => ({}))
       if (res.ok) { setJustCancelled(true); window.location.reload() }
       else setCancelError(json.error || 'Could not cancel — try again or contact support.')
@@ -2085,7 +2067,10 @@ function DangerTab({ workspace, permissions, session }: any) {
     if (!canDelete) return
     setDeleting(true); setErr('')
     try {
-      const res  = await fetch('/api/workspace/delete', { method: 'DELETE' })
+      const res  = await fetchWithStepUp('/api/workspace/delete', {
+        method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmName: confirm.trim() }),
+      })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error)
       await supabase.auth.signOut()
@@ -2158,7 +2143,7 @@ function TransferOwnershipSection() {
     if (!selected || !confirm) return
     setBusy(true); setErr('')
     try {
-      const res  = await fetch('/api/workspace/transfer-ownership', {
+      const res  = await fetchWithStepUp('/api/workspace/transfer-ownership', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ newOwnerUserId: selected }),
       })

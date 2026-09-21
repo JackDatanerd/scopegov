@@ -2,6 +2,7 @@
 'use client'
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
+import { fetchWithStepUp } from '@/lib/client/step-up'
 
 interface Status {
   enrolled: boolean
@@ -27,7 +28,7 @@ export default function MfaSection({ mandatory }: { mandatory: boolean }) {
     if (!status?.factorId) return
     setLoading(true); setError('')
     try {
-      const res = await fetch('/api/auth/mfa/factors', {
+      const res = await fetchWithStepUp('/api/auth/mfa/factors', {
         method: 'DELETE', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ factorId: status.factorId }),
       })
@@ -41,7 +42,7 @@ export default function MfaSection({ mandatory }: { mandatory: boolean }) {
   async function handleRegenerate() {
     setLoading(true); setError('')
     try {
-      const res = await fetch('/api/auth/mfa/backup-codes', { method: 'POST' })
+      const res = await fetchWithStepUp('/api/auth/mfa/backup-codes', { method: 'POST' })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error)
       setNewCodes(json.backupCodes)

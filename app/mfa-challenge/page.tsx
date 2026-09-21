@@ -126,7 +126,7 @@ function MfaChallengeInner() {
                 <div className="fgrp">
                   <label className="flbl">Backup code</label>
                   <input className="finp" style={{ fontFamily: 'IBM Plex Mono, monospace', letterSpacing: '0.05em' }}
-                    placeholder="XXXXX-XXXXX" value={backupCode} autoFocus
+                    placeholder="XXXXXX-XXXXXX" value={backupCode} autoFocus
                     onChange={(e: React.ChangeEvent<HTMLInputElement>) => setBackupCode(e.target.value.toUpperCase())} required />
                 </div>
                 <button type="submit" className="btn btn-primary"

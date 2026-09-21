@@ -42,6 +42,7 @@
 // today, so this route introduces no new session-handling edge case.
 
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
+import { requireStepUp } from '@/lib/auth/step-up'
 import { NextResponse, type NextRequest } from 'next/server'
 import { logAudit } from '@/lib/utils/audit'
 import { banAuthUser } from '@/lib/utils/account-erasure'
@@ -74,6 +75,11 @@ export async function DELETE(request: NextRequest) {
         confirmEmail.trim().toLowerCase() !== (user.email || '').toLowerCase()) {
       return NextResponse.json({ error: 'Type your account email to confirm' }, { status: 400 })
     }
+
+    // Audit round 2: typing your OWN email proves nothing (anyone holding the
+    // session can read it). A recent password / authenticator confirmation does.
+    const stepUp = await requireStepUp(supabase, createServiceClient() as any, user)
+    if (stepUp) return stepUp
 
     const service = createServiceClient()
 

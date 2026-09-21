@@ -3,6 +3,8 @@ import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/
 import { NextResponse, type NextRequest } from 'next/server'
 import { logAudit } from '@/lib/utils/audit'
 import { checkSeatLimit } from '@/lib/utils/seat-limit'
+import { inviterMayStillGrant } from '@/lib/utils/invite-authority'
+import { sanitizeDisplayName } from '@/lib/utils/sanitize'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
@@ -15,7 +17,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const { data: member } = await (service as any)
       .from('workspace_members')
-      .select('id,status,workspace_id,invite_token_expires_at,invited_email,role_id,workspaces(name,deleted_at,plan_tier)')
+      .select('id,status,workspace_id,invite_token_expires_at,invited_email,invited_by,role_id,workspaces(name,deleted_at,plan_tier)')
       .eq('invite_token', token)
       .single()
 
@@ -51,6 +53,22 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const expires = new Date(member.invite_token_expires_at)
     if (expires < new Date())
       return NextResponse.json({ error: 'Invite expired' }, { status: 410 })
+
+    // This route sits under the public /api/team/invite/ prefix (a brand-new invitee
+    // has no workspace yet), so the middleware's second-factor gate does not cover
+    // it. A password-only session for an account that HAS a second factor must not
+    // be able to attach new memberships.
+    const { data: aalNow } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
+    if (aalNow?.nextLevel === 'aal2' && aalNow.currentLevel !== 'aal2') {
+      return NextResponse.json({ error: 'Complete two-factor verification before accepting this invite.', code: 'mfa_required' }, { status: 403 })
+    }
+
+    // The invite is only as good as its sender's authority NOW (see lib/utils/invite-authority.ts).
+    if (!(await inviterMayStillGrant(service, member.workspace_id, member.invited_by, member.role_id))) {
+      return NextResponse.json({
+        error: 'This invite is no longer valid — the person who sent it can no longer grant this role. Ask a workspace admin to send a new one.',
+      }, { status: 410 })
+    }
 
     // Verify the accepting account matches the invited address — prevents
     // a leaked token being accepted by an unrelated account.
@@ -149,7 +167,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       await (service as any).from('users').insert({
         id:                   user.id,
         email:                user.email,
-        name:                 user.user_metadata?.name || '',
+        name:                 sanitizeDisplayName(user.user_metadata?.name),
         active_workspace_id:  member.workspace_id,
         email_verified_at:    user.email_confirmed_at || now,
       })

@@ -9,8 +9,8 @@ export async function PATCH(request: NextRequest) {
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-    const { name: nameRaw } = await request.json()
-    if (!nameRaw?.trim()) return NextResponse.json({ error: 'Name required' }, { status: 400 })
+    const { name: nameRaw } = await request.json().catch(() => ({ name: '' })) as { name?: unknown }
+    if (typeof nameRaw !== 'string' || !nameRaw.trim()) return NextResponse.json({ error: 'Name required' }, { status: 400 })
     // FIX (deep audit, Workspace lifecycle section): was a bare .trim() —
     // no length cap, no control-character stripping — unlike the sibling
     // agencyName field in workspace/create and workspace/settings, which
@@ -51,6 +51,14 @@ export async function PATCH(request: NextRequest) {
     // workspace-scoped but audit_log.workspace_id is NOT NULL.
     // Best-effort, same as every other audit-log insert in this
     // codebase — must never fail an already-successful name change.
+    // Keep the auth-side copy (user_metadata.name, which ends up inside the JWT) in
+    // step — set HERE, sanitised. The browser used to call
+    // supabase.auth.updateUser({ data: { name } }) itself with no length cap.
+    try {
+      const { error: metaErr } = await (service as any).auth.admin.updateUserById(session.id, { user_metadata: { name } })
+      if (metaErr) console.error('Profile name: auth metadata sync failed (non-fatal):', metaErr.message)
+    } catch (e) { console.error('Profile name: auth metadata sync failed (non-fatal):', e) }
+
     try {
       await logAudit(service, {
         workspaceId: session.workspaceId, actorId: session.id, actorEmail: session.email,

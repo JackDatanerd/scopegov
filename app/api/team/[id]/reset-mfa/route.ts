@@ -4,6 +4,9 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { permissionsBeyondActorForTarget } from '@/lib/utils/permission-ceiling'
 import { logAudit } from '@/lib/utils/audit'
 import { sendMfaDisabledEmail } from '@/lib/email/templates'
+import { requireStepUpForCurrentUser } from '@/lib/auth/step-up'
+import { activeWorkspaceIdsForUser } from '@/lib/auth/security-audit'
+import { notifySecurityEvent } from '@/lib/utils/notify'
 
 // FEATURE (deep audit, Auth+MFA section — feature gap): there was no way
 // back into the app for a member who lost their authenticator device AND
@@ -31,6 +34,11 @@ export async function POST(
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     if (!hasPermission(session, 'MANAGE_ROLES'))
       return NextResponse.json({ error: 'Missing permission: MANAGE_ROLES' }, { status: 403 })
+
+    // Stripping someone's second factor is the most sensitive thing this route
+    // family does: the ACTOR must have just proved who they are (step-up).
+    const stepUp = await requireStepUpForCurrentUser()
+    if (stepUp) return stepUp
 
     const service = createServiceClient()
 
@@ -74,23 +82,36 @@ export async function POST(
       .update({ used_at: new Date().toISOString() })
       .eq('user_id', member.user_id).is('used_at', null)
 
+    // Sessions the target already holds (possibly an attacker's, which is often WHY
+    // an admin is resetting) must not survive the reset: they were minted under a
+    // second-factor regime that no longer exists.
+    const { error: revokeErr } = await (service as any).rpc('revoke_user_sessions', { p_user: member.user_id, p_except: null })
+    if (revokeErr) console.error('Admin MFA reset: could not revoke the member\u2019s sessions (non-fatal):', revokeErr.message)
+
     await logAudit(service, {
       workspaceId: session.workspaceId, actorId: session.id,
       actorEmail: session.email, actorName: session.name,
       eventType: 'security.mfa_reset_by_admin', entityType: 'user',
       entityId: member.user_id, entityName: member.users?.name || member.users?.email || '',
-      metadata: {},
+      metadata: { sessions_revoked: !revokeErr },
     })
 
-    // FIX (deep audit, RLS+permissions section, cross-referenced into
-    // Auth+MFA — this route mutates MFA state so it was traced from
-    // there): fire-and-forget here is unsafe in serverless — the function
-    // can freeze the instant the response above is (about to be) sent, so
-    // the .catch() may never even run. Every sibling MFA route
-    // (enroll/verify/factors/recover/backup-codes) already awaits its
-    // email send for exactly this reason; this one — arguably the most
-    // security-sensitive of all of them, since it tells the affected
-    // member someone else just reset their MFA — was the one missed.
+    // MFA belongs to the PERSON, not to this workspace: an admin here just removed
+    // protection that also guards their access to every OTHER workspace. Those
+    // workspaces' admins are told — without disclosing who in this workspace did it.
+    try {
+      const others = (await activeWorkspaceIdsForUser(service, member.user_id)).filter(w => w !== session.workspaceId)
+      await Promise.all(others.map(workspaceId => logAudit(service, {
+        workspaceId, actorId: null, actorEmail: '', actorName: 'An administrator of another workspace',
+        eventType: 'security.mfa_reset_by_admin', entityType: 'user',
+        entityId: member.user_id, entityName: member.users?.name || member.users?.email || '',
+        metadata: { via: 'admin_reset', other_workspace: true },
+      })))
+    } catch (e) { console.error('Admin MFA reset: cross-workspace audit failed (non-fatal):', e) }
+    await notifySecurityEvent(service, member.user_id, 'Two-factor authentication was reset',
+      'An administrator reset your two-factor authentication and signed you out everywhere. Set it up again on your next sign-in.')
+      .catch(() => {})
+
     const targetEmail = member.users?.email
     if (targetEmail) {
       try {

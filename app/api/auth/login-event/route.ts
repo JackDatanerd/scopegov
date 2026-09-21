@@ -2,7 +2,7 @@ export const runtime = 'nodejs'
 
 import { NextResponse, type NextRequest } from 'next/server'
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
-import { logAudit } from '@/lib/utils/audit'
+import { logLoginOnce } from '@/lib/auth/login-audit'
 import { resolveActiveWorkspaceId, resolveActorName } from '@/lib/auth/session'
 import { decodeJwtPayload, authenticationAgeSeconds, lastAuthenticatedAtSeconds, loginMethodFromAmr } from '@/lib/auth/auth-time'
 
@@ -49,18 +49,13 @@ export async function POST(request: NextRequest) {
     const workspaceId = await resolveActiveWorkspaceId(service, user.id)
     if (!workspaceId) return NextResponse.json({ ok: true })
 
-    const { data: already } = await (service as any)
-      .from('audit_log').select('id')
-      .eq('actor_id', user.id).eq('event_type', 'security.login_succeeded')
-      .eq('metadata->>auth_at', String(authAt)).limit(1)
-    if (already && already.length > 0) return NextResponse.json({ ok: true })
-
+    // The auth.sessions trigger (migration 068) normally records this sign-in
+    // server-side; this call is the fallback for a database without it, so it
+    // stands down when a row for THIS sign-in (newer than its auth time) exists.
     const actorName = await resolveActorName(service, user.id, user.user_metadata?.name || user.email!)
-    await logAudit(service, {
-      workspaceId, actorId: user.id,
-      actorEmail: user.email!, actorName,
-      eventType: 'security.login_succeeded', entityType: 'user', entityId: user.id, entityName: user.email!,
-      metadata: { method, auth_at: authAt },
+    await logLoginOnce(service, {
+      workspaceId, userId: user.id, email: user.email!, name: actorName,
+      method, extra: { auth_at: authAt }, sinceSeconds: (ageSeconds as number) + 5,
     })
 
     return NextResponse.json({ ok: true })

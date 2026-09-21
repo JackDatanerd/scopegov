@@ -22,6 +22,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { requireStepUpForCurrentUser } from '@/lib/auth/step-up'
 
 export async function GET() {
   try {
@@ -65,6 +66,10 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => ({}))
     const newOwnerUserId = typeof body?.newOwnerUserId === 'string' ? body.newOwnerUserId : null
     if (!newOwnerUserId) return NextResponse.json({ error: 'newOwnerUserId is required' }, { status: 400 })
+
+    // Handing over a workspace is irreversible by the giver — confirm it's them.
+    const stepUp = await requireStepUpForCurrentUser()
+    if (stepUp) return stepUp
 
     const service = createServiceClient()
 

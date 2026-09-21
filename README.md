@@ -37,6 +37,16 @@
 > stored (to `false`), adds CHECK constraints on `roles.permissions` / `workspace_members.permission_overrides`,
 > installs the password-change audit trigger on `auth.users`, and creates `auth_attempts`.
 
+> **Migration `068_auth_rls_audit_round2.sql` must be applied BEFORE deploying the matching app build.**
+> The app now calls functions it creates: `auth_attempt_begin` / `auth_attempt_release` (atomic sign-in and
+> MFA attempt ledger), `issue_backup_codes` (backup-code enrolment — without it, finishing MFA setup fails),
+> `user_has_password`, `list_user_sessions` / `revoke_user_session(s)`, and the `step_up_grants` /
+> `session_seen` tables. It also restores two `leave_workspace_atomic` guards that 065 dropped (sole
+> MANAGE_ROLES holder; trial creator), removes the stale `EXPORT_DATA` permission key, adds a CHECK on
+> `users.name`, revokes leftover API-role grants, and installs sign-in audit triggers on `auth.sessions`.
+> Then do the dashboard steps in §1.3 (Auth hooks) — until they are enabled, the MFA / password lockout only
+> covers calls made through the app's own routes.
+
 **Required checks after migration:**
 - [ ] `handle_new_user` trigger exists with SECURITY DEFINER
 - [ ] Verify: `SELECT count(*) FROM auth.users` = `SELECT count(*) FROM public.users`
@@ -48,7 +58,11 @@
 - [ ] All indexes from migration created
 - [ ] RLS enabled on all tables
 
-### 1.2 Storage Buckets (MANUAL — not in migrations)
+### 1.2 Storage Buckets (created by migration 068 if missing; the rest is manual)
+> Migration 068 creates `logos` (public) and `flag-evidence` (private) if they don't exist, and always sets
+> their **size and mime-type limits** (`logos`: 2 MB, PNG/JPEG; `flag-evidence`: 10 MB, the attachment types
+> the upload route allows). Do the policy review below by hand — no storage policy is created for you.
+
 Create in Supabase Dashboard → Storage:
 
 1. **`logos`** — Public bucket (also holds profile avatars)
@@ -95,6 +109,27 @@ Create in Supabase Dashboard → Storage:
   any signed-in browser can call `supabase.auth.updateUser({ password })` directly and skip the current-password,
   recent-sign-in and MFA checks in `/api/auth/change-password`. (The database trigger from migration 064 still
   audits such a change, but it cannot prevent it.)
+- [ ] **Auth Hook — MFA Verification Attempt: ON** (Auth → Hooks → *MFA verification attempt* → Postgres
+  function → `public.hook_mfa_verification_attempt`). **This is what makes the authenticator-code lockout real.**
+  The app's own throttle only sees calls made through `/api/auth/mfa/*`; a password-only session can call
+  Supabase Auth's MFA endpoints directly with the public anon key and guess codes without ever touching the app.
+  The hook runs INSIDE Auth: 5 wrong codes in 5 minutes locks that account's verification (even for a correct
+  code) and writes a `security.mfa_locked` audit row. (Trade-off: someone who already has the password can
+  keep a victim locked out of the second-factor step; they still cannot get in.)
+- [ ] **Auth Hook — Password Verification Attempt: ON** *(Supabase Pro plan and above)* →
+  `public.hook_password_verification_attempt`. Audits every failed sign-in (`security.login_failed`) and locks
+  password sign-in for an account after 10 failures in 10 minutes. Skip if your plan doesn't offer it.
+- [ ] **Sign-in audit trigger:** migration 068 creates `on_auth_session_created` /
+  `on_auth_session_aal_upgraded` on `auth.sessions`, so every sign-in is audited server-side (previously only
+  sign-ins the browser chose to report were). Confirm they exist:
+  `SELECT tgname FROM pg_trigger WHERE tgrelid = 'auth.sessions'::regclass AND NOT tgisinternal;`
+  If the migration printed a WARNING that it couldn't create them, re-run that section as a role that owns
+  `auth.sessions`; the app-side login-event fallback covers you meanwhile.
+- [ ] **Secure email change: ON** (Auth → Sign In / Providers → Email). Both the old and the new address must
+  confirm. Settings → Account → "Sign-in email" uses it (`/api/auth/change-email`), and a signed-in browser can
+  call `updateUser({ email })` directly, so this toggle is the server-side rule.
+- [ ] **Leaked password protection: ON** where your plan offers it (Auth → Sign In / Providers → Email →
+  *Prevent use of leaked passwords*). The app itself only rejects a short list of very common passwords.
 - [ ] **Multi-factor (TOTP): enabled** (Auth → Multi Factor). Required for two-factor sign-in and for the
   mandatory-MFA policy on governance roles.
 - [ ] **JWT expiry:** leave at the default (3600 s). Session cookies are re-issued on refresh; shortening it
@@ -135,6 +170,11 @@ PAYSTACK_PLAN_STARTER_ANNUAL=
 PAYSTACK_PLAN_PRO_ANNUAL=
 PAYSTACK_PLAN_AGENCY_ANNUAL=
 CRON_SECRET=                         ← openssl rand -hex 32 (BUG-036)
+MFA_BACKUP_CODE_PEPPER=              ← openssl rand -hex 32. Server-only key for the HMAC that stores MFA backup
+                                       codes (a leaked database alone no longer yields usable codes). Codes issued
+                                       before it was set keep working. DO NOT ROTATE casually: changing it
+                                       invalidates every backup code issued under the old value (people can
+                                       regenerate them in Settings). If unset, codes fall back to an unsalted SHA-256.
 ```
 
 ### 2.2 Domains

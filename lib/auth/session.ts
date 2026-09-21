@@ -3,6 +3,8 @@
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
 import type { SessionUser, Permission } from '@/lib/supabase/types'
 import { permissionsRequireMfa } from '@/lib/auth/mfa-policy'
+import { registerSessionSeen } from '@/lib/auth/session-seen'
+import { headers as nextHeaders } from 'next/headers'
 
 // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — flagship
 // finding): every place in this codebase that has to pick a FALLBACK
@@ -125,6 +127,14 @@ export async function getSession(): Promise<SessionUser | null> {
     const ws    = memberRow.workspaces
     const u     = memberRow.users
     const perms = memberRow.effective_permissions as Record<string, boolean>
+
+    // New-device sign-in alert (best-effort; see lib/auth/session-seen.ts).
+    try {
+      await registerSessionSeen({
+        service, supabase, user, workspaceId: memberRow.workspace_id,
+        name: u?.name || user.user_metadata?.name || user.email!, headers: nextHeaders(),
+      })
+    } catch { /* never block a request on the alert */ }
 
     return {
       id:                   user.id,

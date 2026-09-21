@@ -9,7 +9,8 @@ import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/
 import { NextResponse, type NextRequest } from 'next/server'
 import type { EmailOtpType } from '@supabase/supabase-js'
 import { safeRedirectPath } from '@/lib/utils/safe-redirect'
-import { logAudit } from '@/lib/utils/audit'
+import { logLoginOnce } from '@/lib/auth/login-audit'
+import { decodeJwtPayload, authenticationAgeSeconds, loginMethodFromAmr } from '@/lib/auth/auth-time'
 import { resolveActorName } from '@/lib/auth/session'
 import { TERMS_VERSION_PATTERN } from '@/lib/auth/terms'
 
@@ -75,16 +76,16 @@ async function logLoginEvent(
   serviceClient: ReturnType<typeof createServiceClient>,
   user: { id: string; email?: string | null; user_metadata?: any },
   workspaceId: string,
-  method: 'google' | 'email_confirmation'
+  method: string,
+  sinceSeconds: number
 ) {
   // FIX (deep audit, Auth+MFA section — actor-name staleness): see
   // resolveActorName's own comment in lib/auth/session.ts.
   const actorName = await resolveActorName(serviceClient, user.id, user.user_metadata?.name || user.email || '')
-  await logAudit(serviceClient as any, {
-    workspaceId, actorId: user.id,
-    actorEmail: user.email || '', actorName,
-    eventType: 'security.login_succeeded', entityType: 'user', entityId: user.id, entityName: user.email || '',
-    metadata: { method },
+  // Fallback only: the auth.sessions trigger (migration 068) records sign-ins
+  // server-side, and logLoginOnce stands down when it already did.
+  await logLoginOnce(serviceClient as any, {
+    workspaceId, userId: user.id, email: user.email || '', name: actorName, method, sinceSeconds,
   })
 }
 
@@ -129,7 +130,7 @@ export async function GET(request: NextRequest) {
   // factor is still owed, in which case /api/auth/mfa/verify logs it once the
   // challenge passes (logging here would record "login succeeded" for attempts
   // that then fail MFA).
-  async function finishSignIn(method: 'google' | 'email_confirmation'): Promise<NextResponse> {
+  async function finishSignIn(): Promise<NextResponse> {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.redirect(`${origin}${next}`)
 
@@ -164,7 +165,13 @@ export async function GET(request: NextRequest) {
     const mfaPending = ((user as any).factors as Array<{ status: string }> | undefined || [])
       .some(f => f.status === 'verified')
     if (!mfaPending) {
-      await logLoginEvent(serviceClient, user, member.workspaceId, method)
+      // FIX (audit round 2): the method used to be a hard-coded hint — every `code`
+      // exchange was logged as 'google', including PKCE email confirmations. Derive
+      // it from the session's own amr instead.
+      const { data: { session } } = await supabase.auth.getSession()
+      const payload = decodeJwtPayload(session?.access_token)
+      const age = authenticationAgeSeconds(payload)
+      await logLoginEvent(serviceClient, user, member.workspaceId, loginMethodFromAmr(payload), (age ?? 60) + 5)
     }
 
     if (!member.onboardingCompletedAt && !isInviteDestination) {
@@ -175,10 +182,10 @@ export async function GET(request: NextRequest) {
 
   if (code) {
     const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code)
-    if (!exchangeError) return finishSignIn('google')
+    if (!exchangeError) return finishSignIn()
   } else if (tokenHash && type) {
     const { error: verifyError } = await supabase.auth.verifyOtp({ token_hash: tokenHash, type })
-    if (!verifyError) return finishSignIn('email_confirmation')
+    if (!verifyError) return finishSignIn()
   }
 
   return NextResponse.redirect(`${origin}/login?m=link_invalid`)

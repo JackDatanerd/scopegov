@@ -24,6 +24,7 @@
 // being notified about belongs to a specific project.
 
 import type { Permission } from '@/lib/supabase/types'
+import { fetchAll } from '@/lib/utils/fetch-all'
 
 export async function filterToProjectAccess<T extends { id: string }>(
   service: any, projectId: string, recipients: T[], permissionMap: Map<string, Record<string, boolean>>
@@ -94,13 +95,15 @@ export async function getMembersWithPermission(
   // determinism; a generous upper bound (10x the largest limit any caller
   // passes today) keeps this from becoming an unbounded query on a very
   // large workspace while not truncating realistic team sizes.
-  const { data: members } = await service
+  // Paged (audit round 2): a flat .limit(500) silently dropped every eligible
+  // member beyond the 500th from notifications on very large workspaces.
+  const members = await fetchAll<any>('permissions-query members', (from, to) => service
     .from('workspace_members')
     .select('user_id, effective_permissions, users!workspace_members_user_id_fkey(id, name, email)')
     .eq('workspace_id', workspaceId)
     .eq('status', 'active')
     .order('user_id')
-    .limit(500)
+    .range(from, to))
 
   const eligible = (members || [])
     .filter((m: any) => m.effective_permissions?.[permission] === true && m.users?.email)
@@ -235,14 +238,16 @@ export async function getMembersWithRole(
   // afterward for lacking project access had already consumed a slot in
   // that batch. Same fix shape: fetch a generous, ordered upper bound,
   // filter, THEN slice to `limit`.
-  const { data: members } = await service
+  // Paged (audit round 2): a flat .limit(500) silently dropped every eligible
+  // member beyond the 500th from notifications on very large workspaces.
+  const members = await fetchAll<any>('permissions-query members', (from, to) => service
     .from('workspace_members')
     .select('user_id, effective_permissions, users!workspace_members_user_id_fkey(id, name, email)')
     .eq('workspace_id', workspaceId)
     .eq('role_id', roleId)
     .eq('status', 'active')
     .order('user_id')
-    .limit(500)
+    .range(from, to))
 
   const eligible = (members || []).filter((m: any) => m.users?.email)
   // FIX (fix round, section-11 finding): confirmed via independent trace —

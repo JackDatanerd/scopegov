@@ -5,7 +5,7 @@ import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/
 import { resolveActorName } from '@/lib/auth/session'
 import { sendPasswordChangedEmail } from '@/lib/email/templates'
 import { validatePassword } from '@/lib/auth/password-policy'
-import { decodeJwtPayload, authenticationAgeSeconds } from '@/lib/auth/auth-time'
+import { decodeJwtPayload, authenticationAgeSeconds, isMailboxProvenSession } from '@/lib/auth/auth-time'
 
 // POST /api/auth/reset-password — set a new password from a password-recovery
 // session (the page at /reset-password, reached from the emailed link).
@@ -33,7 +33,7 @@ export async function POST(request: NextRequest) {
     if (!user) return NextResponse.json({ error: 'Your reset link has expired. Request a new one.', code: 'no_session' }, { status: 401 })
 
     const { password } = await request.json().catch(() => ({})) as { password?: unknown }
-    const policyError = validatePassword(password)
+    const policyError = validatePassword(password, { email: user.email })
     if (policyError) return NextResponse.json({ error: policyError }, { status: 400 })
 
     // This endpoint exists for recovery links, which are consumed moments before
@@ -41,7 +41,22 @@ export async function POST(request: NextRequest) {
     // (which asks for the current password) and must not use this as a way
     // around it.
     const { data: { session } } = await supabase.auth.getSession()
-    const ageSeconds = authenticationAgeSeconds(decodeJwtPayload(session?.access_token))
+    const tokenPayload = decodeJwtPayload(session?.access_token)
+
+    // FIX (Auth+MFA audit round 2): only a session that was JUST created by proving
+    // control of the mailbox (recovery / OTP / magic link) may set a password with
+    // no current password. This used to accept ANY session that had authenticated
+    // within 15 minutes — an ordinary password sign-in, or a hijacked cookie — which
+    // bypassed the current-password check, throttle and audit that
+    // /api/auth/change-password enforces.
+    if (!isMailboxProvenSession(tokenPayload)) {
+      return NextResponse.json({
+        error: 'This page is only for password-reset links. To change your password while signed in, use Settings \u2192 Account.',
+        code: 'not_recovery_session',
+      }, { status: 403 })
+    }
+
+    const ageSeconds = authenticationAgeSeconds(tokenPayload)
     if (ageSeconds === null || ageSeconds > RECENT_AUTH_SECONDS) {
       return NextResponse.json({
         error: 'This reset session has expired. Request a new reset link, or change your password from Settings while signed in.',

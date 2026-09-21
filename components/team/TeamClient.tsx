@@ -4,6 +4,7 @@
 // C13: role edit modal (carried forward from previous batch)
 
 'use client'
+import { fetchWithStepUp } from '@/lib/client/step-up'
 import { useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import type { SessionUser } from '@/lib/supabase/types'
@@ -135,7 +136,7 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
     const res = await fetch(`/api/team/${memberId}`, { method: 'DELETE' })
     const json = await res.json().catch(() => ({}))
     if (!res.ok) { setError(json.error || 'Could not deactivate member'); return }
-    const notes = [json.warning, json.projectWarning].filter(Boolean)
+    const notes = [json.warning, json.projectWarning, json.inviteWarning].filter(Boolean)
     if (notes.length) setNotice(notes.join(' '))
     router.refresh()
   }
@@ -146,7 +147,7 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
   async function handleResetMfa(memberId: string, memberName: string) {
     if (!confirm(`Reset two-factor authentication for ${memberName}? They'll need to set it up again the next time their role requires it.`)) return
     setError(''); setNotice('')
-    const res = await fetch(`/api/team/${memberId}/reset-mfa`, { method: 'POST' })
+    const res = await fetchWithStepUp(`/api/team/${memberId}/reset-mfa`, { method: 'POST' })
     const json = await res.json().catch(() => ({}))
     if (!res.ok) { setError(json.error || 'Could not reset two-factor authentication'); return }
     setNotice(`Two-factor authentication reset for ${memberName}.`)

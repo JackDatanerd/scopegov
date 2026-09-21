@@ -8,6 +8,7 @@ import { sendInviteEmail } from '@/lib/email/templates'
 import { nanoid } from 'nanoid'
 import { checkInviteRateLimit } from '@/lib/utils/rate-limit'
 import { checkSeatLimit } from '@/lib/utils/seat-limit'
+import { roleWithinCeiling } from '@/lib/utils/permission-ceiling'
 
 // FIX (deep audit, Team & Invites section — HIGH, destructive): "Resend"
 // in components/team/TeamClient.tsx was implemented as DELETE-then-POST:
@@ -62,7 +63,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const { data: member } = await (service as any)
       .from('workspace_members')
-      .select('id,status,invited_email,user_id,invite_token,invite_token_expires_at,roles(name),users!workspace_members_user_id_fkey(email)')
+      .select('id,status,invited_email,user_id,invited_by,invite_token,invite_token_expires_at,roles(name,permissions),users!workspace_members_user_id_fkey(email)')
       .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
 
     if (!member) return NextResponse.json({ error: 'Invite not found' }, { status: 404 })
@@ -72,6 +73,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'This membership was deactivated. Reactivate it instead of resending an invite.' }, { status: 409 })
     if (member.status !== 'invited' && member.status !== 'expired')
       return NextResponse.json({ error: 'This invite can no longer be resent.' }, { status: 409 })
+
+    // Resending re-issues the invite under THIS person's name, so it is subject to the
+    // same "only hand out a role you already hold" ceiling as creating one — otherwise
+    // any INVITE_MEMBERS holder could keep alive (and re-attribute to themselves) an
+    // invite for a role they could never have issued.
+    if (member.roles && !roleWithinCeiling(session, member.roles))
+      return NextResponse.json({ error: 'Cannot resend an invite for a role with permissions you don\u2019t hold yourself' }, { status: 403 })
 
     const email = member.invited_email || member.users?.email
     if (!email) return NextResponse.json({ error: 'This invite has no email address on record.' }, { status: 400 })
@@ -95,6 +103,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       invite_token:            member.invite_token,
       invite_token_expires_at: member.invite_token_expires_at,
       status:                  member.status,
+      invited_by:              member.invited_by ?? null,
     }
     const inviteToken = nanoid(32)
     const expiresAt   = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
@@ -105,6 +114,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         invite_token:            inviteToken,
         invite_token_expires_at: expiresAt.toISOString(),
         status:                  'invited',
+        invited_by:              session.id,
       })
       .eq('id', id).eq('workspace_id', session.workspaceId)
 

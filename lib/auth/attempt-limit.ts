@@ -1,66 +1,68 @@
 // lib/auth/attempt-limit.ts
 //
-// FIX (build — Auth independent audit, feature gap): the app added no throttle
-// of its own to /api/auth/mfa/verify, /api/auth/mfa/recover or the
-// current-password check in /api/auth/change-password. The only protection was
-// whatever GoTrue rate-limits by IP — and those calls are made from the
-// server, so the limiter sees the hosting provider's egress IPs, not the
-// attacker's (and can trip for everyone at once). This is a per-USER failure
-// ledger (public.auth_attempts, migration 064): N failures inside the window
-// locks that kind of attempt for the account until the oldest of them ages out.
+// Per-USER failure ledger (public.auth_attempts) for the credential checks the
+// app runs itself: /api/auth/mfa/verify, /api/auth/mfa/recover, the current-
+// password check in /api/auth/change-password and /api/auth/step-up.
 //
-// Fails OPEN on a ledger error (logged): GoTrue's own limits still apply, and
-// a database hiccup must not lock everybody out of signing in.
+// ATOMIC (migration 066): the old limiter read the ledger, ran the check, then
+// wrote the failure — so a burst of parallel guesses all passed the read before
+// any failure landed. beginAuthAttempt() now RESERVES a slot inside one SQL
+// function (advisory lock + insert + count) BEFORE the credential is checked. A
+// reservation counts as a failure until it is released (the error wasn't the
+// person's typo) or cleared (success). However many requests arrive at once, at
+// most `maxFailures` of them ever reach the credential check per window.
+//
+// This ledger only protects calls that go through the app. Direct calls to
+// GoTrue are covered by the Auth hooks in migration 066 (README §1.3).
+//
+// Fails OPEN on a ledger error (logged): GoTrue's own limits still apply, and a
+// database hiccup must not lock everybody out of signing in.
 
 export type AuthAttemptKind = 'mfa_verify' | 'mfa_recover' | 'password_verify'
 
 export const AUTH_ATTEMPT_LIMIT = { maxFailures: 5, windowSeconds: 300 } as const
 
-export interface AttemptCheck {
+export interface AttemptBegin {
   allowed: boolean
   retryAfterSeconds: number
+  /** Failures in the window INCLUDING this reservation (when allowed). */
   failures: number
+  /** Pass to releaseAuthAttempt() when the failure wasn't the person's fault. */
+  attemptId: string | null
 }
 
-export async function checkAuthAttemptLimit(
+export async function beginAuthAttempt(
   service: any,
   userId: string,
-  kind: AuthAttemptKind,
-  now: number = Date.now()
-): Promise<AttemptCheck> {
+  kind: AuthAttemptKind
+): Promise<AttemptBegin> {
   const { maxFailures, windowSeconds } = AUTH_ATTEMPT_LIMIT
   try {
-    const since = new Date(now - windowSeconds * 1000).toISOString()
-    const { data, error } = await service
-      .from('auth_attempts')
-      .select('created_at')
-      .eq('user_id', userId)
-      .eq('kind', kind)
-      .eq('succeeded', false)
-      .gte('created_at', since)
-      .order('created_at', { ascending: false })
-      .limit(maxFailures)
+    const { data, error } = await service.rpc('auth_attempt_begin', {
+      p_user: userId, p_kind: kind, p_max: maxFailures, p_window_seconds: windowSeconds,
+    })
     if (error) throw new Error(error.message)
-    const rows: Array<{ created_at: string }> = data || []
-    if (rows.length < maxFailures) {
-      return { allowed: true, retryAfterSeconds: 0, failures: rows.length }
+    const r = (data || {}) as { allowed?: boolean; attempt_id?: string | null; failures?: number; retry_after_seconds?: number }
+    return {
+      allowed: r.allowed !== false,
+      retryAfterSeconds: Math.max(0, Number(r.retry_after_seconds) || 0),
+      failures: Number(r.failures) || 0,
+      attemptId: r.attempt_id ?? null,
     }
-    // Locked until the OLDEST of the last `maxFailures` failures leaves the window.
-    const oldest = new Date(rows[rows.length - 1].created_at).getTime()
-    const retryAfterSeconds = Math.max(1, Math.ceil((oldest + windowSeconds * 1000 - now) / 1000))
-    return { allowed: false, retryAfterSeconds, failures: rows.length }
   } catch (err) {
-    console.error('checkAuthAttemptLimit failed (failing open):', err)
-    return { allowed: true, retryAfterSeconds: 0, failures: 0 }
+    console.error('beginAuthAttempt failed (failing open):', err)
+    return { allowed: true, retryAfterSeconds: 0, failures: 0, attemptId: null }
   }
 }
 
-export async function recordAuthFailure(service: any, userId: string, kind: AuthAttemptKind): Promise<void> {
+/** The reserved attempt turned out not to be a wrong guess (rate limit, expired challenge, network). */
+export async function releaseAuthAttempt(service: any, attemptId: string | null): Promise<void> {
+  if (!attemptId) return
   try {
-    const { error } = await service.from('auth_attempts').insert({ user_id: userId, kind, succeeded: false })
-    if (error) console.error('recordAuthFailure insert failed:', error.message)
+    const { error } = await service.rpc('auth_attempt_release', { p_attempt: attemptId })
+    if (error) console.error('releaseAuthAttempt failed:', error.message)
   } catch (err) {
-    console.error('recordAuthFailure failed:', err)
+    console.error('releaseAuthAttempt failed:', err)
   }
 }
 
@@ -76,6 +78,11 @@ export async function clearAuthFailures(service: any, userId: string, kind: Auth
 }
 
 export function lockoutMessage(retryAfterSeconds: number): string {
-  const mins = Math.ceil(retryAfterSeconds / 60)
+  const mins = Math.max(1, Math.ceil(retryAfterSeconds / 60))
   return `Too many incorrect attempts. Try again in ${mins} minute${mins === 1 ? '' : 's'}.`
+}
+
+/** Standard 429 body for a locked attempt. */
+export function lockedResponseBody(begin: AttemptBegin) {
+  return { error: lockoutMessage(begin.retryAfterSeconds), code: 'locked', retryAfterSeconds: begin.retryAfterSeconds }
 }

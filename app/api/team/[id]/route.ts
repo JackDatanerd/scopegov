@@ -8,6 +8,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { permissionsBeyondCeiling, permissionsBeyondActorForTarget, roleWithinCeiling } from '@/lib/utils/permission-ceiling'
+import { isProtectedOwnerTarget, OWNER_PROTECTED_MESSAGE } from '@/lib/utils/owner-protection'
 import { parsePermissionMap } from '@/lib/utils/permission-map'
 import { mergePermissions, protectedPermissionsOrphanedBy, describeProtectedPermission, PROTECTED_PERMISSIONS } from '@/lib/utils/admin-floor'
 import { checkSeatLimit } from '@/lib/utils/seat-limit'
@@ -45,12 +46,16 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
       }, { status: 403 })
     }
 
+    if (await isProtectedOwnerTarget(service, session.workspaceId, session.id, member.user_id))
+      return NextResponse.json({ error: OWNER_PROTECTED_MESSAGE }, { status: 403 })
+
     const wasInvite = member.status === 'invited' || member.status === 'expired'
 
     // Projects where this person is the only assigned member: once they are
     // gone, nobody without VIEW_ALL_PROJECTS can see them. Collected before the
     // assignments are archived so the caller can be told.
     let soleProjectNames: string[] = []
+    let revokedInviteCount = 0
     if (!wasInvite) {
       const { data: mine } = await service
         .from('project_members').select('project_id, projects(name)').eq('member_id', id)
@@ -83,6 +88,18 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
       // reactivating the member restores exactly what they had.
       const { error: archiveErr } = await service.rpc('archive_member_projects', { p_member_id: id })
       if (archiveErr) console.error('archive_member_projects failed (member is deactivated regardless):', archiveErr)
+
+      // Invites this person SENT carry their authority to grant the invited role.
+      // Once they're deactivated nobody vouches for those invites any more (they
+      // used to stay valid for 7 days, and resend refreshed them) — revoke them.
+      if (member.user_id) {
+        const { data: revoked, error: revokeInvErr } = await service
+          .from('workspace_members').delete()
+          .eq('workspace_id', session.workspaceId).eq('invited_by', member.user_id)
+          .in('status', ['invited', 'expired']).select('id')
+        if (revokeInvErr) console.error('Could not revoke the deactivated member\u2019s pending invites (non-fatal):', revokeInvErr)
+        revokedInviteCount = (revoked || []).length
+      }
     }
 
     // Approval steps that name this person, directly or through a role only
@@ -122,6 +139,7 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
       metadata: {
         ...(affectedWorkflowNames.length ? { orphaned_approval_workflows: affectedWorkflowNames } : {}),
         ...(soleProjectNames.length ? { sole_member_projects: soleProjectNames } : {}),
+        ...(revokedInviteCount ? { revoked_pending_invites: revokedInviteCount } : {}),
       },
     })
 
@@ -136,6 +154,9 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
       ok: true,
       ...(affectedWorkflowNames.length ? {
         warning: `This person is named as an approver on: ${affectedWorkflowNames.join(', ')}. Update those workflows in Settings so documents don't get stuck waiting on them.`,
+      } : {}),
+      ...(revokedInviteCount ? {
+        inviteWarning: `${revokedInviteCount} pending invite${revokedInviteCount === 1 ? '' : 's'} sent by ${member.users?.name || 'this person'} ${revokedInviteCount === 1 ? 'was' : 'were'} revoked with their access. Re-send ${revokedInviteCount === 1 ? 'it' : 'them'} from your own account if still needed.`,
       } : {}),
       ...(soleProjectNames.length ? {
         projectWarning: `${soleProjectNames.length === 1 ? 'This project was' : 'These projects were'} assigned only to ${member.users?.name || 'this person'}: ${soleProjectNames.slice(0, 5).join(', ')}${soleProjectNames.length > 5 ? ` and ${soleProjectNames.length - 5} more` : ''}. Until someone is assigned, only members who can view all projects will see ${soleProjectNames.length === 1 ? 'it' : 'them'}.`,
@@ -253,6 +274,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       return NextResponse.json({
         error: `Cannot modify a member who holds permissions you don't hold yourself: ${outOfReach.join(', ')}`,
       }, { status: 403 })
+
+    if (await isProtectedOwnerTarget(service, session.workspaceId, session.id, targetMember.user_id))
+      return NextResponse.json({ error: OWNER_PROTECTED_MESSAGE }, { status: 403 })
 
     if (newOverrides) {
       const beyond = permissionsBeyondCeiling(session, newOverrides)

@@ -1,0 +1,115 @@
+ScopeGov — Auth + MFA (1) and RLS + permissions (2): independent audit, round 2
+Base commit: 3fd2698
+
+RUN THIS MIGRATION FIRST (Supabase SQL editor), before deploying the code:
+  068_auth_rls_audit_round2.sql
+Then, in the Supabase dashboard (README §1.3):
+  - Auth -> Hooks: enable "MFA verification attempt" -> public.hook_mfa_verification_attempt
+                   (and, on Pro, "Password verification attempt" -> public.hook_password_verification_attempt)
+  - Auth -> Email: Secure email change ON; leaked-password protection ON where offered
+And in Vercel: set MFA_BACKUP_CODE_PEPPER (openssl rand -hex 32).
+Then `npm install` (adds the dev dependency `pg` for the replay test).
+
+THE BUILD WAS BROKEN AT 79d17d1 (fixed here)
+  app/api/workspace/defaults/route.ts exported REVISION_ROUNDS_MAX from a route file, which Next.js
+  rejects at `next build` ("not a valid Route export field") — HEAD could not have deployed. Now un-exported.
+
+REGRESSION FROM MIGRATION 065 (fixed in 068)
+  065 rebuilt leave_workspace_atomic and dropped the sole-MANAGE_ROLES-holder guard (034) and the
+  trial-creator guard (038). Reproduced on a 001..067 database: the workspace creator (only MANAGE_ROLES
+  holder) left, leaving ZERO people able to manage roles. Restored, plus: the leaver's project assignments
+  are archived (like a deactivation) and the invites they sent are revoked.
+
+AUTH + MFA — bugs fixed
+ 1 HIGH  Onboarding deadlock. Once /api/workspace/create made the user an Owner (MFA-mandatory), the
+         enrolment gate 401'd every call the onboarding wizard makes (branding, defaults, invite,
+         complete-onboarding...). Every new owner was stuck on step 1 with no link to /mfa-setup.
+         middleware.ts now keeps the onboarding APIs reachable until onboarding completes; the person
+         is then sent to /mfa-setup.
+ 2 HIGH  MFA lockout was only enforced in the app's own route. A password-only session can call GoTrue's
+         MFA endpoints directly with the public anon key. hook_mfa_verification_attempt (and the password
+         hook) now enforce it inside Auth. Sign-ins were audited only when the BROWSER reported them; a
+         trigger on auth.sessions now records every sign-in (app-side reporting stays as a fallback and
+         stands down when the trigger already wrote the row).
+ 3 MED   /api/auth/reset-password accepted ANY session that had authenticated in the last 15 minutes
+         (an ordinary password login, a hijacked cookie) — bypassing change-password's current-password
+         check, throttle and audit. It now requires a recovery / OTP / magic-link session.
+ 4 MED   The attempt limiter was check-then-act: N parallel guesses all passed the check. Now a single
+         SQL function (advisory lock + reserve + count) — exactly `max` attempts reach the credential
+         check however many arrive at once (tested: 5 of 40 parallel).
+ 5 MED   middleware.ts built its response before the session refresh, so the route handler after it
+         received the OLD cookies and re-refreshed with a token the middleware had just consumed.
+         The response is now rebuilt when cookies rotate.
+ 6 LOW   Backup codes: retiring the old set could fail silently while the UI said it worked, and two
+         concurrent regenerations left both sets valid -> one transaction (issue_backup_codes).
+         Codes are 12 chars (was 10) and stored as HMAC-SHA256(MFA_BACKUP_CODE_PEPPER) instead of an
+         unsalted SHA-256 (a database leak made all codes brute-forceable in hours). Old codes still work.
+ 7 LOW   OAuth/PKCE callback logged every `code` exchange as method 'google'; now derived from the session.
+ 8 LOW   change-password decided "has a password" from the identities list (unreliable for OAuth-first
+         users); now reads the real credential (user_has_password).
+ 9 LOW   MFA enrolment could be completed from a password-only session while another factor was verified.
+10 LOW   Invite acceptance sits under a public middleware prefix and skipped the second-factor gate.
+11 LOW   Passwords: rejects single-character, very common and email-as-password.
+
+RLS + PERMISSIONS — bugs fixed
+ 1 MED   Invites outlived their sender: deactivating, removing or demoting the inviter left their pending
+         invites valid (and Resend refreshed them). They are revoked on deactivation/leave, and re-checked
+         at acceptance against the sender's CURRENT authority. Resend now applies the role ceiling.
+ 2 MED   Admin "Reset MFA" removed a credential that guards the person's access to EVERY workspace, from
+         one workspace, without a step-up, leaving their live sessions alive. Now: the actor confirms
+         first; the target's sessions are revoked; every workspace the person belongs to gets an audit
+         row (without naming the acting admin to the others).
+ 3 MED   DELETE /api/workspace/delete needed only MANAGE_WORKSPACE_SETTINGS (a routinely delegated
+         permission) yet cancels billing and deactivates everyone. Owner-only (unless the owner is no
+         longer a member), the typed name is verified server-side, and it needs a step-up.
+ 4 MED   public.users.name could be rewritten straight through PostgREST, skipping every sanitiser
+         (5,000 chars, newlines, markup). CHECK constraint added; the direct write grant removed.
+ 5 LOW   The workspace Owner was protected only by an accident: the Owner role held a stale EXPORT_DATA
+         key no other role could hold. The key is removed and the protection is explicit
+         (lib/utils/owner-protection.ts): nobody else can deactivate the owner or change their role/overrides.
+ 6 LOW   Grant hygiene: cron_heartbeats still granted ALL to anon/authenticated; a sweep now closes any
+         drift and default privileges stop new tables inheriting API-role grants. logos / flag-evidence
+         buckets get size and mime limits (and are created if missing).
+ 7 LOW   Security events about a person (MFA on/off, backup codes, password, email change, admin reset)
+         are audited in every workspace they belong to, not just the active one.
+ 8 LOW   getMembersWithPermission / role-holder lookups were capped at 500; now paged.
+ 9 GAP   Onboarding invited people with no role, so each got the workspace default (as seeded: all
+         projects, financials, client data, and mandatory MFA). The wizard now shows and sends a role.
+Already closed by the Settings+Team pass (79d17d1), covered by regression tests here: invite role pinned
++ ceiling-checked at invite time; role PATCH floor applies to isDefault; unique role names; role/permission
+change audit diffs; roster MFA badge.
+
+FEATURES BUILT
+ - Step-up ("confirm it's you"): password or authenticator code, valid 10 minutes, bound to the session.
+   Guards: disable MFA, regenerate backup codes, delete account (typing your own email proved nothing),
+   delete workspace, transfer ownership, admin MFA reset, cancel billing, change sign-in email.
+   Client: fetchWithStepUp() + <StepUpHost/> in the app layout.
+ - Sessions list (device, IP, last active) with per-session sign-out (Settings -> Account).
+ - New-device sign-in alerts (email + in-app + audit) when a browser/OS not seen in 90 days signs in.
+ - Guarded sign-in email change (Settings -> Account), notice to the old address, audit rows.
+ - Server-side sign-in audit and failed-sign-in audit (Pro-plan hook).
+
+TESTS (457 pass; tsc clean; next build succeeds)
+ - tests/middleware-gate.test.ts        real middleware: onboarding APIs, enrolment gate, cookie rotation
+                                        (9 of its 19 fail against the old middleware.ts)
+ - tests/route-authority.test.ts        reset-password rule, default-role ceiling, owner protection,
+                                        workspace delete, admin MFA reset, resend ceiling
+ - tests/step-up.test.ts, recovery-session.test.ts, backup-codes.test.ts, invite-authority.test.ts,
+   attempt-limit.test.ts (rewritten), password-policy.test.ts (extended)
+ - tests/pg-replay.test.ts              replays every migration on a real Postgres and attacks it as
+                                        anon / authenticated, races the SQL functions (33 tests).
+                                        Skipped unless PG_REPLAY_URL is set — see tests/pg-replay/README.md.
+
+NOT CHANGED ON PURPOSE
+ - The Terms / Privacy links point at scopegov.app/terms and /privacy (marketing site), as in 79d17d1.
+ - No grace period when a role edit makes MFA mandatory (the roster badge from 067 shows who is affected).
+ - Passkeys / WebAuthn not built.
+
+CAVEATS
+ - Not run against a live GoTrue/PostgREST. The recovery-session rule denies known non-mailbox methods
+   (password, oauth, sso) rather than requiring one specific `amr` name, so it can't lock legitimate
+   resets out if GoTrue names the method differently.
+ - The auth.sessions triggers need a role that owns that table; if creation is refused the migration
+   warns and the app-side login-event fallback stays active.
+ - The MFA hook lockout can be triggered by anyone who holds the password (they can keep the victim out of
+   the second-factor step for a few minutes; they still can't get in).

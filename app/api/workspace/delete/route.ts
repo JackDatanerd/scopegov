@@ -7,9 +7,10 @@ import { NextResponse } from 'next/server'
 import { getSession, hasPermission, pickFallbackMembership } from '@/lib/auth/session'
 import { cancelPaystackSubscription } from '@/lib/integrations/paystack'
 import { logAudit } from '@/lib/utils/audit'
+import { requireStepUpForCurrentUser } from '@/lib/auth/step-up'
 import { sendWorkspaceDeletedEmail } from '@/lib/email/templates'
 
-export async function DELETE() {
+export async function DELETE(request: Request) {
   try {
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -17,6 +18,38 @@ export async function DELETE() {
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
 
     const service = createServiceClient()
+
+    // FIX (RLS+permissions audit round 2): this was gated on MANAGE_WORKSPACE_SETTINGS
+    // alone — a permission routinely delegated to a co-admin — with no ownership
+    // check, no typed confirmation server-side and no step-up, yet it cancels the
+    // Paystack subscription and deactivates every member. Deleting the workspace is
+    // an OWNER action (workspace/restore is already owner-only, and the UI only
+    // shows the button to the owner). If the owner is no longer an active member
+    // (they left after handing over, or the account was deleted) a settings admin
+    // may still do it, otherwise nobody could ever remove the workspace.
+    const { data: wsOwnerRow } = await (service as any)
+      .from('workspaces').select('created_by').eq('id', session.workspaceId).maybeSingle()
+    const ownerId: string | null = wsOwnerRow?.created_by ?? null
+    if (ownerId && ownerId !== session.id) {
+      const { data: ownerMember } = await (service as any)
+        .from('workspace_members').select('id')
+        .eq('workspace_id', session.workspaceId).eq('user_id', ownerId).eq('status', 'active').maybeSingle()
+      if (ownerMember) {
+        return NextResponse.json({
+          error: 'Only the workspace owner can delete it. Ask the owner, or have them transfer ownership to you first.',
+        }, { status: 403 })
+      }
+    }
+
+    // The client's type-the-name box is a UX guard; enforce it where it can't be skipped.
+    const deleteBody = await request.json().catch(() => null) as { confirmName?: unknown } | null
+    const expectedName = (session.workspaceName || '').trim()
+    if (!expectedName || typeof deleteBody?.confirmName !== 'string' || deleteBody.confirmName.trim() !== expectedName) {
+      return NextResponse.json({ error: 'Type the workspace name to confirm deletion.' }, { status: 400 })
+    }
+
+    const stepUp = await requireStepUpForCurrentUser()
+    if (stepUp) return stepUp
 
     // Block deletion if any signed SOW exists
     const { count: signedSowCount } = await (service as any)

@@ -16,6 +16,7 @@
 export interface JwtPayload {
   iat?: number
   aal?: string
+  session_id?: string
   amr?: Array<{ method?: string; timestamp?: number }>
   [key: string]: unknown
 }
@@ -79,4 +80,50 @@ export function loginMethodFromAmr(payload: JwtPayload | null): LoginMethod {
     if (methods.has(m)) return 'email_confirmation'
   }
   return 'password'
+}
+
+// ── Recovery-session detection (audit round 2) ─────────────────────────────
+// /api/auth/reset-password sets a password WITHOUT asking for the current one.
+// That is only acceptable when the session was just created by proving control
+// of the mailbox (a recovery / OTP / magic link). It used to accept ANY session
+// that had authenticated in the last 15 minutes — including an ordinary password
+// sign-in or a hijacked cookie — which skipped the current-password check,
+// throttle and audit that /api/auth/change-password enforces.
+//
+// The rule is a DENY-list on the newest primary authentication method, ignoring
+// token refreshes and the second-factor step (`totp`): a session whose latest
+// primary method is a password / OAuth / SSO sign-in is NOT a recovery session.
+const NON_MAILBOX_PRIMARY_METHODS = new Set(['password', 'oauth', 'sso/saml', 'web3', 'anonymous'])
+const IGNORED_METHODS = new Set(['token_refresh', 'totp', 'mfa/totp', 'mfa/phone', 'mfa/webauthn'])
+
+export function latestPrimaryAuthMethod(payload: JwtPayload | null): { method: string; timestamp: number } | null {
+  if (!payload || !Array.isArray(payload.amr)) return null
+  let best: { method: string; timestamp: number } | null = null
+  for (const entry of payload.amr) {
+    if (!entry || typeof entry !== 'object') continue
+    const method = typeof entry.method === 'string' ? entry.method : ''
+    if (!method || IGNORED_METHODS.has(method)) continue
+    if (typeof entry.timestamp !== 'number' || !Number.isFinite(entry.timestamp)) continue
+    if (!best || entry.timestamp >= best.timestamp) best = { method, timestamp: entry.timestamp }
+  }
+  return best
+}
+
+/** True when the session's newest primary sign-in proved mailbox control (recovery / OTP / magic link). */
+export function isMailboxProvenSession(payload: JwtPayload | null): boolean {
+  const latest = latestPrimaryAuthMethod(payload)
+  return !!latest && !NON_MAILBOX_PRIMARY_METHODS.has(latest.method)
+}
+
+/** Unix seconds of the newest `totp` step in the token, or null. */
+export function lastTotpAtSeconds(payload: JwtPayload | null): number | null {
+  if (!payload || !Array.isArray(payload.amr)) return null
+  let best: number | null = null
+  for (const e of payload.amr) {
+    if (!e || typeof e !== 'object') continue
+    if ((e.method === 'totp' || e.method === 'mfa/totp') && typeof e.timestamp === 'number' && Number.isFinite(e.timestamp)) {
+      best = best === null ? e.timestamp : Math.max(best, e.timestamp)
+    }
+  }
+  return best
 }

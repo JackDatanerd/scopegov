@@ -72,6 +72,17 @@ export async function POST(request: NextRequest) {
     if (error) throw new Error(error.message)
   })
 
+  // 4c. Step-up grants live 10 minutes (lib/auth/step-up.ts); session_seen feeds the 90-day
+  // new-device comparison (lib/auth/session-seen.ts, migration 068) — keep a little longer than that.
+  await run.step('prune step_up_grants', async () => {
+    const { error } = await (service as any).from('step_up_grants').delete().lt('expires_at', iso(1))
+    if (error) throw new Error(error.message)
+  })
+  await run.step('prune session_seen', async () => {
+    const { error } = await (service as any).from('session_seen').delete().lt('first_seen_at', iso(100))
+    if (error) throw new Error(error.message)
+  })
+
   // 5a. Accounts deleted BEFORE deletion started banning the auth user are still able to sign in for
   // the rest of their 30-day window. Ban any that aren't (idempotent; only newly-banned are counted).
   await run.step('ban recently-deleted accounts', async () => {

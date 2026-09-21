@@ -2239,3 +2239,62 @@ export async function sendInvoiceDisputeResolvedEmail(params: {
     html,
   }, params.log)
 }
+
+// ── Security: new sign-in from an unrecognised device (audit round 2) ─────
+// Sent by lib/auth/session-seen.ts the first time the app sees a session whose
+// browser/OS the account hasn't used in the last 90 days. Carries what a person
+// needs to judge it — when, from where (IP), on what — and the one action to take.
+export async function sendNewSignInEmail(params: {
+  to: string; name: string; when: string; ip: string | null; device: string; settingsUrl: string
+}) {
+  const { to, name: nameRaw, when, ip, device, settingsUrl } = params
+  const name = escapeHtml(nameRaw)
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.amber,
+    headerIcon: '🛡️',
+    label: 'Security',
+    headline: 'New sign-in to your account',
+    body: `
+      <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${name},</p>
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 12px;">
+        Your ScopeGov account was just signed in to from a device we haven't seen recently.
+      </p>
+      <table style="font-size:13px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        <tr><td style="padding-right:14px;color:${C.text};">When</td><td>${escapeHtml(when)}</td></tr>
+        <tr><td style="padding-right:14px;color:${C.text};">Device</td><td>${escapeHtml(device)}</td></tr>
+        <tr><td style="padding-right:14px;color:${C.text};">IP address</td><td>${escapeHtml(ip || 'unknown')}</td></tr>
+      </table>
+      <p style="font-size:13px;color:${C.text2};line-height:1.7;">
+        If this was you, there is nothing to do. If it wasn't,
+        <a href="${escapeHtml(settingsUrl)}" style="color:${C.green};">sign out every session and change your password</a>
+        straight away.
+      </p>
+    `,
+  })
+  return deliver({ from: systemFrom(), to, subject: 'New sign-in to your ScopeGov account', html })
+}
+
+// ── Security: sign-in email change requested (sent to the OLD address) ────
+export async function sendEmailChangeRequestedEmail(params: { to: string; name: string; newEmail: string; settingsUrl: string }) {
+  const { to, name: nameRaw, newEmail, settingsUrl } = params
+  const name = escapeHtml(nameRaw)
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.amber,
+    headerIcon: '✉️',
+    label: 'Security',
+    headline: 'A sign-in email change was requested',
+    body: `
+      <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${name},</p>
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        Someone asked to change the sign-in email on your ScopeGov account to
+        <strong>${escapeHtml(newEmail)}</strong>. Nothing changes until that address is confirmed.
+      </p>
+      <p style="font-size:13px;color:${C.text2};line-height:1.7;">
+        Didn't request this? <a href="${escapeHtml(settingsUrl)}" style="color:${C.green};">Sign out every session and change your password</a>.
+      </p>
+    `,
+  })
+  return deliver({ from: systemFrom(), to, subject: 'A sign-in email change was requested on your ScopeGov account', html })
+}

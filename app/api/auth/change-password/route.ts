@@ -8,7 +8,7 @@ import { sendPasswordChangedEmail } from '@/lib/email/templates'
 import { validatePassword } from '@/lib/auth/password-policy'
 import { decodeJwtPayload, authenticationAgeSeconds } from '@/lib/auth/auth-time'
 import {
-  checkAuthAttemptLimit, recordAuthFailure, clearAuthFailures, lockoutMessage, AUTH_ATTEMPT_LIMIT,
+  beginAuthAttempt, releaseAuthAttempt, clearAuthFailures, lockedResponseBody, AUTH_ATTEMPT_LIMIT,
 } from '@/lib/auth/attempt-limit'
 
 // POST /api/auth/change-password
@@ -38,23 +38,30 @@ export async function POST(request: NextRequest) {
     const { password, currentPassword } = await request.json().catch(() => ({})) as {
       password?: unknown; currentPassword?: unknown
     }
-    const policyError = validatePassword(password)
+    const policyError = validatePassword(password, { email: user.email })
     if (policyError) return NextResponse.json({ error: policyError }, { status: 400 })
 
     const service = createServiceClient()
 
-    const hasPasswordIdentity = (user.identities || []).some((i: any) => i.provider === 'email')
+    // Audit round 2: this used to be inferred from user.identities containing an
+    // 'email' identity. GoTrue does not necessarily add one when an OAuth-first
+    // person later sets a password, which would leave them treated as "no password"
+    // FOREVER — every later change then needed only a recent sign-in, not the
+    // current password. Ask the source of truth (auth.users.encrypted_password);
+    // fall back to the identity heuristic only if that lookup fails.
+    const { data: hasPwRpc, error: hasPwErr } = await (service as any).rpc('user_has_password', { p_user: user.id })
+    const hasPasswordIdentity = hasPwErr
+      ? (user.identities || []).some((i: any) => i.provider === 'email')
+      : hasPwRpc === true
     if (hasPasswordIdentity) {
       if (!currentPassword || typeof currentPassword !== 'string') {
         return NextResponse.json({ error: 'Current password is required' }, { status: 400 })
       }
 
-      const limit = await checkAuthAttemptLimit(service, user.id, 'password_verify')
-      if (!limit.allowed) {
-        return NextResponse.json(
-          { error: lockoutMessage(limit.retryAfterSeconds), code: 'locked', retryAfterSeconds: limit.retryAfterSeconds },
-          { status: 429, headers: { 'Retry-After': String(limit.retryAfterSeconds) } }
-        )
+      // Atomic reservation (counts as a failure until released/cleared).
+      const begin = await beginAuthAttempt(service, user.id, 'password_verify')
+      if (!begin.allowed) {
+        return NextResponse.json(lockedResponseBody(begin), { status: 429, headers: { 'Retry-After': String(begin.retryAfterSeconds) } })
       }
 
       const verifyClient = createStatelessAuthClient()
@@ -62,15 +69,19 @@ export async function POST(request: NextRequest) {
         email: user.email!, password: currentPassword,
       })
       if (verifyError) {
-        await recordAuthFailure(service, user.id, 'password_verify')
-        const after = await checkAuthAttemptLimit(service, user.id, 'password_verify')
+        const wrong = (verifyError as any).code === 'invalid_credentials' || /invalid login credentials/i.test(String((verifyError as any).message || ''))
+        if (!wrong) {
+          await releaseAuthAttempt(service, begin.attemptId)
+          console.error('Password verification unavailable:', (verifyError as any).code, verifyError.message)
+          return NextResponse.json({ error: 'We couldn\u2019t verify your password right now. Please try again.' }, { status: 502 })
+        }
         try {
           await logAudit(service, {
             workspaceId: (await resolveActiveWorkspaceId(service, user.id)) || '',
             actorId: user.id, actorEmail: user.email!,
             actorName: await resolveActorName(service, user.id, user.user_metadata?.name || user.email!),
             eventType: 'security.password_verify_failed', entityType: 'user', entityId: user.id, entityName: user.email!,
-            metadata: { context: 'change_password', failures_in_window: after.failures, locked: !after.allowed, window_seconds: AUTH_ATTEMPT_LIMIT.windowSeconds },
+            metadata: { context: 'change_password', failures_in_window: begin.failures, locked: begin.failures >= AUTH_ATTEMPT_LIMIT.maxFailures, window_seconds: AUTH_ATTEMPT_LIMIT.windowSeconds },
           })
         } catch (e) { console.error('Password verify-failure audit log failed (non-fatal):', e) }
         return NextResponse.json({ error: 'Current password is incorrect' }, { status: 401 })

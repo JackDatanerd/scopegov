@@ -2,6 +2,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { requireStepUpForCurrentUser } from '@/lib/auth/step-up'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { cancelPaystackSubscription } from '@/lib/integrations/paystack'
 import { getBillingRecipients } from '@/lib/billing/recipients'
@@ -14,6 +15,9 @@ export async function POST(request: NextRequest) {
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     if (!hasPermission(session, 'MANAGE_BILLING'))
       return NextResponse.json({ error: 'Missing permission: MANAGE_BILLING' }, { status: 403 })
+
+    const stepUp = await requireStepUpForCurrentUser()
+    if (stepUp) return stepUp
 
     const service = createServiceClient()
     // FIX (deep audit, Billing re-pass, minor): this was `.single()` — the
