@@ -4,6 +4,8 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { diffFields } from '@/lib/utils/audit-diff'
+import { CURRENCIES } from '@/lib/constants/workspace-options'
 
 function canManage(session: any) {
   return hasPermission(session, 'MANAGE_WORKSPACE_SETTINGS')
@@ -22,16 +24,26 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
     if (!existing) return NextResponse.json({ error: 'Workflow not found' }, { status: 404 })
 
-    const body = await request.json()
-    const patch: Record<string, unknown> = { updated_at: new Date().toISOString() }
-    if (typeof body?.isActive === 'boolean') patch.is_active = body.isActive
-    if (typeof body?.name === 'string' && body.name.trim()) patch.name = body.name.trim()
-    if (body?.thresholdAmount !== undefined) {
-      // FIX (deep audit, Settings re-pass): POST /api/approval-workflows
-      // requires thresholdAmount to be finite and non-negative — this edit
-      // path had no equivalent check, so a negative or non-numeric value
-      // could be saved by editing an existing workflow even though
-      // creating one that way was already blocked.
+    const body = await request.json().catch(() => null)
+    if (!body || typeof body !== 'object' || Array.isArray(body))
+      return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+
+    // Everything is validated before anything is written: a rejected edit must
+    // leave the workflow exactly as it was.
+    const patch: Record<string, unknown> = {}
+    if (body.isActive !== undefined) {
+      if (typeof body.isActive !== 'boolean')
+        return NextResponse.json({ error: 'isActive must be true or false' }, { status: 400 })
+      patch.is_active = body.isActive
+    }
+    if (body.name !== undefined) {
+      if (typeof body.name !== 'string' || !body.name.trim())
+        return NextResponse.json({ error: 'Workflow name is required' }, { status: 400 })
+      if (body.name.trim().length > 120)
+        return NextResponse.json({ error: 'Workflow name must be under 120 characters' }, { status: 400 })
+      patch.name = body.name.trim()
+    }
+    if (body.thresholdAmount !== undefined) {
       if (body.thresholdAmount !== '' && body.thresholdAmount != null) {
         const n = Number(body.thresholdAmount)
         if (!Number.isFinite(n) || n < 0)
@@ -41,79 +53,33 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         patch.threshold_amount = null
       }
     }
-    // FIX (re-audit): see migration 023 / api/approval-workflows/route.ts —
-    // threshold_currency must travel with threshold_amount. Resolve the
-    // effective amount (either what's being patched now, or what's
-    // already stored) to decide whether a currency is required at all.
     const effectiveAmount = patch.threshold_amount !== undefined ? patch.threshold_amount : existing.threshold_amount
     if (effectiveAmount == null) {
-      patch.threshold_currency = null
-    } else if (body?.thresholdCurrency !== undefined) {
-      patch.threshold_currency = (body.thresholdCurrency || 'USD').toUpperCase()
+      if (existing.threshold_currency != null) patch.threshold_currency = null
+    } else if (body.thresholdCurrency !== undefined) {
+      const currency = typeof body.thresholdCurrency === 'string' && body.thresholdCurrency ? body.thresholdCurrency.toUpperCase() : 'USD'
+      if (!(CURRENCIES as readonly string[]).includes(currency))
+        return NextResponse.json({ error: 'Invalid threshold currency' }, { status: 400 })
+      patch.threshold_currency = currency
     } else if (!existing.threshold_currency) {
       patch.threshold_currency = 'USD' // amount is being set for the first time with no currency supplied
     }
 
-    // FIX (deep audit, section 5 re-pass): same duplicate-catch-all guard
-    // as POST — check the state this edit would *result in* (active +
-    // threshold null), not just the fields present on this request, since
-    // either flipping is_active on or clearing the threshold on an
-    // otherwise-unchanged row can create the same silent-collision.
-    const resultingActive    = 'is_active' in patch ? (patch.is_active as boolean) : existing.is_active
-    const resultingThreshold = 'threshold_amount' in patch ? patch.threshold_amount : existing.threshold_amount
-    const resultingCurrency  = 'threshold_currency' in patch ? patch.threshold_currency : existing.threshold_currency
-    if (resultingActive && resultingThreshold == null) {
-      const { count: dupeCatchAll } = await (service as any)
-        .from('approval_workflows').select('id', { count: 'exact', head: true })
-        .eq('workspace_id', session.workspaceId).eq('document_type', existing.document_type)
-        .eq('is_active', true).is('threshold_amount', null).neq('id', id)
-      if ((dupeCatchAll || 0) > 0) {
-        return NextResponse.json({
-          error: `An active catch-all ${existing.document_type === 'sow' ? 'SOW' : existing.document_type === 'invoice' ? 'invoice' : 'change order'} workflow already exists. Add a value threshold to this one, or deactivate the other rule first.`,
-        }, { status: 409 })
-      }
-    } else if (resultingActive && resultingThreshold != null) {
-      // FIX (section-11 fix round, real gap): matches the equivalent guard
-      // added to POST /api/approval-workflows — two ACTIVE tiered
-      // workflows sharing the exact same (document_type, threshold_amount,
-      // threshold_currency) is the same silent-collision the catch-all
-      // guard above exists to prevent, just never checked for the tiered
-      // case. Only the state this edit RESULTS IN matters, same reasoning
-      // as resultingActive/resultingThreshold above.
-      const { count: dupeThreshold } = await (service as any)
-        .from('approval_workflows').select('id', { count: 'exact', head: true })
-        .eq('workspace_id', session.workspaceId).eq('document_type', existing.document_type)
-        .eq('is_active', true).eq('threshold_amount', resultingThreshold).eq('threshold_currency', resultingCurrency)
-        .neq('id', id)
-      if ((dupeThreshold || 0) > 0) {
-        return NextResponse.json({
-          error: `An active ${existing.document_type === 'sow' ? 'SOW' : existing.document_type === 'invoice' ? 'invoice' : 'change order'} workflow already exists at this exact threshold (${resultingCurrency} ${resultingThreshold}) — only one of the two would ever actually apply. Pick a different threshold, or deactivate the other rule first.`,
-        }, { status: 409 })
-      }
-    }
-
-    await (service as any).from('approval_workflows').update(patch).eq('id', id)
-
-    // Replacing steps wholesale is simplest-correct here: workflow edits
-    // are infrequent admin actions, not a high-frequency path worth a
-    // diffing algorithm, and this guarantees step_order stays contiguous.
-    if (Array.isArray(body?.steps)) {
-      const steps: Array<{ approverRoleId?: string; approverUserId?: string }> = body.steps
-      for (const s of steps) {
-        if ((!s.approverRoleId && !s.approverUserId) || (s.approverRoleId && s.approverUserId))
+    let steps: Array<{ approverRoleId?: string; approverUserId?: string }> | undefined
+    if (body.steps !== undefined) {
+      if (!Array.isArray(body.steps) || body.steps.length === 0)
+        return NextResponse.json({ error: 'An approval workflow needs at least one approver step' }, { status: 400 })
+      if (body.steps.length > 10)
+        return NextResponse.json({ error: 'An approval workflow can have at most 10 steps' }, { status: 400 })
+      steps = body.steps as typeof steps
+      for (const st of steps!) {
+        if (!st || typeof st !== 'object' ||
+            (typeof st.approverRoleId !== 'string' && typeof st.approverUserId !== 'string') ||
+            (st.approverRoleId && st.approverUserId))
           return NextResponse.json({ error: 'Each step needs exactly one approver — a role or a person' }, { status: 400 })
       }
-      // FIX (deep audit, section 5): same ownership check added to POST —
-      // see the comment there for why.
-      //
-      // FIX (section-11 audit, flagship finding): same APPROVE_DOCUMENTS
-      // check added to POST /api/approval-workflows — an edit could
-      // otherwise reassign a step to a role/person who can't act on it,
-      // exactly the same silent-dead-end failure mode, invisible to the
-      // stall-cron's escalation. See the comment on POST for the full
-      // explanation.
-      const roleIds = steps.map(s => s.approverRoleId).filter(Boolean) as string[]
-      const userIds = steps.map(s => s.approverUserId).filter(Boolean) as string[]
+      const roleIds = steps!.map(st => st.approverRoleId).filter(Boolean) as string[]
+      const userIds = steps!.map(st => st.approverUserId).filter(Boolean) as string[]
       if (roleIds.length) {
         const { data: roleRows } = await (service as any)
           .from('roles').select('id, name, permissions')
@@ -138,32 +104,61 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
             error: `${memberCantApprove.users?.name || 'That member'} doesn't have the Approve documents permission — grant it first, or pick a different approver.`,
           }, { status: 400 })
       }
-      await (service as any).from('approval_workflow_steps').delete().eq('workflow_id', id)
-      if (steps.length > 0) {
-        // FIX (deep audit, section 5 re-pass): same unchecked insert as
-        // POST /api/approval-workflows — a failure here (after the old
-        // steps were already deleted) left an active workflow with zero
-        // steps, which evaluateApprovalGate() silently treats as "no
-        // approval needed." Surface the failure instead of pretending the
-        // edit succeeded; the workflow is deactivated so it can't gate
-        // (or fail to gate) anything while its steps are in a broken
-        // state, and the admin can retry the edit.
-        const { error: stepsErr } = await (service as any).from('approval_workflow_steps').insert(
-          steps.map((s, i) => ({
-            workflow_id: id,
-            step_order: i + 1,
-            approver_role_id: s.approverRoleId || null,
-            approver_user_id: s.approverUserId || null,
-          }))
-        )
-        if (stepsErr) {
-          await (service as any).from('approval_workflows')
-            .update({ is_active: false, updated_at: new Date().toISOString() }).eq('id', id)
-          return NextResponse.json({
-            error: 'Could not save the updated approval steps — this workflow has been paused to avoid running with no approvers. Please try editing it again.',
-          }, { status: 500 })
-        }
+    }
+
+    const { count: existingStepCount } = await (service as any)
+      .from('approval_workflow_steps').select('id', { count: 'exact', head: true }).eq('workflow_id', id)
+
+    const resultingActive    = 'is_active' in patch ? (patch.is_active as boolean) : existing.is_active
+    const resultingThreshold = 'threshold_amount' in patch ? patch.threshold_amount : existing.threshold_amount
+    const resultingCurrency  = 'threshold_currency' in patch ? patch.threshold_currency : existing.threshold_currency
+
+    // A workflow with no approvers would let documents through unreviewed.
+    if (resultingActive && !steps && (existingStepCount || 0) === 0) {
+      return NextResponse.json({ error: 'This workflow has no approver steps. Add at least one approver before activating it.' }, { status: 409 })
+    }
+
+    if (resultingActive && resultingThreshold == null) {
+      const { count: dupeCatchAll } = await (service as any)
+        .from('approval_workflows').select('id', { count: 'exact', head: true })
+        .eq('workspace_id', session.workspaceId).eq('document_type', existing.document_type)
+        .eq('is_active', true).is('threshold_amount', null).neq('id', id)
+      if ((dupeCatchAll || 0) > 0) {
+        return NextResponse.json({
+          error: `An active catch-all ${existing.document_type === 'sow' ? 'SOW' : existing.document_type === 'invoice' ? 'invoice' : 'change order'} workflow already exists. Add a value threshold to this one, or deactivate the other rule first.`,
+        }, { status: 409 })
       }
+    } else if (resultingActive && resultingThreshold != null) {
+      const { count: dupeThreshold } = await (service as any)
+        .from('approval_workflows').select('id', { count: 'exact', head: true })
+        .eq('workspace_id', session.workspaceId).eq('document_type', existing.document_type)
+        .eq('is_active', true).eq('threshold_amount', resultingThreshold).eq('threshold_currency', resultingCurrency)
+        .neq('id', id)
+      if ((dupeThreshold || 0) > 0) {
+        return NextResponse.json({
+          error: `An active ${existing.document_type === 'sow' ? 'SOW' : existing.document_type === 'invoice' ? 'invoice' : 'change order'} workflow already exists at this exact threshold (${resultingCurrency} ${resultingThreshold}) — only one of the two would ever actually apply. Pick a different threshold, or deactivate the other rule first.`,
+        }, { status: 409 })
+      }
+    }
+
+    const before = {
+      name: existing.name, is_active: existing.is_active,
+      threshold_amount: existing.threshold_amount, threshold_currency: existing.threshold_currency,
+    }
+    const { changedKeys, changes } = diffFields(before, patch)
+    if (changedKeys.length === 0 && !steps) return NextResponse.json({ ok: true, unchanged: true })
+
+    // Field changes and the step replacement commit together or not at all.
+    const { error: rpcErr } = await (service as any).rpc('update_approval_workflow_atomic', {
+      p_workspace_id: session.workspaceId,
+      p_workflow_id:  id,
+      p_patch:        patch,
+      p_set_steps:    !!steps,
+      p_steps:        steps ?? null,
+    })
+    if (rpcErr) {
+      console.error('update_approval_workflow_atomic failed:', rpcErr)
+      return NextResponse.json({ error: 'Could not save this workflow. Nothing was changed — please try again.' }, { status: 500 })
     }
 
     await logAudit(service, {
@@ -171,7 +166,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       actorId: session.id, actorEmail: session.email, actorName: session.name,
       eventType: 'approval_workflow.updated', entityType: 'approval_workflow',
       entityId: id, entityName: (patch.name as string) || existing.name,
-      metadata: { fields: Object.keys(patch) },
+      metadata: {
+        fields: [...changedKeys, ...(steps ? ['steps'] : [])],
+        changes,
+        ...(steps ? { steps: { from: existingStepCount || 0, to: steps.length } } : {}),
+      },
     })
 
     return NextResponse.json({ ok: true })

@@ -47,7 +47,8 @@ export default async function SettingsPage() {
       .select('*')
       .eq('workspace_id', session.workspaceId)
       .is('project_type', null)
-      .maybeSingle(), // FIX 2: was .single() — returns null gracefully, never 406
+      .order('updated_at', { ascending: false })
+      .limit(1), // newest workspace-wide row; never errors on legacy duplicates
   ])
 
   // FIX (deep audit, Settings section — missing-column bug): this query's
@@ -158,7 +159,7 @@ export default async function SettingsPage() {
     <SettingsClient
       workspace={workspace}
       billing={billing}
-      defaults={defaultsRes.data}
+      defaults={canManageWorkspace ? (defaultsRes.data?.[0] ?? null) : null}
       logoUrl={logoUrl}
       session={session}
       mfaMandatory={mfaMandatory}

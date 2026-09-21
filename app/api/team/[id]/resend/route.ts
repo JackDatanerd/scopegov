@@ -7,6 +7,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { sendInviteEmail } from '@/lib/email/templates'
 import { nanoid } from 'nanoid'
 import { checkInviteRateLimit } from '@/lib/utils/rate-limit'
+import { checkSeatLimit } from '@/lib/utils/seat-limit'
 
 // FIX (deep audit, Team & Invites section — HIGH, destructive): "Resend"
 // in components/team/TeamClient.tsx was implemented as DELETE-then-POST:
@@ -61,7 +62,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const { data: member } = await (service as any)
       .from('workspace_members')
-      .select('id,status,invited_email,user_id,users!workspace_members_user_id_fkey(email)')
+      .select('id,status,invited_email,user_id,invite_token,invite_token_expires_at,roles(name),users!workspace_members_user_id_fkey(email)')
       .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
 
     if (!member) return NextResponse.json({ error: 'Invite not found' }, { status: 404 })
@@ -81,6 +82,20 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // actually released, so resending can't push a workspace over its
     // limit. Acceptance re-checks against 'active' regardless, which is
     // the check that actually matters.
+    // An expired invite no longer holds a seat (invite creation only counts
+    // active and pending ones), so bringing it back has to pass the same seat
+    // check a fresh invite does.
+    if (member.status === 'expired') {
+      const seatCheck = await checkSeatLimit(service, session.workspaceId, session.planTier, ['active', 'invited'])
+      if (!seatCheck.ok)
+        return NextResponse.json({ error: seatCheck.message, upgradeRequired: true }, { status: 403 })
+    }
+
+    const previous = {
+      invite_token:            member.invite_token,
+      invite_token_expires_at: member.invite_token_expires_at,
+      status:                  member.status,
+    }
     const inviteToken = nanoid(32)
     const expiresAt   = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
 
@@ -109,14 +124,22 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         inviterName:   session.name,
         workspaceName: ws?.name || session.agencyName,
         agencyName:    session.agencyName,
+        roleName:      member.roles?.name,
         inviteUrl,
         expiresAt:     expiresAt.toISOString(),
       })
     } catch (e) { console.error('Invite resend email failed:', e); emailSent = false }
 
-    // Same reasoning as invite creation: the token is a live bearer
-    // credential and never belongs in a row that's exportable to CSV/PDF
-    // by anyone holding VIEW_AUDIT_LOG. The address is enough context.
+    // The new link never reached the invitee, so put the previous one back:
+    // a link they already hold keeps working instead of being replaced by one
+    // they never received.
+    if (!emailSent) {
+      const { error: restoreErr } = await (service as any)
+        .from('workspace_members').update(previous)
+        .eq('id', id).eq('workspace_id', session.workspaceId).eq('invite_token', inviteToken)
+      if (restoreErr) console.error('Invite resend: could not restore previous token:', restoreErr)
+    }
+
     await logAudit(service, {
       workspaceId: session.workspaceId, actorId: session.id,
       actorEmail: session.email, actorName: session.name,

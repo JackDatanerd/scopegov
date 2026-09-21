@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { CURRENCIES } from '@/lib/constants/workspace-options'
 
 // Configuring who approves what is treated as a workspace setting rather
 // than minting a new permission — MANAGE_WORKSPACE_SETTINGS already gates
@@ -51,9 +52,11 @@ export async function POST(request: NextRequest) {
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     if (!canManage(session)) return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
 
-    const body = await request.json()
+    const body = await request.json().catch(() => null)
+    if (!body || typeof body !== 'object' || Array.isArray(body))
+      return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
     const documentType: string = body?.documentType
-    const name: string = (body?.name || '').trim()
+    const name: string = typeof body?.name === 'string' ? body.name.trim() : ''
     const thresholdAmount = body?.thresholdAmount === '' || body?.thresholdAmount == null
       ? null : Number(body.thresholdAmount)
     // FIX (re-audit): threshold_amount was compared against a document's
@@ -61,13 +64,17 @@ export async function POST(request: NextRequest) {
     // Required whenever a threshold is actually set (a currency-agnostic
     // "applies to every document" workflow has no amount to denominate).
     const thresholdCurrency: string | null = thresholdAmount != null
-      ? (body?.thresholdCurrency || 'USD').toUpperCase()
+      ? (typeof body?.thresholdCurrency === 'string' && body.thresholdCurrency ? body.thresholdCurrency : 'USD').toUpperCase()
       : null
     const steps: Array<{ approverRoleId?: string; approverUserId?: string }> = Array.isArray(body?.steps) ? body.steps : []
 
     if (!['sow', 'co', 'invoice'].includes(documentType))
       return NextResponse.json({ error: 'documentType must be "sow", "co", or "invoice"' }, { status: 400 })
     if (!name) return NextResponse.json({ error: 'Name is required' }, { status: 400 })
+    if (name.length > 120) return NextResponse.json({ error: 'Name must be under 120 characters' }, { status: 400 })
+    if (thresholdCurrency && !(CURRENCIES as readonly string[]).includes(thresholdCurrency))
+      return NextResponse.json({ error: 'Invalid threshold currency' }, { status: 400 })
+    if (steps.length > 10) return NextResponse.json({ error: 'An approval workflow can have at most 10 steps' }, { status: 400 })
     if (thresholdAmount != null && (!Number.isFinite(thresholdAmount) || thresholdAmount < 0))
       return NextResponse.json({ error: 'Threshold must be a positive number' }, { status: 400 })
     if (steps.length === 0)

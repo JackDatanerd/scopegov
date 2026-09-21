@@ -4,6 +4,8 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { permissionsBeyondCeiling } from '@/lib/utils/permission-ceiling'
 import { parsePermissionMap } from '@/lib/utils/permission-map'
+import { roleNameTaken } from '@/lib/utils/role-names'
+import { diffPermissionMaps } from '@/lib/utils/permission-diff'
 
 // Mirrors the same constant in components/team/TeamClient.tsx — the
 // allowlist and the copy that describes it must not drift apart again.
@@ -74,10 +76,9 @@ export async function POST(request: NextRequest) {
     // on the Team page and the invite modal's role <select> all identify
     // a role to the user by name alone, so duplicates are genuinely
     // ambiguous at the point someone is granting access.
-    const { data: nameClash } = await (service as any)
-      .from('roles').select('id').eq('workspace_id', session.workspaceId)
-      .ilike('name', name.trim()).maybeSingle()
-    if (nameClash)
+    const { data: existingRoles } = await (service as any)
+      .from('roles').select('id,name').eq('workspace_id', session.workspaceId)
+    if (roleNameTaken(existingRoles || [], name))
       return NextResponse.json({ error: 'A role with that name already exists in this workspace' }, { status: 409 })
 
     // FIX (deep audit, Team & Invites re-pass — CRITICAL): this used to
@@ -102,7 +103,12 @@ export async function POST(request: NextRequest) {
       created_by:   session.id,
     }).select('id').single()
 
-    if (error) throw new Error(error.message)
+    if (error) {
+      // Two creates racing for the same name: the unique index (migration 067) decides.
+      if ((error as any).code === '23505')
+        return NextResponse.json({ error: 'A role with that name already exists in this workspace' }, { status: 409 })
+      throw new Error(error.message)
+    }
 
     let defaultSwapFailed = false
     if (isDefault) {
@@ -118,9 +124,12 @@ export async function POST(request: NextRequest) {
     await logAudit(service, {
       workspaceId: session.workspaceId, actorId: session.id,
       actorEmail: session.email, actorName: session.name,
-      eventType: 'workspace.role_created', entityType: 'role',
+      eventType: 'role.created', entityType: 'role',
       entityId: role.id, entityName: name,
-      metadata: isDefault ? { requested_default: true, default_swap_failed: defaultSwapFailed } : {},
+      metadata: {
+        permissions_granted: diffPermissionMaps({}, permissions || {}).granted,
+        ...(isDefault ? { requested_default: true, default_swap_failed: defaultSwapFailed } : {}),
+      },
     })
 
     return NextResponse.json({

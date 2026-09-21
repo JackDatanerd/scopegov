@@ -5,26 +5,25 @@ import { createClient } from '@supabase/supabase-js'
 import { logAudit } from '@/lib/utils/audit'
 import { sanitizeDisplayName } from '@/lib/utils/sanitize'
 import { checkSeatLimit } from '@/lib/utils/seat-limit'
+import { validatePassword } from '@/lib/auth/password-policy'
+import { TERMS_VERSION } from '@/lib/auth/terms'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
     const { token }             = await params
-    const { name: rawName, password } = await request.json()
+    const body = await request.json().catch(() => null)
+    const rawName  = body?.name
+    const password = body?.password
 
-    // FIX (deep audit, Auth+MFA section, standalone pass): `name` used to
-    // be forwarded as `name.trim()` with no length cap, unlike every
-    // structurally comparable field in this codebase (agency_name,
-    // workspace name), which goes through sanitizeDisplayName() (120-char
-    // cap, strips CR/LF/control chars). Applying it here at the one place
-    // this route sets the name — both the new auth user's metadata and
-    // the immediately-following public.users upsert, which overwrites
-    // whatever handle_new_user()'s own trigger-level cap (042) just wrote,
-    // so the trigger fix alone doesn't cover this call site.
-    const name = sanitizeDisplayName(rawName)
+    const name = sanitizeDisplayName(typeof rawName === 'string' ? rawName : '')
 
     if (!name)         return NextResponse.json({ error: 'Name is required' }, { status: 400 })
-    if (!password || password.length < 8)
-      return NextResponse.json({ error: 'Password must be at least 8 characters' }, { status: 400 })
+    const policyError = validatePassword(password)
+    if (policyError) return NextResponse.json({ error: policyError }, { status: 400 })
+    // Same consent basis as the public sign-up page: the Terms and Privacy
+    // Policy were shown next to the button, and the version is recorded.
+    if (body?.acceptedTerms !== true)
+      return NextResponse.json({ error: 'Please accept the Terms and Privacy Policy to create your account.' }, { status: 400 })
 
     const service = createServiceClient()
 
@@ -90,7 +89,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       email,
       password,
       email_confirm: true,
-      user_metadata: { name },
+      // terms_version is picked up by handle_new_user(), which stamps the acceptance time.
+      user_metadata: { name, terms_version: TERMS_VERSION },
     })
 
     if (createErr) {
@@ -107,7 +107,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     userId = newUser.user.id
     const now = new Date().toISOString()
 
-    await (service as any).from('users').upsert({
+    const { error: userRowErr } = await (service as any).from('users').upsert({
       id: userId, email, name,
       email_verified_at: now,
       active_workspace_id: member.workspace_id,

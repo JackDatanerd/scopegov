@@ -30,6 +30,8 @@ import MfaSection from '@/components/settings/MfaSection'
 // drifting copy of the list.
 import { CURRENCIES } from '@/lib/constants/workspace-options'
 import { GRACE_DAYS } from '@/lib/billing/plans'
+import { isValidTimeZone } from '@/lib/utils/timezone'
+import { sameValue } from '@/lib/utils/audit-diff'
 
 type SettingsTab = 'account' | 'workspace' | 'branding' | 'defaults' | 'guardian' | 'billing' | 'notifications' | 'integrations' | 'danger'
 
@@ -41,8 +43,11 @@ type SettingsTab = 'account' | 'workspace' | 'branding' | 'defaults' | 'guardian
 // common zones covering this product's actual customer base.
 const IANA_TIMEZONES: string[] = (() => {
   try {
-    // @ts-ignore — supportedValuesOf isn't in older lib.es TS targets
-    if (typeof Intl.supportedValuesOf === 'function') return Intl.supportedValuesOf('timeZone')
+    if (typeof Intl.supportedValuesOf === 'function') {
+      const list = Intl.supportedValuesOf('timeZone')
+      // The runtime list omits 'UTC' (it only holds canonical zone names).
+      return list.includes('UTC') ? list : ['UTC', ...list]
+    }
   } catch { /* fall through to static list */ }
   return [
     'UTC', 'Africa/Nairobi', 'Africa/Lagos', 'Africa/Johannesburg', 'Africa/Cairo',
@@ -81,6 +86,77 @@ function normalizeSowLanguage(value: unknown): string {
   const base = value.replace('_', '-').split('-')[0].toLowerCase()
   return SOW_LANGUAGES.some(l => l.code === base) ? base : 'en'
 }
+
+// ── Workspace form <-> server values ─────────────────────────────────────────
+// The Workspace and Guardian tabs edit a form, but only fields the person
+// actually changed are sent, together with the value each one had when the
+// page loaded. The server refuses the save if a colleague changed the same
+// field in the meantime instead of silently overwriting it.
+const trimText = (v: unknown) => String(v ?? '').trim()
+
+function workspaceToForm(ws: any) {
+  return {
+    name:         ws?.name || '',
+    agencyName:   ws?.agency_name || '',
+    industry:     ws?.industry || '',
+    timezone:     ws?.timezone || '',
+    currency:     ws?.currency || 'USD',
+    governingLaw: ws?.governing_law || '',
+    sowLanguage:  normalizeSowLanguage(ws?.sow_language),
+    slug:         ws?.slug || '',
+    taxId:                      ws?.tax_id || '',
+    phone:                      ws?.phone || '',
+    website:                    ws?.website || '',
+    replyToEmail:               ws?.reply_to_email || '',
+    defaultPaymentInstructions: ws?.default_payment_instructions || '',
+    autoClientReminders:        ws?.auto_client_reminders ?? false,
+    clientReminderAfterDays:    String(ws?.client_reminder_after_days ?? 3),
+    clientReminderMax:          String(ws?.client_reminder_max ?? 3),
+    legalAddress: {
+      line1:      ws?.legal_address?.line1 || '',
+      line2:      ws?.legal_address?.line2 || '',
+      city:       ws?.legal_address?.city || '',
+      region:     ws?.legal_address?.region || '',
+      postalCode: ws?.legal_address?.postalCode || '',
+      country:    ws?.legal_address?.country || '',
+    },
+  }
+}
+
+function cleanAddress(a: any): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const k of ['line1', 'line2', 'city', 'region', 'postalCode', 'country']) {
+    const v = trimText(a?.[k])
+    if (v) out[k] = v
+  }
+  return out
+}
+
+/** A form value in the shape the server stores it. */
+function toServerValue(key: string, value: any): unknown {
+  switch (key) {
+    case 'autoClientReminders':
+    case 'proactiveRiskAlertsEnabled': return !!value
+    case 'clientReminderAfterDays':
+    case 'clientReminderMax':
+    case 'proactiveRiskThreshold':     return Number(value)
+    case 'legalAddress':               return cleanAddress(value)
+    case 'slug':                       return String(value ?? '')
+    default:                           return trimText(value)
+  }
+}
+
+function workspaceSnapshot(ws: any): Record<string, unknown> {
+  const snap: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(workspaceToForm(ws))) snap[k] = toServerValue(k, v)
+  snap.guardianSensitivityTier    = ws?.guardian_sensitivity_tier || 'medium'
+  snap.proactiveRiskAlertsEnabled = ws?.proactive_risk_alerts_enabled ?? true
+  snap.proactiveRiskThreshold     = Number(ws?.proactive_risk_threshold ?? 10000)
+  return snap
+}
+
+const stdLines = (text: string) => text.split('\n').map(l => l.trim()).filter(Boolean)
+const stdText  = (list: unknown) => (Array.isArray(list) ? list.join('\n') : '')
 
 const TABS: { key: SettingsTab; label: string }[] = [
   { key: 'account',       label: 'Account' },
@@ -197,95 +273,53 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
   // Account the moment the page reloaded.
   function setTab(next: SettingsTab) {
     setTabState(next)
+    setError(''); setConflict(false); setSaved('')
     const params = new URLSearchParams(Array.from(searchParams.entries()))
     params.set('tab', next)
     router.replace(`/settings?${params.toString()}`, { scroll: false })
   }
   const [saving, setSaving] = useState(false)
-  const [saved,  setSaved]  = useState(false)
+  const [saved,  setSaved]  = useState('')
   const [error,  setError]  = useState('')
+  const [conflict, setConflict] = useState(false)
 
-  // ── Lifted form state (all seeded once via lazy init; never reset by remounts) ──
-  const [wsForm, setWsForm] = useState(() => ({
-    name:         workspace?.name || '',
-    agencyName:   workspace?.agency_name || '',
-    industry:     workspace?.industry || '',
-    timezone:     workspace?.timezone || '',
-    currency:     workspace?.currency || 'USD',
-    governingLaw: workspace?.governing_law || '',
-    // FIX (deep audit, Settings section — CRITICAL, client half): seeded
-    // straight from the column, which defaulted to 'en-US' on every
-    // workspace ever created (see migration 054 and
-    // api/workspace/settings/route.ts). 'en-US' matches no <option>
-    // below, so the select painted "English" while state held the
-    // rejected value — and since both Save buttons on this tab post the
-    // whole `form`, every save on an untouched workspace 400'd with
-    // "Unsupported SOW language", naming a field nobody had touched.
-    // Normalize any regional code onto its base language on read, so the
-    // select shows the real value and the save carries an accepted one
-    // even before the migration has run.
-    sowLanguage:  normalizeSowLanguage(workspace?.sow_language),
-    slug:         workspace?.slug || '',
-    // Phase 11 — document billing identity. Printed on every SOW/CO/Invoice
-    // PDF as the agency's "From" block; all optional, PDFs render fine
-    // without them, they just omit the address/tax-ID lines.
-    taxId:                      workspace?.tax_id || '',
-    phone:                      workspace?.phone || '',
-    website:                    workspace?.website || '',
-    replyToEmail:               workspace?.reply_to_email || '',
-    defaultPaymentInstructions: workspace?.default_payment_instructions || '',
-    autoClientReminders:        workspace?.auto_client_reminders ?? false,
-    clientReminderAfterDays:    String(workspace?.client_reminder_after_days ?? 3),
-    clientReminderMax:          String(workspace?.client_reminder_max ?? 3),
-    legalAddress: {
-      line1:      workspace?.legal_address?.line1 || '',
-      line2:      workspace?.legal_address?.line2 || '',
-      city:       workspace?.legal_address?.city || '',
-      region:     workspace?.legal_address?.region || '',
-      postalCode: workspace?.legal_address?.postalCode || '',
-      country:    workspace?.legal_address?.country || '',
-    },
-  }))
-  // FIX: no UI existed anywhere for the workspace slug despite full,
-  // working backend support (including the once-only change lock).
+  const [wsForm, setWsForm] = useState(() => workspaceToForm(workspace))
   const slugLocked = !!workspace?.slug_changed_at
 
-  // Sends replyToEmail only when it differs from what was loaded, so a save never touches the
-  // column (or fails before migration 062 adds it) unless the user actually edited the field.
-  const initialReplyTo = workspace?.reply_to_email || ''
-  // Same rule for the automatic-client-reminder fields (migration 063): only sent when the user changed them.
-  const initialReminders = {
-    autoClientReminders:     workspace?.auto_client_reminders ?? false,
-    clientReminderAfterDays: String(workspace?.client_reminder_after_days ?? 3),
-    clientReminderMax:       String(workspace?.client_reminder_max ?? 3),
-  }
-  const patchWorkspace = (url: string, body: any) => {
-    const { replyToEmail, autoClientReminders, clientReminderAfterDays, clientReminderMax, ...rest } = body
-    const next = typeof replyToEmail === 'string' ? replyToEmail.trim() : initialReplyTo
-    const out: any = next !== initialReplyTo ? { ...rest, replyToEmail: next } : { ...rest }
-    if (autoClientReminders !== undefined && autoClientReminders !== initialReminders.autoClientReminders) out.autoClientReminders = autoClientReminders
-    if (clientReminderAfterDays !== undefined && clientReminderAfterDays !== initialReminders.clientReminderAfterDays) out.clientReminderAfterDays = clientReminderAfterDays
-    if (clientReminderMax !== undefined && clientReminderMax !== initialReminders.clientReminderMax) out.clientReminderMax = clientReminderMax
-    return patch(url, out)
+  // What each saved field looked like when this page loaded (updated after our
+  // own successful saves) — sent alongside changes so a concurrent edit by a
+  // colleague is detected instead of overwritten.
+  const baseRef = useRef<Record<string, unknown>>(workspaceSnapshot(workspace))
+
+  const patchWorkspace = async (url: string, body: Record<string, any>) => {
+    const changes: Record<string, unknown> = {}
+    const expected: Record<string, unknown> = {}
+    for (const [key, raw] of Object.entries(body)) {
+      if (key === 'slug' && slugLocked) continue
+      const value = toServerValue(key, raw)
+      if (sameValue(value, baseRef.current[key])) continue
+      changes[key] = value
+      expected[key] = baseRef.current[key]
+    }
+    if (Object.keys(changes).length === 0) {
+      setError(''); setConflict(false)
+      setSaved('Nothing to save — no changes were made.'); setTimeout(() => setSaved(''), 2000)
+      return true
+    }
+    const ok = await patch(url, { ...changes, expected })
+    if (ok) baseRef.current = { ...baseRef.current, ...changes }
+    return ok
   }
   const [brandColour, setBrandColour] = useState(() => workspace?.brand_colour || '#1A5C3A')
   const [logoPreview, setLogoPreview] = useState<string | null>(logoUrl)
 
   const [defaultsForm, setDefaultsForm] = useState(() => ({
-    // FIX (deep audit, section 5 re-pass): `|| 2` — same falsy-zero read
-    // bug as riskThreshold below. The dropdown only offers 1–5 today so
-    // this was never user-reachable, but fixing the write side
-    // (api/workspace/defaults/route.ts) without fixing this read would
-    // leave a value saved via direct API call misrendered here.
-    revRounds:    String(defaults?.revision_rounds ?? 2),
-    payStructure: defaults?.payment_structure || '50_50',
-    // FIX (doc-completeness audit, finding #1): governing law used to be a
-    // second, independent field here (workspace_defaults.governing_law)
-    // that SOW generation never actually read — agencies would fill this
-    // in during onboarding, see it "saved," and every SOW would silently
-    // use the fallback country instead. There's now exactly one governing
-    // law field, on the Workspace tab, writing straight to
-    // workspaces.governing_law (the field SOW generation actually reads).
+    revRounds:      String(defaults?.revision_rounds ?? 2),
+    payStructure:   defaults?.payment_structure || '50_50',
+    revisionPolicy: defaults?.revision_policy || '',
+    paymentTerms:   defaults?.payment_terms || '',
+    outOfScope:     stdText(defaults?.out_of_scope_clauses),
+    assumptions:    stdText(defaults?.assumptions),
   }))
 
   const [guardianForm, setGuardianForm] = useState(() => ({
@@ -305,12 +339,15 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
 
 
   async function patch(path: string, body: any) {
-    setSaving(true); setError('')
+    setSaving(true); setError(''); setConflict(false)
     try {
       const res  = await fetch(path, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error)
-      setSaved(true); setTimeout(() => setSaved(false), 2000)
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        if (Array.isArray(json.conflicts)) setConflict(true)
+        throw new Error(json.error || 'Save failed')
+      }
+      setSaved('Changes saved.'); setTimeout(() => setSaved(''), 2000)
       router.refresh()
       return true
     } catch (err: unknown) {
@@ -355,8 +392,19 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
         </div>
       </div>
       <div>
-        {error && <div className="auth-error" style={{ marginBottom: 14 }}>{error}</div>}
-        {saved && <div className="auth-success" style={{ marginBottom: 14 }}>Changes saved.</div>}
+        {error && (
+          <div className="auth-error" style={{ marginBottom: 14 }}>
+            {error}
+            {conflict && (
+              <div style={{ marginTop: 8 }}>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => window.location.reload()}>
+                  Reload latest settings
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+        {saved && <div className="auth-success" style={{ marginBottom: 14 }}>{saved}</div>}
 
         {tab === 'account' && <AccountTab session={session} supabase={supabase} router={router} mfaMandatory={mfaMandatory} />}
 
@@ -379,7 +427,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
         )}
 
         {tab === 'guardian' && (
-          <GuardianTab form={guardianForm} setForm={setGuardianForm} permissions={permissions} onSave={patch} saving={saving} />
+          <GuardianTab form={guardianForm} setForm={setGuardianForm} permissions={permissions} onSave={patchWorkspace} saving={saving} />
         )}
 
         {tab === 'billing' && <BillingTab workspace={workspace} billing={billing} session={session} permissions={permissions} />}
@@ -709,13 +757,14 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugLocked }
         </div>
         <div className="fgrp">
           <label className="flbl">
-            Workspace slug{' '}
+            Workspace handle{' '}
             <span className="fhint">
               {slugLocked ? '(already changed once — locked)' : '(can only be changed once, ever — choose carefully)'}
             </span>
           </label>
-          <input className="finp" value={form.slug} disabled={slugLocked}
+          <input className="finp" value={form.slug} disabled={slugLocked} maxLength={40}
             onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('slug', e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '-'))} />
+          <span className="fhint">A short unique identifier for this workspace: 3–40 letters, numbers or hyphens.</span>
         </div>
         <div className="f2">
           <div className="fgrp">
@@ -732,24 +781,19 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugLocked }
         <div className="f2">
           <div className="fgrp">
             <label className="flbl">Timezone</label>
-            {/* FIX (deep audit, section 5 re-pass): this was a bare free-text
-                input — any string ("asdf", empty, a typo) saved without
-                complaint. Nothing in the app currently reads workspace
-                timezone for scheduling or display, but storing garbage in a
-                field literally named "timezone" is its own small landmine
-                for whenever something finally does. A constrained select
-                over the real IANA list costs nothing and makes the stored
-                value trustworthy the day it's needed. */}
             <select className="finp" value={form.timezone} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => set('timezone', e.target.value)}>
-              <option value="">Not set</option>
-              {/* A previously-saved free-text value that isn't a real IANA
-                  zone (from before this was a select) still shows up as its
-                  own option instead of silently vanishing from the field. */}
+              <option value="">Not set (UTC)</option>
+              {/* A saved zone that this browser's list doesn't name (an alias
+                  such as Asia/Kolkata, or free text from before this was a
+                  select) still shows as its own option. */}
               {form.timezone && !IANA_TIMEZONES.includes(form.timezone) && (
-                <option value={form.timezone}>{form.timezone} (unrecognized — please re-select)</option>
+                <option value={form.timezone}>
+                  {form.timezone.replace(/_/g, ' ')}{isValidTimeZone(form.timezone) ? '' : ' (unrecognized — please re-select)'}
+                </option>
               )}
               {IANA_TIMEZONES.map((tz: string) => <option key={tz} value={tz}>{tz.replace(/_/g, ' ')}</option>)}
             </select>
+            <span className="fhint">The audit log and your audit, portfolio and report PDFs show times in this timezone. CSV and JSON exports always use UTC.</span>
           </div>
           <div className="fgrp">
             <label className="flbl">Governing law</label>
@@ -909,6 +953,8 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, save
   }
 
   async function saveBranding() {
+    if (!/^#[0-9a-fA-F]{6}$/.test(colour)) { setFileError('Brand colour must be a hex colour, e.g. #1A5C3A'); return }
+    setFileError('')
     setUploading(true)
     try {
       let logoStoragePath: string | undefined
@@ -936,7 +982,8 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, save
           return
         }
       }
-      await onSave('/api/workspace/branding', { brandColour: colour, ...(logoStoragePath ? { logoStoragePath } : {}) })
+      const ok = await onSave('/api/workspace/branding', { brandColour: colour, ...(logoStoragePath ? { logoStoragePath } : {}) })
+      if (ok) setLogoFile(null)
     } finally { setUploading(false) }
   }
 
@@ -977,14 +1024,16 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, save
   }
 
   async function clearSavedSignature() {
-    setSavingSig(true)
+    setSigError(''); setSavingSig(true)
     try {
       const res = await fetch('/api/workspace/branding', {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ agencySignatureData: null }),
       })
       if (res.ok) setSigSaved(null)
-    } finally { setSavingSig(false) }
+      else setSigError('Could not remove the signature — try again.')
+    } catch { setSigError('Could not remove the signature — try again.') }
+    finally { setSavingSig(false) }
   }
 
   return (
@@ -1044,6 +1093,7 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, save
               <button className="btn btn-ghost btn-sm" onClick={clearSavedSignature} disabled={savingSig}>
                 {savingSig ? <span className="spin spin-dark" /> : <><i className="ti ti-trash" style={{ fontSize: 12 }} /> Remove & redraw</>}
               </button>
+              {sigError && <p className="ferr" style={{ marginTop: 6 }}>{sigError}</p>}
             </div>
           </div>
         ) : (
@@ -1065,42 +1115,92 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, save
   )
 }
 
-// ── DEFAULTS ──────────────────────────────────────────────────
-// FIX (deep audit, section 5 re-pass): completes per-project-type SOW
-// defaults — see app/api/workspace/defaults/route.ts for the full
-// writeup of why workspace_defaults always supported this and nothing
-// ever used it.
 const DEFAULTS_PROJECT_TYPES = Object.keys(PROJECT_TYPE_LABELS)
+
+type StandardsForm = { revisionPolicy: string; paymentTerms: string; outOfScope: string; assumptions: string }
+
+const STD_TEXT_MAX = 1500
+const STD_ITEM_MAX = 500
+const STD_ITEMS_MAX = 30
+
+function standardsProblem(std: StandardsForm): string {
+  if (std.revisionPolicy.trim().length > STD_TEXT_MAX) return `Revision policy wording must be ${STD_TEXT_MAX} characters or fewer.`
+  if (std.paymentTerms.trim().length > STD_TEXT_MAX) return `Payment terms wording must be ${STD_TEXT_MAX} characters or fewer.`
+  for (const [label, text] of [['exclusions', std.outOfScope], ['assumptions', std.assumptions]] as const) {
+    const items = stdLines(text)
+    if (items.length > STD_ITEMS_MAX) return `Standard ${label} can have at most ${STD_ITEMS_MAX} items (one per line).`
+    if (items.some(i => i.length > STD_ITEM_MAX)) return `Each standard ${label.slice(0, -1)} must be ${STD_ITEM_MAX} characters or fewer.`
+  }
+  return ''
+}
+
+function StandardsFields({ value, onChange, disabled }: { value: StandardsForm; onChange: (patch: Partial<StandardsForm>) => void; disabled?: boolean }) {
+  const oosCount = stdLines(value.outOfScope).length
+  const asmCount = stdLines(value.assumptions).length
+  return (
+    <div style={{ marginTop: 22, paddingTop: 18, borderTop: '1px solid var(--border)' }}>
+      <div className="settings-section-title">Standard terms</div>
+      <p style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 16, lineHeight: 1.6 }}>
+        Your agency&apos;s usual wording. Whenever a SOW is generated, these are worked into the matching sections
+        and appended if the draft leaves them out. Leave a field blank to add nothing for it.
+      </p>
+      <div className="fgrp">
+        <label className="flbl">Revision policy wording <span className="fhint">— {value.revisionPolicy.trim().length}/{STD_TEXT_MAX}</span></label>
+        <textarea className="finp" rows={3} disabled={disabled} value={value.revisionPolicy}
+          onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => onChange({ revisionPolicy: e.target.value })}
+          placeholder="e.g. Each round covers consolidated feedback delivered within 5 business days of the deliverable." />
+      </div>
+      <div className="fgrp">
+        <label className="flbl">Payment terms wording <span className="fhint">— {value.paymentTerms.trim().length}/{STD_TEXT_MAX}</span></label>
+        <textarea className="finp" rows={3} disabled={disabled} value={value.paymentTerms}
+          onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => onChange({ paymentTerms: e.target.value })}
+          placeholder="e.g. Invoices are due within 14 days of issue. Work pauses on any invoice more than 7 days overdue." />
+      </div>
+      <div className="fgrp">
+        <label className="flbl">Standard exclusions <span className="fhint">— one per line · {oosCount}/{STD_ITEMS_MAX}</span></label>
+        <textarea className="finp" rows={4} disabled={disabled} value={value.outOfScope}
+          onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => onChange({ outOfScope: e.target.value })}
+          placeholder={'Hosting and domain fees\nThird-party licences\nContent writing'} />
+      </div>
+      <div className="fgrp">
+        <label className="flbl">Standard assumptions <span className="fhint">— one per line · {asmCount}/{STD_ITEMS_MAX}</span></label>
+        <textarea className="finp" rows={4} disabled={disabled} value={value.assumptions}
+          onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => onChange({ assumptions: e.target.value })}
+          placeholder={'Client provides all content and brand assets before kickoff\nOne named point of contact approves each deliverable'} />
+      </div>
+    </div>
+  )
+}
+
+const REVISION_ROUND_CHOICES = ['1', '2', '3', '4', '5']
 
 function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab }: any) {
   function set(key: string, value: string) {
     setForm((f: any) => ({ ...f, [key]: value }))
   }
 
-  // 'global' behaves exactly as this tab always did (form/setForm/onSave
-  // from the parent, seeded server-side). Picking a specific project type
-  // switches to a locally-fetched override scoped to just that type.
-  //
-  // FIX (deep audit, section 5 re-pass): these hooks must run before the
-  // `permissions.manageWorkspace` early return below — this component
-  // previously had no hooks of its own (just the form/setForm passed in
-  // from the parent), so the early return above the function body never
-  // mattered. Adding hooks here without moving the permission check broke
-  // the rules of hooks (an unprivileged member hits the `<Restricted />`
-  // return and skips every hook below it, while a privileged member
-  // doesn't — a different hook count between renders/users).
   const [scope, setScope] = useState<string>('global')
   const [typeData, setTypeData] = useState<{ revisionRounds: number; paymentStructure: string; isOverride: boolean } | null>(null)
+  const [typeStd, setTypeStd] = useState<StandardsForm>({ revisionPolicy: '', paymentTerms: '', outOfScope: '', assumptions: '' })
   const [typeLoading, setTypeLoading] = useState(false)
+  const [localError, setLocalError] = useState('')
   const isGlobal = scope === 'global'
 
+  const stdFromJson = (json: any): StandardsForm => ({
+    revisionPolicy: json?.revisionPolicy || '',
+    paymentTerms:   json?.paymentTerms || '',
+    outOfScope:     stdText(json?.outOfScopeClauses),
+    assumptions:    stdText(json?.assumptions),
+  })
+
   useEffect(() => {
+    setLocalError('')
     if (isGlobal) { setTypeData(null); return }
     let cancelled = false
     setTypeLoading(true)
     fetch(`/api/workspace/defaults?projectType=${scope}`)
       .then(r => r.json())
-      .then(json => { if (!cancelled) setTypeData(json) })
+      .then(json => { if (!cancelled) { setTypeData(json); setTypeStd(stdFromJson(json)) } })
       .catch(() => { if (!cancelled) setTypeData(null) })
       .finally(() => { if (!cancelled) setTypeLoading(false) })
     return () => { cancelled = true }
@@ -1110,6 +1210,12 @@ function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab }: any
 
   const revValue = isGlobal ? form.revRounds : String(typeData?.revisionRounds ?? 2)
   const payValue = isGlobal ? form.payStructure : (typeData?.paymentStructure ?? '50_50')
+  const std: StandardsForm = isGlobal
+    ? { revisionPolicy: form.revisionPolicy, paymentTerms: form.paymentTerms, outOfScope: form.outOfScope, assumptions: form.assumptions }
+    : typeStd
+  const revChoices = REVISION_ROUND_CHOICES.includes(revValue)
+    ? REVISION_ROUND_CHOICES
+    : [...REVISION_ROUND_CHOICES, revValue].sort((a, b) => Number(a) - Number(b))
 
   function setTypeField(patch: Partial<{ revisionRounds: number; paymentStructure: string }>) {
     setTypeData(d => ({
@@ -1118,35 +1224,49 @@ function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab }: any
     }))
   }
 
+  function setStd(patch: Partial<StandardsForm>) {
+    if (isGlobal) setForm((f: any) => ({ ...f, ...patch }))
+    else setTypeStd(prev => ({ ...prev, ...patch }))
+  }
+
   async function refetchType() {
     const res = await fetch(`/api/workspace/defaults?projectType=${scope}`)
-    if (res.ok) setTypeData(await res.json())
+    if (res.ok) { const json = await res.json(); setTypeData(json); setTypeStd(stdFromJson(json)) }
   }
 
   async function saveCurrent() {
+    const problem = standardsProblem(std)
+    if (problem) { setLocalError(problem); return }
+    setLocalError('')
+    const standards = {
+      revisionPolicy:    std.revisionPolicy.trim(),
+      paymentTerms:      std.paymentTerms.trim(),
+      outOfScopeClauses: stdLines(std.outOfScope),
+      assumptions:       stdLines(std.assumptions),
+    }
     if (isGlobal) {
-      await onSave('/api/workspace/defaults', { revisionRounds: parseInt(form.revRounds), paymentStructure: form.payStructure })
+      await onSave('/api/workspace/defaults', { revisionRounds: parseInt(form.revRounds), paymentStructure: form.payStructure, ...standards })
       return
     }
     const ok = await onSave('/api/workspace/defaults', {
       revisionRounds: typeData?.revisionRounds ?? 2,
       paymentStructure: typeData?.paymentStructure ?? '50_50',
       projectType: scope,
+      ...standards,
     })
-    // router.refresh() inside onSave only refreshes server-provided props
-    // (the global row) — this tab's per-type view is client-fetched, so
-    // re-pull it directly to reflect the save (isOverride flips to true).
     if (ok) await refetchType()
   }
 
   async function removeOverride() {
     if (isGlobal || !typeData?.isOverride) return
     if (!confirm(`Remove the ${PROJECT_TYPE_LABELS[scope]} override? New ${PROJECT_TYPE_LABELS[scope]} projects will go back to using the global default.`)) return
-    setTypeLoading(true)
+    setTypeLoading(true); setLocalError('')
     try {
       const res = await fetch(`/api/workspace/defaults?projectType=${scope}`, { method: 'DELETE' })
       if (res.ok) await refetchType()
-    } finally { setTypeLoading(false) }
+      else { const json = await res.json().catch(() => ({})); setLocalError(json.error || 'Could not remove that override. Try again.') }
+    } catch { setLocalError('Could not remove that override. Try again.') }
+    finally { setTypeLoading(false) }
   }
 
   return (
@@ -1155,7 +1275,7 @@ function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab }: any
       <div className="settings-section">
         <div className="settings-section-title">Default SOW settings</div>
         <p style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 18, lineHeight: 1.6 }}>
-          These values pre-fill every new Statement of Work. You can override them per project, and now per project type below.
+          These values pre-fill every new Statement of Work. You can override them per project, and per project type below.
         </p>
 
         <div className="fgrp" style={{ marginBottom: 18, maxWidth: 340 }}>
@@ -1178,7 +1298,7 @@ function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab }: any
             <label className="flbl">Default revision rounds</label>
             <select className="finp" disabled={typeLoading} value={revValue}
               onChange={(e: React.ChangeEvent<HTMLSelectElement>) => isGlobal ? set('revRounds', e.target.value) : setTypeField({ revisionRounds: parseInt(e.target.value) })}>
-              {['1','2','3','4','5'].map(n => <option key={n} value={n}>{n} round{n !== '1' ? 's' : ''}</option>)}
+              {revChoices.map(n => <option key={n} value={n}>{n} round{n !== '1' ? 's' : ''}</option>)}
             </select>
           </div>
           <div className="fgrp">
@@ -1193,20 +1313,17 @@ function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab }: any
             </select>
           </div>
         </div>
-        {/* FIX (doc-completeness audit, finding #1): this used to be a
-            second, disconnected "Default governing law" input that saved
-            to a column SOW generation never read — every SOW silently
-            defaulted regardless of what was typed here. Governing law now
-            lives in exactly one place, and — unlike revision rounds and
-            payment structure — is never project-type-specific, since a
-            workspace only has one legal jurisdiction. */}
-        <p style={{ fontSize: 12.5, color: 'var(--text-3)', marginBottom: 0, lineHeight: 1.6 }}>
+
+        <StandardsFields value={std} onChange={setStd} disabled={typeLoading} />
+
+        <p style={{ fontSize: 12.5, color: 'var(--text-3)', margin: '16px 0 0', lineHeight: 1.6 }}>
           Governing law is set on the{' '}
           <button type="button" onClick={() => setTab?.('workspace')}
             style={{ background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'var(--green)', textDecoration: 'underline', cursor: 'pointer' }}>
             Workspace tab
           </button>{' '}and applies to every SOW, regardless of project type.
         </p>
+        {localError && <p className="ferr" style={{ marginTop: 10 }}>{localError}</p>}
         <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
           <button className="btn btn-primary btn-sm" disabled={saving || typeLoading} onClick={saveCurrent}>
             {saving ? <span className="spin" /> : isGlobal ? 'Save defaults' : `Save ${PROJECT_TYPE_LABELS[scope]} override`}
@@ -1222,7 +1339,6 @@ function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab }: any
   )
 }
 
-// ── GUARDIAN ──────────────────────────────────────────────────
 function GuardianTab({ form, setForm, permissions, onSave, saving }: any) {
   if (!permissions.manageWorkspace) return <Restricted />
 
@@ -1417,7 +1533,7 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
     finally { setHistoryLoadingMore(false) }
   }
 
-  if (!permissions.manageBilling) return <Restricted />
+  if (!permissions.manageBilling) return <Restricted need="MANAGE_BILLING" />
 
   async function handleCancel() {
     if (!confirm('Cancel your subscription? You\u2019ll keep access until the end of the current billing period, then the workspace will be downgraded.')) return
@@ -1721,23 +1837,30 @@ function NotificationsTab({ permissions }: { permissions: { manageWorkspace: boo
       .catch(() => setLoadErr('Could not load notification preferences.'))
   }, [])
 
+  // In-app-only events keep their single on/off state in `prefs` (the server
+  // stores it in the in-app column and reports it there); only events that
+  // also go out by email have a separate bell state in `inAppPrefs`.
+  const inAppOnlyKeys = new Set<string>(IN_APP_NOTIF_ITEMS.map(i => i.key))
+
   async function toggle(key: string, channel: 'email' | 'in_app' = 'email') {
     if (!prefs || locked[key]) return
-    const isBell = channel === 'in_app'
-    const next = isBell ? !inAppPrefs[key] : !prefs[key]
-    const set = (v: boolean) => isBell
+    const inAppOnly = inAppOnlyKeys.has(key)
+    const isBell = !inAppOnly && channel === 'in_app'
+    const current = isBell ? inAppPrefs[key] !== false : !!prefs[key]
+    const next = !current
+    const write = (v: boolean) => isBell
       ? setInAppPrefs(p => ({ ...p, [key]: v }))
       : setPrefs(p => ({ ...(p || {}), [key]: v }))
-    set(next) // optimistic
+    write(next) // optimistic
     setSaving(`${key}:${channel}`)
     try {
       const res = await fetch('/api/notifications/preferences', {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ eventType: key, enabled: next, channel }),
+        body: JSON.stringify({ eventType: key, enabled: next, channel: inAppOnly ? 'in_app' : channel }),
       })
       if (!res.ok) throw new Error()
     } catch {
-      set(!next) // revert on failure
+      write(current) // revert on failure
     } finally { setSaving(null) }
   }
 
@@ -2097,12 +2220,12 @@ function TransferOwnershipSection() {
 }
 
 
-function Restricted() {
+function Restricted({ need = 'MANAGE_WORKSPACE_SETTINGS' }: { need?: string }) {
   return (
     <div className="surface surface-p" style={{ textAlign: 'center', padding: 48 }}>
       <i className="ti ti-lock" style={{ fontSize: 28, color: 'var(--text-4)', display: 'block', marginBottom: 12 }} />
       <p style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-2)', marginBottom: 6 }}>Access restricted</p>
-      <p style={{ fontSize: 12, color: 'var(--text-3)' }}>You need the MANAGE_WORKSPACE_SETTINGS permission to view this section.</p>
+      <p style={{ fontSize: 12, color: 'var(--text-3)' }}>You need the {need} permission to view this section.</p>
     </div>
   )
 }

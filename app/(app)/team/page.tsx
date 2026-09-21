@@ -8,6 +8,7 @@ import { redirect } from 'next/navigation'
 import TeamClient from '@/components/team/TeamClient'
 import Link from 'next/link'
 import { PLAN_LIMITS } from '@/lib/utils/format'
+import { permissionsRequireMfa } from '@/lib/auth/mfa-policy'
 
 export const metadata = { title: 'Team' }
 
@@ -42,51 +43,52 @@ export default async function TeamPage() {
     (service as any)
       .from('workspace_members')
       .select(`
-        id, status, deactivated_at, effective_permissions,
-        users!workspace_members_user_id_fkey(id, name, email, avatar_url)
+        id, status, deactivated_at, role_id, permission_overrides,
+        users!workspace_members_user_id_fkey(id, name, email, avatar_url),
+        roles(id, name)
       `)
       .eq('workspace_id', session.workspaceId)
       .eq('status', 'deactivated')
       .order('deactivated_at', { ascending: false }),
   ])
 
-  const members = membersRes.data || []
+  const canInvite      = hasPermission(session, 'INVITE_MEMBERS')
   const canManageRoles = hasPermission(session, 'MANAGE_ROLES')
 
-  // FIX (deep audit, Team & Invites section): every member received the
-  // complete roles.permissions jsonb for every role in the workspace,
-  // plus each member's own effective_permissions — and TeamClient gated
-  // only the ACTIONS, not the Roles tab itself, so anyone could read the
-  // full permission matrix. Props handed to a Client Component are
-  // serialized into the RSC payload and reach the browser regardless of
-  // what renders, which is the exact reasoning app/(app)/settings/page.tsx
-  // already applies to its own sensitive columns. Only ship the
-  // permission maps to someone who can actually act on them.
+  // Everyone on the team can see who is on it. What each person is permitted to
+  // do (their permission map and overrides), pending invitees' addresses and
+  // the deactivated list are only sent to people whose role lets them act on
+  // them — anything sent here is readable in the browser.
+  const allMembers = membersRes.data || []
+  const stripPermissions = (m: any) => {
+    const { effective_permissions, permission_overrides, ...rest } = m
+    return canManageRoles ? { ...rest, permission_overrides } : rest
+  }
+
+  // Which members have MFA set up, and which hold access that requires it.
+  let mfaByUser = new Map<string, boolean>()
+  if (canManageRoles) {
+    const { data: mfaRows, error: mfaErr } = await (service as any)
+      .rpc('workspace_mfa_status', { p_workspace_id: session.workspaceId })
+    if (!mfaErr) mfaByUser = new Map((mfaRows || []).map((r: any) => [r.user_id, !!r.has_mfa]))
+  }
+  const withMfa = (m: any) => {
+    const userId = m.users?.id
+    const hasMfa = userId && mfaByUser.has(userId) ? mfaByUser.get(userId)! : undefined
+    const mfa = hasMfa === undefined ? undefined
+      : hasMfa ? 'enrolled'
+      : permissionsRequireMfa(m.effective_permissions) ? 'required_missing' : 'none'
+    return { ...stripPermissions(m), ...(mfa ? { mfa } : {}) }
+  }
+
   const roles = (rolesRes.data || []).map((r: any) => canManageRoles ? r : ({
     id: r.id, name: r.name, description: r.description, is_default: r.is_default,
   }))
-  const active  = members.filter((m: any) => m.status === 'active')
-  const pending = members.filter((m: any) => m.status === 'invited')
-  // FIX (deep audit, Team & Invites re-pass): the main query already
-  // fetches 'expired' rows too (it only excludes 'deactivated'), but they
-  // were dropped on the floor here — neither `active` nor `pending`
-  // matches status='expired', so cron/invite-cleanup/route.ts flipping a
-  // dead invite's status made it vanish from the Team UI entirely, with
-  // no "Expired" state ever shown and no way to manually clear it before
-  // the 30-day auto-purge. Surface them the same way pending invites are.
-  const expired = members.filter((m: any) => m.status === 'expired')
-  const deactivated = deactivatedRes.data || []
+  const active  = allMembers.filter((m: any) => m.status === 'active').map(withMfa)
+  const pending = canInvite ? allMembers.filter((m: any) => m.status === 'invited').map(stripPermissions) : []
+  const expired = canInvite ? allMembers.filter((m: any) => m.status === 'expired').map(stripPermissions) : []
+  const deactivated = canInvite ? (deactivatedRes.data || []).map(stripPermissions) : []
 
-  // FIX (deep audit, Team & Invites re-pass): this used to hide the whole
-  // page behind a Solo-plan upsell whenever planTier === 'solo', no
-  // exception. Since plan downgrades were never checked against a
-  // workspace's actual seat count (see the /api/billing/upgrade fix), a
-  // workspace could already be sitting on Solo with several active
-  // members — and this page was the one place that would have let them
-  // see and fix that. Only show the upsell for a genuinely single-member
-  // workspace; otherwise render the real page (with a banner) so an
-  // over-limit workspace can actually deactivate down to what it's paying
-  // for instead of being locked out of managing its own team.
   if (session.planTier === 'solo' && active.length <= 1) {
     return <SoloUpsell />
   }
@@ -114,7 +116,7 @@ export default async function TeamPage() {
       deactivatedMembers={deactivated}
       roles={roles}
       session={session}
-      canInvite={hasPermission(session, 'INVITE_MEMBERS')}
+      canInvite={canInvite}
       canManageRoles={canManageRoles}
       workspaceId={session.workspaceId}
       overSeatLimit={overSeatLimit}

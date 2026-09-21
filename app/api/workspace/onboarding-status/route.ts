@@ -50,10 +50,12 @@ async function buildResumePayload(service: any, w: any) {
   // submitBranding/submitDefaults always PATCH/POST whatever's currently
   // in state. Fetch and return what's already saved so the wizard can
   // rehydrate its fields instead of reintroducing the defaults.
-  const { data: defaultsRow } = await service
+  const { data: defaultsRows } = await service
     .from('workspace_defaults')
     .select('revision_rounds, payment_structure')
-    .eq('workspace_id', w.id).is('project_type', null).maybeSingle()
+    .eq('workspace_id', w.id).is('project_type', null)
+    .order('updated_at', { ascending: false }).limit(1)
+  const defaultsRow = defaultsRows?.[0] ?? null
 
   return {
     status: 'resume',

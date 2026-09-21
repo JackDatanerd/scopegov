@@ -1,6 +1,6 @@
 // components/settings/ApprovalWorkflowsClient.tsx
 'use client'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { formatCurrency } from '@/lib/utils/format'
 // FIX (section-11 audit): this file hardcoded its own 8-currency list,
@@ -53,6 +53,9 @@ export default function ApprovalWorkflowsClient({ initialWorkflows, roles, membe
 }) {
   const router = useRouter()
   const [workflows, setWorkflows] = useState<Workflow[]>(initialWorkflows)
+  // router.refresh() re-renders the server page with fresh data but keeps this
+  // component's state, so follow the prop or a saved workflow never appears.
+  useEffect(() => { setWorkflows(initialWorkflows) }, [initialWorkflows])
   const [editing, setEditing] = useState<Workflow | 'new' | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [error, setError] = useState('')
@@ -216,6 +219,11 @@ function WorkflowEditorModal({ workflow, defaultType, roles, members, workspaceC
   async function save() {
     setError('')
     if (!name.trim()) { setError('Give this workflow a name'); return }
+    // Ticking the threshold box with no amount would quietly save a workflow
+    // that applies to every document — the opposite of what was asked for.
+    if (hasThreshold && (threshold.trim() === '' || !Number.isFinite(Number(threshold)) || Number(threshold) < 0)) {
+      setError('Enter the value threshold, or untick “Only apply above a value threshold”.'); return
+    }
     const cleanSteps = steps.filter(s => s.kind && s.id)
     if (cleanSteps.length === 0) { setError('Add at least one approver'); return }
     if (cleanSteps.length !== steps.length) { setError('Every step needs an approver selected'); return }

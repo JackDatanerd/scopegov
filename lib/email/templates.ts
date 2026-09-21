@@ -535,11 +535,14 @@ export async function sendGuardianFlagEmail(params: {
 // ── Event 20: Invite sent ─────────────────────────────────────
 export async function sendInviteEmail(params: {
   to: string; inviterName: string; workspaceName: string
-  agencyName: string; inviteUrl: string; expiresAt: string
+  agencyName: string; inviteUrl: string; expiresAt: string; roleName?: string | null
 }) {
-  const { to, inviterName: inviterNameRaw, workspaceName: workspaceNameRaw, agencyName, inviteUrl, expiresAt } = params
+  const { to, inviterName: inviterNameRaw, workspaceName: workspaceNameRaw, agencyName, inviteUrl, expiresAt, roleName: roleNameRaw } = params
   const inviterName   = escapeHtml(inviterNameRaw)
   const workspaceName = escapeHtml(workspaceNameRaw)
+  const roleLine = roleNameRaw
+    ? `<p style="font-size:13px;color:${C.text2};line-height:1.7;margin:0 0 16px;">You&apos;ll join as <strong>${escapeHtml(roleNameRaw)}</strong>.</p>`
+    : ''
 
   const html = baseTemplate({
     agencyName: 'ScopeGov',
@@ -551,6 +554,7 @@ export async function sendInviteEmail(params: {
         <strong>${inviterName}</strong> has invited you to join <strong>${workspaceName}</strong>
         on ScopeGov — the scope governance platform for agencies.
       </p>
+      ${roleLine}
       <p style="font-size:13px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
         As a team member, you&apos;ll be able to collaborate on projects, SOWs, change orders,
         and Guardian scope monitoring.

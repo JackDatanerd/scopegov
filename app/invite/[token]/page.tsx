@@ -8,6 +8,8 @@ import { useState, useEffect } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter, useParams } from 'next/navigation'
 import Link from 'next/link'
+import { TERMS_VERSION } from '@/lib/auth/terms'
+import { validatePassword } from '@/lib/auth/password-policy'
 
 export default function InvitePage() {
   const router   = useRouter()
@@ -71,13 +73,14 @@ export default function InvitePage() {
 
   async function handleNewUser(e: React.FormEvent) {
     e.preventDefault()
-    if (password.length < 8) { setError('Password must be at least 8 characters.'); return }
+    const passwordProblem = validatePassword(password)
+    if (passwordProblem) { setError(passwordProblem); return }
     setLoading(true); setError('')
     try {
       const res  = await fetch(`/api/team/invite/${token}/signup`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ name, password }),
+        body:    JSON.stringify({ name, password, acceptedTerms: true }),
       })
       const json = await res.json()
       if (!res.ok) {
@@ -149,12 +152,15 @@ export default function InvitePage() {
   // invite URL, rather than dumping them on /dashboard and leaving them
   // to find the link in their inbox again. `next` is the same mechanism
   // middleware.ts already uses for deep links.
-  async function signInWithGoogle() {
+  // `newAccount`: the person is creating their account here (the Terms notice is
+  // on screen), so the version they saw is passed on to be recorded.
+  async function signInWithGoogle(newAccount = false) {
     setLoading(true); setError('')
     try {
+      const terms = newAccount ? `&terms=${encodeURIComponent(TERMS_VERSION)}` : ''
       const { error: oauthErr } = await supabase.auth.signInWithOAuth({
         provider: 'google',
-        options: { redirectTo: `${window.location.origin}/api/auth/callback?next=/invite/${token}` },
+        options: { redirectTo: `${window.location.origin}/api/auth/callback?next=/invite/${token}${terms}` },
       })
       if (oauthErr) throw oauthErr
     } catch (err: unknown) {
@@ -321,7 +327,7 @@ export default function InvitePage() {
                 )}
                 <button type="button" className="btn btn-ghost"
                   style={{ width: '100%', justifyContent: 'center', padding: '10px', marginBottom: 14 }}
-                  disabled={loading} onClick={signInWithGoogle}>
+                  disabled={loading} onClick={() => signInWithGoogle(true)}>
                   <i className="ti ti-brand-google" style={{ fontSize: 14 }} /> Continue with Google
                 </button>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '0 0 14px' }}>
@@ -349,6 +355,11 @@ export default function InvitePage() {
                     disabled={loading || !name || !password}>
                     {loading ? <span className="spin" /> : 'Accept invitation'}
                   </button>
+                  <p style={{ fontSize: 11, color: 'var(--text-3)', textAlign: 'center', marginTop: 12, lineHeight: 1.6 }}>
+                    By creating an account you agree to our{' '}
+                    <a href="https://scopegov.app/terms" target="_blank" rel="noreferrer" className="auth-link">Terms</a> and{' '}
+                    <a href="https://scopegov.app/privacy" target="_blank" rel="noreferrer" className="auth-link">Privacy Policy</a>.
+                  </p>
                 </form>
               </>
             )}
@@ -402,7 +413,7 @@ export default function InvitePage() {
               from this screen at all. */}
           <button type="button" className="btn btn-ghost"
             style={{ width: '100%', justifyContent: 'center', padding: '10px', marginBottom: 14 }}
-            disabled={loading} onClick={signInWithGoogle}>
+            disabled={loading} onClick={() => signInWithGoogle(false)}>
             <i className="ti ti-brand-google" style={{ fontSize: 14 }} /> Continue with Google
           </button>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '0 0 14px' }}>

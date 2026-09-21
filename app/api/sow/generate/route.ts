@@ -16,6 +16,7 @@ import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
 import { logAudit } from '@/lib/utils/audit'
 import { sanitizeRichText } from '@/lib/utils/sanitize'
 import { applyAgencyStandards, ensureContractValueStated, type AgencyStandards } from '@/lib/ai/sow-content'
+import { pickAgencyStandards } from '@/lib/utils/agency-standards'
 import { canReadProject } from '@/lib/utils/project-access'
 import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
 import Anthropic from '@anthropic-ai/sdk'
@@ -187,12 +188,7 @@ export async function POST(request: NextRequest) {
         .from('workspace_defaults')
         .select('project_type, revision_policy, payment_terms, out_of_scope_clauses, assumptions')
         .eq('workspace_id', session.workspaceId)
-      const rows: any[] = Array.isArray(defaultRows) ? defaultRows : []
-      const row = rows.find(r => r.project_type === project.type) || rows.find(r => !r.project_type)
-      if (row) standards = {
-        revisionPolicy: row.revision_policy, paymentTerms: row.payment_terms,
-        outOfScopeClauses: row.out_of_scope_clauses, assumptions: row.assumptions,
-      }
+      standards = pickAgencyStandards(Array.isArray(defaultRows) ? defaultRows : [], project.type)
     } catch (e) { console.error('SOW generate: workspace_defaults lookup failed', e) }
 
     const contentInput: SowContentInput = {

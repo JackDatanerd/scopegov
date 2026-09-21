@@ -1,0 +1,73 @@
+ScopeGov — Settings (5) + Team & invites (6): independent deep-audit pass, fixes and gap closures
+Base commit: 7b7ab7a
+
+RUN THESE MIGRATIONS FIRST (Supabase SQL editor), in order, before deploying the code:
+  066_workspace_defaults_one_global_row.sql   dedupe global defaults rows + partial unique index
+  067_team_settings_round.sql                 unique role names; retained project assignments
+                                              (archive/restore functions); atomic approval-workflow
+                                              edit; member MFA status function
+The code depends on 067's functions (approval-workflow edit, project archive/restore, MFA status).
+
+SETTINGS
+ Gaps closed
+  - Agency standard SOW terms now have an editor (Settings > Defaults), global and per project type:
+    revision-policy wording, payment-terms wording, standard exclusions, standard assumptions.
+    SOW generation merges them field-by-field (a per-type row no longer drops workspace-wide standards).
+  - Settings audit trail records only fields that changed, with from/to values (tax ID, phone and
+    payment instructions are recorded as "changed" without the value). Defaults and branding likewise.
+  - Concurrent edits: the client sends only changed fields plus the values it loaded; the server
+    refuses with a 409 if a colleague changed the same field meanwhile ("Reload latest settings").
+  - Workspace timezone now applies to the in-app audit log and to the audit, portfolio and report
+    PDFs (labelled, e.g. "EAT"). CSV/JSON exports stay UTC by design.
+  - Workspace handle (slug): validated (3-40 chars, reserved words), copy no longer calls it a URL.
+ Bugs fixed
+  - Timezone validation rejected Asia/Kolkata and UTC (canonical-name list check); now validates by
+    constructing an Intl formatter. UTC is offered in the picker.
+  - Approval workflows list did not update after create/edit (state not following props).
+  - Five in-app-only notification toggles did not work (read/wrote the wrong state).
+  - workspace_defaults could accumulate duplicate global rows; reads/writes tolerate them, a race on
+    insert is retried as an update, and migration 066 enforces one global row.
+  - PATCH approval-workflows/[id] wrote before validating and ignored errors; now validate-first,
+    atomic (fields + steps in one transaction), and a workflow can't be saved/activated with no steps.
+  - Blank threshold with "only above a value" ticked silently saved a catch-all; now rejected.
+  - Revision rounds validated (whole number 0-20); governing law length/type checked; settings fields
+    type-checked (no more opaque 500s / "[object Object]").
+  - Erased accounts' profile photos are now deleted from the public bucket by the anonymization cron.
+  - Billing tab named the wrong permission; logo Remove hidden after upload; signature-remove errors
+    swallowed; banners leaked across tabs; unchanged branding saves produced audit noise.
+
+TEAM & INVITES
+ Bugs fixed
+  - CRITICAL: any MANAGE_ROLES holder could make a higher role (e.g. Owner) the workspace default and
+    then invite without a role to mint that role. Every role mutation (edit, rename, make default,
+    delete) now needs the floor check; invites with no role resolve the default at invite time, check it
+    against the inviter's own permissions and store it on the invite.
+  - Deleting a role held only by deactivated members returned a 500; now a clear message, and the
+    Deactivated list has "Change role".
+  - Resending an expired invite skipped the seat check; a failed email now restores the previous link.
+  - Re-inviting someone who registered after being invited returned a 500 / created duplicates.
+  - Team page sent every member's permission map, pending invitee emails and the deactivated list to
+    every member; now only to people whose permissions let them act on them.
+  - Invite signup ignored the shared password policy (72-byte limit -> opaque 500).
+  - Invite accept/signup now check their write results and require the invite to still be pending.
+  - Role/permission audit events: correct event type, from/to role names, permissions granted/revoked;
+    role creation now logs role.created (old workspace.role_created still filters under Team & roles);
+    no-op changes write nothing and send no email. Role names are compared exactly (no LIKE wildcards).
+ Gaps closed
+  - Deactivating a member no longer destroys their project assignments: they are archived and
+    restored on reactivation. Deactivation warns about projects assigned only to that person and about
+    approval steps only they can act on. Reactivating an erased account is refused.
+  - Invited users now see and accept the Terms/Privacy notice (password and Google paths); the version
+    and time are recorded like normal sign-up.
+  - Pending/expired invites can have their role changed; the invite email names the role; the invite
+    dialog names the default role.
+  - Team roster shows two-factor status (and "required - not set up" for roles that need it); Reset MFA
+    is only offered where a factor exists.
+
+NOT CHANGED / OPEN
+  - Workspace handle is still not used by any route (product decision: give it a use, or remove it).
+  - The approvals engine still treats a stepless workflow as "no approval needed"; the API can no
+    longer create one.
+  - Roles tab member count still counts active members only.
+
+TESTS: tests/settings-team-helpers.test.ts (new). Full suite: 356 passing. tsc --noEmit clean.

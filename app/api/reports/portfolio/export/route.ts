@@ -15,6 +15,7 @@ export const maxDuration = 60
 // the same read, not a separate capability, matching the audit-export
 // route's own reasoning for not inventing a new permission.
 
+import { getWorkspaceTimeZone } from '@/lib/utils/workspace-time'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
@@ -63,6 +64,7 @@ export async function GET(request: NextRequest) {
         workspaceName: session.workspaceName,
         generatedBy: session.name,
         generatedAt: new Date().toISOString(),
+        timeZone: await getWorkspaceTimeZone(service, session.workspaceId),
         periodLabel: PERIOD_LABELS[period],
         canViewFinancials,
         data,

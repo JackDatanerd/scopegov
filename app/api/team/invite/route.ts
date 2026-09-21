@@ -38,116 +38,81 @@ export async function POST(request: NextRequest) {
     // app/api/workspace/switch/route.ts, which explicitly re-verifies
     // membership before trusting a client-supplied workspace id) — always
     // use the caller's own active workspace.
-    const { email, roleId } = await request.json()
+    const body = await request.json().catch(() => null)
+    const email  = body?.email
+    const roleId = body?.roleId
     const wsId = session.workspaceId
-    // FIX (deep audit, Team & Invites section): `!email?.trim()` was the
-    // ONLY check — `.trim()` on a non-string body value threw a TypeError
-    // into the catch-all as a 500, and any non-empty string at all
-    // created a real workspace_members row and fired a real Resend call.
-    // The client's type="email" was the only actual validation in the
-    // system, so a typo'd address produced a Pending invite that could
-    // never be accepted while still consuming a seat against the
-    // ['active','invited'] count until somebody noticed and revoked it.
     if (typeof email !== 'string' || !email.trim())
       return NextResponse.json({ error: 'Email required' }, { status: 400 })
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()))
+    if (email.trim().length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()))
       return NextResponse.json({ error: 'That doesn\u2019t look like a valid email address' }, { status: 400 })
+    if (roleId !== undefined && roleId !== null && roleId !== '' && typeof roleId !== 'string')
+      return NextResponse.json({ error: 'Invalid role for this workspace' }, { status: 400 })
 
-    // FIX (audit round 1): roleId came straight from the request body with
-    // no check that it actually belongs to this workspace. Low real-world
-    // exploitability on its own (role ids are random UUIDs, and `roles`
-    // has RLS with no client policies so they can't be enumerated through
-    // the DB), but it's a missing check, not a defended one — confirm the
-    // role is actually one of this workspace's before it ever reaches the
-    // insert below.
+    // The role this person will hold. An explicit choice must belong to this
+    // workspace; with no choice the workspace default applies. Either way the
+    // role is fixed now and must sit within the inviter's own permissions, so
+    // nothing the inviter couldn't grant can be handed out later through a
+    // default that changes (or was already privileged) before acceptance.
+    let role: { id: string; name: string; permissions: Record<string, unknown> } | null = null
     if (roleId) {
-      const { data: role } = await (service as any)
-        .from('roles').select('id,permissions').eq('id', roleId).eq('workspace_id', wsId).maybeSingle()
-      if (!role) return NextResponse.json({ error: 'Invalid role for this workspace' }, { status: 400 })
-      // FIX (audit round 4, finding #1): an INVITE_MEMBERS holder without
-      // MANAGE_ROLES could still hand a brand-new member the workspace's
-      // most-privileged role. Same ceiling rule as everywhere else — can
-      // only assign a role whose permissions you already hold yourself.
-      if (!roleWithinCeiling(session, role))
-        return NextResponse.json({ error: 'Cannot invite someone into a role with permissions you don\u2019t hold yourself' }, { status: 403 })
+      const { data } = await (service as any)
+        .from('roles').select('id,name,permissions').eq('id', roleId).eq('workspace_id', wsId).maybeSingle()
+      if (!data) return NextResponse.json({ error: 'Invalid role for this workspace' }, { status: 400 })
+      role = data
+    } else {
+      const { data } = await (service as any)
+        .from('roles').select('id,name,permissions').eq('workspace_id', wsId).eq('is_default', true).maybeSingle()
+      role = data || null
+    }
+    if (role && !roleWithinCeiling(session, role)) {
+      return NextResponse.json({
+        error: roleId
+          ? 'Cannot invite someone into a role with permissions you don\u2019t hold yourself'
+          : `The workspace\u2019s default role (${role.name}) holds permissions you don\u2019t hold yourself, so you can\u2019t invite without choosing a role. Pick a role you can assign.`,
+      }, { status: 403 })
     }
 
-    // Seat limit check — reserves a seat for a pending invite too, not
-    // just active members, so an admin can't invite more people than the
-    // plan has room for even before anyone accepts. See
-    // lib/utils/seat-limit.ts for why this now lives in one shared place.
-    const seatCheck = await checkSeatLimit(service, wsId, session.planTier, ['active', 'invited'])
-    if (!seatCheck.ok)
-      return NextResponse.json({ error: seatCheck.message, upgradeRequired: true }, { status: 403 })
-
-    // Check for existing membership
     const normalizedEmail = email.toLowerCase().trim()
     const { data: existingUser } = await (service as any)
       .from('users').select('id').eq('email', normalizedEmail).maybeSingle()
 
-    if (existingUser) {
-      const { data: existingMember } = await (service as any)
-        .from('workspace_members')
-        .select('id,status')
-        .eq('workspace_id', wsId)
-        .eq('user_id', existingUser.id)
-        .maybeSingle()
+    // Every membership row in this workspace that already belongs to this
+    // person: matched by account AND by invited address, because an invite
+    // sent before they registered has no user_id yet.
+    const memberSelect = 'id,status,user_id,invited_email'
+    const [byEmailRes, byUserRes] = await Promise.all([
+      (service as any).from('workspace_members').select(memberSelect)
+        .eq('workspace_id', wsId).eq('invited_email', normalizedEmail),
+      existingUser
+        ? (service as any).from('workspace_members').select(memberSelect)
+            .eq('workspace_id', wsId).eq('user_id', existingUser.id)
+        : Promise.resolve({ data: [] }),
+    ])
+    const relatedRows = [...(byEmailRes.data || []), ...(byUserRes.data || [])]
+      .filter((r: any, i: number, all: any[]) => all.findIndex(x => x.id === r.id) === i)
+    const related: any[] = relatedRows || []
+    const byStatus = (st: string) => related.find(r => r.status === st)
 
-      if (existingMember?.status === 'active')
-        return NextResponse.json({ error: 'This person is already a member of the workspace' }, { status: 409 })
-      if (existingMember?.status === 'invited')
-        return NextResponse.json({ error: 'An invite is already pending for this email' }, { status: 409 })
-      // FIX (deep audit, Team & Invites section — HIGH): only those two
-      // statuses were handled. 'deactivated' and 'expired' fell straight
-      // through to the INSERT below and hit
-      // `UNIQUE(workspace_id, user_id)` (001, line 106), which rethrew
-      // memberErr into the catch-all as a bare 500 "Internal server
-      // error". The admin's mental model — "they left, I'll invite them
-      // back" — got an unexplained internal error with no hint that
-      // Reactivate is the path, and no hint that anything was wrong with
-      // the request rather than with the server.
-      //
-      // Migration 020's comment already worked through this exact
-      // reasoning for the NO-ACCOUNT branch below (which is why
-      // workspace_members_pending_email is scoped WHERE status =
-      // 'invited'); the existing-user branch was never brought in line.
-      if (existingMember?.status === 'deactivated')
-        return NextResponse.json({
-          error: 'This person was deactivated in this workspace. Reactivate them from the Deactivated list instead of sending a new invite — that restores the access their role already had.',
-          reactivateMemberId: existingMember.id,
-        }, { status: 409 })
-      if (existingMember?.status === 'expired')
-        return NextResponse.json({
-          error: 'This person already has an expired invite in this workspace. Use Resend on that invite instead of creating a new one.',
-          resendMemberId: existingMember.id,
-        }, { status: 409 })
-    } else {
-      // No account yet — check for a duplicate pending invite by email
-      // (DB also enforces this via workspace_members_pending_email, this
-      // just gives a clean error message instead of a raw constraint error)
-      const { data: priorInvite } = await (service as any)
-        .from('workspace_members')
-        .select('id,status')
-        .eq('workspace_id', wsId)
-        .eq('invited_email', normalizedEmail)
-        .in('status', ['invited', 'expired'])
-        .maybeSingle()
+    if (byStatus('active'))
+      return NextResponse.json({ error: 'This person is already a member of the workspace' }, { status: 409 })
+    if (byStatus('invited'))
+      return NextResponse.json({ error: 'An invite is already pending for this email' }, { status: 409 })
+    if (byStatus('deactivated'))
+      return NextResponse.json({
+        error: 'This person was deactivated in this workspace. Reactivate them from the Deactivated list instead of sending a new invite \u2014 that restores the access their role already had.',
+        reactivateMemberId: byStatus('deactivated').id,
+      }, { status: 409 })
 
-      if (priorInvite?.status === 'invited')
-        return NextResponse.json({ error: 'An invite is already pending for this email' }, { status: 409 })
+    const seatCheck = await checkSeatLimit(service, wsId, session.planTier, ['active', 'invited'])
+    if (!seatCheck.ok)
+      return NextResponse.json({ error: seatCheck.message, upgradeRequired: true }, { status: 403 })
 
-      // FIX (deep audit, Team & Invites section): an 'expired' row for the
-      // same address is NOT caught by workspace_members_pending_email
-      // (that partial index is scoped WHERE status = 'invited'), so a
-      // re-invite used to insert a SECOND row alongside the dead one —
-      // leaving a permanent phantom entry in the Expired list that no
-      // longer corresponds to anything, for an address that now also has
-      // a live invite. An expired, never-accepted invite has no user and
-      // nothing to preserve; clear it, exactly as DELETE already
-      // hard-deletes rows in this state.
-      if (priorInvite?.status === 'expired') {
-        await (service as any).from('workspace_members').delete().eq('id', priorInvite.id)
-      }
+    // Expired, never-accepted invites for this address carry nothing worth
+    // keeping; clear them so the new invite is the only row.
+    const expiredIds = related.filter(r => r.status === 'expired').map(r => r.id)
+    if (expiredIds.length > 0) {
+      await (service as any).from('workspace_members').delete().in('id', expiredIds)
     }
 
     const inviteToken   = nanoid(32)
@@ -159,7 +124,7 @@ export async function POST(request: NextRequest) {
         workspace_id:            wsId,
         user_id:                 existingUser?.id || null,
         invited_email:           normalizedEmail,
-        role_id:                 roleId || null,
+        role_id:                 role?.id || null,
         effective_permissions:   '{}',
         status:                  'invited',
         invite_token:            inviteToken,
@@ -169,7 +134,12 @@ export async function POST(request: NextRequest) {
       })
       .select('id').single()
 
-    if (memberErr) throw new Error(memberErr.message)
+    if (memberErr) {
+      // Two invites for the same address racing each other: the unique index lets one through.
+      if ((memberErr as any).code === '23505')
+        return NextResponse.json({ error: 'An invite is already pending for this email' }, { status: 409 })
+      throw new Error(memberErr.message)
+    }
 
     // Fetch workspace info for email
     const { data: ws } = await (service as any)
@@ -189,6 +159,7 @@ export async function POST(request: NextRequest) {
         inviterName:   session.name,
         workspaceName: ws?.name || session.agencyName,
         agencyName:    session.agencyName,
+        roleName:      role?.name,
         inviteUrl,
         expiresAt:     expiresAt.toISOString(),
       })
@@ -207,7 +178,7 @@ export async function POST(request: NextRequest) {
       actorEmail: session.email, actorName: session.name,
       eventType: 'member.invited', entityType: 'workspace_member',
       entityId: member.id, entityName: normalizedEmail,
-      metadata: emailSent ? {} : { email_send_failed: true },
+      metadata: { role_id: role?.id ?? null, role_name: role?.name ?? null, ...(emailSent ? {} : { email_send_failed: true }) },
     })
 
     return NextResponse.json({

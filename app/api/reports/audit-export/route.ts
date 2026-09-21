@@ -7,6 +7,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { renderAuditReportPdf, type AuditReportRow } from '@/lib/pdf/audit-report'
+import { getWorkspaceTimeZone } from '@/lib/utils/workspace-time'
 import { csvRow, CSV_BOM } from '@/lib/utils/csv'
 import { fetchPaged } from '@/lib/utils/paginate'
 import { buildAuditSearchFilter } from '@/lib/audit/search'
@@ -231,6 +232,7 @@ export async function GET(request: Request) {
       const buffer = await renderAuditReportPdf({
         agencyName: session.agencyName, workspaceName: session.workspaceName,
         generatedBy: session.name, generatedAt: new Date().toISOString(),
+        timeZone: await getWorkspaceTimeZone(service, session.workspaceId),
         from: fromDate.toISOString(), to: upper.toISOString(),
         filters: {
           project: projectName ?? (projectId ? 'Deleted project' : undefined),

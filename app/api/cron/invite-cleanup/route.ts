@@ -3,6 +3,7 @@ export const runtime = 'nodejs'
 // payment-overdue carries this override for.
 export const maxDuration = 300
 
+import { removeAvatarObjects } from '@/lib/utils/avatar-storage'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
@@ -121,6 +122,11 @@ export async function POST(request: NextRequest) {
         }
         const auth = await anonymizeAuthUser(service, u.id)
         if (!auth.ok) throw new Error(`auth anonymization failed: ${auth.error}`)
+
+        // The profile photo is personal data in a public bucket at a guessable
+        // path; clearing avatar_url alone would leave the image itself online.
+        const avatarErr = await removeAvatarObjects(service, u.id)
+        if (avatarErr) throw new Error(`avatar removal failed: ${avatarErr}`)
 
         const { error } = await (service as any).from('users').update({
           email:        anonymizedEmail(u.id),

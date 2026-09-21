@@ -3,6 +3,7 @@ import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import Link from 'next/link'
 import { formatRelative } from '@/lib/utils/format'
 import { AUDIT_CATEGORIES } from '@/lib/audit/categories'
+import { formatDateTimeInZone } from '@/lib/utils/timezone'
 
 interface Project { id: string; name: string; deleted?: boolean }
 interface Member { id: string; name: string; email: string; active: boolean }
@@ -66,8 +67,8 @@ const RANGE_PRESETS = [
 // so clicking Export right after typing can never export the previous filter.
 const SEARCH_DEBOUNCE_MS = 350
 
-function formatExact(iso: string) {
-  return new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'medium' })
+function formatExact(iso: string, timeZone: string) {
+  return formatDateTimeInZone(iso, timeZone, { seconds: true })
 }
 
 function formatMetaValue(v: unknown): string {
@@ -77,7 +78,7 @@ function formatMetaValue(v: unknown): string {
   try { return JSON.stringify(v) } catch { return String(v) }
 }
 
-export default function AuditLogClient({ projects, members }: { projects: Project[]; members: Member[] }) {
+export default function AuditLogClient({ projects, members, timeZone }: { projects: Project[]; members: Member[]; timeZone: string }) {
   const [preset, setPreset] = useState('90d')
   const [from, setFrom] = useState(daysAgoLocal(90))
   const [to, setTo] = useState(localDate(new Date()))
@@ -335,7 +336,7 @@ export default function AuditLogClient({ projects, members }: { projects: Projec
                       )}
                     </td>
                     <td style={{ fontSize: 12, color: 'var(--text-3)', whiteSpace: 'nowrap' }} title={e.createdAt}>
-                      <div>{formatExact(e.createdAt)}</div>
+                      <div>{formatExact(e.createdAt, timeZone)}</div>
                       <div style={{ fontSize: 10, color: 'var(--text-4)' }}>{formatRelative(e.createdAt)}</div>
                     </td>
                   </tr>
@@ -344,7 +345,7 @@ export default function AuditLogClient({ projects, members }: { projects: Projec
                       <td colSpan={4} style={{ background: 'var(--surface-2, rgba(0,0,0,0.02))', padding: '12px 16px' }}>
                         <div style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', columnGap: 16, rowGap: 4, fontSize: 12 }}>
                           <span style={{ color: 'var(--text-3)' }}>Exact time</span>
-                          <span>{formatExact(e.createdAt)} · <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{e.createdAt}</span></span>
+                          <span>{formatExact(e.createdAt, timeZone)} · <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{e.createdAt}</span></span>
                           <span style={{ color: 'var(--text-3)' }}>Record</span>
                           <span>{e.entityType}{e.entityName ? ` · ${e.entityName}` : ''}{e.entityId ? <span style={{ fontFamily: 'IBM Plex Mono, monospace', color: 'var(--text-3)' }}> · {e.entityId}</span> : null}</span>
                           {e.projectId && (

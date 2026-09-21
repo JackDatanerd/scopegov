@@ -101,13 +101,17 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
   const [error,   setError]   = useState('')
   const [notice,  setNotice]  = useState('')
 
+  // Opening a dialog starts clean: an error from an earlier, unrelated action
+  // shouldn't greet the person inside a different dialog.
+  function openModal(next: 'invite' | 'role') { setError(''); setNotice(''); setModal(next) }
+
   async function handleInvite(e: React.FormEvent) {
     e.preventDefault()
     setLoading(true); setError('')
     try {
       const res  = await fetch('/api/team/invite', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: inviteEmail, roleId: inviteRoleId || null, workspaceId }),
+        body: JSON.stringify({ email: inviteEmail, roleId: inviteRoleId || null }),
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error)
@@ -126,12 +130,13 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
   }
 
   async function handleDeactivate(memberId: string, memberName: string) {
-    if (!confirm(`Deactivate ${memberName}? They will lose workspace access immediately.`)) return
+    if (!confirm(`Deactivate ${memberName}? They will lose workspace access immediately. Their project assignments are kept aside and restored if you reactivate them.`)) return
     setError(''); setNotice('')
     const res = await fetch(`/api/team/${memberId}`, { method: 'DELETE' })
     const json = await res.json().catch(() => ({}))
     if (!res.ok) { setError(json.error || 'Could not deactivate member'); return }
-    if (json.warning) setNotice(json.warning)
+    const notes = [json.warning, json.projectWarning].filter(Boolean)
+    if (notes.length) setNotice(notes.join(' '))
     router.refresh()
   }
 
@@ -173,12 +178,13 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
     const json = await res.json().catch(() => ({}))
     if (!res.ok) { setError(json.error || 'Could not resend invite'); return }
     setNotice(json.emailFailed
-      ? 'Invite refreshed, but the email couldn\u2019t be sent. Try Resend again shortly \u2014 the invite itself is intact.'
+      ? 'The email couldn\u2019t be sent, so nothing changed \u2014 any link already sent still works. Try Resend again shortly.'
       : 'Invite resent. The previous link is no longer valid.')
     router.refresh()
   }
 
   async function handleRevokeInvite(memberId: string) {
+    if (!confirm('Revoke this invitation? The link will stop working.')) return
     setError('')
     const res = await fetch(`/api/team/${memberId}`, { method: 'DELETE' })
     if (!res.ok) {
@@ -189,7 +195,7 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
   }
 
   async function handleReactivate(memberId: string, memberName: string) {
-    if (!confirm(`Reactivate ${memberName}? They will regain the access their previous role held.`)) return
+    if (!confirm(`Reactivate ${memberName}? They will regain their role and the projects they were assigned to.`)) return
     setError(''); setNotice('')
     const res = await fetch(`/api/team/${memberId}`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
@@ -197,6 +203,13 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
     })
     const json = await res.json().catch(() => ({}))
     if (!res.ok) { setError(json.error || 'Could not reactivate member'); return }
+    const parts = [
+      typeof json.projectsRestored === 'number' && json.projectsRestored > 0
+        ? `${memberName} is back, with ${json.projectsRestored} project assignment${json.projectsRestored === 1 ? '' : 's'} restored.`
+        : `${memberName} is back.`,
+      json.warning,
+    ].filter(Boolean)
+    setNotice(parts.join(' '))
     router.refresh()
   }
 
@@ -324,7 +337,7 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           {canInvite && (
-            <button className="btn btn-primary" onClick={() => setModal('invite')}>
+            <button className="btn btn-primary" onClick={() => openModal('invite')}>
               <i className="ti ti-user-plus" style={{ fontSize: 13 }} /> Invite member
             </button>
           )}
@@ -388,6 +401,17 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div className="member-name">{name} {isMe && <span style={{ fontSize: 10, color: 'var(--green)' }}>you</span>}</div>
                       <div className="member-role">{m.roles?.name || 'No role'}</div>
+                      {m.mfa === 'enrolled' && (
+                        <div style={{ fontSize: 10.5, color: 'var(--green)', marginTop: 2 }}>
+                          <i className="ti ti-shield-check" style={{ fontSize: 11 }} /> Two-factor on
+                        </div>
+                      )}
+                      {m.mfa === 'required_missing' && (
+                        <div style={{ fontSize: 10.5, color: 'var(--amber, #B45309)', marginTop: 2 }}
+                          title="Their role requires two-factor authentication, and they haven't set it up yet.">
+                          <i className="ti ti-shield-exclamation" style={{ fontSize: 11 }} /> Two-factor required &mdash; not set up
+                        </div>
+                      )}
                     </div>
                   </div>
                   <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 12 }}>{u?.email}</div>
@@ -421,7 +445,7 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
                           Overrides
                         </button>
                       )}
-                      {!isMe && canManageRoles && (
+                      {!isMe && canManageRoles && (m.mfa === undefined || m.mfa === 'enrolled') && (
                         <button className="btn btn-ghost btn-xs" onClick={() => handleResetMfa(m.id, name)}>
                           Reset MFA
                         </button>
@@ -451,7 +475,7 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
               )
             })}
             {canInvite && (
-              <div className="invite-slot" onClick={() => setModal('invite')}>
+              <div className="invite-slot" onClick={() => openModal('invite')}>
                 <i className="ti ti-user-plus" style={{ fontSize: 28, color: 'var(--green)', marginBottom: 10 }} />
                 <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--green)' }}>Invite member</span>
                 <span style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>Send an invitation by email</span>
@@ -482,7 +506,12 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
                         <td>
                           <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
                             <span className="pill pill-amber pill-sm">Pending</span>
-                            {/* FIX 3D: Resend and Revoke actions */}
+                            {canManageRoles && (
+                              <button className="btn btn-ghost btn-xs"
+                                onClick={() => { setRoleEditMember(m); setRoleEditRoleId(m.role_id || '') }}>
+                                Change role
+                              </button>
+                            )}
                             <button className="btn btn-ghost btn-xs" onClick={() => handleResendInvite(m)}>
                               Resend
                             </button>
@@ -528,6 +557,12 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
                         <td>
                           <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
                             <span className="pill pill-slate pill-sm">Expired</span>
+                            {canManageRoles && (
+                              <button className="btn btn-ghost btn-xs"
+                                onClick={() => { setRoleEditMember(m); setRoleEditRoleId(m.role_id || '') }}>
+                                Change role
+                              </button>
+                            )}
                             <button className="btn btn-ghost btn-xs" onClick={() => handleResendInvite(m)}>
                               Resend
                             </button>
@@ -554,7 +589,7 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
               <div className="surface" style={{ overflow: 'hidden' }}>
                 <table className="gov-table" style={{ width: '100%' }}>
                   <thead>
-                    <tr><th>Name</th><th>Email</th><th>Deactivated</th><th /></tr>
+                    <tr><th>Name</th><th>Email</th><th>Role</th><th>Deactivated</th><th /></tr>
                   </thead>
                   <tbody>
                     {deactivatedMembers.map((m: any) => {
@@ -564,9 +599,16 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
                         <tr key={m.id}>
                           <td className="td-primary" style={{ color: 'var(--text-3)' }}>{name}</td>
                           <td style={{ color: 'var(--text-3)', fontSize: 12 }}>{u?.email}</td>
+                          <td style={{ color: 'var(--text-3)', fontSize: 12 }}>{m.roles?.name || 'No role'}</td>
                           <td style={{ color: 'var(--text-3)', fontSize: 12 }}>{m.deactivated_at ? formatDate(m.deactivated_at) : '—'}</td>
                           <td>
-                            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
+                              {canManageRoles && (
+                                <button className="btn btn-ghost btn-xs"
+                                  onClick={() => { setRoleEditMember(m); setRoleEditRoleId(m.role_id || '') }}>
+                                  Change role
+                                </button>
+                              )}
                               <button className="btn btn-ghost btn-xs" onClick={() => handleReactivate(m.id, name)}>
                                 Reactivate
                               </button>
@@ -600,7 +642,7 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
                 : 'Preset roles are available on all plans. Custom roles require Pro, Agency, or an active trial.'}
             </p>
             {canManageRoles && CUSTOM_ROLE_PLANS.includes(session.planTier) && (
-              <button className="btn btn-primary btn-sm" onClick={() => setModal('role')}>
+              <button className="btn btn-primary btn-sm" onClick={() => openModal('role')}>
                 <i className="ti ti-plus" style={{ fontSize: 12 }} /> New role
               </button>
             )}
@@ -696,7 +738,7 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
                 <label className="flbl">Role <span className="fhint">— optional</span></label>
                 <select className="finp" value={inviteRoleId}
                   onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setInviteRoleId(e.target.value)}>
-                  <option value="">Default role</option>
+                  <option value="">{(() => { const d = roles.find((r: any) => r.is_default); return d ? `Default role (${d.name})` : 'Default role' })()}</option>
                   {roles.map((r: any) => <option key={r.id} value={r.id}>{r.name}</option>)}
                 </select>
               </div>

@@ -1,4 +1,4 @@
-// app/api/team/roles/[id]/route.ts  (NEW FILE — C13)
+// app/api/team/roles/[id]/route.ts
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
@@ -6,6 +6,8 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { permissionsBeyondCeiling, permissionsBeyondActorForTarget } from '@/lib/utils/permission-ceiling'
 import { parsePermissionMap } from '@/lib/utils/permission-map'
 import { mergePermissions, protectedPermissionsOrphanedBy, describeProtectedPermission, PROTECTED_PERMISSIONS } from '@/lib/utils/admin-floor'
+import { roleNameTaken } from '@/lib/utils/role-names'
+import { diffPermissionMaps } from '@/lib/utils/permission-diff'
 import { logAudit } from '@/lib/utils/audit'
 
 export async function PATCH(
@@ -19,78 +21,54 @@ export async function PATCH(
     if (!hasPermission(session, 'MANAGE_ROLES'))
       return NextResponse.json({ error: 'Missing permission: MANAGE_ROLES' }, { status: 403 })
 
-    const { permissions: rawPermissions, name, description, isDefault } = await request.json()
+    const body = await request.json().catch(() => null)
+    if (!body || typeof body !== 'object' || Array.isArray(body))
+      return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+    const { permissions: rawPermissions, name, description, isDefault } = body as Record<string, any>
 
-    // A null/non-object `permissions` reached `permissions['MANAGE_ROLES']`
-    // below and threw a TypeError into the catch-all, surfacing as a 500
-    // where a 400 belongs. Not client-reachable; still the wrong answer.
-    // FIX (build — RLS + permissions independent audit, HIGH): values must be real
-    // booleans (see lib/utils/permission-map.ts). A truthy non-boolean such as
-    // {DELETE_PROJECTS: 1} used to pass the ceiling and be granted by getSession();
-    // a string like "maybe" made update_role_permissions_atomic's ::boolean cast
-    // raise for every later edit in the workspace.
+    // Permission values must be real booleans; unknown keys are dropped.
     let permissions: Record<string, boolean> | undefined = undefined
     if (rawPermissions !== undefined) {
       const parsed = parsePermissionMap(rawPermissions)
       if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 })
       permissions = parsed.value
     }
-    // FIX (deep audit, Team & Invites section): PATCH applied `if (name)`
-    // with no trim and no length cap at all — unlike POST, which at least
-    // trims, and unlike every comparable field in the codebase (042 caps
-    // users.name; sanitizeDisplayName caps agency/workspace names at 120).
     if (name !== undefined) {
-      if (typeof name !== 'string' || !name.trim()) {
+      if (typeof name !== 'string' || !name.trim())
         return NextResponse.json({ error: 'Role name required' }, { status: 400 })
-      }
-      if (name.trim().length > 60) {
+      if (name.trim().length > 60)
         return NextResponse.json({ error: 'Role name must be under 60 characters' }, { status: 400 })
-      }
     }
-    // FIX (build, Team & Invites section — validation gap): same gap as
-    // POST /api/team/roles — description had no type check or length cap
-    // here either. See that route's own comment for the full reasoning;
-    // kept as the same 300-char limit so the two can't drift apart.
-    if (description !== undefined && description !== null && typeof description !== 'string') {
+    if (description !== undefined && description !== null && typeof description !== 'string')
       return NextResponse.json({ error: 'Invalid description' }, { status: 400 })
-    }
-    if (typeof description === 'string' && description.trim().length > 300) {
+    if (typeof description === 'string' && description.trim().length > 300)
       return NextResponse.json({ error: 'Role description must be under 300 characters' }, { status: 400 })
-    }
+    if (isDefault !== undefined && typeof isDefault !== 'boolean')
+      return NextResponse.json({ error: 'isDefault must be true or false' }, { status: 400 })
 
-    const service = createServiceClient()
+    if (permissions === undefined && name === undefined && description === undefined && isDefault === undefined)
+      return NextResponse.json({ error: 'Nothing to update' }, { status: 400 })
 
-    // FIX (deep audit, Team & Invites re-pass): fetched unconditionally
-    // now (previously only when `permissions` was in the body) so a
-    // name/description-only edit also 404s on a nonexistent-or-other-
-    // workspace role instead of silently updating zero rows and reporting
-    // ok:true, and so the role's name is available below for the audit
-    // log regardless of which fields changed.
-    const { data: existingRole } = await (service as any)
-      .from('roles').select('name, permissions, is_default').eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
+    const service = createServiceClient() as any
+
+    const { data: existingRole } = await service
+      .from('roles').select('name, description, permissions, is_default').eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
     if (!existingRole) return NextResponse.json({ error: 'Role not found' }, { status: 404 })
 
-    // FIX (deep audit, Team & Invites re-pass — feature gap): isDefault
-    // was accepted at role CREATION only (POST /api/team/roles) — this
-    // route never read it at all, and the frontend hid the Edit button
-    // outright for whichever role currently had is_default = true. Net
-    // effect: once a role became the workspace default, nothing about it
-    // — not its permissions, not its name, not even WHICH role holds the
-    // title — could ever be changed again short of creating a brand-new
-    // role and marking that one default instead, leaving the old one an
-    // orphaned non-default role. `isDefault: false` on the currently-
-    // default role is rejected rather than silently ignored — there's
-    // always exactly one default role (roles_one_default, migration 001);
-    // removing the title requires naming a replacement, same as DELETE
-    // already requires below.
-    // Same uniqueness rule POST enforces — a rename can collide just as
-    // easily as a creation, and the ambiguity it creates in the approver
-    // pickers is identical.
-    if (name !== undefined && name.trim().toLowerCase() !== (existingRole.name || '').toLowerCase()) {
-      const { data: nameClash } = await (service as any)
-        .from('roles').select('id').eq('workspace_id', session.workspaceId)
-        .ilike('name', name.trim()).neq('id', id).maybeSingle()
-      if (nameClash)
+    // Floor check for EVERY change to a role — its permissions, its name or
+    // description, and making it the workspace default. A role that currently
+    // holds anything the actor doesn't hold can't be edited, renamed or
+    // promoted by them: promoting it to default would hand those permissions
+    // to everyone invited without an explicit role.
+    const outOfReach = permissionsBeyondActorForTarget(session, existingRole.permissions)
+    if (outOfReach.length > 0)
+      return NextResponse.json({
+        error: `Cannot modify a role that holds permissions you don't hold yourself: ${outOfReach.join(', ')}`,
+      }, { status: 403 })
+
+    if (name !== undefined && name.trim().toLowerCase() !== (existingRole.name || '').trim().toLowerCase()) {
+      const { data: others } = await service.from('roles').select('id,name').eq('workspace_id', session.workspaceId)
+      if (roleNameTaken(others || [], name, id))
         return NextResponse.json({ error: 'A role with that name already exists in this workspace' }, { status: 409 })
     }
 
@@ -100,70 +78,19 @@ export async function PATCH(
       }, { status: 409 })
     }
 
-    // FIX (section-by-section re-audit, RLS+permissions Finding 2 —
-    // CRITICAL): the ceiling check below only ever blocked granting a
-    // NEW true permission beyond the actor's own — it never checked what
-    // the role CURRENTLY has. Since a `false` entry is never "beyond the
-    // ceiling" (that's correct for the grant direction), an actor could
-    // submit `{ permissions: { ...every key: false } }` and sail through,
-    // zeroing out ANY role — including "Owner" itself, which is just an
-    // ordinarily-editable row with no structural protection. Floor check
-    // first: you cannot touch a role that currently holds anything you
-    // don't hold yourself, full stop, regardless of what you're changing
-    // it to.
-    if (permissions !== undefined) {
-      const outOfReach = permissionsBeyondActorForTarget(session, existingRole.permissions)
-      if (outOfReach.length > 0)
-        return NextResponse.json({
-          error: `Cannot modify a role that holds permissions you don't hold yourself: ${outOfReach.join(', ')}`,
-        }, { status: 403 })
-    }
-
-    // FIX (audit round 4, finding #1): this edits an EXISTING role in
-    // place — and trg_role_permissions_propagate (migration 001)
-    // recomputes effective_permissions for every member currently
-    // holding it, so an unbounded edit here could silently reshape
-    // everyone assigned to the role, including an already-privileged
-    // member, or be used to bump the editor's own role past their
-    // current ceiling. Same rule as role creation: can't grant what you
-    // don't already hold.
     if (permissions !== undefined) {
       const beyond = permissionsBeyondCeiling(session, permissions)
       if (beyond.length > 0)
         return NextResponse.json({
           error: `Cannot grant permissions you don't hold yourself: ${beyond.join(', ')}`,
         }, { status: 403 })
-    }
 
-    // FIX (deep audit, RLS+permissions independent re-pass — CRITICAL):
-    // leave_workspace_atomic() (027/034/038) exists specifically so the
-    // sole MANAGE_ROLES/MANAGE_WORKSPACE_SETTINGS holder can never leave
-    // and orphan the permission system — "a one-way lockout of the
-    // permission system itself, with no self-service recovery" (034's own
-    // words), enforced there by locking every active workspace_members
-    // row (FOR UPDATE) before checking. Editing a role's permissions in
-    // place reaches the exact same end state — trg_role_permissions_
-    // propagate (migration 001) recomputes effective_permissions for
-    // every member holding this role the instant it's saved — but this
-    // pre-check is a plain SELECT with no lock and no transaction tying
-    // it to the write below. Two concurrent MANAGE_ROLES-holder requests
-    // (two co-admins, or a doubled-up submit) can each read this same
-    // pre-change snapshot, both see someone else still holds it, and both
-    // proceed — jointly orphaning the workspace. Kept here as a fast,
-    // friendly pre-check (good error message before ever touching the
-    // database) but it is NOT the actual gate: migration 055's
-    // update_role_permissions_atomic re-runs the identical check inside a
-    // transaction that locks the workspace's active membership first, so
-    // a second concurrent call re-evaluates against real post-commit
-    // state instead of the same stale read this block used. See that
-    // migration's comment for a from-scratch, empirically-raced
-    // reproduction of exactly this failure mode and its fix.
-    if (permissions !== undefined && permissions !== null) {
+      // Friendly pre-check; update_role_permissions_atomic below is the real gate.
       const losing = PROTECTED_PERMISSIONS.filter(
-        perm => existingRole.permissions?.[perm] === true && permissions[perm] !== true
+        perm => existingRole.permissions?.[perm] === true && permissions![perm] !== true
       )
       if (losing.length > 0) {
-        const { data: activeMembers } = await (service as any)
+        const { data: activeMembers } = await service
           .from('workspace_members').select('id,role_id,permission_overrides,effective_permissions')
           .eq('workspace_id', session.workspaceId).eq('status', 'active')
 
@@ -173,7 +100,6 @@ export async function PATCH(
             .filter((m: any) => m.role_id === id)
             .map((m: any): [string, Record<string, unknown> | null] => [m.id, mergePermissions(permissions, m.permission_overrides)])
         )
-
         const orphaned = protectedPermissionsOrphanedBy(snapshot, simulated)
         if (orphaned.length > 0) {
           const label = orphaned.map(describeProtectedPermission).join(' or ')
@@ -184,15 +110,8 @@ export async function PATCH(
       }
     }
 
-    // `permissions` goes through the atomic RPC (the real, race-proof
-    // gate — see the long comment above); name/description are a plain
-    // update, same as before. Two calls instead of one, same trade-off
-    // this file already accepts for the default-role swap below
-    // (defaultSwapFailed): if the second call fails, the permissions
-    // change already landed and name/description just didn't — reported
-    // rather than silently dropped.
     if (permissions !== undefined) {
-      const { error: rpcError } = await (service as any).rpc('update_role_permissions_atomic', {
+      const { error: rpcError } = await service.rpc('update_role_permissions_atomic', {
         p_workspace_id: session.workspaceId, p_role_id: id, p_permissions: permissions,
       })
       if (rpcError) {
@@ -207,36 +126,34 @@ export async function PATCH(
       }
     }
 
+    const newName = name !== undefined ? name.trim() : undefined
+    const newDescription = description !== undefined
+      ? (typeof description === 'string' ? description.trim() || null : null)
+      : undefined
     const otherUpdates: Record<string, unknown> = {}
-    if (name)        otherUpdates.name        = name.trim()
-    // FIX (build, Team & Invites section): wrote `description` raw, with
-    // no trim — inconsistent with POST /api/team/roles, which already
-    // trims (and, same as `name` here, with the untrimmed value counting
-    // against the 300-char cap just added above, so " ".repeat(301) would
-    // pass validation and still land in the DB untrimmed).
-    if (description !== undefined) otherUpdates.description = typeof description === 'string' ? description.trim() || null : description
+    if (newName !== undefined && newName !== existingRole.name) otherUpdates.name = newName
+    if (newDescription !== undefined && newDescription !== (existingRole.description ?? null)) otherUpdates.description = newDescription
 
-    if (Object.keys(otherUpdates).length > 0 || permissions === undefined) {
+    if (Object.keys(otherUpdates).length > 0) {
       otherUpdates.updated_at = new Date().toISOString()
-      const { error } = await (service as any)
-        .from('roles')
-        .update(otherUpdates)
-        .eq('id', id)
-        .eq('workspace_id', session.workspaceId) // scope to workspace — never cross-tenant
-
-      if (error) throw new Error(error.message)
+      const { error } = await service
+        .from('roles').update(otherUpdates).eq('id', id)
+        .eq('workspace_id', session.workspaceId)
+      if (error) {
+        if ((error as any).code === '23505')
+          return NextResponse.json({ error: 'A role with that name already exists in this workspace' }, { status: 409 })
+        throw new Error(error.message)
+      }
     }
 
-    // FIX (deep audit, Team & Invites re-pass — feature gap, continued):
-    // promote this role to default via the same atomic swap role
-    // creation uses (migration 049) — never two separate non-transactional
-    // statements, for the same "workspace briefly has zero default roles"
-    // reason documented there. Only fires when it's actually a change;
-    // re-sending isDefault: true on the role that's already default is a
-    // harmless no-op, not a wasted RPC call.
+    // Promote to default with the same atomic swap role creation uses.
     let defaultSwapFailed = false
+    let previousDefaultName: string | null = null
     if (isDefault === true && !existingRole.is_default) {
-      const { error: defaultErr } = await (service as any).rpc('set_default_role_atomic', {
+      const { data: prev } = await service
+        .from('roles').select('name').eq('workspace_id', session.workspaceId).eq('is_default', true).maybeSingle()
+      previousDefaultName = prev?.name ?? null
+      const { error: defaultErr } = await service.rpc('set_default_role_atomic', {
         p_workspace_id: session.workspaceId, p_new_role_id: id,
       })
       if (defaultErr) {
@@ -245,47 +162,45 @@ export async function PATCH(
       }
     }
 
-    // FIX (section-11 audit): stripping APPROVE_DOCUMENTS from a role here
-    // silently breaks any active workflow step that assigns it.
-    // getMembersWithRole() now filters on live effective_permissions (fix
-    // round, section-11 finding) instead of matching on role_id alone, so
-    // this correctly drops to zero recipients and the stall cron's
-    // escalation fires — this warning is a heads-up at edit time, not the
-    // only thing standing between this change and a silently-stuck step.
-    // DELETE below already checks this for role deletion; edits had no
-    // equivalent warning. Warn rather than block, matching the
-    // member-deactivation pattern.
+    // Stripping APPROVE_DOCUMENTS from a role silently breaks workflow steps
+    // that assign it — warn at edit time.
     let affectedWorkflowNames: string[] = []
     if (permissions !== undefined && existingRole.permissions?.['APPROVE_DOCUMENTS'] === true && permissions['APPROVE_DOCUMENTS'] !== true) {
-      const { data: affectedSteps } = await (service as any)
+      const { data: affectedSteps } = await service
         .from('approval_workflow_steps')
         .select('id, approval_workflows!inner(name, is_active)')
         .eq('approver_role_id', id)
         .eq('approval_workflows.workspace_id', session.workspaceId)
         .eq('approval_workflows.is_active', true)
-      affectedWorkflowNames = Array.from(new Set((affectedSteps || []).map((s: any) => s.approval_workflows?.name).filter(Boolean)))
+      affectedWorkflowNames = Array.from(new Set((affectedSteps || []).map((s: any) => s.approval_workflows?.name).filter(Boolean))) as string[]
     }
 
-    // FIX (deep audit, Team & Invites re-pass): POST (role_created) and
-    // DELETE (role.deleted) right next to this both log to the audit
-    // trail — this edit path never did, despite being the most
-    // consequential of the three: trg_role_permissions_propagate
-    // (migration 001) recomputes effective_permissions for every member
-    // currently holding this role the instant it's saved.
-    await logAudit(service, {
-      workspaceId: session.workspaceId, actorId: session.id,
-      actorEmail: session.email, actorName: session.name,
-      eventType: 'role.updated', entityType: 'role',
-      entityId: id, entityName: (name as string) || existingRole.name,
-      metadata: {
-        fields: [
-          ...Object.keys(otherUpdates).filter(k => k !== 'updated_at'),
-          ...(permissions !== undefined ? ['permissions'] : []),
-        ],
-        ...(affectedWorkflowNames.length ? { orphaned_approval_workflows: affectedWorkflowNames } : {}),
-        ...(isDefault === true ? { requested_default: true, default_swap_failed: defaultSwapFailed } : {}),
-      },
-    })
+    const permChange = permissions !== undefined ? diffPermissionMaps(existingRole.permissions, permissions) : { granted: [], revoked: [] }
+    const contentChanged = Object.keys(otherUpdates).length > 0 || permChange.granted.length > 0 || permChange.revoked.length > 0
+    if (contentChanged) {
+      await logAudit(service, {
+        workspaceId: session.workspaceId, actorId: session.id,
+        actorEmail: session.email, actorName: session.name,
+        eventType: 'role.updated', entityType: 'role',
+        entityId: id, entityName: newName || existingRole.name,
+        metadata: {
+          ...(otherUpdates.name ? { name: { from: existingRole.name, to: otherUpdates.name } } : {}),
+          ...('description' in otherUpdates ? { description_changed: true } : {}),
+          ...(permChange.granted.length ? { permissions_granted: permChange.granted } : {}),
+          ...(permChange.revoked.length ? { permissions_revoked: permChange.revoked } : {}),
+          ...(affectedWorkflowNames.length ? { orphaned_approval_workflows: affectedWorkflowNames } : {}),
+        },
+      })
+    }
+    if (isDefault === true && !existingRole.is_default) {
+      await logAudit(service, {
+        workspaceId: session.workspaceId, actorId: session.id,
+        actorEmail: session.email, actorName: session.name,
+        eventType: 'role.default_changed', entityType: 'role',
+        entityId: id, entityName: newName || existingRole.name,
+        metadata: { from_role: previousDefaultName, to_role: newName || existingRole.name, swap_failed: defaultSwapFailed },
+      })
+    }
 
     return NextResponse.json({
       ok: true,
@@ -297,22 +212,14 @@ export async function PATCH(
       } : {}),
     })
   } catch (err) {
-    // FIX (deep audit, Team & Invites re-pass): raw exception messages
-    // were returned straight to the client — same info-disclosure pattern
-    // already fixed elsewhere. Log server-side only.
     console.error('Team roles PATCH error:', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
 
-// FIX (deep audit, section 6): roles could be created but never deleted —
-// no endpoint existed at all. Over time every custom role an agency ever
-// created, used or not, sat permanently in the workspace. Block deletion
-// where it would actually break something (a role currently held by a
-// member, or currently the workspace's default/fallback role, or
-// currently named as an approver in an active workflow) rather than just
-// always refusing — those are real, checkable constraints, not a reason
-// to disallow deletion altogether.
+// Deleting a role is refused wherever it would break something: a role still
+// held by a member (active, pending OR deactivated), the workspace default, or
+// a role named as an approver in a workflow.
 export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -324,8 +231,8 @@ export async function DELETE(
     if (!hasPermission(session, 'MANAGE_ROLES'))
       return NextResponse.json({ error: 'Missing permission: MANAGE_ROLES' }, { status: 403 })
 
-    const service = createServiceClient()
-    const { data: role } = await (service as any)
+    const service = createServiceClient() as any
+    const { data: role } = await service
       .from('roles').select('id, name, is_default, permissions')
       .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
     if (!role) return NextResponse.json({ error: 'Role not found' }, { status: 404 })
@@ -336,8 +243,6 @@ export async function DELETE(
       }, { status: 409 })
     }
 
-    // Same floor check as PATCH above — you can't delete a role that
-    // currently holds permissions you don't hold yourself either.
     const outOfReach = permissionsBeyondActorForTarget(session, role.permissions)
     if (outOfReach.length > 0) {
       return NextResponse.json({
@@ -345,16 +250,29 @@ export async function DELETE(
       }, { status: 403 })
     }
 
-    const { count: memberCount } = await (service as any)
-      .from('workspace_members').select('id', { count: 'exact', head: true })
-      .eq('workspace_id', session.workspaceId).eq('role_id', id).neq('status', 'deactivated')
-    if ((memberCount || 0) > 0) {
+    const { data: holders } = await service
+      .from('workspace_members').select('id,status')
+      .eq('workspace_id', session.workspaceId).eq('role_id', id)
+    const live        = (holders || []).filter((m: any) => m.status === 'active').length
+    const pending     = (holders || []).filter((m: any) => m.status === 'invited' || m.status === 'expired').length
+    const deactivated = (holders || []).filter((m: any) => m.status === 'deactivated').length
+    if (live > 0) {
       return NextResponse.json({
-        error: `${memberCount} active member${memberCount === 1 ? '' : 's'} currently hold this role. Reassign them first.`,
+        error: `${live} active member${live === 1 ? '' : 's'} currently hold this role. Reassign them first.`,
+      }, { status: 409 })
+    }
+    if (pending > 0) {
+      return NextResponse.json({
+        error: `${pending} pending or expired invite${pending === 1 ? '' : 's'} still use this role. Revoke ${pending === 1 ? 'it' : 'them'} or change ${pending === 1 ? 'its' : 'their'} role first.`,
+      }, { status: 409 })
+    }
+    if (deactivated > 0) {
+      return NextResponse.json({
+        error: `${deactivated} deactivated member${deactivated === 1 ? '' : 's'} still hold this role. Change ${deactivated === 1 ? 'their' : 'their'} role from the Deactivated list on the Members tab first, so reactivating ${deactivated === 1 ? 'them' : 'them'} later doesn't leave anyone with no role.`,
       }, { status: 409 })
     }
 
-    const { count: stepCount } = await (service as any)
+    const { count: stepCount } = await service
       .from('approval_workflow_steps').select('id', { count: 'exact', head: true })
       .eq('approver_role_id', id)
     if ((stepCount || 0) > 0) {
@@ -363,9 +281,13 @@ export async function DELETE(
       }, { status: 409 })
     }
 
-    const { error } = await (service as any)
+    const { error } = await service
       .from('roles').delete().eq('id', id).eq('workspace_id', session.workspaceId)
-    if (error) throw new Error(error.message)
+    if (error) {
+      if ((error as any).code === '23503')
+        return NextResponse.json({ error: 'This role is still assigned to someone. Reassign them first.' }, { status: 409 })
+      throw new Error(error.message)
+    }
 
     await logAudit(service, {
       workspaceId: session.workspaceId, actorId: session.id,

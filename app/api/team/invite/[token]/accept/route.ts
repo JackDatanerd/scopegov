@@ -93,7 +93,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     // Activate membership
     // BUG FIX (Fix 3): don't null invite_token — see signup/route.ts for why.
-    await (service as any).from('workspace_members').update({
+    const { data: activated, error: activateErr } = await (service as any).from('workspace_members').update({
       user_id:              user.id,
       status:               'active',
       joined_at:            now,
@@ -109,7 +109,18 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       // drop role_id from this update for any future reason and every
       // invitee would silently land on the default role's permissions
       // regardless of what they were invited as, with nothing to catch it.
-    }).eq('id', member.id)
+    }).eq('id', member.id).eq('status', 'invited').select('id')
+
+    // Nothing else may happen (active workspace switch, audit, notifications)
+    // unless the membership really flipped to active — a failed write, or a
+    // second simultaneous accept that lost the race, must not report success.
+    if (activateErr) {
+      console.error('Invite accept: membership update failed:', activateErr)
+      return NextResponse.json({ error: 'Could not accept this invite. Please try again.' }, { status: 500 })
+    }
+    if (!activated || activated.length === 0) {
+      return NextResponse.json({ error: 'This invite has already been accepted or is no longer valid.' }, { status: 409 })
+    }
 
     // Ensure user row exists (BUG-002: INSERT policy + service role)
     // FIX (round 3, Workspace lifecycle Finding 5): this used to be an

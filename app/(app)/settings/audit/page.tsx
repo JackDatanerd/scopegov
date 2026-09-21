@@ -3,6 +3,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import { fetchPaged } from '@/lib/utils/paginate'
 import AuditLogClient from '@/components/settings/AuditLogClient'
+import { getWorkspaceTimeZone } from '@/lib/utils/workspace-time'
 
 export const metadata = { title: 'Audit Log' }
 
@@ -66,5 +67,7 @@ export default async function AuditLogPage() {
     .filter((m: any) => m.users)
     .map((m: any) => ({ id: m.users.id, name: m.users.name || m.users.email, email: m.users.email, active: m.status === 'active' }))
 
-  return <AuditLogClient projects={projectOptions} members={memberOptions} />
+  const timeZone = await getWorkspaceTimeZone(service, session.workspaceId)
+
+  return <AuditLogClient projects={projectOptions} members={memberOptions} timeZone={timeZone} />
 }

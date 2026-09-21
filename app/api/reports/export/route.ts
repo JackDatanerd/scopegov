@@ -18,6 +18,7 @@ export const maxDuration = 60
 // form of the same read, not a separate capability, matching every other
 // export route's reasoning in this codebase.
 
+import { getWorkspaceTimeZone } from '@/lib/utils/workspace-time'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
@@ -88,6 +89,7 @@ export async function GET(request: NextRequest) {
     const meta = {
       agencyName: session.agencyName, workspaceName: session.workspaceName,
       generatedBy: session.name, generatedAt: new Date().toISOString(),
+      timeZone: await getWorkspaceTimeZone(service, session.workspaceId),
       periodLabel: PERIOD_LABELS[period],
     }
     const buffer = mode === 'scope' ? await renderScopeReportPdf(meta, data) : await renderFinancialReportPdf(meta, data)
