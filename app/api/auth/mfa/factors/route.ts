@@ -46,6 +46,24 @@ export async function DELETE(request: Request) {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+    const service = createServiceClient()
+
+    // FIX (deep audit, Auth+MFA re-pass round 3 — HIGH): requireStepUp() was
+    // already imported here but never called. All that actually gated this
+    // route was `aal.currentLevel !== 'aal2'` below — and step-up.ts's own
+    // doc comment explains exactly why that's insufficient: aal2 persists for
+    // the WHOLE LIFE of the session (hours or days), whereas step-up demands
+    // proof within the last 10 minutes. The round-2 changelog explicitly
+    // claimed step-up guards "disable MFA" — it never actually did on this
+    // route. Every sibling sensitive-action route (change-email, account
+    // delete, team/reset-mfa, workspace transfer/delete, billing cancel) does
+    // call requireStepUp correctly; this one and backup-codes/route.ts were
+    // the two left with a dead import instead of a real call. Without this, a
+    // long-lived or hijacked aal2 session could strip MFA off the account
+    // with no fresh proof at all.
+    const stepUp = await requireStepUp(supabase, service, user)
+    if (stepUp) return stepUp
+
     const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
     if (aal?.currentLevel !== 'aal2') {
       return NextResponse.json({ error: 'Re-verify your authenticator code before disabling two-factor authentication.' }, { status: 403 })
@@ -69,7 +87,6 @@ export async function DELETE(request: Request) {
     // correctly checks every membership). Use the same aggregate check
     // middleware uses so this endpoint actually refuses it outright, as
     // the comment above always intended.
-    const service = createServiceClient()
     // FIX (deep audit, RLS+permissions section): previously a bare
     // `.select('active_workspace_id')` with no fallback to the oldest
     // active membership (see resolveActiveWorkspaceId's own comment) — an

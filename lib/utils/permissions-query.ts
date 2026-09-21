@@ -37,11 +37,21 @@ export async function filterToProjectAccess<T extends { id: string }>(
   const remaining = recipients.filter(r => !viewAllIds.has(r.id))
   let projectMemberIds = new Set<string>()
   if (remaining.length) {
+    // FIX (deep audit, RLS+permissions re-pass round 3): same gap and same
+    // fix as canReadProject() in lib/utils/project-access.ts — this joined
+    // in workspace_members but never filtered status, so a member whose
+    // deactivation-time project-archival step had failed (see migration 070
+    // / app/api/team/[id]/route.ts) would still be treated as having project
+    // access here too (this function feeds who gets notified about /
+    // can open a flag-escalation, approval, etc.). project_members_active
+    // is the same data narrowed to currently-active members; queried by its
+    // flattened column rather than PostgREST embedding, which a view isn't
+    // guaranteed to support for its underlying tables' foreign keys.
     const { data } = await service
-      .from('project_members')
-      .select('workspace_members!inner(user_id)')
+      .from('project_members_active')
+      .select('member_user_id')
       .eq('project_id', projectId)
-    projectMemberIds = new Set((data || []).map((r: any) => r.workspace_members.user_id))
+    projectMemberIds = new Set((data || []).map((r: any) => r.member_user_id))
   }
   return recipients.filter(r => viewAllIds.has(r.id) || projectMemberIds.has(r.id))
 }

@@ -1,0 +1,118 @@
+ScopeGov — Auth + MFA (1) and RLS + permissions (2): independent audit, round 3
+Base commit: c0ddda9
+
+RUN THIS MIGRATION FIRST (Supabase SQL editor), before deploying the code:
+  070_rls_project_access_atomicity_round3.sql
+Then `npm install` is NOT needed — no new dependencies this round.
+
+Both findings from round 3 crossed the boundary between the two named sections
+(a dead auth check, and a permission-read primitive used all over the app), so
+this ships as one tarball again, same as rounds 1 and 2.
+
+AUTH + MFA — bugs fixed
+ 1 HIGH  Step-up was never actually wired into two of the routes it was built
+         for. DELETE /api/auth/mfa/factors (disable MFA) and POST
+         /api/auth/mfa/backup-codes (regenerate backup codes) both already
+         imported requireStepUp() — and never called it. All that gated them
+         was `aal.currentLevel === 'aal2'`, which (per step-up.ts's own doc
+         comment) persists for the WHOLE LIFE of the session, not a recent
+         re-verification. The round-2 changelog explicitly claimed step-up
+         guards "disable MFA" and "regenerate backup codes" — it never
+         actually did on these two routes, even though every sibling
+         sensitive-action route (change-email, account delete, team/reset-mfa,
+         workspace transfer/delete, billing cancel) calls it correctly. A
+         long-lived or hijacked aal2 session could strip MFA or regenerate
+         codes with no fresh proof at all. Fixed by actually calling
+         requireStepUp(supabase, service, user) before the existing aal2
+         check in both routes. The frontend (components/settings/MfaSection.tsx)
+         was ALREADY calling both endpoints through fetchWithStepUp() and
+         already handles a step_up_required response correctly — it's been
+         sitting ready for this backend fix with no changes needed.
+ 2 HIGH  Infinite redirect loop for a mandatory-MFA member who has never
+         enrolled a factor, when they try to reset a forgotten password.
+         Middleware's must-enroll-mfa gate 401s POST /api/auth/reset-password
+         with "Two-factor enrollment required for this account." — but the
+         reset-password page's error handler matched ANY "two-factor" message
+         with one regex and always redirected to /mfa-challenge. That page has
+         nothing to challenge (no verified factor exists) and immediately
+         bounces back to /reset-password via router.replace(next) — which hits
+         the same 401 again. Infinite loop, no way out except manually typing
+         /mfa-setup into the address bar. Fixed by giving middleware's two
+         distinct 401s their own `code` (mfa_challenge_required vs
+         mfa_enrollment_required) and routing the reset-password page on that
+         instead of pattern-matching the message text — the enrollment case now
+         goes to /mfa-setup?next=/reset-password, which correctly returns the
+         person to finish their password reset once they've enrolled (verified
+         the amr/recovery-session freshness checks in
+         POST /api/auth/reset-password still pass after completing enrollment
+         in the same session — completing TOTP enrollment doesn't touch the
+         session's recovery-primary-method or reduce its freshness).
+
+RLS + PERMISSIONS — bug fixed
+ 1 HIGH  Systemic, both project-membership-resolution primitives. canReadProject()
+         and filterToProjectAccess() (the only two places in the app that decide
+         "does this session have project-level access") both joined
+         project_members -> workspace_members filtering only on user_id, never
+         on workspace_members.status = 'active' — unlike every other query in
+         this codebase that touches workspace_members. The only thing keeping
+         that safe was a single un-retried RPC call, archive_member_projects(),
+         invoked from exactly one place (the deactivate path in
+         DELETE /api/team/[id]) as a SEPARATE network round-trip after the
+         status flip, with its error only console.error'd ("member is
+         deactivated regardless"). If that call ever failed — a timeout, a
+         transient DB error — the member's status still flipped to
+         'deactivated' (never rolled back) but their project_members rows were
+         silently left behind forever, with no retry and no cron sweep. Because
+         the two read-side functions never independently checked status, that
+         failure mode was a PERMANENT, silent authorization leak: a removed
+         employee keeps full read access to every project they were on,
+         indefinitely, through an app that believes it cut them off.
+         Two independent fixes for the two independent weaknesses:
+           - deactivate_member_atomic() (migration 070): the status flip and
+             the project-membership archive now happen in ONE transaction. A
+             failure rolls both back — the admin sees a real, retryable error
+             instead of a silent half-deactivation. Verified end-to-end against
+             a real Postgres: normal deactivation archives correctly, a second
+             deactivation attempt is safely rejected, and a forced failure
+             after the atomic call rolls the status flip back too.
+           - project_members_active (migration 070): a view narrowing
+             project_members to currently-active members, with the two columns
+             the read side needs (project_workspace_id, member_user_id)
+             flattened in rather than left to PostgREST embedding (a view
+             doesn't reliably carry its underlying tables' foreign keys for
+             `table!inner(...)` embedding to resolve through). canReadProject()
+             and filterToProjectAccess() now read from this view instead of the
+             raw table — defense in depth against this exact failure mode, or
+             any other future code path that might deactivate a member without
+             going through (A) above.
+
+FILES
+  New:      supabase/migrations/070_rls_project_access_atomicity_round3.sql
+  Modified: app/api/auth/mfa/factors/route.ts, app/api/auth/mfa/backup-codes/route.ts,
+            middleware.ts, app/(auth)/reset-password/page.tsx,
+            app/api/team/[id]/route.ts, lib/utils/project-access.ts,
+            lib/utils/permissions-query.ts, tests/route-authority.test.ts
+            (mock updated for the new deactivate_member_atomic RPC call)
+
+VERIFIED
+  - npx tsc --noEmit: clean
+  - npx vitest run: 48 files / 484 tests, all passing (including
+    tests/pg-replay.test.ts against a real local Postgres 16 + pgvector,
+    replaying all 70 migrations)
+  - npx next build: succeeds (the three auth-page static-export warnings for
+    /forgot-password, /reset-password, /signup are pre-existing — reproduced
+    identically on the unmodified base commit with no Supabase env vars
+    configured in this sandbox; not caused by this round's changes)
+  - Manually verified deactivate_member_atomic()/project_members_active against
+    a real Postgres: active-member archival, idempotent re-deactivation
+    (returns false, no error), and transactional rollback on a forced failure
+    all behave as intended.
+
+NOT DONE / KNOWN LIMITS
+  - The "trusted device" / remember-me-for-30-days feature gap noted in the
+    audit is NOT built here — it's a product decision (more convenience vs.
+    more assurance for a governance product) that hasn't been confirmed either
+    way, not an oversight, so nothing was added speculatively.
+  - This tarball does not touch anything already fixed in rounds 1-2
+    (migrations 064/068 and their code) — only the three fresh findings from
+    round 3's independent re-audit.

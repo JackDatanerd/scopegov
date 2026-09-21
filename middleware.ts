@@ -221,7 +221,12 @@ export async function middleware(request: NextRequest) {
   if (user && !isPublicRoute && !isMfaFlowRoute) {
     if (currentLevel === 'aal1' && nextLevel === 'aal2') {
       if (isApi) {
-        return finalize(NextResponse.json({ error: 'Two-factor verification required.' }, { status: 401 }))
+        // FIX (deep audit, Auth+MFA re-pass round 3): give this its own `code`,
+        // distinct from the must-enroll case below. A caller that only pattern-
+        // matched the message text (reset-password/page.tsx did, on /two-factor/i)
+        // couldn't tell "you have a factor, go prove it" from "you have no factor,
+        // go enroll one" — see that page's own fix note for the loop this caused.
+        return finalize(NextResponse.json({ error: 'Two-factor verification required.', code: 'mfa_challenge_required' }, { status: 401 }))
       }
       const url = new URL('/mfa-challenge', request.url)
       url.searchParams.set('next', pathname + search)
@@ -267,7 +272,12 @@ export async function middleware(request: NextRequest) {
       if (!gate) return finalize(unavailable())
       if (gate.must_enroll_mfa && !(isOnboardingApi && !gate.onboarding_complete)) {
         if (isApi) {
-          return finalize(NextResponse.json({ error: 'Two-factor enrollment required for this account.' }, { status: 401 }))
+          // FIX (deep audit, Auth+MFA re-pass round 3): distinct `code` from the
+          // aal2-pending case above — see that fix's comment. This one means
+          // "no factor exists to challenge," which needs /mfa-setup, not
+          // /mfa-challenge (which has nothing to verify and would bounce right
+          // back).
+          return finalize(NextResponse.json({ error: 'Two-factor enrollment required for this account.', code: 'mfa_enrollment_required' }, { status: 401 }))
         }
         return finalize(NextResponse.redirect(new URL('/mfa-setup', request.url)))
       }

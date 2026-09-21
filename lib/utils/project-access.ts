@@ -32,12 +32,25 @@ import { hasPermission } from '@/lib/auth/session'
 // safe regardless of what the caller does around it.
 export async function canReadProject(service: any, session: SessionUser, projectId: string): Promise<boolean> {
   if (hasPermission(session, 'VIEW_ALL_PROJECTS')) return true
+  // FIX (deep audit, RLS+permissions re-pass round 3): this queried
+  // project_members directly, joining in workspace_members but filtering
+  // only on user_id — never on workspace_members.status. The single thing
+  // keeping a deactivated member's row out of project_members was one
+  // un-retried RPC call at deactivation time (see app/api/team/[id]/route.ts
+  // and migration 070); if that step ever failed, this function had no
+  // independent check of its own and would keep granting access forever.
+  // project_members_active (migration 070) is the same data narrowed to
+  // currently-active members, with the workspace/user columns flattened in
+  // (no PostgREST embedding — a view doesn't reliably carry the underlying
+  // tables' foreign keys for embedding to resolve through) — belt-and-braces
+  // against exactly that failure mode, not just the procedural fix on the
+  // write side.
   const { data } = await service
-    .from('project_members')
-    .select('project_id, projects!inner(workspace_id), workspace_members!inner(user_id)')
+    .from('project_members_active')
+    .select('project_id')
     .eq('project_id', projectId)
-    .eq('projects.workspace_id', session.workspaceId)
-    .eq('workspace_members.user_id', session.id)
+    .eq('project_workspace_id', session.workspaceId)
+    .eq('member_user_id', session.id)
     .limit(1)
   return !!(data && data.length)
 }

@@ -17,12 +17,22 @@ export async function POST() {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+    const service = createServiceClient()
+
+    // FIX (deep audit, Auth+MFA re-pass round 3 — HIGH): same gap as
+    // DELETE /api/auth/mfa/factors — requireStepUp() was imported but never
+    // called, leaving only the aal2 check below, which proves the factor was
+    // verified SOMEWHERE in this session's lifetime, not recently. Backup
+    // codes are the account-recovery path of last resort; regenerating them
+    // silently invalidates every existing code, so this deserves the same
+    // fresh-proof requirement the round-2 changelog already claimed it had.
+    const stepUp = await requireStepUp(supabase, service, user)
+    if (stepUp) return stepUp
+
     const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
     if (aal?.currentLevel !== 'aal2') {
       return NextResponse.json({ error: 'Re-verify your authenticator code before regenerating backup codes.' }, { status: 403 })
     }
-
-    const service = createServiceClient()
     // FIX (build — Auth independent audit): the new set is inserted BEFORE the
     // previously-unused codes are retired (lib/auth/backup-code-store.ts). The
     // old order retired first and inserted second, so a failure in between left

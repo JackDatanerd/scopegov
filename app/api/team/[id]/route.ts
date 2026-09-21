@@ -76,18 +76,32 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
         return NextResponse.json({ error: 'Could not revoke the invite. Try again.' }, { status: 500 })
       }
     } else {
-      const { error } = await service.from('workspace_members').update({
-        status: 'deactivated', deactivated_at: new Date().toISOString(),
-      }).eq('id', id).eq('status', 'active')
+      // FIX (deep audit, RLS+permissions re-pass round 3 — HIGH): this used to
+      // be two separate network round-trips — flip status to 'deactivated',
+      // then a second, independent call to archive_member_projects() to set
+      // aside their project assignments. If the second call ever failed (a
+      // transient DB error, a timeout), the first had already committed and
+      // was never rolled back — the old comment here said so outright
+      // ("member is deactivated regardless"). Nothing retried it and nothing
+      // ever swept for the orphaned project_members rows left behind. Because
+      // canReadProject()/filterToProjectAccess() didn't independently check
+      // workspace_members.status (see project-access.ts / permissions-query.ts
+      // for that half of the fix), that failure mode was a PERMANENT, silent
+      // authorization leak: a removed employee kept full read access to every
+      // project they were on. Both steps are now one transaction (migration
+      // 070's deactivate_member_atomic) — either both happen or neither does,
+      // and a failure here is a real, surfaced error the admin can retry,
+      // not a silent half-deactivation.
+      const { data: deactivated, error } = await service.rpc('deactivate_member_atomic', {
+        p_member_id: id, p_workspace_id: session.workspaceId,
+      })
       if (error) {
         console.error('Member deactivate failed:', error)
         return NextResponse.json({ error: 'Could not deactivate this member. Try again.' }, { status: 500 })
       }
-
-      // Their project assignments are set aside (not deleted) so that
-      // reactivating the member restores exactly what they had.
-      const { error: archiveErr } = await service.rpc('archive_member_projects', { p_member_id: id })
-      if (archiveErr) console.error('archive_member_projects failed (member is deactivated regardless):', archiveErr)
+      if (!deactivated) {
+        return NextResponse.json({ error: 'This member is already deactivated' }, { status: 409 })
+      }
 
       // Invites this person SENT carry their authority to grant the invited role.
       // Once they're deactivated nobody vouches for those invites any more (they

@@ -41,7 +41,18 @@ vi.mock('@/lib/supabase/server', () => ({
         return target[prop]
       } })
     },
-    rpc: async (name: string, args: any) => { rpcCalls.push({ name, args }); return { data: null, error: null } },
+    // deactivate_member_atomic (migration 070) returns a boolean — true means
+    // "found an active member and deactivated it," which is what every
+    // existing DELETE /api/team/[id] test here exercises (a not-found /
+    // already-deactivated member is turned away earlier in the route, before
+    // this RPC is ever called). The generic `data: null` default is fine for
+    // every other RPC in this file, whose return values these tests don't
+    // read at all.
+    rpc: async (name: string, args: any) => {
+      rpcCalls.push({ name, args })
+      if (name === 'deactivate_member_atomic') return { data: true, error: null }
+      return { data: null, error: null }
+    },
     auth: { admin: { mfa: {
       listFactors: async () => { writes.push('auth.listFactors'); return { data: { factors: [{ id: 'f1', factor_type: 'totp' }] }, error: null } },
       deleteFactor: async () => { writes.push('auth.deleteFactor'); return { error: null } },

@@ -100,9 +100,26 @@ export default function ResetPasswordPage() {
       })
       const body = await res.json().catch(() => ({} as { error?: string; code?: string }))
       if (!res.ok) {
-        // Accounts with two-factor authentication must pass the challenge before
-        // the password can change: send them there and bring them straight back.
-        if (body.code === 'mfa_required' || (res.status === 401 && /two-factor/i.test(body.error || ''))) {
+        // FIX (deep audit, Auth+MFA re-pass round 3 — infinite redirect loop):
+        // this used to treat ANY "two-factor" message as "go pass the
+        // challenge" and send everyone to /mfa-challenge. But middleware's
+        // must-enroll-mfa gate ALSO says "Two-factor enrollment required..."
+        // for someone with a mandatory role who has never enrolled a factor —
+        // that regex caught it too. /mfa-challenge has nothing to challenge
+        // for such a person (no verified factor exists), so its own effect
+        // immediately bounced them straight back to /reset-password, which
+        // hit the same 401 again — an infinite loop with no way out except
+        // manually navigating to /mfa-setup. middleware now sends a distinct
+        // `code` for each case (mfa_challenge_required vs
+        // mfa_enrollment_required); route on that instead of pattern-matching
+        // the message. `mfa_required` (from THIS route's own 403, a step-up-
+        // style check) and the legacy text fallback still mean "go challenge."
+        if (body.code === 'mfa_enrollment_required') {
+          router.push('/mfa-setup?next=' + encodeURIComponent('/reset-password'))
+          return
+        }
+        if (body.code === 'mfa_required' || body.code === 'mfa_challenge_required' ||
+            (res.status === 401 && /two-factor/i.test(body.error || ''))) {
           router.push('/mfa-challenge?next=' + encodeURIComponent('/reset-password'))
           return
         }
