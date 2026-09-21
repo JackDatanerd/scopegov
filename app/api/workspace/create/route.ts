@@ -92,7 +92,7 @@ export async function POST(request: NextRequest) {
       // nothing to stop discard-then-recreate from resetting the 14-day
       // clock indefinitely, despite this exact rpcError branch's own
       // pre-existing comment claiming that scenario was closed. Migration
-      // 047 adds a real lifetime flag (with a 24h grace window so the
+      // 048 adds a real lifetime flag (with a 24h grace window so the
       // wizard's own "discard and start over" escape hatch still works
       // for a genuine early restart) and raises this distinguishable
       // error once that window has passed.

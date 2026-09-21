@@ -6,7 +6,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { sanitizeDisplayName } from '@/lib/utils/sanitize'
-import { CURRENCIES } from '@/lib/constants/workspace-options'
+import { INDUSTRIES, CURRENCIES } from '@/lib/constants/workspace-options'
 import { isValidTimeZone } from '@/lib/utils/timezone'
 import { diffFields, sameValue } from '@/lib/utils/audit-diff'
 import { validateSlug } from '@/lib/utils/slug'
@@ -73,8 +73,19 @@ function parseField(key: string, value: unknown): unknown {
       return v
     }
     case 'industry': {
+      // FIX (fresh independent audit, Workspace lifecycle + Onboarding):
+      // this only ever length-checked the value — unlike workspace/create,
+      // which validates against the curated INDUSTRIES list specifically
+      // because "the UI presents fixed dropdowns... nothing stopped a
+      // direct API call from storing an unrecognized industry" (see that
+      // route's own comment). This route is hit by the exact same field
+      // from the exact same wizard's own step-0 "go back and edit" path
+      // (submitIdentity PATCHes here once workspaceId already exists) —
+      // the dropdown protects a normal browser user, but any direct API
+      // call bypassed the enum check entirely and could set an industry
+      // the app never offers. Validate against the same curated list.
       const v = requireString(value, 'Industry').trim()
-      if (v.length > 100) throw new FieldError('Industry must be under 100 characters')
+      if (!(INDUSTRIES as readonly string[]).includes(v)) throw new FieldError('Invalid industry')
       return v
     }
     case 'currency': {

@@ -435,7 +435,33 @@ function OnboardingWizard() {
     )) return
     setLoading(true); setError('')
     try {
-      const res  = await fetch('/api/workspace/delete', { method: 'DELETE' })
+      // FIX (fresh independent audit, Workspace lifecycle + Onboarding):
+      // workspace/delete requires the caller to type the workspace's
+      // exact `name` (what session.workspaceName reads) as `confirmName`
+      // in the request body — this call sent NO body at all, so every
+      // discard here unconditionally hit "Type the workspace name to
+      // confirm deletion" and 400'd. This screen deliberately uses a
+      // plain window.confirm() rather than a typed-name box (unlike
+      // Settings > Danger Zone — nothing real has been invested yet at
+      // this point in the wizard), so fetch the authoritative `name`
+      // server-side rather than trust local `agencyName` state, which can
+      // have drifted from it: going back to step 0 and editing only PATCHes
+      // `agency_name` via workspace/settings, never the separate `name`
+      // column workspace/delete actually checks against.
+      const listRes  = await fetch('/api/workspace/list')
+      const listJson = await listRes.json().catch(() => ({}))
+      const current  = Array.isArray(listJson.workspaces)
+        ? listJson.workspaces.find((w: any) => w.id === workspaceId)
+        : null
+      if (!listRes.ok || !current?.name) {
+        setError('Could not discard this workspace — try again, or contact support@scopegov.app.')
+        return
+      }
+      const res  = await fetch('/api/workspace/delete', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmName: current.name }),
+      })
       const json = await res.json().catch(() => ({}))
       if (!res.ok) {
         setError(json.error || 'Could not discard this workspace — try again, or contact support@scopegov.app.')
@@ -695,6 +721,20 @@ function OnboardingWizard() {
           setError(json.error || 'Could not send that invite — check the email address, or skip this step.')
           return
         }
+      } catch {
+        // FIX (fresh independent audit, Workspace lifecycle + Onboarding):
+        // every sibling step function in this wizard (submitIdentity,
+        // submitBranding, submitDefaults, complete, restoreWorkspace,
+        // switchToWorkspace, discardWorkspace, leaveWaitingWorkspace)
+        // catches a network-level fetch failure and shows a generic error
+        // — this was the one step that didn't. A network-level throw (offline,
+        // DNS blip — fetch only throws on those, never on a resolved
+        // non-2xx) propagated unhandled: loading still cleared via
+        // `finally` below, but no error was ever shown and the wizard
+        // never advanced, silently stranding the user on step 3 with no
+        // explanation.
+        setError('Could not send that invite — check your connection and try again, or skip this step.')
+        return
       } finally { setLoading(false) }
     }
     setStep(4)
