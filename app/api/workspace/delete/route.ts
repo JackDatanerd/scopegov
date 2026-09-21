@@ -4,7 +4,7 @@
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
-import { getSession, hasPermission } from '@/lib/auth/session'
+import { getSession, hasPermission, pickFallbackMembership } from '@/lib/auth/session'
 import { cancelPaystackSubscription } from '@/lib/integrations/paystack'
 import { logAudit } from '@/lib/utils/audit'
 import { sendWorkspaceDeletedEmail } from '@/lib/email/templates'
@@ -203,9 +203,19 @@ export async function DELETE() {
     // as above — a failure here previously left the workspace soft-deleted
     // but every membership still 'active', silently, with the client told
     // deletion succeeded.
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — feature
+    // gap): this write never stamped deactivated_at (unlike
+    // leave_workspace_atomic's own deactivation, which always does) —
+    // harmless on its own, but restore_workspace_atomic (migration 065,
+    // the new workspace-restore feature) needs to tell "deactivated BY
+    // THIS deletion" apart from "was already deactivated for an unrelated
+    // reason before the deletion happened" so a restore can't accidentally
+    // resurrect someone who'd genuinely left or been removed earlier.
+    // Stamping it with the exact same `now` used for the workspace's own
+    // deleted_at just below gives restore an exact, reliable match.
     const { error: deactivateError } = await (service as any)
       .from('workspace_members')
-      .update({ status: 'deactivated' })
+      .update({ status: 'deactivated', deactivated_at: now })
       .eq('workspace_id', session.workspaceId)
       .neq('status', 'deactivated')
     if (deactivateError) {
@@ -234,11 +244,24 @@ export async function DELETE() {
         const { data: u } = await (service as any)
           .from('users').select('active_workspace_id').eq('id', m.user_id).maybeSingle()
         if (u?.active_workspace_id !== session.workspaceId) continue
-        const { data: fallback } = await (service as any)
+        // FIX (deep audit, Workspace lifecycle + Onboarding re-pass —
+        // flagship finding): this used to grab only the single oldest
+        // remaining active membership, with no regard for whether THAT
+        // workspace had actually finished onboarding — see
+        // pickFallbackMembership's own comment in lib/auth/session.ts for
+        // the full story and the other three call sites sharing this exact
+        // gap. Concretely reachable via the onboarding wizard's own
+        // "Discard this workspace" button: an invited member sitting on
+        // the 'waiting' screen for THIS workspace could get reassigned
+        // into some other older-but-still-incomplete workspace of theirs
+        // instead of a perfectly usable, already-onboarded one. Fetch a
+        // real candidate set and prefer a completed workspace.
+        const { data: candidates } = await (service as any)
           .from('workspace_members')
-          .select('workspace_id')
+          .select('workspace_id, workspaces(deleted_at, onboarding_completed_at)')
           .eq('user_id', m.user_id).eq('status', 'active')
-          .order('created_at', { ascending: true }).limit(1).maybeSingle()
+          .order('created_at', { ascending: true }).limit(25)
+        const fallback = pickFallbackMembership(candidates)
         await (service as any)
           .from('users').update({ active_workspace_id: fallback?.workspace_id ?? null }).eq('id', m.user_id)
       } catch (e) { console.error('active_workspace_id reassignment failed (non-fatal):', m.user_id, e) }

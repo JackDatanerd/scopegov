@@ -1977,6 +1977,42 @@ export async function sendWorkspaceCreatedEmail(params: { to: string; name: stri
   return deliver({ from: systemFrom(), to, subject: `Welcome to ${agencyNameRaw} on ScopeGov`, html })
 }
 
+// ── Workspace restored ───────────────────────────────────────
+// FEATURE (deep audit, Workspace lifecycle + Onboarding re-pass —
+// feature gap): sendWorkspaceDeletedEmail above tells the OTHER members
+// their access ended; there was nothing symmetric for when the owner
+// undoes that within the restore window (see restore_workspace_atomic,
+// migration 065) — the one workspace-lifecycle transition in this file
+// that would otherwise confirm nothing to anyone. Sent to the restorer
+// and, best-effort, to every member whose access just came back.
+export async function sendWorkspaceRestoredEmail(params: { to: string; name: string; agencyName: string; restoredByName: string; isRestorer: boolean }) {
+  const { to, name: nameRaw, agencyName: agencyNameRaw, restoredByName: restoredByRaw, isRestorer } = params
+  const name = escapeHtml(nameRaw)
+  const agencyName = escapeHtml(agencyNameRaw)
+  const restoredBy = escapeHtml(restoredByRaw)
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.green,
+    headerIcon: '↩️',
+    label: 'Workspace',
+    headline: `${agencyName} has been restored`,
+    body: `
+      <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${name},</p>
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        ${isRestorer
+          ? `You restored the <strong>${agencyName}</strong> workspace on ScopeGov. Everything — projects, documents, and data — is back exactly as it was when it was deleted.`
+          : `${restoredBy} restored the <strong>${agencyName}</strong> workspace on ScopeGov. Your access to its projects, documents, and data is back.`}
+      </p>
+      <p style="font-size:13px;color:${C.text2};">
+        Didn't expect this? Contact ${isRestorer ? 'your workspace administrator' : restoredBy} directly to find out more.
+      </p>
+    `,
+    cta: 'Open workspace →',
+    ctaUrl: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard`,
+  })
+  return deliver({ from: systemFrom(), to, subject: `${agencyNameRaw} has been restored`, html })
+}
+
 // ══════════════════════════════════════════════════════════════
 // Notifications & email fix round — team lifecycle senders
 // ══════════════════════════════════════════════════════════════

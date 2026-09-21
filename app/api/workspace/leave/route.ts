@@ -108,8 +108,13 @@ export async function POST(request: NextRequest) {
       entityName: member.workspaces?.name || '', metadata: {},
     }).catch(() => {})
 
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — minor):
+    // eventType used to be 'member_joined' — the wrong preference key for
+    // a member LEAVING, silently coupling the two in one direction (muting
+    // "joined" notices also muted "left" notices, with no way to separate
+    // them). See lib/constants/notification-events.ts for the new key.
     await notifyMembersWithPermission(service, {
-      workspaceId: workspaceId, permission: 'INVITE_MEMBERS', eventType: 'member_joined',
+      workspaceId: workspaceId, permission: 'INVITE_MEMBERS', eventType: 'member_left',
       type: 'member_left', title: 'A teammate left',
       body: `${leavingUserRow?.name || user.user_metadata?.name || user.email} left the workspace.`,
       entityType: 'team', excludeUserId: user.id,

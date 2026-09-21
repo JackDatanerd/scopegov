@@ -22,7 +22,7 @@ interface Row {
 }
 
 function eventColour(type: string) {
-  if (type.includes('signed') || type.includes('accepted') || type.includes('completed') || type.includes('joined') || type.includes('enabled')) return 'var(--green)'
+  if (type.includes('signed') || type.includes('accepted') || type.includes('completed') || type.includes('joined') || type.includes('enabled') || type.includes('restored')) return 'var(--green)'
   if (type.includes('declined') || type.includes('failed') || type.includes('stalled') || type.includes('deleted') || type.includes('disabled')) return 'var(--red)'
   if (type.includes('flag') || type.includes('guardian') || type.includes('escalated')) return 'var(--amber)'
   if (type.includes('billing') || type.includes('plan')) return 'var(--blue)'

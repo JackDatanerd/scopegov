@@ -4,6 +4,39 @@ import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/
 import type { SessionUser, Permission } from '@/lib/supabase/types'
 import { permissionsRequireMfa } from '@/lib/auth/mfa-policy'
 
+// FIX (deep audit, Workspace lifecycle + Onboarding re-pass — flagship
+// finding): every place in this codebase that has to pick a FALLBACK
+// active workspace for a user — this function's own fallback branch
+// below, resolveActiveWorkspaceId() further down, the leave_workspace_atomic
+// RPC (migration 027), and workspace/delete/route.ts's post-delete
+// active_workspace_id reassignment loop — picked strictly by oldest
+// created_at among the user's remaining active memberships, with zero
+// regard for whether that workspace had actually finished onboarding.
+// A user who belongs to an older, still-incomplete workspace (e.g. they're
+// an invited member parked on the onboarding wizard's 'waiting' screen for
+// someone else's slow-to-launch workspace) AND a newer, fully-onboarded one
+// could lose their active workspace (by leaving it, or an admin deleting
+// it out from under them) and get bounced into the incomplete one — the
+// wizard or the waiting screen — instead of the workspace that actually
+// works, purely because it happened to be created first. Reachable
+// concretely via the onboarding exit panel's "Discard this workspace":
+// an invited member sitting on 'waiting' for that exact workspace gets
+// swept through this same fallback logic the instant the creator discards
+// it. Centralizing the "prefer a completed workspace, oldest first among
+// ties" pick here so every call site shares one implementation instead of
+// reinventing the same incomplete tie-break four times.
+export function pickFallbackMembership(
+  candidatesOldestFirst: Array<{ workspaces: { deleted_at?: string | null; onboarding_completed_at?: string | null } | null; [key: string]: any }> | null | undefined
+): any {
+  const alive = (candidatesOldestFirst || []).filter(m => m.workspaces && !m.workspaces.deleted_at)
+  if (alive.length === 0) return null
+  // Array.prototype.sort is stable (guaranteed since ES2019), so within
+  // each group (done vs. not-done) the original oldest-first order from
+  // the caller's own ORDER BY created_at is preserved.
+  const done = alive.filter(m => !!m.workspaces!.onboarding_completed_at)
+  return done[0] || alive[0]
+}
+
 export async function getSession(): Promise<SessionUser | null> {
   try {
     const supabase = await createServerSupabaseClient()
@@ -61,10 +94,11 @@ export async function getSession(): Promise<SessionUser | null> {
     }
 
     if (!memberRow) {
-      // Fetch a few candidates rather than just the single oldest one, so
-      // a deleted workspace occupying that slot doesn't fully defeat the
-      // fallback — pick the oldest active membership whose workspace is
-      // actually still there.
+      // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): fetch
+      // enough candidates to have a real choice between them, not just the
+      // single oldest one — see pickFallbackMembership's own comment above
+      // for why oldest-first alone isn't the right tie-break. 25 comfortably
+      // covers any realistic number of workspace memberships for one user.
       const { data } = await (service as any)
         .from('workspace_members')
         .select(`
@@ -82,8 +116,8 @@ export async function getSession(): Promise<SessionUser | null> {
         .eq('user_id', user.id)
         .eq('status', 'active')
         .order('created_at', { ascending: true })
-        .limit(5)
-      memberRow = (data || []).find((m: any) => m.workspaces && !m.workspaces.deleted_at) || null
+        .limit(25)
+      memberRow = pickFallbackMembership(data)
     }
 
     if (!memberRow) return null
@@ -180,10 +214,16 @@ export async function resolveActiveWorkspaceId(service: any, userId: string): Pr
       .maybeSingle()
     if (member?.workspace_id && !member.workspaces?.deleted_at) return member.workspace_id
   }
+  // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): same
+  // oldest-only-with-no-completeness-awareness gap as getSession()'s own
+  // fallback above — see pickFallbackMembership's comment. This function's
+  // own impact is narrower (audit-log workspace attribution only, not
+  // session/redirect behavior), but it's the same reinvented tie-break, so
+  // it gets the same fix for consistency.
   const { data: candidates } = await service.from('workspace_members')
-    .select('workspace_id, workspaces(deleted_at)').eq('user_id', userId).eq('status', 'active')
-    .order('created_at', { ascending: true }).limit(5)
-  const fallback = (candidates || []).find((m: any) => m.workspaces && !m.workspaces.deleted_at)
+    .select('workspace_id, workspaces(deleted_at, onboarding_completed_at)').eq('user_id', userId).eq('status', 'active')
+    .order('created_at', { ascending: true }).limit(25)
+  const fallback = pickFallbackMembership(candidates)
   return fallback?.workspace_id || null
 }
 

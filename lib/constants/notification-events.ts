@@ -29,6 +29,13 @@ export const IN_APP_ONLY_EVENT_TYPES = [
   'approval_no_reachable_approver', 'flag_comment_added', 'project_message_mention',
   // Added in the Notifications & email fix round:
   'member_joined', 'client_viewed',
+  // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — minor):
+  // workspace/leave used to reuse 'member_joined' (labeled "Teammate
+  // joined" in Settings, described only as "when someone you invited
+  // accepts and joins") to also gate its "a teammate left" notification —
+  // muting new-member notices silently muted leave notices too, with no
+  // separate toggle and no UI copy admitting the overlap. Distinct key now.
+  'member_left',
 ] as const
 
 export const ALL_EVENT_TYPES: readonly string[] = [...EMAIL_EVENT_TYPES, ...IN_APP_ONLY_EVENT_TYPES]

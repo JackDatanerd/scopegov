@@ -158,6 +158,10 @@ const IN_APP_NOTIF_ITEMS = [
   // mentions, so this belongs here rather than in NOTIF_ITEMS.
   { key: 'project_message_mention',       label: '@-mentions in project discussion', desc: 'When someone @-mentions you in a project message' },
   { key: 'member_joined',                 label: 'Teammate joined',         desc: 'When someone you invited accepts and joins the workspace (requires managing team roles)' },
+  // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — minor):
+  // previously silently controlled by the 'member_joined' toggle above,
+  // with no way to mute one without the other. Split out.
+  { key: 'member_left',                   label: 'Teammate left',           desc: 'When a member leaves the workspace on their own' },
   { key: 'client_viewed',                 label: 'Client opened a document', desc: 'The first time a client opens a SOW, change order or invoice you sent' },
 ]
 

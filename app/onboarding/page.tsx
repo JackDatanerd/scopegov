@@ -112,6 +112,17 @@ function OnboardingWizard() {
   // path — powers the "resume that workspace instead" link on step 0.
   const [trialConflict, setTrialConflict] = useState(false)
 
+  // FEATURE (deep audit, Workspace lifecycle + Onboarding re-pass —
+  // feature gap): see restore_workspace_atomic's own comment (migration
+  // 065) — before this, deleting a workspace (including a single
+  // misclick on "Discard this workspace" below) was permanently one-way
+  // from the product's point of view. Offered right where a brand-new-
+  // looking "create" gate is the ONE place someone who just deleted their
+  // only workspace can land with zero active memberships at all — every
+  // other screen in the app needs one.
+  const [restorable, setRestorable] = useState<Array<{ id: string; agencyName: string; deletedAt: string }>>([])
+  const [restoringId, setRestoringId] = useState<string | null>(null)
+
   // FIX (Workspace lifecycle + Onboarding, round 4 — headline feature
   // gap): middleware.ts only gates PAGE routes on onboarding completion,
   // not /api/* — so once a workspace is created (and becomes active),
@@ -363,6 +374,38 @@ function OnboardingWizard() {
       })
       .catch(() => { /* non-critical — exit panel just won't offer a switch target */ })
   }, [gate, workspaceId])
+
+  // FEATURE (deep audit, Workspace lifecycle + Onboarding re-pass —
+  // feature gap): only relevant before this session has created or
+  // resumed anything of its own (workspaceId still null) — once a
+  // workspace exists to work on, the exit panel above already covers
+  // "not this one" for anything ELSE the user owns.
+  useEffect(() => {
+    if (gate !== 'create' || workspaceId) return
+    fetch('/api/workspace/restore')
+      .then(r => r.json())
+      .then(json => { if (Array.isArray(json.restorable)) setRestorable(json.restorable) })
+      .catch(() => { /* non-critical — restore offer just won't show */ })
+  }, [gate, workspaceId])
+
+  async function restoreWorkspace(id: string) {
+    setRestoringId(id); setError('')
+    try {
+      const res  = await fetch('/api/workspace/restore', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId: id }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setError(json.error || 'Could not restore that workspace. Try again.')
+        return
+      }
+      clearSavedProgress()
+      router.push('/dashboard')
+    } catch {
+      setError('Could not restore that workspace. Try again.')
+    } finally { setRestoringId(null) }
+  }
 
   async function switchToWorkspace(id: string) {
     setLoading(true); setError('')
@@ -908,6 +951,23 @@ function OnboardingWizard() {
                 onClick={() => window.location.assign('/onboarding')}>
                 Go to that workspace instead
               </button>
+            )}
+
+            {/* FEATURE (deep audit, Workspace lifecycle + Onboarding
+                re-pass — feature gap): see restore_workspace_atomic's own
+                comment — a recently-deleted workspace of yours can be
+                brought back within 30 days instead of starting fresh. */}
+            {restorable.length > 0 && (
+              <div style={{ marginBottom: 16, padding: 12, border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', background: 'var(--surface-2)' }}>
+                <p style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 6 }}>Recently deleted — restore instead of starting over?</p>
+                {restorable.map(w => (
+                  <button key={w.id} type="button" className="btn btn-ghost btn-sm"
+                    style={{ display: 'block', width: '100%', textAlign: 'left', marginBottom: 4 }}
+                    disabled={restoringId === w.id} onClick={() => restoreWorkspace(w.id)}>
+                    {restoringId === w.id ? <span className="spin spin-dark" /> : `Restore "${w.agencyName}"`}
+                  </button>
+                ))}
+              </div>
             )}
 
             <div className="fgrp">
