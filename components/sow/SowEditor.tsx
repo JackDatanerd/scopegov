@@ -21,6 +21,11 @@ interface Props {
   isLocked: boolean
   canSend:  boolean
   canEdit:  boolean
+  // FIX (section-9 re-audit): api/pdf/sow/[id] now 403s a viewer without
+  // VIEW_FINANCIALS (see that route's comment) — the editor's own
+  // "Preview PDF" link needs this to stop linking to a route that will
+  // now always fail for them, same fix as the wrapper page's link.
+  canViewFinancials?: boolean
   // Contract value + currency, so the Payment Schedule editor can show a
   // running total against the figure send-time validation checks it
   // against (9-G6).
@@ -62,7 +67,7 @@ const REQUIRED_SECTIONS = ['parties', 'deliverables', 'oos', 'payment', 'governi
 // it from the single source of truth so the two can't drift again.
 const SECTION_ORDER = [...SOW_SECTION_DEFS].sort((a, b) => a.order - b.order).map(d => d.id)
 
-export default function SowEditor({ sowId, sections: initialSections, isLocked, canSend, canEdit, contractValue, currency, language, changeRequest, msaReference, registerFlush }: Props) {
+export default function SowEditor({ sowId, sections: initialSections, isLocked, canSend, canEdit, canViewFinancials, contractValue, currency, language, changeRequest, msaReference, registerFlush }: Props) {
   const [sections,      setSections]      = useState<Section[]>(
     [...initialSections].sort((a, b) => a.order - b.order)
   )
@@ -516,9 +521,11 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
         {!isLocked && canSend && (
           <div style={{ padding: '14px 16px', borderTop: '1px solid var(--border)', background: 'var(--surface-2)', display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
             {/* FIX 4A: was hardcoded /api/pdf/sow/draft — always 404 */}
-            <a href={`/api/pdf/sow/${sowId}`} target="_blank" className="btn btn-ghost btn-sm">
-              <i className="ti ti-download" style={{ fontSize: 12 }} /> Preview PDF
-            </a>
+            {canViewFinancials && (
+              <a href={`/api/pdf/sow/${sowId}`} target="_blank" className="btn btn-ghost btn-sm">
+                <i className="ti ti-download" style={{ fontSize: 12 }} /> Preview PDF
+              </a>
+            )}
             {/* FIX (section-9 audit, 9-B14): there used to be a second
                 "Send to client" button here behind an `onSend` prop the
                 editor page never passed, so it never rendered — dead

@@ -18,7 +18,7 @@ export default function SowEditorPage() {
   // The editor registers a function that writes every outstanding edit and reports success.
   const flushRef = useRef<null | (() => Promise<boolean>)>(null)
   const registerFlush = useCallback((fn: () => Promise<boolean>) => { flushRef.current = fn }, [])
-  const [perms,    setPerms]    = useState<{ canEdit: boolean; canSend: boolean }>({ canEdit: false, canSend: false })
+  const [perms,    setPerms]    = useState<{ canEdit: boolean; canSend: boolean; canViewFinancials: boolean }>({ canEdit: false, canSend: false, canViewFinancials: false })
 
   useEffect(() => {
     fetch(`/api/sow/${sowId}`)
@@ -120,14 +120,22 @@ export default function SowEditorPage() {
 
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           {error && <span style={{ fontSize: 12, color: 'var(--red)' }}>{error}</span>}
-          <a
-            href={`/api/pdf/sow/${sowId}`}
-            target="_blank"
-            className="btn btn-ghost btn-sm"
-          >
-            <i className="ti ti-download" style={{ fontSize: 12 }} />
-            {isLocked ? 'Download PDF' : 'Preview PDF'}
-          </a>
+          {/* FIX (section-9 re-audit): api/pdf/sow/[id] now 403s a viewer
+              without VIEW_FINANCIALS (same fix as the invoice PDF route —
+              see that route's own comment, and GET /api/sow/[id]'s new
+              permissions.canViewFinancials flag this reads). This link
+              used to be unconditional and would now dead-end for exactly
+              the same viewers contractValue is already hidden from above. */}
+          {perms.canViewFinancials && (
+            <a
+              href={`/api/pdf/sow/${sowId}`}
+              target="_blank"
+              className="btn btn-ghost btn-sm"
+            >
+              <i className="ti ti-download" style={{ fontSize: 12 }} />
+              {isLocked ? 'Download PDF' : 'Preview PDF'}
+            </a>
+          )}
           {!isLocked && perms.canSend && (
             <button className="btn btn-primary btn-sm" onClick={handleSend} disabled={sending}>
               {sending
@@ -174,6 +182,7 @@ export default function SowEditorPage() {
           isLocked={isLocked}
           canSend={!isLocked && perms.canSend}
           canEdit={!isLocked && perms.canEdit}
+          canViewFinancials={perms.canViewFinancials}
           // FIX (section-9 audit, 9-G6 / 9-G7 / 9-G8): the Payment
           // Schedule editor needs the contract value to show a running
           // total against it, table headers need the drafting language,

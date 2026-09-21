@@ -54,7 +54,37 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     // were shipped (up to ~500 KB of base64) to every member who could open the draft.
     const { guardian_flags, token, client_signature_data, signer_ip, ...coRest } = co
     const pendingApproval = co.status === 'draft' ? !!(await getPendingApprovalForDocument(service, 'co', id)) : false
-    return NextResponse.json({ co: { ...coRest, currency: co.projects?.currency, flagRequestText }, pendingApproval })
+
+    // FIX (section-10 audit): this returned line_items/subtotal/tax_rate/
+    // tax_inclusive/total/counter_amount/counter_note to ANY project-
+    // assigned viewer with no VIEW_FINANCIALS check at all — the same data
+    // ProjectDetail.tsx's own CoCard deliberately hides behind
+    // `permissions.viewFinancials` ({permissions.viewFinancials &&
+    // <span>{formatCurrency(co.total, ...)}</span>}), and the same
+    // permission GET /api/sow/[id] already gates contractValue on. A
+    // member explicitly denied financial visibility (the preset Designer
+    // role, VIEW_FINANCIALS: false) could open a CO's edit URL directly
+    // and read every rate and total the UI was hiding from them elsewhere.
+    // Redact rather than 403 the whole route — same softer pattern as the
+    // SOW side — so non-financial fields (title, note, status, scope/
+    // timeline impact) stay visible to any project member who can already
+    // see this CO exists. `permissions` lets CoEditor render a real
+    // "hidden" state instead of a blank/zeroed-out editable form.
+    const canViewFinancials = hasPermission(session, 'VIEW_FINANCIALS')
+    const FINANCIAL_FIELDS = ['line_items', 'subtotal', 'tax_rate', 'tax_inclusive', 'total', 'counter_amount', 'counter_note'] as const
+    const safeCoRest: Record<string, unknown> = { ...coRest }
+    if (!canViewFinancials) {
+      for (const field of FINANCIAL_FIELDS) safeCoRest[field] = null
+    }
+
+    return NextResponse.json({
+      co: { ...safeCoRest, currency: co.projects?.currency, flagRequestText },
+      pendingApproval,
+      permissions: {
+        canEdit: hasPermission(session, 'CREATE_CHANGE_ORDERS'),
+        canViewFinancials,
+      },
+    })
   } catch {
     return NextResponse.json({ error: 'Error' }, { status: 500 })
   }

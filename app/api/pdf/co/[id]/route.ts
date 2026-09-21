@@ -2,7 +2,7 @@ export const runtime = 'nodejs'
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
-import { getSession } from '@/lib/auth/session'
+import { getSession, hasPermission } from '@/lib/auth/session'
 import { renderCoPdf } from '@/lib/pdf/renderer'
 import { canReadProject } from '@/lib/utils/project-access'
 import { getContractValueBefore } from '@/lib/documents/co-contract-value'
@@ -13,6 +13,13 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const { id }  = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    // FIX (section-10 audit): this route rendered every line item, rate,
+    // subtotal, tax and total into the PDF with no VIEW_FINANCIALS check —
+    // the same gap app/api/pdf/invoice/[id]/route.ts was already fixed
+    // for (see that file's comment), and the CO's own detail JSON has the
+    // identical unfixed gap (see GET /api/co/[id] below).
+    if (!hasPermission(session, 'VIEW_FINANCIALS'))
+      return NextResponse.json({ error: 'Missing permission: VIEW_FINANCIALS' }, { status: 403 })
 
     const service = createServiceClient()
     const { data: co } = await (service as any)

@@ -225,6 +225,13 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       permissions: {
         canEdit: hasPermission(session, 'EDIT_SOW'),
         canSend: hasPermission(session, 'SEND_SOW'),
+        // FIX (section-9 re-audit): api/pdf/sow/[id] now 403s for a viewer
+        // without VIEW_FINANCIALS (same fix as the invoice PDF route,
+        // applied here — see that route's comment). SowEditor's
+        // "Download PDF" link had nothing to gate that on; without this
+        // flag it would keep linking to a route that now always fails for
+        // exactly the viewers contractValue is already redacted for above.
+        canViewFinancials: hasPermission(session, 'VIEW_FINANCIALS'),
       },
     })
   } catch {

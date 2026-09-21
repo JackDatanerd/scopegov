@@ -2,7 +2,7 @@ export const runtime = 'nodejs'
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
-import { getSession } from '@/lib/auth/session'
+import { getSession, hasPermission } from '@/lib/auth/session'
 import { renderSowPdf, resolveLogoDataUri } from '@/lib/pdf/renderer'
 import { canReadProject } from '@/lib/utils/project-access'
 import { fetchExecutedPdf } from '@/lib/documents/executed-pdf'
@@ -13,6 +13,15 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const { id }  = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    // FIX (section-9 re-audit): this route rendered the contract value
+    // (and the payment-schedule table, which states it repeatedly) into
+    // the PDF with no VIEW_FINANCIALS check — the same data GET
+    // /api/sow/[id] already redacts (`contractValue: hasPermission(...)
+    // ? value : null`), and the exact gap app/api/pdf/invoice/[id]/route.ts
+    // was already fixed for: a document's PDF has to be gated the same as
+    // its JSON, or the JSON-side redaction is pure theater.
+    if (!hasPermission(session, 'VIEW_FINANCIALS'))
+      return NextResponse.json({ error: 'Missing permission: VIEW_FINANCIALS' }, { status: 403 })
 
     const service = createServiceClient()
 

@@ -32,6 +32,15 @@ export default function CoEditor({ projId, coId }: Props) {
   // Set when this draft is sitting in an approval chain: it is still status 'draft' in the database, but
   // the server refuses edits and a second send until the request is decided or cancelled.
   const [pendingApproval, setPendingApproval] = useState(false)
+  // FIX (section-10 audit): GET /api/co/[id] now redacts line items/
+  // subtotal/tax/total for a viewer without VIEW_FINANCIALS instead of
+  // shipping them unconditionally. Without this, the redacted (null →
+  // zeroed) values would render as an ordinary, apparently-editable $0
+  // change order — indistinguishable from a real one and silently
+  // discarding the fact that money is being hidden, not that there isn't
+  // any. Defaults false: a brand-new CO (no coId, nothing fetched yet)
+  // has nothing to redact and is never in this state.
+  const [financialsHidden, setFinancialsHidden] = useState(false)
   const [saveError,   setSaveError]    = useState('')
   const [isRetainerRenewal, setIsRetainerRenewal] = useState(false)
   const [renewalTermMonths, setRenewalTermMonths] = useState('')
@@ -98,6 +107,7 @@ export default function CoEditor({ projId, coId }: Props) {
           setCurrency(co.currency || 'USD')
           setStatus(co.status || 'draft')
           setPendingApproval(!!json.pendingApproval)
+          setFinancialsHidden(json.permissions?.canViewFinancials === false)
           setIsRetainerRenewal(co.is_retainer_renewal || false)
           setRenewalTermMonths(co.renewal_term_months != null ? String(co.renewal_term_months) : '')
           setTimelineImpactDays(co.timeline_impact_days != null ? String(co.timeline_impact_days) : '')
@@ -249,7 +259,13 @@ export default function CoEditor({ projId, coId }: Props) {
     } finally { setSending(false) }
   }
 
-  const isLocked = status !== 'draft' || pendingApproval
+  // FIX (section-10 audit): a viewer without VIEW_FINANCIALS gets the CO
+  // back with its money fields nulled out (see GET /api/co/[id]) — lock
+  // the editor for them too, the same way a sent/accepted CO locks. There
+  // is no sensible "edit a price you can't see" state, and PATCH would
+  // reject their save anyway; this just tells them why up front instead
+  // of letting them type into fields backed by redacted data.
+  const isLocked = status !== 'draft' || pendingApproval || financialsHidden
 
   async function draftWithAi() {
     if (!aiText.trim()) { setAiError('Describe what the client is asking for first.'); return }
@@ -319,7 +335,9 @@ export default function CoEditor({ projId, coId }: Props) {
             actually works: Revise & resend, on the project's CO tab. */}
         {isLocked && (
           <div className="banner banner-info" style={{ marginBottom: 14 }}>
-            {pendingApproval && status === 'draft'
+            {financialsHidden
+              ? <>You don&rsquo;t have permission to view this change order&rsquo;s pricing, so it&rsquo;s shown read-only. Ask an admin for financial access if you need to edit it.</>
+              : pendingApproval && status === 'draft'
               ? <>This change order is waiting on an approval request and can&rsquo;t be edited. Decide or cancel the request from <strong>Approvals</strong> to unlock it.</>
               : ['declined', 'withdrawn', 'closed', 'countered', 'expired'].includes(status)
                 ? <>This change order is {status} and can no longer be edited. Use <strong>Revise &amp; resend</strong> on the project&rsquo;s Change orders tab to continue from it in a new draft.</>
@@ -399,6 +417,17 @@ export default function CoEditor({ projId, coId }: Props) {
         </div>
 
         {/* Line items */}
+        {financialsHidden ? (
+          // FIX (section-10 audit): the redacted GET response resolves
+          // every money field to 0/empty (see updateLineItem's default
+          // row) — rendering the normal table here would show a real
+          // change order as a priced-at-nothing one, which is worse than
+          // just saying the pricing is hidden.
+          <div className="surface surface-p" style={{ marginBottom: 14, color: 'var(--text-3)', fontSize: 13 }}>
+            <i className="ti ti-lock" style={{ fontSize: 12, marginRight: 6 }} />
+            Line items, tax and totals are hidden — you don&rsquo;t have financial access.
+          </div>
+        ) : (
         <div className="surface surface-p" style={{ marginBottom: 14 }}>
           <div style={{ display: 'flex', fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
             letterSpacing: '.07em', color: 'var(--text-3)', paddingBottom: 8,
@@ -479,6 +508,7 @@ export default function CoEditor({ projId, coId }: Props) {
             </div>
           </div>
         </div>
+        )}
 
         <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13, color: 'var(--text-2)', marginBottom: 20 }}>
           <input type="checkbox" checked={isRetainerRenewal} disabled={isLocked}
@@ -517,20 +547,28 @@ export default function CoEditor({ projId, coId }: Props) {
           <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text-3)', marginBottom: 12 }}>
             Summary
           </div>
-          <div style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 30, color: 'var(--green)', marginBottom: 4 }}>
-            {formatCurrency(total, currency)}
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 16 }}>
-            {lineItems.filter(l => l.description).length} line item{lineItems.filter(l => l.description).length !== 1 ? 's' : ''}
-            {parseFloat(taxRate) > 0 && ` · ${taxRate}% tax`}
-          </div>
-          {lineItems.filter(l => l.description).map(l => (
-            <div key={l.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '5px 0', borderBottom: '1px solid var(--surface-2)', color: 'var(--text-2)' }}>
-              <span style={{ flex: 1, marginRight: 8, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{l.description}</span>
-              <span style={{ fontFamily: 'IBM Plex Mono, monospace', flexShrink: 0 }}>{formatCurrency(l.total, currency)}</span>
+          {financialsHidden ? (
+            <div style={{ fontSize: 13, color: 'var(--text-3)', marginBottom: 4 }}>
+              <i className="ti ti-lock" style={{ fontSize: 12, marginRight: 6 }} />Hidden — no financial access
             </div>
-          ))}
-          {savedCoId.current && (
+          ) : (
+            <>
+              <div style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 30, color: 'var(--green)', marginBottom: 4 }}>
+                {formatCurrency(total, currency)}
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 16 }}>
+                {lineItems.filter(l => l.description).length} line item{lineItems.filter(l => l.description).length !== 1 ? 's' : ''}
+                {parseFloat(taxRate) > 0 && ` · ${taxRate}% tax`}
+              </div>
+              {lineItems.filter(l => l.description).map(l => (
+                <div key={l.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '5px 0', borderBottom: '1px solid var(--surface-2)', color: 'var(--text-2)' }}>
+                  <span style={{ flex: 1, marginRight: 8, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{l.description}</span>
+                  <span style={{ fontFamily: 'IBM Plex Mono, monospace', flexShrink: 0 }}>{formatCurrency(l.total, currency)}</span>
+                </div>
+              ))}
+            </>
+          )}
+          {savedCoId.current && !financialsHidden && (
             <a href={`/api/pdf/co/${savedCoId.current}`} target="_blank"
               className="btn btn-ghost btn-sm" style={{ marginTop: 14, width: '100%', justifyContent: 'center', display: 'flex' }}>
               <i className="ti ti-download" style={{ fontSize: 12 }} /> Download PDF

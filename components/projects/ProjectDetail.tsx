@@ -880,7 +880,7 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
                         : <><i className="ti ti-refresh" style={{ fontSize: 12 }} /> Start new version</>}
                     </button>
                   )}
-                  {currentSow.signed_at && (
+                  {currentSow.signed_at && permissions.viewFinancials && (
                     <a href={`/api/pdf/sow/${currentSow.id}`} target="_blank" className="btn btn-ghost btn-sm">
                       <i className="ti ti-download" style={{ fontSize: 12 }} /> Download PDF
                     </a>
@@ -904,7 +904,12 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
                         a declined or withdrawn version is the record of what the client actually saw,
                         and had no way to be viewed. */}
                     <Link href={`/projects/${project.id}/sow/${s.id}`} className="btn btn-ghost btn-xs"><i className="ti ti-eye" style={{ fontSize: 11 }} /> View</Link>
-                    <a href={`/api/pdf/sow/${s.id}`} target="_blank" className="btn btn-ghost btn-xs"><i className="ti ti-download" style={{ fontSize: 11 }} /> PDF</a>
+                    {/* FIX (section-9 re-audit): api/pdf/sow/[id] now 403s a viewer without
+                        VIEW_FINANCIALS (see that route's comment) — gate the link the same
+                        way every other contract-value display in this file already does. */}
+                    {permissions.viewFinancials && (
+                      <a href={`/api/pdf/sow/${s.id}`} target="_blank" className="btn btn-ghost btn-xs"><i className="ti ti-download" style={{ fontSize: 11 }} /> PDF</a>
+                    )}
                   </div>
                 </div>
               ))}

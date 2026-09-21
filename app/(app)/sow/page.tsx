@@ -25,6 +25,17 @@ export default async function SowPage() {
   // api/invoices) already gates on project membership — this registry
   // page was the one place that didn't. /invoices/page.tsx copied this
   // same gap; fixed there too.
+  // FIX (section-9 re-audit): the "Value" column rendered
+  // s.projects.contract_value unconditionally — every other place
+  // contract value appears (GET /api/sow/[id], the projects list, the
+  // dashboard, clients, reports, invoices) gates it behind
+  // VIEW_FINANCIALS. This registry page was the one place that didn't:
+  // a member explicitly denied financial visibility (e.g. the preset
+  // Designer role) could still read every SOW's contract value straight
+  // off this table. Same fix shape as ProjectsClient.tsx: hide the whole
+  // column, not just the value, so its absence isn't itself a "there's a
+  // number here you can't see" tell.
+  const canViewFinancials = hasPermission(session, 'VIEW_FINANCIALS')
   const canViewAll = hasPermission(session, 'VIEW_ALL_PROJECTS')
   let allowedProjectIds: string[] | null = null
   if (!canViewAll) {
@@ -142,7 +153,7 @@ export default async function SowPage() {
                 <th>Status</th>
                 <th>Sent</th>
                 <th>Signed</th>
-                <th>Value</th>
+                {canViewFinancials && <th>Value</th>}
               </tr>
             </thead>
             <tbody>
@@ -163,11 +174,13 @@ export default async function SowPage() {
                   </td>
                   <td style={{ color: 'var(--text-3)', fontSize: 12 }}>{s.sent_at ? formatDate(s.sent_at) : '—'}</td>
                   <td style={{ color: 'var(--text-3)', fontSize: 12 }}>{s.signed_at ? formatDate(s.signed_at) : '—'}</td>
-                  <td className="td-mono" style={{ textAlign: 'right', fontSize: 12 }}>
-                    {s.projects?.contract_value
-                      ? formatCurrency(s.projects.contract_value, s.projects.currency)
-                      : '—'}
-                  </td>
+                  {canViewFinancials && (
+                    <td className="td-mono" style={{ textAlign: 'right', fontSize: 12 }}>
+                      {s.projects?.contract_value
+                        ? formatCurrency(s.projects.contract_value, s.projects.currency)
+                        : '—'}
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
