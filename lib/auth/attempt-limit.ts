@@ -13,7 +13,8 @@
 // most `maxFailures` of them ever reach the credential check per window.
 //
 // This ledger only protects calls that go through the app. Direct calls to
-// GoTrue are covered by the Auth hooks in migration 066 (README §1.3).
+// GoTrue are covered only by the Auth hooks created in migration 068 — which the Supabase
+// Team/Enterprise plan is needed to enable (README §1.3). On a lower plan that path is open.
 //
 // Fails OPEN on a ledger error (logged): GoTrue's own limits still apply, and a
 // database hiccup must not lock everybody out of signing in.

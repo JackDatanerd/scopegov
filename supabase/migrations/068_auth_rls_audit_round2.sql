@@ -11,7 +11,8 @@
 --     protects calls that go through the app's own routes; a password-only
 --     session can call GoTrue's MFA endpoints directly with the public anon
 --     key. The hooks enforce the lockout INSIDE GoTrue, where it can't be
---     skipped. ENABLE THEM in the Supabase dashboard (Auth -> Hooks) — see
+--     skipped. Enabling them (Auth -> Hooks) needs the Supabase Team or Enterprise plan;
+--     until then they sit unused and harmless — see
 --     README §1.3.
 --  3. Server-side sign-in audit: AFTER INSERT / UPDATE OF aal trigger on
 --     auth.sessions. Sign-in events used to be reported BY THE BROWSER, so an
@@ -184,7 +185,7 @@ BEGIN
 END;
 $$;
 
--- Password Verification Attempt hook (Supabase Pro plan and above):
+-- Password Verification Attempt hook (Supabase Team or Enterprise plan):
 -- event = { user_id, valid }. Records failed sign-ins in the audit trail and
 -- locks password sign-in for an account after 10 failures in 10 minutes.
 CREATE OR REPLACE FUNCTION public.hook_password_verification_attempt(event jsonb)

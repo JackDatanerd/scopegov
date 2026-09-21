@@ -44,8 +44,9 @@
 > `session_seen` tables. It also restores two `leave_workspace_atomic` guards that 065 dropped (sole
 > MANAGE_ROLES holder; trial creator), removes the stale `EXPORT_DATA` permission key, adds a CHECK on
 > `users.name`, revokes leftover API-role grants, and installs sign-in audit triggers on `auth.sessions`.
-> Then do the dashboard steps in §1.3 (Auth hooks) — until they are enabled, the MFA / password lockout only
-> covers calls made through the app's own routes.
+> The two Auth hooks in §1.3 need Supabase's **Team or Enterprise** plan, so they can't be enabled on Free/Pro.
+> The migration still creates their functions (harmless until enabled); until you're on that plan, the MFA /
+> password lockout only covers calls made through the app's own routes — see §1.3 for what that leaves open.
 
 **Required checks after migration:**
 - [ ] `handle_new_user` trigger exists with SECURITY DEFINER
@@ -109,16 +110,24 @@ Create in Supabase Dashboard → Storage:
   any signed-in browser can call `supabase.auth.updateUser({ password })` directly and skip the current-password,
   recent-sign-in and MFA checks in `/api/auth/change-password`. (The database trigger from migration 064 still
   audits such a change, but it cannot prevent it.)
-- [ ] **Auth Hook — MFA Verification Attempt: ON** (Auth → Hooks → *MFA verification attempt* → Postgres
-  function → `public.hook_mfa_verification_attempt`). **This is what makes the authenticator-code lockout real.**
-  The app's own throttle only sees calls made through `/api/auth/mfa/*`; a password-only session can call
-  Supabase Auth's MFA endpoints directly with the public anon key and guess codes without ever touching the app.
-  The hook runs INSIDE Auth: 5 wrong codes in 5 minutes locks that account's verification (even for a correct
-  code) and writes a `security.mfa_locked` audit row. (Trade-off: someone who already has the password can
-  keep a victim locked out of the second-factor step; they still cannot get in.)
-- [ ] **Auth Hook — Password Verification Attempt: ON** *(Supabase Pro plan and above)* →
-  `public.hook_password_verification_attempt`. Audits every failed sign-in (`security.login_failed`) and locks
-  password sign-in for an account after 10 failures in 10 minutes. Skip if your plan doesn't offer it.
+- [ ] **Auth Hooks — REQUIRE THE SUPABASE TEAM OR ENTERPRISE PLAN** (Auth → Hooks → Add hook; the dashboard
+  greys both out on Free/Pro with "Team or Enterprise Plan required"). **Do this the day you upgrade**; until
+  then skip both. Migration 068 already created the functions, so enabling them later needs no new migration.
+  - *MFA verification attempt* → Postgres function `public.hook_mfa_verification_attempt`. **This is what makes
+    the authenticator-code lockout impossible to bypass.** The app's own throttle (atomic, in
+    `lib/auth/attempt-limit.ts`) only sees calls made through `/api/auth/mfa/*`; a password-only session can
+    call Supabase Auth's MFA endpoints directly with the public anon key and guess codes without touching the
+    app. The hook runs INSIDE Auth: 5 wrong codes in 5 minutes locks that account's verification (even for a
+    correct code) and writes a `security.mfa_locked` audit row. (Trade-off: someone who already has the
+    password can keep a victim locked out of the second-factor step; they still cannot get in.)
+  - *Password verification attempt* → `public.hook_password_verification_attempt`. Audits every failed sign-in
+    (`security.login_failed`) and locks password sign-in for an account after 10 failures in 10 minutes.
+  - **Until then:** the in-app lockout still protects every attempt made through the app, and sign-ins are still
+    audited server-side (trigger below, works on every plan). What stays open on a lower plan: someone who
+    already holds a victim's password can guess authenticator codes by calling Supabase Auth directly, limited
+    only by Supabase's own rate limits — review **Auth → Rate Limits** and keep the verification limits tight —
+    and failed sign-in attempts are not audited. Both are worth closing before you have customers with
+    sensitive data.
 - [ ] **Sign-in audit trigger:** migration 068 creates `on_auth_session_created` /
   `on_auth_session_aal_upgraded` on `auth.sessions`, so every sign-in is audited server-side (previously only
   sign-ins the browser chose to report were). Confirm they exist:

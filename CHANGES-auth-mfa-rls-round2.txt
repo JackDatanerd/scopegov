@@ -4,11 +4,27 @@ Base commit: 3fd2698
 RUN THIS MIGRATION FIRST (Supabase SQL editor), before deploying the code:
   068_auth_rls_audit_round2.sql
 Then, in the Supabase dashboard (README §1.3):
-  - Auth -> Hooks: enable "MFA verification attempt" -> public.hook_mfa_verification_attempt
-                   (and, on Pro, "Password verification attempt" -> public.hook_password_verification_attempt)
-  - Auth -> Email: Secure email change ON; leaked-password protection ON where offered
+  - Auth -> Email: Secure email change ON; leaked-password protection ON where your plan offers it
+  - Auth -> Rate Limits: review the verification limits (see PLAN REQUIREMENT below)
+  - Auth -> Hooks: NOT POSSIBLE ON FREE/PRO — see PLAN REQUIREMENT below. Do it when you move to Team.
 And in Vercel: set MFA_BACKUP_CODE_PEPPER (openssl rand -hex 32).
 Then `npm install` (adds the dev dependency `pg` for the replay test).
+
+PLAN REQUIREMENT — the two Auth hooks need Supabase Team or Enterprise (not Pro)
+  "MFA verification attempt" and "Password verification attempt" are greyed out in Auth -> Hooks on lower
+  plans ("Team or Enterprise Plan required"). An earlier draft of this note said the password hook only
+  needed Pro; that was wrong. Effects until you upgrade:
+    - Nothing breaks. Migration 068 creates hook_mfa_verification_attempt and
+      hook_password_verification_attempt anyway; they sit unused. Enabling them later needs NO new
+      migration: Auth -> Hooks -> Add hook -> Postgres function -> pick the function.
+    - AUTH+MFA #2 below is only HALF closed on a lower plan. Closed on every plan: sign-ins are audited
+      server-side by the auth.sessions trigger. OPEN until the hooks are on: someone who already holds a
+      victim's password can guess authenticator codes by calling Supabase Auth directly (the in-app
+      lockout only sees calls made through /api/auth/mfa/*), limited only by Supabase's own rate limits.
+    - Failed sign-ins are not audited and password sign-in has no per-account lockout (both come from the
+      password hook). Supabase's per-IP limits still apply.
+    - Meanwhile: Auth -> Rate Limits, keep the verification limits tight. Everything else in this round
+      (atomic in-app limiter, step-up, backup-code hardening, owner protection...) works on every plan.
 
 THE BUILD WAS BROKEN AT 79d17d1 (fixed here)
   app/api/workspace/defaults/route.ts exported REVISION_ROUNDS_MAX from a route file, which Next.js
@@ -28,9 +44,11 @@ AUTH + MFA — bugs fixed
          is then sent to /mfa-setup.
  2 HIGH  MFA lockout was only enforced in the app's own route. A password-only session can call GoTrue's
          MFA endpoints directly with the public anon key. hook_mfa_verification_attempt (and the password
-         hook) now enforce it inside Auth. Sign-ins were audited only when the BROWSER reported them; a
-         trigger on auth.sessions now records every sign-in (app-side reporting stays as a fallback and
-         stands down when the trigger already wrote the row).
+         hook) enforce it inside Auth — BUT ONLY ONCE ENABLED, WHICH NEEDS THE TEAM PLAN (see PLAN
+         REQUIREMENT), so on a lower plan the direct-call gap stays open. What IS closed on every plan:
+         sign-ins were audited only when the BROWSER reported them; a trigger on auth.sessions now records
+         every sign-in (app-side reporting stays as a fallback and stands down when the trigger already
+         wrote the row).
  3 MED   /api/auth/reset-password accepted ANY session that had authenticated in the last 15 minutes
          (an ordinary password login, a hijacked cookie) — bypassing change-password's current-password
          check, throttle and audit. It now requires a recovery / OTP / magic-link session.
@@ -87,7 +105,8 @@ FEATURES BUILT
  - Sessions list (device, IP, last active) with per-session sign-out (Settings -> Account).
  - New-device sign-in alerts (email + in-app + audit) when a browser/OS not seen in 90 days signs in.
  - Guarded sign-in email change (Settings -> Account), notice to the old address, audit rows.
- - Server-side sign-in audit and failed-sign-in audit (Pro-plan hook).
+ - Server-side sign-in audit (all plans). Failed-sign-in audit + lockout: built, but it lives in the
+   password hook, which needs Team/Enterprise (see PLAN REQUIREMENT).
 
 TESTS (457 pass; tsc clean; next build succeeds)
  - tests/middleware-gate.test.ts        real middleware: onboarding APIs, enrolment gate, cookie rotation
@@ -111,5 +130,5 @@ CAVEATS
    resets out if GoTrue names the method differently.
  - The auth.sessions triggers need a role that owns that table; if creation is refused the migration
    warns and the app-side login-event fallback stays active.
- - The MFA hook lockout can be triggered by anyone who holds the password (they can keep the victim out of
+ - (Once the hooks are enabled on Team) the MFA hook lockout can be triggered by anyone who holds the password (they can keep the victim out of
    the second-factor step for a few minutes; they still can't get in).

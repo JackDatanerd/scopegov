@@ -9,8 +9,9 @@ export const runtime = 'nodejs'
 // ATTEMPT LIMIT (audit round 2): a slot is RESERVED atomically before the code is
 // checked (lib/auth/attempt-limit.ts), so a burst of parallel guesses can no longer
 // all slip past the check. The same lockout is enforced INSIDE Supabase Auth by
-// hook_mfa_verification_attempt (migration 068), which is what stops guesses that
-// bypass this route and call GoTrue directly.
+// hook_mfa_verification_attempt (migration 068) once that hook is enabled (Team or
+// Enterprise plan) — that is what stops guesses that bypass this route and call GoTrue
+// directly; until then only this route's own ledger applies.
 
 import { NextResponse } from 'next/server'
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
