@@ -5,7 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { permissionsBeyondCeiling, permissionsBeyondActorForTarget } from '@/lib/utils/permission-ceiling'
 import { parsePermissionMap } from '@/lib/utils/permission-map'
-import { mergePermissions, protectedPermissionsOrphanedBy, describeProtectedPermission, PROTECTED_PERMISSIONS } from '@/lib/utils/admin-floor'
+import { mergePermissions, protectedPermissionsOrphanedBy, describeProtectedPermission, PROTECTED_PERMISSIONS, approvalPermissionOrphanedBy, APPROVE_DOCUMENTS_ORPHAN_MESSAGE } from '@/lib/utils/admin-floor'
 import { roleNameTaken } from '@/lib/utils/role-names'
 import { diffPermissionMaps } from '@/lib/utils/permission-diff'
 import { logAudit } from '@/lib/utils/audit'
@@ -108,6 +108,22 @@ export async function PATCH(
           }, { status: 409 })
         }
       }
+    }
+
+    // Application-layer floor for APPROVE_DOCUMENTS — see approvalPermissionOrphanedBy.
+    if (permissions !== undefined && permissions !== null &&
+        existingRole.permissions?.['APPROVE_DOCUMENTS'] === true && permissions['APPROVE_DOCUMENTS'] !== true) {
+      const { data: approvalMembers } = await service
+        .from('workspace_members').select('id,role_id,permission_overrides,effective_permissions')
+        .eq('workspace_id', session.workspaceId).eq('status', 'active')
+      const approvalSnapshot = (approvalMembers || []).map((m: any) => ({ id: m.id, effectivePermissions: m.effective_permissions }))
+      const approvalSimulated = new Map<string, Record<string, unknown> | null>(
+        (approvalMembers || [])
+          .filter((m: any) => m.role_id === id)
+          .map((m: any): [string, Record<string, unknown> | null] => [m.id, mergePermissions(permissions, m.permission_overrides)])
+      )
+      if (approvalPermissionOrphanedBy(approvalSnapshot, approvalSimulated))
+        return NextResponse.json({ error: APPROVE_DOCUMENTS_ORPHAN_MESSAGE }, { status: 409 })
     }
 
     if (permissions !== undefined) {
@@ -278,6 +294,23 @@ export async function DELETE(
     if ((stepCount || 0) > 0) {
       return NextResponse.json({
         error: 'This role is used as an approver in one or more approval workflows. Update those workflows first.',
+      }, { status: 409 })
+    }
+
+    // FIX (section-11 audit, pass 2): a role that is the CURRENT approver on a
+    // request still waiting for a decision can't simply vanish — the step would
+    // be left with no approver at all. (The FK from approval_steps to roles had
+    // no ON DELETE rule either, so a role that had EVER appeared in a finished
+    // request could never be deleted, and the failure surfaced as a bare 500;
+    // migration 069 makes historical steps SET NULL.)
+    const { count: liveApprovalSteps } = await service
+      .from('approval_steps')
+      .select('id, approval_requests!inner(workspace_id, status)', { count: 'exact', head: true })
+      .eq('approver_role_id', id).eq('status', 'pending')
+      .eq('approval_requests.workspace_id', session.workspaceId).eq('approval_requests.status', 'pending')
+    if ((liveApprovalSteps || 0) > 0) {
+      return NextResponse.json({
+        error: `This role is the current approver on ${liveApprovalSteps} approval request${liveApprovalSteps === 1 ? '' : 's'} still waiting for a decision. Reassign or cancel ${liveApprovalSteps === 1 ? 'it' : 'them'} from the Approvals page first.`,
       }, { status: 409 })
     }
 

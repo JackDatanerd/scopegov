@@ -20,7 +20,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     const service = createServiceClient()
     const { data: existing } = await (service as any)
-      .from('approval_workflows').select('id, name, document_type, is_active, threshold_amount, threshold_currency')
+      .from('approval_workflows').select('id, name, document_type, is_active, threshold_amount, threshold_currency, allow_self_approval, require_distinct_approvers, apply_to_other_currencies')
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
     if (!existing) return NextResponse.json({ error: 'Workflow not found' }, { status: 404 })
 
@@ -52,6 +52,17 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       } else {
         patch.threshold_amount = null
       }
+    }
+    // FIX (section-11 audit, pass 2 — feature gaps): policy switches, see migration 069.
+    for (const [key, col] of [
+      ['allowSelfApproval', 'allow_self_approval'],
+      ['requireDistinctApprovers', 'require_distinct_approvers'],
+      ['applyToOtherCurrencies', 'apply_to_other_currencies'],
+    ] as const) {
+      if (body[key] === undefined) continue
+      if (typeof body[key] !== 'boolean')
+        return NextResponse.json({ error: `${key} must be true or false` }, { status: 400 })
+      patch[col] = body[key]
     }
     const effectiveAmount = patch.threshold_amount !== undefined ? patch.threshold_amount : existing.threshold_amount
     if (effectiveAmount == null) {
@@ -141,9 +152,17 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       }
     }
 
+    // "Also gate other currencies" has no meaning on a catch-all (it already
+    // gates every currency) — keep the stored value honest.
+    if (resultingThreshold == null && (patch.apply_to_other_currencies === true || existing.apply_to_other_currencies === true))
+      patch.apply_to_other_currencies = false
+
     const before = {
       name: existing.name, is_active: existing.is_active,
       threshold_amount: existing.threshold_amount, threshold_currency: existing.threshold_currency,
+      allow_self_approval: existing.allow_self_approval,
+      require_distinct_approvers: existing.require_distinct_approvers,
+      apply_to_other_currencies: existing.apply_to_other_currencies,
     }
     const { changedKeys, changes } = diffFields(before, patch)
     if (changedKeys.length === 0 && !steps) return NextResponse.json({ ok: true, unchanged: true })
@@ -199,10 +218,17 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
     // If this workflow has ever produced a real approval request, keep it
     // for audit history — deactivate instead of deleting out from under
     // the trail Phase 1's audit export relies on.
-    const { count } = await (service as any)
+    const { count, error: countErr } = await (service as any)
       .from('approval_requests')
       .select('id', { count: 'exact', head: true })
       .eq('workflow_id', id)
+    // FIX (section-11 audit, pass 2): a failed count read as "no history" and
+    // fell through to a delete that the approval_requests FK then rejected —
+    // while the route still logged 'deleted' and returned ok. Fail visibly.
+    if (countErr) {
+      console.error('Approval workflow DELETE history check failed:', countErr)
+      return NextResponse.json({ error: 'Could not check this workflow\'s history — nothing was changed.' }, { status: 500 })
+    }
 
     if ((count || 0) > 0) {
       await (service as any).from('approval_workflows')
@@ -217,7 +243,11 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
       return NextResponse.json({ ok: true, deactivatedInstead: true })
     }
 
-    await (service as any).from('approval_workflows').delete().eq('id', id)
+    const { error: delErr } = await (service as any).from('approval_workflows').delete().eq('id', id)
+    if (delErr) {
+      console.error('Approval workflow delete failed:', delErr)
+      return NextResponse.json({ error: 'Could not delete this workflow — it may have gained approval history. Deactivate it instead.' }, { status: 409 })
+    }
     await logAudit(service, {
       workspaceId: session.workspaceId,
       actorId: session.id, actorEmail: session.email, actorName: session.name,

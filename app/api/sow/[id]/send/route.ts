@@ -5,6 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { sendSowDocument } from '@/lib/documents/send-sow'
 import { evaluateApprovalGate } from '@/lib/approvals/engine'
+import { sendBlockedReason } from '@/lib/documents/preflight'
 import { canReadProject } from '@/lib/utils/project-access'
 import { validateSowForSend } from '@/lib/sow/validate-send'
 
@@ -54,6 +55,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         error: validation.warnings[0], warnings: validation.warnings, needsAcknowledgement: true,
       }, { status: 409 })
 
+    // Refuse before creating an approval request for a send that can never happen.
+    const blockedReason = await sendBlockedReason(service, project.id)
+    if (blockedReason) return NextResponse.json({ error: blockedReason }, { status: 400 })
+
     // Phase 3 — Approval Chains: if a workflow matches this SOW's contract
     // value, halt here and wait on sign-off instead of sending. The
     // document stays 'draft' (and un-numbered — Phase 0 only assigns a
@@ -71,6 +76,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       documentTitle: `SOW v${sow.version} — ${project.name}`,
       requestedBy:  { id: session.id, name: session.name, email: session.email },
     })
+
+    // FIX (section-11 audit, pass 2): the gate can now REFUSE (nobody able to
+    // approve, an approved-but-unsent request already exists, a workflow with
+    // no approvers). Never proceed to a send in that case.
+    if (gate.blocked) {
+      return NextResponse.json({ error: gate.error, approvalRequestId: gate.approvalRequestId }, { status: gate.status || 409 })
+    }
 
     if (gate.requiresApproval) {
       return NextResponse.json({

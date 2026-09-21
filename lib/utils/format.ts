@@ -115,6 +115,28 @@ export function formatCurrency(
   }
 }
 
+// FIX (section-12 audit, pass 2): formatCurrency() above deliberately rounds to
+// whole units — right for contract totals on dashboards, wrong for an invoice
+// ledger: an invoice of $386.66 showed as "$387", a $0.29 balance showed as
+// "$0 due" on an invoice that was still 'partially_paid', and every recorded
+// payment lost its cents. The emails and PDFs print cents (server-side
+// formatters), so the app and the document the client received disagreed.
+// This keeps the currency's own minor units (2 for USD/EUR/KES, 0 for JPY,
+// 3 for KWD…) and is what invoice / payment / approval amounts should use.
+export function formatCurrencyExact(
+  amount: number | string | null | undefined,
+  currency: string = 'USD'
+): string {
+  if (amount === null || amount === undefined || amount === '') return '—'
+  const n = Number(amount)
+  if (!Number.isFinite(n)) return '—'
+  try {
+    return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(n)
+  } catch {
+    return `${currency} ${n.toFixed(2)}`
+  }
+}
+
 // ── DATES ─────────────────────────────────────────────────────────────────────
 export function formatDate(date: string | Date | null, opts?: Intl.DateTimeFormatOptions): string {
   if (!date) return '—'

@@ -61,7 +61,7 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
   // status='pending' so it was invisible here.
   let pendingApprovalsQuery = (service as any)
     .from('approval_requests')
-    .select('project_id, created_at, send_failed_at')
+    .select('project_id, created_at, updated_at, send_failed_at')
     .eq('workspace_id', session.workspaceId)
     .or('status.eq.pending,and(status.eq.approved,send_failed_at.not.is.null)')
   if (!canViewAll) {
@@ -72,7 +72,8 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
   const pendingApprovalsByProject = new Map<string, Array<{ created_at: string; send_failed_at: string | null }>>()
   for (const r of (pendingApprovalRows || [])) {
     const list = pendingApprovalsByProject.get(r.project_id) || []
-    list.push({ created_at: r.created_at, send_failed_at: r.send_failed_at })
+    // Last activity, not creation time — same clock the approval-stall cron uses.
+    list.push({ created_at: r.updated_at || r.created_at, send_failed_at: r.send_failed_at })
     pendingApprovalsByProject.set(r.project_id, list)
   }
   const projectsWithApprovals = (projects || []).map((p: any) => ({

@@ -1,6 +1,6 @@
 // lib/approvals/engine.ts
 //
-// Core orchestration for Phase 3 — Approval Chains. Two entry points:
+// Core orchestration for Phase 3 — Approval Chains. Entry points:
 //
 //   evaluateApprovalGate()   — called from the SOW/CO send routes BEFORE
 //                              the actual send happens. If a workspace has
@@ -32,6 +32,10 @@ import { sendInvoiceDocument } from '@/lib/documents/send-invoice'
 import { acceptCoCounter } from '@/lib/documents/accept-co-counter'
 import { hasPermission } from '@/lib/auth/session'
 import { canReadProject } from '@/lib/utils/project-access'
+import { eligibleApprovers, checkChainFeasibility } from '@/lib/approvals/eligibility'
+import { pickWorkflow } from '@/lib/approvals/pick-workflow'
+
+export { pickWorkflow }
 import type { SessionUser } from '@/lib/supabase/types'
 
 // FIX (section-11 audit): 'co_counter' added so accept-counter can gate a
@@ -100,65 +104,70 @@ interface GateParams {
   requestedBy: { id: string; name: string; email: string }
 }
 
+// FIX (section-11 audit, pass 2): the gate used to have exactly two answers
+// — "no approval needed" or "a request exists, halt". Two situations fit
+// neither and were handled by silently picking one:
+//   * a workflow matched but nobody can ever decide it (the requester is the
+//     only approver, the approver left, the role lost APPROVE_DOCUMENTS) —
+//     a request was created that could never clear, with the document
+//     parked behind it and no one told; and a matched workflow with ZERO
+//     steps was waved through as "no approval needed" (a silent bypass);
+//   * the document already has an approved-but-not-sent request — clicking
+//     Send again started a whole second chain.
+// `blocked` is the third answer: the send must NOT proceed and no new request
+// was created; `error`/`status` are what to hand back to the user. Every
+// caller checks it before looking at requiresApproval.
 export interface GateResult {
   requiresApproval: boolean
   approvalRequestId?: string
+  blocked?: boolean
+  error?: string
+  status?: number
 }
 
+// The one request that currently "owns" a document: still pending, or fully
+// approved but stuck waiting for a successful send. At most one can exist
+// (approval_requests_one_active_per_doc, migration 069).
+async function findActiveRequest(
+  service: any, workspaceId: string, documentType: ApprovalDocumentType, documentId: string
+): Promise<{ id: string; status: string; send_failed_at: string | null } | null> {
+  const { data } = await service
+    .from('approval_requests')
+    .select('id, status, send_failed_at')
+    .eq('workspace_id', workspaceId)
+    .eq('document_type', documentType)
+    .eq('document_id', documentId)
+    .or('status.eq.pending,and(status.eq.approved,send_failed_at.not.is.null)')
+    .order('created_at', { ascending: false })
+    .limit(1)
+  return (data && data[0]) || null
+}
+
+function activeRequestResult(active: { id: string; status: string }): GateResult {
+  if (active.status === 'pending') return { requiresApproval: true, approvalRequestId: active.id }
+  return {
+    requiresApproval: true, blocked: true, approvalRequestId: active.id, status: 409,
+    error: 'This document was already approved but could not be sent. Open it in Approvals to retry the send — or cancel that request there to start over.',
+  }
+}
+
+// (workflow selection lives in lib/approvals/pick-workflow.ts so it can be unit-tested)
 export async function evaluateApprovalGate(service: any, params: GateParams): Promise<GateResult> {
   const { workspaceId, documentType, documentId } = params
 
-  // Idempotency: a pending request for this exact document already covers
-  // us — return it rather than creating a duplicate. Backstopped by the
-  // partial unique index in the migration for the concurrent case.
-  const { data: existingPending } = await service
-    .from('approval_requests')
-    .select('id')
-    .eq('document_type', documentType)
-    .eq('document_id', documentId)
-    .eq('status', 'pending')
-    .maybeSingle()
-  if (existingPending) return { requiresApproval: true, approvalRequestId: existingPending.id }
+  // Idempotency: a request for this exact document already covers us —
+  // return it rather than creating a duplicate.
+  const active = await findActiveRequest(service, workspaceId, documentType, documentId)
+  if (active) return activeRequestResult(active)
 
   const { data: workflows } = await service
     .from('approval_workflows')
-    .select('id, threshold_amount, threshold_currency')
+    .select('id, threshold_amount, threshold_currency, allow_self_approval, require_distinct_approvers, apply_to_other_currencies')
     .eq('workspace_id', workspaceId)
     .eq('document_type', workflowLookupType(documentType))
     .eq('is_active', true)
-    // FIX (section-11 audit, pass 2): no explicit order — two active
-    // workflows with the SAME threshold_amount resolved to whichever
-    // Postgres happened to return first, which SQL doesn't guarantee
-    // without an ORDER BY. Ordering by id gives a stable, at-least-
-    // deterministic tie-break (doesn't fix the underlying "which rule
-    // governs" ambiguity for an admin who's duplicated a threshold, but
-    // at least the same workflow wins every time rather than varying
-    // run to run).
-    .order('id', { ascending: true })
 
-  // Best match = highest threshold the document's amount still clears.
-  // A NULL threshold is a catch-all and sorts last, so a more specific
-  // tiered rule always wins over a blanket one when both would apply.
-  // FIX (re-audit): a thresholded workflow is only comparable against a
-  // document in the SAME currency — see migration 023's comment. A
-  // "$10,000" threshold has no defensible meaning against a JPY or KES
-  // amount, so a currency-mismatched thresholded workflow no longer
-  // matches at all (rather than comparing raw digits across currencies).
-  // Currency-agnostic (threshold_amount == null, "applies to every
-  // document of this type") workflows are unaffected — there's no amount
-  // being compared for them.
-  const matching = (workflows || [])
-    .filter((w: any) =>
-      w.threshold_amount == null ||
-      (w.threshold_currency === params.currency && params.amount >= Number(w.threshold_amount))
-    )
-    .sort((a: any, b: any) => {
-      if (a.threshold_amount == null) return 1
-      if (b.threshold_amount == null) return -1
-      return Number(b.threshold_amount) - Number(a.threshold_amount)
-    })
-
-  const workflow = matching[0]
+  const workflow = pickWorkflow(workflows || [], params.amount, params.currency)
   if (!workflow) return { requiresApproval: false }
 
   const { data: steps } = await service
@@ -167,7 +176,25 @@ export async function evaluateApprovalGate(service: any, params: GateParams): Pr
     .eq('workflow_id', workflow.id)
     .order('step_order', { ascending: true })
 
-  if (!steps || steps.length === 0) return { requiresApproval: false }
+  // Fail closed: a matching workflow with no steps used to read as "no
+  // approval needed" — the document sailed through as if ungoverned while the
+  // admin believed a rule was protecting it.
+  if (!steps || steps.length === 0) {
+    return {
+      requiresApproval: true, blocked: true, status: 409,
+      error: 'An approval workflow applies to this document but has no approvers configured. An admin needs to fix it in Settings → Approvals before this can be sent.',
+    }
+  }
+
+  const allowSelfApproval        = workflow.allow_self_approval === true
+  const requireDistinctApprovers = workflow.require_distinct_approvers === true
+
+  // Pre-flight: refuse to create a request nobody can decide.
+  const feasibility = await checkChainFeasibility(service, {
+    workspaceId, projectId: params.projectId, steps,
+    requesterId: params.requestedBy.id, allowSelfApproval, requireDistinctApprovers,
+  })
+  if (!feasibility.ok) return { requiresApproval: true, blocked: true, status: 409, error: feasibility.error }
 
   const { data: request, error: insertErr } = await service
     .from('approval_requests')
@@ -181,6 +208,8 @@ export async function evaluateApprovalGate(service: any, params: GateParams): Pr
       status:        'pending',
       current_step:  1,
       total_steps:   steps.length,
+      allow_self_approval:        allowSelfApproval,
+      require_distinct_approvers: requireDistinctApprovers,
       context: {
         title:        params.documentTitle,
         amount:       params.amount,
@@ -191,24 +220,22 @@ export async function evaluateApprovalGate(service: any, params: GateParams): Pr
     .select('id')
     .single()
 
-  // Fail closed, not open: if we can't durably record that this document
-  // is now gated, the send route must NOT proceed as if it weren't.
   if (insertErr || !request) {
+    // A double-click / two tabs racing the unique index: the other request
+    // won — that IS the request this send belongs to, not a failure.
+    if (insertErr?.code === '23505') {
+      const raced = await findActiveRequest(service, workspaceId, documentType, documentId)
+      if (raced) return activeRequestResult(raced)
+    }
+    // Fail closed, not open: if we can't durably record that this document
+    // is now gated, the send route must NOT proceed as if it weren't.
     throw new Error('Failed to create approval request — send halted for safety')
   }
 
-  // FIX (section-11 audit): this insert had no error check at all, unlike
-  // the identical approval_workflow_steps insert in the workflow-creation
-  // routes. A partial failure here (e.g. a transient DB error) left a
-  // 'pending' approval_requests row with total_steps > 0 but zero real
-  // approval_steps rows — notifyStepApprovers() below still fires because
-  // it reads from the workflow's template `steps`, not from what actually
-  // got inserted, so an approver would be told to decide on something
-  // recordApprovalDecision() can never find (it looks up approval_steps by
-  // request_id + step_order and would come back empty), returning a
-  // misleading "already decided" error with no way for anyone to tell what
-  // actually went wrong. Fail closed here the same way the request insert
-  // above does: roll back the orphaned request and halt the send.
+  // A partial failure here (a transient DB error) would leave a 'pending'
+  // request with no real approval_steps — an approver would be told to decide
+  // something recordApprovalDecision() can never find. Fail closed the same
+  // way: roll back the orphaned request and halt the send.
   const { error: stepsInsertErr } = await service.from('approval_steps').insert(
     steps.map((s: WorkflowStepRow) => ({
       request_id:       request.id,
@@ -238,9 +265,76 @@ export async function evaluateApprovalGate(service: any, params: GateParams): Pr
     projectId: params.projectId, projectName: params.projectName,
     amount: params.amount, currency: params.currency,
     requestedBy: params.requestedBy, totalSteps: steps.length,
+    allowSelfApproval,
   })
 
   return { requiresApproval: true, approvalRequestId: request.id }
+}
+
+// ── SEND DISPATCH ────────────────────────────────────────────────
+// FIX (section-11 audit, pass 2): the auto-send after a final approval used
+// to be a bare `await sendXDocument(...)` with no try/catch, and only ever
+// read `result.ok`. Two consequences:
+//   * ANY thrown error inside a send (send-invoice never wrapped its
+//     document-number assignment the way send-sow/send-co do, and a DB or
+//     secret-lookup error can throw anywhere) escaped recordApprovalDecision
+//     after the chain had already approved: the approver got a 500 and the
+//     request was left approved with no send_failed_at — invisible to the
+//     requester, the retry UI and the stall cron. Exactly the limbo
+//     migration 053 was written to remove.
+//   * A send that "succeeded" but whose client email was rejected by the
+//     mail provider (emailSent:false) was reported as "sent to client".
+type SendOutcome =
+  | { ok: true; emailSent: boolean; emailError?: string }
+  | { ok: false; error: string }
+
+async function dispatchSend(
+  service: any,
+  request: { document_type: ApprovalDocumentType; document_id: string },
+  sendParams: { workspaceId: string; actorId: string; actorEmail: string; actorName: string; approvalRequestId: string },
+): Promise<SendOutcome> {
+  try {
+    // 'co_counter' needs its own auto-finalize — it's not a fresh send, it's
+    // accepting an already-negotiated counter-offer (routing it through
+    // sendCoDocument, which CASes on status:'draft', would silently no-op).
+    const result: any = request.document_type === 'sow'
+      ? await sendSowDocument(service, { sowId: request.document_id, ...sendParams })
+      : request.document_type === 'co_counter'
+      ? await acceptCoCounter(service, { coId: request.document_id, ...sendParams })
+      : request.document_type === 'invoice'
+      ? await sendInvoiceDocument(service, { invoiceId: request.document_id, ...sendParams })
+      : await sendCoDocument(service, { coId: request.document_id, ...sendParams })
+    if (!result.ok) return { ok: false, error: result.error || 'The send failed.' }
+    return { ok: true, emailSent: result.emailSent !== false, emailError: result.emailError }
+  } catch (e) {
+    console.error('Auto-send threw:', e)
+    return { ok: false, error: 'The send failed unexpectedly — retry it, and contact support if it keeps happening.' }
+  }
+}
+
+function deliveryWarningFor(outcome: SendOutcome): string | null {
+  if (!outcome.ok || outcome.emailSent) return null
+  return `The document was sent, but the email to the client could not be delivered${outcome.emailError ? ` (${outcome.emailError})` : ''}. Copy the client link from the project and send it to them yourself.`
+}
+
+// Records how the auto-send went and lifts the request out of its
+// "sending" state (see migration 069). The RPC is one atomic UPDATE; if it
+// errors, fall back to a plain guarded update so a transient failure here can't
+// leave the request parked in 'pending' with every step already decided.
+async function finalizeSend(service: any, requestId: string, outcome: SendOutcome, deliveryWarning: string | null): Promise<boolean> {
+  const failedReason = outcome.ok ? null : outcome.error
+  const { data, error } = await service.rpc('finalize_approval_send', {
+    p_request_id: requestId, p_send_ok: outcome.ok, p_error: failedReason, p_delivery_warning: deliveryWarning,
+  })
+  if (!error) return data === true
+  console.error('finalize_approval_send failed, falling back:', error)
+  const now = new Date().toISOString()
+  const { data: updated } = await service.from('approval_requests').update({
+    status: 'approved', decided_at: now, updated_at: now, sending_started_at: null,
+    send_failed_at: outcome.ok ? null : now, send_failed_reason: failedReason,
+    delivery_warning: outcome.ok ? deliveryWarning : null,
+  }).eq('id', requestId).eq('status', 'pending').select('id').maybeSingle()
+  return !!updated
 }
 
 // ── DECISION ─────────────────────────────────────────────────────
@@ -252,13 +346,13 @@ interface DecisionParams {
 }
 
 export type DecisionResult =
-  | { ok: true; status: 'pending' | 'approved' | 'rejected'; autoSent?: boolean }
+  | { ok: true; status: 'pending' | 'approved' | 'rejected'; autoSent?: boolean; deliveryWarning?: string | null }
   | { ok: false; error: string; status: number }
 
 export async function recordApprovalDecision(service: any, params: DecisionParams): Promise<DecisionResult> {
   const { data: request } = await service
     .from('approval_requests')
-    .select('id, workspace_id, workflow_id, document_type, document_id, project_id, requested_by, status, current_step, total_steps, context')
+    .select('id, workspace_id, workflow_id, document_type, document_id, project_id, requested_by, status, current_step, total_steps, context, allow_self_approval, require_distinct_approvers')
     .eq('id', params.requestId)
     .eq('workspace_id', params.actor.workspaceId)
     .single()
@@ -278,11 +372,9 @@ export async function recordApprovalDecision(service: any, params: DecisionParam
   if (!hasPermission(params.actor, 'APPROVE_DOCUMENTS'))
     return { ok: false, error: 'Missing permission: APPROVE_DOCUMENTS', status: 403 }
 
-  // Belt-and-braces: holding the blanket permission isn't enough — you
-  // must also be the specific approver assigned to THIS step (the named
-  // user, or any active member currently holding the assigned role).
-  // Otherwise anyone with APPROVE_DOCUMENTS could jump ahead of a chain
-  // they were never part of.
+  // Holding the blanket permission isn't enough — you must also be the
+  // specific approver assigned to THIS step (the named user, or any active
+  // member currently holding the assigned role).
   let eligible = false
   if (step.approver_user_id) {
     eligible = step.approver_user_id === params.actor.id
@@ -298,87 +390,58 @@ export async function recordApprovalDecision(service: any, params: DecisionParam
   }
   if (!eligible) return { ok: false, error: 'You are not an approver for this step', status: 403 }
 
-  // FIX (section-11 audit, flagship finding): nothing anywhere in this
-  // gate/decision path ever checked whether the person deciding is the
-  // same person who requested the send in the first place. Send
-  // permission (SEND_SOW/SEND_CHANGE_ORDERS/SEND_INVOICES) and approval
-  // permission (APPROVE_DOCUMENTS) are both commonly held by the same
-  // role (an agency owner/admin), so if that role is also the workflow's
-  // configured approver, the requester could send their own document for
-  // approval and then approve it themselves — defeating the entire point
-  // of a governance/approval product. This blocks a decision (either
-  // direction) by the same user who triggered the request that created
-  // it, regardless of how they qualify as an eligible approver for the
-  // step (named or via role).
-  if (request.requested_by === params.actor.id)
+  // Nobody decides a request they raised themselves — unless the workflow was
+  // explicitly configured to allow it (sole-approver / solo-agency workspaces;
+  // the flag is snapshotted onto the request so a later edit can't change the
+  // rules of a chain already in flight).
+  if (request.requested_by === params.actor.id && !request.allow_self_approval)
     return { ok: false, error: 'You requested this — it needs to be decided by someone else', status: 403 }
 
-  // FIX (section-11 audit, flagship finding): everywhere else in this file
-  // that touches an approver — notifyStepApprovers' role branch (via
-  // getMembersWithRole's projectId param) and its direct-user branch (via
-  // filterToProjectAccess), both with explicit comments reasoning about
-  // exactly this — scopes the approver to whoever can actually SEE the
-  // project the document lives on. That principle was only ever wired
-  // into the notification layer (who gets emailed), never into this, the
-  // actual authorization boundary (who's allowed to click Approve). A
-  // member on VIEW_OWN_PROJECTS with no assignment to this project, but
-  // who happens to hold the assigned role (or is the named approver),
-  // could approve/reject — and thereby trigger a real send to the client
-  // — for a project they have no other visibility into. canReadProject
-  // is the same primitive every other document-mutating route in the app
-  // already gates writes on; the decision path was the one place that
-  // never got it.
+  // Four-eyes across steps: one person may clear at most one step.
+  if (request.require_distinct_approvers) {
+    const { data: earlier } = await service
+      .from('approval_steps').select('id')
+      .eq('request_id', request.id).eq('status', 'approved').eq('decided_by', params.actor.id).limit(1)
+    if (earlier && earlier.length > 0)
+      return { ok: false, error: 'You already approved an earlier step of this request — a different person needs to approve this one', status: 403 }
+  }
+
+  // The decision path must gate on project visibility exactly like every
+  // other document-mutating route (canReadProject).
   if (!(await canReadProject(service, params.actor, request.project_id)))
     return { ok: false, error: 'You do not have access to this project', status: 403 }
 
-  const now = new Date().toISOString()
-  // FIX (section-11 audit): same collapsing fix as notifyStepApprovers
-  // below — a decided 'co_counter' request (approving/rejecting
-  // acceptance of a client's negotiated counter-offer) used to read as a
-  // plain "Change order" decision, indistinguishable from an ordinary CO
-  // send decision, in both the requester's notification and the audit
-  // trail's implicit framing.
   const documentLabel = documentLabelFor(request.document_type)
   const docTitle       = request.context?.title || documentLabel
   const projectName    = request.context?.project_name || ''
 
-  // FIX (re-audit, critical race-condition finding): this is the exact
-  // read-then-write pattern that got an explicit CAS guard everywhere else
-  // in the app (SOW/CO sign, decline, accept, countersign) after a
-  // double-click or two near-simultaneous triggers turned out to be a real
-  // risk — but the engine's own decision path, on the busiest multi-user
-  // surface in the product (a role-based step can have several eligible
-  // approvers), never got the same guard. Two people (or one double-click)
-  // approving the same step at once could both pass the `step.status
-  // !== 'pending'` read above and both reach here; if it's the final step,
-  // both branches below would independently fire the auto-send, emailing
-  // the client twice with two different tokens (only the last write's
-  // stays valid). Guard the actual write and bail if someone already won.
-  const { data: decided } = await service.from('approval_steps').update({
-    status: params.decision, decided_by: params.actor.id, decided_at: now, note: params.note || null,
-  }).eq('id', step.id).eq('status', 'pending').select('id').maybeSingle()
-
-  if (!decided) return { ok: false, error: 'This step has already been decided', status: 409 }
+  // FIX (section-11 audit, pass 2): this used to be five-to-seven sequential
+  // writes (step CAS, request status, skip the rest, advance…) with no
+  // transaction and no error ever read — supabase-js resolves to {error}
+  // rather than throwing, so a failed second write left a step 'approved'
+  // with the request stuck, or fired the auto-send while the request still
+  // read 'pending'. The whole decision is now one transaction with the request
+  // row locked (migration 069), which also serialises two approvers racing
+  // on the same step and closes the window where a cancel could be
+  // overwritten back to 'approved'.
+  const { data: outcome, error: decideErr } = await service.rpc('decide_approval_step', {
+    p_request_id: request.id, p_step_id: step.id, p_decision: params.decision,
+    p_actor_id: params.actor.id, p_note: params.note || null,
+  })
+  if (decideErr) {
+    console.error('decide_approval_step failed:', decideErr)
+    return { ok: false, error: 'Could not record your decision — please try again.', status: 500 }
+  }
+  if (outcome === 'conflict') return { ok: false, error: 'This step has already been decided', status: 409 }
+  if (outcome !== 'rejected' && outcome !== 'advanced' && outcome !== 'final') {
+    console.error('decide_approval_step returned an unexpected outcome:', outcome)
+    return { ok: false, error: 'Could not record your decision — please try again.', status: 500 }
+  }
 
   const { data: requester } = await service
     .from('users').select('id, name, email').eq('id', request.requested_by).maybeSingle()
 
-  if (params.decision === 'rejected') {
-    await service.from('approval_requests').update({
-      status: 'rejected', decided_at: now, updated_at: now,
-    }).eq('id', request.id)
-
-    // FIX (section-11 audit): only the just-decided step was ever touched
-    // here — every step AFTER it (inserted 'pending' at request creation,
-    // same as the decided one was) stayed 'pending' forever, since the
-    // chain never advances past a rejection. cancelApprovalRequest()
-    // already does the equivalent cleanup for a cancelled request
-    // (marking every still-pending step 'skipped'); a rejected request
-    // needs the same so its own detail view doesn't render un-reached
-    // steps as "Awaiting decision" under a request that's already dead.
-    await service.from('approval_steps').update({ status: 'skipped' })
-      .eq('request_id', request.id).eq('status', 'pending')
-
+  if (outcome === 'rejected') {
     await logAudit(service, {
       workspaceId: params.actor.workspaceId,
       actorId: params.actor.id, actorEmail: params.actor.email, actorName: params.actor.name,
@@ -393,19 +456,13 @@ export async function recordApprovalDecision(service: any, params: DecisionParam
         workspaceId: params.actor.workspaceId, requester, decision: 'rejected',
         documentLabel, docTitle, projectId: request.project_id, projectName,
         decidedByName: params.actor.name, note: params.note, requestId: request.id,
+        isCounter: request.document_type === 'co_counter',
       })
     }
     return { ok: true, status: 'rejected' }
   }
 
-  // Approved this step — either advance to the next one, or (if this was
-  // the last step) close out the chain and send the document.
-  if (request.current_step < request.total_steps) {
-    const nextStepOrder = request.current_step + 1
-    await service.from('approval_requests').update({
-      current_step: nextStepOrder, updated_at: now,
-    }).eq('id', request.id)
-
+  if (outcome === 'advanced') {
     await logAudit(service, {
       workspaceId: params.actor.workspaceId,
       actorId: params.actor.id, actorEmail: params.actor.email, actorName: params.actor.name,
@@ -415,6 +472,7 @@ export async function recordApprovalDecision(service: any, params: DecisionParam
       metadata: { approval_request_id: request.id, step: step.step_order, note: params.note || null },
     })
 
+    const nextStepOrder = request.current_step + 1
     const { data: nextStep } = await service
       .from('approval_steps')
       .select('step_order, approver_role_id, approver_user_id')
@@ -428,15 +486,26 @@ export async function recordApprovalDecision(service: any, params: DecisionParam
         amount: request.context?.amount || 0, currency: request.context?.currency || 'USD',
         requestedBy: { id: requester.id, name: requester.name, email: requester.email },
         totalSteps: request.total_steps,
+        allowSelfApproval: request.allow_self_approval === true,
+      })
+    }
+    // FIX (section-11 audit, pass 2 — feature gap): a multi-step chain used to
+    // be silent to the requester until the very last step; they had no way to
+    // tell "step 1 of 3 cleared" from "nobody has looked at it".
+    if (requester) {
+      await notifyRequesterProgress(service, {
+        workspaceId: params.actor.workspaceId, requester, documentLabel, docTitle,
+        decidedByName: params.actor.name, step: step.step_order, totalSteps: request.total_steps, requestId: request.id,
       })
     }
     return { ok: true, status: 'pending' }
   }
 
-  await service.from('approval_requests').update({
-    status: 'approved', decided_at: now, updated_at: now,
-  }).eq('id', request.id)
-
+  // outcome === 'final': the last step just cleared. The request is still
+  // status 'pending' (with sending_started_at set), so the document's edit
+  // lock holds while the send runs — the old code flipped it to 'approved'
+  // first, opening a window in which the draft could be edited or deleted
+  // between approval and send.
   await logAudit(service, {
     workspaceId: params.actor.workspaceId,
     actorId: params.actor.id, actorEmail: params.actor.email, actorName: params.actor.name,
@@ -446,54 +515,43 @@ export async function recordApprovalDecision(service: any, params: DecisionParam
     metadata: { approval_request_id: request.id, step: step.step_order, note: params.note || null },
   })
 
-  let autoSent = false
-  let sendFailedReason: string | null = null
-  if (requester) {
-    const sendParams = {
+  const sendOutcome: SendOutcome = requester
+    ? await dispatchSend(service, request, {
+        workspaceId: params.actor.workspaceId,
+        actorId: requester.id, actorEmail: requester.email, actorName: requester.name,
+        approvalRequestId: request.id,
+      })
+    : { ok: false, error: 'The person who requested this no longer has an account, so it could not be sent automatically. Cancel this request and send the document again.' }
+
+  const autoSent = sendOutcome.ok
+  const sendFailedReason = sendOutcome.ok ? null : sendOutcome.error
+  const deliveryWarning = deliveryWarningFor(sendOutcome)
+  if (!sendOutcome.ok) console.error('Auto-send after final approval failed:', sendOutcome.error)
+
+  const finalized = await finalizeSend(service, request.id, sendOutcome, deliveryWarning)
+  if (!finalized) {
+    // Cancelled while the send was in flight — the document may have gone out
+    // anyway; leave a trail rather than pretend nothing happened.
+    await logAudit(service, {
       workspaceId: params.actor.workspaceId,
-      actorId: requester.id, actorEmail: requester.email, actorName: requester.name,
-      approvalRequestId: request.id,
-    }
-    // FIX (section-11 audit): 'co_counter' needs its own auto-finalize —
-    // it's not a fresh send, it's accepting an already-negotiated
-    // counter-offer. Routing it through sendCoDocument (which CASes on
-    // status:'draft') would silently no-op, since a countered CO's
-    // status is 'countered', not 'draft' — the approval would record as
-    // 'approved' while the client never actually got a countersignature
-    // request, stranding the CO indefinitely.
-    const result = request.document_type === 'sow'
-      ? await sendSowDocument(service, { sowId: request.document_id, ...sendParams })
-      : request.document_type === 'co_counter'
-      ? await acceptCoCounter(service, { coId: request.document_id, ...sendParams })
-      : request.document_type === 'invoice'
-      ? await sendInvoiceDocument(service, { invoiceId: request.document_id, ...sendParams })
-      : await sendCoDocument(service, { coId: request.document_id, ...sendParams })
-    autoSent = result.ok
-    if (!result.ok) {
-      sendFailedReason = result.error
-      console.error('Auto-send after final approval failed:', result.error)
-      // FIX (section-11 fix round, flagship finding): see migration 053.
-      // Recorded on the request itself (still correctly 'approved' — the
-      // CHAIN approved; only the mechanical send after it failed) so it's
-      // discoverable in the UI and retryable without re-running the whole
-      // gate. Best-effort: if this write itself fails, the console.error
-      // above is still the fallback trail — never let a logging failure
-      // block the approval outcome already recorded above.
-      await service.from('approval_requests').update({
-        send_failed_at: now, send_failed_reason: sendFailedReason,
-      }).eq('id', request.id).then(null, (e: unknown) => console.error('Failed to record send_failed_at:', e))
-    }
+      actorId: params.actor.id, actorEmail: params.actor.email, actorName: params.actor.name,
+      eventType: 'approval.send_outcome_unrecorded',
+      entityType: entityTypeFor(request.document_type),
+      entityId: request.document_id, entityName: docTitle,
+      metadata: { approval_request_id: request.id, send_ok: sendOutcome.ok },
+    })
   }
 
   if (requester) {
     await notifyRequester(service, {
       workspaceId: params.actor.workspaceId, requester, decision: 'approved',
       documentLabel, docTitle, projectId: request.project_id, projectName,
-      decidedByName: params.actor.name, note: params.note, autoSent, sendFailedReason, requestId: request.id,
+      decidedByName: params.actor.name, note: params.note, autoSent, sendFailedReason, deliveryWarning,
+      requestId: request.id, isCounter: request.document_type === 'co_counter',
     })
   }
 
-  return { ok: true, status: 'approved', autoSent }
+  return { ok: true, status: 'approved', autoSent, deliveryWarning }
 }
 
 // ── CANCELLATION ─────────────────────────────────────────────────
@@ -526,13 +584,20 @@ export async function cancelApprovalRequest(service: any, params: {
   // and a retry would only ever fail looking up a dead document_id.
   // Broadened to match either state; the write below is CAS'd against
   // whichever one it actually read.
-  const { data: request } = await service
+  // FIX (section-11 audit, pass 2): `.maybeSingle()` errors when more than one
+  // row matches (see getPendingApprovalForDocument), returning null — so the
+  // cancel silently did nothing while a chain stayed live. Scoped to the
+  // workspace and newest-first instead.
+  const { data: requestRows } = await service
     .from('approval_requests')
     .select('id, project_id, current_step, context, status')
+    .eq('workspace_id', params.workspaceId)
     .eq('document_type', params.documentType)
     .eq('document_id', params.documentId)
     .or('status.eq.pending,and(status.eq.approved,send_failed_at.not.is.null)')
-    .maybeSingle()
+    .order('created_at', { ascending: false })
+    .limit(1)
+  const request = requestRows && requestRows[0]
   if (!request) return
 
   const now = new Date().toISOString()
@@ -631,32 +696,30 @@ export async function cancelApprovalRequest(service: any, params: {
 // same step for longer than the reminder window — re-notifies whoever
 // the CURRENT step is assigned to, exactly as if the step had just
 // become active.
-// FIX (cron audit, section 17 — flagship finding): this used to return
-// `true` unconditionally after calling notifyStepApprovers, which itself
-// silently no-ops when it ends up with zero recipients (approver_role_id
-// has no active holder, or — see the fix in notifyStepApprovers below —
-// approver_user_id points at someone no longer an active member of this
-// workspace). approval-stall/route.ts trusts this return value to decide
-// whether to reset the stall clock and log 'approval.reminder_sent' — so
-// a broken approver assignment was resetting the clock and recording a
-// reminder that reached nobody, every 2 days, forever. The request just
-// sat there invisibly: exactly the silent-stall failure mode this whole
-// product exists to catch, reproduced inside the mechanism built to catch
-// it. Returning a real tri-state lets the cron tell "reminded" apart from
-// "nobody to remind" and act on that instead of assuming success.
+//
+// Returns a real tri-state so the cron can tell "reminded" apart from
+// "nobody to remind" (a broken assignment needs a human to fix it).
+//
+// FIX (section-11 audit, pass 2): the requester is excluded from the
+// recipients (unless the workflow allows self-approval). They were counted as
+// a reachable approver, so a request whose only eligible approver was the
+// requester "reminded" the one person who could never act, every window,
+// forever — instead of escalating as 'no_recipients'. The step lookup also
+// now requires the step to still be pending: a request whose last step has
+// cleared but whose send is in flight has nobody left to remind.
 export async function sendApprovalReminder(
   service: any, requestId: string
 ): Promise<'sent' | 'no_recipients' | 'not_found'> {
   const { data: request } = await service
     .from('approval_requests')
-    .select('id, workspace_id, document_type, current_step, total_steps, context, requested_by, project_id')
+    .select('id, workspace_id, document_type, current_step, total_steps, context, requested_by, project_id, allow_self_approval')
     .eq('id', requestId).eq('status', 'pending').single()
   if (!request) return 'not_found'
 
   const { data: step } = await service
     .from('approval_steps')
     .select('step_order, approver_role_id, approver_user_id')
-    .eq('request_id', requestId).eq('step_order', request.current_step).single()
+    .eq('request_id', requestId).eq('step_order', request.current_step).eq('status', 'pending').maybeSingle()
   if (!step) return 'not_found'
 
   const { data: requester } = await service
@@ -670,25 +733,29 @@ export async function sendApprovalReminder(
     currency: request.context?.currency || 'USD',
     requestedBy: { id: requester.id, name: requester.name, email: requester.email },
     totalSteps: request.total_steps,
+    allowSelfApproval: request.allow_self_approval === true,
   })
   return notifiedCount > 0 ? 'sent' : 'no_recipients'
 }
 
 // ── RETRY (send_failed_at) ──────────────────────────────────────
-// FIX (section-11 fix round, flagship finding): see migration 053 and the
-// send_failed_at/send_failed_reason write in recordApprovalDecision above.
-// This is the recovery path for a request that finished approving but
-// whose auto-send afterward failed — it re-attempts ONLY the mechanical
-// send, against a request that's already 'approved'. It deliberately does
-// NOT go anywhere near evaluateApprovalGate: re-running the gate would
-// create a brand-new approval_request and re-notify every approver to
-// decide something they've already decided, which is exactly the bad
-// "recovery path" this whole fix exists to replace.
+// The recovery path for a request that finished approving but whose
+// auto-send afterward failed — it re-attempts ONLY the mechanical send,
+// against a request that's already 'approved'. It deliberately does NOT go
+// anywhere near evaluateApprovalGate: re-running the gate would create a
+// brand-new approval_request and re-notify every approver to decide
+// something they've already decided.
+//
+// FIX (section-11 audit, pass 2): two concurrent retries (a double click, two
+// tabs) both ran the send; the loser's "already sent" error then overwrote
+// the reason on a request that had in fact succeeded. The retry now CLAIMS
+// the request first (sending_started_at) and the send runs inside the same
+// try/catch as the original auto-send.
 export async function retryFailedSend(service: any, params: {
   requestId: string
   workspaceId: string
   actor: { id: string; email: string; name: string }
-}): Promise<{ ok: true } | { ok: false; error: string }> {
+}): Promise<{ ok: true; deliveryWarning?: string | null } | { ok: false; error: string }> {
   const { data: request } = await service
     .from('approval_requests')
     .select('id, document_type, document_id, project_id, context, status, send_failed_at')
@@ -698,70 +765,199 @@ export async function retryFailedSend(service: any, params: {
   if (request.status !== 'approved' || !request.send_failed_at)
     return { ok: false, error: 'This request has nothing to retry' }
 
-  const sendParams = {
+  const claimStamp = new Date().toISOString()
+  const staleBefore = new Date(Date.now() - 2 * 60 * 1000).toISOString()
+  const { data: claimed } = await service.from('approval_requests')
+    .update({ sending_started_at: claimStamp })
+    .eq('id', request.id).eq('status', 'approved').not('send_failed_at', 'is', null)
+    .or(`sending_started_at.is.null,sending_started_at.lt.${staleBefore}`)
+    .select('id')
+  if (!claimed || claimed.length === 0)
+    return { ok: false, error: 'A retry is already in progress — give it a moment, then refresh.' }
+
+  const outcome = await dispatchSend(service, request, {
     workspaceId: params.workspaceId,
     actorId: params.actor.id, actorEmail: params.actor.email, actorName: params.actor.name,
     approvalRequestId: request.id,
-  }
-  const result = request.document_type === 'sow'
-    ? await sendSowDocument(service, { sowId: request.document_id, ...sendParams })
-    : request.document_type === 'co_counter'
-    ? await acceptCoCounter(service, { coId: request.document_id, ...sendParams })
-    : request.document_type === 'invoice'
-    ? await sendInvoiceDocument(service, { invoiceId: request.document_id, ...sendParams })
-    : await sendCoDocument(service, { coId: request.document_id, ...sendParams })
+  })
 
   const now = new Date().toISOString()
-  if (result.ok) {
+  if (outcome.ok) {
+    const deliveryWarning = deliveryWarningFor(outcome)
     await service.from('approval_requests').update({
-      send_failed_at: null, send_failed_reason: null, updated_at: now,
+      send_failed_at: null, send_failed_reason: null, sending_started_at: null,
+      delivery_warning: deliveryWarning, updated_at: now,
     }).eq('id', request.id)
     await logAudit(service, {
       workspaceId: params.workspaceId,
       actorId: params.actor.id, actorEmail: params.actor.email, actorName: params.actor.name,
       eventType: 'approval.send_retried', entityType: entityTypeFor(request.document_type),
       entityId: request.document_id, entityName: request.context?.title || '',
-      metadata: { approval_request_id: request.id },
+      metadata: { approval_request_id: request.id, email_delivered: outcome.emailSent },
     })
-    return { ok: true }
+    return { ok: true, deliveryWarning }
   }
 
   // Still failing (e.g. the client's email is still missing) — refresh the
-  // reason shown in the UI so it reflects whatever's actually wrong now,
-  // rather than the original failure from however long ago.
+  // reason shown in the UI so it reflects whatever's actually wrong now.
   await service.from('approval_requests').update({
-    send_failed_reason: result.error, updated_at: now,
+    send_failed_reason: outcome.error, sending_started_at: null, updated_at: now,
   }).eq('id', request.id)
-  return { ok: false, error: result.error }
+  return { ok: false, error: outcome.error }
+}
+
+// ── SELF-HEALING ─────────────────────────────────────────────────
+// A request is parked 'pending' with sending_started_at set for the few
+// seconds an auto-send takes. If the process dies in that window (a deploy, a
+// platform timeout) nothing would ever move it on — every step is decided, so
+// no approver has anything to act on either. The stall cron calls this to turn
+// such a request into the normal, visible, retryable "approved — not sent"
+// state.
+export async function healStuckSends(service: any, olderThanMinutes = 10): Promise<Array<{ id: string; workspace_id: string }>> {
+  const cutoff = new Date(Date.now() - olderThanMinutes * 60 * 1000).toISOString()
+  const { data: stuck } = await service
+    .from('approval_requests')
+    .select('id, workspace_id, requested_by, project_id, document_type, context')
+    .eq('status', 'pending').not('sending_started_at', 'is', null).lt('sending_started_at', cutoff)
+    .order('sending_started_at', { ascending: true }).limit(50)
+
+  const healed: Array<{ id: string; workspace_id: string }> = []
+  for (const r of stuck || []) {
+    const reason = 'The send did not finish (the server may have restarted mid-send). Check whether the document already shows as sent: if it does, cancel this request; otherwise retry the send.'
+    const { data: ok } = await service.rpc('finalize_approval_send', {
+      p_request_id: r.id, p_send_ok: false, p_error: reason, p_delivery_warning: null,
+    })
+    if (ok !== true) continue
+    healed.push({ id: r.id, workspace_id: r.workspace_id })
+    try {
+      const [inAppOn] = await filterByNotificationPreference(
+        service, r.workspace_id, 'approval_decision', [{ id: r.requested_by }], 'in_app'
+      )
+      if (inAppOn) {
+        await insertNotificationRows(service, [{
+          workspace_id: r.workspace_id, recipient_id: r.requested_by, type: 'approval_approved',
+          title: `${documentLabelFor(r.document_type)} approved — send didn't finish`,
+          body: `${r.context?.title || 'A document'} was approved but the automatic send didn't finish — open it in Approvals to retry.`,
+          entity_type: 'approval_request', entity_id: r.id,
+        }])
+      }
+    } catch { /* never let a notification failure stop the heal */ }
+  }
+  return healed
+}
+
+// ── REASSIGN (feature gap) ───────────────────────────────────────
+// Steps are snapshotted from the workflow when a request is created, so
+// editing the workflow never touches a request already in flight — which meant
+// an approver who left, went on leave, or turned out to be the requester left
+// the request permanently stuck (the only way out was cancel + resubmit).
+// An admin can now hand the CURRENT step to a different person or role.
+export async function reassignApprovalStep(service: any, params: {
+  requestId: string
+  workspaceId: string
+  actor: { id: string; name: string; email: string }
+  target: { userId?: string | null; roleId?: string | null }
+  reason?: string | null
+}): Promise<{ ok: true } | { ok: false; error: string; status: number }> {
+  const { data: request } = await service
+    .from('approval_requests')
+    .select('id, project_id, document_type, document_id, requested_by, status, current_step, total_steps, context, allow_self_approval, require_distinct_approvers, sending_started_at')
+    .eq('id', params.requestId).eq('workspace_id', params.workspaceId).single()
+  if (!request) return { ok: false, error: 'Approval request not found', status: 404 }
+  if (request.status !== 'pending' || request.sending_started_at)
+    return { ok: false, error: 'Only a request that is still waiting on an approver can be reassigned', status: 409 }
+
+  const { data: step } = await service
+    .from('approval_steps')
+    .select('id, step_order, approver_role_id, approver_user_id, status')
+    .eq('request_id', request.id).eq('step_order', request.current_step).single()
+  if (!step || step.status !== 'pending')
+    return { ok: false, error: 'This step has already been decided', status: 409 }
+
+  const targetUser = params.target.userId || null
+  const targetRole = params.target.roleId || null
+  if ((targetUser ? 1 : 0) + (targetRole ? 1 : 0) !== 1)
+    return { ok: false, error: 'Choose exactly one new approver — a person or a role', status: 400 }
+  if ((targetUser && targetUser === step.approver_user_id) || (targetRole && targetRole === step.approver_role_id))
+    return { ok: false, error: 'That approver is already assigned to this step', status: 400 }
+
+  let candidates = await eligibleApprovers(service, params.workspaceId, request.project_id, {
+    approver_user_id: targetUser, approver_role_id: targetRole,
+  })
+  if (request.allow_self_approval !== true) candidates = candidates.filter(c => c.id !== request.requested_by)
+  if (request.require_distinct_approvers === true) {
+    const { data: earlier } = await service
+      .from('approval_steps').select('decided_by').eq('request_id', request.id).eq('status', 'approved')
+    const already = new Set((earlier || []).map((e: any) => e.decided_by))
+    candidates = candidates.filter(c => !already.has(c.id))
+  }
+  if (candidates.length === 0)
+    return { ok: false, error: 'Nobody in that assignment can decide this request — they need the Approve documents permission, access to this project, and (unless this workflow allows it) must not be the person who requested it.', status: 400 }
+
+  const { data: updated } = await service.from('approval_steps')
+    .update({ approver_user_id: targetUser, approver_role_id: targetRole })
+    .eq('id', step.id).eq('status', 'pending').select('id').maybeSingle()
+  if (!updated) return { ok: false, error: 'This step has already been decided', status: 409 }
+
+  const now = new Date().toISOString()
+  await service.from('approval_requests')
+    .update({ updated_at: now, reminder_count: 0, escalated_at: null })
+    .eq('id', request.id).eq('status', 'pending')
+
+  await logAudit(service, {
+    workspaceId: params.workspaceId,
+    actorId: params.actor.id, actorEmail: params.actor.email, actorName: params.actor.name,
+    eventType: 'approval.step_reassigned',
+    entityType: entityTypeFor(request.document_type),
+    entityId: request.document_id, entityName: request.context?.title || '',
+    metadata: {
+      approval_request_id: request.id, step: step.step_order,
+      from: { user_id: step.approver_user_id, role_id: step.approver_role_id },
+      to: { user_id: targetUser, role_id: targetRole },
+      reason: params.reason || null,
+    },
+  })
+
+  const { data: requester } = await service
+    .from('users').select('id, name, email').eq('id', request.requested_by).maybeSingle()
+  if (requester) {
+    await notifyStepApprovers(service, {
+      workspaceId: params.workspaceId, requestId: request.id,
+      step: { step_order: step.step_order, approver_role_id: targetRole, approver_user_id: targetUser },
+      documentType: request.document_type, documentTitle: request.context?.title || '',
+      projectId: request.project_id, projectName: request.context?.project_name || '',
+      amount: request.context?.amount || 0, currency: request.context?.currency || 'USD',
+      requestedBy: { id: requester.id, name: requester.name, email: requester.email },
+      totalSteps: request.total_steps, allowSelfApproval: request.allow_self_approval === true,
+    })
+  }
+  return { ok: true }
 }
 
 // ── LOOKUP ───────────────────────────────────────────────────────
-// FIX (fix round, section-11 flagship finding): every caller of this
-// function is an edit-lock — "don't let the document change while an
-// approval concern is outstanding." That was only ever true for
-// status='pending'. A request that fully approved but then failed to
-// auto-send (status='approved', send_failed_at set — see migration 053)
-// is just as much an outstanding concern: the document is sitting in a
-// "the client is about to receive exactly this" state, waiting on a
-// retry, and nothing stopped an edit from changing it out from under
-// that already-granted approval in the meantime — the eventual retry
-// would ship whatever the document looks like *now*, with no relation to
-// what was actually approved, and with none of the sending route's own
-// business-rule validation re-run (that validation only ever runs once,
-// at the original send attempt). Broadened to match either state so the
-// edit-lock actually covers the full window a document can be "spoken
-// for" by an approval decision.
+// Every caller of this function is an edit-lock — "don't let the document
+// change while an approval concern is outstanding": a request that is
+// pending (including the few seconds an auto-send runs — see
+// decide_approval_step) or fully approved but waiting on a successful send.
+//
+// FIX (section-11 audit, pass 2): this used `.maybeSingle()`, which ERRORS
+// when more than one row matches (a stale approved-not-sent request plus a
+// second chain started by a stray Send click). The error was ignored, `data`
+// came back null, and the edit-lock silently vanished while a chain was live.
+// migration 069's unique index makes two matches impossible; this read is now
+// also safe by construction (newest row wins) if one ever appears.
 export async function getPendingApprovalForDocument(
   service: any, documentType: ApprovalDocumentType, documentId: string
-): Promise<{ id: string; current_step: number; total_steps: number } | null> {
+): Promise<{ id: string; current_step: number; total_steps: number; status: string; send_failed_at: string | null; sending_started_at: string | null } | null> {
   const { data } = await service
     .from('approval_requests')
-    .select('id, current_step, total_steps')
+    .select('id, current_step, total_steps, status, send_failed_at, sending_started_at')
     .eq('document_type', documentType)
     .eq('document_id', documentId)
     .or('status.eq.pending,and(status.eq.approved,send_failed_at.not.is.null)')
-    .maybeSingle()
-  return data || null
+    .order('created_at', { ascending: false })
+    .limit(1)
+  return (data && data[0]) || null
 }
 
 // ── NOTIFICATION HELPERS ─────────────────────────────────────────
@@ -771,7 +967,12 @@ async function notifyStepApprovers(service: any, args: {
   projectId: string; projectName: string; amount: number; currency: string
   requestedBy: { id: string; name: string; email: string }
   totalSteps: number
+  // When false (the default) the requester is never notified as an approver —
+  // they can't decide their own request, so telling them it's "awaiting your
+  // approval" is noise, and counting them as reachable hid stalled chains.
+  allowSelfApproval?: boolean
 }): Promise<number> {
+  const excludeId = args.allowSelfApproval ? undefined : args.requestedBy.id
   // FIX (deep audit, notifications+search section): the role branch used
   // to build one shared `recipients` list via getMembersWithRole (capped
   // to 25 BEFORE preference filtering — see that function's fix comment),
@@ -798,7 +999,7 @@ async function notifyStepApprovers(service: any, args: {
       .eq('user_id', args.step.approver_user_id)
       .eq('status', 'active')
       .maybeSingle()
-    if (m?.users) {
+    if (m?.users && m.users.id !== excludeId) {
       recipients = [{ id: m.users.id, name: m.users.name, email: m.users.email }]
       // FIX (deep audit, RLS+permissions re-pass): same project-visibility
       // rule as the role-based branch below and as getMembersWithPermission
@@ -813,8 +1014,8 @@ async function notifyStepApprovers(service: any, args: {
       )
     }
   } else if (args.step.approver_role_id) {
-    inAppRecipients = await getMembersWithRole(service, args.workspaceId, args.step.approver_role_id, 25, args.projectId, 'approval_requested', 'in_app')
-    emailRecipients = await getMembersWithRole(service, args.workspaceId, args.step.approver_role_id, 25, args.projectId, 'approval_requested', 'email')
+    inAppRecipients = await getMembersWithRole(service, args.workspaceId, args.step.approver_role_id, 25, args.projectId, 'approval_requested', 'in_app', excludeId)
+    emailRecipients = await getMembersWithRole(service, args.workspaceId, args.step.approver_role_id, 25, args.projectId, 'approval_requested', 'email', excludeId)
   }
   if (args.step.approver_user_id) {
     // FIX (re-audit, notifications section): a single filterByNotificationPreference
@@ -864,6 +1065,7 @@ async function notifyStepApprovers(service: any, args: {
       amount: args.amount, currency: args.currency,
       stepNumber: args.step.step_order, totalSteps: args.totalSteps,
       requestedByName: args.requestedBy.name,
+      isCounter: args.documentType === 'co_counter',
       url: `${appUrl}/approvals?highlight=${args.requestId}`,
     }).catch(e => console.error('approval requested email failed:', e))
   ))
@@ -882,6 +1084,7 @@ async function notifyRequester(service: any, args: {
   decision: 'approved' | 'rejected'
   documentLabel: string; docTitle: string; projectId: string; projectName: string
   decidedByName: string; note?: string; autoSent?: boolean; sendFailedReason?: string | null
+  deliveryWarning?: string | null; isCounter?: boolean
   requestId: string
 }) {
   // FIX (deep audit, notifications section): this was the one notification
@@ -916,6 +1119,8 @@ async function notifyRequester(service: any, args: {
         // ApprovalsClient with a retry action.
         body: args.decision === 'approved' && args.sendFailedReason
           ? `${args.decidedByName} approved ${args.docTitle}, but it could not be sent automatically (${args.sendFailedReason}) — open it in Approvals to retry.`
+          : args.decision === 'approved' && args.deliveryWarning
+          ? `${args.decidedByName} approved ${args.docTitle} and it was sent, but the email to the client could not be delivered — open it in Approvals for the details.`
           : `${args.decidedByName} ${args.decision} ${args.docTitle}${args.autoSent ? ' — sent to client' : ''}.`,
         // FIX (fix round, section-11 finding): this used entity_type:
         // 'project' + entity_id: projectId, which NotificationBell's
@@ -956,8 +1161,35 @@ async function notifyRequester(service: any, args: {
         // fixes elsewhere in this round) showed no sign anything was
         // wrong. The button destination now matches what the text says.
         url: `${appUrl}/approvals?highlight=${args.requestId}`, autoSent: args.autoSent,
-        sendFailedReason: args.sendFailedReason,
+        sendFailedReason: args.sendFailedReason, deliveryWarning: args.deliveryWarning, isCounter: args.isCounter,
       })
     } catch (e) { console.error('approval decision email failed:', e) }
   }
+}
+
+// FIX (section-11 audit, pass 2 — feature gap): in-app heads-up to the
+// requester that one step of a multi-step chain cleared and the request is now
+// with the next approver. Gated under the same 'approval_decision' preference
+// as the final decision notification; deliberately not emailed (informational).
+async function notifyRequesterProgress(service: any, args: {
+  workspaceId: string
+  requester: { id: string; name: string; email: string }
+  documentLabel: string; docTitle: string
+  decidedByName: string; step: number; totalSteps: number; requestId: string
+}) {
+  try {
+    const [inAppOn] = await filterByNotificationPreference(
+      service, args.workspaceId, 'approval_decision', [args.requester], 'in_app'
+    )
+    if (!inAppOn) return
+    await insertNotificationRows(service, [{
+      workspace_id: args.workspaceId,
+      recipient_id: args.requester.id,
+      type:         'approval_step_approved',
+      title:        `${args.documentLabel}: step ${args.step} of ${args.totalSteps} approved`,
+      body:         `${args.decidedByName} approved step ${args.step} of ${args.totalSteps} for ${args.docTitle} — it's now with the next approver.`,
+      entity_type:  'approval_request',
+      entity_id:    args.requestId,
+    }])
+  } catch { /* non-fatal */ }
 }

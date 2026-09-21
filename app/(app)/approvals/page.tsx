@@ -14,6 +14,7 @@ export default async function ApprovalsPage() {
       session={session}
       canViewAll={hasPermission(session, 'VIEW_ALL_PROJECTS') || hasPermission(session, 'MANAGE_WORKSPACE_SETTINGS')}
       canManageWorkflows={hasPermission(session, 'MANAGE_WORKSPACE_SETTINGS')}
+      canApprove={hasPermission(session, 'APPROVE_DOCUMENTS')}
     />
   )
 }

@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { canReadProject } from '@/lib/utils/project-access'
 import { evaluateApprovalGate } from '@/lib/approvals/engine'
+import { sendBlockedReason } from '@/lib/documents/preflight'
 import { acceptCoCounter } from '@/lib/documents/accept-co-counter'
 
 // FIX (doc-completeness audit, decision: require re-sign): this route used
@@ -50,6 +51,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // through to the original total. Matches lib/documents/accept-co-counter.ts.
     const negotiatedTotal = co.counter_amount ?? co.total
 
+    const blockedReason = await sendBlockedReason(service, co.project_id)
+    if (blockedReason) return NextResponse.json({ error: blockedReason }, { status: 400 })
+
     // FIX (section-11 audit): gate on the NEGOTIATED amount, using the
     // same 'co' workflows an admin already configured — a counter-offer
     // shouldn't need its own separate workflow type to be covered.
@@ -64,6 +68,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       documentTitle: co.title,
       requestedBy:  { id: session.id, name: session.name, email: session.email },
     })
+
+    // FIX (section-11 audit, pass 2): the gate can now REFUSE (nobody able to
+    // approve, an approved-but-unsent request already exists, a workflow with
+    // no approvers). Never proceed to a send in that case.
+    if (gate.blocked) {
+      return NextResponse.json({ error: gate.error, approvalRequestId: gate.approvalRequestId }, { status: gate.status || 409 })
+    }
 
     if (gate.requiresApproval) {
       return NextResponse.json({

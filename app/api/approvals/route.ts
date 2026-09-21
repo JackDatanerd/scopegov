@@ -7,11 +7,12 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 const REQUEST_FIELDS = `
   id, document_type, document_id, project_id, status, current_step, total_steps,
   context, created_at, decided_at, requested_by,
-  send_failed_at, send_failed_reason,
+  send_failed_at, send_failed_reason, delivery_warning, sending_started_at,
+  allow_self_approval, require_distinct_approvers, reminder_count, escalated_at,
   requester:users!approval_requests_requested_by_fkey(id, name, email),
   projects(id, name),
   approval_steps(
-    id, step_order, status, note, decided_at,
+    id, step_order, status, note, decided_at, decided_by,
     approver_role_id, approver_user_id,
     roles(id, name),
     approver:users!approval_steps_approver_user_id_fkey(id, name),
@@ -19,61 +20,77 @@ const REQUEST_FIELDS = `
   )
 `
 
+const STATUS_FILTERS = new Set(['pending', 'approved', 'rejected', 'cancelled'])
+const TYPE_FILTERS   = new Set(['sow', 'co', 'co_counter', 'invoice'])
+
+// Projects the viewer can see when they don't hold VIEW_ALL_PROJECTS. Mirrors
+// canReadProject's join (project_members → workspace_members, scoped to THIS
+// workspace).
+async function allowedProjectIdsFor(service: any, session: any): Promise<Set<string> | null> {
+  if (hasPermission(session, 'VIEW_ALL_PROJECTS')) return null
+  const { data: ids } = await service
+    .from('project_members')
+    .select('project_id, projects!inner(workspace_id), workspace_members!inner(user_id)')
+    .eq('projects.workspace_id', session.workspaceId)
+    .eq('workspace_members.user_id', session.id)
+  return new Set((ids || []).map((r: any) => r.project_id))
+}
+
+// FIX (section-11 audit, pass 2): the server now says, per request, whether THIS
+// viewer can actually decide it. The client used to guess (any role-based step
+// showed Approve/Reject to everyone looking at it — including the requester and
+// oversight admins who aren't in the role — and every click ended in a 403), and
+// the sidebar badge / "My queue" counted requests the viewer could never act on
+// (their own, when they held the assigned role).
+function canDecideRequest(r: any, session: any, roleId: string | null | undefined): boolean {
+  if (r.status !== 'pending' || r.sending_started_at) return false
+  if (!hasPermission(session, 'APPROVE_DOCUMENTS')) return false
+  const steps: any[] = r.approval_steps || []
+  const step = steps.find(s => s.step_order === r.current_step)
+  if (!step || step.status !== 'pending') return false
+  const assigned = step.approver_user_id
+    ? step.approver_user_id === session.id
+    : !!step.approver_role_id && !!roleId && roleId === step.approver_role_id
+  if (!assigned) return false
+  if (r.requested_by === session.id && !r.allow_self_approval) return false
+  if (r.require_distinct_approvers && steps.some(s => s.status === 'approved' && s.decided_by === session.id)) return false
+  return true
+}
+
+function decorate(requests: any[], session: any, roleId: string | null | undefined) {
+  const canSeeMoney = hasPermission(session, 'VIEW_FINANCIALS')
+  return requests.map(r => {
+    const canDecide = canDecideRequest(r, session, roleId)
+    // FIX (section-11 audit, pass 2): amounts in an approval's snapshot were
+    // shown to anyone who could list the request — including members whose role
+    // deliberately lacks VIEW_FINANCIALS (the seeded Project Coordinator holds
+    // VIEW_ALL_PROJECTS but not VIEW_FINANCIALS). An approver needs the figure
+    // to decide, and the requester already knows it, so they keep it.
+    const keepAmount = canSeeMoney || canDecide || r.requested_by === session.id
+    const context = keepAmount ? r.context : { ...(r.context || {}), amount: null }
+    // decided_by is only needed server-side for canDecide.
+    const approval_steps = (r.approval_steps || []).map((s: any) => {
+      const { decided_by, ...rest } = s
+      return rest
+    })
+    return { ...r, context, approval_steps, canDecide }
+  })
+}
+
 export async function GET(request: NextRequest) {
   try {
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const service = createServiceClient()
-    const scope = request.nextUrl.searchParams.get('scope') || 'mine'
+    const params = request.nextUrl.searchParams
+    const scope = params.get('scope') || 'mine'
+    const statusFilter = params.get('status') || ''
+    const typeFilter = params.get('type') || ''
+    if (statusFilter && !STATUS_FILTERS.has(statusFilter))
+      return NextResponse.json({ error: 'Invalid status filter' }, { status: 400 })
+    if (typeFilter && !TYPE_FILTERS.has(typeFilter))
+      return NextResponse.json({ error: 'Invalid type filter' }, { status: 400 })
 
-    // Workspace-wide view — everything, any status, for oversight. Gated
-    // behind the same permission distinction Phase 2's portfolio report
-    // uses (VIEW_ALL_PROJECTS), or MANAGE_WORKSPACE_SETTINGS since that's
-    // who configures the workflows in the first place.
-    if (scope === 'all') {
-      if (!hasPermission(session, 'VIEW_ALL_PROJECTS') && !hasPermission(session, 'MANAGE_WORKSPACE_SETTINGS'))
-        return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
-
-      const { data } = await (service as any)
-        .from('approval_requests')
-        .select(REQUEST_FIELDS)
-        .eq('workspace_id', session.workspaceId)
-        .order('created_at', { ascending: false })
-        .limit(500)
-
-      return NextResponse.json({ requests: data || [], scope: 'all' })
-    }
-
-    // FIX (section-11 fix round, flagship finding — completing the
-    // send_failed_at fix): a request that finishes approving but whose
-    // auto-send then fails needs to be discoverable by the person who
-    // actually has to act on it — the ORIGINAL REQUESTER — not just by
-    // approvers ("mine" above, which only ever returns PENDING requests
-    // assigned to the viewer) or admins ("all" above, gated behind
-    // VIEW_ALL_PROJECTS/MANAGE_WORKSPACE_SETTINGS, which an ordinary team
-    // member filing a routine SOW/CO/invoice send usually doesn't hold).
-    // Without this, the in-app/email notification's "open it in Approvals
-    // to retry" instruction would send a regular requester to a page with
-    // no way to actually find their own request. Scoped strictly to the
-    // caller's own submissions — no project-access or admin check needed,
-    // since requested_by = session.id is inherently "yours to see."
-    if (scope === 'submitted') {
-      const { data } = await (service as any)
-        .from('approval_requests')
-        .select(REQUEST_FIELDS)
-        .eq('workspace_id', session.workspaceId)
-        .eq('requested_by', session.id)
-        .order('created_at', { ascending: false })
-        .limit(200)
-
-      return NextResponse.json({ requests: data || [], scope: 'submitted' })
-    }
-
-    // "Mine" — pending requests whose CURRENT step is assigned to me,
-    // either by name or via a role I currently hold. Filtered in JS
-    // (rather than in the query) because "the pending step" is the one
-    // whose step_order matches the request's current_step, which isn't
-    // expressible as a single PostgREST filter across the join.
     const { data: member } = await (service as any)
       .from('workspace_members')
       .select('role_id')
@@ -81,14 +98,54 @@ export async function GET(request: NextRequest) {
       .eq('user_id', session.id)
       .eq('status', 'active')
       .maybeSingle()
+    const roleId: string | null = member?.role_id ?? null
 
-    // FIX (re-audit): 150 pending requests workspace-wide, fetched
-    // oldest-first, before the "assigned to me" filter runs in JS. In a
-    // busy workspace with 150+ pending requests across all users, a
-    // genuinely-mine request newer than the cutoff would never appear —
-    // no warning, the badge and queue would just silently undercount.
-    // Match the 500 cap used elsewhere in the app (e.g. the SOW registry)
-    // rather than a much tighter one specific to this endpoint.
+    // Workspace-wide view — everything, any status, for oversight. Gated
+    // behind VIEW_ALL_PROJECTS, or MANAGE_WORKSPACE_SETTINGS since that's who
+    // configures the workflows in the first place.
+    if (scope === 'all') {
+      if (!hasPermission(session, 'VIEW_ALL_PROJECTS') && !hasPermission(session, 'MANAGE_WORKSPACE_SETTINGS'))
+        return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
+
+      let q = (service as any)
+        .from('approval_requests')
+        .select(REQUEST_FIELDS)
+        .eq('workspace_id', session.workspaceId)
+      if (statusFilter) q = q.eq('status', statusFilter)
+      if (typeFilter) q = q.eq('document_type', typeFilter)
+      const { data } = await q.order('created_at', { ascending: false }).limit(500)
+
+      // FIX (section-11 audit, pass 2): MANAGE_WORKSPACE_SETTINGS alone (no
+      // VIEW_ALL_PROJECTS) used to return every project's requests — titles,
+      // project names, amounts — for projects the viewer can't open. Every
+      // other route treats canReadProject as the visibility boundary; the
+      // oversight list now does too.
+      const allowed = await allowedProjectIdsFor(service, session)
+      const visible = (data || []).filter((r: any) => !allowed || allowed.has(r.project_id))
+      return NextResponse.json({ requests: decorate(visible, session, roleId), scope: 'all' })
+    }
+
+    // The ORIGINAL REQUESTER's own submissions — pending, decided or send-failed.
+    // Scoped strictly to the caller's own requests; requested_by = session.id
+    // is inherently "yours to see". The Approvals page now shows this as a tab
+    // ("My requests") for everyone, not only as the retry banner.
+    if (scope === 'submitted') {
+      let q = (service as any)
+        .from('approval_requests')
+        .select(REQUEST_FIELDS)
+        .eq('workspace_id', session.workspaceId)
+        .eq('requested_by', session.id)
+      if (statusFilter) q = q.eq('status', statusFilter)
+      if (typeFilter) q = q.eq('document_type', typeFilter)
+      const { data } = await q.order('created_at', { ascending: false }).limit(200)
+      return NextResponse.json({ requests: decorate(data || [], session, roleId), scope: 'submitted' })
+    }
+
+    // "Mine" — pending requests whose CURRENT step this viewer can decide.
+    // Filtered in JS because "the pending step" is the one whose step_order
+    // matches the request's current_step, which isn't expressible as a single
+    // PostgREST filter across the join. 500 matches the cap used elsewhere
+    // (a tighter one silently undercounts the badge in a busy workspace).
     const { data: pending } = await (service as any)
       .from('approval_requests')
       .select(REQUEST_FIELDS)
@@ -97,46 +154,17 @@ export async function GET(request: NextRequest) {
       .order('created_at', { ascending: true })
       .limit(500)
 
-    // FIX (section-11 audit): this only checked step assignment (name or
-    // role match) — nothing scoped the list to projects the viewer can
-    // actually see. lib/approvals/engine.ts's notifyStepApprovers already
-    // runs both the role and named-user branches through
-    // filterToProjectAccess for exactly this reason (a project-restricted
-    // VIEW_OWN_PROJECTS member isn't exempt just because they hold the
-    // assigned role, or are the named approver, on a document outside
-    // their project access) — this list endpoint, and the decision route
-    // it feeds, are the two places that principle was missing. Mirrors
-    // the same allowed-project-ids pattern used by /api/invoices and
-    // /api/sow's registry pages.
-    // FIX (fix round, section-11 finding): this joined project_members to
-    // workspace_members and filtered on user_id only — with no workspace
-    // scope, it pulled in every project the viewer belongs to across every
-    // workspace they're a member of, not just this one. Currently harmless
-    // in practice (project ids from a different workspace can never
-    // collide with this workspace's own, so nothing extra actually leaked
-    // through), but it's a duplicate, imprecise reimplementation of
-    // exactly the mistake canReadProject (lib/utils/project-access.ts) was
-    // built to prevent. Mirrors that function's own join pattern.
-    let allowedProjectIds: Set<string> | null = null
-    if (!hasPermission(session, 'VIEW_ALL_PROJECTS')) {
-      const { data: ids } = await (service as any)
-        .from('project_members')
-        .select('project_id, projects!inner(workspace_id), workspace_members!inner(user_id)')
-        .eq('projects.workspace_id', session.workspaceId)
-        .eq('workspace_members.user_id', session.id)
-      allowedProjectIds = new Set((ids || []).map((r: any) => r.project_id))
-    }
-
+    // A project-restricted VIEW_OWN_PROJECTS member isn't exempt just because
+    // they hold the assigned role, or are the named approver, on a document
+    // outside their project access (same rule as notifyStepApprovers and the
+    // decision route).
+    const allowed = await allowedProjectIdsFor(service, session)
     const mine = (pending || []).filter((r: any) => {
-      if (allowedProjectIds && !allowedProjectIds.has(r.project_id)) return false
-      const step = (r.approval_steps || []).find((s: any) => s.step_order === r.current_step)
-      if (!step) return false
-      if (step.approver_user_id) return step.approver_user_id === session.id
-      if (step.approver_role_id) return member?.role_id === step.approver_role_id
-      return false
+      if (allowed && !allowed.has(r.project_id)) return false
+      return canDecideRequest(r, session, roleId)
     })
 
-    return NextResponse.json({ requests: mine, scope: 'mine' })
+    return NextResponse.json({ requests: decorate(mine, session, roleId), scope: 'mine' })
   } catch (err) {
     console.error('Approvals list error:', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

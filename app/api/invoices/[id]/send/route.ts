@@ -6,6 +6,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { canReadProject } from '@/lib/utils/project-access'
 import { sendInvoiceDocument } from '@/lib/documents/send-invoice'
 import { evaluateApprovalGate } from '@/lib/approvals/engine'
+import { sendBlockedReason, isDueDateInPast } from '@/lib/documents/preflight'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -42,6 +43,19 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!invoice.payment_instructions?.trim())
       return NextResponse.json({ error: 'Add payment instructions before sending this invoice.' }, { status: 400 })
 
+    // FIX (section-12 audit, pass 2): an invoice can wait days in an approval
+    // chain, then go out with a due date that has already passed — it would be
+    // overdue the moment the client opened it. Refuse a clearly-past due date
+    // up front (before anyone is asked to approve it); the requester fixes the
+    // date and sends again.
+    if (isDueDateInPast(invoice.due_date))
+      return NextResponse.json({ error: 'The due date has already passed — set a current due date before sending this invoice.' }, { status: 400 })
+
+    // Same preconditions as SOW/CO: don't ask approvers to sign off on a send
+    // that can't reach the client (no client email / deleted project).
+    const blockedReason = await sendBlockedReason(service, project.id)
+    if (blockedReason) return NextResponse.json({ error: blockedReason }, { status: 400 })
+
     // FIX (section-12 audit — flagship feature gap): invoices previously
     // had no approval gate at all, despite document_type being free-text
     // specifically so 'invoice' could be added here without a migration
@@ -65,6 +79,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       requestedBy:  { id: session.id, name: session.name, email: session.email },
     })
 
+    // FIX (section-11 audit, pass 2): the gate can now REFUSE (nobody able to
+    // approve, an approved-but-unsent request already exists, a workflow with
+    // no approvers). Never proceed to a send in that case.
+    if (gate.blocked) {
+      return NextResponse.json({ error: gate.error, approvalRequestId: gate.approvalRequestId }, { status: gate.status || 409 })
+    }
+
     if (gate.requiresApproval) {
       return NextResponse.json({
         ok: true,
@@ -87,7 +108,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       emailSent: result.emailSent, ...(result.emailError ? { emailError: result.emailError } : {}),
     })
   } catch (err) {
-    console.error('Invoice send error:', err)
     console.error('Invoice send error:', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }

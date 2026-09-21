@@ -20,7 +20,6 @@ import { SignJWT } from 'jose'
 import { nanoid } from 'nanoid'
 import { sendInvoiceEmail, sendInvoiceSentInternalEmail } from '@/lib/email/templates'
 import { logAudit } from '@/lib/utils/audit'
-import { assignDocumentNumber } from '@/lib/utils/document-number'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { renderInvoicePdf } from '@/lib/pdf/renderer'
@@ -51,7 +50,7 @@ export async function sendInvoiceDocument(service: any, params: {
     .from('invoices')
     .select(`id, title, amount, currency, status, due_date, payment_instructions, invoice_number,
       po_number, milestone_id, project_id, subtotal, tax_rate, tax_inclusive, line_items, sow_id, co_id,
-      projects(id, name, client_id, clients(name, email, cc_emails, company_name, billing_address, vat_number),
+      projects(id, name, client_id, deleted_at, clients(name, email, cc_emails, company_name, billing_address, vat_number),
         workspaces(id, agency_name, brand_colour, logo_storage_path, legal_address, tax_id, phone, website)),
       sow_documents(document_number), change_orders(document_number, title)`)
     .eq('id', invoiceId).eq('workspace_id', workspaceId).single()
@@ -65,6 +64,11 @@ export async function sendInvoiceDocument(service: any, params: {
   const project   = invoice.projects
   const client    = project?.clients
   const workspace = project?.workspaces
+
+  // FIX (section-12 audit, pass 2): SOW/CO sends refuse a soft-deleted project;
+  // this one never selected deleted_at, so an invoice could be sent (or an
+  // approval-failed send retried) for a project sitting in the trash.
+  if (project?.deleted_at) return { ok: false, error: 'This project has been deleted, so its invoices can no longer be sent.', status: 400 }
 
   if (!client?.email) return { ok: false, error: 'Client email required', status: 400 }
   if (!invoice.due_date) return { ok: false, error: 'Add a due date before sending this invoice.', status: 400 }
@@ -95,25 +99,38 @@ export async function sendInvoiceDocument(service: any, params: {
 
   const now = new Date().toISOString()
 
-  const invoiceNumber = invoice.invoice_number || await assignDocumentNumber(service, workspaceId, 'invoice')
+  // FIX (section-12 audit, pass 2): a milestone can only be billed once. The
+  // create-time check and migration 069's unique index stop a second live
+  // invoice, but an older duplicate (created before either existed) could still
+  // be sent here and bill the same deliverable twice. Refuse if a DIFFERENT
+  // invoice against this milestone has already gone out.
+  if (invoice.milestone_id) {
+    const { data: already } = await (service as any)
+      .from('invoices').select('id').eq('milestone_id', invoice.milestone_id)
+      .neq('id', invoiceId).not('status', 'in', '(draft,void)').limit(1)
+    if (already && already.length > 0)
+      return { ok: false, error: 'This milestone has already been invoiced by another invoice — void that one first if you need to re-bill it.', status: 409 }
+  }
 
-  // Same CAS pattern as send-sow.ts / send-co.ts — survives a double-click
-  // or two near-simultaneous triggers (manual Send + approval-engine
-  // auto-send).
-  const { data: sent, error: updateErr } = await (service as any).from('invoices').update({
-    status:         'sent',
-    sent_at:        now,
-    token,
-    expires_at:     expiresAt.toISOString(),
-    invoice_number: invoiceNumber,
-    updated_at:     now,
-  }).eq('id', invoiceId).eq('status', 'draft').select('id').maybeSingle()
-
-  if (updateErr) {
-    console.error('Invoice send: update failed', updateErr)
+  // FIX (section-12 audit, pass 2): the invoice number used to be claimed FIRST
+  // (assignDocumentNumber — a separate transaction that advances the workspace
+  // sequence) and the draft->sent guard ran afterwards. A double-click, a manual
+  // send racing the approval auto-send, or a failed update all burned a number
+  // — a gap in a sequence many tax regimes require to be unbroken — and the
+  // assignment itself was unwrapped, so a throw escaped to the approval engine
+  // (send-sow/send-co wrap theirs). Now ONE transaction: lock the row, check it
+  // is still a draft, take the next number, flip it to sent (migration 069). NULL
+  // means it was not a draft any more and no number was consumed.
+  const { data: finalNumber, error: finalizeErr } = await (service as any).rpc('finalize_invoice_send', {
+    p_invoice_id: invoiceId, p_workspace_id: workspaceId,
+    p_token: token, p_expires_at: expiresAt.toISOString(), p_now: now,
+  })
+  if (finalizeErr) {
+    console.error('Invoice send: finalize failed', finalizeErr)
     return { ok: false, error: 'Failed to send invoice', status: 500 }
   }
-  if (!sent) return { ok: false, error: 'This invoice was already sent by another action', status: 409 }
+  if (!finalNumber) return { ok: false, error: 'This invoice was already sent by another action', status: 409 }
+  const invoiceNumber: string = finalNumber
 
   const portalUrl = `${process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL}/portal/invoice/${token}`
 

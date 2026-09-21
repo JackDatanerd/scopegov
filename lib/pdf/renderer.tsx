@@ -816,12 +816,28 @@ const INVOICE_METHOD_LABEL: Record<string, string> = {
 
 function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | null }) {
   const c = data.brandColour || '#1A5C3A'
-  const balanceDue = Math.max(0, data.amount - data.amountPaid)
-  // FIX (doc-completeness audit, finding #2): tax breakdown, mirroring CoDocument.
-  const invSubtotal = data.subtotal ?? data.amount
-  const invTax = (data.taxRate || 0) > 0 && !data.taxInclusive
-    ? invSubtotal * (data.taxRate || 0) / 100
-    : 0
+  // FIX (section-12 audit, pass 2): fmtInv() (shared with the SOW/CO documents)
+  // prints whole amounts with no decimals and everything else with two, so an
+  // invoice's own column could read "1,160" above "386.66" — and every figure was
+  // rounded independently, so subtotal + tax could disagree with the total by a
+  // cent. Invoices print the currency's own minor units on every line (2 for USD/EUR/KES,
+  // 0 for JPY, 3 for KWD), from figures rounded once.
+  const r2 = (n: number) => Math.round((Number(n) || 0) * 100) / 100
+  const digits = (() => {
+    try { return new Intl.NumberFormat('en-US', { style: 'currency', currency: data.currency }).resolvedOptions().maximumFractionDigits ?? 2 }
+    catch { return 2 }
+  })()
+  const fmtInv = (n: number) => (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })
+  const invAmount = r2(data.amount)
+  const balanceDue = Math.max(0, r2(invAmount - r2(data.amountPaid)))
+  // Tax breakdown, mirroring CoDocument. The tax amount is derived as total −
+  // subtotal, so the three printed rows always foot — and for a tax-INCLUSIVE
+  // invoice it is finally stated (the label used to print "Tax included (16%)" with
+  // no figure, on a document that also prints the client's VAT number).
+  const invSubtotal = r2(data.subtotal ?? data.amount)
+  const hasTax = (data.taxRate || 0) > 0
+  const invTaxAmount = hasTax ? r2(invAmount - invSubtotal) : 0
+  const invTax = hasTax && !data.taxInclusive ? invTaxAmount : 0
 
   const s = StyleSheet.create({
     page:      { fontFamily: PDF_FONT.sans, fontSize: 10, color: '#1A1A1A', padding: '40 48' },
@@ -916,8 +932,8 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
               <View key={i} style={[s.itemsRow, i === data.lineItems!.length - 1 ? { borderBottom: 'none' } : {}]}>
                 <Text style={[s.itemsTd, { flex: 1 }]}>{item.description}</Text>
                 <Text style={[s.itemsTd, { width: 40, textAlign: 'center', fontFamily: 'Courier' }]}>{item.quantity}</Text>
-                <Text style={[s.itemsTd, { width: 90, textAlign: 'right', fontFamily: 'Courier' }]}>{item.rate ? `${data.currency} ${fmtMoney(item.rate)}` : '—'}</Text>
-                <Text style={[s.itemsTd, { width: 90, textAlign: 'right', fontFamily: 'Courier-Bold' }]}>{data.currency} {fmtMoney(item.total)}</Text>
+                <Text style={[s.itemsTd, { width: 90, textAlign: 'right', fontFamily: 'Courier' }]}>{item.rate ? `${data.currency} ${fmtInv(item.rate)}` : '—'}</Text>
+                <Text style={[s.itemsTd, { width: 90, textAlign: 'right', fontFamily: 'Courier-Bold' }]}>{data.currency} {fmtInv(item.total)}</Text>
               </View>
             ))}
           </View>
@@ -928,7 +944,7 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
                 <Text style={s.lineDesc}>{data.title}</Text>
                 {data.milestoneTrigger && <Text style={s.lineSub}>{data.milestoneTrigger}</Text>}
               </View>
-              <Text style={s.lineAmt}>{data.currency} {fmtMoney(data.amount)}</Text>
+              <Text style={s.lineAmt}>{data.currency} {fmtInv(invAmount)}</Text>
             </View>
           </View>
         )}
@@ -936,34 +952,35 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
         <View style={s.totals}>
           <View style={s.totalRow}>
             <Text style={{ color: '#909090' }}>{invTax > 0 || data.taxInclusive ? 'Subtotal' : 'Amount due'}</Text>
-            <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtMoney(invSubtotal)}</Text>
+            <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtInv(invSubtotal)}</Text>
           </View>
           {invTax > 0 && (
             <View style={s.totalRow}>
               <Text style={{ color: '#909090' }}>Tax ({data.taxRate}%)</Text>
-              <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtMoney(invTax)}</Text>
+              <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtInv(invTax)}</Text>
             </View>
           )}
-          {data.taxInclusive && (data.taxRate || 0) > 0 && (
+          {data.taxInclusive && hasTax && (
             <View style={s.totalRow}>
               <Text style={{ color: '#909090' }}>Tax included ({data.taxRate}%)</Text>
+              <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtInv(invTaxAmount)}</Text>
             </View>
           )}
           {(invTax > 0 || data.taxInclusive) && (
             <View style={s.totalRow}>
               <Text style={{ color: '#909090' }}>Amount due</Text>
-              <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtMoney(data.amount)}</Text>
+              <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtInv(invAmount)}</Text>
             </View>
           )}
           {data.amountPaid > 0 && (
             <View style={s.totalRow}>
               <Text style={{ color: '#1A5C3A' }}>Paid to date</Text>
-              <Text style={{ fontFamily: 'Courier', color: '#1A5C3A' }}>-{data.currency} {fmtMoney(data.amountPaid)}</Text>
+              <Text style={{ fontFamily: 'Courier', color: '#1A5C3A' }}>-{data.currency} {fmtInv(data.amountPaid)}</Text>
             </View>
           )}
           <View style={s.grandRow}>
             <Text>{balanceDue > 0 ? 'Balance due' : 'Paid in full'}</Text>
-            <Text style={{ color: c }}>{data.currency} {fmtMoney(balanceDue)}</Text>
+            <Text style={{ color: c }}>{data.currency} {fmtInv(balanceDue)}</Text>
           </View>
         </View>
 
@@ -996,7 +1013,7 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
             {data.payments.map((p, i) => (
               <View key={i} style={s.payRow}>
                 <Text>{fmtDate(p.paidAt)} · {INVOICE_METHOD_LABEL[p.method] || p.method}{p.referenceNote ? ` · ${p.referenceNote}` : ''}</Text>
-                <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtMoney(p.amount)}</Text>
+                <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtInv(p.amount)}</Text>
               </View>
             ))}
           </View>
@@ -1011,20 +1028,20 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
             <Text style={s.secTitle}>Contract position</Text>
             <View style={s.cpRow}>
               <Text>Contracted value</Text>
-              <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtMoney(data.contractPosition.contractedValue)}</Text>
+              <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtInv(data.contractPosition.contractedValue)}</Text>
             </View>
             <View style={s.cpRow}>
               <Text>Invoiced to date (incl. this invoice)</Text>
-              <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtMoney(data.contractPosition.invoicedToDate)}</Text>
+              <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtInv(data.contractPosition.invoicedToDate)}</Text>
             </View>
             <View style={s.cpRow}>
               <Text>Paid to date</Text>
-              <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtMoney(data.contractPosition.paidToDate)}</Text>
+              <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtInv(data.contractPosition.paidToDate)}</Text>
             </View>
             <View style={[s.cpRow, { borderTop: '1 solid #F2F0EA', paddingTop: 6, marginTop: 2 }]}>
               <Text style={{ color: '#1A1A1A' }}>Remaining contract value</Text>
               <Text style={{ fontFamily: 'Courier-Bold', color: '#1A1A1A' }}>
-                {data.currency} {fmtMoney(Math.max(0, data.contractPosition.contractedValue - data.contractPosition.invoicedToDate))}
+                {data.currency} {fmtInv(Math.max(0, data.contractPosition.contractedValue - data.contractPosition.invoicedToDate))}
               </Text>
             </View>
           </View>

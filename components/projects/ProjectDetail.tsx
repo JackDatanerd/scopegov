@@ -85,7 +85,7 @@ interface Props {
   permissions: Permissions
   // Phase 3 — Approval Chains: keyed by "sow:<id>" / "co:<id>", present
   // only for documents currently held on a pending approval chain.
-  pendingApprovals?: Record<string, { id: string; current_step: number; total_steps: number }>
+  pendingApprovals?: Record<string, { id: string; current_step: number; total_steps: number; sendFailed?: boolean; sendFailedReason?: string | null }>
 }
 
 export default function ProjectDetail({
@@ -675,9 +675,28 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
       const res  = await fetch(`/api/approvals/${approvalRequestId}/retry-send`, { method: 'POST' })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error || 'Retry failed')
+      // Approved and sent, but the mail provider rejected the client email.
+      if (json.deliveryWarning) alert(json.deliveryWarning)
       router.refresh()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Retry failed')
+    } finally { setRetrying(false) }
+  }
+  // FIX (section-11 audit, pass 2): a draft SOW whose approval finished but whose send
+  // failed could be retried but never released — it stayed edit-locked, and unlike a
+  // CO or invoice a SOW has no delete/void route to get out. Cancelling the request
+  // makes it an ordinary editable draft again (sending it afterwards needs a new approval).
+  async function handleCancelApproval(approvalRequestId: string) {
+    if (!confirm('Cancel this approved request? The SOW goes back to being an editable draft, and sending it again will need a fresh approval.')) return
+    setRetrying(true); setError('')
+    try {
+      const res  = await fetch(`/api/approvals/${approvalRequestId}/cancel`, { method: 'POST' })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json.error || 'Could not cancel the request')
+      window.dispatchEvent(new Event('scopegov:approvals-changed'))
+      router.refresh()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not cancel the request')
     } finally { setRetrying(false) }
   }
   // FIX (re-audit, "current SOW" finding): defense-in-depth on top of the
@@ -853,12 +872,17 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
                     </button>
                   )}
                   {currentSow.status === 'draft' && pendingApproval && pendingApproval.sendFailed && permissions.sendSow && (
-                    <button className="btn btn-primary btn-sm" onClick={() => handleRetrySend(pendingApproval.id)} disabled={retrying}>
-                      {retrying ? <span className="spin" /> : <><i className="ti ti-refresh" style={{ fontSize: 12 }} /> Retry send</>}
-                    </button>
+                    <>
+                      <button className="btn btn-ghost btn-sm" onClick={() => handleCancelApproval(pendingApproval.id)} disabled={retrying}>
+                        Cancel request
+                      </button>
+                      <button className="btn btn-primary btn-sm" onClick={() => handleRetrySend(pendingApproval.id)} disabled={retrying}>
+                        {retrying ? <span className="spin" /> : <><i className="ti ti-refresh" style={{ fontSize: 12 }} /> Retry send</>}
+                      </button>
+                    </>
                   )}
                   {currentSow.status === 'draft' && pendingApproval && !pendingApproval.sendFailed && (
-                    <Link href="/approvals">
+                    <Link href={`/approvals?highlight=${pendingApproval.id}`}>
                       <button className="btn btn-ghost btn-sm"><i className="ti ti-shield-check" style={{ fontSize: 12 }} /> Awaiting approval</button>
                     </Link>
                   )}
@@ -1920,9 +1944,24 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
       const res  = await fetch(`/api/approvals/${approvalRequestId}/retry-send`, { method: 'POST' })
       const json = await res.json().catch(() => ({}))
       if (!res.ok) { setActionError(json?.error || 'Retry failed'); return }
+      if (json?.deliveryWarning) alert(json.deliveryWarning)
       router.refresh()
     } catch {
       setActionError('Retry failed')
+    } finally { setRetrying(false) }
+  }
+  // Release an approved-but-unsent request so the document is editable again (section-11 audit, pass 2).
+  async function cancelApproval(approvalRequestId: string) {
+    if (!confirm('Cancel this approved request? The document goes back to being an editable draft, and sending it again will need a fresh approval.')) return
+    setRetrying(true); setActionError('')
+    try {
+      const res  = await fetch(`/api/approvals/${approvalRequestId}/cancel`, { method: 'POST' })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) { setActionError(json?.error || 'Could not cancel the request'); return }
+      window.dispatchEvent(new Event('scopegov:approvals-changed'))
+      router.refresh()
+    } catch {
+      setActionError('Could not cancel the request')
     } finally { setRetrying(false) }
   }
   async function doAction(action: string) {
@@ -2019,12 +2058,15 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
             <button className="btn btn-primary btn-xs" onClick={() => doAction('send')} disabled={acting}>Send</button>
           )}
           {co.status === 'draft' && pendingApproval && pendingApproval.sendFailed && permissions.sendCo && (
-            <button className="btn btn-primary btn-xs" onClick={() => retrySend(pendingApproval.id)} disabled={retrying}>
-              {retrying ? <span className="spin" /> : 'Retry send'}
-            </button>
+            <>
+              <button className="btn btn-ghost btn-xs" onClick={() => cancelApproval(pendingApproval.id)} disabled={retrying}>Cancel request</button>
+              <button className="btn btn-primary btn-xs" onClick={() => retrySend(pendingApproval.id)} disabled={retrying}>
+                {retrying ? <span className="spin" /> : 'Retry send'}
+              </button>
+            </>
           )}
           {co.status === 'draft' && pendingApproval && !pendingApproval.sendFailed && (
-            <Link href="/approvals"><button className="btn btn-ghost btn-xs">Awaiting approval</button></Link>
+            <Link href={`/approvals?highlight=${pendingApproval.id}`}><button className="btn btn-ghost btn-xs">Awaiting approval</button></Link>
           )}
           {/* 'stalled' is a live, sent CO (no reply for 5 days) and could previously only be Closed. */}
           {(co.status === 'awaiting_response' || co.status === 'stalled') && (

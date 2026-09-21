@@ -663,9 +663,15 @@ export async function sendApprovalRequestedEmail(params: {
   amount: number; currency: string
   stepNumber: number; totalSteps: number
   requestedByName: string; url: string
+  // FIX (section-11 audit, pass 2): the in-app notification already said
+  // "accept the client's counter on …" for a counter-offer, but this email
+  // always said "wants to send … before it can go to the client" — an
+  // approver reading the email was told to authorize a different action than
+  // the one they were about to approve.
+  isCounter?: boolean
 }) {
   const { to, approverName: approverNameRaw, documentLabel, documentTitle: documentTitleRaw, projectName: projectNameRaw,
-    amount, currency, stepNumber, totalSteps, requestedByName: requestedByNameRaw, url } = params
+    amount, currency, stepNumber, totalSteps, requestedByName: requestedByNameRaw, url, isCounter } = params
   const approverName    = escapeHtml(approverNameRaw)
   const documentTitle   = escapeHtml(documentTitleRaw)
   const projectName     = escapeHtml(projectNameRaw)
@@ -679,9 +685,9 @@ export async function sendApprovalRequestedEmail(params: {
     body: `
       <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${approverName},</p>
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
-        <strong>${requestedByName}</strong> wants to send <strong>${documentTitle}</strong>
+        <strong>${requestedByName}</strong> wants to ${isCounter ? 'accept the client\'s counter-offer on' : 'send'} <strong>${documentTitle}</strong>
         on <strong>${projectName}</strong>, and it needs your sign-off
-        ${totalSteps > 1 ? `(step ${stepNumber} of ${totalSteps})` : ''} before it can go to the client.
+        ${totalSteps > 1 ? `(step ${stepNumber} of ${totalSteps})` : ''} before ${isCounter ? 'it can be accepted' : 'it can go to the client'}.
       </p>
       <div style="background:${C.goldLt};border-left:3px solid ${C.gold};padding:14px 16px;margin:16px 0;border-radius:0 6px 6px 0;">
         <div style="display:flex;justify-content:space-between;font-size:13px;">
@@ -717,10 +723,15 @@ export async function sendApprovalDecisionEmail(params: {
   // being present means approved && !autoSent, i.e. the chain approved
   // but the mechanical send afterward failed.
   sendFailedReason?: string | null
+  // FIX (section-11 audit, pass 2): the document was sent but the mail
+  // provider rejected the email to the client — previously reported as a
+  // plain success ("sent to client").
+  deliveryWarning?: string | null
+  isCounter?: boolean
 }) {
   const { to, requesterName: requesterNameRaw, decision, documentLabel, documentTitle: documentTitleRaw,
     projectName: projectNameRaw, decidedByName: decidedByNameRaw, note: noteRaw, url, autoSent,
-    sendFailedReason: sendFailedReasonRaw } = params
+    sendFailedReason: sendFailedReasonRaw, deliveryWarning: deliveryWarningRaw, isCounter } = params
   const approved       = decision === 'approved'
   const sendFailed      = approved && !!sendFailedReasonRaw
   const requesterName  = escapeHtml(requesterNameRaw)
@@ -729,10 +740,11 @@ export async function sendApprovalDecisionEmail(params: {
   const decidedByName  = escapeHtml(decidedByNameRaw)
   const note           = escapeHtml(noteRaw)
   const sendFailedReason = escapeHtml(sendFailedReasonRaw)
+  const deliveryWarning  = approved && !sendFailed ? escapeHtml(deliveryWarningRaw) : ''
 
   const html = baseTemplate({
     agencyName: 'ScopeGov',
-    headerColour: approved ? (sendFailed ? C.amber : C.green) : C.red,
+    headerColour: approved ? (sendFailed || deliveryWarning ? C.amber : C.green) : C.red,
     label: approved ? (sendFailed ? 'Approved — action needed' : 'Approval Granted') : 'Approval Rejected',
     headline: approved
       ? (sendFailed ? `${documentLabel} approved, but not sent` : `${documentLabel} approved${autoSent ? ' and sent' : ''}`)
@@ -743,8 +755,16 @@ export async function sendApprovalDecisionEmail(params: {
         ${decidedByName} ${approved ? 'approved' : 'rejected'} <strong>${documentTitle}</strong>
         on <strong>${projectName}</strong>.
         ${approved && autoSent ? ' It has been sent to the client automatically.' : ''}
-        ${!approved ? ' It has not been sent and remains a draft — make any changes needed and resubmit.' : ''}
+        ${!approved ? (isCounter
+          ? ' The counter-offer has not been accepted and is still open — review it and try again.'
+          : ' It has not been sent and remains a draft — make any changes needed and resubmit.') : ''}
       </p>
+      ${deliveryWarning ? `
+      <div style="background:${C.amberLt || C.bg};border:1px solid ${C.amber};border-radius:6px;padding:14px 16px;margin:16px 0;">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:${C.amber};margin-bottom:6px;">The client email did not go out</div>
+        <p style="font-size:13px;color:${C.text};margin:0;">${deliveryWarning}</p>
+      </div>
+      ` : ''}
       ${sendFailed ? `
       <div style="background:${C.amberLt || C.bg};border:1px solid ${C.amber};border-radius:6px;padding:14px 16px;margin:16px 0;">
         <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:${C.amber};margin-bottom:6px;">It was not sent to the client</div>

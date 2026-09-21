@@ -1,0 +1,151 @@
+ScopeGov — Section 11 (Approval workflows engine) + Section 12 (Invoicing): deep-audit fixes and gap closures
+Base: the snapshot uploaded after the Auth+MFA / RLS round 2 (latest migration 068_auth_rls_audit_round2.sql).
+
+RUN THIS MIGRATION FIRST (Supabase SQL editor), before deploying the code:
+  069_approvals_invoicing_hardening.sql
+The code CALLS functions created there (decide_approval_step, finalize_approval_send, finalize_invoice_send) and
+reads columns it adds. Deploying the code first breaks approval decisions and invoice sending until it is applied.
+Read the "DATA CHANGES IN 069" note below before running it against production.
+
+No npm changes. No new environment variables.
+
+================================================================================
+SECTION 11 — APPROVAL WORKFLOWS ENGINE
+================================================================================
+
+Gaps closed
+  * A send-failed approval (approved, but the auto-send failed) had no exit: the cancel route refused anything
+    not 'pending', the UI hid Cancel, and the document stayed edit-locked. A draft SOW had no other way out.
+    Cancel now works for that state (API + Approvals page + SOW / CO / Billing tabs).
+  * Requests nobody could decide. The gate now pre-flights every step (eligible = active member holding
+    APPROVE_DOCUMENTS, the named user / holder of the role, able to read the project, not the requester unless
+    allowed) and REFUSES with a message the requester can act on. A workflow with zero steps used to read as "no
+    approval needed" (a silent bypass) — it now blocks the send.
+  * Three policy switches per workflow (builder UI + API): requester may approve their own request (solo /
+    tiny teams), a different approver for every step (four-eyes), and "also gate other currencies" (a
+    thresholded workflow used to let every document in another currency through ungated). Flags are snapshotted
+    onto each request so editing a workflow never changes a chain already in flight.
+  * Reassign the current step to another person or role (admin; new POST /api/approvals/[id]/reassign and GET
+    /api/approvals/[id]/approvers; audited as approval.step_reassigned).
+  * Requesters now have a "My requests" tab (they could not see or cancel their own pending request unless they
+    also held approve/oversight permissions); status + document-type filters; approve with an optional note;
+    server-computed canDecide so Approve/Reject only shows to someone who can actually use it.
+  * Requester gets an in-app note when one step of a multi-step chain clears.
+  * Stall cron: escalates to admins after 3 unanswered reminders, throttles the "no reachable approver" alert to
+    once a week per request (it re-alerted daily), and heals a request left mid-send by a crashed process.
+  * Builder: flags steps nobody can approve, warns about a sole approver, not-enough-approvers for four-eyes,
+    and projects billed in a currency the threshold doesn't cover.
+
+Bugs fixed
+  * Auto-send is wrapped: a thrown error (send-invoice never wrapped its number assignment) used to escape after
+    the chain had approved, leaving the request 'approved' with no send_failed_at — invisible everywhere.
+  * A send that succeeded but whose client email was rejected was reported as "sent to client". The requester is
+    now told, and the request shows "Sent — email bounced".
+  * The decision was 5-7 sequential writes with no transaction and no error ever read. It is now ONE locked
+    transaction (decide_approval_step). Also closes cancel-vs-approve overwriting 'cancelled' with 'approved'.
+  * Edit lock gap: the request flipped to 'approved' BEFORE the send ran, so the draft could be edited or deleted
+    in between. It now stays pending (with a sending marker) until the send outcome is known.
+  * Clicking Send on a document with an approved-but-unsent request started a second chain, after which the lock
+    and cancel silently stopped working (maybeSingle on two rows). Blocked at the gate; one active request per
+    document enforced by a unique index; lookups are safe if it ever happens.
+  * Two concurrent retries both sent; retry now claims the request first.
+  * The requester was notified as an approver (and counted as reachable, so the cron never escalated).
+  * Double-click on Send: the loser of the unique-index race threw a 500 instead of returning the request.
+  * Approvals list: scope=all leaked other projects' requests to MANAGE_WORKSPACE_SETTINGS-only members and
+    amounts to members without VIEW_FINANCIALS; the badge / "My queue" counted requests the viewer couldn't act on.
+  * Highlight effect reopened the modal after every action / tab switch.
+  * Role delete: a role that was ever an approver could never be deleted (FK, surfaced as a bare 500), and a
+    role that is the current approver of a waiting request could vanish. FK is now ON DELETE SET NULL; deleting
+    the current approver of a live request is refused with a clear message.
+  * Project delete / complete now also cancel approved-but-unsent requests.
+  * Notes capped at 2,000 chars; workflow DELETE no longer reports success when the delete failed.
+  * Emails: counter-offer wording ("accept the client's counter"), rejection wording, bounced-email notice.
+  * Dashboard "stuck" clock uses last activity (updated_at), matching the cron.
+  * Comparator for the workflow choice is a strict total order (two catch-alls flip-flopped).
+  * APPROVE_DOCUMENTS can no longer be stripped from its last holder (role PATCH and member PATCH). Application
+    layer only — see NOT DONE.
+
+================================================================================
+SECTION 12 — INVOICING
+================================================================================
+
+Gaps closed
+  * Registry: status filters, search (number / title / project / client), paging (was a hard 500), outstanding
+    BALANCE per currency, receivables aging, per-row PDF link, CSV export (/api/invoices/export, audited, scoped).
+  * Payments can be edited in place (new PATCH); voiding a part-paid invoice keeps its payment records (reason +
+    acknowledgement required) instead of forcing them to be deleted.
+  * Project-level over-invoicing check (409 over_contract, confirmable) — every cap was per source, so invoicing
+    all milestones and then the SOW billed the same money twice.
+  * Send confirmation dialog; send-failed invoice state with Retry / Cancel in the Billing tab; preflight
+    (client email, deleted project, past due date) before anyone is asked to approve.
+  * VAT-inclusive PDFs now print the VAT amount; all invoice PDF lines use the currency's minor units.
+
+Bugs fixed
+  * Money was stored unrounded (333.33 @16% = 386.6628 while the PDF says 386.66) so ~46% of non-round
+    tax-exclusive invoices could not be settled by paying the printed amount and stuck 'partially_paid'.
+    New lib/documents/invoice-totals.ts (rounding, tax 0-100, item limits, quantity x rate); DB rounding trigger;
+    paid-status trigger tolerance.
+  * In-app amounts showed whole units ($386.66 as "$387", a 0.29 balance as "$0 due"): new formatCurrencyExact.
+  * Editing a tax-exclusive invoice without resending the amount grossed the tax up twice.
+  * Invoicing a tax-exclusive CO with the defaults always failed (gross total pre-filled as the net).
+  * PATCH / DELETE / void had no status guard on the write: a concurrent send (including the approval
+    auto-send) could be edited, hard-deleted, or voided twice (double client email).
+  * Invoice numbers could be burned (number claimed before the draft->sent guard); now one transaction.
+  * Two draft invoices against one milestone were both sendable.
+  * paid_at was not cleared when an invoice stopped being paid.
+  * Trashed projects: invoices could be created / sent for them and were listed, chased and counted.
+  * Validation: non-string fields (500s), unparseable dates, future payment dates, unbounded notes/reason/prompt
+    fields, unsanitised notes.
+  * Manual Remind ignored an open client dispute (the automatic reminders already skip it) and rotated the
+    portal token before the cooldown / email checks.
+  * "Collected" used an unpaginated query and under-reported past 1,000 invoices.
+
+================================================================================
+DATA CHANGES IN 069 — read before applying to production
+================================================================================
+  * Existing non-void invoice amounts / subtotals are ROUNDED to 2 decimals (what the PDF already printed).
+  * partially_paid invoices whose only shortfall is sub-cent are settled to 'paid' (this fires the milestone sync).
+  * invoices.paid_at is cleared where the invoice is not paid/void.
+  * A stale approved-but-unsent approval request that has a newer active one for the same document is cancelled
+    (needed to create the one-active-request unique index).
+  * invoices_one_active_per_milestone is created ONLY if no milestone has two non-void invoices; otherwise it
+    raises a WARNING with the statement to run after you void the duplicates. The API enforces it either way.
+  * update_approval_workflow_atomic (from 067) is redefined with the same signature plus the three new flags.
+
+================================================================================
+BEHAVIOUR CHANGES YOU MAY WANT TO VETO
+================================================================================
+  * A matching workflow with no steps blocks the send (was: silently waived).
+  * "My queue" and the sidebar badge list only what the viewer can actually decide.
+  * New workflows default to "different approver per step" ON (only saved when there are 2+ steps).
+  * A clearly past due date blocks sending an invoice. Voiding a DRAFT invoice is refused (delete it).
+  * Line items can't be negative; a line's total is quantity x rate (a client-supplied total is ignored).
+  * A manual reminder on a disputed invoice asks for confirmation.
+
+================================================================================
+NOT DONE / KNOWN LIMITS
+================================================================================
+  * Credit notes, refunds and write-offs — they change the accounting model; needs a design decision. Voiding a
+    part-paid invoice now keeps the payments, but refunding the client is still outside ScopeGov.
+  * APPROVE_DOCUMENTS orphan protection is application-layer only. The SQL functions that mirror the protected
+    list check EVERY protected permission on any edit, so adding it there would block routine role edits in a
+    workspace where nobody has been granted it yet. A race between two admins is not covered.
+  * SOW / CO send paths still claim their document number before their status guard (same burned-number shape as
+    invoices had). Out of these sections; the invoice fix (finalize_invoice_send) is the template.
+  * The SQL in 069 has NOT been executed by me (no database in my environment). tests/pg-replay replays every
+    migration on real Postgres — run it (PG_REPLAY_URL) before applying. No replay tests were written for the new
+    functions.
+  * Verified here: esbuild syntax on every changed file, tsc with no new errors against the base snapshot (missing
+    node_modules types filtered), tests/approvals-invoicing.test.ts (27 cases) plus the existing tests that run
+    without dependencies (identical results on the base snapshot), and the RLS-contract scan of 069's text.
+    NOT verified: `next build`, the full vitest run, anything in a browser.
+
+NEW FILES
+  supabase/migrations/069_approvals_invoicing_hardening.sql
+  lib/approvals/eligibility.ts            lib/approvals/pick-workflow.ts
+  lib/documents/invoice-totals.ts         lib/documents/preflight.ts
+  lib/utils/invoice-registry.ts
+  app/api/approvals/[id]/reassign/route.ts        app/api/approvals/[id]/approvers/route.ts
+  app/api/invoices/export/route.ts
+  tests/approvals-invoicing.test.ts
+  CHANGES-approvals-invoicing-fixes.txt

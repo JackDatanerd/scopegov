@@ -112,3 +112,31 @@ export function describeProtectedPermission(permission: ProtectedPermission): st
     ? 'manage roles'
     : 'manage workspace settings'
 }
+
+// FIX (section-11 audit, pass 2): APPROVE_DOCUMENTS is a permission nobody can
+// re-grant once it has no holder (the permission ceiling only lets you grant
+// what you hold) — exactly the unrecoverable shape PROTECTED_PERMISSIONS
+// exists for. Any admin editing a role could strip it from every role,
+// including their own, and the whole approvals engine went dark for good: no
+// approver could ever be assigned again and every pending request became
+// undecidable.
+//
+// It is deliberately NOT added to PROTECTED_PERMISSIONS: the SQL functions that
+// mirror that list (update_role_permissions_atomic, update_member_permissions_
+// atomic, leave_workspace_atomic) check EVERY protected permission on any edit,
+// so adding it there would make routine role edits fail in a workspace where
+// nobody has been granted APPROVE_DOCUMENTS yet. This is the application-layer
+// guard only — it applies to the edit that would remove the LAST holder, and
+// says nothing about a workspace that never had one.
+export function approvalPermissionOrphanedBy(
+  activeMembers: ActiveMemberSnapshot[],
+  simulated: Map<string, Record<string, unknown> | null>
+): boolean {
+  return !activeMembers.some(m => {
+    const perms = simulated.has(m.id) ? simulated.get(m.id) : m.effectivePermissions
+    return perms?.['APPROVE_DOCUMENTS'] === true
+  })
+}
+
+export const APPROVE_DOCUMENTS_ORPHAN_MESSAGE =
+  'This would leave the workspace with no one who can approve documents, and the approvals engine could never be used again — once nobody holds Approve documents, nobody can grant it back. Give it to another member or role first.'

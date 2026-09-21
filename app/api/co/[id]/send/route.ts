@@ -5,6 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { sendCoDocument, validateCoForSend } from '@/lib/documents/send-co'
 import { evaluateApprovalGate } from '@/lib/approvals/engine'
+import { sendBlockedReason } from '@/lib/documents/preflight'
 import { canReadProject } from '@/lib/utils/project-access'
 import { isTerminalStatus } from '@/lib/utils/project-status'
 
@@ -75,6 +76,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       }, { status: 409 })
     }
 
+    const blockedReason = await sendBlockedReason(service, project.id)
+    if (blockedReason) return NextResponse.json({ error: blockedReason }, { status: 400 })
+
     // Phase 3 — Approval Chains: gate on the CO's own total, not the
     // project's overall contract value — a $500 CO on a $200k retainer
     // shouldn't trip a $10k threshold meant for large scope additions.
@@ -93,6 +97,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       documentTitle: co.title,
       requestedBy:  { id: session.id, name: session.name, email: session.email },
     })
+
+    // FIX (section-11 audit, pass 2): the gate can now REFUSE (nobody able to
+    // approve, an approved-but-unsent request already exists, a workflow with
+    // no approvers). Never proceed to a send in that case.
+    if (gate.blocked) {
+      return NextResponse.json({ error: gate.error, approvalRequestId: gate.approvalRequestId }, { status: gate.status || 409 })
+    }
 
     if (gate.requiresApproval) {
       return NextResponse.json({

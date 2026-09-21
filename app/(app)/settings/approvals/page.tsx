@@ -17,7 +17,7 @@ export default async function ApprovalWorkflowsPage() {
         <div className="page-hd">
           <div>
             <h1 className="page-title">Approval Workflows</h1>
-            <p className="page-sub">Configure who signs off on SOWs and change orders before they reach a client</p>
+            <p className="page-sub">Configure who signs off on SOWs, change orders and invoices before they reach a client</p>
           </div>
         </div>
         <div className="surface">
@@ -33,11 +33,12 @@ export default async function ApprovalWorkflowsPage() {
 
   const service = createServiceClient()
 
-  const [workflowsRes, rolesRes, membersRes, wsRes] = await Promise.all([
+  const [workflowsRes, rolesRes, membersRes, wsRes, projectCurrenciesRes] = await Promise.all([
     (service as any)
       .from('approval_workflows')
       .select(`
         id, document_type, name, threshold_amount, threshold_currency, is_active, created_at,
+        allow_self_approval, require_distinct_approvers, apply_to_other_currencies,
         approval_workflow_steps(id, step_order, approver_role_id, approver_user_id,
           roles(id, name),
           user:users!approval_workflow_steps_approver_user_id_fkey(id, name, email))
@@ -67,7 +68,7 @@ export default async function ApprovalWorkflowsPage() {
     // named-person picker.
     (service as any)
       .from('workspace_members')
-      .select('id, effective_permissions, users!workspace_members_user_id_fkey(id, name, email)')
+      .select('id, role_id, effective_permissions, users!workspace_members_user_id_fkey(id, name, email)')
       .eq('workspace_id', session.workspaceId)
       .eq('status', 'active'),
     // FIX (fix round, section-11 finding): the new-workflow threshold
@@ -83,6 +84,15 @@ export default async function ApprovalWorkflowsPage() {
       .select('currency')
       .eq('id', session.workspaceId)
       .maybeSingle(),
+    // FIX (section-11 audit, pass 2): the currencies projects are ACTUALLY billed in, so
+    // the editor can warn when a value threshold would silently leave some of them
+    // ungated (a threshold only ever compares documents in its own currency).
+    (service as any)
+      .from('projects')
+      .select('currency')
+      .eq('workspace_id', session.workspaceId)
+      .is('deleted_at', null)
+      .limit(5000),
   ])
 
   const workflows = workflowsRes.data || []
@@ -90,8 +100,9 @@ export default async function ApprovalWorkflowsPage() {
     .map((r: any) => ({ id: r.id, name: r.name, canApprove: r.permissions?.APPROVE_DOCUMENTS === true }))
   const members   = (membersRes.data || [])
     .filter((m: any) => m.users)
-    .map((m: any) => ({ id: m.users.id, name: m.users.name, email: m.users.email, canApprove: m.effective_permissions?.APPROVE_DOCUMENTS === true }))
+    .map((m: any) => ({ id: m.users.id, name: m.users.name, email: m.users.email, roleId: m.role_id ?? null, canApprove: m.effective_permissions?.APPROVE_DOCUMENTS === true }))
   const workspaceCurrency = wsRes.data?.currency || 'USD'
+  const projectCurrencies: string[] = Array.from(new Set<string>((projectCurrenciesRes.data || []).map((p: any) => String(p.currency || '').toUpperCase()).filter(Boolean))).sort()
 
   return (
     <div className="page" style={{ maxWidth: 900 }}>
@@ -103,7 +114,7 @@ export default async function ApprovalWorkflowsPage() {
             </Link>
           </div>
           <h1 className="page-title">Approval Workflows</h1>
-          <p className="page-sub">Configure who signs off on SOWs and change orders before they reach a client</p>
+          <p className="page-sub">Configure who signs off on SOWs, change orders and invoices before they reach a client</p>
         </div>
         <Link href="/approvals">
           <button className="btn btn-ghost btn-sm"><i className="ti ti-shield-check" style={{ fontSize: 12 }} /> View queue</button>
@@ -115,6 +126,7 @@ export default async function ApprovalWorkflowsPage() {
         roles={roles}
         members={members}
         workspaceCurrency={workspaceCurrency}
+        projectCurrencies={projectCurrencies}
       />
     </div>
   )

@@ -114,7 +114,10 @@ export async function POST(request: NextRequest) {
     const overdueInvoices = await fetchAll<any>('overdue invoices select', (from, to) =>
       (service as any).from('invoices')
         .select(`id, title, amount, amount_paid, currency, invoice_number, workspace_id, disputed_at, dispute_resolved_at,
-          projects(id, name, clients(name))`)
+          projects!inner(id, name, deleted_at, clients(name))`)
+        // Invoices of a soft-deleted (trashed) project are not chased or flagged
+        // (section-12 audit, pass 2) — nobody can act on them from the UI.
+        .is('projects.deleted_at', null)
         .in('status', ['sent', 'partially_paid'])
         .not('due_date', 'is', null)
         .lt('due_date', today)

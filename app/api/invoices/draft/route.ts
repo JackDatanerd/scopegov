@@ -72,16 +72,31 @@ export async function POST(request: NextRequest) {
     // milestone already had on file, so the model can tell a fixed-fee
     // milestone apart from an hourly_cap/retainer one instead of guessing
     // purely from prose the agency retyped.
-    const { projectId, request: askText, sourceLabel, sourceContext } = await request.json()
-    if (!projectId) return NextResponse.json({ error: 'projectId required' }, { status: 400 })
-    if (!askText?.trim()) return NextResponse.json({ error: 'Describe what this invoice covers' }, { status: 400 })
+    const reqBody = await request.json().catch(() => null)
+    if (!reqBody || typeof reqBody !== 'object' || Array.isArray(reqBody))
+      return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+    const { projectId, request: askText } = reqBody
+    // FIX (section-12 audit, pass 2): sourceLabel / sourceContext were client-supplied
+    // and interpolated into the model prompt with no type or length limit (an
+    // unbounded prompt, and a route for stuffing arbitrary instructions into it).
+    // Only the fields the modal actually sends are read, coerced to short strings.
+    const clip = (v: unknown, max: number): string => (typeof v === 'string' ? v.trim().slice(0, max) : '')
+    const sourceLabel = clip(reqBody.sourceLabel, 200)
+    const rawCtx = reqBody.sourceContext && typeof reqBody.sourceContext === 'object' ? reqBody.sourceContext : {}
+    const sourceContext = {
+      billingType: clip(rawCtx.billingType, 40),
+      trigger: clip(rawCtx.trigger, 300),
+      notes: clip(rawCtx.notes, 500),
+    }
+    if (typeof projectId !== 'string' || !projectId) return NextResponse.json({ error: 'projectId required' }, { status: 400 })
+    if (typeof askText !== 'string' || !askText.trim()) return NextResponse.json({ error: 'Describe what this invoice covers' }, { status: 400 })
 
     const service = createServiceClient()
 
     const { data: project } = await (service as any)
       .from('projects')
       .select('id, name, type, currency, workspace_id')
-      .eq('id', projectId).eq('workspace_id', session.workspaceId).single()
+      .eq('id', projectId).eq('workspace_id', session.workspaceId).is('deleted_at', null).single()
 
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
     if (!(await canReadProject(service, session, projectId)))
@@ -142,7 +157,6 @@ Rules:
     return NextResponse.json({ title: parsed.title || '', lineItems })
   } catch (err) {
     console.error('Invoice draft error:', err)
-    console.error('Invoice draft-suggest error:', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

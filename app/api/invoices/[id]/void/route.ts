@@ -19,7 +19,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Missing permission: SEND_INVOICES' }, { status: 403 })
 
     const body = await request.json().catch(() => ({}))
-    const reason: string | undefined = body?.reason?.trim()
+    // FIX (section-12 audit, pass 2): `body.reason.trim()` threw on a non-string
+    // (opaque 500) and the reason was unbounded — it goes into the audit row and
+    // the email the client receives.
+    if (body?.reason != null && typeof body.reason !== 'string')
+      return NextResponse.json({ error: 'Reason must be text' }, { status: 400 })
+    const reason: string | undefined = body?.reason?.trim() || undefined
+    if (reason && reason.length > 500)
+      return NextResponse.json({ error: 'Please keep the reason under 500 characters' }, { status: 400 })
+    const acknowledgePayments = body?.acknowledgePayments === true
 
     const service = createServiceClient()
     // FIX (doc-completeness audit): only select() addition is
@@ -28,7 +36,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // no longer valid. Everything else in this route is unchanged.
     const { data: invoice } = await (service as any)
       .from('invoices')
-      .select(`id, title, status, amount_paid, token, milestone_id, project_id, sent_at,
+      .select(`id, title, status, amount, amount_paid, currency, token, milestone_id, project_id, sent_at,
         projects(name, client_id, clients(name, email, cc_emails), workspaces(agency_name, brand_colour))`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
@@ -37,10 +45,26 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     if (invoice.status === 'void')
       return NextResponse.json({ error: 'Invoice is already void' }, { status: 400 })
+    // FIX (section-12 audit, pass 2): a DRAFT could be voided (the UI never offers
+    // it, but the API allowed it) — leaving a numberless 'void' row instead of a
+    // clean delete, and an approval-gated draft's request cancelled as a side effect.
+    if (invoice.status === 'draft')
+      return NextResponse.json({ error: 'A draft invoice was never sent — delete it instead of voiding it' }, { status: 400 })
     if (invoice.status === 'paid')
-      return NextResponse.json({ error: 'A fully paid invoice cannot be voided' }, { status: 400 })
-    if (Number(invoice.amount_paid) > 0)
-      return NextResponse.json({ error: 'Remove or correct recorded payments before voiding this invoice' }, { status: 400 })
+      return NextResponse.json({ error: 'A fully paid invoice cannot be voided — record a refund or credit note outside ScopeGov and keep the invoice as the record of the sale' }, { status: 400 })
+
+    // FIX (section-12 audit, pass 2 — feature gap): voiding a part-paid invoice used
+    // to require DELETING the recorded payments first — destroying the very ledger
+    // that shows money was received (only an audit row kept the amounts). The
+    // payments now stay on file: the caller must acknowledge that money was already
+    // received and give a reason, and the amount is recorded in the audit trail.
+    const paidSoFar = Number(invoice.amount_paid) || 0
+    if (paidSoFar > 0 && !(acknowledgePayments && reason)) {
+      return NextResponse.json({
+        error: `${paidSoFar.toFixed(2)} ${invoice.currency || ''} has already been received on this invoice. Voiding keeps the payment records on file — you'll need to refund or credit that money to the client separately. Give a reason and confirm to continue.`.replace('  ', ' '),
+        code: 'has_payments', amountPaid: paidSoFar,
+      }, { status: 409 })
+    }
 
     const now = new Date().toISOString()
     // FIX (section-12 audit, TOCTOU race): the read above blocks voiding
@@ -59,12 +83,17 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       voided_at:   now,
       void_reason: reason || null,
       updated_at:  now,
-    }).eq('id', id).eq('amount_paid', 0).select('id').maybeSingle()
+    }).eq('id', id).eq('amount_paid', paidSoFar).in('status', ['sent', 'partially_paid', 'overdue']).select('id').maybeSingle()
 
     if (error) return NextResponse.json({ error: 'Failed to void invoice' }, { status: 500 })
+    // The write above is guarded on BOTH the payment total the caller confirmed and a
+    // still-voidable status: a payment landing in the gap, a paid-off invoice, or —
+    // FIX (section-12 audit, pass 2) — a second concurrent void (a double-click),
+    // which used to pass the same guards, void the invoice twice and email the client
+    // "voided" twice.
     if (!voided)
       return NextResponse.json({
-        error: 'A payment was just recorded on this invoice — refresh and remove or correct it before voiding',
+        error: 'This invoice just changed (a payment was recorded, or it was already voided) — refresh and try again',
       }, { status: 409 })
 
     // FIX (section-12 fix round): void had no status check excluding a
@@ -99,9 +128,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // If this invoice had put the milestone in 'invoiced', revert it to
     // 'pending' so it doesn't silently look billed when it no longer is.
     if (invoice.milestone_id) {
-      await (service as any).from('payment_milestones')
-        .update({ status: 'pending', invoiced_at: null })
-        .eq('id', invoice.milestone_id).eq('status', 'invoiced')
+      // Only if no OTHER live invoice still bills this milestone (legacy duplicates).
+      const { data: stillBilled } = await (service as any)
+        .from('invoices').select('id').eq('milestone_id', invoice.milestone_id).neq('id', id).neq('status', 'void').limit(1)
+      if (!stillBilled || stillBilled.length === 0) {
+        await (service as any).from('payment_milestones')
+          .update({ status: 'pending', invoiced_at: null })
+          .eq('id', invoice.milestone_id).eq('status', 'invoiced')
+      }
     }
 
     // FIX (doc-completeness audit): notify the client — only relevant if
@@ -130,7 +164,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       workspaceId: session.workspaceId, actorId: session.id,
       actorEmail: session.email, actorName: session.name,
       eventType: 'invoice.voided', entityType: 'invoice',
-      entityId: id, entityName: invoice.title, metadata: { reason: reason || null },
+      entityId: id, entityName: invoice.title,
+      metadata: { reason: reason || null, ...(paidSoFar > 0 ? { amount_paid_at_void: paidSoFar, payments_kept: true } : {}) },
     })
 
     return NextResponse.json({ ok: true })

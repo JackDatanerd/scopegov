@@ -5,7 +5,7 @@ export const maxDuration = 300
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
-import { sendApprovalReminder, documentLabelFor } from '@/lib/approvals/engine'
+import { sendApprovalReminder, documentLabelFor, healStuckSends } from '@/lib/approvals/engine'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { APPROVAL_STALL_DAYS } from '@/lib/utils/attention'
@@ -24,7 +24,28 @@ export async function POST(request: NextRequest) {
   // "needs attention" register and this cron can't drift apart.
   const threshold = APPROVAL_STALL_DAYS // days
   const cutoff    = new Date(now.getTime() - threshold * 86400000).toISOString()
-  let reminded = 0, escalated = 0, sendFailureEscalated = 0
+  let reminded = 0, escalated = 0, sendFailureEscalated = 0, healed = 0, unresponsiveEscalated = 0
+
+  // FIX (section-11 audit, pass 2): reminders repeated forever with no
+  // escalation for an approver who WAS reachable but never acted, and the
+  // "no reachable approver" alert re-fired (bell + audit row) on every run for
+  // as long as the request sat there. Both now use the request's own counters.
+  const ESCALATE_AFTER_REMINDERS = 3
+  const REALERT_AFTER_MS = 7 * 86400000
+
+  // Step 0 — a request parked in its "sending" state by a process that died mid-send.
+  await run.step('heal stuck sends', async () => {
+    const fixed = await healStuckSends(service)
+    for (const r of fixed) {
+      await insertAuditRow(service, {
+        workspace_id: r.workspace_id, actor_id: null,
+        actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
+        event_type: 'approval.send_failed_stale', entity_type: 'approval_request', entity_id: r.id,
+        metadata: { reason: 'send did not finish; request moved to the retryable approved-not-sent state' },
+      })
+      healed++
+    }
+  })
 
   // Step 1 — pending decisions that have gone quiet.
   // updated_at doubles as "last activity on this request": it moves on step-advance and is bumped
@@ -35,8 +56,9 @@ export async function POST(request: NextRequest) {
   await run.step('remind pending approvals', async () => {
     const stale = await fetchAll<any>('approval-stall pending select', (from, to) =>
       (service as any).from('approval_requests')
-        .select('id, workspace_id')
+        .select('id, workspace_id, project_id, document_type, context, reminder_count, escalated_at')
         .eq('status', 'pending')
+        .is('sending_started_at', null)
         .lt('updated_at', cutoff)
         .order('id')
         .range(from, to))
@@ -45,16 +67,40 @@ export async function POST(request: NextRequest) {
       try {
         const result = await sendApprovalReminder(service, r.id)
         if (result === 'sent') {
+          const reminderCount = (r.reminder_count || 0) + 1
           await (service as any).from('approval_requests')
-            .update({ updated_at: now.toISOString() }).eq('id', r.id)
+            .update({ updated_at: now.toISOString(), reminder_count: reminderCount }).eq('id', r.id)
           await insertAuditRow(service, {
             workspace_id: r.workspace_id, actor_id: null,
             actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
             event_type: 'approval.reminder_sent', entity_type: 'approval_request', entity_id: r.id,
-            metadata: { days_pending: threshold },
+            metadata: { days_pending: threshold, reminder_count: reminderCount },
           })
           reminded++
+
+          // Reachable but unresponsive: after N reminders, tell the people who can
+          // reassign the step instead of nudging the same approver indefinitely.
+          if (reminderCount >= ESCALATE_AFTER_REMINDERS && !r.escalated_at) {
+            await notifyMembersWithPermission(service, {
+              workspaceId: r.workspace_id, permission: 'MANAGE_WORKSPACE_SETTINGS',
+              eventType: 'approval_no_reachable_approver', type: 'approval_unresponsive',
+              title: 'An approval is still waiting on its approver',
+              body: `A ${documentLabelFor(r.document_type)} approval has been waiting through ${reminderCount} reminders. You can reassign the step from the Approvals page.`,
+              entityType: 'approval_request', entityId: r.id, projectId: r.project_id,
+            })
+            await (service as any).from('approval_requests')
+              .update({ escalated_at: now.toISOString() }).eq('id', r.id)
+            await insertAuditRow(service, {
+              workspace_id: r.workspace_id, actor_id: null,
+              actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
+              event_type: 'approval.escalated', entity_type: 'approval_request', entity_id: r.id,
+              metadata: { reminder_count: reminderCount },
+            })
+            unresponsiveEscalated++
+          }
         } else if (result === 'no_recipients') {
+          // Alert once a week per request, not on every run.
+          if (r.escalated_at && now.getTime() - new Date(r.escalated_at).getTime() < REALERT_AFTER_MS) continue
           // A broken approver assignment (role with no active holder, or a user no longer active)
           // needs a human to fix the assignment, not another silent retry.
           await insertAuditRow(service, {
@@ -76,6 +122,8 @@ export async function POST(request: NextRequest) {
             body: `A pending approval has been stalled for ${threshold}+ days and its assigned approver (role or user) can't be reached — check the approval workflow's assignment.`,
             entityType: 'approval_request', entityId: r.id,
           })
+          await (service as any).from('approval_requests')
+            .update({ escalated_at: now.toISOString() }).eq('id', r.id)
           escalated++
         }
         // 'not_found': orphaned / already-resolved row race — nothing to do.
@@ -116,7 +164,7 @@ export async function POST(request: NextRequest) {
     }
   })
 
-  Object.assign(run.result, { reminded, escalated, sendFailureEscalated })
+  Object.assign(run.result, { reminded, escalated, sendFailureEscalated, healed, unresponsiveEscalated })
   const { body, status } = await run.finish()
   return NextResponse.json(body, { status })
 }

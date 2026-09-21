@@ -222,7 +222,16 @@ export async function getMembersWithRole(
   // past the cutoff. Threading eventType/channel through, same as the
   // sibling function, so preference filtering happens before the slice.
   eventType?: string,
-  channel: 'email' | 'in_app' = 'email'
+  channel: 'email' | 'in_app' = 'email',
+  // FIX (section-11 audit, pass 2): the approval engine notifies "everyone
+  // holding the assigned role" that a step needs their decision — and that
+  // included the person who REQUESTED the send when they hold the role,
+  // even though the engine refuses to let them decide their own request.
+  // They got a bell + email saying "awaiting your approval" with a button
+  // that could only 403, and (worse) they counted as a reachable approver,
+  // so the stall cron kept "reminding" the one person who could never act
+  // instead of escalating. Callers that know who must be left out pass it.
+  excludeUserId?: string
 ): Promise<Array<{ id: string; name: string; email: string }>> {
   // FIX (deep audit, RLS+permissions re-pass): this reintroduced the exact
   // "cap applied before the final filter" bug already fixed for the
@@ -263,7 +272,9 @@ export async function getMembersWithRole(
   // lookup — migration 001's trigger keeps it synchronously in sync with
   // the role's own permissions for every member holding it, so this is
   // already the live value, not a stale snapshot.
-  const approvers = eligible.filter((m: any) => m.effective_permissions?.['APPROVE_DOCUMENTS'] === true)
+  const approvers = eligible.filter((m: any) =>
+    m.effective_permissions?.['APPROVE_DOCUMENTS'] === true && (!excludeUserId || m.user_id !== excludeUserId)
+  )
   const permissionMap = new Map<string, Record<string, boolean>>(
     approvers.map((m: any) => [m.user_id, m.effective_permissions || {}])
   )

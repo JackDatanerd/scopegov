@@ -6,6 +6,8 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
 import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
+import { computeInvoiceTotals, parseDateOnly } from '@/lib/documents/invoice-totals'
+import { computeContractPosition } from '@/lib/reports/contract-position'
 
 // GET /api/invoices?projectId=&status= — workspace-wide (or project-scoped) list
 export async function GET(request: NextRequest) {
@@ -39,8 +41,10 @@ export async function GET(request: NextRequest) {
       .select(`id, project_id, milestone_id, sow_id, co_id, invoice_number, title,
         amount, amount_paid, currency, status, due_date, sent_at, paid_at, voided_at,
         disputed_at, created_at, updated_at,
-        projects(id, name, clients(id, name, company_name))`)
+        projects!inner(id, name, deleted_at, clients(id, name, company_name))`)
       .eq('workspace_id', session.workspaceId)
+      // Invoices of a soft-deleted (trashed) project are not part of the live ledger.
+      .is('projects.deleted_at', null)
       .order('created_at', { ascending: false })
 
     if (projectId) {
@@ -85,58 +89,55 @@ export async function POST(request: NextRequest) {
     if (!hasPermission(session, 'SEND_INVOICES'))
       return NextResponse.json({ error: 'Missing permission: SEND_INVOICES' }, { status: 403 })
 
-    const body = await request.json()
+    const body = await request.json().catch(() => null)
+    if (!body || typeof body !== 'object' || Array.isArray(body))
+      return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
     const {
       projectId, milestoneId, sowId, coId,
       title, amount, dueDate, paymentInstructions, notes,
       taxRate, taxInclusive, lineItems, poNumber,
-    } = body || {}
+    } = body
 
-    if (!projectId) return NextResponse.json({ error: 'projectId is required' }, { status: 400 })
-    if (!title?.trim()) return NextResponse.json({ error: 'A title is required' }, { status: 400 })
+    // FIX (section-12 audit, pass 2): every text field was used as if it were a
+    // string (`title?.trim()`, `poNumber?.trim()`, `notes?.trim()`) — a number or
+    // object in the body threw a TypeError and came back as an opaque 500.
+    if (typeof projectId !== 'string' || !projectId) return NextResponse.json({ error: 'projectId is required' }, { status: 400 })
+    if (typeof title !== 'string' || !title.trim()) return NextResponse.json({ error: 'A title is required' }, { status: 400 })
+    if (title.trim().length > 200) return NextResponse.json({ error: 'Title must be under 200 characters' }, { status: 400 })
+    if (poNumber != null && typeof poNumber !== 'string') return NextResponse.json({ error: 'PO number must be text' }, { status: 400 })
+    if (notes != null && typeof notes !== 'string') return NextResponse.json({ error: 'Notes must be text' }, { status: 400 })
+    if (typeof notes === 'string' && notes.length > 5000) return NextResponse.json({ error: 'Notes must be under 5,000 characters' }, { status: 400 })
     if (!milestoneId && !sowId && !coId)
       return NextResponse.json({ error: 'An invoice must bill against a milestone, SOW, or change order' }, { status: 400 })
-    const numAmount = Number(amount)
-    if (!numAmount || numAmount <= 0)
-      return NextResponse.json({ error: 'Amount must be a positive number' }, { status: 400 })
+
+    // An unparseable due date used to reach the database and come back as a 500.
+    let due: string | null = null
+    if (dueDate !== undefined && dueDate !== null && dueDate !== '') {
+      due = parseDateOnly(dueDate)
+      if (!due) return NextResponse.json({ error: 'Due date must be a valid date' }, { status: 400 })
+    }
 
     const service = createServiceClient()
 
+    // Soft-deleted projects are excluded, same as the SOW/CO routes: an invoice
+    // could be created (and later sent) for a project sitting in the trash.
     const { data: project } = await (service as any)
       .from('projects')
       .select('id, name, currency, status, contract_value')
-      .eq('id', projectId).eq('workspace_id', session.workspaceId).single()
+      .eq('id', projectId).eq('workspace_id', session.workspaceId).is('deleted_at', null).single()
 
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
     if (!(await canReadProject(service, session, projectId)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
-    // Validate the linked source actually belongs to this project/workspace
-    // and is in a billable state — an invoice against a still-draft SOW or
-    // a not-yet-accepted CO would have nothing behind it to justify billing.
-    let coTaxDefaults: { taxRate: number; taxInclusive: boolean; subtotal: number } | null = null
-    // FIX (section-12 audit, real bug — flagship finding): milestone.amount
-    // and co.subtotal were both already being fetched here and then never
-    // referenced again — an agency could bill any figure at all against a
-    // milestone or CO with zero validation tying the two together, on a
-    // product whose entire premise is preventing exactly this kind of
-    // financial drift. Capped below (after tax math resolves finalSubtotal)
-    // to whatever the linked source was actually scoped for. Under-billing
-    // (partial invoicing) is intentionally still allowed — only billing
-    // MORE than the source's own defined value is blocked.
+    // Validate the linked source actually belongs to this project/workspace and
+    // is in a billable state — an invoice against a still-draft SOW or a
+    // not-yet-accepted CO would have nothing behind it to justify billing.
     //
-    // FIX (section-12 fix round, flagship finding): the per-invoice cap
-    // above was necessary but not sufficient — nothing ever stopped
-    // creating a SECOND (or third) invoice against the same SOW or CO,
-    // each individually under the cap, but together billing the client
-    // twice for the same signed scope. A milestone can't hit this because
-    // it's a natural singleton (blocked from re-selection the moment it's
-    // 'invoiced' — see the milestone branch below), but a SOW/CO has no
-    // such lock. sourceCap/sourceInvoicedElsewhere below make the cap
-    // CUMULATIVE: the sum of every non-void invoice already issued against
-    // this exact source, plus this new one, may never exceed the source's
-    // own value. sowId had no cap at all before this fix — a SOW-linked
-    // invoice's `amount` was never even checked against project.contract_value.
+    // Each source carries a cap: an invoice may bill LESS than the source's own
+    // value (partial invoicing is supported) but never more, and the sum of every
+    // non-void invoice against a SOW/CO may never exceed it.
+    let coTaxDefaults: { taxRate: number; taxInclusive: boolean } | null = null
     let milestoneCap: number | null = null
     let coSubtotalCap: number | null = null
     let sowCap: number | null = null
@@ -147,32 +148,28 @@ export async function POST(request: NextRequest) {
         .from('payment_milestones').select('id, project_id, amount, status')
         .eq('id', milestoneId).eq('project_id', projectId).single()
       if (!milestone) return NextResponse.json({ error: 'Milestone not found on this project' }, { status: 404 })
-      // FIX (section-12 audit, real bug): this only blocked `status ===
-      // 'paid'` — a milestone already sitting at 'invoiced' (a sent
-      // invoice already exists against it, per sync_milestone_from_
-      // invoice()) sailed straight through, and the "Bill against" picker
-      // (components/invoices/BillingTab.tsx) offered that same milestone
-      // right back to the agency. No bypass needed: an agency user who
-      // forgot they'd already billed this milestone could pick it again
-      // from the normal dropdown and send the client a second, duplicate
-      // invoice for the same deliverable. 'pending'/'overdue' remain
-      // billable (a voided invoice reverts its milestone to 'pending' —
-      // see void/route.ts — so re-invoicing after a void still works).
+      // 'pending'/'overdue' remain billable (a voided invoice reverts its milestone
+      // to 'pending', so re-invoicing after a void still works).
       if (milestone.status === 'paid' || milestone.status === 'invoiced')
         return NextResponse.json({
           error: milestone.status === 'paid'
             ? 'This milestone is already marked paid'
             : 'This milestone already has an invoice against it — void the existing one first if you need to re-invoice it',
         }, { status: 400 })
+      // FIX (section-12 audit, pass 2): the status check above only sees SENT
+      // invoices (the milestone flips to 'invoiced' on send). Two DRAFTS against
+      // the same milestone were both creatable — and both sendable, billing the
+      // client twice for the same deliverable. Any live (non-void) invoice counts.
+      const { data: liveForMilestone } = await (service as any)
+        .from('invoices').select('id, status').eq('milestone_id', milestoneId).neq('status', 'void').limit(1)
+      if (liveForMilestone && liveForMilestone.length > 0)
+        return NextResponse.json({
+          error: 'This milestone already has an invoice (a draft counts) — edit or delete that one, or void it, before creating another.',
+        }, { status: 409 })
       milestoneCap = Number(milestone.amount)
       sourceKind = 'milestone'; sourceId = milestoneId
     }
     if (sowId) {
-      // FIX (section-12 fix round, flagship finding): contract_value added
-      // to the select — this branch never fetched it before, so a
-      // SOW-linked invoice had no amount cap at all, not even a
-      // single-invoice one (see the comment on milestoneCap/coSubtotalCap
-      // above).
       const { data: sow } = await (service as any)
         .from('sow_documents').select('id, project_id, status')
         .eq('id', sowId).eq('project_id', projectId).single()
@@ -189,86 +186,22 @@ export async function POST(request: NextRequest) {
       if (!co) return NextResponse.json({ error: 'Change order not found on this project' }, { status: 404 })
       if (co.status !== 'accepted')
         return NextResponse.json({ error: 'Only an accepted change order can be invoiced against' }, { status: 400 })
-      // FIX (doc-completeness audit, finding #2): carry the CO's own tax
-      // terms into the invoice by default, rather than silently dropping
-      // them — an accepted CO that had 8% tax on it shouldn't turn into
-      // a plain untaxed invoice line unless the agency explicitly
-      // overrides taxRate/taxInclusive in the request body.
-      if (taxRate === undefined) coTaxDefaults = { taxRate: co.tax_rate, taxInclusive: co.tax_inclusive, subtotal: co.subtotal }
+      // Carry the CO's own tax terms into the invoice by default, rather than
+      // silently dropping them, unless the request overrides taxRate.
+      if (taxRate === undefined) coTaxDefaults = { taxRate: Number(co.tax_rate) || 0, taxInclusive: !!co.tax_inclusive }
       coSubtotalCap = Number(co.subtotal)
       sourceKind = 'co'; sourceId = coId
     }
 
-    // Optional itemized breakdown (migration 017), computed before the
-    // tax math below since it now feeds into it — see the taxInclusive
-    // fix just underneath.
-    let cleanLineItems: Array<{ description: string; quantity: number; rate: number; total: number }> = []
-    if (Array.isArray(lineItems) && lineItems.length > 0) {
-      cleanLineItems = lineItems.map((l: any) => ({
-        description: String(l.description || '').trim().slice(0, 500),
-        quantity:    Number(l.quantity) || 0,
-        rate:        Number(l.rate) || 0,
-        total:       Number(l.total) || 0,
-      })).filter(l => l.description)
-    }
-    const isItemized = cleanLineItems.length > 0
+    // One validated, rounding implementation (lib/documents/invoice-totals.ts).
+    const computed = computeInvoiceTotals({
+      entered: amount, taxRate, taxInclusive, lineItems, inherited: coTaxDefaults,
+    })
+    if (!computed.ok) return NextResponse.json({ error: computed.error }, { status: 400 })
+    const { amount: finalAmount, subtotal: finalSubtotal, taxRate: finalTaxRate, taxInclusive: finalTaxInclusive, lineItems: cleanLineItems } = computed.totals
 
-    const finalTaxRate = taxRate !== undefined ? Number(taxRate) || 0 : (coTaxDefaults?.taxRate || 0)
-    // FIX (section-12 audit): an itemized invoice's `amount` is DERIVED
-    // from summing the line items (see BillingTab.tsx) — a pre-tax figure
-    // by construction, since no per-line tax is ever applied. That's
-    // inherently "before tax", regardless of what the taxInclusive field
-    // says — but this used to trust taxInclusive verbatim even when
-    // itemized, and the UI's own default for that field is 'inclusive'.
-    // Fed a pre-tax sum under a tax-INCLUSIVE assumption, the math below
-    // divides it by (1 + rate) to back out a *smaller* subtotal that the
-    // line items can never foot to — making the (itemized + nonzero tax +
-    // default tax-inclusive) combination permanently uncreatable, the
-    // exact mirror of the itemized + tax-EXCLUSIVE bug already fixed
-    // right below. Force exclusive whenever line items are present; it's
-    // not a preference to trust from the client, it's a fact about how
-    // itemized amounts are computed.
-    const finalTaxInclusive = isItemized
-      ? false
-      : (taxInclusive !== undefined ? !!taxInclusive : !!coTaxDefaults?.taxInclusive)
-    // `amount` in the DB is always the grand total the client owes.
-    // The create form lets the agency enter either figure: if the entered
-    // amount is tax-inclusive, it already *is* the grand total and we
-    // back out the subtotal for display; if it's "before tax", the
-    // entered amount is the subtotal and we need to gross it up.
-    let finalAmount = numAmount
-    let finalSubtotal = numAmount
-    if (finalTaxRate > 0) {
-      if (finalTaxInclusive) {
-        finalSubtotal = numAmount / (1 + finalTaxRate / 100)
-      } else {
-        finalSubtotal = numAmount
-        finalAmount   = numAmount * (1 + finalTaxRate / 100)
-      }
-    }
-    // FIX (fix round, section-12 flagship finding): there used to be an
-    // `else if (coTaxDefaults) { finalSubtotal = coTaxDefaults.subtotal }`
-    // branch here — reachable whenever a CO is linked, taxRate is omitted
-    // from the request, and the inherited rate resolves to 0. It force-set
-    // finalSubtotal to the CO's *full* subtotal, completely disconnected
-    // from numAmount (what the agency actually typed for THIS invoice) —
-    // breaking partial invoicing (explicitly supported, per the cap-check
-    // comment below) and corrupting the cumulative-cap sum for every
-    // subsequent invoice against that CO, since finalSubtotal is what gets
-    // written to `subtotal` and summed by that check. When finalTaxRate is
-    // 0, numAmount already directly IS the subtotal — there's no tax to
-    // back out, so the plain assignment above is already correct; nothing
-    // needs to borrow a value from the CO at all. (Confirmed via trace
-    // that this branch was unreachable from the shipped UI — BillingTab's
-    // CreateInvoiceModal always sends a concrete taxRate specifically to
-    // avoid trusting this fallback — but it's exactly what a future direct
-    // API caller following this route's own documented contract, omitting
-    // taxRate to inherit from the CO, would hit.)
-
-    // FIX (section-12 audit, flagship finding continued): the actual cap
-    // check — compared pre-tax to pre-tax, since tax is something the
-    // agency adds on top at invoicing time and was never part of what the
-    // milestone/CO was originally scoped or accepted for.
+    // Cap check — pre-tax against pre-tax, since tax is added at invoicing time and
+    // was never part of what the milestone/CO was scoped or accepted for.
     if (milestoneCap != null && finalSubtotal > milestoneCap + 0.01) {
       return NextResponse.json({
         error: `Invoice amount (${finalSubtotal.toFixed(2)} before tax) exceeds this milestone's defined amount (${milestoneCap.toFixed(2)}). Adjust the milestone first if its value has genuinely changed.`,
@@ -285,14 +218,7 @@ export async function POST(request: NextRequest) {
       }, { status: 400 })
     }
 
-    // FIX (section-12 fix round, flagship finding): CUMULATIVE cap — a
-    // single-invoice cap (above) doesn't stop a second or third invoice
-    // against the same SOW/CO, each individually under the cap but
-    // together over-billing the client for the same signed scope. Sum
-    // every non-void invoice already issued against this exact source
-    // (milestone is excluded — it's already a hard singleton via the
-    // status check above, so there's never a prior invoice to sum) and
-    // make sure this new one doesn't push the total past the source's cap.
+    // CUMULATIVE cap for a SOW/CO (a milestone is a singleton — see above).
     if (sourceKind === 'sow' || sourceKind === 'co') {
       const cap = sourceKind === 'sow' ? sowCap : coSubtotalCap
       if (cap != null) {
@@ -313,27 +239,29 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Soft rule enforced in code, not a DB constraint (matches the
-    // column's documented contract): if the agency supplies line items,
-    // they must foot to the invoice subtotal — otherwise the PDF would
-    // show an itemized table whose rows don't sum to the number the
-    // client is actually being asked to pay, which is worse than not
-    // itemizing at all.
-    if (isItemized) {
-      const itemSum = cleanLineItems.reduce((s, l) => s + l.total, 0)
-      // FIX (re-audit, critical finding): this compared against
-      // `finalAmount` (the tax-inclusive grand total) instead of
-      // `finalSubtotal` — but line items are a pre-tax breakdown (the same
-      // convention change_orders.line_items already uses: subtotal is
-      // derived from summing items, tax is applied once on top). Any
-      // itemized invoice with a non-zero, tax-EXCLUSIVE rate would always
-      // fail this check by exactly the tax amount, making that combination
-      // completely uncreatable. Tax-inclusive happened to work by
-      // coincidence, since finalAmount === finalSubtotal in that case.
-      if (Math.abs(itemSum - finalSubtotal) > 0.01) {
-        return NextResponse.json({
-          error: `Line items total ${itemSum.toFixed(2)} does not match invoice subtotal ${finalSubtotal.toFixed(2)}`,
-        }, { status: 400 })
+    // FIX (section-12 audit, pass 2 — feature gap): every cap above is PER SOURCE.
+    // Nothing looked at the project as a whole, so invoicing every milestone (which
+    // together are the contract value) AND THEN a SOW invoice for the full contract
+    // value billed the same money twice, each invoice individually under its own cap.
+    // A project-level check against contracted value (base + amendments — the same
+    // definition the Contract-position block uses) catches it. It is a confirmation,
+    // not a hard block: legitimate billing outside the contracted value exists
+    // (reimbursables, T&M overage), so the caller can acknowledge and proceed.
+    if (body.acknowledgeOverContract !== true) {
+      const position = await computeContractPosition(service, projectId)
+      if (position && position.contractedValue > 0) {
+        const { data: drafts } = await (service as any)
+          .from('invoices').select('subtotal, amount').eq('project_id', projectId).eq('status', 'draft')
+        const draftTotal = (drafts || []).reduce((s: number, i: any) => s + Number(i.subtotal ?? i.amount ?? 0), 0)
+        const projected = position.invoicedToDate + draftTotal + finalSubtotal
+        if (projected > position.contractedValue + 0.01) {
+          return NextResponse.json({
+            error: `This would bring the total invoiced on this project to ${projected.toFixed(2)} (before tax, drafts included) — more than its contracted value of ${position.contractedValue.toFixed(2)}.`,
+            code: 'over_contract',
+            contractedValue: position.contractedValue,
+            projectedInvoiced: projected,
+          }, { status: 409 })
+        }
       }
     }
 
@@ -350,26 +278,12 @@ export async function POST(request: NextRequest) {
         subtotal:      finalSubtotal,
         tax_rate:      finalTaxRate,
         tax_inclusive: finalTaxInclusive,
-        // FIX (section-12 audit): line_items is jsonb (migration 017) —
-        // JSON.stringify(...) here wrote a JSON *string* into the column
-        // instead of a native array, the exact same bug already found and
-        // fixed once for change_orders.line_items (see app/api/co/route.ts).
-        // Masked today only because both PDF-render paths defensively
-        // unwrap `typeof === 'string' ? JSON.parse(...) : ...` — but the
-        // column stops matching its own documented contract, and any
-        // future direct consumer without that unwrap breaks. Write the
-        // array directly; PostgREST/Supabase serializes it as jsonb on
-        // its own.
+        // line_items is jsonb (migration 017) — write the array directly, never a
+        // JSON string. Totals are quantity × rate, computed server-side.
         line_items:    cleanLineItems,
         currency:      project.currency || 'USD',
-        due_date:      dueDate || null,
-        // FIX (section-12 audit — feature gap): po_number (migration 011)
-        // was fully modeled and rendered in the send-email PDF, the
-        // standalone PDF download, and the client portal view — but had no
-        // write path anywhere. Every invoice this product ever generated
-        // had a blank PO-number line by construction. Cap matches the
-        // column's own documented purpose (a short client-issued
-        // reference), not an arbitrary limit.
+        due_date:      due,
+        // po_number (migration 011): a short client-issued reference.
         po_number:     poNumber?.trim().slice(0, 100) || null,
         payment_instructions: sanitizeRichTextOrNull(paymentInstructions),
         notes:         notes?.trim() || null,
@@ -379,6 +293,10 @@ export async function POST(request: NextRequest) {
       .single()
 
     if (error) {
+      // The one-live-invoice-per-milestone index (migration 069) backstops the
+      // check above against two simultaneous creates.
+      if ((error as any).code === '23505')
+        return NextResponse.json({ error: 'This milestone already has an invoice — refresh and check its billing tab.' }, { status: 409 })
       console.error('Invoice create error:', error)
       return NextResponse.json({ error: 'Failed to create invoice' }, { status: 500 })
     }
@@ -388,7 +306,7 @@ export async function POST(request: NextRequest) {
       actorId: session.id, actorEmail: session.email, actorName: session.name,
       eventType: 'invoice.created', entityType: 'invoice',
       entityId: invoice.id, entityName: invoice.title,
-      metadata: { amount: numAmount, project_id: projectId },
+      metadata: { amount: finalAmount, subtotal: finalSubtotal, project_id: projectId },
     })
 
     return NextResponse.json({ ok: true, invoice })

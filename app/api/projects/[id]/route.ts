@@ -279,7 +279,12 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
     try {
       const { data: pending } = await (service as any).from('approval_requests')
         .select('document_type, document_id')
-        .eq('workspace_id', session.workspaceId).eq('project_id', id).eq('status', 'pending')
+        .eq('workspace_id', session.workspaceId).eq('project_id', id)
+        // FIX (section-11 audit, pass 2): also the "approved but the send failed"
+        // state — it kept showing in the Approvals banner, sidebar badge and
+        // dashboard for a deleted project, and offered a retry that would try to
+        // send a document for it.
+        .or('status.eq.pending,and(status.eq.approved,send_failed_at.not.is.null)')
       for (const r of (pending || [])) {
         try {
           await cancelApprovalRequest(service, {

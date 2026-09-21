@@ -7,7 +7,7 @@
 'use client'
 import { useState, useEffect } from 'react'
 import { nanoid } from 'nanoid'
-import { formatCurrency, formatDate, invoiceStatusLabel, invoicePill } from '@/lib/utils/format'
+import { formatCurrency, formatCurrencyExact, roundCurrency, formatDate, invoiceStatusLabel, invoicePill } from '@/lib/utils/format'
 import RichTextField from '@/components/ui/RichTextField'
 
 const METHOD_LABELS: Record<string, string> = {
@@ -30,7 +30,7 @@ interface Props {
   // approval" rather than just sitting untouched, same reasoning as the
   // sow:<id>/co:<id> map ProjectDetail.tsx already threads to the SOW/CO
   // tabs. Keyed "invoice:<id>".
-  pendingApprovals?: Record<string, { id: string; current_step: number; total_steps: number }>
+  pendingApprovals?: Record<string, { id: string; current_step: number; total_steps: number; sendFailed?: boolean; sendFailedReason?: string | null }>
 }
 
 export default function BillingTab({ project, milestones, invoices, reconciliation, permissions, currency, router, defaultPaymentInstructions = '', pendingApprovals = {} }: Props) {
@@ -115,11 +115,16 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
   async function refresh() { router.refresh() }
 
   async function sendInvoice(id: string) {
+    // FIX (section-12 audit, pass 2): one click used to number the invoice, attach a PDF
+    // and email the client with no confirmation — a mis-click on a permanent, legally
+    // numbered document. SOW sends already ask first.
+    if (!confirm('Send this invoice to the client now? It will be given its permanent invoice number and emailed with a PDF, and it can no longer be edited afterwards.')) return
     setBusyId(id); setError('')
     try {
       const res = await fetch(`/api/invoices/${id}/send`, { method: 'POST' })
       const j = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(j.error || 'Failed to send invoice')
+      if (j.pendingApproval) alert('This invoice needs sign-off before it goes to the client — it has been sent for approval.')
       // FIX (Notifications & email fix round): a rejected email used to be
       // reported as a normal send. The invoice is issued either way; say so
       // when the client was NOT emailed, like the SOW and CO screens do.
@@ -133,10 +138,47 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
   async function remindInvoice(id: string) {
     setBusyId(id); setError('')
     try {
-      const res = await fetch(`/api/invoices/${id}/remind`, { method: 'POST' })
-      if (!res.ok) { const j = await res.json(); throw new Error(j.error) }
+      let res = await fetch(`/api/invoices/${id}/remind`, { method: 'POST' })
+      // The client has an open dispute — the server asks before chasing them anyway.
+      if (res.status === 409) {
+        const j = await res.clone().json().catch(() => ({}))
+        if (j.code === 'disputed') {
+          if (!confirm(`${j.error}\n\nSend the reminder anyway?`)) return
+          res = await fetch(`/api/invoices/${id}/remind`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ force: true }),
+          })
+        }
+      }
+      if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || 'Failed to send reminder') }
       alert('Reminder sent.')
     } catch (err: unknown) { setError(err instanceof Error ? err.message : 'Failed to send reminder') }
+    finally { setBusyId(null) }
+  }
+
+  // FIX (section-12 audit, pass 2): an invoice whose approval finished but whose send
+  // failed showed "Awaiting approval (n/n)" — read as still pending — with the Send
+  // button hidden and no way to retry from here. The SOW and CO tabs already handle it.
+  async function retryApprovalSend(approvalId: string, invoiceId: string) {
+    setBusyId(invoiceId); setError('')
+    try {
+      const res = await fetch(`/api/approvals/${approvalId}/retry-send`, { method: 'POST' })
+      const j = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(j.error || 'Retry failed')
+      if (j.deliveryWarning) alert(j.deliveryWarning)
+      await refresh()
+    } catch (err: unknown) { setError(err instanceof Error ? err.message : 'Retry failed') }
+    finally { setBusyId(null) }
+  }
+  async function cancelApprovalFor(approvalId: string, invoiceId: string) {
+    if (!confirm('Cancel this approved request? The invoice goes back to being an editable draft, and sending it again will need a fresh approval.')) return
+    setBusyId(invoiceId); setError('')
+    try {
+      const res = await fetch(`/api/approvals/${approvalId}/cancel`, { method: 'POST' })
+      const j = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(j.error || 'Could not cancel the request')
+      window.dispatchEvent(new Event('scopegov:approvals-changed'))
+      await refresh()
+    } catch (err: unknown) { setError(err instanceof Error ? err.message : 'Could not cancel the request') }
     finally { setBusyId(null) }
   }
 
@@ -213,7 +255,12 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
                           on the SOW/CO tabs — without this, a gated
                           invoice just silently sat there with no visible
                           explanation for why it hadn't gone out. */}
-                      {pendingApproval && (
+                      {pendingApproval && pendingApproval.sendFailed && (
+                        <span className="pill pill-red" title={pendingApproval.sendFailedReason || undefined}>
+                          <i className="ti ti-alert-triangle" style={{ fontSize: 10 }} /> Approved — not sent
+                        </span>
+                      )}
+                      {pendingApproval && !pendingApproval.sendFailed && (
                         <span className="pill pill-amber">
                           <i className="ti ti-shield-check" style={{ fontSize: 10 }} /> Awaiting approval ({pendingApproval.current_step}/{pendingApproval.total_steps})
                         </span>
@@ -254,11 +301,11 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
                   </div>
                   <div style={{ textAlign: 'right' }}>
                     <div style={{ fontSize: 17, fontFamily: 'Cormorant Garamond, Georgia, serif' }}>
-                      {formatCurrency(inv.amount, inv.currency || currency)}
+                      {formatCurrencyExact(inv.amount, inv.currency || currency)}
                     </div>
                     {inv.amount_paid > 0 && inv.status !== 'paid' && (
                       <div style={{ fontSize: 11.5, color: 'var(--green)' }}>
-                        {formatCurrency(inv.amount_paid, inv.currency || currency)} paid · {formatCurrency(balance, inv.currency || currency)} due
+                        {formatCurrencyExact(inv.amount_paid, inv.currency || currency)} paid · {formatCurrencyExact(balance, inv.currency || currency)} due
                       </div>
                     )}
                     {inv.amount_paid > 0 && permissions.sendInvoices && (
@@ -296,8 +343,18 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
                       now reject with "cancel it first" (matching SOW/CO) —
                       this button routes there instead of leaving the
                       invoice with no visible next step. */}
-                  {inv.status === 'draft' && pendingApproval && (
-                    <a href="/approvals" className="btn btn-ghost btn-xs">
+                  {inv.status === 'draft' && pendingApproval && pendingApproval.sendFailed && permissions.sendInvoices && (
+                    <>
+                      <button className="btn btn-ghost btn-sm" disabled={busyId === inv.id} onClick={() => cancelApprovalFor(pendingApproval.id, inv.id)}>
+                        Cancel request
+                      </button>
+                      <button className="btn btn-primary btn-sm" disabled={busyId === inv.id} onClick={() => retryApprovalSend(pendingApproval.id, inv.id)}>
+                        {busyId === inv.id ? <span className="spin" /> : <><i className="ti ti-refresh" style={{ fontSize: 11 }} /> Retry send</>}
+                      </button>
+                    </>
+                  )}
+                  {inv.status === 'draft' && pendingApproval && !pendingApproval.sendFailed && (
+                    <a href={`/approvals?highlight=${pendingApproval.id}`} className="btn btn-ghost btn-xs">
                       <i className="ti ti-shield-check" style={{ fontSize: 11 }} /> Awaiting approval
                     </a>
                   )}
@@ -323,7 +380,7 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
                       </a>
                       {inv.token && (
                         <button className="btn btn-ghost btn-sm" onClick={() => {
-                          navigator.clipboard.writeText(`${window.location.origin}/portal/invoice/${inv.token}`)
+                          navigator.clipboard.writeText(`${process.env.NEXT_PUBLIC_PORTAL_URL || window.location.origin}/portal/invoice/${inv.token}`)
                           alert('Client link copied.')
                         }}>
                           <i className="ti ti-link" style={{ fontSize: 11 }} /> Copy link
@@ -402,6 +459,30 @@ function PaymentsPanel({ invoice, currency, onChanged }: any) {
   const [loading, setLoading]   = useState(true)
   const [removingId, setRemovingId] = useState<string | null>(null)
   const [error, setError]       = useState('')
+  // FEATURE (section-12 audit, pass 2): fix a payment's amount / date / method /
+  // reference in place instead of deleting and re-entering it.
+  const [editId, setEditId]     = useState<string | null>(null)
+  const [draft, setDraft]       = useState<{ amount: string; paidAt: string; method: string; referenceNote: string }>({ amount: '', paidAt: '', method: 'other', referenceNote: '' })
+  const [savingEdit, setSavingEdit] = useState(false)
+  const isVoid = invoice.status === 'void'
+
+  async function saveEdit(paymentId: string) {
+    setSavingEdit(true); setError('')
+    try {
+      const res = await fetch(`/api/invoices/${invoice.id}/payments/${paymentId}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ amount: Number(draft.amount), paidAt: draft.paidAt, method: draft.method, referenceNote: draft.referenceNote }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json.error || 'Could not update that payment.')
+      const listRes = await fetch(`/api/invoices/${invoice.id}/payments`)
+      const listJson = await listRes.json().catch(() => ({}))
+      setPayments(listJson.payments || [])
+      setEditId(null)
+      await onChanged()
+    } catch (err: unknown) { setError(err instanceof Error ? err.message : 'Could not update that payment.') }
+    finally { setSavingEdit(false) }
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -438,21 +519,45 @@ function PaymentsPanel({ invoice, currency, onChanged }: any) {
         <p style={{ fontSize: 12, color: 'var(--text-3)' }}>No payments recorded yet.</p>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {payments.map((p: any) => (
+          {payments.map((p: any) => editId === p.id ? (
+            <div key={p.id} style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', fontSize: 12 }}>
+              <input type="number" className="finp" style={{ width: 110 }} step="0.01" min={0} value={draft.amount}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDraft({ ...draft, amount: e.target.value })} />
+              <input type="date" className="finp" style={{ width: 150 }} value={draft.paidAt}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDraft({ ...draft, paidAt: e.target.value })} />
+              <select className="finp" style={{ width: 140 }} value={draft.method}
+                onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setDraft({ ...draft, method: e.target.value })}>
+                {Object.entries(METHOD_LABELS).map(([k, v]) => <option key={k} value={k}>{v as string}</option>)}
+              </select>
+              <input className="finp" style={{ flex: 1, minWidth: 120 }} maxLength={500} placeholder="Reference" value={draft.referenceNote}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDraft({ ...draft, referenceNote: e.target.value })} />
+              <button className="btn btn-primary btn-xs" disabled={savingEdit} onClick={() => saveEdit(p.id)}>{savingEdit ? <span className="spin" /> : 'Save'}</button>
+              <button className="btn btn-ghost btn-xs" disabled={savingEdit} onClick={() => setEditId(null)}>Cancel</button>
+            </div>
+          ) : (
             <div key={p.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12 }}>
               <div>
-                <strong>{formatCurrency(p.amount, invoice.currency || currency)}</strong>
+                <strong>{formatCurrencyExact(p.amount, invoice.currency || currency)}</strong>
                 <span style={{ color: 'var(--text-3)' }}>
                   {' '}· {METHOD_LABELS[p.method] || p.method} · {formatDate(p.paid_at)}
                   {p.reference_note ? ` · ${p.reference_note}` : ''}
                   {p.users?.name ? ` · logged by ${p.users.name}` : ''}
                 </span>
               </div>
-              <button
-                style={{ background: 'none', border: 'none', padding: 0, color: 'var(--red)', cursor: 'pointer', fontSize: 12 }}
-                disabled={removingId === p.id} onClick={() => remove(p.id)}>
-                {removingId === p.id ? <span className="spin spin-dark" /> : 'Remove'}
-              </button>
+              {!isVoid && (
+                <span style={{ display: 'flex', gap: 10 }}>
+                  <button
+                    style={{ background: 'none', border: 'none', padding: 0, color: 'var(--text-3)', cursor: 'pointer', fontSize: 12 }}
+                    onClick={() => { setEditId(p.id); setDraft({ amount: String(p.amount), paidAt: String(p.paid_at).slice(0, 10), method: p.method, referenceNote: p.reference_note || '' }) }}>
+                    Edit
+                  </button>
+                  <button
+                    style={{ background: 'none', border: 'none', padding: 0, color: 'var(--red)', cursor: 'pointer', fontSize: 12 }}
+                    disabled={removingId === p.id} onClick={() => remove(p.id)}>
+                    {removingId === p.id ? <span className="spin spin-dark" /> : 'Remove'}
+                  </button>
+                </span>
+              )}
             </div>
           ))}
         </div>
@@ -653,14 +758,26 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
       // silently drop the tax.
       if (c) {
         setTitle(c.title)
-        if (!itemized) setAmount(String(c.total))
+        // FIX (section-12 audit, pass 2): this pre-filled the CO's GROSS total (tax
+        // included) even for a tax-EXCLUSIVE CO, where the field means the NET — the
+        // server then read 1,160 as the pre-tax figure against a 1,000 cap and refused
+        // it, so invoicing any taxed exclusive CO with the defaults always failed.
+        // Pre-fill what still remains to bill: net when tax is exclusive, grossed up
+        // when the form will treat the figure as tax-inclusive.
+        if (!itemized) {
+          const netRemaining = Number(c.remaining ?? c.subtotal ?? 0)
+          const rate = Number(c.tax_rate) || 0
+          const inclusive = (c.tax_inclusive ?? true) && rate > 0
+          setAmount(String(inclusive ? roundCurrency(netRemaining * (1 + rate / 100)) : roundCurrency(netRemaining)))
+        }
         setTaxRate(c.tax_rate != null ? String(c.tax_rate) : '0')
         setTaxInclusive(itemized ? false : (c.tax_inclusive ?? true))
       }
     }
   }
 
-  async function submit() {
+  async function submit() { await submitWith(false) }
+  async function submitWith(acknowledgeOverContract: boolean) {
     setError('')
     if (!source.type || !source.id) { setError('Select what this invoice is billing against.'); return }
     if (!title.trim()) { setError('Title is required.'); return }
@@ -681,9 +798,16 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
           milestoneId: source.type === 'milestone' ? source.id : undefined,
           sowId: source.type === 'sow' ? source.id : undefined,
           coId: source.type === 'co' ? source.id : undefined,
+          ...(acknowledgeOverContract ? { acknowledgeOverContract: true } : {}),
         }),
       })
       const json = await res.json()
+      // FIX (section-12 audit, pass 2 — feature gap): the project-level over-invoicing check.
+      if (res.status === 409 && json.code === 'over_contract') {
+        setSubmitting(false)
+        if (confirm(`${json.error}\n\nCreate this invoice anyway?`)) { await submitWith(true) }
+        return
+      }
       if (!res.ok) throw new Error(json.error)
       onCreated()
     } catch (err: unknown) {
@@ -712,19 +836,19 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 200, overflowY: 'auto' }}>
                 {milestones.map((m: any) => (
                   <SourceRow key={m.id} active={source.type === 'milestone' && source.id === m.id}
-                    label={m.title} sub={`Milestone · ${formatCurrency(m.amount, projectCurrency)}`}
+                    label={m.title} sub={`Milestone · ${formatCurrencyExact(m.amount, projectCurrency)}`}
                     onClick={() => pickSource('milestone', m.id)} />
                 ))}
                 {sows.map((s: any) => (
                   <SourceRow key={s.id} active={source.type === 'sow' && source.id === s.id}
                     label={`SOW v${s.version}`}
-                    sub={`${s.document_number || 'Signed SOW'} · ${formatCurrency(s.remaining, projectCurrency)} remaining`}
+                    sub={`${s.document_number || 'Signed SOW'} · ${formatCurrencyExact(s.remaining, projectCurrency)} remaining`}
                     onClick={() => pickSource('sow', s.id)} />
                 ))}
                 {cos.map((c: any) => (
                   <SourceRow key={c.id} active={source.type === 'co' && source.id === c.id}
                     label={c.title}
-                    sub={`Accepted CO · ${formatCurrency(c.remaining, projectCurrency)} remaining`}
+                    sub={`Accepted CO · ${formatCurrencyExact(c.remaining, projectCurrency)} remaining`}
                     onClick={() => pickSource('co', c.id)} />
                 ))}
               </div>
@@ -803,7 +927,7 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
                       value={item.rate} min={0} step="0.01"
                       onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateLineItem(item.id, 'rate', parseFloat(e.target.value) || 0)} />
                     <div style={{ width: 100, textAlign: 'right', fontSize: 13, fontFamily: 'IBM Plex Mono, monospace', color: 'var(--text-2)' }}>
-                      {formatCurrency(item.total, projectCurrency)}
+                      {formatCurrencyExact(item.total, projectCurrency)}
                     </div>
                     <div style={{ width: 32, textAlign: 'right' }}>
                       {lineItems.length > 1 && (
@@ -821,7 +945,7 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
 
                 <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', fontSize: 13, fontWeight: 600 }}>
                   <span>Total</span>
-                  <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{formatCurrency(itemsSubtotal, projectCurrency)}</span>
+                  <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{formatCurrencyExact(itemsSubtotal, projectCurrency)}</span>
                 </div>
               </div>
             )}
@@ -859,7 +983,7 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
             </div>
 
             <div style={{ marginBottom: 12 }}>
-              <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 5 }}>Due date <span style={{ fontWeight: 400, color: 'var(--text-4)' }}>— optional</span></label>
+              <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 5 }}>Due date <span style={{ fontWeight: 400, color: 'var(--text-4)' }}>— needed before it can be sent</span></label>
               <input type="date" className="finp" value={dueDate} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDueDate(e.target.value)} />
             </div>
 
@@ -1084,7 +1208,7 @@ function EditInvoiceModal({ invoiceId, projectCurrency, onClose, onSaved }: {
                       value={item.rate} min={0} step="0.01"
                       onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateLineItem(item.id, 'rate', parseFloat(e.target.value) || 0)} />
                     <div style={{ width: 100, textAlign: 'right', fontSize: 13, fontFamily: 'IBM Plex Mono, monospace', color: 'var(--text-2)' }}>
-                      {formatCurrency(item.total, projectCurrency)}
+                      {formatCurrencyExact(item.total, projectCurrency)}
                     </div>
                     <div style={{ width: 32, textAlign: 'right' }}>
                       {lineItems.length > 1 && (
@@ -1100,7 +1224,7 @@ function EditInvoiceModal({ invoiceId, projectCurrency, onClose, onSaved }: {
                 </button>
                 <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', fontSize: 13, fontWeight: 600 }}>
                   <span>Total</span>
-                  <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{formatCurrency(itemsSubtotal, projectCurrency)}</span>
+                  <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{formatCurrencyExact(itemsSubtotal, projectCurrency)}</span>
                 </div>
               </div>
             )}
@@ -1127,7 +1251,7 @@ function EditInvoiceModal({ invoiceId, projectCurrency, onClose, onSaved }: {
             </div>
 
             <div style={{ marginBottom: 12 }}>
-              <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 5 }}>Due date <span style={{ fontWeight: 400, color: 'var(--text-4)' }}>— optional</span></label>
+              <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--text-2)', marginBottom: 5 }}>Due date <span style={{ fontWeight: 400, color: 'var(--text-4)' }}>— needed before it can be sent</span></label>
               <input type="date" className="finp" value={dueDate} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDueDate(e.target.value)} />
             </div>
 
@@ -1177,7 +1301,7 @@ function SourceRow({ active, label, sub, onClick }: { active: boolean; label: st
 // ── RECORD PAYMENT ────────────────────────────────────────────
 function RecordPaymentModal({ invoice, onClose, onRecorded }: any) {
   const balance = Math.max(0, Number(invoice.amount) - Number(invoice.amount_paid))
-  const [amount, setAmount] = useState(String(balance))
+  const [amount, setAmount] = useState(roundCurrency(balance).toFixed(2))
   const [paidAt, setPaidAt] = useState(new Date().toISOString().split('T')[0])
   const [method, setMethod] = useState('bank_transfer')
   const [referenceNote, setReferenceNote] = useState('')
@@ -1206,7 +1330,7 @@ function RecordPaymentModal({ invoice, onClose, onRecorded }: any) {
       <div className="modal-bg" onClick={onClose} />
       <div className="modal" style={{ maxWidth: 440 }}>
         <h2 className="modal-title">Record payment</h2>
-        <p className="modal-sub">Log money you received outside ScopeGov for &ldquo;{invoice.title}&rdquo;. Balance due: {formatCurrency(balance, invoice.currency)}.</p>
+        <p className="modal-sub">Log money you received outside ScopeGov for &ldquo;{invoice.title}&rdquo;. Balance due: {formatCurrencyExact(balance, invoice.currency)}.</p>
         {error && <p className="ferr" style={{ marginBottom: 10 }}>{error}</p>}
 
         <div className="f2" style={{ marginBottom: 12 }}>
@@ -1248,13 +1372,18 @@ function VoidInvoiceModal({ invoice, onClose, onVoided }: any) {
   const [reason, setReason] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
+  // FIX (section-12 audit, pass 2 — feature gap): voiding a part-paid invoice used to
+  // mean deleting its payment records first. They now stay on file; the person voiding
+  // has to say why and confirm that money was already received.
+  const paid = Number(invoice.amount_paid) || 0
 
   async function submit() {
+    if (paid > 0 && !reason.trim()) { setError('Give a reason — money has already been received on this invoice.'); return }
     setError(''); setSubmitting(true)
     try {
       const res = await fetch(`/api/invoices/${invoice.id}/void`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reason: reason.trim() || undefined }),
+        body: JSON.stringify({ reason: reason.trim() || undefined, ...(paid > 0 ? { acknowledgePayments: true } : {}) }),
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error)
@@ -1270,10 +1399,15 @@ function VoidInvoiceModal({ invoice, onClose, onVoided }: any) {
       <div className="modal" style={{ maxWidth: 440 }}>
         <h2 className="modal-title">Void invoice</h2>
         <p className="modal-sub">The client&apos;s link to &ldquo;{invoice.title}&rdquo; will stop working. This can&apos;t be undone.</p>
+        {paid > 0 && (
+          <p className="ferr" style={{ marginBottom: 10 }}>
+            {formatCurrencyExact(paid, invoice.currency)} has already been received on this invoice. Voiding keeps those payment records on file — you&apos;ll need to refund or credit the client separately.
+          </p>
+        )}
         {error && <p className="ferr" style={{ marginBottom: 10 }}>{error}</p>}
         <textarea className="finp" style={{ minHeight: 70, marginBottom: 14 }} value={reason}
           onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setReason(e.target.value)}
-          placeholder="Optional: reason for voiding" />
+          placeholder={paid > 0 ? 'Reason for voiding (required — money was received)' : 'Optional: reason for voiding'} />
         <div className="modal-footer">
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
           <button className="btn btn-danger" onClick={submit} disabled={submitting}>

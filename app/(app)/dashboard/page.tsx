@@ -190,7 +190,7 @@ export default async function DashboardPage() {
   // rather than waiting out the ordinary pending-decision stall window.
   let pendingApprovalsQuery = (service as any)
     .from('approval_requests')
-    .select('project_id, created_at, send_failed_at')
+    .select('project_id, created_at, updated_at, send_failed_at')
     .eq('workspace_id', session.workspaceId)
     .or('status.eq.pending,and(status.eq.approved,send_failed_at.not.is.null)')
   if (!canViewAll) pendingApprovalsQuery = pendingApprovalsQuery.in('project_id', accessibleProjectIds || [])
@@ -198,7 +198,12 @@ export default async function DashboardPage() {
   const pendingApprovalsByProject = new Map<string, Array<{ createdAt: string; sendFailed?: boolean }>>()
   for (const r of (pendingApprovalRows || [])) {
     const list = pendingApprovalsByProject.get(r.project_id) || []
-    list.push({ createdAt: r.created_at, sendFailed: !!r.send_failed_at })
+    // FIX (section-11 audit, pass 2): the "stuck" clock is the last activity on the
+    // request (updated_at moves on every step advance/reminder — it is what the
+    // approval-stall cron uses), not its creation time: a 3-step chain whose
+    // step 3 became active an hour ago is not "stuck" just because step 1 was
+    // raised two days ago.
+    list.push({ createdAt: r.updated_at || r.created_at, sendFailed: !!r.send_failed_at })
     pendingApprovalsByProject.set(r.project_id, list)
   }
 

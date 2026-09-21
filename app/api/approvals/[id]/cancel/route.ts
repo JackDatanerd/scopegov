@@ -15,14 +15,27 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const service = createServiceClient()
     const { data: req } = await (service as any)
       .from('approval_requests')
-      .select('id, requested_by, status, document_type, document_id, project_id')
+      .select('id, requested_by, status, document_type, document_id, project_id, send_failed_at, sending_started_at')
       .eq('id', id)
       .eq('workspace_id', session.workspaceId)
       .single()
 
     if (!req) return NextResponse.json({ error: 'Approval request not found' }, { status: 404 })
-    if (req.status !== 'pending')
-      return NextResponse.json({ error: 'Only a pending request can be cancelled' }, { status: 400 })
+    // FIX (section-11 audit, pass 2): cancelApprovalRequest() has handled the
+    // "approved but the send failed" state since migration 053, but this route
+    // still refused anything that wasn't 'pending' — so a request stuck there
+    // (client email missing, project reopened later, …) could be neither retried
+    // to success nor abandoned, while the edit-lock froze the document. For a
+    // draft SOW there was no other way out at all (no delete/void route).
+    const sendFailed = req.status === 'approved' && !!req.send_failed_at
+    if (req.status !== 'pending' && !sendFailed)
+      return NextResponse.json({ error: 'Only a pending or approved-but-unsent request can be cancelled' }, { status: 400 })
+    // The last step cleared and the send is running right now — cancelling would
+    // race a document that is about to go out. (A send that died mid-flight is
+    // healed into the retryable state by the stall cron within minutes.)
+    if (req.status === 'pending' && req.sending_started_at &&
+        Date.now() - new Date(req.sending_started_at).getTime() < 2 * 60 * 1000)
+      return NextResponse.json({ error: 'This request was just approved and is being sent — give it a moment, then refresh.' }, { status: 409 })
     if (req.requested_by !== session.id && !hasPermission(session, 'MANAGE_WORKSPACE_SETTINGS'))
       return NextResponse.json({ error: 'Only the requester or an admin can cancel this' }, { status: 403 })
     // FIX (fix round, section-11 finding): recordApprovalDecision treats
@@ -46,7 +59,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       documentType: req.document_type, documentId: req.document_id,
       workspaceId: session.workspaceId,
       actorId: session.id, actorEmail: session.email, actorName: session.name,
-      reason: req.requested_by === session.id ? 'Cancelled by requester' : 'Cancelled by admin',
+      reason: (sendFailed ? 'Abandoned after a failed send — ' : '') + (req.requested_by === session.id ? 'Cancelled by requester' : 'Cancelled by admin'),
     })
 
     return NextResponse.json({ ok: true })

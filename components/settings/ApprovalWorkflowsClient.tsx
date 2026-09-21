@@ -11,7 +11,7 @@ import { formatCurrency } from '@/lib/utils/format'
 import { CURRENCIES } from '@/lib/constants/workspace-options'
 
 interface Role { id: string; name: string; canApprove: boolean }
-interface Member { id: string; name: string; email: string; canApprove: boolean }
+interface Member { id: string; name: string; email: string; roleId: string | null; canApprove: boolean }
 interface WorkflowStep {
   id: string
   step_order: number
@@ -28,7 +28,20 @@ interface Workflow {
   threshold_currency: string | null
   is_active: boolean
   created_at: string
+  allow_self_approval: boolean
+  require_distinct_approvers: boolean
+  apply_to_other_currencies: boolean
   approval_workflow_steps: WorkflowStep[]
+}
+
+// FEATURE (section-11 audit, pass 2): how many active members could actually decide a step right now —
+// a named person who still holds the approve permission, or the members holding an assigned role who do.
+// The list view flags steps that have nobody, instead of letting a workflow look healthy while every
+// document it governs is undecidable.
+function eligibleCount(step: { approver_role_id: string | null; approver_user_id: string | null }, members: Member[]): number {
+  if (step.approver_user_id) return members.some(m => m.id === step.approver_user_id && m.canApprove) ? 1 : 0
+  if (step.approver_role_id) return members.filter(m => m.roleId === step.approver_role_id && m.canApprove).length
+  return 0
 }
 
 // FIX (section-12 audit — flagship feature gap): 'invoice' added as a
@@ -48,8 +61,8 @@ function newStep(): StepDraft {
   return { key: Math.random().toString(36).slice(2), kind: '', id: '' }
 }
 
-export default function ApprovalWorkflowsClient({ initialWorkflows, roles, members, workspaceCurrency }: {
-  initialWorkflows: Workflow[]; roles: Role[]; members: Member[]; workspaceCurrency?: string
+export default function ApprovalWorkflowsClient({ initialWorkflows, roles, members, workspaceCurrency, projectCurrencies = [] }: {
+  initialWorkflows: Workflow[]; roles: Role[]; members: Member[]; workspaceCurrency?: string; projectCurrencies?: string[]
 }) {
   const router = useRouter()
   const [workflows, setWorkflows] = useState<Workflow[]>(initialWorkflows)
@@ -142,6 +155,25 @@ export default function ApprovalWorkflowsClient({ initialWorkflows, roles, membe
                         .slice().sort((a, b) => a.step_order - b.step_order)
                         .map(s => s.roles?.name || s.user?.name || '—').join(' → ')}
                     </div>
+                    {(() => {
+                      const broken = w.approval_workflow_steps
+                        .slice().sort((a, b) => a.step_order - b.step_order)
+                        .filter(s => eligibleCount(s, members) === 0)
+                      const flags: string[] = []
+                      if (w.allow_self_approval) flags.push('requester may approve')
+                      if (w.require_distinct_approvers) flags.push('different approver per step')
+                      if (w.apply_to_other_currencies && w.threshold_amount != null) flags.push('other currencies gated too')
+                      return (
+                        <>
+                          {broken.length > 0 && (
+                            <div style={{ fontSize: 11.5, color: 'var(--red)', marginTop: 4 }}>
+                              <i className="ti ti-alert-triangle" style={{ fontSize: 11 }} /> Step{broken.length > 1 ? 's' : ''} {broken.map(s => s.step_order).join(', ')} {broken.length > 1 ? 'have' : 'has'} nobody who can approve right now (approver left, lost the Approve documents permission, or the role is empty) — anything this rule governs will be held with no one able to clear it.
+                            </div>
+                          )}
+                          {flags.length > 0 && <div style={{ fontSize: 11, color: 'var(--text-4)', marginTop: 3 }}>{flags.join(' · ')}</div>}
+                        </>
+                      )
+                    })()}
                   </div>
                   <button className="btn btn-ghost btn-sm" onClick={() => setEditing(w)}>Edit</button>
                   <button className="btn btn-ghost btn-sm" onClick={() => remove(w)} disabled={busyId === w.id}>
@@ -161,6 +193,7 @@ export default function ApprovalWorkflowsClient({ initialWorkflows, roles, membe
           roles={roles}
           members={members}
           workspaceCurrency={workspaceCurrency}
+          projectCurrencies={projectCurrencies}
           onClose={() => setEditing(null)}
           onSaved={() => { setEditing(null); refresh() }}
         />
@@ -169,10 +202,10 @@ export default function ApprovalWorkflowsClient({ initialWorkflows, roles, membe
   )
 }
 
-function WorkflowEditorModal({ workflow, defaultType, roles, members, workspaceCurrency, onClose, onSaved }: {
+function WorkflowEditorModal({ workflow, defaultType, roles, members, workspaceCurrency, projectCurrencies, onClose, onSaved }: {
   workflow: Workflow | null
   defaultType: 'sow' | 'co' | 'invoice'
-  roles: Role[]; members: Member[]; workspaceCurrency?: string
+  roles: Role[]; members: Member[]; workspaceCurrency?: string; projectCurrencies: string[]
   onClose: () => void; onSaved: () => void
 }) {
   const isEdit = !!workflow
@@ -197,8 +230,28 @@ function WorkflowEditorModal({ workflow, defaultType, roles, members, workspaceC
           .map(s => ({ key: s.id, kind: s.approver_role_id ? 'role' : 'user', id: (s.approver_role_id || s.approver_user_id)! }))
       : [newStep()]
   )
+  // Policy switches (migration 069). Distinct approvers defaults ON for a new workflow: a
+  // multi-step chain exists to collect several sign-offs, and one person clearing
+  // every step defeats it. Self-approval defaults OFF.
+  const [allowSelfApproval, setAllowSelfApproval] = useState(workflow?.allow_self_approval ?? false)
+  const [requireDistinct, setRequireDistinct] = useState(workflow?.require_distinct_approvers ?? true)
+  const [applyOtherCurrencies, setApplyOtherCurrencies] = useState(workflow?.apply_to_other_currencies ?? false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+
+  // Live warnings — a workflow that saves fine but can never clear is worse than one that refuses to save.
+  const approverPool = members.filter(m => m.canApprove)
+  const chosenSteps = steps.filter(s => s.kind && s.id)
+  const stepProblems: string[] = []
+  chosenSteps.forEach((s, i) => {
+    const n = eligibleCount({ approver_role_id: s.kind === 'role' ? s.id : null, approver_user_id: s.kind === 'user' ? s.id : null }, members)
+    if (n === 0) stepProblems.push(`Step ${i + 1} has nobody who can approve it right now.`)
+  })
+  const soleApprover = approverPool.length === 1 && !allowSelfApproval
+  const notEnoughForDistinct = requireDistinct && chosenSteps.length > 1 && approverPool.length < chosenSteps.length
+  const uncoveredCurrencies = hasThreshold && !applyOtherCurrencies
+    ? projectCurrencies.filter(c => c !== thresholdCurrency)
+    : []
 
   function updateStep(key: string, patch: Partial<StepDraft>) {
     setSteps(ss => ss.map(s => s.key === key ? { ...s, ...patch } : s))
@@ -235,6 +288,9 @@ function WorkflowEditorModal({ workflow, defaultType, roles, members, workspaceC
         name: name.trim(),
         thresholdAmount: hasThreshold && threshold !== '' ? Number(threshold) : null,
         thresholdCurrency: hasThreshold && threshold !== '' ? thresholdCurrency : null,
+        allowSelfApproval,
+        requireDistinctApprovers: requireDistinct && cleanSteps.length > 1,
+        applyToOtherCurrencies: hasThreshold && threshold !== '' && applyOtherCurrencies,
         steps: cleanSteps.map(s => s.kind === 'role' ? { approverRoleId: s.id } : { approverUserId: s.id }),
       }
       const res = await fetch(isEdit ? `/api/approval-workflows/${workflow!.id}` : '/api/approval-workflows', {
@@ -350,6 +406,38 @@ function WorkflowEditorModal({ workflow, defaultType, roles, members, workspaceC
             <i className="ti ti-plus" style={{ fontSize: 12 }} /> Add step
           </button>
         </div>
+
+        <div className="fgrp">
+          <label className="flbl">Rules</label>
+          {steps.length > 1 && (
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 13, marginBottom: 8 }}>
+              <input type="checkbox" style={{ marginTop: 3 }} checked={requireDistinct} onChange={e => setRequireDistinct(e.target.checked)} />
+              <span>A different person must approve each step<br />
+                <span className="fhint" style={{ margin: 0 }}>Without this, someone who qualifies for every step can clear the whole chain alone.</span></span>
+            </label>
+          )}
+          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 13, marginBottom: 8 }}>
+            <input type="checkbox" style={{ marginTop: 3 }} checked={allowSelfApproval} onChange={e => setAllowSelfApproval(e.target.checked)} />
+            <span>The person who sends it may also approve it<br />
+              <span className="fhint" style={{ margin: 0 }}>Off by default. Turn on for a solo or very small team where the same person is the only approver.</span></span>
+          </label>
+          {hasThreshold && (
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 13 }}>
+              <input type="checkbox" style={{ marginTop: 3 }} checked={applyOtherCurrencies} onChange={e => setApplyOtherCurrencies(e.target.checked)} />
+              <span>Also require this approval for documents in other currencies<br />
+                <span className="fhint" style={{ margin: 0 }}>Amounts are never converted, so every document in another currency is held, whatever its size.</span></span>
+            </label>
+          )}
+        </div>
+
+        {(stepProblems.length > 0 || soleApprover || notEnoughForDistinct || uncoveredCurrencies.length > 0) && (
+          <div className="auth-error" style={{ marginBottom: 14, borderColor: 'var(--amber)', color: 'var(--text)' }}>
+            {stepProblems.map(p => <div key={p}>{p}</div>)}
+            {soleApprover && <div>Only one person can approve documents at the moment, and they can&apos;t approve their own sends — anything they send would be stuck. Tick &ldquo;The person who sends it may also approve it&rdquo;, or give someone else the Approve documents permission.</div>}
+            {notEnoughForDistinct && <div>This chain has {chosenSteps.length} steps but only {approverPool.length} member{approverPool.length === 1 ? '' : 's'} can approve — sends will be refused until there are enough different approvers.</div>}
+            {uncoveredCurrencies.length > 0 && <div>Projects billed in {uncoveredCurrencies.join(', ')} won&apos;t be held by this rule (it only compares {thresholdCurrency} amounts). Tick &ldquo;Also require this approval for documents in other currencies&rdquo; to cover them.</div>}
+          </div>
+        )}
 
         <div className="modal-footer">
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>

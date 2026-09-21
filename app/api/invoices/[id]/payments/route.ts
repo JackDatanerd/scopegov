@@ -8,6 +8,8 @@ import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { sendInvoicePaymentRecordedEmail } from '@/lib/email/templates'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { canReadProject } from '@/lib/utils/project-access'
+import { parseDateOnly } from '@/lib/documents/invoice-totals'
+import { roundCurrency } from '@/lib/utils/format'
 
 const VALID_METHODS = ['bank_transfer', 'stripe', 'check', 'cash', 'other']
 
@@ -49,15 +51,30 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!hasPermission(session, 'SEND_INVOICES'))
       return NextResponse.json({ error: 'Missing permission: SEND_INVOICES' }, { status: 403 })
 
-    const body = await request.json()
-    const amount = Number(body?.amount)
-    const paidAt: string | undefined = body?.paidAt
-    const method: string = VALID_METHODS.includes(body?.method) ? body.method : 'other'
-    const referenceNote: string | undefined = body?.referenceNote?.trim()
+    const body = await request.json().catch(() => null)
+    if (!body || typeof body !== 'object' || Array.isArray(body))
+      return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
 
-    if (!amount || amount <= 0)
+    // FIX (section-12 audit, pass 2): none of this was validated. A non-string
+    // `referenceNote` threw (opaque 500), an unparseable `paidAt` reached the
+    // database (500), a date in the future was accepted, and the amount was stored
+    // exactly as typed — more than two decimals included.
+    const rawAmount = Number(body.amount)
+    if (!Number.isFinite(rawAmount) || rawAmount <= 0 || rawAmount > 1_000_000_000_000)
       return NextResponse.json({ error: 'Amount must be a positive number' }, { status: 400 })
-    if (!paidAt) return NextResponse.json({ error: 'paidAt (date received) is required' }, { status: 400 })
+    const amount = roundCurrency(rawAmount)
+    if (amount <= 0) return NextResponse.json({ error: 'Amount must be at least 0.01' }, { status: 400 })
+    if (!body.paidAt) return NextResponse.json({ error: 'paidAt (date received) is required' }, { status: 400 })
+    const paidAt = parseDateOnly(body.paidAt)
+    if (!paidAt) return NextResponse.json({ error: 'Date received must be a valid date' }, { status: 400 })
+    if (paidAt > new Date(Date.now() + 86400000).toISOString().slice(0, 10))
+      return NextResponse.json({ error: "Date received can't be in the future" }, { status: 400 })
+    const method: string = VALID_METHODS.includes(body.method) ? body.method : 'other'
+    if (body.referenceNote != null && typeof body.referenceNote !== 'string')
+      return NextResponse.json({ error: 'Reference note must be text' }, { status: 400 })
+    const referenceNote: string | undefined = body.referenceNote?.trim() || undefined
+    if (referenceNote && referenceNote.length > 500)
+      return NextResponse.json({ error: 'Reference note must be under 500 characters' }, { status: 400 })
 
     const service = createServiceClient()
     const { data: invoice } = await (service as any)
@@ -134,7 +151,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       actorEmail: session.email, actorName: session.name,
       eventType: 'invoice.payment_recorded', entityType: 'invoice',
       entityId: id, entityName: invoice.title,
-      metadata: { amount, method, is_fully_paid: isFullyPaid },
+      metadata: { amount, method, paid_at: paidAt, is_fully_paid: isFullyPaid },
     })
 
     await notifyMembersWithPermission(service, {
@@ -142,7 +159,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       eventType: 'invoice_payment_received',
       type: isFullyPaid ? 'invoice_paid' : 'invoice_payment_received',
       title: isFullyPaid ? `Invoice paid in full — ${invoice.projects?.name}` : `Payment received — ${invoice.projects?.name}`,
-      body: `${invoice.projects?.clients?.name || 'Client'} paid ${invoice.currency} ${amount.toLocaleString()} on "${invoice.title}"`,
+      body: `${invoice.projects?.clients?.name || 'Client'} paid ${invoice.currency} ${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} on "${invoice.title}"`,
       // FIX (audit): entity_type was 'invoice' with entityId = invoice id, but
       // NotificationBell's entityHref() only resolves 'project' / 'project_message'
       // / 'approval_request' — clicking these notifications did nothing. Point at

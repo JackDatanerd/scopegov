@@ -108,7 +108,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     try {
       const { data: pending } = await (service as any).from('approval_requests')
         .select('document_type, document_id')
-        .eq('workspace_id', session.workspaceId).eq('project_id', id).eq('status', 'pending')
+        .eq('workspace_id', session.workspaceId).eq('project_id', id)
+        // Includes approved-but-send-failed requests: once the project is complete
+        // a SOW/CO retry can never succeed, and the request would sit un-cancellable.
+        .or('status.eq.pending,and(status.eq.approved,send_failed_at.not.is.null)')
         .in('document_type', SCOPE_CHANGE_DOCUMENT_TYPES)
       for (const r of (pending || [])) {
         try {

@@ -10,7 +10,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { permissionsBeyondCeiling, permissionsBeyondActorForTarget, roleWithinCeiling } from '@/lib/utils/permission-ceiling'
 import { isProtectedOwnerTarget, OWNER_PROTECTED_MESSAGE } from '@/lib/utils/owner-protection'
 import { parsePermissionMap } from '@/lib/utils/permission-map'
-import { mergePermissions, protectedPermissionsOrphanedBy, describeProtectedPermission, PROTECTED_PERMISSIONS } from '@/lib/utils/admin-floor'
+import { mergePermissions, protectedPermissionsOrphanedBy, describeProtectedPermission, PROTECTED_PERMISSIONS, approvalPermissionOrphanedBy, APPROVE_DOCUMENTS_ORPHAN_MESSAGE } from '@/lib/utils/admin-floor'
 import { checkSeatLimit } from '@/lib/utils/seat-limit'
 import { diffOverrides } from '@/lib/utils/permission-diff'
 
@@ -321,6 +321,16 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const finalOverrides = newOverrides !== undefined ? newOverrides : targetMember.permission_overrides
     const finalRolePermissions = newRolePermissions !== undefined ? newRolePermissions : oldRolePermissions
     const simulatedPerms = mergePermissions(finalRolePermissions, finalOverrides)
+
+    // Application-layer floor for APPROVE_DOCUMENTS — see approvalPermissionOrphanedBy.
+    if (targetMember.effective_permissions?.['APPROVE_DOCUMENTS'] === true && simulatedPerms!['APPROVE_DOCUMENTS'] !== true) {
+      const { data: approvalMembers } = await service
+        .from('workspace_members').select('id,effective_permissions')
+        .eq('workspace_id', session.workspaceId).eq('status', 'active')
+      const approvalSnapshot = (approvalMembers || []).map((m: any) => ({ id: m.id, effectivePermissions: m.effective_permissions }))
+      if (approvalPermissionOrphanedBy(approvalSnapshot, new Map([[id, simulatedPerms]])))
+        return NextResponse.json({ error: APPROVE_DOCUMENTS_ORPHAN_MESSAGE }, { status: 409 })
+    }
 
     const losing = PROTECTED_PERMISSIONS.filter(
       perm => targetMember.effective_permissions?.[perm] === true && simulatedPerms![perm] !== true

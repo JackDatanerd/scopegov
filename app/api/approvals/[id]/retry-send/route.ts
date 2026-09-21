@@ -47,7 +47,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     })
 
     if (!result.ok) return NextResponse.json({ error: result.error }, { status: 400 })
-    return NextResponse.json({ ok: true })
+    return NextResponse.json({ ok: true, ...(result.deliveryWarning ? { deliveryWarning: result.deliveryWarning } : {}) })
   } catch (err) {
     console.error('Approval retry-send error:', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

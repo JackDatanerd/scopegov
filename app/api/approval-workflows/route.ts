@@ -26,6 +26,7 @@ export async function GET() {
       .from('approval_workflows')
       .select(`
         id, document_type, name, threshold_amount, threshold_currency, is_active, created_at,
+        allow_self_approval, require_distinct_approvers, apply_to_other_currencies,
         approval_workflow_steps(id, step_order, approver_role_id, approver_user_id,
           roles(id, name),
           user:users!approval_workflow_steps_approver_user_id_fkey(id, name, email))
@@ -67,6 +68,16 @@ export async function POST(request: NextRequest) {
       ? (typeof body?.thresholdCurrency === 'string' && body.thresholdCurrency ? body.thresholdCurrency : 'USD').toUpperCase()
       : null
     const steps: Array<{ approverRoleId?: string; approverUserId?: string }> = Array.isArray(body?.steps) ? body.steps : []
+    // FIX (section-11 audit, pass 2 — feature gaps): three explicit policy
+    // switches the engine had no way to express. See migration 069.
+    for (const key of ['allowSelfApproval', 'requireDistinctApprovers', 'applyToOtherCurrencies']) {
+      if (body[key] !== undefined && typeof body[key] !== 'boolean')
+        return NextResponse.json({ error: `${key} must be true or false` }, { status: 400 })
+    }
+    const allowSelfApproval        = body.allowSelfApproval === true
+    const requireDistinctApprovers = body.requireDistinctApprovers === true
+    // Only meaningful for a thresholded workflow — a catch-all already gates every currency.
+    const applyToOtherCurrencies   = thresholdAmount != null && body.applyToOtherCurrencies === true
 
     if (!['sow', 'co', 'invoice'].includes(documentType))
       return NextResponse.json({ error: 'documentType must be "sow", "co", or "invoice"' }, { status: 400 })
@@ -185,6 +196,9 @@ export async function POST(request: NextRequest) {
         name,
         threshold_amount: thresholdAmount,
         threshold_currency: thresholdCurrency,
+        allow_self_approval: allowSelfApproval,
+        require_distinct_approvers: requireDistinctApprovers,
+        apply_to_other_currencies: applyToOtherCurrencies,
         is_active: true,
         created_by: session.id,
       })
@@ -226,7 +240,10 @@ export async function POST(request: NextRequest) {
       actorId: session.id, actorEmail: session.email, actorName: session.name,
       eventType: 'approval_workflow.created', entityType: 'approval_workflow',
       entityId: workflow.id, entityName: name,
-      metadata: { document_type: documentType, threshold_amount: thresholdAmount, threshold_currency: thresholdCurrency, steps: steps.length },
+      metadata: {
+        document_type: documentType, threshold_amount: thresholdAmount, threshold_currency: thresholdCurrency, steps: steps.length,
+        allow_self_approval: allowSelfApproval, require_distinct_approvers: requireDistinctApprovers, apply_to_other_currencies: applyToOtherCurrencies,
+      },
     })
 
     return NextResponse.json({ ok: true, id: workflow.id })

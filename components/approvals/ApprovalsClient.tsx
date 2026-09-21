@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import type { SessionUser } from '@/lib/supabase/types'
-import { formatCurrency, formatRelative } from '@/lib/utils/format'
+import { formatCurrencyExact, formatRelative } from '@/lib/utils/format'
 
 interface Step {
   id: string
@@ -21,27 +21,38 @@ interface Step {
 
 interface ApprovalRequest {
   id: string
-  // FIX (section-11/12 audit): runtime values include 'co_counter'
-  // (accepting a negotiated counter-offer) and 'invoice' — this type
-  // previously omitted both.
+  // Runtime values include 'co_counter' (accepting a negotiated counter-offer)
+  // and 'invoice'.
   document_type: 'sow' | 'co' | 'co_counter' | 'invoice'
   document_id: string
   project_id: string
   status: 'pending' | 'approved' | 'rejected' | 'cancelled'
   current_step: number
   total_steps: number
-  context: { title?: string; amount?: number; currency?: string; project_name?: string }
+  // amount is null for a viewer without VIEW_FINANCIALS who isn't the approver/requester.
+  context: { title?: string; amount?: number | null; currency?: string; project_name?: string }
   created_at: string
   decided_at: string | null
   requested_by: string
-  // FIX (section-11 fix round, flagship finding): see migration 053 — set
-  // when the auto-send that fires on final approval fails.
+  // Set when the auto-send that fires on final approval fails (migration 053).
   send_failed_at: string | null
   send_failed_reason: string | null
+  // The document WAS sent but the client email was rejected (migration 069).
+  delivery_warning: string | null
+  // Set while the auto-send after the final approval is running (migration 069).
+  sending_started_at: string | null
+  allow_self_approval: boolean
+  require_distinct_approvers: boolean
+  reminder_count: number
+  // Computed by the server for THIS viewer: assigned to the current step, holds
+  // the approve permission, and isn't blocked by the requester / distinct-approver rules.
+  canDecide: boolean
   requester: { id: string; name: string; email: string } | null
   projects: { id: string; name: string } | null
   approval_steps: Step[]
 }
+
+type Tab = 'mine' | 'submitted' | 'all'
 
 function documentLabelFor(documentType: ApprovalRequest['document_type']): string {
   if (documentType === 'sow') return 'SOW'
@@ -50,63 +61,83 @@ function documentLabelFor(documentType: ApprovalRequest['document_type']): strin
   return 'Change order'
 }
 
-// FIX (section-11 fix round, flagship feature gap): neither the table row
-// nor the detail modal ever linked to the actual document being decided —
-// an approver saw only a title string and a dollar figure, with no way to
-// open the real SOW sections / CO line items / invoice before approving
-// or rejecting it. canReadProject already gates who's allowed to decide
-// (see recordApprovalDecision in lib/approvals/engine.ts), so anyone
-// eligible to act here is already entitled to view the project's SOW/CO/
-// billing tab — this was a pure UI omission, not a permissions gap.
+function shortTypeLabel(documentType: ApprovalRequest['document_type']): string {
+  return documentType === 'sow' ? 'SOW' : documentType === 'invoice' ? 'Invoice' : documentType === 'co_counter' ? 'CO counter' : 'CO'
+}
+
+// Which project tab shows the document being decided, so an approver can open
+// it before deciding. canReadProject already gates who may decide, so anyone
+// eligible is entitled to that tab.
 function tabForDocumentType(documentType: ApprovalRequest['document_type']): string {
   if (documentType === 'sow') return 'sow'
   if (documentType === 'invoice') return 'billing'
   return 'co' // 'co' and 'co_counter' both live on the CO tab
 }
 
-// FIX (fix round, section-11 flagship finding): a send-failed request
-// (status='approved', send_failed_at set) rendered as a plain "Approved"
-// pill here — visually identical to a request that actually went out —
-// so the one place meant to give a workspace-wide view of every approval
-// request showed nothing to distinguish a silently-stuck one from a
-// successful one.
-function requestPill(status: string, sendFailed?: boolean): string {
-  if (status === 'approved' && sendFailed) return 'red'
-  const m: Record<string, string> = { pending: 'amber', approved: 'green', rejected: 'red', cancelled: 'slate' }
-  return m[status] || 'slate'
+// A send-failed request (status='approved', send_failed_at set) must not read
+// as a plain "Approved" — it never reached the client.
+function isSending(r: Pick<ApprovalRequest, 'status' | 'sending_started_at'>): boolean {
+  return r.status === 'pending' && !!r.sending_started_at
 }
-function requestLabel(status: string, sendFailed?: boolean): string {
-  if (status === 'approved' && sendFailed) return 'Approved — not sent'
+function requestPill(r: ApprovalRequest): string {
+  if (r.status === 'approved' && r.send_failed_at) return 'red'
+  if (r.status === 'approved' && r.delivery_warning) return 'amber'
+  if (isSending(r)) return 'amber'
+  const m: Record<string, string> = { pending: 'amber', approved: 'green', rejected: 'red', cancelled: 'slate' }
+  return m[r.status] || 'slate'
+}
+function requestLabel(r: ApprovalRequest): string {
+  if (r.status === 'approved' && r.send_failed_at) return 'Approved — not sent'
+  if (r.status === 'approved' && r.delivery_warning) return 'Sent — email bounced'
+  if (isSending(r)) return 'Sending…'
   const m: Record<string, string> = { pending: 'Pending', approved: 'Approved', rejected: 'Rejected', cancelled: 'Cancelled' }
-  return m[status] || status
+  return m[r.status] || r.status
 }
 
-export default function ApprovalsClient({ session, canViewAll, canManageWorkflows }: {
-  session: SessionUser; canViewAll: boolean; canManageWorkflows: boolean
+const STATUS_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: '', label: 'All statuses' },
+  { value: 'pending', label: 'Pending' },
+  { value: 'approved', label: 'Approved' },
+  { value: 'rejected', label: 'Rejected' },
+  { value: 'cancelled', label: 'Cancelled' },
+]
+const TYPE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: '', label: 'All documents' },
+  { value: 'sow', label: 'SOWs' },
+  { value: 'co', label: 'Change orders' },
+  { value: 'co_counter', label: 'CO counter-offers' },
+  { value: 'invoice', label: 'Invoices' },
+]
+
+export default function ApprovalsClient({ session, canViewAll, canManageWorkflows, canApprove }: {
+  session: SessionUser; canViewAll: boolean; canManageWorkflows: boolean; canApprove: boolean
 }) {
   const searchParams = useSearchParams()
   const highlight = searchParams.get('highlight')
 
-  const [tab, setTab] = useState<'mine' | 'all'>('mine')
+  // FIX (section-11 audit, pass 2): a requester without approve/oversight
+  // permissions had no way to see, track or cancel their own pending request —
+  // the "submitted" list only ever fed the send-failed banner. Everyone now gets
+  // a "My requests" tab.
+  const tabs: Array<{ id: Tab; label: string }> = []
+  if (canApprove || canViewAll) tabs.push({ id: 'mine', label: 'My queue' })
+  tabs.push({ id: 'submitted', label: 'My requests' })
+  if (canViewAll) tabs.push({ id: 'all', label: 'All requests' })
+
+  const [tab, setTab] = useState<Tab>(canApprove || canViewAll ? 'mine' : 'submitted')
   const [items, setItems] = useState<ApprovalRequest[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [selected, setSelected] = useState<ApprovalRequest | null>(null)
-  // FIX (section-11 fix round, flagship finding — completing the
-  // send_failed_at fix): fetched independently of the mine/all tabs above,
-  // since a request needing a retry belongs to the ORIGINAL REQUESTER —
-  // who may hold neither the approving role ("mine") nor canViewAll
-  // ("all"). Without this, an ordinary team member who just gets the
-  // notification telling them to "open it in Approvals to retry" would
-  // land on a page with no way to actually find their own request.
+  const [statusFilter, setStatusFilter] = useState('')
+  const [typeFilter, setTypeFilter] = useState('')
+  // Requests the caller submitted that were approved but not sent — fetched
+  // independently of the tabs, since they belong to the ORIGINAL REQUESTER who
+  // may hold neither the approving role nor oversight permissions.
   const [needsRetry, setNeedsRetry] = useState<ApprovalRequest[]>([])
-  const [retryingId, setRetryingId] = useState<string | null>(null)
-  // FIX (fix round, section-11 finding): this used to be derived from
-  // `items`, which only ever holds whichever tab is currently loaded —
-  // so the count on the "My queue" button itself disappeared the moment
-  // you switched to "All requests", unlike the Sidebar's badge (same
-  // underlying number) which fetches independently and stays live no
-  // matter what page or tab you're on. Fetched the same way here now.
+  const [busyId, setBusyId] = useState<string | null>(null)
+  // The "My queue" count fetched independently so it stays live on any tab
+  // (same number the Sidebar badge shows).
   const [mineCount, setMineCount] = useState<number | null>(null)
 
   const loadMineCount = useCallback(async () => {
@@ -114,11 +145,11 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
       const res  = await fetch('/api/approvals?scope=mine')
       const json = await res.json()
       if (!res.ok) return
-      setMineCount((json.requests || []).filter((r: ApprovalRequest) => r.status === 'pending').length)
+      setMineCount((json.requests || []).length)
     } catch { /* non-fatal — the button just shows no count */ }
   }, [])
 
-  const load = useCallback(async (scope: 'mine' | 'all') => {
+  const load = useCallback(async (scope: Tab) => {
     setLoading(true); setError('')
     try {
       const res  = await fetch(`/api/approvals?scope=${scope}`)
@@ -135,39 +166,42 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
       const res  = await fetch('/api/approvals?scope=submitted')
       const json = await res.json()
       if (!res.ok) return
-      setNeedsRetry((json.requests || []).filter((r: ApprovalRequest) => !!r.send_failed_at))
+      setNeedsRetry((json.requests || []).filter((r: ApprovalRequest) => r.status === 'approved' && !!r.send_failed_at))
     } catch { /* non-fatal — the notification is still the primary signal */ }
   }, [])
 
   useEffect(() => { load(tab) }, [tab, load])
   useEffect(() => { loadNeedsRetry() }, [loadNeedsRetry])
-  useEffect(() => { loadMineCount() }, [loadMineCount])
+  useEffect(() => { if (canApprove || canViewAll) loadMineCount() }, [canApprove, canViewAll, loadMineCount])
 
-  async function retrySend(id: string) {
-    setRetryingId(id)
+  async function post(id: string, action: 'retry-send' | 'cancel') {
+    setBusyId(id); setError('')
     try {
-      const res  = await fetch(`/api/approvals/${id}/retry-send`, { method: 'POST' })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error || 'Retry failed')
+      const res  = await fetch(`/api/approvals/${id}/${action}`, { method: 'POST' })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json.error || (action === 'retry-send' ? 'Retry failed' : 'Could not cancel'))
       await Promise.all([load(tab), loadNeedsRetry(), loadMineCount()])
       window.dispatchEvent(new Event('scopegov:approvals-changed'))
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Retry failed')
-    } finally { setRetryingId(null) }
+      setError(err instanceof Error ? err.message : 'Something went wrong')
+    } finally { setBusyId(null) }
   }
 
-  // Auto-open the request linked from a notification.
-  // FIX (Notifications & email fix round): ?highlight= only searched the tab that happened to be
-  // loaded ("Assigned to me"), so a link to a request you SUBMITTED (approved / rejected / send
-  // failed) or one you can only see under "All" opened the page and then did nothing. It now checks
-  // the loaded tab, then requests you submitted, then (if you may) everything — once.
-  const highlightTried = useRef<string | null>(null)
+  // Auto-open the request linked from a notification or a project tab — ONCE.
+  // FIX (section-11 audit, pass 2): this effect re-ran whenever the item list
+  // changed and re-selected the highlighted request every time, so after an
+  // action (or after switching to the "All requests" tab) the modal for the
+  // request you had just decided popped straight back open. openedHighlight
+  // makes the auto-open a one-shot.
+  const openedHighlight = useRef<string | null>(null)
+  const searchedHighlight = useRef<string | null>(null)
   useEffect(() => {
     if (!highlight || loading) return
+    if (openedHighlight.current === highlight) return
     const local = items.find(r => r.id === highlight) || needsRetry.find(r => r.id === highlight)
-    if (local) { setSelected(local); return }
-    if (highlightTried.current === highlight) return
-    highlightTried.current = highlight
+    if (local) { openedHighlight.current = highlight; setSelected(local); return }
+    if (searchedHighlight.current === highlight) return
+    searchedHighlight.current = highlight
     ;(async () => {
       for (const scope of (canViewAll ? ['submitted', 'all'] : ['submitted'])) {
         try {
@@ -175,43 +209,33 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
           const json = await res.json()
           if (!res.ok) continue
           const found = (json.requests || []).find((r: ApprovalRequest) => r.id === highlight)
-          if (found) { setSelected(found); return }
+          if (found) { openedHighlight.current = highlight; setSelected(found); return }
         } catch { /* try the next scope */ }
       }
     })()
   }, [highlight, items, needsRetry, loading, canViewAll])
 
-  function myEligibleStep(r: ApprovalRequest): Step | null {
-    const step = r.approval_steps.find(s => s.step_order === r.current_step)
-    if (!step || step.status !== 'pending') return null
-    if (step.approver_user_id) return step.approver_user_id === session.id ? step : null
-    // Role-based eligibility is enforced server-side (we don't know the
-    // viewer's role_id here) — the button just fires and the API is the
-    // real gatekeeper if this optimistic check is ever wrong.
-    return step
-  }
-
   async function refreshAfterAction() {
     setSelected(null)
-    await Promise.all([load(tab), loadMineCount()])
-    // FIX (section-11 audit, flagship finding): Sidebar's pending-count
-    // badge only ever refetched on a `pathname` change — approving/
-    // rejecting/cancelling from this page doesn't navigate anywhere, so
-    // the badge sat stale (still showing the pre-action count) for the
-    // rest of the visit. Dispatch a plain DOM event Sidebar listens for,
-    // rather than reaching for a heavier shared-state solution for what
-    // is, in the whole app, a single cross-component refresh signal.
+    await Promise.all([load(tab), loadNeedsRetry(), loadMineCount()])
+    // Sidebar's pending-count badge refetches on this plain DOM event (approving
+    // from this page doesn't navigate anywhere).
     window.dispatchEvent(new Event('scopegov:approvals-changed'))
   }
 
-  const pendingMineCount = mineCount
+  const visible = tab === 'mine'
+    ? items
+    : items.filter(r =>
+        (!statusFilter || r.status === statusFilter) &&
+        (!typeFilter || r.document_type === typeFilter)
+      )
 
   return (
     <div className="page">
       <div className="page-hd">
         <div>
           <h1 className="page-title">Approvals</h1>
-          <p className="page-sub">Sign-offs required before a SOW or change order reaches the client</p>
+          <p className="page-sub">Sign-offs required before a SOW, change order or invoice reaches the client</p>
         </div>
         {canManageWorkflows && (
           <Link href="/settings/approvals">
@@ -234,23 +258,44 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
                     {r.projects?.name || r.context?.project_name} · {r.send_failed_reason}
                   </div>
                 </div>
-                <button className="btn btn-primary btn-sm" onClick={() => retrySend(r.id)} disabled={retryingId === r.id}>
-                  {retryingId === r.id ? <span className="spin" /> : 'Retry send'}
-                </button>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  {/* FIX (section-11 audit, pass 2): a send-failed request could be retried
+                      but never abandoned — and the document stayed edit-locked meanwhile. */}
+                  <button className="btn btn-ghost btn-sm" onClick={() => {
+                    if (confirm('Cancel this approved request? The document goes back to being an editable draft, and sending it again will need a fresh approval.')) post(r.id, 'cancel')
+                  }} disabled={busyId === r.id}>
+                    Cancel request
+                  </button>
+                  <button className="btn btn-primary btn-sm" onClick={() => post(r.id, 'retry-send')} disabled={busyId === r.id}>
+                    {busyId === r.id ? <span className="spin" /> : 'Retry send'}
+                  </button>
+                </div>
               </div>
             ))}
           </div>
         </div>
       )}
 
-      {canViewAll && (
-        <div style={{ display: 'flex', gap: 6, marginBottom: 18 }}>
-          <button className={`btn btn-sm ${tab === 'mine' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('mine')}>
-            My queue{pendingMineCount ? ` (${pendingMineCount})` : ''}
-          </button>
-          <button className={`btn btn-sm ${tab === 'all' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('all')}>
-            All requests
-          </button>
+      {tabs.length > 1 && (
+        <div style={{ display: 'flex', gap: 6, marginBottom: 18, flexWrap: 'wrap' }}>
+          {tabs.map(t => (
+            <button key={t.id} className={`btn btn-sm ${tab === t.id ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab(t.id)}>
+              {t.label}{t.id === 'mine' && mineCount ? ` (${mineCount})` : ''}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {tab !== 'mine' && (
+        <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
+          <select className="finp" style={{ width: 'auto' }} value={statusFilter}
+            onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setStatusFilter(e.target.value)}>
+            {STATUS_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+          <select className="finp" style={{ width: 'auto' }} value={typeFilter}
+            onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setTypeFilter(e.target.value)}>
+            {TYPE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
         </div>
       )}
 
@@ -258,15 +303,21 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
 
       {loading ? (
         <div className="surface"><div className="empty-state"><span className="spin spin-dark" /></div></div>
-      ) : items.length === 0 ? (
+      ) : visible.length === 0 ? (
         <div className="surface">
           <div className="empty-state">
             <i className="ti ti-shield-check empty-state-icon" />
-            <p className="empty-state-title">{tab === 'mine' ? 'Nothing waiting on you' : 'No approval requests yet'}</p>
+            <p className="empty-state-title">
+              {tab === 'mine' ? 'Nothing waiting on you'
+                : items.length > 0 ? 'No requests match these filters'
+                : tab === 'submitted' ? 'You haven\u2019t sent anything for approval' : 'No approval requests yet'}
+            </p>
             <p className="empty-state-sub">
               {tab === 'mine'
                 ? 'Documents gated by an approval workflow will show up here when it\u2019s your turn to decide.'
-                : 'Once a workflow is configured, SOWs and change orders that trip it will appear here.'}
+                : tab === 'submitted'
+                ? 'When a SOW, change order or invoice you send needs sign-off, you can follow (and cancel) it here.'
+                : 'Once a workflow is configured, SOWs, change orders and invoices that trip it will appear here.'}
             </p>
           </div>
         </div>
@@ -285,26 +336,19 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
               </tr>
             </thead>
             <tbody>
-              {items.map(r => (
+              {visible.map(r => (
                 <tr key={r.id} onClick={() => setSelected(r)}>
                   <td>
                     <span style={{ fontWeight: 500 }}>{r.context?.title || documentLabelFor(r.document_type)}</span>
-                    {/* FIX (section-11/12 audit, flagship finding): a
-                        'co_counter' request (accepting a client's negotiated
-                        counter-offer) or an 'invoice' request rendered an
-                        identical "CO"/generic pill — no way to tell them
-                        apart from this list. */}
-                    <span className="pill pill-slate pill-sm" style={{ marginLeft: 8 }}>
-                      {r.document_type === 'sow' ? 'SOW' : r.document_type === 'invoice' ? 'Invoice' : r.document_type === 'co_counter' ? 'CO counter' : 'CO'}
-                    </span>
+                    <span className="pill pill-slate pill-sm" style={{ marginLeft: 8 }}>{shortTypeLabel(r.document_type)}</span>
                   </td>
                   <td>{r.projects?.name || r.context?.project_name || '—'}</td>
                   <td>{r.requester?.name || '—'}</td>
                   <td style={{ fontFamily: 'IBM Plex Mono, monospace', fontSize: 12 }}>{r.current_step} / {r.total_steps}</td>
                   <td style={{ fontFamily: 'IBM Plex Mono, monospace' }}>
-                    {r.context?.amount != null ? formatCurrency(r.context.amount, r.context.currency || 'USD') : '—'}
+                    {r.context?.amount != null ? formatCurrencyExact(r.context.amount, r.context.currency || 'USD') : '—'}
                   </td>
-                  <td><span className={`pill pill-${requestPill(r.status, !!r.send_failed_at)}`}>{requestLabel(r.status, !!r.send_failed_at)}</span></td>
+                  <td><span className={`pill pill-${requestPill(r)}`}>{requestLabel(r)}</span></td>
                   <td style={{ color: 'var(--text-3)', fontSize: 12 }}>{formatRelative(r.created_at)}</td>
                 </tr>
               ))}
@@ -317,7 +361,6 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
         <ApprovalDetailModal
           request={selected}
           session={session}
-          eligibleStep={myEligibleStep(selected)}
           canManageWorkflows={canManageWorkflows}
           onClose={() => setSelected(null)}
           onDone={refreshAfterAction}
@@ -327,45 +370,35 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
   )
 }
 
-function ApprovalDetailModal({ request, session, eligibleStep, canManageWorkflows, onClose, onDone }: {
+function ApprovalDetailModal({ request, session, canManageWorkflows, onClose, onDone }: {
   request: ApprovalRequest
   session: SessionUser
-  eligibleStep: Step | null
   canManageWorkflows: boolean
   onClose: () => void
   onDone: () => void
 }) {
-  const [acting, setActing]   = useState<'approve' | 'reject' | 'cancel' | 'retry-send' | null>(null)
+  const [acting, setActing]   = useState<'approve' | 'reject' | 'cancel' | 'retry-send' | 'reassign' | null>(null)
   const [note, setNote]       = useState('')
   const [showReject, setShowReject] = useState(false)
   const [error, setError]     = useState('')
+  const [showReassign, setShowReassign] = useState(false)
+  const [candidates, setCandidates] = useState<{ users: Array<{ id: string; name: string; email: string }>; roles: Array<{ id: string; name: string }> } | null>(null)
+  const [assignee, setAssignee] = useState('')
+  const [reassignReason, setReassignReason] = useState('')
 
   const isRequester = request.requested_by === session.id
-  // FIX (section-11/12 audit, flagship finding): document_type can also be
-  // 'co_counter' (approving acceptance of a client's negotiated
-  // counter-offer) or 'invoice' — collapsing either into plain "Change
-  // order" made that decision indistinguishable from an ordinary CO send
-  // approval. Mirrors the same fix in lib/approvals/engine.ts.
   const documentLabel = documentLabelFor(request.document_type)
-  // FIX (fix round, section-11 finding): this only ever checked
-  // isRequester — the retry-send/cancel API routes have always allowed a
-  // MANAGE_WORKSPACE_SETTINGS admin to act on someone else's request (see
-  // those routes' own comments), but the button to do either was never
-  // rendered for that admin at all, since canManageWorkflows (already
-  // passed into ApprovalsClient for the "Configure workflows" link) was
-  // never threaded down into this modal. The API-level capability existed
-  // but was completely unreachable from the product.
-  const canCancel = (isRequester || canManageWorkflows) && request.status === 'pending'
-  const canRetrySend = (isRequester || canManageWorkflows) && request.status === 'approved' && !!request.send_failed_at
-  // FIX (section-11 audit, flagship finding): eligibleStep only ever
-  // checked whether the signed-in member is the assigned approver
-  // (named user or role) for the current step — never whether they're
-  // also the person who requested this send. The server now rejects a
-  // self-decision (see recordApprovalDecision), but the button was still
-  // shown, live, to the requester whenever they also happened to hold
-  // the approving role — clicking it just produced a confusing 403.
-  // Suppress it client-side and say why.
-  const selfApprovalBlocked = isRequester && !!eligibleStep
+  const sending = isSending(request)
+  const sendFailed = request.status === 'approved' && !!request.send_failed_at
+  // The requester or a workspace admin can cancel a pending request — and, now,
+  // abandon an approved-but-unsent one (the cancel route accepts it).
+  const canCancel = (isRequester || canManageWorkflows) && ((request.status === 'pending' && !sending) || sendFailed)
+  const canRetrySend = (isRequester || canManageWorkflows) && sendFailed
+  // The server computes this for the viewer (assigned to the current step, holds
+  // the approve permission, not blocked by the requester/distinct rules).
+  const canDecide = request.canDecide
+  const canReassign = canManageWorkflows && request.status === 'pending' && !sending
+  const currentStep = request.approval_steps.find(s => s.step_order === request.current_step)
 
   async function act(action: 'approve' | 'reject' | 'cancel' | 'retry-send', body?: Record<string, unknown>) {
     setActing(action); setError('')
@@ -375,11 +408,44 @@ function ApprovalDetailModal({ request, session, eligibleStep, canManageWorkflow
         headers: body ? { 'Content-Type': 'application/json' } : undefined,
         body: body ? JSON.stringify(body) : undefined,
       })
-      const json = await res.json()
+      const json = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(json.error || `Failed to ${action}`)
+      // Approved and sent, but the client email bounced — say so before closing.
+      if (action === 'approve' && json.deliveryWarning) alert(json.deliveryWarning)
+      if (action === 'retry-send' && json.deliveryWarning) alert(json.deliveryWarning)
       onDone()
     } catch (err) {
       setError(err instanceof Error ? err.message : `Failed to ${action}`)
+    } finally { setActing(null) }
+  }
+
+  async function openReassign() {
+    setShowReassign(true); setError('')
+    if (candidates) return
+    try {
+      const res  = await fetch(`/api/approvals/${request.id}/approvers`)
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error || 'Could not load approvers')
+      setCandidates({ users: json.users || [], roles: json.roles || [] })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load approvers')
+    }
+  }
+
+  async function submitReassign() {
+    if (!assignee) return
+    setActing('reassign'); setError('')
+    try {
+      const [kind, id] = assignee.split(':')
+      const res  = await fetch(`/api/approvals/${request.id}/reassign`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [kind === 'role' ? 'roleId' : 'userId']: id, reason: reassignReason }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json.error || 'Could not reassign this step')
+      onDone()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not reassign this step')
     } finally { setActing(null) }
   }
 
@@ -390,7 +456,7 @@ function ApprovalDetailModal({ request, session, eligibleStep, canManageWorkflow
         <h2 className="modal-title">{request.context?.title || documentLabel}</h2>
         <p className="modal-sub">
           {documentLabel} on {request.projects?.name || request.context?.project_name} · requested by {request.requester?.name}
-          {request.context?.amount != null && <> · {formatCurrency(request.context.amount, request.context.currency || 'USD')}</>}
+          {request.context?.amount != null && <> · {formatCurrencyExact(request.context.amount, request.context.currency || 'USD')}</>}
         </p>
         {request.projects?.id && (
           <p className="modal-sub" style={{ marginTop: -8, marginBottom: 14 }}>
@@ -402,16 +468,29 @@ function ApprovalDetailModal({ request, session, eligibleStep, canManageWorkflow
 
         {error && <div className="auth-error" style={{ marginBottom: 14 }}>{error}</div>}
 
-        {/* FIX (fix round, section-11 flagship finding): before this, a
-            fully-approved-but-send-failed request looked identical to an
-            ordinary successful "Approved" one everywhere in this table —
-            this banner and the retry button below are the only place in
-            the whole product (besides the original requester's one-time
-            email) that ever surfaces this state or offers a way to fix it. */}
-        {request.status === 'approved' && request.send_failed_at && (
+        {sendFailed && (
           <div className="auth-error" style={{ marginBottom: 14 }}>
             <strong>Approved, but couldn&apos;t be sent.</strong> {request.send_failed_reason || 'The send failed.'}
+            <div style={{ marginTop: 6, fontSize: 12 }}>
+              Retry once the problem is fixed — no re-approval is needed. Or cancel this request to make the document editable again (sending it afterwards will need a new approval).
+            </div>
           </div>
+        )}
+        {request.status === 'approved' && !request.send_failed_at && request.delivery_warning && (
+          <div className="auth-error" style={{ marginBottom: 14, borderColor: 'var(--amber)', color: 'var(--text)' }}>
+            <strong>Sent — but the client email didn&apos;t go out.</strong> {request.delivery_warning}
+          </div>
+        )}
+        {sending && (
+          <div className="surface-p" style={{ marginBottom: 14, fontSize: 12.5, color: 'var(--text-2)' }}>
+            Fully approved — the {documentLabel.toLowerCase()} is being sent to the client now. Refresh in a moment.
+          </div>
+        )}
+        {(request.allow_self_approval || request.require_distinct_approvers) && request.status === 'pending' && (
+          <p style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 10 }}>
+            {request.require_distinct_approvers && 'Each step must be approved by a different person. '}
+            {request.allow_self_approval && 'The person who requested this may approve it.'}
+          </p>
         )}
 
         <div style={{ marginBottom: 18 }}>
@@ -444,7 +523,7 @@ function ApprovalDetailModal({ request, session, eligibleStep, canManageWorkflow
                   </div>
                   <div style={{ fontSize: 12, color: 'var(--text-3)' }}>
                     {step.status === 'pending' && 'Awaiting decision'}
-                    {step.status === 'skipped' && 'Skipped — request cancelled'}
+                    {step.status === 'skipped' && 'Skipped — request closed'}
                     {(step.status === 'approved' || step.status === 'rejected') && (
                       <>{step.status === 'approved' ? 'Approved' : 'Rejected'} by {step.decider?.name || '—'}
                         {step.decided_at && <> · {formatRelative(step.decided_at)}</>}</>
@@ -460,27 +539,71 @@ function ApprovalDetailModal({ request, session, eligibleStep, canManageWorkflow
             ))}
         </div>
 
-        {showReject && (
-          <div className="fgrp">
-            <label className="flbl">Reason for rejection</label>
-            <textarea className="finp" rows={3} value={note} autoFocus
-              onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setNote(e.target.value)}
-              placeholder="Explain what needs to change before this can go out…" />
+        {showReassign && (
+          <div className="fgrp" style={{ marginBottom: 14 }}>
+            <label className="flbl">Hand step {request.current_step} to</label>
+            {!candidates ? (
+              <span className="spin spin-dark" />
+            ) : (
+              <>
+                <select className="finp" value={assignee}
+                  onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setAssignee(e.target.value)}>
+                  <option value="">Choose an approver…</option>
+                  {candidates.users.length > 0 && (
+                    <optgroup label="People">
+                      {candidates.users
+                        .filter(u => u.id !== currentStep?.approver_user_id)
+                        .map(u => <option key={u.id} value={`user:${u.id}`}>{u.name}</option>)}
+                    </optgroup>
+                  )}
+                  {candidates.roles.length > 0 && (
+                    <optgroup label="Anyone holding a role">
+                      {candidates.roles
+                        .filter(r => r.id !== currentStep?.approver_role_id)
+                        .map(r => <option key={r.id} value={`role:${r.id}`}>Any {r.name}</option>)}
+                    </optgroup>
+                  )}
+                </select>
+                <input className="finp" style={{ marginTop: 8 }} maxLength={500} value={reassignReason}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setReassignReason(e.target.value)}
+                  placeholder="Reason (optional) — recorded in the audit log" />
+                <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                  <button className="btn btn-primary btn-sm" onClick={submitReassign} disabled={!assignee || !!acting}>
+                    {acting === 'reassign' ? <span className="spin" /> : 'Reassign step'}
+                  </button>
+                  <button className="btn btn-ghost btn-sm" onClick={() => setShowReassign(false)} disabled={!!acting}>Never mind</button>
+                </div>
+              </>
+            )}
           </div>
         )}
 
-        {selfApprovalBlocked && (
+        {canDecide && (
+          <div className="fgrp">
+            <label className="flbl">{showReject ? 'Reason for rejection' : 'Note (optional)'}</label>
+            <textarea className="finp" rows={3} value={note} maxLength={2000}
+              onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setNote(e.target.value)}
+              placeholder={showReject ? 'Explain what needs to change before this can go out…' : 'Anything the requester should know about this sign-off…'} />
+          </div>
+        )}
+
+        {isRequester && request.status === 'pending' && !request.allow_self_approval && !canDecide && (
           <p style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 4 }}>
             You requested this — it needs to be decided by someone else.
           </p>
         )}
 
         <div className="modal-footer" style={{ justifyContent: 'space-between' }}>
-          <div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {canCancel && (
-              <button className="btn btn-ghost" onClick={() => act('cancel')} disabled={!!acting}>
-                {acting === 'cancel' ? <span className="spin" /> : 'Cancel request'}
+              <button className="btn btn-ghost" onClick={() => {
+                if (!sendFailed || confirm('Cancel this approved request? The document goes back to being an editable draft, and sending it again will need a fresh approval.')) act('cancel')
+              }} disabled={!!acting}>
+                {acting === 'cancel' ? <span className="spin" /> : sendFailed ? 'Cancel request' : 'Cancel request'}
               </button>
+            )}
+            {canReassign && !showReassign && (
+              <button className="btn btn-ghost" onClick={openReassign} disabled={!!acting}>Reassign step</button>
             )}
             {canRetrySend && (
               <button className="btn btn-primary" onClick={() => act('retry-send')} disabled={!!acting}>
@@ -490,17 +613,17 @@ function ApprovalDetailModal({ request, session, eligibleStep, canManageWorkflow
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="btn btn-ghost" onClick={onClose}>Close</button>
-            {eligibleStep && !selfApprovalBlocked && !showReject && (
+            {canDecide && !showReject && (
               <>
                 <button className="btn btn-ghost" onClick={() => setShowReject(true)} disabled={!!acting}>
                   Reject
                 </button>
-                <button className="btn btn-primary" onClick={() => act('approve')} disabled={!!acting}>
+                <button className="btn btn-primary" onClick={() => act('approve', note.trim() ? { note: note.trim() } : {})} disabled={!!acting}>
                   {acting === 'approve' ? <span className="spin" /> : 'Approve'}
                 </button>
               </>
             )}
-            {eligibleStep && !selfApprovalBlocked && showReject && (
+            {canDecide && showReject && (
               <button className="btn btn-primary" onClick={() => act('reject', { note })} disabled={!!acting || !note.trim()}>
                 {acting === 'reject' ? <span className="spin" /> : 'Submit rejection'}
               </button>
