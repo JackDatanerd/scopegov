@@ -13,7 +13,13 @@ type ProjectType = typeof PROJECT_TYPES[number]
 
 const PAYMENT_STRUCTURES = ['50_50', '100_upfront', 'milestones', 'monthly', 'on_delivery'] as const
 
-export const REVISION_ROUNDS_MAX = 20
+// FIX (traced while verifying the Workspace lifecycle + Onboarding round —
+// pre-existing, confirmed on unmodified HEAD, unrelated to this round's own
+// changes): a route file may only export the specific fields Next.js's route
+// type-checking recognizes (GET/POST/etc., runtime, config, ...) — exporting
+// an arbitrary named constant from one broke `next build` entirely for the
+// whole app. Only used within this file, so it doesn't need to be exported.
+const REVISION_ROUNDS_MAX = 20
 const GOVERNING_LAW_MAX = 200
 
 // undefined = not specified (caller means "global"); null = explicitly global;

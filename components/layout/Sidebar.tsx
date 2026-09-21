@@ -44,6 +44,21 @@ export default function Sidebar({ session }: { session: SessionUser }) {
   const [workspaces,   setWorkspaces]   = useState<WorkspaceOption[]>([])
   const [switching,    setSwitching]    = useState(false)
   const [leavingId,    setLeavingId]    = useState<string | null>(null)
+  // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — feature
+  // gap): workspace/restore (migration 065) was only ever reachable from
+  // the onboarding page's own 'create' gate — which only renders when
+  // onboarding-status has NOTHING active to show the user. The instant
+  // someone has even one other active membership (their own second
+  // workspace, or just being invited somewhere else), onboarding-status
+  // resolves 'complete' and bounces straight to /dashboard before that
+  // gate — and its restore-fetch effect — ever mounts. There was no
+  // restore entry point anywhere else in the app. This switcher is
+  // already the one place an existing user reaches regardless of
+  // onboarding status (see the "Create new workspace" link just below,
+  // fixed for the identical reachability gap in round 3) — surfacing
+  // restore here too closes it the same way.
+  const [restorable,   setRestorable]   = useState<Array<{ id: string; agencyName: string }>>([])
+  const [restoringId,  setRestoringId]  = useState<string | null>(null)
   const [pendingApprovals, setPendingApprovals] = useState(0)
   const switcherRef = useRef<HTMLDivElement>(null)
 
@@ -144,6 +159,12 @@ export default function Sidebar({ session }: { session: SessionUser }) {
     if (!switcherOpen && workspaces.length === 0) {
       fetch('/api/workspace/list').then(r => r.json()).then(json => setWorkspaces(json.workspaces || [])).catch(() => {})
     }
+    // Best-effort, same as the workspace list fetch above — a failed
+    // lookup just means the "recently deleted" section doesn't show,
+    // never a blocker for the switcher itself.
+    if (!switcherOpen && restorable.length === 0) {
+      fetch('/api/workspace/restore').then(r => r.json()).then(json => setRestorable(json.restorable || [])).catch(() => {})
+    }
   }
 
   // Close on outside click
@@ -171,6 +192,23 @@ export default function Sidebar({ session }: { session: SessionUser }) {
         window.location.href = '/dashboard'
       }
     } finally { setSwitching(false) }
+  }
+
+  async function restoreWorkspace(workspaceId: string, name: string) {
+    if (!confirm(`Restore "${name}"? It'll come back exactly as it was when it was deleted.`)) return
+    setRestoringId(workspaceId)
+    try {
+      const res  = await fetch('/api/workspace/restore', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) { alert(json.error || 'Could not restore that workspace.'); return }
+      // Full reload, same reasoning as switchWorkspace above — every
+      // server component reading session data off active_workspace_id
+      // needs to see the newly-restored workspace.
+      window.location.href = '/dashboard'
+    } finally { setRestoringId(null) }
   }
 
   async function leaveWorkspace(workspaceId: string, name: string) {
@@ -260,6 +298,21 @@ export default function Sidebar({ session }: { session: SessionUser }) {
                 </div>
               ))}
             </div>
+            {restorable.length > 0 && (
+              <div style={{ borderTop: '1px solid var(--border)', padding: '8px 12px' }}>
+                <p style={{ fontSize: 10.5, color: 'var(--text-3)', marginBottom: 4 }}>Recently deleted</p>
+                {restorable.map(w => (
+                  <button key={w.id} type="button" onClick={() => restoreWorkspace(w.id, w.agencyName)}
+                    disabled={restoringId === w.id}
+                    style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: '4px 0', cursor: 'pointer', fontSize: 12, color: 'var(--text-2)' }}>
+                    {restoringId === w.id
+                      ? <span className="spin spin-dark" style={{ width: 11, height: 11 }} />
+                      : <i className="ti ti-history" style={{ fontSize: 12 }} />}
+                    Restore &quot;{w.agencyName}&quot;
+                  </button>
+                ))}
+              </div>
+            )}
             {/* FIX (round 3, Workspace lifecycle Finding 1 — severe): this
                 used to link straight to /onboarding with no signal of
                 intent. onboarding-status returns 'complete' the instant

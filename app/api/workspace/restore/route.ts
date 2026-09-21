@@ -18,6 +18,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { resumePaystackSubscription } from '@/lib/integrations/paystack'
+import { alertBillingOps } from '@/lib/billing/ops-alert'
 import { sendWorkspaceRestoredEmail } from '@/lib/email/templates'
 
 const RESTORE_WINDOW_DAYS = 30
@@ -92,6 +93,22 @@ export async function POST(request: NextRequest) {
           error: `This workspace was deleted more than ${RESTORE_WINDOW_DAYS} days ago and can no longer be restored. Contact support@scopegov.app if you need help.`,
         }, { status: 409 })
       }
+      // FIX (deep audit, Workspace lifecycle + Onboarding re-pass —
+      // Restore feature): restore_workspace_atomic's own UPDATE clears
+      // deleted_at unconditionally, and can collide with migration 019's
+      // one_active_trial_per_creator partial unique index — reachable
+      // whenever this SAME creator used the onboarding wizard's own 24h
+      // "discard and start over" grace window (migration 048) to spin up
+      // a brand-new replacement trial workspace before coming back to
+      // restore the original. workspace/create already gives this exact
+      // conflict a clear, actionable message; restore fell through to
+      // the generic 500 below with no explanation at all. Match create's
+      // handling.
+      if (rpcError.code === '23505' && msg.includes('one_active_trial_per_creator')) {
+        return NextResponse.json({
+          error: 'You already have another active trial workspace. Delete or upgrade it first, or contact support@scopegov.app, before restoring this one.',
+        }, { status: 409 })
+      }
       console.error('restore_workspace_atomic failed:', JSON.stringify(rpcError))
       return NextResponse.json({ error: 'Failed to restore workspace' }, { status: 500 })
     }
@@ -108,14 +125,53 @@ export async function POST(request: NextRequest) {
     // required as a precondition. Never blocks the restore, which has
     // already succeeded by this point — same discipline every other
     // best-effort step in this section already follows.
+    //
+    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass —
+    // flagship finding): this used to call resumePaystackSubscription and
+    // stop there. billing/resume/route.ts's near-identical call to the
+    // same helper always follows it with a local write clearing
+    // cancels_at_period_end back to false — with its own comment
+    // explaining exactly why: "Left as-is, the period-end sweep would
+    // downgrade a customer who is still being charged." That write was
+    // missing here. Concretely: workspace/delete's cancellation never set
+    // cancels_at_period_end itself either, but Paystack's own
+    // subscription.disable/not_renew webhook self-heals it to true while
+    // the workspace sits deleted — there is no equivalent
+    // subscription.enable webhook handler to self-heal the other
+    // direction. Left unfixed, a restored-and-still-paying workspace
+    // would keep cancels_at_period_end stuck at true indefinitely, and
+    // the first time cron/payment-overdue's step 5 finds
+    // current_period_end in the past (any renewal-processing lag is
+    // enough, since charge.success never touches this flag either) it
+    // force-downgrades the workspace to Solo and nulls out its still-live
+    // paystack_subscription_code/paystack_customer_code — silently
+    // ejecting a paying customer from their plan while Paystack keeps
+    // charging them. Mirrors billing/resume's retry-once +
+    // alert-a-human-on-persistent-failure discipline exactly, since the
+    // failure mode (Paystack re-enabled, local flag stuck) is identical.
     try {
       const { data: billing } = await (service as any)
         .from('billing')
-        .select('paystack_subscription_code, paystack_email_token')
+        .select('paystack_subscription_code, paystack_email_token, cancels_at_period_end')
         .eq('workspace_id', workspaceId).maybeSingle()
       if (billing?.paystack_subscription_code) {
         const result = await resumePaystackSubscription(billing)
-        if (!result.ok) console.error('Paystack resume after workspace restore failed (non-fatal):', result.error)
+        if (!result.ok) {
+          console.error('Paystack resume after workspace restore failed (non-fatal):', result.error)
+        } else if (billing.cancels_at_period_end) {
+          const localUpdate = () => (service as any).from('billing').update({
+            cancels_at_period_end: false, updated_at: new Date().toISOString(),
+          }).eq('workspace_id', workspaceId)
+          let upd = await localUpdate()
+          if (upd.error) upd = await localUpdate()
+          if (upd.error) {
+            await alertBillingOps(service, `billing:restore-resume-local-write:${workspaceId}`, 'Resume-on-restore not recorded locally', [
+              `workspace: ${workspaceId}`,
+              `Paystack subscription was RE-ENABLED on workspace restore but billing.cancels_at_period_end could not be cleared: ${upd.error.message}`,
+              'Left as-is, the period-end sweep would downgrade a customer who is still being charged.',
+            ])
+          }
+        }
       }
     } catch (e) { console.error('Billing resume after workspace restore threw (non-fatal):', e) }
 
