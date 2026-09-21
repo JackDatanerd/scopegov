@@ -277,6 +277,19 @@ function NewProjectPageInner() {
     } finally { setBriefParsing(false) }
   }
 
+  // FEATURE GAP closed (Projects & Dashboard deep audit): the step
+  // indicator has always advertised a third step, "Review & Send", but
+  // nothing ever set step to 2 and there was no step===2 block — "Generate
+  // SOW" on step 1 fired the AI generation and navigated away immediately,
+  // with no checkpoint to catch a wrong client, a typo'd deliverable, or a
+  // premature click before that (costed, non-trivial) generation ran. This
+  // makes the step real: it advances to a read-only summary first: the
+  // actual "Generate SOW" call now happens from here, not from step 1.
+  function goToReview() {
+    if (!objective && !deliverables) return
+    setStep(2)
+  }
+
   async function handleBriefSubmit() {
     if (!projectId) return
     setLoading(true); setError('')
@@ -558,7 +571,63 @@ function NewProjectPageInner() {
 
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 20 }}>
               <button className="btn btn-ghost" onClick={() => setStep(0)}>← Back</button>
-              <button className="btn btn-primary" onClick={handleBriefSubmit} disabled={loading || (!objective && !deliverables)}>
+              <button className="btn btn-primary" onClick={goToReview} disabled={!objective && !deliverables}>
+                Review <i className="ti ti-arrow-right" style={{ fontSize: 12 }} />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* STEP 2: Review & Send */}
+        {step === 2 && (
+          <div>
+            <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 24, fontWeight: 400, marginBottom: 6 }}>Review &amp; send</h2>
+            <p style={{ fontSize: 13, color: 'var(--text-3)', marginBottom: 20 }}>
+              Last check before Guardian generates the SOW from this brief. You&apos;ll review the drafted
+              document itself — and send it — from the project&apos;s SOW tab next.
+            </p>
+            {error && <div className="auth-error">{error}</div>}
+
+            <div className="surface surface-p" style={{ marginBottom: 16 }}>
+              <div className="sec-title" style={{ marginBottom: 10 }}>Client &amp; basics</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px 20px', fontSize: 13 }}>
+                <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Client</div><div>{clientName || '—'}</div></div>
+                <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Project</div><div>{projectName || '—'}</div></div>
+                <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Type</div><div>{PROJECT_TYPES.find(pt => pt.key === projectType)?.label || projectType}</div></div>
+                <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Contract value</div><div>{contractValue ? `${currency} ${contractValue}` : '—'}</div></div>
+              </div>
+            </div>
+
+            <div className="surface surface-p" style={{ marginBottom: 16 }}>
+              <div className="sec-title" style={{ marginBottom: 10 }}>Brief</div>
+              {objective && (
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 2 }}>Objective</div>
+                  <div style={{ fontSize: 13, whiteSpace: 'pre-wrap' }}>{objective}</div>
+                </div>
+              )}
+              {deliverables && (
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 2 }}>Deliverables</div>
+                  <div style={{ fontSize: 13, whiteSpace: 'pre-wrap' }}>{deliverables}</div>
+                </div>
+              )}
+              {outOfScope && (
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 2 }}>Out of scope</div>
+                  <div style={{ fontSize: 13, whiteSpace: 'pre-wrap' }}>{outOfScope}</div>
+                </div>
+              )}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px 20px', fontSize: 13 }}>
+                <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Timeline</div><div>{timeline || '—'}</div></div>
+                <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Payment</div><div>{paymentStructure.replace(/_/g, ' ')}</div></div>
+                <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Revisions</div><div>{revisionRounds} round{revisionRounds !== '1' ? 's' : ''}</div></div>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 20 }}>
+              <button className="btn btn-ghost" onClick={() => setStep(1)} disabled={loading}>← Back to brief</button>
+              <button className="btn btn-primary" onClick={handleBriefSubmit} disabled={loading}>
                 {loading ? <><span className="spin" /> Generating SOW…</> : <><i className="ti ti-wand" style={{ fontSize: 12 }} /> Generate SOW</>}
               </button>
             </div>

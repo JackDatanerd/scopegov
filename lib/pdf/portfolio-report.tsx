@@ -168,7 +168,9 @@ function PortfolioReportDocument({ report }: { report: PortfolioReportData }) {
                 <Text style={[s.td, { width: FLAG_COL.severity, textTransform: 'capitalize' }]}>{f.severity}</Text>
                 <View style={{ flex: 1 }}>
                   <Text style={s.td}>{fmtDate(f.createdAt)}</Text>
-                  {canViewFinancials && f.contractValue ? (
+                  {/* FIX (fix round, Portfolio section 8): truthy check hid a genuine
+                      $0 contract value; the CSV export of this same data shows 0. */}
+                  {canViewFinancials && f.contractValue != null ? (
                     <Text style={s.tdSub}>{fmtMoney(f.contractValue, f.currency)}</Text>
                   ) : null}
                 </View>
@@ -197,7 +199,9 @@ function PortfolioReportDocument({ report }: { report: PortfolioReportData }) {
                 </View>
                 <Text style={[s.td, { width: STALL_COL.since }]}>{fmtDate(item.since)}</Text>
                 <Text style={[s.td, { flex: 1 }]}>
-                  {canViewFinancials && item.amount ? fmtMoney(item.amount, item.currency || 'USD') : '—'}
+                  {/* FIX (fix round, Portfolio section 8): same $0-hidden issue as the
+                      open-flags table above. */}
+                  {canViewFinancials && item.amount != null ? fmtMoney(item.amount, item.currency || 'USD') : '—'}
                 </Text>
               </View>
             ))}

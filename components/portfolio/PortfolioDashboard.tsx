@@ -300,7 +300,11 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName, canO
                         </td>
                         {canViewFinancials && (
                           <td className="td-mono" style={{ textAlign: 'right' }}>
-                            {f.contractValue ? formatCurrency(f.contractValue, f.currency) : '—'}
+                            {/* FIX (fix round, Portfolio section 8): a truthy check hid a
+                                genuine $0 contract value (a pro-bono project, e.g.) as '—',
+                                while the CSV export showed it as 0 for the same data — an
+                                explicit null check keeps this in sync with the export. */}
+                            {f.contractValue != null ? formatCurrency(f.contractValue, f.currency) : '—'}
                           </td>
                         )}
                         <td style={{ color: 'var(--text-3)', fontSize: 12.5 }}>{formatRelative(f.createdAt)}</td>
@@ -507,7 +511,10 @@ function StalledPanel({ sows, cos, canViewFinancials, canOpenProjects }: { sows:
                 {item.sub && <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>{item.sub}</div>}
               </div>
               <div style={{ textAlign: 'right', flexShrink: 0, marginLeft: 12 }}>
-                {canViewFinancials && item.amount ? (
+                {/* FIX (fix round, Portfolio section 8): same $0-hidden-as-truthy-check
+                    issue as the open-flags table above — a net-zero change order would
+                    silently show no amount here while the CSV listed it as 0. */}
+                {canViewFinancials && item.amount != null ? (
                   <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{formatCurrency(item.amount, item.currency || 'USD')}</div>
                 ) : null}
                 <div style={{ fontSize: 10.5, color: 'var(--text-4)' }}>since {formatRelative(item.since)}</div>

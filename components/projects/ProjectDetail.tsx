@@ -2248,15 +2248,25 @@ function TeamTab({ project, team, permissions }: any) {
   // FIX (deep audit, section 7): there was previously no way to remove a
   // member from a project short of deactivating them from the whole
   // workspace.
+  const [removeError, setRemoveError] = useState('')
+
+  // FIX (fix round, Projects & Dashboard section 7): a failed removal (e.g.
+  // a permission race, or the last-manager guard on the API) used to fail
+  // completely silently — the spinner just stopped with no indication
+  // anything went wrong, unlike addMember which already surfaces its errors.
   async function removeMember(memberId: string, name: string) {
     if (!confirm(`Remove ${name} from this project?`)) return
-    setRemovingId(memberId)
+    setRemovingId(memberId); setRemoveError('')
     try {
       const res = await fetch(`/api/projects/${project.id}/members`, {
         method: 'DELETE', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ memberId }),
       })
-      if (res.ok) router.refresh()
+      if (res.ok) { router.refresh(); return }
+      const json = await res.json().catch(() => ({}))
+      setRemoveError(json.error || 'Could not remove that member — try again.')
+    } catch {
+      setRemoveError('Could not remove that member — try again.')
     } finally { setRemovingId(null) }
   }
 
@@ -2270,6 +2280,8 @@ function TeamTab({ project, team, permissions }: any) {
           </button>
         )}
       </div>
+
+      {removeError && <p className="ferr" style={{ marginBottom: 10 }}>{removeError}</p>}
 
       {team.length === 0 ? (
         <p style={{ fontSize: 13, color: 'var(--text-3)' }}>No members assigned to this project yet.</p>

@@ -53,8 +53,15 @@ export default function EditProjectModal({
     if (disc.trim() !== (project.disc || '')) body.disc = disc.trim()
     if (startDate !== (project.start_date || '')) body.startDate = startDate
     if (internalRef.trim() !== (project.internal_ref || '')) body.internalRef = internalRef.trim()
-    if (canViewFinancials && !valueLocked && contractValue.trim() !== '' && Number(contractValue) !== Number(project.contract_value)) {
-      body.contractValue = contractValue
+    // FIX (fix round, Projects & Dashboard section 7): this used to skip
+    // sending contractValue whenever the field was blank, so clearing it
+    // (to zero out a project, e.g. converting to pro-bono) silently no-op'd
+    // — the save appeared to succeed but the old value stayed. The API's
+    // parseContractValue already treats '' as a valid 0; retainerMonths
+    // below handles its own "clear to empty" case correctly, this didn't.
+    const contractValueNum = contractValue.trim() === '' ? 0 : Number(contractValue)
+    if (canViewFinancials && !valueLocked && contractValueNum !== Number(project.contract_value || 0)) {
+      body.contractValue = contractValue.trim()
     }
     if (!hasAnySow && currency !== (project.currency || 'USD')) body.currency = currency
     if (project.type === 'retainer' && retainerMonths !== (project.retainer_duration_months ? String(project.retainer_duration_months) : '')) {
