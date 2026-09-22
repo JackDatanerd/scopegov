@@ -12,6 +12,7 @@ interface HistoryPoint {
   openFlagsCount: number
   contractValueAtRisk: number | null
   exceptionsCount: number
+  currency: string
 }
 interface OpenFlag {
   id: string; severity: 'high' | 'medium' | 'low'; description: string; sowReference: string
@@ -194,7 +195,19 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName, canO
                 Money can&apos;t be summed across currencies, so the headline value is {data.currency}. Counts above include every currency.
               </p>
               <table className="gov-table" style={{ width: '100%' }}>
-                <thead><tr><th>Currency</th><th>Active projects</th><th>Open flags</th>{canViewFinancials && <th style={{ textAlign: 'right' }}>Value at risk</th>}</tr></thead>
+                <thead>
+                  <tr>
+                    <th>Currency</th><th>Active projects</th><th>Open flags</th>
+                    {canViewFinancials && <th style={{ textAlign: 'right' }}>Value at risk</th>}
+                    {/* FIX (fix round, Portfolio section 8): exceptionsValueTotal is
+                        computed per currency (lib/reports/scope-health.ts) and the
+                        CSV export already has this column — it was just never added
+                        here, so a non-dominant currency's exceptions value had no
+                        way to reach the screen at all, despite the paragraph above
+                        pointing here for exactly that detail. */}
+                    {canViewFinancials && <th style={{ textAlign: 'right' }}>Exceptions value</th>}
+                  </tr>
+                </thead>
                 <tbody>
                   {data.current.byCurrency.map(row => (
                     <tr key={row.currency}>
@@ -202,6 +215,7 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName, canO
                       <td>{row.activeProjectCount}</td>
                       <td>{row.openFlagsCount}</td>
                       {canViewFinancials && <td className="td-mono" style={{ textAlign: 'right' }}>{row.contractValueAtRisk !== null ? formatCurrency(row.contractValueAtRisk, row.currency) : '—'}</td>}
+                      {canViewFinancials && <td className="td-mono" style={{ textAlign: 'right' }}>{row.exceptionsValueTotal !== null ? formatCurrency(row.exceptionsValueTotal, row.currency) : '—'}</td>}
                     </tr>
                   ))}
                 </tbody>
@@ -221,6 +235,20 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName, canO
                 mode={canViewFinancials ? 'risk' : 'flags'}
                 currency={data.currency}
               />
+              {/* FIX (fix round, Portfolio section 8): a history point's own
+                  currency (see getPortfolioData) can differ from today's
+                  dominant one if the workspace's mix has shifted since —
+                  those points are nulled out at the source rather than
+                  silently plotted under today's currency label. When
+                  canViewFinancials is on, null here can only mean that (the
+                  API never returns null for that field for any other
+                  reason), so say so instead of leaving an unexplained dip. */}
+              {canViewFinancials && data.history.some(h => h.contractValueAtRisk === null) && (
+                <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 8 }}>
+                  Some days aren&apos;t shown — the workspace&apos;s dominant currency was different on
+                  those days, and money can&apos;t be mixed across currencies on one line.
+                </p>
+              )}
             </div>
 
             <div className="surface surface-p">
@@ -368,9 +396,17 @@ function MetricStrip({ data, canViewFinancials }: { data: PortfolioData; canView
 }
 
 // ── TREND CHART (hand-rolled SVG — no charting dependency) ──────────
-function TrendChart({ points, mode, currency }: { points: HistoryPoint[]; mode: 'risk' | 'flags'; currency: string }) {
+function TrendChart({ points: allPoints, mode, currency }: { points: HistoryPoint[]; mode: 'risk' | 'flags'; currency: string }) {
   const [hover, setHover] = useState<number | null>(null)
   const W = 640, H = 180, PAD = 8
+
+  // FIX (fix round, Portfolio section 8): in risk mode, a point whose own
+  // currency didn't match today's dominant one arrives with
+  // contractValueAtRisk already nulled (see getPortfolioData) — drop it from
+  // the line entirely rather than coercing it to 0, which would draw a day
+  // with a currency mismatch as a day with zero risk. Flag-count mode has no
+  // currency concept, so every point is always kept.
+  const points = mode === 'risk' ? allPoints.filter(p => p.contractValueAtRisk !== null) : allPoints
 
   const values = points.map(p => mode === 'risk' ? (p.contractValueAtRisk ?? 0) : p.openFlagsCount)
   const max = Math.max(...values, 1)

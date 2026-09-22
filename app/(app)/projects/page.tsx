@@ -48,6 +48,27 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
 
   const { data: projects = [] } = await query
 
+  // FIX (fix round, Projects & Dashboard section 7): viewFinancials used to
+  // only control what ProjectsClient (a Client Component) *rendered* —
+  // contract_value and change_orders[].total were fetched here and passed
+  // into it wholesale regardless of permission, so both travelled to the
+  // browser in every RSC payload for a member without VIEW_FINANCIALS, same
+  // as any other prop. Same class of bug already fixed on the project detail
+  // page (app/(app)/projects/[id]/page.tsx's own comment describes it) and
+  // on the Dashboard (a plain server component, so it never had this
+  // exposure) — just missed here. Strip at the source instead of trusting
+  // the client component to hide what it's already been given.
+  const canViewFinancials = hasPermission(session, 'VIEW_FINANCIALS')
+  const safeProjects = canViewFinancials
+    ? projects
+    : (projects || []).map((p: any) => ({
+        ...p,
+        contract_value: null,
+        change_orders: Array.isArray(p.change_orders)
+          ? p.change_orders.map((co: any) => ({ ...co, total: null }))
+          : p.change_orders,
+      }))
+
   // FIX (section-11/12 audit — flagship feature gap): see lib/utils/attention.ts
   // — mirrors the same pending-approvals fetch the Dashboard now does, so
   // both screens agree on which projects are stuck in an approval chain.
@@ -76,7 +97,7 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
     list.push({ created_at: r.updated_at || r.created_at, send_failed_at: r.send_failed_at })
     pendingApprovalsByProject.set(r.project_id, list)
   }
-  const projectsWithApprovals = (projects || []).map((p: any) => ({
+  const projectsWithApprovals = (safeProjects || []).map((p: any) => ({
     ...p, pending_approvals: pendingApprovalsByProject.get(p.id),
   }))
 
@@ -94,7 +115,7 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
       projects={projectsWithApprovals}
       initialFilter={filter === 'attention' ? 'attention' : null}
       canCreate={canCreate}
-      canViewFinancials={hasPermission(session, 'VIEW_FINANCIALS')}
+      canViewFinancials={canViewFinancials}
       session={session}
       workspaceSettings={{
         proactiveRiskAlertsEnabled: ws?.proactive_risk_alerts_enabled,

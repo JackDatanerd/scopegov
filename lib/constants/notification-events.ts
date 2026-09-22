@@ -36,6 +36,14 @@ export const IN_APP_ONLY_EVENT_TYPES = [
   // muting new-member notices silently muted leave notices too, with no
   // separate toggle and no UI copy admitting the overlap. Distinct key now.
   'member_left',
+  // FIX (fix round, Projects & Dashboard section 7): the exact same overlap
+  // bug as member_left above, just never caught here — DELETE
+  // /api/projects/[id]/members reused 'project_assigned' (labeled "Added to
+  // a project" in Settings) to gate the "removed from a project" bell
+  // notification, so muting one silently muted the other with no separate
+  // toggle and no UI copy admitting it. Distinct key, same in-app-only shape
+  // (removal never had an email path).
+  'project_removed',
 ] as const
 
 export const ALL_EVENT_TYPES: readonly string[] = [...EMAIL_EVENT_TYPES, ...IN_APP_ONLY_EVENT_TYPES]

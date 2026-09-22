@@ -54,8 +54,16 @@ export interface PortfolioData {
   history: Array<{
     date: string
     openFlagsCount: number
+    /**
+     * Null whenever this point's own currency (see `currency` below) isn't
+     * the CURRENT dominant currency — see the FIX note on the trend-chart
+     * guard in getPortfolioData for why a mismatched figure must never be
+     * plotted under today's currency label instead of silently dropped.
+     */
     contractValueAtRisk: number | null
     exceptionsCount: number
+    /** Dominant currency THIS snapshot was computed in on the day it ran. */
+    currency: string
   }>
   /** Live figures vs the first snapshot inside the period (null when there is no comparable snapshot). */
   trend: { openFlagsDelta: number; atRiskDelta: number | null } | null
@@ -125,11 +133,32 @@ export async function getPortfolioData(
 
   // History = persisted snapshots + today's live point, so the chart always
   // ends on what the tiles say even before tonight's cron has run.
+  //
+  // FIX (fix round, Portfolio section 8): a snapshot's contract_value_at_risk
+  // was computed under WHATEVER currency was dominant on the day it ran
+  // (scope-health-rollup persists `h.currency` alongside it — this module's
+  // own snapshot query already selects it) — but every point here used to be
+  // plotted, exported and labelled as if it were in TODAY's dominant
+  // currency (`data.currency`), with no per-point currency at all. A
+  // workspace whose dominant currency shifts over the selected period (this
+  // module's own comment above the type says that's a real, designed-for
+  // scenario) would silently mix currencies on one line with no signal
+  // anything was wrong — the exact failure mode the single-point trend
+  // delta below is already guarded against (`earliest.currency ===
+  // health.currency`), just never extended to the full series that guard
+  // was modelled on. Each point now carries its own currency, and a point
+  // whose currency doesn't match today's is nulled out here — at the
+  // source, once — rather than trusting the chart/CSV/PDF to each re-derive
+  // and apply the same guard independently.
+  const nullIfCurrencyMismatch = (value: number, pointCurrency: string) =>
+    pointCurrency === health.currency ? money(value) : null
+
   const history = snapshots.map((h: any) => ({
     date: h.snapshot_date as string,
     openFlagsCount: h.open_flags_count as number,
-    contractValueAtRisk: money(Number(h.contract_value_at_risk) || 0),
+    contractValueAtRisk: nullIfCurrencyMismatch(Number(h.contract_value_at_risk) || 0, h.currency),
     exceptionsCount: h.exceptions_count as number,
+    currency: h.currency as string,
   }))
   const lastDate = history.length ? history[history.length - 1].date : null
   if (!lastDate || lastDate < today) {
@@ -138,6 +167,7 @@ export async function getPortfolioData(
       openFlagsCount: health.openFlagsCount,
       contractValueAtRisk: money(health.contractValueAtRisk),
       exceptionsCount: health.exceptionsCount,
+      currency: health.currency,
     })
   } else {
     // A snapshot for today exists but may be hours old — show the live values.
@@ -146,6 +176,7 @@ export async function getPortfolioData(
       openFlagsCount: health.openFlagsCount,
       contractValueAtRisk: money(health.contractValueAtRisk),
       exceptionsCount: health.exceptionsCount,
+      currency: health.currency,
     }
   }
 

@@ -157,10 +157,24 @@ function toCsv(data: Awaited<ReturnType<typeof getPortfolioData>>, canViewFinanc
 
   // The period selector only ever scoped THIS section; the export used to omit
   // it entirely, so 30-day and 12-month files were identical.
+  //
+  // FIX (fix round, Portfolio section 8): a history row's own dominant
+  // currency (now carried per row — see getPortfolioData) can differ from
+  // today's if the workspace's mix has shifted since that day ran. Such a
+  // row's contract_value_at_risk arrives already nulled at the source, and
+  // this line used to coerce that null to 0 exactly like the on-screen
+  // chart did — silently exporting "zero risk" for a day that was actually
+  // just a different currency. A "Currency" column now makes every row
+  // self-describing, and a mismatched row is spelled out rather than
+  // zeroed.
   lines.push(`History (${periodLabel})`)
-  lines.push(['Date', 'Open flags', `Contract value at risk (${data.currency})`, 'Exceptions granted, all-time'].map(csvCell).join(','))
+  lines.push(['Date', 'Open flags', `Contract value at risk (${data.currency} only)`, 'Currency that day', 'Exceptions granted, all-time'].map(csvCell).join(','))
   for (const h of data.history) {
-    lines.push([h.date, h.openFlagsCount, canViewFinancials ? (h.contractValueAtRisk ?? 0) : 'redacted', h.exceptionsCount].map(csvCell).join(','))
+    const riskCell = !canViewFinancials
+      ? 'redacted'
+      : h.contractValueAtRisk !== null ? h.contractValueAtRisk
+      : `n/a — ${h.currency} was dominant that day`
+    lines.push([h.date, h.openFlagsCount, riskCell, h.currency, h.exceptionsCount].map(csvCell).join(','))
   }
 
   return lines.join('\r\n')

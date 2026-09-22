@@ -180,10 +180,15 @@ export async function DELETE(
     })
 
     // No entity link: they can no longer open the project this refers to.
+    // FIX (fix round, Projects & Dashboard section 7): this reused the
+    // 'project_assigned' preference ("Added to a project") to gate a removal
+    // notice — the exact overlap bug already fixed for member_left/
+    // member_joined elsewhere in this codebase, just missed here. See
+    // lib/constants/notification-events.ts's new 'project_removed' key.
     if (member?.user_id && member.user_id !== session.id) {
       await notifyUsers(service, {
         workspaceId: session.workspaceId, recipientIds: [member.user_id],
-        type: 'project_removed', eventType: 'project_assigned',
+        type: 'project_removed', eventType: 'project_removed',
         title: `Removed from ${project.name}`, body: `${session.name} removed you from this project.`,
       })
     }

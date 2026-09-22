@@ -241,6 +241,12 @@ const IN_APP_NOTIF_ITEMS = [
   // previously silently controlled by the 'member_joined' toggle above,
   // with no way to mute one without the other. Split out.
   { key: 'member_left',                   label: 'Teammate left',           desc: 'When a member leaves the workspace on their own' },
+  // FIX (fix round, Projects & Dashboard section 7): same overlap bug as
+  // member_left above — this was silently controlled by the
+  // 'project_assigned' ("Added to a project") toggle, with no way to mute
+  // one without the other. Split out; no email counterpart, so it belongs
+  // here rather than in NOTIF_ITEMS.
+  { key: 'project_removed',               label: 'Removed from a project',  desc: 'When a teammate removes you from a project' },
   { key: 'client_viewed',                 label: 'Client opened a document', desc: 'The first time a client opens a SOW, change order or invoice you sent' },
 ]
 

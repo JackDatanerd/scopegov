@@ -126,6 +126,12 @@ function PortfolioReportDocument({ report }: { report: PortfolioReportData }) {
               <Text style={[s.th, { width: 90 }]}>Active projects</Text>
               <Text style={[s.th, { width: 80 }]}>Open flags</Text>
               <Text style={[s.th, { flex: 1 }]}>Value at risk</Text>
+              {/* FIX (fix round, Portfolio section 8): exceptionsValueTotal is
+                  computed per currency and the CSV export already carries it —
+                  it was just never added to this table (or the matching one on
+                  the dashboard), so a non-dominant currency's exceptions value
+                  had no way to reach either the screen or the PDF. */}
+              <Text style={[s.th, { flex: 1 }]}>Exceptions value</Text>
             </View>
             {c.byCurrency.map((row, i) => (
               <View key={i} style={s.row} wrap={false}>
@@ -134,6 +140,9 @@ function PortfolioReportDocument({ report }: { report: PortfolioReportData }) {
                 <Text style={[s.td, { width: 80 }]}>{row.openFlagsCount}</Text>
                 <Text style={[s.td, { flex: 1 }]}>
                   {canViewFinancials && row.contractValueAtRisk !== null ? fmtMoney(row.contractValueAtRisk, row.currency) : '—'}
+                </Text>
+                <Text style={[s.td, { flex: 1 }]}>
+                  {canViewFinancials && row.exceptionsValueTotal !== null ? fmtMoney(row.exceptionsValueTotal, row.currency) : '—'}
                 </Text>
               </View>
             ))}
@@ -228,14 +237,24 @@ function PortfolioReportDocument({ report }: { report: PortfolioReportData }) {
             <View style={s.tableHdr} fixed>
               <Text style={[s.th, { width: 100 }]}>Date</Text>
               <Text style={[s.th, { width: 100 }]}>Open flags</Text>
-              <Text style={[s.th, { flex: 1 }]}>Value at risk ({data.currency})</Text>
+              <Text style={[s.th, { flex: 1 }]}>Value at risk ({data.currency} only)</Text>
             </View>
+            {/* FIX (fix round, Portfolio section 8): a row's own dominant
+                currency that day (now carried per row) can differ from
+                today's — such a row arrives with contractValueAtRisk already
+                nulled at the source, indistinguishable here from a plain
+                permission redaction. Name the actual currency that day
+                instead of a bare dash, matching the CSV export's row. */}
             {sampleHistory(data.history, 30).map((h, i) => (
               <View key={i} style={s.row} wrap={false}>
                 <Text style={[s.td, { width: 100 }]}>{fmtDate(h.date)}</Text>
                 <Text style={[s.td, { width: 100 }]}>{h.openFlagsCount}</Text>
                 <Text style={[s.td, { flex: 1 }]}>
-                  {canViewFinancials && h.contractValueAtRisk !== null ? fmtMoney(h.contractValueAtRisk, data.currency) : '—'}
+                  {!canViewFinancials
+                    ? '—'
+                    : h.contractValueAtRisk !== null
+                    ? fmtMoney(h.contractValueAtRisk, data.currency)
+                    : `n/a (${h.currency} that day)`}
                 </Text>
               </View>
             ))}
