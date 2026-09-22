@@ -19,10 +19,28 @@ import { recordCronHeartbeat } from '@/lib/utils/cron-heartbeat'
 // SCHEDULING: crons are triggered by the external scopegov-cron-worker (vercel.json no longer lists
 // them), so this endpoint does nothing until the worker calls it — daily, e.g. 02:30 UTC:
 //   POST /api/cron/notification-cleanup   (Authorization: Bearer $CRON_SECRET)
-// Once it is scheduled, add `'notification-cleanup': 27` to EXPECTATIONS in
-// cron-heartbeat-watchdog/route.ts so a dead run pages ops. It is deliberately NOT registered there
-// yet: the watchdog pages on "never recorded", so registering it before it is scheduled would alert
-// on every deploy.
+//
+// FIX (deep audit, notifications/search re-pass): this comment used to say
+// 'notification-cleanup' was deliberately left OUT of EXPECTATIONS in
+// cron-heartbeat-watchdog/route.ts until the worker was confirmed to call
+// it, "since registering it before it is scheduled would alert on every
+// deploy" — but a later round (cron + portal audit round 2, closing
+// heartbeat gaps across section 17) registered it there without coming
+// back to update this warning, so the two files have been contradicting
+// each other. cron_heartbeats has no seed row for any cron and the
+// watchdog gives a never-seen cron no grace period ("no row at all reads
+// the same as stale... needs a human, not a free pass") — so if the
+// external worker's schedule was never actually updated to include this
+// route, ops has been getting a false "never ran" page roughly hourly
+// (the alert's own cooldown) ever since that round shipped.
+// Kept registered rather than pulled back out: silently dropping
+// heartbeat coverage risks masking a real failure later, which is worse
+// than a loud, cooldown-limited false alarm now. MANUAL VERIFICATION
+// NEEDED: confirm the scopegov-cron-worker schedule actually includes
+// `notification-cleanup` (same category of external-scheduling check
+// already flagged for the GitHub Actions CRON_SECRET/APP_BASE_URL
+// secrets) — if it doesn't, add it there rather than removing the
+// EXPECTATIONS entry.
 
 const READ_RETENTION_DAYS = 90
 const ANY_RETENTION_DAYS  = 180

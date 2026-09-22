@@ -141,19 +141,30 @@ export async function GET(request: NextRequest) {
         }))
       }),
 
-      // ── Change orders ──
+      // ── Change orders (title, document number, or their project's name) ──
+      // FIX (deep audit, notifications/search re-pass — feature gap): SOWs
+      // below have always matched on their project's name (projects!inner
+      // is already embedded here for exactly that reason), but change
+      // orders never got the same third query — typing a project's name
+      // found the project and any SOWs on it, never its change orders.
       nothingVisible ? Promise.resolve([] as Result[]) : block('change orders', async () => {
         const base = () => scope(service.from('change_orders')
           .select('id, title, document_number, status, project_id, projects!inner(name, deleted_at)')
           .eq('workspace_id', wsId).is('projects.deleted_at', null), 'project_id')
         let byTitle = base()
         for (const t of plain) byTitle = byTitle.ilike('title', likePattern(t))
-        const [a, b] = await Promise.all([
+        let byProject = base()
+        for (const t of folded) byProject = byProject.ilike('projects.search_text', likePattern(t))
+        const [a, b, c] = await Promise.all([
           byTitle.limit(FETCH),
           base().ilike('document_number', likePattern(wholePlain)).limit(FETCH),
+          byProject.limit(FETCH),
         ])
-        const rows = uniq([...must<any[]>(a), ...must<any[]>(b)])
-        return rankBy(rows, plain, co => `${co.document_number || ''} ${co.title}`).slice(0, 4).map(co => ({
+        const rows = uniq([...must<any[]>(a), ...must<any[]>(b), ...must<any[]>(c)])
+        // Ranked with `folded` (not `plain`): a row can now be here purely because it matched the
+        // *project's* search_text via a folded token, and plain tokens keep accents SOW's own
+        // ranking already avoids for the same reason — see that block below.
+        return rankBy(rows, folded, co => `${co.document_number || ''} ${co.title} ${co.projects?.name || ''}`).slice(0, 4).map(co => ({
           type: 'change_order', id: co.id,
           title: co.document_number ? `${co.document_number} — ${co.title}` : co.title,
           sub: `${co.projects?.name || ''} · CO · ${co.status}`,
@@ -182,19 +193,25 @@ export async function GET(request: NextRequest) {
         }))
       }),
 
-      // ── Invoices ──
+      // ── Invoices (title, invoice number, or their project's name) ──
+      // FIX (deep audit, notifications/search re-pass — feature gap): same
+      // gap as change orders above — never matched on the project's name.
       (!canViewFinancials || nothingVisible) ? Promise.resolve([] as Result[]) : block('invoices', async () => {
         const base = () => scope(service.from('invoices')
           .select('id, title, invoice_number, status, project_id, projects!inner(name, deleted_at)')
           .eq('workspace_id', wsId).is('projects.deleted_at', null), 'project_id')
         let byTitle = base()
         for (const t of plain) byTitle = byTitle.ilike('title', likePattern(t))
-        const [a, b] = await Promise.all([
+        let byProject = base()
+        for (const t of folded) byProject = byProject.ilike('projects.search_text', likePattern(t))
+        const [a, b, c] = await Promise.all([
           byTitle.limit(FETCH),
           base().ilike('invoice_number', likePattern(wholePlain)).limit(FETCH),
+          byProject.limit(FETCH),
         ])
-        const rows = uniq([...must<any[]>(a), ...must<any[]>(b)])
-        return rankBy(rows, plain, inv => `${inv.invoice_number || ''} ${inv.title}`).slice(0, 4).map(inv => ({
+        const rows = uniq([...must<any[]>(a), ...must<any[]>(b), ...must<any[]>(c)])
+        // Ranked with `folded` — see the change-orders block above for why.
+        return rankBy(rows, folded, inv => `${inv.invoice_number || ''} ${inv.title} ${inv.projects?.name || ''}`).slice(0, 4).map(inv => ({
           type: 'invoice', id: inv.id,
           title: inv.invoice_number ? `${inv.invoice_number} — ${inv.title}` : inv.title,
           sub: `${inv.projects?.name || ''} · Invoice · ${inv.status}`,
@@ -202,7 +219,10 @@ export async function GET(request: NextRequest) {
         }))
       }),
 
-      // ── Guardian flags: description, or the SOW reference they cite ──
+      // ── Guardian flags: description, the SOW reference they cite, or their project's name ──
+      // FIX (deep audit, notifications/search re-pass — feature gap): same
+      // gap as change orders/invoices above — never matched on the
+      // project's name.
       nothingVisible ? Promise.resolve([] as Result[]) : block('flags', async () => {
         const base = () => scope(service.from('guardian_flags')
           .select('id, description, sow_reference, severity, status, project_id, projects!inner(name, deleted_at)')
@@ -210,12 +230,16 @@ export async function GET(request: NextRequest) {
           .order('created_at', { ascending: false }), 'project_id')
         let byDescription = base()
         for (const t of plain) byDescription = byDescription.ilike('description', likePattern(t))
-        const [a, b] = await Promise.all([
+        let byProject = base()
+        for (const t of folded) byProject = byProject.ilike('projects.search_text', likePattern(t))
+        const [a, b, c] = await Promise.all([
           byDescription.limit(FETCH),
           base().ilike('sow_reference', likePattern(wholePlain)).limit(FETCH),
+          byProject.limit(FETCH),
         ])
-        const rows = uniq([...must<any[]>(a), ...must<any[]>(b)])
-        return rankBy(rows, plain, f => f.description).slice(0, 4).map(f => ({
+        const rows = uniq([...must<any[]>(a), ...must<any[]>(b), ...must<any[]>(c)])
+        // Ranked with `folded` — see the change-orders block above for why.
+        return rankBy(rows, folded, f => `${f.description} ${f.projects?.name || ''}`).slice(0, 4).map(f => ({
           type: 'guardian_flag', id: f.id,
           title: f.description.length > 80 ? `${f.description.slice(0, 80)}…` : f.description,
           sub: `${f.projects?.name || ''} · ${f.severity} severity · ${String(f.status).replace(/_/g, ' ')}`,

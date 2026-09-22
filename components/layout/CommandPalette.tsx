@@ -256,7 +256,14 @@ export default function CommandPalette({ permissions = [] }: Props) {
               { label: 'SOW Registry', href: '/sow',        icon: 'ti-file-description' },
               // FIX (audit): Invoices, Approvals, Team, and Portfolio are all
               // primary sidebar destinations that had no quick-nav entry here.
-              { label: 'Invoices',    href: '/invoices',    icon: 'ti-receipt-2' },
+              // FIX (deep audit, notifications/search re-pass): Invoices was
+              // added unconditionally alongside Reports/Portfolio, but
+              // app/(app)/invoices/page.tsx redirects to /dashboard for
+              // anyone without VIEW_FINANCIALS — the exact gap this file's
+              // own Reports entry was already fixed for, just missed here.
+              ...(permissions.includes('VIEW_FINANCIALS')
+                ? [{ label: 'Invoices', href: '/invoices', icon: 'ti-receipt-2' }]
+                : []),
               { label: 'Approvals',   href: '/approvals',   icon: 'ti-shield-check' },
               // FIX (deep audit, Reports & Audit re-pass): same gap this
               // file's own Portfolio entry was already fixed for — /reports
