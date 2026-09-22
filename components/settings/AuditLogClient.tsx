@@ -6,7 +6,17 @@ import { AUDIT_CATEGORIES } from '@/lib/audit/categories'
 import { formatDateTimeInZone } from '@/lib/utils/timezone'
 
 interface Project { id: string; name: string; deleted?: boolean }
-interface Member { id: string; name: string; email: string; active: boolean }
+interface Member { id: string; name: string; email: string; status: 'active' | 'invited' | 'expired' | 'deactivated' }
+
+// FIX (re-audit, Reports & Audit section): every non-active status used to
+// render as "(Former member)" — including 'invited' and 'expired', neither
+// of which is a former member (they never joined this workspace at all).
+const MEMBER_STATUS_LABEL: Record<Member['status'], string> = {
+  active: '',
+  invited: ' (Invite pending)',
+  expired: ' (Invite expired)',
+  deactivated: ' (Former member)',
+}
 interface Row {
   id: string
   eventType: string
@@ -272,7 +282,7 @@ export default function AuditLogClient({ projects, members, timeZone }: { projec
             <select className="finp" value={actorId} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setActorId(e.target.value)}>
               <option value="">All users</option>
               <option value="none">System / client portal (no user)</option>
-              {members.map(m => <option key={m.id} value={m.id}>{m.name}{!m.active ? ' (Former member)' : ''}</option>)}
+              {members.map(m => <option key={m.id} value={m.id}>{m.name}{MEMBER_STATUS_LABEL[m.status]}</option>)}
             </select>
           </div>
           <div className="fgrp" style={{ margin: 0, minWidth: 170 }}>

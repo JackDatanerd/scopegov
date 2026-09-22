@@ -43,29 +43,38 @@ export default async function AuditLogPage() {
         .range(f, t),
       { maxRows: 5000 },
     ).then(r => r.rows).catch(err => { console.error('Audit page projects load failed:', err); return [] as any[] }),
-    (service as any)
-      .from('workspace_members')
-      // Everyone, not only active members: "what did this person do before
-      // they left" is precisely when a compliance-grade record matters.
-      .select('user_id, status, users!workspace_members_user_id_fkey(id, name, email)')
-      .eq('workspace_id', session.workspaceId)
-      // FIX (Reports & Audit re-pass #4): unlike the projects fetch right
-      // above (which logs and falls back on failure), this query's `error`
-      // was never checked — a failed read silently rendered as an empty
-      // actor-filter dropdown with no signal anywhere that anything went
-      // wrong. Same swallowed-Supabase-result class of bug this codebase
-      // has fixed repeatedly elsewhere (round 13's logAudit fix being the
-      // most direct precedent).
-      .then((res: any) => {
-        if (res.error) { console.error('Audit page members load failed:', res.error.message); return [] }
-        return res.data || []
-      }),
+    // FIX (re-audit, Reports & Audit section): this had no `.range()`/count
+    // at all — the exact "PostgREST silently caps an unbounded read at its
+    // Max Rows setting" bug the projects fetch right above (and this
+    // section's own lib/utils/paginate.ts) exists specifically to prevent.
+    // Everyone, not only active members, is kept forever for audit purposes
+    // ("what did this person do before they left"), so a long-lived
+    // workspace can realistically cross that cap over the years. It also had
+    // no `.order()`, so which rows survived a truncation would have been
+    // non-deterministic — could even have hidden a currently-active member
+    // from the picker. Paged and ordered the same way as the projects fetch.
+    fetchPaged<any>(
+      (f, t) => (service as any)
+        .from('workspace_members')
+        .select('id, user_id, status, users!workspace_members_user_id_fkey(id, name, email)', { count: 'exact' })
+        .eq('workspace_id', session.workspaceId)
+        .order('created_at').order('id')
+        .range(f, t),
+      { maxRows: 5000 },
+    ).then(r => r.rows).catch(err => { console.error('Audit page members load failed:', err); return [] as any[] }),
   ])
 
   const projectOptions = projects.map((p: any) => ({ id: p.id, name: p.name, deleted: !!p.deleted_at }))
+  // FIX (re-audit, Reports & Audit section): `status` used to collapse to a
+  // boolean (`active: m.status === 'active'`), so the client rendered every
+  // non-active member as "(Former member)" — including someone who was just
+  // invited (status 'invited') or whose invite link expired without them
+  // ever joining (status 'expired'). Neither of those is a former member;
+  // they never joined this workspace at all. Passing the real status lets
+  // the client label each case correctly.
   const memberOptions = (members as any[])
     .filter((m: any) => m.users)
-    .map((m: any) => ({ id: m.users.id, name: m.users.name || m.users.email, email: m.users.email, active: m.status === 'active' }))
+    .map((m: any) => ({ id: m.users.id, name: m.users.name || m.users.email, email: m.users.email, status: m.status as 'active' | 'invited' | 'expired' | 'deactivated' }))
 
   const timeZone = await getWorkspaceTimeZone(service, session.workspaceId)
 

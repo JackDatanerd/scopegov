@@ -3,7 +3,8 @@
 // "Confirm it's you" for the account-level actions where a stolen or idle
 // session must not be enough on its own: turning MFA off, regenerating backup
 // codes, deleting the account or workspace, transferring ownership, resetting a
-// teammate's MFA, cancelling billing, changing the sign-in email.
+// teammate's MFA, cancelling billing, changing a workspace's paid plan,
+// changing the sign-in email.
 //
 // Until now these checked only that the session was at aal2 — which persists for
 // the whole life of the session — or (account deletion) that the caller could

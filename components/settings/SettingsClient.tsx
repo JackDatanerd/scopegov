@@ -1580,7 +1580,14 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
       await loadPaystackScript().catch(() => {
         throw new Error('Could not load the payment provider. If you\u2019re using an ad-blocker or privacy extension, try disabling it for this site, then refresh and try again.')
       })
-      const res  = await fetch('/api/billing/upgrade', {
+      // FIX (re-audit, Billing section): plain fetch(), so the new
+      // requireStepUpForCurrentUser() guard on /api/billing/upgrade would
+      // have surfaced as an opaque "Could not start checkout" error for
+      // anyone without a fresh-enough session, with no way to actually get
+      // past it. fetchWithStepUp is the same wrapper billing/cancel already
+      // uses just above — it shows the "Confirm it's you" modal and retries
+      // this exact request once confirmed.
+      const res  = await fetchWithStepUp('/api/billing/upgrade', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ planKey, interval: targetInterval }),
       })

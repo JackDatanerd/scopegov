@@ -1,6 +1,7 @@
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
+import { requireStepUpForCurrentUser } from '@/lib/auth/step-up'
 import { PLAN_LIMITS } from '@/lib/utils/format'
 import { LIMIT_COUNTED_STATUSES } from '@/lib/utils/project-status'
 import { parsePlanRequest, planCodeFor } from '@/lib/billing/plans'
@@ -18,12 +19,27 @@ import { createPendingCheckout } from '@/lib/billing/checkouts'
 //  - Re-buying the plan + interval the workspace already has (two tabs, a
 //    direct call) is refused instead of creating a second, immediately
 //    charged subscription for nothing.
+//
+// FIX (re-audit, Billing section): this had no step-up (recent-MFA/
+// re-authentication) guard, unlike billing/cancel right next to it — but
+// this route isn't only "upgrade" despite its name: it accepts ANY paid
+// tier, including switching to a cheaper one, and per the subscription.create
+// webhook handler, completing that checkout DISABLES the workspace's current
+// live subscription, the same real-world effect billing/cancel has. It's
+// also the entry point for a brand-new charge. A stolen or long-idle aal2
+// session (which, per lib/auth/step-up.ts, persists at aal2 for the whole
+// life of the session) could silently swap or downgrade a workspace's paid
+// plan with no fresh proof of identity, right next to a sibling endpoint
+// that already requires one for a less-drastic action.
 export async function POST(request: NextRequest) {
   try {
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     if (!hasPermission(session, 'MANAGE_BILLING'))
       return NextResponse.json({ error: 'Missing permission: MANAGE_BILLING' }, { status: 403 })
+
+    const stepUp = await requireStepUpForCurrentUser()
+    if (stepUp) return stepUp
 
     const body = await request.json().catch(() => ({}))
     const parsed = parsePlanRequest(body?.planKey, body?.interval)

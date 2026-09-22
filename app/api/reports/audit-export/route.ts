@@ -147,7 +147,25 @@ export async function GET(request: Request) {
         .from('workspace_members').select('users(name)')
         .eq('workspace_id', session.workspaceId).eq('user_id', actorParam).maybeSingle()
       if (memberErr) throw new Error(`actor lookup: ${memberErr.message}`)
-      actorName = member?.users?.name
+      // FIX (re-audit, Reports & Audit section): a well-formed but unknown
+      // actorId (never a member of this workspace) used to fall through
+      // silently — 200 with zero matching rows and no "actor" label on the
+      // export, unlike the projectId case just above, which explicitly 404s
+      // for the same "id doesn't belong here" situation. Only reachable via
+      // a direct API call (the UI's dropdown only ever sends real member
+      // ids), but the two filters should agree on how an unrecognized id is
+      // handled. Same fallback shape: only 404 when the id has never
+      // appeared in this workspace's log either (a genuinely unknown actor),
+      // not when it's a real former actor whose member row is gone.
+      if (!member) {
+        const { count: seen, error: seenErr } = await (service as any)
+          .from('audit_log').select('id', { count: 'exact', head: true })
+          .eq('workspace_id', session.workspaceId).eq('actor_id', actorParam)
+        if (seenErr) throw new Error(`actor lookup: ${seenErr.message}`)
+        if (!seen) return NextResponse.json({ error: 'Actor not found' }, { status: 404 })
+      } else {
+        actorName = member.users?.name
+      }
     }
 
     const searchFilter = buildAuditSearchFilter(q)
@@ -228,6 +246,9 @@ export async function GET(request: Request) {
       const pdfRows: AuditReportRow[] = pageRows.map(r => ({
         createdAt: r.created_at, eventType: r.event_type, actorName: r.actor_name || 'System',
         actorEmail: r.actor_email, entityType: r.entity_type, entityName: r.entity_name || '', ipAddress: r.ip_address,
+        // FIX (re-audit, Reports & Audit section): CSV and JSON both carry
+        // this (redacted the same way); the PDF used to drop it entirely.
+        metadata: redactMetadata(r.metadata, canViewFinancials),
       }))
       const buffer = await renderAuditReportPdf({
         agencyName: session.agencyName, workspaceName: session.workspaceName,

@@ -15,6 +15,12 @@ export interface AuditReportRow {
   entityType:  string
   entityName:  string
   ipAddress:   string | null
+  // FIX (re-audit, Reports & Audit section): the PDF used to carry no
+  // metadata at all — CSV and the in-app table both show it (already
+  // redacted for viewers without VIEW_FINANCIALS), only the PDF, the one
+  // export explicitly branded a "compliance export," silently dropped it.
+  // Optional so old callers/tests that never set it keep compiling.
+  metadata?:   Record<string, unknown> | null
 }
 
 export interface AuditReportData {
@@ -56,6 +62,25 @@ function humanizeEvent(eventType: string): string {
     .join(' — ')
     .replace(/_/g, ' ')
     .replace(/\b\w/g, c => c.toUpperCase())
+}
+
+// One compact "key: value, key: value" line per row — the fixed-width page
+// has no room for a full details column, but a one-line summary keeps the
+// PDF's evidentiary content in line with CSV/JSON instead of omitting it
+// outright. Values are already redacted (or not) by the caller before this
+// ever sees them; this only formats what it's given.
+const MAX_DETAILS_CHARS = 160
+function summarizeMetadata(metadata: Record<string, unknown> | null | undefined): string | null {
+  if (!metadata) return null
+  const entries = Object.entries(metadata)
+  if (!entries.length) return null
+  const fmt = (v: unknown) => {
+    if (v === null || v === undefined) return '—'
+    if (typeof v === 'object') { try { return JSON.stringify(v) } catch { return String(v) } }
+    return String(v)
+  }
+  const line = entries.map(([k, v]) => `${k}: ${fmt(v)}`).join(', ')
+  return line.length > MAX_DETAILS_CHARS ? `${line.slice(0, MAX_DETAILS_CHARS)}…` : line
 }
 
 const s = StyleSheet.create({
@@ -114,22 +139,26 @@ function AuditReportDocument({ data }: { data: AuditReportData }) {
           <Text style={[s.th, { flex: 1 }]}>Record</Text>
         </View>
 
-        {data.rows.map((row, i) => (
-          <View key={i} style={s.row} wrap={false}>
-            <Text style={[s.td, { width: COL.when }]}>{fmtDateTime(row.createdAt, data.timeZone)}</Text>
-            <View style={{ width: COL.event }}>
-              <Text style={s.td}>{humanizeEvent(row.eventType)}</Text>
+        {data.rows.map((row, i) => {
+          const details = summarizeMetadata(row.metadata)
+          return (
+            <View key={i} style={s.row} wrap={false}>
+              <Text style={[s.td, { width: COL.when }]}>{fmtDateTime(row.createdAt, data.timeZone)}</Text>
+              <View style={{ width: COL.event }}>
+                <Text style={s.td}>{humanizeEvent(row.eventType)}</Text>
+              </View>
+              <View style={{ width: COL.actor }}>
+                <Text style={s.td}>{row.actorName}</Text>
+                <Text style={s.tdSub}>{row.actorEmail}</Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={s.td}>{row.entityName || '—'}</Text>
+                <Text style={s.tdSub}>{row.entityType}{row.ipAddress ? ` · ${row.ipAddress}` : ''}</Text>
+                {details && <Text style={s.tdSub}>{details}</Text>}
+              </View>
             </View>
-            <View style={{ width: COL.actor }}>
-              <Text style={s.td}>{row.actorName}</Text>
-              <Text style={s.tdSub}>{row.actorEmail}</Text>
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={s.td}>{row.entityName || '—'}</Text>
-              <Text style={s.tdSub}>{row.entityType}{row.ipAddress ? ` · ${row.ipAddress}` : ''}</Text>
-            </View>
-          </View>
-        ))}
+          )
+        })}
 
         {data.truncated && (
           <Text style={s.truncNote}>
