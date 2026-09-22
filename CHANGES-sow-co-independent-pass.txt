@@ -1,0 +1,53 @@
+SOW lifecycle (section 9) + CO logic (section 10) — independent re-audit, fix round 2
+=======================================================================================
+
+Full independent re-pass over both sections, deliberately ignoring every existing
+audit comment (only consulted them afterward to check whether a comment was itself
+wrong or misleading — none were). Found 3 bugs, 0 feature gaps. No migration needed.
+
+BUGS FIXED
+
+1. app/api/sow/[id]/remind/route.ts
+   The 'reminder.sent' audit-log write ran BEFORE the `if (!client?.email)` check.
+   If a client's email was cleared/edited after the SOW was originally sent, clicking
+   Remind wrote a false "reminder sent" audit row, then returned 400 — with no
+   compensating 'reminder.failed' row, since that's only ever logged after a real
+   delivery attempt fails. checkReminderCooldown's own escape hatch (see its comment)
+   depends on finding a 'reminder.failed' newer than the claim to know nothing actually
+   went out; without one, the agency was locked out of reminding that client for 24h,
+   even immediately after fixing the client's email, on top of a permanently false
+   audit trail entry. Fix: move the client-email check (and the CC lookup that depends
+   on it) above the audit write, so nothing is claimed sent until there's actually
+   somewhere to send it.
+
+2. app/api/co/[id]/remind/route.ts
+   Identical bug, independently present — same fix, same ordering change. Both routes
+   share lib/utils/reminder-cooldown.ts, so this was one bug class in two places.
+
+3. components/sow/SowEditor.tsx
+   flush() — registered via registerFlush, and called by handleSend specifically to
+   guarantee "everything typed in the last moments is stored before the server
+   snapshots the document" — only flushed the section-content/table autosave state
+   (saveTimers/pendingSaves/failedSaves). It never touched msaSaveTimer, the separate
+   800ms-debounced autosave for the MSA Reference field. Typing an MSA reference and
+   clicking Send within that 800ms window sent and locked the document; the pending
+   MSA save then fired against an already-locked SOW, was silently rejected (409), and
+   the entered reference was lost with no visible error (nothing was watching
+   msaSaveStatus after the post-send navigation). Fix: extracted the MSA-reference
+   persistence into persistMsaRef() (shared by both the debounce timer and flush()),
+   added a msaPendingValue ref so flush() knows what value to persist and can tell it
+   apart from an already-saved one, and flush() now cancels the pending timer and
+   persists that value directly, folding its success/failure into flush()'s own
+   returned result the same way section saves already are.
+
+VERIFICATION
+   Re-diffed every file in both sections' scope against the prior audit pass before
+   touching anything: nothing else in either section had changed (repo was quiet, as
+   expected) — confirming the fixes above are the complete list for this round, not a
+   partial view of a moving target. Re-read all three changed files afterward in full
+   to confirm no unintended side effects (in particular: flush() calling
+   persistMsaRef() directly cannot double-fire against the debounce timer, since the
+   timer is explicitly cleared first).
+
+   Independent pass result: clean. No further bugs or feature gaps found in section 9
+   or section 10 on this round.

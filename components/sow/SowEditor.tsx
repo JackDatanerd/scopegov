@@ -75,6 +75,11 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
   const [msaRef,        setMsaRef]        = useState(msaReference || '')
   const [msaSaveStatus, setMsaSaveStatus] = useState<'idle'|'saving'|'saved'|'error'>('idle')
   const msaSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // FIX (section-9 re-audit, independent pass): holds whatever value is
+  // waiting on msaSaveTimer's debounce (or was last written to the
+  // server), so flush() below can persist it directly instead of only
+  // knowing a timer exists.
+  const msaPendingValue = useRef<string | null>(null)
   const [activeSection,    setActiveSection]    = useState<string>(sections[0]?.id || 'overview')
   const [saveStatus,       setSaveStatus]       = useState<'idle'|'saving'|'saved'|'error'>('idle')
   const [regenLoading,     setRegenLoading]     = useState<string | null>(null)
@@ -177,8 +182,44 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
     saveTimers.current.set(sectionId, timer)
   }
 
+  // Extracted from scheduleMsaAutosave's setTimeout body so flush() below can call the same
+  // persistence logic directly, on demand, instead of only being able to wait for the timer.
+  const persistMsaRef = useCallback(async (value: string): Promise<boolean> => {
+    try {
+      const res = await fetch(`/api/sow/${sowId}`, {
+        method:  'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ msaReference: value }),
+      })
+      setMsaSaveStatus(res.ok ? 'saved' : 'error')
+      if (res.ok) {
+        // Only clear the pending marker if nothing newer has been typed since — a flush that
+        // raced a fresh keystroke must not erase the record of that newer, still-unsaved edit.
+        if (msaPendingValue.current === value) msaPendingValue.current = null
+        setTimeout(() => setMsaSaveStatus('idle'), 2000)
+      }
+      return res.ok
+    } catch {
+      setMsaSaveStatus('error')
+      return false
+    }
+  }, [sowId])
+
   // Writes everything outstanding NOW (pending edits and previously-failed ones) and reports
   // whether every section is safely stored.
+  //
+  // FIX (section-9 re-audit, independent pass — data-loss finding): this
+  // used to only flush saveTimers/pendingSaves/failedSaves (section
+  // content/tables) — msaSaveTimer's own separate 800ms-debounced autosave
+  // for the MSA Reference field was never included. handleSend calls this
+  // specifically so "everything typed in the last moments is stored before
+  // the server snapshots the document" — typing an MSA reference and
+  // hitting Send within that 800ms window sent and locked the document
+  // while the reference was still only sitting in the debounce, so the
+  // pending save then fired against an already-locked SOW, was silently
+  // 409'd, and the entered reference was lost with no visible error. Flush
+  // it the same way the section saves are: cancel the timer and persist
+  // the pending value directly.
   const flush = useCallback(async (): Promise<boolean> => {
     saveTimers.current.forEach(t => clearTimeout(t))
     saveTimers.current.clear()
@@ -191,27 +232,27 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
     let ok = true
     for (const [id, payload] of entries) { if (!(await persist(id, payload))) ok = false }
     await saveChain.current
+
+    if (msaSaveTimer.current) {
+      clearTimeout(msaSaveTimer.current)
+      msaSaveTimer.current = null
+    }
+    if (msaPendingValue.current !== null) {
+      if (!(await persistMsaRef(msaPendingValue.current))) ok = false
+    }
+
     return ok && failedSaves.current.size === 0
-  }, [persist])
+  }, [persist, persistMsaRef])
 
   useEffect(() => { registerFlush?.(flush) }, [registerFlush, flush])
 
   function scheduleMsaAutosave(value: string) {
     if (msaSaveTimer.current) clearTimeout(msaSaveTimer.current)
+    msaPendingValue.current = value
     setMsaSaveStatus('saving')
-    msaSaveTimer.current = setTimeout(async () => {
+    msaSaveTimer.current = setTimeout(() => {
       msaSaveTimer.current = null
-      try {
-        const res = await fetch(`/api/sow/${sowId}`, {
-          method:  'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({ msaReference: value }),
-        })
-        setMsaSaveStatus(res.ok ? 'saved' : 'error')
-        if (res.ok) setTimeout(() => setMsaSaveStatus('idle'), 2000)
-      } catch {
-        setMsaSaveStatus('error')
-      }
+      void persistMsaRef(value)
     }, 800)
   }
 

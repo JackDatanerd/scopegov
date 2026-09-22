@@ -60,6 +60,21 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const portalUrl = `${process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL}/portal/sow/${sow.token}`
     const accent    = ws?.brand_colour || '#1A5C3A'
 
+    // FIX (section-9 re-audit, independent pass): this must be checked
+    // BEFORE the optimistic 'reminder.sent' audit write below — it used to
+    // run after, so a client with no email on file (removed/edited after
+    // the SOW was originally sent) got a false "reminder sent" audit
+    // record and burned the cooldown with no compensating
+    // 'reminder.failed' row, since that's only ever logged after a real
+    // delivery attempt. checkReminderCooldown's own escape hatch (see its
+    // comment) depends on 'reminder.failed' existing for every claim that
+    // didn't actually go out — this case produced a claim with no way to
+    // clear it, locking the agency out of reminding this client for 24h
+    // even immediately after fixing the client's email.
+    if (!client?.email)
+      return NextResponse.json({ error: 'This client has no email address on file.' }, { status: 400 })
+    const cc = await withPrimaryContactCc(service, project?.client_id, client.email, client.cc_emails)
+
     // FIX (re-audit, notifications section): checkReminderCooldown reads
     // the audit log, then the caller acts — a check-then-act race, not an
     // atomic claim. Two near-simultaneous requests (double-click, two
@@ -88,10 +103,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const clientHtml  = escapeHtml(client?.name)
     const projectHtml = escapeHtml(project?.name)
     const agencyHtml  = escapeHtml(ws?.agency_name)
-
-    if (!client?.email)
-      return NextResponse.json({ error: 'This client has no email address on file.' }, { status: 400 })
-    const cc = await withPrimaryContactCc(service, project?.client_id, client.email, client.cc_emails)
 
     // resend.emails.send() RESOLVES with { error } on API failures instead of throwing — so this
     // used to report success (and burn the 24h cooldown) for reminders that never left.
