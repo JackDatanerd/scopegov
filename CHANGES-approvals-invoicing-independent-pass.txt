@@ -1,0 +1,78 @@
+Approval workflows engine (section 11) + Invoicing (section 12) — independent re-audit, fix round
+====================================================================================================
+
+Full independent re-pass over both sections, deliberately ignoring every existing audit comment
+(consulted afterward, only to check whether a comment was itself wrong or misleading — one was: the
+cancellation notice to the current step's approver uses entity_type:'project' rather than
+'approval_request' like every sibling notification in this file; traced end to end and left as-is —
+it's the only destination that reliably resolves for that recipient once the request is cancelled,
+since the highlight lookup on /approvals can't find a cancelled request outside 'mine'/'submitted'
+scope for a non-canViewAll approver). Found 2 bugs, 0 new feature gaps (one long-standing gap closed
+as a bug fix — see #1). No migration needed; no new environment variables; no npm changes.
+
+BUGS FIXED
+
+1. lib/approvals/engine.ts — cancelApprovalRequest()
+   The requester was never notified that their own approval request was cancelled — only the
+   approver holding the currently-pending step was (an in-app "no action needed" heads-up). Every
+   caller of cancelApprovalRequest (approvals/[id]/cancel, co/withdraw, co/close, co/revise,
+   invoices/[id] DELETE, invoices/[id]/void, projects/[id] DELETE/complete) was checked; none of them
+   notify the requester separately either. sendApprovalDecisionEmail's own header comment in
+   lib/email/templates.ts already claimed cancellation was covered ("notifies the requester once a
+   chain fully approves, is rejected at any step, or is cancelled") — it never actually was for the
+   cancelled case.
+   Sharpest real-world case: a workspace admin (MANAGE_WORKSPACE_SETTINGS) cancels someone else's
+   pending request — the document silently unlocks back to an editable draft with no signal to the
+   person who submitted it. Sharper still: DELETE /api/invoices/[id] auto-cancels a live chain as a
+   side effect of deleting the draft outright — if someone other than the requester deletes it, the
+   requester's invoice (not just their approval) is simply gone, with zero notification anywhere.
+   Fix: cancelApprovalRequest now also sends an in-app notification to request.requested_by (added to
+   the initial select), skipped when the requester is the one who cancelled their own request (they
+   don't need to be told something they just did). Gated under the 'approval_decision' preference —
+   same key and same in-app-only reasoning as notifyRequesterProgress just below it in the same file
+   (informational, no action needed, not worth a new email template). Uses entity_type:
+   'approval_request' (not 'project') because, unlike the approver-side notice, the REQUESTER's own
+   'submitted' scope on /api/approvals is never filtered by status — so /approvals?highlight=<id>
+   reliably resolves for them even once the request is cancelled. No new imports needed
+   (filterByNotificationPreference / insertNotificationRows / documentLabelFor / entityTypeFor were
+   already in scope in this function).
+
+2. lib/documents/send-invoice.ts — sendInvoiceDocument()
+   An approval-gated invoice could auto-send with a due date already in the past. The direct-send
+   route (app/api/invoices/[id]/send) checks isDueDateInPast() before asking anyone to approve,
+   specifically so an invoice can't sit in a chain for days and arrive already overdue — but that
+   check only ran once, at submission. sendInvoiceDocument — called both by that same direct-send
+   route AND by lib/approvals/engine.ts's dispatchSend() once a chain clears — never re-ran it; its
+   own header comment explicitly disclaimed "no due-date/payment-instructions completeness
+   validation, callers are responsible," but the one caller that actually needed it (the delayed
+   auto-send) never provided it. Given the stall cron's multi-day reminder/escalation windows, a due
+   date valid at submission routinely goes stale before an approver acts — exactly the scenario the
+   original fix was written to prevent, and didn't, for the one path where it matters most. The
+   invoice would ship to the client silently overdue on arrival: no error, no warning, nothing in the
+   audit trail to distinguish it from a normal send.
+   Fix: added the same isDueDateInPast() check inside sendInvoiceDocument itself, right after the
+   existing due-date-presence check, so both callers are covered from one place. On a stale date this
+   returns the same { ok: false, error, status: 400 } shape every other send-mechanics failure in this
+   function already returns — which folds straight into the existing "Approved — not sent" / Retry
+   send UI (BillingTab.tsx) with no new UI work: the requester or an admin fixes the due date (after
+   cancelling the request, same as any other edit-while-gated case — PATCH already refuses to touch a
+   document with a live or send-failed approval), then a fresh approval cycle picks up the corrected
+   date. Verified retry-send (app/api/approvals/[id]/retry-send -> retryFailedSend) routes through the
+   same dispatchSend -> sendInvoiceDocument path, so a retry without fixing the date fails again with
+   the same clear message rather than looping silently or crashing.
+
+NOT DONE / KNOWN LIMITS
+  * No database in this environment — nothing here touches SQL/migrations, so nothing needed
+    replaying, but I could not run `next build`, tsc, or the vitest suite (no node_modules, no
+    network to install them). Reviewed both diffs by hand for syntax/brace balance and cross-checked
+    every call site by grep. isDueDateInPast() itself is unchanged and already covered by
+    tests/approvals-invoicing.test.ts; the two new call sites are inside DB-facing functions
+    (sendInvoiceDocument, cancelApprovalRequest) that aren't unit-tested in that file either — same
+    limit the original CHANGES file already notes for the rest of this module.
+  * Did not add an email for the cancellation-to-requester notice, matching the existing in-app-only
+    precedent (notifyRequesterProgress) rather than inventing a new template for what's explicitly a
+    no-action-needed heads-up.
+
+CHANGED FILES
+  lib/approvals/engine.ts         (cancelApprovalRequest: select requested_by, notify requester)
+  lib/documents/send-invoice.ts   (re-check isDueDateInPast before an auto/retry send goes out)

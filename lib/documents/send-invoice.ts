@@ -12,8 +12,23 @@
 // sent one keeps its PDF.
 //
 // This file intentionally contains ONLY the send mechanics — no permission
-// checks, no approval-gate logic, no due-date/payment-instructions
-// completeness validation. Callers are responsible for all of that.
+// checks, no approval-gate logic, no payment-instructions completeness
+// validation. Callers are responsible for all of that.
+//
+// FIX (re-audit, section-12 finding): due-date-in-the-past IS re-checked here
+// (see isDueDateInPast below), unlike every other completeness rule in this
+// file. The direct-send route (app/api/invoices/[id]/send) already refuses a
+// stale due date before asking anyone to approve, specifically so an invoice
+// can't wait days in a chain and arrive already overdue — but that check ran
+// once, at submission. The auto-send this function serves when a chain
+// clears (lib/approvals/engine.ts's dispatchSend) never re-ran it, so a due
+// date that was fine when submitted could — and, given the stall cron's
+// multi-day reminder/escalation windows, routinely would — go stale while
+// still waiting on an approver, and ship to the client silently overdue on
+// arrival with no error surfaced anywhere. Re-checking here, right before
+// the send actually happens, covers both callers at once and folds into the
+// existing "approved — not sent, retry once fixed" flow other send failures
+// already use — no new UI needed.
 
 import { computeContractPosition } from '@/lib/reports/contract-position'
 import { SignJWT } from 'jose'
@@ -28,6 +43,7 @@ import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
 import { resolveReplyTo } from '@/lib/email/reply-to'
 import { checkedSend } from '@/lib/email/delivery'
 import { formatMoney } from '@/lib/utils/money'
+import { isDueDateInPast } from '@/lib/documents/preflight'
 
 export type SendInvoiceResult =
   | { ok: true; token: string; portalUrl: string; invoiceNumber: string; projectId: string; projectName: string; emailSent: boolean; emailError?: string }
@@ -72,6 +88,8 @@ export async function sendInvoiceDocument(service: any, params: {
 
   if (!client?.email) return { ok: false, error: 'Client email required', status: 400 }
   if (!invoice.due_date) return { ok: false, error: 'Add a due date before sending this invoice.', status: 400 }
+  if (isDueDateInPast(invoice.due_date))
+    return { ok: false, error: 'The due date has passed since this was submitted — update the due date, then retry the send.', status: 400 }
   if (!invoice.payment_instructions?.trim())
     return { ok: false, error: 'Add payment instructions before sending this invoice.', status: 400 }
 

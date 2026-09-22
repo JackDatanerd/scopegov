@@ -590,7 +590,7 @@ export async function cancelApprovalRequest(service: any, params: {
   // workspace and newest-first instead.
   const { data: requestRows } = await service
     .from('approval_requests')
-    .select('id, project_id, current_step, context, status')
+    .select('id, project_id, current_step, context, status, requested_by')
     .eq('workspace_id', params.workspaceId)
     .eq('document_type', params.documentType)
     .eq('document_id', params.documentId)
@@ -677,6 +677,42 @@ export async function cancelApprovalRequest(service: any, params: {
           entity_type:  'project',
           entity_id:    request.project_id,
         })))
+      }
+    } catch { /* never let a notification failure break cancellation */ }
+  }
+
+  // FIX (re-audit, section-11/12 finding): the requester was never told their
+  // own request was cancelled — only the approver holding the pending step
+  // was (above). That's invisible whenever the actor cancelling ISN'T the
+  // requester (a workspace admin cancelling on someone else's behalf, or —
+  // sharper — DELETE /api/invoices/[id] auto-cancelling a live chain as a
+  // side effect of another teammate deleting the draft outright): the
+  // document unlocks back to an editable draft, or disappears entirely,
+  // with no signal anywhere that it happened. sendApprovalDecisionEmail's
+  // own header comment already claimed cancellation was covered by "notifies
+  // the requester once a chain... is cancelled" — it never actually was.
+  // Skip when the requester cancelled their own request; they don't need to
+  // be told something they just did themselves. In-app only, same reasoning
+  // and preference key ('approval_decision') as notifyRequesterProgress
+  // right below in this file — informational, no action needed, not worth a
+  // new email template of its own.
+  if (request.requested_by && request.requested_by !== params.actorId) {
+    try {
+      const [inAppOn] = await filterByNotificationPreference(
+        service, params.workspaceId, 'approval_decision', [{ id: request.requested_by }], 'in_app'
+      )
+      if (inAppOn) {
+        const docTitle    = request.context?.title || documentLabelFor(params.documentType)
+        const projectName = request.context?.project_name || ''
+        await insertNotificationRows(service, [{
+          workspace_id: params.workspaceId,
+          recipient_id: request.requested_by,
+          type:         'approval_cancelled',
+          title:        'Your approval request was cancelled',
+          body:         `${params.actorName} cancelled the request for ${docTitle}${projectName ? ` on ${projectName}` : ''}${params.reason ? ` — ${params.reason}` : ''}. It is now an editable draft again.`,
+          entity_type:  'approval_request',
+          entity_id:    request.id,
+        }])
       }
     } catch { /* never let a notification failure break cancellation */ }
   }
