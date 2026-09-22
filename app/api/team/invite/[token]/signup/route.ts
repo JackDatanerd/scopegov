@@ -128,11 +128,49 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     userId = newUser.user.id
     const now = new Date().toISOString()
 
+    // Best-effort rollback shared by every failure from here on: a real
+    // Supabase Auth user already exists with a password set, so leaving it
+    // behind on any subsequent failure is a real, sign-in-able account that
+    // belongs to no workspace, permanently blocking a retry of this exact
+    // signup ("already exists"). See the workspace_members activation
+    // failure below, which this mirrors.
+    const rollbackAuthUser = async (reason: string, err: unknown) => {
+      console.error(reason, err)
+      try {
+        await (service as any).from('users').delete().eq('id', userId)
+      } catch (cleanupErr) {
+        console.error('Users-row rollback failed (non-fatal):', cleanupErr)
+      }
+      try {
+        await adminClient.auth.admin.deleteUser(userId)
+      } catch (cleanupErr) {
+        console.error('Auth-user rollback failed (non-fatal):', cleanupErr)
+      }
+    }
+
+    // FIX (deep audit, Settings + Team re-pass round 3 — silent-failure
+    // gap): this error was fetched and never checked. handle_new_user()
+    // (migration 001) already auto-creates a bare public.users row the
+    // instant createUser() above inserts into auth.users, so a failure
+    // here doesn't fail the FK on the workspace_members update just below
+    // — that update goes on to succeed regardless, activating the person
+    // into the workspace with whatever stale/default values the trigger
+    // left (crucially, `active_workspace_id` pointing at nothing and
+    // `email_verified_at` unset), and nothing anywhere signals that
+    // anything went wrong. Treated exactly like the workspace_members
+    // activation failure right below: fatal, with the same rollback, so a
+    // failed signup is retryable rather than a member stuck with a wrong
+    // active workspace and no error trail to explain why.
     const { error: userRowErr } = await (service as any).from('users').upsert({
       id: userId, email, name,
       email_verified_at: now,
       active_workspace_id: member.workspace_id,
     }, { onConflict: 'id' })
+
+    if (userRowErr) {
+      await rollbackAuthUser('Invite signup: users upsert failed, rolling back auth user:', userRowErr)
+      return NextResponse.json({ error: 'Could not complete signup. Please try again.' }, { status: 500 })
+    }
 
     const { data: defaultRole } = await (service as any)
       .from('roles').select('id, permissions')
@@ -178,17 +216,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       // them to a sign-in screen for an account that can never accept
       // this invite. Best-effort roll back both writes so the person is
       // back to a clean, retryable state instead of stuck in limbo.
-      console.error('Membership activation failed, rolling back auth user:', activateErr)
-      try {
-        await (service as any).from('users').delete().eq('id', userId)
-      } catch (cleanupErr) {
-        console.error('Users-row rollback failed (non-fatal):', cleanupErr)
-      }
-      try {
-        await adminClient.auth.admin.deleteUser(userId)
-      } catch (cleanupErr) {
-        console.error('Auth-user rollback failed (non-fatal):', cleanupErr)
-      }
+      await rollbackAuthUser('Membership activation failed, rolling back auth user:', activateErr)
       return NextResponse.json({ error: 'Could not complete signup. Please try again.' }, { status: 500 })
     }
 

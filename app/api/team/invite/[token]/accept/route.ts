@@ -157,20 +157,48 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // select `name` here — see the logAudit call below's own comment.
     const { data: existingUserRow } = await (service as any)
       .from('users').select('id,name').eq('id', user.id).maybeSingle()
-    if (existingUserRow) {
-      await (service as any).from('users').update({
-        email:                user.email,
-        active_workspace_id:  member.workspace_id,
-        email_verified_at:    user.email_confirmed_at || now, // invited = pre-verified (spec §16.0)
-      }).eq('id', user.id)
-    } else {
-      await (service as any).from('users').insert({
-        id:                   user.id,
-        email:                user.email,
-        name:                 sanitizeDisplayName(user.user_metadata?.name),
-        active_workspace_id:  member.workspace_id,
-        email_verified_at:    user.email_confirmed_at || now,
-      })
+    // FIX (deep audit, Settings + Team re-pass round 3 — silent-failure
+    // gap): neither branch's error was ever checked. By this point
+    // workspace_members is already flipped to 'active' — unlike
+    // signup/route.ts's sibling upsert (which runs BEFORE its equivalent
+    // activation and can still be treated as fatal with a full rollback),
+    // rolling back here would mean ejecting someone from a membership that
+    // genuinely, correctly exists. A failure here instead means the
+    // person's `active_workspace_id` and/or `email_verified_at` are left
+    // wrong (or, for a brand-new row, missing entirely) with no signal to
+    // anyone that anything needs correcting. Retry once (transient DB
+    // blips are the realistic failure mode for a plain update/insert right
+    // after a successful RPC), then log loudly and continue — the
+    // membership itself is sound regardless, matching this route's own
+    // "member is active regardless" tolerance for restore_member_projects
+    // below.
+    const updateUserRow = () => (service as any).from('users').update({
+      email:                user.email,
+      active_workspace_id:  member.workspace_id,
+      email_verified_at:    user.email_confirmed_at || now, // invited = pre-verified (spec §16.0)
+    }).eq('id', user.id)
+    const insertUserRow = () => (service as any).from('users').insert({
+      id:                   user.id,
+      email:                user.email,
+      name:                 sanitizeDisplayName(user.user_metadata?.name),
+      active_workspace_id:  member.workspace_id,
+      email_verified_at:    user.email_confirmed_at || now,
+    })
+    let { error: userRowErr } = existingUserRow ? await updateUserRow() : await insertUserRow()
+    if (userRowErr) {
+      console.error('Invite accept: users row sync failed, retrying once:', userRowErr)
+      // A retried insert racing a row that's since come to exist (e.g. this
+      // same user accepting a second invite concurrently) would just repeat
+      // the same duplicate-key error — fall back to an update in that one
+      // case instead of retrying an insert that can't succeed twice.
+      const useUpdate = !!existingUserRow || (userRowErr as any)?.code === '23505'
+      ;({ error: userRowErr } = useUpdate ? await updateUserRow() : await insertUserRow())
+    }
+    if (userRowErr) {
+      console.error(
+        'Invite accept: users row sync failed after retry — member is active regardless, but ' +
+        `active_workspace_id/email_verified_at may be stale for user ${user.id}:`, userRowErr,
+      )
     }
 
     // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): this
