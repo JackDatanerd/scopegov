@@ -75,36 +75,57 @@ describe('protectedPermissionsOrphanedBy', () => {
   // permanently losing Settings → Workspace/Branding/Defaults/Guardian/
   // Danger zone, approval workflows, workspace deletion and ownership
   // transfer. These pin BOTH permissions.
+  //
+  // FIX (deep audit, Settings + Team re-pass round 2 — MEDIUM, migration
+  // 071): PROTECTED_PERMISSIONS grew from two entries to five
+  // (MANAGE_BILLING, INVITE_MEMBERS, VIEW_AUDIT_LOG joined MANAGE_ROLES /
+  // MANAGE_WORKSPACE_SETTINGS — see admin-floor.ts's own comment for why).
+  // Fixtures below now give every member all five where the scenario calls
+  // for "holds everything protected," matching how a real workspace's
+  // Owner role actually looks (seeded with the full permission set) —
+  // otherwise the fixtures were implicitly describing an already-broken
+  // workspace (zero holders of the three newer permissions before the
+  // simulated change even runs), which is a different scenario than the
+  // one each test is named for.
+  const ALL_PROTECTED = { MANAGE_ROLES: true, MANAGE_WORKSPACE_SETTINGS: true, MANAGE_BILLING: true, INVITE_MEMBERS: true, VIEW_AUDIT_LOG: true }
+
   it('reports MANAGE_WORKSPACE_SETTINGS when the change would leave zero holders', () => {
     const members = [
-      { id: 'm1', effectivePermissions: { MANAGE_ROLES: true, MANAGE_WORKSPACE_SETTINGS: true } },
-      { id: 'm2', effectivePermissions: { MANAGE_ROLES: true } },
+      { id: 'm1', effectivePermissions: { ...ALL_PROTECTED } },
+      { id: 'm2', effectivePermissions: { ...ALL_PROTECTED, MANAGE_WORKSPACE_SETTINGS: false } },
     ]
-    // m1 keeps MANAGE_ROLES (m2 has it too) but is the sole settings holder
-    const simulated = new Map([['m1', { MANAGE_ROLES: true, MANAGE_WORKSPACE_SETTINGS: false }]])
+    // m1 keeps everything else (m2 has it too) but is the sole settings holder
+    const simulated = new Map([['m1', { ...ALL_PROTECTED, MANAGE_WORKSPACE_SETTINGS: false }]])
     expect(protectedPermissionsOrphanedBy(members, simulated)).toEqual(['MANAGE_WORKSPACE_SETTINGS'])
   })
 
-  it('reports both when a change orphans both at once', () => {
-    const members = [{ id: 'm1', effectivePermissions: { MANAGE_ROLES: true, MANAGE_WORKSPACE_SETTINGS: true } }]
+  it('reports all five when a change orphans all of them at once', () => {
+    const members = [{ id: 'm1', effectivePermissions: { ...ALL_PROTECTED } }]
     const simulated = new Map([['m1', {}]])
     expect(protectedPermissionsOrphanedBy(members, simulated).sort())
-      .toEqual(['MANAGE_ROLES', 'MANAGE_WORKSPACE_SETTINGS'])
+      .toEqual(['INVITE_MEMBERS', 'MANAGE_ROLES', 'MANAGE_WORKSPACE_SETTINGS', 'MANAGE_BILLING', 'VIEW_AUDIT_LOG'].sort())
+  })
+
+  it('reports only the three newly-protected permissions when just those are stripped', () => {
+    const members = [{ id: 'm1', effectivePermissions: { ...ALL_PROTECTED } }]
+    const simulated = new Map([['m1', { MANAGE_ROLES: true, MANAGE_WORKSPACE_SETTINGS: true, MANAGE_BILLING: false, INVITE_MEMBERS: false, VIEW_AUDIT_LOG: false }]])
+    expect(protectedPermissionsOrphanedBy(members, simulated).sort())
+      .toEqual(['INVITE_MEMBERS', 'MANAGE_BILLING', 'VIEW_AUDIT_LOG'].sort())
   })
 
   it('reports nothing when another active member still holds each permission', () => {
     const members = [
-      { id: 'm1', effectivePermissions: { MANAGE_ROLES: true, MANAGE_WORKSPACE_SETTINGS: true } },
-      { id: 'm2', effectivePermissions: { MANAGE_ROLES: true, MANAGE_WORKSPACE_SETTINGS: true } },
+      { id: 'm1', effectivePermissions: { ...ALL_PROTECTED } },
+      { id: 'm2', effectivePermissions: { ...ALL_PROTECTED } },
     ]
     const simulated = new Map([['m1', {}]])
     expect(protectedPermissionsOrphanedBy(members, simulated)).toEqual([])
   })
 
   it('wouldOrphanManageRoles stays true to its original meaning', () => {
-    const members = [{ id: 'm1', effectivePermissions: { MANAGE_ROLES: true, MANAGE_WORKSPACE_SETTINGS: true } }]
+    const members = [{ id: 'm1', effectivePermissions: { ...ALL_PROTECTED } }]
     // Only settings is being dropped — the legacy helper must NOT fire
-    const simulated = new Map([['m1', { MANAGE_ROLES: true }]])
+    const simulated = new Map([['m1', { ...ALL_PROTECTED, MANAGE_WORKSPACE_SETTINGS: false }]])
     expect(wouldOrphanManageRoles(members, simulated)).toBe(false)
   })
 })
@@ -113,5 +134,8 @@ describe('describeProtectedPermission', () => {
   it('renders a human label rather than echoing the constant at the user', () => {
     expect(describeProtectedPermission('MANAGE_ROLES')).toBe('manage roles')
     expect(describeProtectedPermission('MANAGE_WORKSPACE_SETTINGS')).toBe('manage workspace settings')
+    expect(describeProtectedPermission('MANAGE_BILLING')).toBe('manage billing')
+    expect(describeProtectedPermission('INVITE_MEMBERS')).toBe('invite members')
+    expect(describeProtectedPermission('VIEW_AUDIT_LOG')).toBe('view the audit log')
   })
 })

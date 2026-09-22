@@ -31,9 +31,28 @@ function canonical(value: unknown): unknown {
   return value
 }
 
-const isBlank = (v: unknown) => v === null || v === undefined || v === ''
+// FIX (deep audit, Settings re-pass — HIGH): a workspace whose legal_address
+// had never been set stored NULL (no DB default — see migration 011). The
+// client always sends a fully-shaped baseline object for it (cleanAddress()
+// on an empty form produces `{}`, never `null`). isBlank() didn't consider
+// `{}`/`[]` blank, so sameValue({}, null) was false, so *any* edit to
+// legalAddress on a workspace that had never saved one tripped the
+// optimistic-concurrency check in PATCH /api/workspace/settings and was
+// rejected as "changed by someone else" — a conflict that was never real,
+// and that reloading the page could never clear, because the reload would
+// hand back the same NULL/`{}` pair. Structurally-empty values (`{}`, `[]`)
+// now count as blank alongside null/undefined/'', so they compare equal to
+// each other and to null. This is the same fix in spirit as the existing
+// null/undefined/'' equivalence just above: none of these carry information,
+// so none of them should read as a "change" against each other, either in
+// the audit diff or in the conflict check that reuses this same function.
+const isEmptyStructure = (v: unknown): boolean =>
+  (Array.isArray(v) && v.length === 0) ||
+  (v !== null && typeof v === 'object' && !Array.isArray(v) && Object.keys(v as Record<string, unknown>).length === 0)
 
-/** Equality for settings values: blank/null/undefined match, objects compare regardless of key order. */
+const isBlank = (v: unknown) => v === null || v === undefined || v === '' || isEmptyStructure(v)
+
+/** Equality for settings values: blank/null/undefined/empty-object/empty-array match, objects compare regardless of key order. */
 export function sameValue(a: unknown, b: unknown): boolean {
   if (a === b) return true
   if (isBlank(a) && isBlank(b)) return true

@@ -4,6 +4,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { permissionsBeyondActorForTarget } from '@/lib/utils/permission-ceiling'
 import { logAudit } from '@/lib/utils/audit'
 import { sendMfaDisabledEmail } from '@/lib/email/templates'
+import { checkedSend } from '@/lib/email/delivery'
 import { requireStepUpForCurrentUser } from '@/lib/auth/step-up'
 import { activeWorkspaceIdsForUser } from '@/lib/auth/security-audit'
 import { notifySecurityEvent } from '@/lib/utils/notify'
@@ -114,11 +115,16 @@ export async function POST(
 
     const targetEmail = member.users?.email
     if (targetEmail) {
-      try {
-        await sendMfaDisabledEmail({ to: targetEmail, name: member.users?.name || targetEmail, via: 'admin_reset' })
-      } catch (e) {
-        console.error('Admin MFA reset email failed (non-fatal):', e)
-      }
+      // FIX (deep audit, Settings + Team re-pass round 2 — LOW): same
+      // detection gap as the invite routes (a rejected send resolves rather
+      // than throws), fixed here too for an accurate log line. The action
+      // itself stays deliberately non-fatal either way — a failed security
+      // notice shouldn't block the MFA reset it's reporting on.
+      const delivery = await checkedSend(
+        () => sendMfaDisabledEmail({ to: targetEmail, name: member.users?.name || targetEmail, via: 'admin_reset' }),
+        'admin MFA reset notice',
+      )
+      if (!delivery.ok) console.error('Admin MFA reset email failed (non-fatal):', delivery.error)
     }
 
     return NextResponse.json({ ok: true })

@@ -72,7 +72,22 @@ export interface ActiveMemberSnapshot {
 // Expressed as a list rather than a second hardcoded key so the next
 // permission that turns out to be self-gating can be added in one place
 // instead of a fourth copy of this logic.
-export const PROTECTED_PERMISSIONS = ['MANAGE_ROLES', 'MANAGE_WORKSPACE_SETTINGS'] as const
+// FIX (deep audit, Settings + Team re-pass round 2 — MEDIUM, see migration
+// 071): the two permissions above are not the only ones with this
+// unrecoverable-orphan shape. MANAGE_BILLING (nobody could ever pay,
+// upgrade, or downgrade the plan again), INVITE_MEMBERS (nobody could grow
+// the team, and nobody could grant INVITE_MEMBERS back to fix that), and
+// VIEW_AUDIT_LOG (nobody could review the workspace's own audit trail, and
+// — same shape again — nobody could re-grant that either) are all seeded
+// onto every workspace's Owner role at creation, exactly like the two
+// already here, so a real workspace always starts with a holder and the
+// only way to reach zero is a role edit or override that strips the last
+// one. (APPROVE_DOCUMENTS deliberately stays out of this list — see
+// approvalPermissionOrphanedBy's own comment below for why a workspace can
+// legitimately have zero holders of it, which isn't true of any of these.)
+// SQL mirrors: update_role_permissions_atomic, update_member_permissions_atomic
+// and leave_workspace_atomic (migration 071) all check the same five now.
+export const PROTECTED_PERMISSIONS = ['MANAGE_ROLES', 'MANAGE_WORKSPACE_SETTINGS', 'MANAGE_BILLING', 'INVITE_MEMBERS', 'VIEW_AUDIT_LOG'] as const
 export type ProtectedPermission = typeof PROTECTED_PERMISSIONS[number]
 
 // `simulated` maps member id -> their post-change effective_permissions,
@@ -108,9 +123,14 @@ export function wouldOrphanManageRoles(
 // "no one who can manage workspace settings" rather than echoing a
 // permission constant at the person.
 export function describeProtectedPermission(permission: ProtectedPermission): string {
-  return permission === 'MANAGE_ROLES'
-    ? 'manage roles'
-    : 'manage workspace settings'
+  switch (permission) {
+    case 'MANAGE_ROLES': return 'manage roles'
+    case 'MANAGE_WORKSPACE_SETTINGS': return 'manage workspace settings'
+    case 'MANAGE_BILLING': return 'manage billing'
+    case 'INVITE_MEMBERS': return 'invite members'
+    case 'VIEW_AUDIT_LOG': return 'view the audit log'
+    default: return permission
+  }
 }
 
 // FIX (section-11 audit, pass 2): APPROVE_DOCUMENTS is a permission nobody can

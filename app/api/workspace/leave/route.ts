@@ -10,6 +10,7 @@ import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { logAudit } from '@/lib/utils/audit'
+import { describeProtectedPermission, type ProtectedPermission } from '@/lib/utils/admin-floor'
 
 export async function POST(request: NextRequest) {
   try {
@@ -74,6 +75,21 @@ export async function POST(request: NextRequest) {
       if (leaveErr.message?.includes('sole_roles_admin')) {
         return NextResponse.json({
           error: 'You\u2019re the only member who can manage roles and permissions. Assign that ability to someone else first (Team > Roles), or delete the workspace instead if no one else should keep it.',
+        }, { status: 400 })
+      }
+      // FIX (deep audit, Settings + Team re-pass round 2 — migration 071):
+      // leave_workspace_atomic now also refuses to let the sole holder of
+      // MANAGE_BILLING, INVITE_MEMBERS or VIEW_AUDIT_LOG leave — same
+      // reasoning as sole_admin/sole_roles_admin above, generalized (see
+      // admin-floor.ts). Parsed the same way team/[id] and team/roles/[id]
+      // already parse this exact error shape from the other two guard
+      // functions, so the message names whichever of the three actually
+      // applies rather than a generic refusal.
+      if (leaveErr.message?.startsWith('would_orphan_permissions:')) {
+        const orphaned = leaveErr.message.split(':')[1]?.split(',').filter(Boolean) as ProtectedPermission[]
+        const label = (orphaned || []).map(describeProtectedPermission).join(' or ') || 'manage this workspace'
+        return NextResponse.json({
+          error: `You\u2019re the only member who can ${label}. Assign that ability to someone else first (Team > Roles), or delete the workspace instead if no one else should keep it.`,
         }, { status: 400 })
       }
       // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — see

@@ -231,8 +231,21 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
     }
 
     if ((count || 0) > 0) {
-      await (service as any).from('approval_workflows')
+      // FIX (deep audit, Settings + Team re-pass round 2 — LOW): this
+      // update's result went unchecked — the two other Postgres calls in
+      // this very function (the history count just above, and the delete
+      // just below) both already check their error and fail visibly; this
+      // one didn't, so a failed deactivate still logged
+      // 'approval_workflow.deactivated' and returned `ok: true,
+      // deactivatedInstead: true` — the workflow stayed exactly as active
+      // as it was before the call, with an audit trail and a UI response
+      // both claiming otherwise.
+      const { error: deactivateErr } = await (service as any).from('approval_workflows')
         .update({ is_active: false, updated_at: new Date().toISOString() }).eq('id', id)
+      if (deactivateErr) {
+        console.error('Approval workflow deactivate failed:', deactivateErr)
+        return NextResponse.json({ error: 'Could not deactivate this workflow — nothing was changed. Try again.' }, { status: 500 })
+      }
       await logAudit(service, {
         workspaceId: session.workspaceId,
         actorId: session.id, actorEmail: session.email, actorName: session.name,

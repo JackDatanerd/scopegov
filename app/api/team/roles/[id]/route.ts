@@ -6,6 +6,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { permissionsBeyondCeiling, permissionsBeyondActorForTarget } from '@/lib/utils/permission-ceiling'
 import { parsePermissionMap } from '@/lib/utils/permission-map'
 import { mergePermissions, protectedPermissionsOrphanedBy, describeProtectedPermission, PROTECTED_PERMISSIONS, approvalPermissionOrphanedBy, APPROVE_DOCUMENTS_ORPHAN_MESSAGE } from '@/lib/utils/admin-floor'
+import { workspaceOwnerId } from '@/lib/utils/owner-protection'
 import { roleNameTaken } from '@/lib/utils/role-names'
 import { diffPermissionMaps } from '@/lib/utils/permission-diff'
 import { logAudit } from '@/lib/utils/audit'
@@ -76,6 +77,36 @@ export async function PATCH(
       return NextResponse.json({
         error: 'Every workspace needs a default role. Make a different role the default first, rather than unsetting this one.',
       }, { status: 409 })
+    }
+
+    // FIX (deep audit, Settings + Team re-pass round 2 — MEDIUM): owner
+    // protection (lib/utils/owner-protection.ts) stops anyone but the owner
+    // themselves from touching the owner's role_id or permission_overrides
+    // directly — but this route edits a ROLE, not a member, and a role is
+    // often held by several people at once. Editing the role the owner
+    // happens to hold reaches the exact same end state — the owner's
+    // effective permissions change — through a door owner-protection never
+    // watches, and permissionsBeyondActorForTarget/protectedPermissionsOrphanedBy
+    // above don't help either: an actor editing within their OWN ceiling, who
+    // still personally holds every permission being stripped (just via a
+    // different role than the owner's), sails through both checks even
+    // though the owner they're not supposed to be able to touch just lost
+    // access. Same restriction as owner-protection's own: only the owner can
+    // change what their own role grants; anyone else has to ask them to do
+    // it, or use transfer-ownership first.
+    if (permissions !== undefined) {
+      const ownerId = await workspaceOwnerId(service, session.workspaceId)
+      if (ownerId && ownerId !== session.id) {
+        const { data: ownerHoldsRole } = await service
+          .from('workspace_members').select('id')
+          .eq('workspace_id', session.workspaceId).eq('user_id', ownerId).eq('role_id', id).eq('status', 'active')
+          .maybeSingle()
+        if (ownerHoldsRole) {
+          return NextResponse.json({
+            error: 'This role belongs to the workspace owner, so its permissions can\u2019t be changed by anyone else. Ask the owner to make this change, or have them hand ownership over from Settings \u2192 Danger zone first.',
+          }, { status: 403 })
+        }
+      }
     }
 
     if (permissions !== undefined) {

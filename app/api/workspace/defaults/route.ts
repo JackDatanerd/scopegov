@@ -4,7 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
-import { diffFields } from '@/lib/utils/audit-diff'
+import { diffFields, sameValue } from '@/lib/utils/audit-diff'
 import { parseStandardsInput } from '@/lib/utils/agency-standards'
 import type { SessionUser } from '@/lib/supabase/types'
 
@@ -86,16 +86,47 @@ async function saveDefaults(workspaceId: string, body: any, actor: SessionUser) 
 
   const service = createServiceClient() as any
   const existing = await findRow(service, workspaceId, scope)
+  // FIX (deep audit, Settings + Team re-pass round 2 — MEDIUM): GET already
+  // resolves an override field-by-field — own(), just below in this file —
+  // falling back to the global row wherever the override's own field is
+  // empty. pickAgencyStandards (used by SOW generation) does the identical
+  // fallback. Both were defeated in practice: this route used to spread
+  // `...standards.values` and set revision_rounds/payment_structure
+  // unconditionally, so ANY save on an override scope wrote a full snapshot
+  // of every field's then-CURRENT value, most of which the person never
+  // touched — they'd only opened the form to change one thing. Once
+  // written, that snapshot was indistinguishable from a deliberate override:
+  // a later edit to the workspace-wide value silently stopped reaching that
+  // project type's SOWs, with no way to tell from the UI that it had
+  // "frozen." Fetch the global row (only needed for a scoped save — the
+  // global row IS `existing` when scope is null) and, per field, store an
+  // explicit NULL — "inherit" in both GET's and pickAgencyStandards's
+  // fallback chains — whenever the submitted value matches what global
+  // already resolves to. Genuinely different values still get stored,
+  // and still take precedence, exactly as before.
+  const globalDefaults = scope ? await findRow(service, workspaceId, null) : existing
 
   const payload: Record<string, unknown> = {
     workspace_id: workspaceId,
     project_type: scope,
     updated_at:   new Date().toISOString(),
-    ...standards.values,
   }
-  if (revisionRounds !== undefined || !existing) payload.revision_rounds = revisionRounds ?? existing?.revision_rounds ?? 2
-  if ((paymentStructure !== undefined && paymentStructure !== null && paymentStructure !== '') || !existing) {
-    payload.payment_structure = paymentStructure || existing?.payment_structure || '50_50'
+  for (const [key, value] of Object.entries(standards.values)) {
+    const inheritsFromGlobal = !!scope && sameValue(value, (globalDefaults as Record<string, unknown> | null)?.[key] ?? null)
+    payload[key] = inheritsFromGlobal ? null : value
+  }
+  if (revisionRounds !== undefined) {
+    const inheritedRounds = globalDefaults?.revision_rounds ?? 2
+    payload.revision_rounds = (scope && revisionRounds === inheritedRounds) ? null : revisionRounds
+  } else if (!existing) {
+    payload.revision_rounds = scope ? null : 2
+  }
+  const paymentStructureProvided = paymentStructure !== undefined && paymentStructure !== null && paymentStructure !== ''
+  if (paymentStructureProvided) {
+    const inheritedStructure = globalDefaults?.payment_structure ?? '50_50'
+    payload.payment_structure = (scope && paymentStructure === inheritedStructure) ? null : paymentStructure
+  } else if (!existing) {
+    payload.payment_structure = scope ? null : '50_50'
   }
   if (!scope && governingLawValue !== undefined) payload.governing_law = governingLawValue || null
 

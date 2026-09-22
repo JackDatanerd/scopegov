@@ -5,6 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { sendInviteEmail } from '@/lib/email/templates'
+import { checkedSend } from '@/lib/email/delivery'
 import { nanoid } from 'nanoid'
 import { checkInviteRateLimit } from '@/lib/utils/rate-limit'
 import { checkSeatLimit } from '@/lib/utils/seat-limit'
@@ -127,18 +128,24 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .from('workspaces').select('name,agency_name').eq('id', session.workspaceId).maybeSingle()
 
     const inviteUrl = `${process.env.NEXT_PUBLIC_APP_URL}/invite/${inviteToken}`
-    let emailSent = true
-    try {
-      await sendInviteEmail({
-        to:            email,
-        inviterName:   session.name,
-        workspaceName: ws?.name || session.agencyName,
-        agencyName:    session.agencyName,
-        roleName:      member.roles?.name,
-        inviteUrl,
-        expiresAt:     expiresAt.toISOString(),
-      })
-    } catch (e) { console.error('Invite resend email failed:', e); emailSent = false }
+    // FIX (deep audit, Settings + Team re-pass round 2 — MEDIUM): same gap as
+    // POST /api/team/invite — see that route's fix note. The plain try/catch
+    // here never caught a provider rejection either (Resend resolves with
+    // `{ data: null, error }`, it doesn't throw), so the restore-the-previous-
+    // token rollback right below — which is otherwise exactly the right
+    // behaviour — never actually ran on the failure mode it exists for. The
+    // old link died, the new one never arrived, and the admin was told
+    // nothing was wrong.
+    const delivery = await checkedSend(() => sendInviteEmail({
+      to:            email,
+      inviterName:   session.name,
+      workspaceName: ws?.name || session.agencyName,
+      agencyName:    session.agencyName,
+      roleName:      member.roles?.name,
+      inviteUrl,
+      expiresAt:     expiresAt.toISOString(),
+    }), 'invite resend email')
+    const emailSent = delivery.ok
 
     // The new link never reached the invitee, so put the previous one back:
     // a link they already hold keeps working instead of being replaced by one

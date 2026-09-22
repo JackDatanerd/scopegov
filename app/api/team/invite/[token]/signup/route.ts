@@ -7,6 +7,7 @@ import { sanitizeDisplayName } from '@/lib/utils/sanitize'
 import { checkSeatLimit } from '@/lib/utils/seat-limit'
 import { validatePassword } from '@/lib/auth/password-policy'
 import { TERMS_VERSION } from '@/lib/auth/terms'
+import { inviterMayStillGrant } from '@/lib/utils/invite-authority'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
@@ -27,9 +28,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const service = createServiceClient()
 
+    // FIX (deep audit, Settings + Team re-pass round 2 — MEDIUM): invited_by
+    // is now selected so the inviter-authority check below can run — see
+    // that check's own comment for why it was missing entirely on this path.
     const { data: member } = await (service as any)
       .from('workspace_members')
-      .select('id, status, invite_token_expires_at, invited_email, workspace_id, role_id, workspaces(name,deleted_at,plan_tier)')
+      .select('id, status, invite_token_expires_at, invited_email, invited_by, workspace_id, role_id, workspaces(name,deleted_at,plan_tier)')
       .eq('invite_token', token)
       .single()
 
@@ -61,6 +65,23 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     if (new Date(member.invite_token_expires_at) < new Date())
       return NextResponse.json({ error: 'This invite has expired. Ask the workspace owner to resend it.' }, { status: 410 })
+
+    // FIX (deep audit, Settings + Team re-pass round 2 — MEDIUM): accept/
+    // route.ts (an existing account accepting an invite) has re-checked "is
+    // the invite only as good as its sender's authority NOW" since
+    // inviterMayStillGrant() was introduced — see that route's own comment.
+    // This sibling path, a brand-new account signing up straight from the
+    // invite link, never called it at all: the exact same invite (same
+    // token, same demoted/deactivated/downgraded inviter, same
+    // no-longer-grantable role) that accept/route.ts correctly refuses with
+    // 410 was silently honoured here instead, because a new user hits
+    // signup rather than accept. Most invitees are new to the platform, so
+    // this was the more commonly hit of the two paths, not a rare corner.
+    if (!(await inviterMayStillGrant(service, member.workspace_id, member.invited_by, member.role_id))) {
+      return NextResponse.json({
+        error: 'This invite is no longer valid — the person who sent it can no longer grant this role. Ask a workspace admin to send a new one.',
+      }, { status: 410 })
+    }
 
     const email = member.invited_email
     if (!email) return NextResponse.json({ error: 'Invite email missing.' }, { status: 400 })

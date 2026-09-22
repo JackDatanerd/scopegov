@@ -5,6 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { sendInviteEmail } from '@/lib/email/templates'
+import { checkedSend } from '@/lib/email/delivery'
 import { nanoid } from 'nanoid'
 import { roleWithinCeiling } from '@/lib/utils/permission-ceiling'
 import { checkInviteRateLimit } from '@/lib/utils/rate-limit'
@@ -152,18 +153,31 @@ export async function POST(request: NextRequest) {
     // that the email never went out. It would sit as "Pending" forever,
     // discoverable only if the invitee eventually asked about it. Track
     // the outcome and report it.
-    let emailSent = true
-    try {
-      await sendInviteEmail({
-        to:            normalizedEmail,
-        inviterName:   session.name,
-        workspaceName: ws?.name || session.agencyName,
-        agencyName:    session.agencyName,
-        roleName:      role?.name,
-        inviteUrl,
-        expiresAt:     expiresAt.toISOString(),
-      })
-    } catch (e) { console.error('Invite email failed:', e); emailSent = false }
+    //
+    // FIX (deep audit, Settings + Team re-pass round 2 — MEDIUM): the plain
+    // try/catch above never actually caught this. Per lib/email/delivery.ts's
+    // own header comment, the Resend SDK reports an unverified domain, a
+    // quota limit, or an invalid recipient by RESOLVING with
+    // `{ data: null, error }` — it does not throw. sendInviteEmail() (and
+    // every send*Email helper) forwards that resolved value straight through
+    // from sendEmail(), so `emailSent` here was unconditionally true even
+    // when the provider had rejected the message outright: the invite sat
+    // as "Pending" forever with no signal to the admin, exactly the failure
+    // mode the comment above describes — the fix just never reached this
+    // call site. checkedSend() (already used by every other email call in
+    // the app — team member-changed emails, invoice/SOW/CO reminders,
+    // ownership transfer, …) is the one place both failure shapes (thrown or
+    // resolved-with-error) are normalized; use it here too.
+    const delivery = await checkedSend(() => sendInviteEmail({
+      to:            normalizedEmail,
+      inviterName:   session.name,
+      workspaceName: ws?.name || session.agencyName,
+      agencyName:    session.agencyName,
+      roleName:      role?.name,
+      inviteUrl,
+      expiresAt:     expiresAt.toISOString(),
+    }), 'invite email')
+    const emailSent = delivery.ok
 
     // FIX (deep audit, Team & Invites re-pass): this used to log the raw
     // invite token/URL verbatim — a live, unexpired credential sitting in

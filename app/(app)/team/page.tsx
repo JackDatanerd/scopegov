@@ -43,7 +43,8 @@ export default async function TeamPage() {
     (service as any)
       .from('workspace_members')
       .select(`
-        id, status, deactivated_at, role_id, permission_overrides,
+        id, status, deactivated_at, joined_at, role_id, permission_overrides,
+        invited_email,
         users!workspace_members_user_id_fkey(id, name, email, avatar_url),
         roles(id, name)
       `)
@@ -64,6 +65,24 @@ export default async function TeamPage() {
     const { effective_permissions, permission_overrides, ...rest } = m
     return canManageRoles ? { ...rest, permission_overrides } : rest
   }
+  // FIX (deep audit, Settings + Team re-pass round 2 — LOW/cross-tenant PII):
+  // POST /api/team/invite matches the invited address against the users
+  // table workspace-wide across the entire platform (no workspace scope on
+  // that lookup — by design, so it can warn about a re-invite or reuse an
+  // account that predates this workspace) and sets user_id on the new
+  // workspace_members row immediately, before the invite is ever accepted,
+  // whenever that address already has an account ANYWHERE. The
+  // `users!workspace_members_user_id_fkey` join above then resolves that
+  // user_id straight to their real name and avatar_url — someone else's
+  // account, possibly at a competing agency, with no relationship to this
+  // workspace at all. `joined_at` is only ever set on acceptance
+  // (see /api/team/invite/[token]/accept and .../signup), so it's the right
+  // signal for "has this person actually become a member here" regardless
+  // of which of the three lists (pending/expired/deactivated) the row is
+  // in — a deactivated row can be a revoked invite that was never accepted,
+  // exactly the same leak as pending/expired. invited_email (already known
+  // to whoever sent the invite) still identifies the row.
+  const redactStrangerProfile = (m: any) => (m.joined_at ? m : { ...m, users: null })
 
   // Which members have MFA set up, and which hold access that requires it.
   let mfaByUser = new Map<string, boolean>()
@@ -85,9 +104,9 @@ export default async function TeamPage() {
     id: r.id, name: r.name, description: r.description, is_default: r.is_default,
   }))
   const active  = allMembers.filter((m: any) => m.status === 'active').map(withMfa)
-  const pending = canInvite ? allMembers.filter((m: any) => m.status === 'invited').map(stripPermissions) : []
-  const expired = canInvite ? allMembers.filter((m: any) => m.status === 'expired').map(stripPermissions) : []
-  const deactivated = canInvite ? (deactivatedRes.data || []).map(stripPermissions) : []
+  const pending = canInvite ? allMembers.filter((m: any) => m.status === 'invited').map(stripPermissions).map(redactStrangerProfile) : []
+  const expired = canInvite ? allMembers.filter((m: any) => m.status === 'expired').map(stripPermissions).map(redactStrangerProfile) : []
+  const deactivated = canInvite ? (deactivatedRes.data || []).map(stripPermissions).map(redactStrangerProfile) : []
 
   if (session.planTier === 'solo' && active.length <= 1) {
     return <SoloUpsell />

@@ -46,6 +46,7 @@ import { requireStepUp } from '@/lib/auth/step-up'
 import { NextResponse, type NextRequest } from 'next/server'
 import { logAudit } from '@/lib/utils/audit'
 import { banAuthUser } from '@/lib/utils/account-erasure'
+import { describeProtectedPermission, type ProtectedPermission } from '@/lib/utils/admin-floor'
 
 const LEAVE_ERROR_MESSAGES: Record<string, string> = {
   // Same copy as app/api/workspace/leave/route.ts's per-code messages —
@@ -105,6 +106,17 @@ export async function DELETE(request: NextRequest) {
         // this row between the select above and this call — nothing left
         // to block on, treat as already resolved rather than a blocker.
         if (leaveErr.message?.includes('not_a_member')) continue
+
+        // FIX (deep audit, Settings + Team re-pass round 2 — migration 071):
+        // same new guard as app/api/workspace/leave/route.ts — see that
+        // route's own comment. Handled here too so account deletion reports
+        // the real reason instead of the generic fallback below.
+        if (leaveErr.message?.startsWith('would_orphan_permissions:')) {
+          const orphaned = leaveErr.message.split(':')[1]?.split(',').filter(Boolean) as ProtectedPermission[]
+          const label = (orphaned || []).map(describeProtectedPermission).join(' or ') || 'manage this workspace'
+          blockers.push(`"${workspaceName}" — you\u2019re the only member who can ${label} there — assign that ability to someone else first (Team > Roles), or delete the workspace`)
+          continue
+        }
 
         const code = Object.keys(LEAVE_ERROR_MESSAGES).find(c => leaveErr.message?.includes(c))
         blockers.push(code

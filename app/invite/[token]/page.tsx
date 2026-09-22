@@ -133,6 +133,25 @@ export default function InvitePage() {
     } finally { setLoading(false) }
   }
 
+  // FIX (deep audit, Settings + Team re-pass round 2 — MEDIUM): POST
+  // .../accept returns 403 { code: 'mfa_required' } whenever the signed-in
+  // account has an enrolled second factor and the current session is only
+  // aal1 (this route sits under the public /api/team/invite/ prefix, so
+  // middleware's own aal2 gate — which would normally redirect through
+  // /mfa-challenge automatically — never runs for it; see that route's own
+  // comment). Neither call site below ever inspected the response body for
+  // this, only its `error` string, so an existing user with 2FA landed on a
+  // dead end: the button just kept failing with no path forward. The fix is
+  // a redirect, not a retry — /mfa-challenge already exists and already
+  // understands `next`, exactly like every other aal2-gated flow in the app.
+  function redirectIfMfaRequired(status: number, body: any): boolean {
+    if (status === 403 && body?.code === 'mfa_required') {
+      router.push(`/mfa-challenge?next=${encodeURIComponent(`/invite/${token}`)}`)
+      return true
+    }
+    return false
+  }
+
   // Already signed in as the invited address — there is nothing to
   // authenticate, so just accept. This also covers the OAuth round trip
   // below, which lands back here with a live session.
@@ -140,7 +159,11 @@ export default function InvitePage() {
     setLoading(true); setError('')
     try {
       const res = await fetch(`/api/team/invite/${token}/accept`, { method: 'POST' })
-      if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || 'Could not accept this invite') }
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}))
+        if (redirectIfMfaRequired(res.status, j)) return
+        throw new Error(j.error || 'Could not accept this invite')
+      }
       setMode('done')
       setTimeout(() => router.push('/dashboard'), 1500)
     } catch (err: unknown) {
@@ -178,7 +201,11 @@ export default function InvitePage() {
       })
       if (signInErr) throw signInErr
       const res = await fetch(`/api/team/invite/${token}/accept`, { method: 'POST' })
-      if (!res.ok) { const j = await res.json(); throw new Error(j.error) }
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}))
+        if (redirectIfMfaRequired(res.status, j)) return
+        throw new Error(j.error)
+      }
       setMode('done')
       setTimeout(() => router.push('/dashboard'), 1500)
     } catch (err: unknown) {

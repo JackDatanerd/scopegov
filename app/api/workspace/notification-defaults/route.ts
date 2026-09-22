@@ -71,9 +71,28 @@ export async function PATCH(request: NextRequest) {
     if (!hasPermission(session, 'MANAGE_WORKSPACE_SETTINGS')) {
       return NextResponse.json({ error: 'Missing permission: MANAGE_WORKSPACE_SETTINGS' }, { status: 403 })
     }
-    const { eventType, enabled, locked } = await request.json()
-    if (!ALL_EVENT_TYPES.includes(eventType)) {
+    // FIX (deep audit, Settings + Team re-pass round 2 — LOW): this route
+    // upserts the WHOLE row every call (both email_enabled/in_app_enabled
+    // and locked), so a caller that omits `enabled` used to silently
+    // DISABLE the event via `!!undefined === false` — precisely the bug
+    // app/api/notifications/preferences/route.ts (the personal-preferences
+    // sibling) was hardened against; this workspace-wide admin route,
+    // arguably the more consequential of the two since it can also LOCK the
+    // result so members can't undo it, was missed. Require both fields
+    // explicitly, as real booleans, rather than coercing.
+    const body = await request.json().catch(() => null)
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+    }
+    const { eventType, enabled, locked } = body as Record<string, unknown>
+    if (typeof eventType !== 'string' || !ALL_EVENT_TYPES.includes(eventType)) {
       return NextResponse.json({ error: 'Unknown event type' }, { status: 400 })
+    }
+    if (typeof enabled !== 'boolean') {
+      return NextResponse.json({ error: '"enabled" must be true or false' }, { status: 400 })
+    }
+    if (typeof locked !== 'boolean') {
+      return NextResponse.json({ error: '"locked" must be true or false' }, { status: 400 })
     }
 
     const service = createServiceClient()
@@ -95,9 +114,9 @@ export async function PATCH(request: NextRequest) {
     const payload = {
       workspace_id:   session.workspaceId,
       event_type:     eventType,
-      email_enabled:  isInAppOnly ? true : !!enabled,
-      in_app_enabled: isInAppOnly ? !!enabled : true,
-      locked:         !!locked,
+      email_enabled:  isInAppOnly ? true : enabled,
+      in_app_enabled: isInAppOnly ? enabled : true,
+      locked,
     }
 
     const { error } = existing?.id
@@ -120,7 +139,7 @@ export async function PATCH(request: NextRequest) {
       actorId: session.id, actorEmail: session.email, actorName: session.name,
       eventType: 'workspace.notification_defaults_updated',
       entityType: 'workspace_defaults', entityId: session.workspaceId, entityName: session.workspaceName,
-      metadata: { event_type: eventType, enabled: !!enabled, locked: !!locked },
+      metadata: { event_type: eventType, enabled, locked },
     })
     return NextResponse.json({ ok: true })
   } catch (err) {

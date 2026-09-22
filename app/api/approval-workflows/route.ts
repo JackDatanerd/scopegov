@@ -231,7 +231,26 @@ export async function POST(request: NextRequest) {
       }))
     )
     if (stepsErr) {
-      await (service as any).from('approval_workflows').delete().eq('id', workflow.id)
+      console.error('Approval workflow steps insert failed, rolling back workflow', workflow.id, ':', stepsErr)
+      const { error: rollbackErr } = await (service as any).from('approval_workflows').delete().eq('id', workflow.id)
+      if (rollbackErr) {
+        // FIX (deep audit, Settings + Team re-pass round 2 — LOW): the
+        // rollback's own result used to be thrown away. If it ALSO fails,
+        // the comment right above (evaluateApprovalGate treats a zero-step
+        // workflow as "no approval needed") describes exactly the state
+        // this would silently leave behind — a genuinely dangerous one,
+        // since it looks configured. The row can't be deleted from here
+        // (workspace_members/approval_requests may already reference it by
+        // now), so fail closed instead: force it inactive, and log loudly
+        // enough that a zero-step ACTIVE workflow is never the quiet
+        // outcome of this failure mode.
+        console.error('Approval workflow rollback ALSO failed — forcing is_active=false for', workflow.id, ':', rollbackErr)
+        const { error: deactivateErr } = await (service as any)
+          .from('approval_workflows').update({ is_active: false }).eq('id', workflow.id)
+        if (deactivateErr) {
+          console.error('CRITICAL: could not deactivate orphaned zero-step approval workflow', workflow.id, ':', deactivateErr)
+        }
+      }
       return NextResponse.json({ error: 'Could not save approval steps — try again' }, { status: 500 })
     }
 
