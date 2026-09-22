@@ -10,6 +10,7 @@ import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { sendSowExpiredEmail } from '@/lib/email/templates'
 
 import { insertAuditRow } from '@/lib/utils/audit'
+import { fetchAll } from '@/lib/utils/cron-run'
 // FIX (section-9 audit, 9-G3): 'expired' has been a valid sow_documents
 // status since migration 001 — it's in the CHECK constraint, in the
 // registry's pill-colour map (app/(app)/sow/page.tsx), and the client
@@ -40,16 +41,22 @@ export async function POST(request: NextRequest) {
     // Only SOWs actually out with the client can expire. A draft has no
     // token and no meaningful expires_at; a signed/declined/withdrawn one
     // has already reached a terminal state.
-    const { data: expiring, error: expiringErr } = await (service as any)
-      .from('sow_documents')
-      .select('id, version, status, workspace_id, project_id, expires_at, token, projects(id, name, status, clients(name))')
-      .in('status', ['awaiting_signature', 'changes_requested'])
-      .not('expires_at', 'is', null)
-      .lt('expires_at', now)
-    if (expiringErr) throw new Error(`sow-expiry select: ${expiringErr.message}`) // was silently treated as "nothing to expire"
+    // FIX (cron audit, section 17 re-pass): unpaginated — same bug class
+    // reconciliation-rollup and scope-health-rollup were fixed for; past
+    // 1000 SOWs simultaneously past expiry (PostgREST's max_rows) the tail
+    // would silently never expire. Paged here the same way.
+    const expiring = await fetchAll<any>('sow-expiry select', (from, to) =>
+      (service as any)
+        .from('sow_documents')
+        .select('id, version, status, workspace_id, project_id, expires_at, token, projects(id, name, status, clients(name))')
+        .in('status', ['awaiting_signature', 'changes_requested'])
+        .not('expires_at', 'is', null)
+        .lt('expires_at', now)
+        .order('id')
+        .range(from, to))
 
     let expired = 0
-    for (const sow of (expiring || [])) {
+    for (const sow of expiring) {
       try {
         // CAS on the status we read — a client signing in the same
         // instant must win over this sweep.

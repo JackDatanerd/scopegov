@@ -8,6 +8,7 @@ import { verifyCronSecret } from '@/lib/utils/verify-cron'
 import { alertCronFailure } from '@/lib/utils/cron-alert'
 import { recordCronHeartbeat } from '@/lib/utils/cron-heartbeat'
 import { computeScopeHealth } from '@/lib/reports/scope-health'
+import { fetchAll } from '@/lib/utils/cron-run'
 
 // Persists the day's scope-health snapshot (history / trend). The numbers
 // themselves come from lib/reports/scope-health.ts — the SAME computation the
@@ -20,7 +21,12 @@ import { computeScopeHealth } from '@/lib/reports/scope-health'
 //    any read error, so a failed workspace writes NOTHING and is reported.
 //  - The upsert's own `{ error }` was never inspected, so a rejected write
 //    counted as `processed`. It is now checked.
-//  - Reads are paged (PostgREST caps a plain select at 1000 rows).
+//  - Reads inside computeScopeHealth are paged (PostgREST caps a plain select at
+//    1000 rows) — but the top-level workspace list this file itself queries was
+//    NOT (FIX, cron audit section 17 re-pass): past ~1000 active workspaces the
+//    tail silently never got a snapshot, the exact bug reconciliation-rollup
+//    found and fixed in its own project list — see that file's header comment.
+//    Paged here the same way, with fetchAll.
 //  - The dominant currency is chosen among in-progress projects, non-monetary
 //    counts span every currency, exceptions on finished projects no longer
 //    inflate at-risk — see scope-health.ts.
@@ -34,16 +40,17 @@ export async function POST(request: NextRequest) {
     const service = createServiceClient()
     const snapshotDate = new Date().toISOString().split('T')[0]
 
-    const { data: workspaces, error: wsErr } = await (service as any)
-      .from('workspaces')
-      .select('id')
-      .is('deleted_at', null)
-    if (wsErr) throw new Error(`workspaces: ${wsErr.message}`)
+    const workspaces = await fetchAll<{ id: string }>('scope-health workspaces select', (from, to) =>
+      (service as any).from('workspaces')
+        .select('id')
+        .is('deleted_at', null)
+        .order('id')
+        .range(from, to))
 
     let processed = 0
     const errors: Array<{ workspaceId: string; error: string }> = []
 
-    for (const ws of (workspaces || [])) {
+    for (const ws of workspaces) {
       try {
         await rollupWorkspace(service, ws.id, snapshotDate)
         processed++

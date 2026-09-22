@@ -8,6 +8,7 @@ import { recordCronHeartbeat } from '@/lib/utils/cron-heartbeat'
 import { renewInvoiceTokenIfExpired } from '@/lib/documents/renew-invoice-token'
 
 import { insertAuditRow } from '@/lib/utils/audit'
+import { fetchAll } from '@/lib/utils/cron-run'
 // FIX (build, cron/portal audit round — flagship finding, section 18):
 // see renew-invoice-token.ts for the full history of why this cron exists
 // (mirrors app/api/cron/sow-expiry and co-expiry, which exist for the
@@ -35,16 +36,23 @@ export async function POST(request: NextRequest) {
 
     // Only invoices actually out with a client can have a dead link —
     // draft has no token yet, paid/void are terminal and don't need one.
-    const { data: candidates, error: candErr } = await (service as any)
-      .from('invoices')
-      .select('id, workspace_id, status, expires_at')
-      .in('status', ['sent', 'partially_paid', 'overdue'])
-      .not('expires_at', 'is', null)
-      .lt('expires_at', now)
-    if (candErr) throw new Error(`invoice-expiry select: ${candErr.message}`)
+    // FIX (cron audit, section 17 re-pass): unpaginated — same bug class
+    // reconciliation-rollup and scope-health-rollup were fixed for; past
+    // 1000 invoices simultaneously past token expiry (PostgREST's
+    // max_rows) the tail would silently never get renewed. Paged here the
+    // same way.
+    const candidates = await fetchAll<any>('invoice-expiry select', (from, to) =>
+      (service as any)
+        .from('invoices')
+        .select('id, workspace_id, status, expires_at')
+        .in('status', ['sent', 'partially_paid', 'overdue'])
+        .not('expires_at', 'is', null)
+        .lt('expires_at', now)
+        .order('id')
+        .range(from, to))
 
     let renewed = 0
-    for (const inv of (candidates || [])) {
+    for (const inv of candidates) {
       try {
         const result = await renewInvoiceTokenIfExpired(
           service, inv.id, inv.workspace_id, inv.status, inv.expires_at,

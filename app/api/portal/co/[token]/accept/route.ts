@@ -90,7 +90,18 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       co, signerName: signerName.trim(), signatureData, source: 'direct', signerIp: ip,
       // FIX (re-audit, race-condition finding): see finalize-co.ts —
       // this is the compare-and-swap guard, not just a pre-check.
-      expectedStatus: 'awaiting_response',
+      //
+      // FIX (portal audit, section 18 re-pass): this was pinned to the
+      // single string 'awaiting_response', but the pre-check just above
+      // (CLIENT_RESPONDABLE_STATUSES) correctly lets a 'stalled' CO through
+      // too — co-stall flips awaiting_response -> stalled after 5 days of no
+      // reply. A client accepting a CO that had already stalled passed the
+      // pre-check, then failed this CAS (the row is 'stalled', not
+      // 'awaiting_response', so the update matched zero rows) and got a
+      // false "This change order was already accepted" — nobody had
+      // responded to it at all. CAS must accept the same set the pre-check
+      // does.
+      expectedStatus: CLIENT_RESPONDABLE_STATUSES,
     })
     if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status })
 

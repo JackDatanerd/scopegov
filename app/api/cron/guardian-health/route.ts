@@ -131,10 +131,11 @@ export async function POST(request: NextRequest) {
 // wired up in vercel.json would 405 the moment Vercel actually triggered
 // them. Exporting GET as an alias makes both invocation paths work.
 //
-// FIX (build, cron/portal audit round): the 3 sub-hourly jobs (sow-stall,
-// co-stall, guardian-health) are now scheduled directly in vercel.json
-// AND kept in .github/workflows/vercel-crons.yml as a redundant trigger
-// (see that file's own comment for why both are kept intentionally) —
-// this comment previously implied GitHub Actions was the only path,
-// which stopped being true once vercel.json picked these three up too.
+// FIX (cron audit, section 17 re-pass): the paragraph this replaces claimed
+// sow-stall/co-stall/guardian-health were "now scheduled directly in
+// vercel.json" — vercel.json is actually `{}` (confirmed on disk); the
+// primary scheduler is the external scopegov-cron-worker (Cloudflare
+// Worker, not in this repo), with .github/workflows/vercel-crons.yml kept
+// as a redundant trigger. That comment was stale and pointed anyone
+// debugging "why didn't this cron run" at a file that controls nothing.
 export const GET = POST

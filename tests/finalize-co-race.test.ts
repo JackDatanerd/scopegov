@@ -11,6 +11,23 @@ import { finalizeCoAcceptance } from '@/lib/documents/finalize-co'
 // even though it's written after the import above.
 vi.mock('@/lib/pdf/renderer', () => ({ renderCoPdf: vi.fn() }))
 
+// The new "array expectedStatus succeeds" test below is the first test in
+// this file to reach PAST the CAS write — every side-effecting call after
+// it (email sends, notifications, JWT/reply-to/cc lookups) is mocked out
+// so this stays a fast, isolated unit test of the CAS logic, not an
+// integration test that hits real email delivery.
+vi.mock('@/lib/utils/permissions-query', () => ({ getMemberEmailsWithPermission: vi.fn(() => Promise.resolve([])) }))
+vi.mock('@/lib/utils/notify', () => ({ notifyMembersWithPermission: vi.fn(() => Promise.resolve()) }))
+vi.mock('@/lib/email/delivery', () => ({ checkedSend: vi.fn(() => Promise.resolve()) }))
+vi.mock('@/lib/email/reply-to', () => ({ resolveReplyTo: vi.fn(() => Promise.resolve(null)) }))
+vi.mock('@/lib/utils/client-contacts', () => ({ withPrimaryContactCc: vi.fn(() => Promise.resolve([])) }))
+vi.mock('@/lib/utils/workspace-secret', () => ({ getWorkspaceJwtSecret: vi.fn(() => Promise.resolve(null)) }))
+vi.mock('@/lib/documents/co-contract-value', () => ({ getContractValueBefore: vi.fn(() => Promise.resolve(null)) }))
+vi.mock('@/lib/documents/executed-pdf', () => ({
+  computeContentHash: vi.fn(() => 'fake-hash'),
+  storeExecutedPdf: vi.fn(() => Promise.resolve(null)),
+}))
+
 // Minimal chainable fake matching the subset of the Supabase query builder
 // finalizeCoAcceptance actually uses. Real supabase-js builders are
 // PromiseLike — awaiting the chain (without an explicit terminal call)
@@ -24,6 +41,7 @@ function mockService(perTable: Record<string, { data: any; error?: any }>) {
     const builder: any = {
       select: () => builder,
       eq: () => builder,
+      in: () => builder,
       order: () => builder,
       limit: () => builder,
       single: () => builder,
@@ -114,5 +132,34 @@ describe('finalizeCoAcceptance — race-condition compare-and-swap (re-audit fix
 
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.status).toBe(422)
+  })
+
+  // FIX (portal audit, section 18 re-pass): app/api/portal/co/[token]/accept
+  // used to pass the single string 'awaiting_response' as expectedStatus,
+  // even though its own pre-check (CLIENT_RESPONDABLE_STATUSES) lets a CO
+  // in the 'stalled' status through too — co-stall flips a CO to 'stalled'
+  // after 5 days with no client reply. A stalled CO going through direct
+  // accept passed the pre-check, then failed this CAS (matched against
+  // 'awaiting_response' alone), and got a false "already accepted" 409.
+  // No existing test exercised this path — this is the regression test.
+  it('accepts a CO whose expectedStatus is passed as an array (e.g. the stalled CO going through direct accept)', async () => {
+    const service = mockService({
+      sow_documents:  { data: { id: 'sow-1', document_number: 'SOW-001' }, error: null },
+      // Non-empty array = the CAS matched — the row really was in one of
+      // the array's statuses (here, 'stalled') before this update.
+      change_orders:  { data: [{ id: 'co-1' }], error: null },
+      amendments:     { data: null, error: null },
+    })
+
+    const result = await finalizeCoAcceptance(service, {
+      co: baseCo,
+      signerName: 'Jane Client',
+      signatureData: 'data:image/png;base64,abc',
+      source: 'direct',
+      // The real fix: pass the full respondable-status array, not a single string.
+      expectedStatus: ['awaiting_response', 'stalled'],
+    })
+
+    expect(result.ok).toBe(true)
   })
 })

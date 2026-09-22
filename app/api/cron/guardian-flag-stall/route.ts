@@ -31,6 +31,7 @@ import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { sendGuardianFlagStalledEmail } from '@/lib/email/templates'
 
 import { insertAuditRow } from '@/lib/utils/audit'
+import { fetchAll } from '@/lib/utils/cron-run'
 export async function POST(request: NextRequest) {
   if (!verifyCronSecret(request))
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -49,15 +50,21 @@ export async function POST(request: NextRequest) {
     // forward on any status change and gets bumped here after a reminder,
     // so a flag that was just touched (or just reminded) won't be picked
     // up again until it's been quiet for the full window again.
-    const { data: stale, error: staleErr } = await (service as any)
-      .from('guardian_flags')
-      .select('id, workspace_id, project_id, status, severity, description, sow_reference, projects(id, name, status, deleted_at, clients(name))')
-      .in('status', ['open', 'borderline_review'])
-      .lt('updated_at', cutoff)
-    if (staleErr) throw new Error(`guardian-flag-stall select: ${staleErr.message}`)
+    // FIX (cron audit, section 17 re-pass): unpaginated — same bug class
+    // reconciliation-rollup and scope-health-rollup were fixed for; past
+    // 1000 simultaneously-stale flags (PostgREST's max_rows) the tail would
+    // silently never get reminded. Paged here the same way.
+    const stale = await fetchAll<any>('guardian-flag-stall select', (from, to) =>
+      (service as any)
+        .from('guardian_flags')
+        .select('id, workspace_id, project_id, status, severity, description, sow_reference, projects(id, name, status, deleted_at, clients(name))')
+        .in('status', ['open', 'borderline_review'])
+        .lt('updated_at', cutoff)
+        .order('id')
+        .range(from, to))
 
     let reminded = 0
-    for (const flag of (stale || [])) {
+    for (const flag of stale) {
       try {
         const project = flag.projects
         if (!project) continue

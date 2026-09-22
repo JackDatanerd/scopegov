@@ -10,6 +10,7 @@ import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { sendCoExpiredEmail } from '@/lib/email/templates'
 
 import { insertAuditRow } from '@/lib/utils/audit'
+import { fetchAll } from '@/lib/utils/cron-run'
 // FIX (section-10 audit, feature gap): mirrors app/api/cron/sow-expiry
 // exactly — see that route's header comment for the full history of why
 // this pattern exists. change_orders never had the equivalent: no
@@ -37,16 +38,22 @@ export async function POST(request: NextRequest) {
     const now     = new Date().toISOString()
     const EXPIRABLE_FROM = ['awaiting_response', 'awaiting_countersignature', 'stalled']
 
-    const { data: expiring, error: expiringErr } = await (service as any)
-      .from('change_orders')
-      .select('id, title, workspace_id, project_id, expires_at, token, projects(id, name, clients(name))')
-      .in('status', EXPIRABLE_FROM)
-      .not('expires_at', 'is', null)
-      .lt('expires_at', now)
-    if (expiringErr) throw new Error(`co-expiry select: ${expiringErr.message}`) // was silently treated as "nothing to expire"
+    // FIX (cron audit, section 17 re-pass): unpaginated — past 1000 change
+    // orders simultaneously past their expiry (PostgREST's max_rows), the
+    // tail silently never expired. Same bug class reconciliation-rollup and
+    // scope-health-rollup were fixed for; paged here the same way.
+    const expiring = await fetchAll<any>('co-expiry select', (from, to) =>
+      (service as any)
+        .from('change_orders')
+        .select('id, title, workspace_id, project_id, expires_at, token, projects(id, name, clients(name))')
+        .in('status', EXPIRABLE_FROM)
+        .not('expires_at', 'is', null)
+        .lt('expires_at', now)
+        .order('id')
+        .range(from, to))
 
     let expired = 0
-    for (const co of (expiring || [])) {
+    for (const co of expiring) {
       try {
         // CAS on the status we read — a client responding/countersigning
         // in the same instant must win over this sweep.

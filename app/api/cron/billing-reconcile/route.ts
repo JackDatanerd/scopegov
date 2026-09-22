@@ -43,11 +43,20 @@ export async function POST(request: NextRequest) {
 
   try {
     const service = createServiceClient()
+    // FIX (cron audit, section 17 re-pass — starvation bug): this used to order by
+    // `updated_at`, which is only touched on an actual repair (see the update below) —
+    // a row checked and found clean never moved, so past 200 live subscriptions the
+    // same oldest-by-updated_at rows were re-selected every day and everything past
+    // the batch boundary was never reconciled again. `last_reconciled_at` (migration
+    // 072) is bumped on every check regardless of outcome, so this now rotates
+    // through the whole table; nullsFirst picks up rows that have never been checked
+    // even once (new rows, and every existing row as of the migration) before
+    // anything already-checked.
     const { data: rows, error } = await (service as any).from('billing')
       .select('workspace_id, paystack_subscription_code, current_period_end, cancels_at_period_end, grace_period_started_at, workspaces!inner(id, agency_name, deleted_at)')
       .not('paystack_subscription_code', 'is', null)
       .is('workspaces.deleted_at', null)
-      .order('updated_at', { ascending: true })
+      .order('last_reconciled_at', { ascending: true, nullsFirst: true })
       .limit(BATCH)
     if (error) throw new Error(error.message)
 
@@ -59,8 +68,23 @@ export async function POST(request: NextRequest) {
         const res = await fetchPaystackSubscription(b.paystack_subscription_code)
         checked++
         if (!res.ok) {
-          if (res.notFound) anomalies.push(`workspace ${b.workspace_id}: subscription ${b.paystack_subscription_code} NOT FOUND on Paystack`)
-          else readErrors++
+          if (res.notFound) {
+            anomalies.push(`workspace ${b.workspace_id}: subscription ${b.paystack_subscription_code} NOT FOUND on Paystack`)
+            // FIX (cron audit, section 17 re-pass): a "not found" is still a
+            // definitive, successful check — stamp the cursor so this row
+            // cycles through the queue like any other, instead of pinning
+            // itself at the front forever (see migration 072 / the query
+            // comment above).
+            const { error: cursorErr } = await (service as any).from('billing')
+              .update({ last_reconciled_at: new Date().toISOString() }).eq('workspace_id', b.workspace_id)
+            if (cursorErr) console.error('billing-reconcile: cursor update failed:', cursorErr.message)
+          } else {
+            // A transient read failure is NOT a completed check — leave
+            // last_reconciled_at untouched so this row is retried before the
+            // batch advances past it, rather than silently skipped for a
+            // whole cycle.
+            readErrors++
+          }
           continue
         }
         const { status, nextPaymentDate } = res.sub
@@ -85,10 +109,21 @@ export async function POST(request: NextRequest) {
         if (status === 'attention' && !b.grace_period_started_at)
           anomalies.push(`workspace ${b.workspace_id}: Paystack shows ATTENTION (charge failing) but no grace period is running (${b.paystack_subscription_code})`)
 
-        if (Object.keys(updates).length) {
-          const { error: upErr } = await (service as any).from('billing')
-            .update({ ...updates, updated_at: new Date().toISOString() }).eq('workspace_id', b.workspace_id)
-          if (upErr) { console.error('billing-reconcile update failed:', upErr.message); continue }
+        // FIX (cron audit, section 17 re-pass — starvation bug): `updated_at`
+        // stays reserved for an actual repair (its existing meaning
+        // elsewhere in the app); `last_reconciled_at` is a separate cursor
+        // stamped on every successful check, repaired or not, which is what
+        // the batch query above now orders by. Without this, a subscription
+        // that's clean every day never moved in the old ordering and, past
+        // BATCH=200 live subscriptions, would never be checked again.
+        const hasRepair = Object.keys(changes).length > 0
+        const writeFields: Record<string, unknown> = { ...updates, last_reconciled_at: new Date().toISOString() }
+        if (hasRepair) writeFields.updated_at = new Date().toISOString()
+
+        const { error: upErr } = await (service as any).from('billing')
+          .update(writeFields).eq('workspace_id', b.workspace_id)
+        if (upErr) { console.error('billing-reconcile update failed:', upErr.message); continue }
+        if (hasRepair) {
           repaired++
           await insertAuditRow(service, {
             workspace_id: b.workspace_id, actor_id: null,

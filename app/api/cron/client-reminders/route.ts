@@ -25,6 +25,16 @@ import { isReminderDue, summarizeReminders, type ReminderEvent } from '@/lib/uti
 // logged as `reminder.sent` (metadata.automatic = true) so the manual 24h cooldown and the agency's audit trail see them.
 //
 // Daily. Must be registered in the scheduler (Cloudflare worker) — nothing in this repo schedules it.
+//
+// FIX (cron audit, section 17 re-pass): this is already registered in
+// EXPECTATIONS in cron-heartbeat-watchdog/route.ts (same open question as
+// notification-cleanup — see that file's comment for the full reasoning).
+// Kept registered rather than pulled back out: silently dropping heartbeat
+// coverage risks masking a real failure later, which is worse than a
+// loud, cooldown-limited false alarm now if the worker turns out not to
+// call this yet. MANUAL VERIFICATION NEEDED: confirm the
+// scopegov-cron-worker schedule actually includes `client-reminders` — if
+// it doesn't, add it there rather than removing the EXPECTATIONS entry.
 
 type Kind = 'sow' | 'co' | 'invoice'
 const ENTITY: Record<Kind, string> = { sow: 'sow', co: 'change_order', invoice: 'invoice' }
