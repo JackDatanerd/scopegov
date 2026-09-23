@@ -22,8 +22,9 @@ import { PERIOD_LABELS as ALL_PERIOD_LABELS, type PeriodKey } from './period'
 import {
   computeScopeHealth, IN_PROGRESS_STATUSES, SEVERITY_RANK, type CurrencyRollup,
 } from './scope-health'
+import { fetchPaged } from '@/lib/utils/paginate'
 
-export type PortfolioPeriod = '30d' | '90d' | '6m' | '12m'
+export type PortfolioPeriod = PeriodKey
 
 export interface PortfolioCurrencyRow {
   currency: string
@@ -86,6 +87,11 @@ export interface PortfolioData {
 const PERIOD_DAYS: Record<PeriodKey, number | null> = { '30d': 30, '90d': 90, '6m': 180, '12m': 365, 'all': null }
 const OPEN_FLAGS_LIST_LIMIT = 100
 const STALLED_CO_LIST_LIMIT = 500
+// One row per workspace per day (daily rollup cron) — 20,000 is ~54 years of
+// history, effectively unbounded for any real workspace, but still a real
+// cap with a real error on the other side of it (see the fetchPaged call
+// below), rather than no cap at all.
+const HISTORY_MAX_ROWS = 20000
 
 export async function getPortfolioData(
   service: any,
@@ -99,14 +105,28 @@ export async function getPortfolioData(
   const now = new Date()
   const today = now.toISOString().split('T')[0]
 
-  const [health, snapRes, stalledCosRes] = await Promise.all([
+  const [health, snapPage, stalledCosRes] = await Promise.all([
     computeScopeHealth(service, workspaceId, { withDetail: true }),
-    service
+    // BUG fixed (fix round, Portfolio section 8): this was a plain
+    // `.select()` with no `.range()`/`.limit()` at all — unlike every other
+    // "big read" in this file's own family (computeScopeHealth's five
+    // queries), which page with fetchPaged() and explicitly THROW rather
+    // than let a truncated read pass as complete, specifically because
+    // PostgREST silently caps a plain select at 1000 rows (see
+    // lib/utils/paginate.ts). A daily rollup means ~1000 rows is about 2.7
+    // years of history — well within reach for `?period=all` (and
+    // eventually `12m`/`6m`) on a workspace old enough to have that much
+    // history. Past that point this query would have silently returned a
+    // truncated series to the chart, the CSV and the PDF with no signal
+    // anything was cut off — the exact failure mode the sibling function
+    // was written to prevent.
+    fetchPaged<any>((from, to) => service
       .from('scope_health_snapshots')
-      .select('snapshot_date, open_flags_count, exceptions_count, contract_value_at_risk, currency')
+      .select('snapshot_date, open_flags_count, exceptions_count, contract_value_at_risk, currency', { count: 'exact' })
       .eq('workspace_id', workspaceId)
       .gte('snapshot_date', since)
-      .order('snapshot_date', { ascending: true }),
+      .order('snapshot_date', { ascending: true })
+      .range(from, to), { maxRows: HISTORY_MAX_ROWS }),
     service.from('change_orders')
       .select('id, title, total, project_id, updated_at, projects!inner(id, name, currency, status, deleted_at)')
       .eq('workspace_id', workspaceId).eq('status', 'stalled')
@@ -115,10 +135,11 @@ export async function getPortfolioData(
       .order('updated_at', { ascending: true })
       .limit(STALLED_CO_LIST_LIMIT),
   ])
-  if (snapRes.error) throw new Error(`snapshots: ${snapRes.error.message}`)
   if (stalledCosRes.error) throw new Error(`stalled COs: ${stalledCosRes.error.message}`)
+  if (snapPage.truncated)
+    throw new Error(`Portfolio history truncated: scope_health_snapshots exceeded ${HISTORY_MAX_ROWS} rows for this workspace/period`)
 
-  const snapshots: any[] = snapRes.data || []
+  const snapshots: any[] = snapPage.rows
   const earliest = snapshots.length ? snapshots[0] : null
 
   const money = (n: number) => (canViewFinancials ? n : null)

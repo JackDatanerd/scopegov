@@ -7,10 +7,21 @@
 // auto-generate" on the Overview tab), could not be corrected by anyone.
 // The rules the API enforces are mirrored here so the form doesn't offer
 // what the server will refuse.
+//
+// FEATURE GAP closed (fix round, Projects & Dashboard section 7): the same
+// PATCH route has always accepted `clientId` too — validated, workspace-
+// scoped, blocked once a SOW exists (same structural-edit rule as type and
+// currency) — but this modal never exposed it. A project attached to the
+// wrong client at intake, before any SOW exists, had no way to be corrected
+// short of deleting and recreating the whole project. The search/select UI
+// below mirrors app/(app)/projects/new/page.tsx's client picker; it's
+// deliberately narrower — existing clients only, no "+ New client" — since
+// this is a correction to an already-created project, not intake.
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { CURRENCIES } from '@/lib/constants/workspace-options'
 import { PROJECT_TYPE_LABELS } from '@/lib/utils/format'
+import type { Client } from '@/lib/supabase/types'
 
 export default function EditProjectModal({
   project, canViewFinancials, onClose, onSaved,
@@ -43,6 +54,27 @@ export default function EditProjectModal({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
+  // Client reassignment — existing clients only, gated the same way the API
+  // gates it (no SOW yet). Only fetched when the field can actually be used.
+  const [clientId, setClientId] = useState<string>(project.client_id || '')
+  const [clientSearch, setClientSearch] = useState('')
+  const [clients, setClients] = useState<Client[]>([])
+  useEffect(() => {
+    if (hasAnySow) return
+    fetch('/api/clients').then(r => r.json()).then(json => {
+      setClients(json.clients || [])
+    }).catch(() => {})
+  }, [hasAnySow])
+  const filteredClients = clientSearch
+    ? clients.filter(c =>
+        c.id !== clientId &&
+        (c.name.toLowerCase().includes(clientSearch.toLowerCase()) ||
+         c.email?.toLowerCase().includes(clientSearch.toLowerCase()))
+      )
+    : []
+  const selectedClient = clients.find(c => c.id === clientId)
+  const selectedClientLabel = selectedClient?.name || project.clients?.name || ''
+
   async function save() {
     setError('')
     if (!name.trim()) { setError('Project name is required'); return }
@@ -64,6 +96,7 @@ export default function EditProjectModal({
       body.contractValue = contractValue.trim()
     }
     if (!hasAnySow && currency !== (project.currency || 'USD')) body.currency = currency
+    if (!hasAnySow && clientId && clientId !== project.client_id) body.clientId = clientId
     if (project.type === 'retainer' && retainerMonths !== (project.retainer_duration_months ? String(project.retainer_duration_months) : '')) {
       body.retainerDurationMonths = retainerMonths
     }
@@ -92,6 +125,49 @@ export default function EditProjectModal({
 
         <label className="form-label">Project name</label>
         <input className="form-input" value={name} maxLength={200} onChange={e => setName(e.target.value)} style={{ marginBottom: 12 }} />
+
+        <label className="form-label">Client</label>
+        {hasAnySow ? (
+          <p style={{ fontSize: 12.5, marginBottom: 12 }}>
+            {project.clients?.name}
+            <span style={{ fontSize: 11.5, color: 'var(--text-3)', display: 'block', marginTop: 2 }}>
+              Client is fixed once a SOW exists.
+            </span>
+          </p>
+        ) : (
+          <div style={{ marginBottom: 12 }}>
+            <input className="form-input" placeholder="Search existing clients…" value={clientSearch}
+              onChange={e => setClientSearch(e.target.value)} />
+            {clientSearch && (
+              <div className="surface" style={{ marginTop: 4, maxHeight: 160, overflowY: 'auto', position: 'relative', zIndex: 10 }}>
+                {filteredClients.length === 0 ? (
+                  <div style={{ padding: '10px 12px' }}>
+                    <span style={{ fontSize: 13, color: 'var(--text-3)' }}>No match.</span>
+                  </div>
+                ) : (
+                  filteredClients.map(c => (
+                    <button key={c.id} type="button"
+                      style={{ display: 'block', width: '100%', textAlign: 'left', padding: '10px 12px', background: 'none', border: 'none', cursor: 'pointer', borderBottom: '1px solid var(--surface-2)' }}
+                      onClick={() => { setClientId(c.id); setClientSearch('') }}>
+                      <div style={{ fontSize: 13, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 6 }}>
+                        {c.name}
+                        {c.status === 'archived' && <span className="pill pill-slate pill-sm">Archived</span>}
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{c.email}</div>
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+            <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span className="pill pill-green"><i className="ti ti-check" style={{ fontSize: 10 }} /> {selectedClientLabel}</span>
+              {clientId !== project.client_id && (
+                <button type="button" className="auth-link" style={{ fontSize: 11, background: 'none', border: 'none', padding: 0 }}
+                  onClick={() => { setClientId(project.client_id || ''); setClientSearch('') }}>Undo</button>
+              )}
+            </div>
+          </div>
+        )}
 
         <label className="form-label">Subtitle (optional)</label>
         <input className="form-input" value={disc} maxLength={300} onChange={e => setDisc(e.target.value)} style={{ marginBottom: 12 }} />

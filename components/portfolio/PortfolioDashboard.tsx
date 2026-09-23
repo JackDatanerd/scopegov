@@ -396,6 +396,26 @@ function MetricStrip({ data, canViewFinancials }: { data: PortfolioData; canView
 }
 
 // ── TREND CHART (hand-rolled SVG — no charting dependency) ──────────
+// FEATURE GAP closed (fix round, Portfolio section 8): lib/pdf/portfolio-
+// report.tsx thins a long history down to 30 points before rendering it as
+// a table (sampleHistory()), specifically so a long period doesn't produce
+// an unreadable/oversized page — but this component, plotting the exact
+// same `data.history` array, had no equivalent: one SVG path vertex and one
+// hover-rect per row, uncapped. Combined with the missing row cap fixed in
+// getPortfolioData, a mature workspace on "All time" was the worst case
+// twice over; even now that the data itself is bounded, a multi-year daily
+// series is still needlessly heavy to render as a line chart with no
+// decimation. Evenly-spaced sampling (endpoints always kept) mirrors the
+// PDF's own algorithm — daily precision is kept in full up to a year of
+// history, and only compressed beyond that.
+const MAX_CHART_POINTS = 366
+function sampleForChart<T>(rows: T[], max: number): T[] {
+  if (rows.length <= max) return rows
+  const out: T[] = []
+  for (let i = 0; i < max; i++) out.push(rows[Math.round((i * (rows.length - 1)) / (max - 1))])
+  return out
+}
+
 function TrendChart({ points: allPoints, mode, currency }: { points: HistoryPoint[]; mode: 'risk' | 'flags'; currency: string }) {
   const [hover, setHover] = useState<number | null>(null)
   const W = 640, H = 180, PAD = 8
@@ -406,7 +426,10 @@ function TrendChart({ points: allPoints, mode, currency }: { points: HistoryPoin
   // the line entirely rather than coercing it to 0, which would draw a day
   // with a currency mismatch as a day with zero risk. Flag-count mode has no
   // currency concept, so every point is always kept.
-  const points = mode === 'risk' ? allPoints.filter(p => p.contractValueAtRisk !== null) : allPoints
+  const points = sampleForChart(
+    mode === 'risk' ? allPoints.filter(p => p.contractValueAtRisk !== null) : allPoints,
+    MAX_CHART_POINTS,
+  )
 
   const values = points.map(p => mode === 'risk' ? (p.contractValueAtRisk ?? 0) : p.openFlagsCount)
   const max = Math.max(...values, 1)

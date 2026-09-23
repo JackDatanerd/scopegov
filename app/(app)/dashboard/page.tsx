@@ -59,11 +59,23 @@ function formatEvent(a: any, canViewFinances: boolean): string {
     'project.completed': `${n} marked complete`,
     'project.reopened': `${n} reopened`,
     'project.archived': `${n} archived`,
+    'project.unarchived': `${n} unarchived`,
     'co.sent': `Change order sent — ${n}`,
     'flag.raised': `Scope flag raised on ${n}`,
+    // Same creation path as 'flag.raised' (guardian/check, guardian/checks/[id]/retry,
+    // guardian/inbound all do `isBorderline ? 'flag.borderline_created' : 'flag.raised'`),
+    // just the borderline branch. isAttentionWorthy() treats a borderline flag as just
+    // as actionable as an open one, so the feed should label it the same way.
+    'flag.borderline_created': `Scope flag raised on ${n}`,
     'flag.resolved': `Scope flag resolved on ${n}`,
     'member.invited': `${actor} invited a team member`,
-    'member.joined': `${a.entity_name} joined the workspace`,
+    // NOTE: no 'member.joined'/'member.left' entry here on purpose. Those events are
+    // always logged with entityType: 'workspace_member', which audit_resolve_project_id()
+    // (migration 056) has no case for and their metadata carries no project_id fallback —
+    // so project_id is always NULL on these rows. The query below already filters on
+    // `.not('project_id', 'is', null)`, so these rows never reach this function. Adding
+    // a label here would be dead code; fixing the scoping (if teammate-joined events are
+    // ever wanted on this feed) belongs in the query above, not in this map.
   }
   return map[a.event_type] || `${actor} · ${a.event_type.replace(/\./g, ' ')}`
 }
