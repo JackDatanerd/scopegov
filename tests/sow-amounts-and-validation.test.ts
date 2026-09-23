@@ -28,7 +28,13 @@ describe('parseTableAmount', () => {
     expect(p('1.5k')).toBe(1500)
     expect(p(250)).toBe(250)
     expect(p('-500')).toBe(-500)
-    expect(p('(500)')).toBe(500)
+    // FIX (fix round, SOW-B1): this used to assert 500 — literally codifying the
+    // bug where accounting-style parens never actually got detected as negative
+    // (only a literal '-' character ever did, despite the function's own comment
+    // always having claimed "(500)" was handled). Now genuinely negative.
+    expect(p('(500)')).toBe(-500)
+    expect(p('($500)')).toBe(-500)
+    expect(p('500 (refund)')).toBe(500) // trailing annotation, not a wrapping paren — stays positive
   })
 })
 
@@ -67,6 +73,19 @@ describe('validateSowForSend', () => {
     expect(validateSowForSend({ sections: s, metadata: meta, contractValue: 10000 }).errors).toHaveLength(1)
     s[3].table[1].amount = 'later'
     expect(validateSowForSend({ sections: s, metadata: meta, contractValue: 10000 }).errors[0]).toContain('read the amount')
+  })
+  // FIX (fix round, SOW-B3): the footing check used to only sum rows with a
+  // strictly positive amount, silently dropping a legitimate negative
+  // "credit" milestone from the total — so a schedule that visibly footed
+  // (and that SowEditor's own running total agreed footed) could still be
+  // rejected here. Every named row counts now, whatever its sign.
+  it('foots a schedule containing a negative credit milestone', () => {
+    const s: any[] = [...good(), { id: 'payment_schedule', visible: true, table: [
+      { milestone: 'Deposit', amount: '12,000' },
+      { milestone: 'Early-bird credit', amount: '-2,000' },
+    ] }]
+    const meta = { paymentStructure: 'milestones' }
+    expect(validateSowForSend({ sections: s, metadata: meta, contractValue: 10000 }).errors).toHaveLength(0)
   })
   it('amountsMentioned finds every figure in prose', () => {
     expect(amountsMentioned('pay 50% of 1,500.50 by 30 June')).toContain(1500.5)

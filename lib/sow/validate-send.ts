@@ -94,13 +94,21 @@ export function validateSowForSend(input: {
     if (unreadable.length > 0) {
       errors.push(`Couldn't read the amount on the Payment Schedule milestone "${unreadable[0].milestone}". Enter a plain number.`)
     } else {
-      const validRows = parsed.filter(r => r.milestone && (r.amount ?? 0) > 0)
+      // FIX (fix round, SOW-B3): this used to only count rows with a strictly
+      // positive amount, silently dropping any zero or negative (e.g. a
+      // legitimate "credit"/discount milestone) row from both the "at least one
+      // milestone" check and the footing sum. That let the editor's own running
+      // total (which — correctly — includes every named row regardless of sign)
+      // show "Matches the contract value" while this check computed a different
+      // total and rejected the send. Now every named, readable row counts,
+      // matching SowEditor.tsx's scheduleTotal exactly.
+      const validRows = parsed.filter(r => r.milestone)
       if (validRows.length === 0) {
         errors.push('Add at least one milestone to the Payment Schedule before sending this SOW.')
       } else if (schedule?.visible === false) {
         errors.push('This SOW uses a milestone payment structure — un-hide the Payment Schedule section before sending it.')
       } else if (Number.isFinite(contractValue)) {
-        const sum = roundCurrency(validRows.reduce((s, r) => s + (r.amount as number), 0))
+        const sum = roundCurrency(validRows.reduce((s, r) => s + (r.amount ?? 0), 0))
         if (Math.abs(sum - contractValue) >= 0.01)
           errors.push(`The Payment Schedule totals ${sum.toFixed(2)} but the contract value is ${contractValue.toFixed(2)} — these must match before sending.`)
       }

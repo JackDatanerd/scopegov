@@ -758,16 +758,26 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
     }
   }
 
-  async function handleWithdraw() {
+  // FIX (fix round, SOW-G1): generalized to take an explicit sowId (default:
+  // currentSow, unchanged for every existing caller) so the version-history
+  // row below can withdraw a `changes_requested` SOW specifically — the API
+  // has always allowed this (WITHDRAWABLE_FROM includes 'changes_requested'),
+  // but nothing in the UI could ever reach it, since a changes_requested SOW
+  // is never `currentSow` (request-changes always spawns a newer draft on
+  // top of it) and the version-history list only ever offered View/PDF.
+  const [withdrawingId, setWithdrawingId] = useState<string | null>(null)
+  async function handleWithdraw(sowId: string = currentSow.id) {
     if (!confirm('Withdraw this SOW? The client link will be deactivated.')) return
-    setError('')
+    setError(''); setWithdrawingId(sowId)
     try {
-      const res  = await fetch(`/api/sow/${currentSow.id}/withdraw`, { method: 'POST' })
+      const res  = await fetch(`/api/sow/${sowId}/withdraw`, { method: 'POST' })
       const json = await res.json().catch(() => ({}))
       if (!res.ok) { setError(json.error || 'Failed to withdraw'); return }
       router.refresh()
     } catch {
       setError('Failed to withdraw')
+    } finally {
+      setWithdrawingId(null)
     }
   }
 
@@ -894,7 +904,7 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
                       {permissions.sendSow && (
                         <button className="btn btn-ghost btn-sm" onClick={handleCopyLink}><i className="ti ti-link" style={{ fontSize: 12 }} /> Copy signing link</button>
                       )}
-                      <button className="btn btn-ghost btn-sm" onClick={handleWithdraw}><i className="ti ti-x" style={{ fontSize: 12 }} /> Withdraw</button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => handleWithdraw()}><i className="ti ti-x" style={{ fontSize: 12 }} /> Withdraw</button>
                     </>
                   )}
                   {['withdrawn', 'declined', 'expired'].includes(currentSow.status) && permissions.editSow && (
@@ -933,6 +943,21 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
                         way every other contract-value display in this file already does. */}
                     {permissions.viewFinancials && (
                       <a href={`/api/pdf/sow/${s.id}`} target="_blank" className="btn btn-ghost btn-xs"><i className="ti ti-download" style={{ fontSize: 11 }} /> PDF</a>
+                    )}
+                    {/* FIX (fix round, SOW-G1): the only reachable path to formally cancel
+                        a changes_requested SOW (revoke its still-live token, notify the
+                        client this thread is closed) rather than leaving it dangling
+                        forever while its auto-created sibling draft sits unsent. */}
+                    {s.status === 'changes_requested' && permissions.sendSow && (
+                      <button
+                        className="btn btn-ghost btn-xs"
+                        onClick={() => handleWithdraw(s.id)}
+                        disabled={withdrawingId === s.id}
+                      >
+                        {withdrawingId === s.id
+                          ? <span className="spin" />
+                          : <><i className="ti ti-x" style={{ fontSize: 11 }} /> Withdraw</>}
+                      </button>
                     )}
                   </div>
                 </div>
@@ -2128,8 +2153,16 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
           {/* FIX (section-10 audit, feature gap — CO expiry): 'expired'
               added — same as 'declined'/'stalled', an agency should be
               able to close out a dead CO instead of only being able to
-              revise it. */}
-          {['countered','stalled','declined','expired'].includes(co.status) && (
+              revise it.
+              FIX (fix round, CO-G2): 'draft' added — the close route's own
+              TERMINAL_FROM list has always allowed closing a plain draft
+              ("'draft' never had a client-facing state, so nothing to
+              notify there"), and already cancels any pending approval
+              request on the way. Nothing in the UI ever exposed it: a
+              draft CO created by mistake, or simply abandoned, had no way
+              to be discarded — Cancel in the editor just navigates away
+              without touching the row, and there's no delete endpoint. */}
+          {['countered','stalled','declined','expired','draft'].includes(co.status) && (
             <button className="btn btn-ghost btn-xs" onClick={() => doAction('close')} disabled={acting}>Close</button>
           )}
           {/* FIX (section-10 audit, feature gap — CO expiry): 'expired'

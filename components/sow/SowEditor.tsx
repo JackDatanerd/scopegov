@@ -604,9 +604,16 @@ function TableSectionEditor({
   // was to hit Send and read the error. Amounts are free text (and now
   // parsed tolerantly, so "1,500" counts), so show the arithmetic as it's
   // typed.
+  // FIX (fix round, SOW-B3): this used to sum every row's amount regardless of sign
+  // or milestone name, while lib/sow/validate-send.ts (the actual send-time check)
+  // only counted named rows with a positive amount — so a schedule with a
+  // legitimate negative "credit" row (or a stray amount on an unnamed row) could
+  // show "Matches the contract value ✓" here and then fail at Send with a
+  // different total, or vice versa. Now mirrors validate-send.ts exactly: every
+  // named row's amount counts, whatever its sign, and an unnamed row never does.
   const showsTotals = sectionId === 'payment_schedule' && typeof contractValue === 'number'
   const scheduleTotal = showsTotals
-    ? rows.reduce((sum, r) => sum + (parseTableAmount(r.amount) ?? 0), 0)
+    ? rows.reduce((sum, r) => String(r.milestone || '').trim() ? sum + (parseTableAmount(r.amount) ?? 0) : sum, 0)
     : 0
   const unreadable = showsTotals
     ? rows.filter(r => String(r.milestone || '').trim() && parseTableAmount(r.amount) === null).length

@@ -130,6 +130,28 @@ export function columnLabel(col: SowTableColumn, language?: string): string {
   return TABLE_COLUMN_LABELS[language]?.[col.key] || col.label
 }
 
+// FIX (fix round, SOW-B2): the signed-SOW payment-milestones block (rendered
+// from payment_milestones once signed, in place of the authored
+// payment_schedule table) had its own hardcoded "Milestone"/"Amount"/"Due"
+// headers — every other table in the document routes through columnLabel
+// above, so a signed non-English SOW translated everywhere except this one
+// block. Reuses the same milestone/amount translations (the milestone block
+// shows a due *date* rather than the combined "Trigger / Due" column, so
+// that gets its own short label per language instead of reusing `trigger`'s).
+const MILESTONE_DUE_LABELS: Record<string, string> = {
+  es: 'Vencimiento', fr: 'Échéance', pt: 'Vencimento', de: 'Fällig', sw: 'Tarehe',
+}
+
+/** Milestone/Amount/Due header labels for the signed-SOW milestone block, in the document's language. */
+export function milestoneBlockLabels(language?: string): { milestone: string; amount: string; due: string } {
+  if (!language || language === 'en') return { milestone: 'Milestone', amount: 'Amount', due: 'Due' }
+  return {
+    milestone: TABLE_COLUMN_LABELS[language]?.milestone || 'Milestone',
+    amount: TABLE_COLUMN_LABELS[language]?.amount || 'Amount',
+    due: MILESTONE_DUE_LABELS[language] || 'Due',
+  }
+}
+
 export type SowTableRow = Record<string, string>
 
 /**
@@ -192,9 +214,15 @@ export function parseTableAmount(raw: unknown): number | null {
   const after = raw.slice(raw.indexOf(tokens[0]) + tokens[0].length)
   if (/^\s*k\b/i.test(after)) n *= 1000
 
-  // Accounting-style negatives: "(500)" or a leading minus.
+  // Accounting-style negatives: "(500)"/"($500)" or a leading minus ("-500", "-$500").
+  // FIX (fix round, SOW-B1): this used to only ever test `before` for a literal '-'
+  // character — parens were never actually checked despite the comment always having
+  // claimed "(500)" was handled. A row like "(500)" (a common way to write a credit/
+  // refund milestone) silently parsed as +500.
   const before = raw.slice(0, raw.indexOf(tokens[0]))
-  if (/-\s*[^\d]*$/.test(before) && !/\d/.test(before)) n = -n
+  const leadingMinus = /-\s*[^\d]*$/.test(before) && !/\d/.test(before)
+  const wrappedInParens = /\([^\d]*$/.test(before) && /^[^\d]*\)/.test(after)
+  if (leadingMinus || wrappedInParens) n = -n
   return n
 }
 

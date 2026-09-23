@@ -143,7 +143,12 @@ export default function SowEditorPage() {
                 : <><i className="ti ti-send" style={{ fontSize: 12 }} /> Send to client</>}
             </button>
           )}
-          {isLocked && sow.status === 'awaiting_signature' && perms.canSend && (
+          {/* FIX (fix round, SOW-G1): the API has always allowed withdrawing a
+              changes_requested SOW too (same cancellation-notice email as
+              awaiting_signature) — this page just never offered the button, even
+              though ProjectDetail's version-history "View" link is exactly how an
+              agency reaches a changes_requested SOW in the first place. */}
+          {isLocked && (sow.status === 'awaiting_signature' || sow.status === 'changes_requested') && perms.canSend && (
             <button
               className="btn btn-ghost btn-sm"
               onClick={async () => {

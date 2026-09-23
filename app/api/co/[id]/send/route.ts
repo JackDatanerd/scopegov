@@ -26,8 +26,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // whole query (42703), which silently surfaces as "CO not found".
     const { data: co, error: coFetchErr } = await (service as any)
       .from('change_orders')
-      .select(`id,title,status,total,line_items,version,project_id,
-        projects(id,name,status,currency)`)
+      .select(`id,title,status,total,line_items,version,project_id,is_retainer_renewal,renewal_term_months,
+        projects(id,name,status,currency,type)`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!co) {
@@ -59,6 +59,18 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const project = co.projects
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
+
+    // FIX (fix round, CO-B4): same check sendCoDocument already runs, hoisted here
+    // to fail fast — per lib/documents/preflight.ts's own stated purpose ("checked
+    // before evaluateApprovalGate() in every send route"), this one was left living
+    // only inside sendCoDocument (which runs AFTER the gate). A retainer-renewal CO
+    // missing its term but large enough to require approval used to sail through an
+    // approver's decision and only fail once auto-send actually fired — burning a
+    // real approval cycle on something that was checkable up front.
+    if (co.is_retainer_renewal && project.type === 'retainer' && !co.renewal_term_months)
+      return NextResponse.json({
+        error: 'A retainer renewal needs its term — enter how many months it extends the retainer for.',
+      }, { status: 400 })
 
     // FIX (CO-logic fix round): backstop for the same check now applied at
     // creation time in POST /api/co — kept here too since this route has

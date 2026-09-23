@@ -11,7 +11,7 @@ import {
 import { safeFetch } from '@/lib/utils/safe-fetch'
 import { RichText } from '@/lib/pdf/rich-text'
 import { SowTable } from '@/lib/pdf/sow-table'
-import { isTableSection, type SowTableRow } from '@/lib/sow/table-schema'
+import { isTableSection, milestoneBlockLabels, type SowTableRow } from '@/lib/sow/table-schema'
 import { formatAddressLines, type LegalAddress } from '@/lib/utils/format'
 import { PDF_FONT, sanitizeForPdf } from '@/lib/pdf/fonts'
 import { mapPdfSymbols } from '@/lib/pdf/pdf-symbols'
@@ -423,9 +423,9 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
               <Text style={s.secNum}>{scheduleIndex + 1}. </Text>{paymentScheduleTitle}
             </Text>
             <View style={s.schedHdr}>
-              <Text style={[s.th, { flex: 1 }]}>Milestone</Text>
-              <Text style={[s.th, { width: 90, textAlign: 'right' }]}>Amount</Text>
-              <Text style={[s.th, { width: 90, textAlign: 'right' }]}>Due</Text>
+              <Text style={[s.th, { flex: 1 }]}>{milestoneBlockLabels(data.language).milestone}</Text>
+              <Text style={[s.th, { width: 90, textAlign: 'right' }]}>{milestoneBlockLabels(data.language).amount}</Text>
+              <Text style={[s.th, { width: 90, textAlign: 'right' }]}>{milestoneBlockLabels(data.language).due}</Text>
             </View>
             {data.paymentSchedule!.map((m, i) => (
               <View key={i} style={s.schedRow}>
