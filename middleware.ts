@@ -207,10 +207,32 @@ export async function middleware(request: NextRequest) {
   // getUser() call above already fetched the live user from Supabase Auth, so
   // its factor list is authoritative — the JWT `aal` claim still supplies the
   // CURRENT level.
+  //
+  // FIX (deep audit, Auth+MFA independent re-pass — LOW): getAuthenticatorAssuranceLevel()'s
+  // own `error` was never checked. Every other lookup failure in this file fails
+  // CLOSED (the onboarding gate and the mandatory-enrolment gate below both return
+  // an explicit 503 rather than let the request through) — this was the one place
+  // that still failed OPEN: on an error, currentLevel/nextLevel both stayed null,
+  // which is neither 'aal1'/'aal2' nor 'aal1'/'aal1', so BOTH the aal2-challenge
+  // gate right below and the mandatory-enrolment gate further down were silently
+  // skipped — an account with a pending second-factor challenge, or one that has
+  // never enrolled at all, could reach the app on this one error path. Same fix
+  // shape as the two gates it feeds: an explicit, retryable 503 instead of a
+  // silent pass-through.
   let currentLevel: string | null = null
   let nextLevel: string | null = null
   if (user) {
-    const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
+    const { data: aal, error: aalError } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
+    // Only fail closed when the result actually feeds a gate: the aal2-challenge
+    // gate right below applies exactly on `!isPublicRoute && !isMfaFlowRoute`, and
+    // the mandatory-enrolment gate further down is a strict subset of that scope.
+    // Bailing out unconditionally would 503 the public routes and the MFA-flow
+    // pages themselves — including /mfa-challenge and /mfa-setup, the very pages
+    // someone would need to recover through.
+    if (aalError) {
+      console.error('getAuthenticatorAssuranceLevel failed:', aalError.message)
+      if (!isPublicRoute && !isMfaFlowRoute) return finalize(unavailable())
+    }
     currentLevel = aal?.currentLevel ?? null
     const liveFactors = (user as any).factors as Array<{ status: string }> | undefined
     nextLevel = liveFactors

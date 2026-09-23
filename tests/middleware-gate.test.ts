@@ -14,7 +14,7 @@ vi.mock('@supabase/ssr', () => ({
         return { data: { user: state.user } }
       },
       signOut: async () => ({}),
-      mfa: { getAuthenticatorAssuranceLevel: async () => ({ data: state.aal }) },
+      mfa: { getAuthenticatorAssuranceLevel: async () => ({ data: state.aal, error: state.aalError ?? null }) },
     },
     rpc: async () => ({ data: state.gate, error: state.gateError ?? null }),
   }),
@@ -33,6 +33,7 @@ beforeEach(() => {
     // The exact state right after POST /api/workspace/create: an Owner (MFA-mandatory) mid-onboarding.
     gate: { deleted: false, has_workspace: true, onboarding_complete: false, must_enroll_mfa: true },
     refreshTo: null,
+    aalError: null,
   }
 })
 
@@ -108,6 +109,24 @@ describe('forced-MFA enrolment gate vs. onboarding', () => {
     state.user = null
     expect((await call('/api/projects')).status).toBe(401)
     expect(passes(await call('/legal/terms'))).toBe(true)
+  })
+
+  it('fails CLOSED (503) when getAuthenticatorAssuranceLevel() errors on a gated route — regardless of which gate it would have fed', async () => {
+    state.gate = { ...state.gate, onboarding_complete: true }
+    state.aalError = { message: 'boom' }
+    // Would have been the aal2-challenge gate (currentLevel/nextLevel both null on error → neither
+    // 'aal1'/'aal2' nor 'aal1'/'aal1' → both gates used to silently no-op and let this through).
+    expect((await call('/api/projects', 'POST')).status).toBe(503)
+    const page = await call('/dashboard')
+    expect(page.status).toBe(503)
+  })
+
+  it('an aal lookup error does NOT 503 a public route or the MFA-flow pages themselves', async () => {
+    state.gate = { ...state.gate, onboarding_complete: true }
+    state.aalError = { message: 'boom' }
+    expect(passes(await call('/legal/terms'))).toBe(true)
+    expect(passes(await call('/mfa-challenge'))).toBe(true)
+    expect(passes(await call('/api/auth/mfa/verify', 'POST'))).toBe(true)
   })
 })
 
