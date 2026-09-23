@@ -106,7 +106,6 @@ function workspaceToForm(ws: any) {
     currency:     ws?.currency || 'USD',
     governingLaw: ws?.governing_law || '',
     sowLanguage:  normalizeSowLanguage(ws?.sow_language),
-    slug:         ws?.slug || '',
     taxId:                      ws?.tax_id || '',
     phone:                      ws?.phone || '',
     website:                    ws?.website || '',
@@ -144,7 +143,6 @@ function toServerValue(key: string, value: any): unknown {
     case 'clientReminderMax':
     case 'proactiveRiskThreshold':     return Number(value)
     case 'legalAddress':               return cleanAddress(value)
-    case 'slug':                       return String(value ?? '')
     default:                           return trimText(value)
   }
 }
@@ -293,7 +291,6 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
   const [conflict, setConflict] = useState(false)
 
   const [wsForm, setWsForm] = useState(() => workspaceToForm(workspace))
-  const slugLocked = !!workspace?.slug_changed_at
 
   // What each saved field looked like when this page loaded (updated after our
   // own successful saves) — sent alongside changes so a concurrent edit by a
@@ -304,7 +301,6 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
     const changes: Record<string, unknown> = {}
     const expected: Record<string, unknown> = {}
     for (const [key, raw] of Object.entries(body)) {
-      if (key === 'slug' && slugLocked) continue
       const value = toServerValue(key, raw)
       if (sameValue(value, baseRef.current[key])) continue
       changes[key] = value
@@ -418,7 +414,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
         {tab === 'account' && <AccountTab session={session} supabase={supabase} router={router} mfaMandatory={mfaMandatory} />}
 
         {tab === 'workspace' && (
-          <WorkspaceTab form={wsForm} setForm={setWsForm} permissions={permissions} onSave={patchWorkspace} saving={saving} slugLocked={slugLocked} />
+          <WorkspaceTab form={wsForm} setForm={setWsForm} permissions={permissions} onSave={patchWorkspace} saving={saving} />
         )}
 
         {tab === 'branding' && (
@@ -718,7 +714,7 @@ function AccountTab({ session, supabase, router, mfaMandatory }: any) {
 }
 
 // ── WORKSPACE ─────────────────────────────────────────────────
-function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugLocked }: any) {
+function WorkspaceTab({ form, setForm, permissions, onSave, saving }: any) {
   if (!permissions.manageWorkspace) return <Restricted />
 
   function set<K extends string>(key: K, value: string | boolean) {
@@ -742,17 +738,6 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugLocked }
             <label className="flbl">Agency name <span className="fhint">(on documents)</span></label>
             <input className="finp" value={form.agencyName} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('agencyName', e.target.value)} />
           </div>
-        </div>
-        <div className="fgrp">
-          <label className="flbl">
-            Workspace handle{' '}
-            <span className="fhint">
-              {slugLocked ? '(already changed once — locked)' : '(can only be changed once, ever — choose carefully)'}
-            </span>
-          </label>
-          <input className="finp" value={form.slug} disabled={slugLocked} maxLength={40}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('slug', e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '-'))} />
-          <span className="fhint">A short unique identifier for this workspace: 3–40 letters, numbers or hyphens.</span>
         </div>
         <div className="f2">
           <div className="fgrp">

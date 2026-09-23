@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest'
 import { isValidTimeZone, resolveTimeZone, formatDateTimeInZone, formatDateInZone, timeZoneLabel } from '@/lib/utils/timezone'
-import { normalizeSlug, validateSlug } from '@/lib/utils/slug'
 import { diffFields, sameValue } from '@/lib/utils/audit-diff'
 import { parseStandardsInput, pickAgencyStandards, CLAUSES_MAX, CLAUSE_MAX, STANDARD_TEXT_MAX } from '@/lib/utils/agency-standards'
 import { roleNameTaken } from '@/lib/utils/role-names'
@@ -46,21 +45,6 @@ describe('workspace-timezone formatting', () => {
     expect(formatDateTimeInZone('not a date', 'UTC')).toBe('—')
     expect(formatDateInZone(instant, 'Africa/Nairobi')).toMatch(/^22 Sep(t)? 2026$/)
     expect(timeZoneLabel('UTC')).toBe('UTC')
-  })
-})
-
-describe('workspace handle rules', () => {
-  it('normalizes', () => {
-    expect(normalizeSlug('  My Agency!! ')).toBe('my-agency')
-    expect(normalizeSlug('a---b')).toBe('a-b')
-    expect(normalizeSlug('-x-')).toBe('x')
-  })
-  it('enforces length and reserved words', () => {
-    expect(validateSlug('ab').ok).toBe(false)
-    expect(validateSlug('---').ok).toBe(false)
-    expect(validateSlug('x'.repeat(41)).ok).toBe(false)
-    expect(validateSlug('Settings').ok).toBe(false)
-    expect(validateSlug('acme-studio')).toEqual({ ok: true, value: 'acme-studio' })
   })
 })
 

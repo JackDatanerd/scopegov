@@ -9,7 +9,6 @@ import { sanitizeDisplayName } from '@/lib/utils/sanitize'
 import { INDUSTRIES, CURRENCIES } from '@/lib/constants/workspace-options'
 import { isValidTimeZone } from '@/lib/utils/timezone'
 import { diffFields, sameValue } from '@/lib/utils/audit-diff'
-import { validateSlug } from '@/lib/utils/slug'
 
 // API field name -> workspaces column.
 const COLUMNS: Record<string, string> = {
@@ -32,7 +31,6 @@ const COLUMNS: Record<string, string> = {
   defaultPaymentInstructions: 'default_payment_instructions',
   replyToEmail:               'reply_to_email',
   legalAddress:               'legal_address',
-  slug:                       'slug',
 }
 
 // Recorded as "changed" in the audit trail without the value: identifiers and
@@ -187,7 +185,7 @@ export async function PATCH(request: NextRequest) {
 
     const { data: current, error: currentErr } = await (service as any)
       .from('workspaces')
-      .select(Object.values(COLUMNS).concat('slug_changed_at').join(', '))
+      .select(Object.values(COLUMNS).join(', '))
       .eq('id', session.workspaceId).single()
     if (currentErr || !current) {
       console.error('Workspace settings: could not load workspace:', currentErr)
@@ -198,30 +196,11 @@ export async function PATCH(request: NextRequest) {
     const currentByKey: Record<string, unknown> = {}
     for (const [key, col] of Object.entries(COLUMNS)) currentByKey[key] = current[col]
 
-    // Validate everything that was sent; slug is handled separately below.
+    // Validate everything that was sent.
     const proposed: Record<string, unknown> = {}
     for (const key of Object.keys(COLUMNS)) {
-      if (key === 'slug' || (body as any)[key] === undefined) continue
+      if ((body as any)[key] === undefined) continue
       proposed[key] = parseField(key, (body as any)[key])
-    }
-
-    if ((body as any).slug !== undefined) {
-      const rawSlug = (body as any).slug
-      if (typeof rawSlug !== 'string') return NextResponse.json({ error: 'Invalid workspace handle' }, { status: 400 })
-      if (rawSlug !== current.slug) {
-        const checked = validateSlug(rawSlug)
-        if (!checked.ok) return NextResponse.json({ error: checked.error }, { status: 400 })
-        if (checked.value !== current.slug) {
-          if (current.slug_changed_at)
-            return NextResponse.json({ error: 'Workspace handle can only be changed once' }, { status: 409 })
-          const { count: taken } = await (service as any)
-            .from('workspaces').select('id', { count: 'exact', head: true })
-            .eq('slug', checked.value).neq('id', session.workspaceId)
-          if ((taken || 0) > 0)
-            return NextResponse.json({ error: 'That workspace handle is already taken. Please choose another.' }, { status: 409 })
-          proposed.slug = checked.value
-        }
-      }
     }
 
     const { changedKeys, changes } = diffFields(currentByKey, proposed, AUDIT_REDACT)
@@ -242,7 +221,6 @@ export async function PATCH(request: NextRequest) {
 
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
     for (const key of changedKeys) updates[COLUMNS[key]] = proposed[key]
-    if (changedKeys.includes('slug')) updates.slug_changed_at = new Date().toISOString()
 
     const { error } = await (service as any)
       .from('workspaces').update(updates).eq('id', session.workspaceId)
