@@ -73,12 +73,20 @@ describe('audit diff', () => {
 
 describe('agency standards', () => {
   it('parses and trims lists, dropping blanks', () => {
+    // FIX (deep audit, Settings section — flagship finding): a submitted
+    // blank string is now a real, storable "explicitly nothing" value, not
+    // silently promoted to the same null that means "inherit from global"
+    // — see pickAgencyStandards's own test below for why that distinction
+    // is the whole point of the fix. Only a literal `null` input still
+    // means "inherit."
     const r = parseStandardsInput({ outOfScopeClauses: [' Hosting ', '', 'Licences'], revisionPolicy: '  ' })
-    expect(r).toEqual({ ok: true, values: { out_of_scope_clauses: ['Hosting', 'Licences'], revision_policy: null } })
+    expect(r).toEqual({ ok: true, values: { out_of_scope_clauses: ['Hosting', 'Licences'], revision_policy: '' } })
   })
-  it('leaves absent fields alone and clears with null/empty', () => {
+  it('leaves absent fields alone; only literal null clears to "inherit"', () => {
     expect(parseStandardsInput({})).toEqual({ ok: true, values: {} })
-    expect(parseStandardsInput({ assumptions: [] })).toEqual({ ok: true, values: { assumptions: null } })
+    // An explicitly empty list is a deliberate override to "nothing", not
+    // "not set" — it must survive as [], not collapse to null.
+    expect(parseStandardsInput({ assumptions: [] })).toEqual({ ok: true, values: { assumptions: [] } })
     expect(parseStandardsInput({ paymentTerms: null })).toEqual({ ok: true, values: { payment_terms: null } })
   })
   it('enforces the limits the SOW generator keeps', () => {
@@ -102,6 +110,25 @@ describe('agency standards', () => {
     expect(pickAgencyStandards([], 'web')).toBeNull()
     expect(pickAgencyStandards([{ project_type: null }], 'web')).toBeNull()
     expect(pickAgencyStandards(null, null)).toBeNull()
+  })
+  // FIX (deep audit, Settings section — flagship finding): a project type
+  // that deliberately overrides its exclusions/assumptions to NOTHING must
+  // have that respected, not have the workspace-wide list quietly put back
+  // because "empty" and "not set" used to be the same stored value (null).
+  it('honours a deliberate empty override instead of falling back to global', () => {
+    const rows = [
+      { project_type: null, revision_policy: 'Global policy', out_of_scope_clauses: ['Hosting', 'Domain'], payment_terms: 'Net 30', assumptions: ['Client supplies content'] },
+      // 'web' explicitly cleared its exclusions and assumptions to nothing,
+      // while genuinely never touching revision_policy/payment_terms.
+      { project_type: 'web', revision_policy: null, out_of_scope_clauses: [], payment_terms: null, assumptions: [] },
+    ]
+    expect(pickAgencyStandards(rows, 'web')).toEqual({
+      revisionPolicy: 'Global policy', paymentTerms: 'Net 30', outOfScopeClauses: [], assumptions: [],
+    })
+    // A type that never created a row at all still inherits everything.
+    expect(pickAgencyStandards(rows, 'brand')).toEqual({
+      revisionPolicy: 'Global policy', paymentTerms: 'Net 30', outOfScopeClauses: ['Hosting', 'Domain'], assumptions: ['Client supplies content'],
+    })
   })
 })
 

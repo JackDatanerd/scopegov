@@ -288,11 +288,27 @@ export async function GET(request: NextRequest) {
       service.from('workspaces').select('currency, governing_law').eq('id', session.workspaceId).single(),
     ])
 
-    // Standards mirror how SOW generation resolves them: an override's own
-    // value when it has one, else the workspace-wide value.
+    // Standards mirror how SOW generation resolves them (see
+    // lib/utils/agency-standards.ts's pickAgencyStandards, whose own comment
+    // has the full story): an override's own value when it has ANY value —
+    // including a deliberately blank string or empty list — else the
+    // workspace-wide value. Only a column that's actually NULL (never
+    // touched, or resolved identical to global at save time — see this
+    // route's own POST/PATCH inheritsFromGlobal collapse) falls back.
+    //
+    // FIX (deep audit, Settings section — flagship finding): this used to
+    // fall back whenever the override's own value was EMPTY rather than
+    // NULL, so a project type deliberately cleared to have no standard
+    // exclusions (say) silently showed the workspace-wide exclusions
+    // instead — indistinguishable in this UI from the override never having
+    // been touched, even though saving it is exactly what made isOverride
+    // true. parseText/parseClauses no longer collapse a submitted '' or []
+    // to null on the way in, so a real empty value now persists and is
+    // honoured here rather than masked.
     const own = (field: string) => {
-      const v = typeDefaults?.[field]
-      return (Array.isArray(v) ? v.length > 0 : typeof v === 'string' && v.trim() !== '') ? v : globalDefaults?.[field]
+      if (!typeDefaults) return globalDefaults?.[field]
+      const v = typeDefaults[field]
+      return (v === null || v === undefined) ? globalDefaults?.[field] : v
     }
 
     return NextResponse.json({

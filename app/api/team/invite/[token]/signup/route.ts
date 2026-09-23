@@ -183,7 +183,23 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // (which relies on finding the row and checking status === 'active').
     // Reuse is already prevented by the status check above — the token can
     // stay on the row indefinitely.
-    const { error: activateErr } = await (service as any)
+    //
+    // FIX (deep audit, Team & Invites re-pass — atomicity gap): this update
+    // had no `.eq('status', 'invited')` guard, unlike its sibling
+    // accept/route.ts (an existing account accepting the same invite),
+    // whose own comment explains why one matters: "nothing else may happen
+    // ... unless the membership really flipped to active." Two concurrent
+    // signups against the same token both reading 'invited' before either
+    // writes would otherwise let the second update silently overwrite the
+    // first's user_id, leaving one real, password-protected auth account
+    // orphaned with no membership pointing at it. In practice Supabase
+    // Auth's own email-uniqueness constraint (both requests target the same
+    // invited_email) already closes this for today's callers — but this
+    // route shouldn't rely on that being true forever when the guard is one
+    // clause and the failure mode is silent. Check the row really flipped,
+    // exactly like accept/route.ts does, and roll back like every other
+    // failure path in this route already does.
+    const { data: activated, error: activateErr } = await (service as any)
       .from('workspace_members')
       .update({
         user_id: userId, status: 'active', joined_at: now,
@@ -200,8 +216,18 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       // regardless of what they were invited as, with nothing to catch it.
         role_id: member.role_id || defaultRole?.id || null,
       })
-      .eq('id', member.id)
+      .eq('id', member.id).eq('status', 'invited').select('id')
 
+    if (!activateErr && (!activated || activated.length === 0)) {
+      await rollbackAuthUser(
+        'Invite signup: lost the race to activate this membership (already activated elsewhere), rolling back auth user:',
+        new Error('workspace_members row was no longer status=invited'),
+      )
+      return NextResponse.json({
+        error: 'This invite has already been used. Try signing in directly.',
+        alreadyUsed: true,
+      }, { status: 409 })
+    }
     if (activateErr) {
       // FIX (deep audit, Team & Invites re-pass — partial-failure gap):
       // by this point a real Supabase Auth user already exists with a

@@ -108,7 +108,23 @@ export default async function TeamPage() {
   const expired = canInvite ? allMembers.filter((m: any) => m.status === 'expired').map(stripPermissions).map(redactStrangerProfile) : []
   const deactivated = canInvite ? (deactivatedRes.data || []).map(stripPermissions).map(redactStrangerProfile) : []
 
-  if (session.planTier === 'solo' && active.length <= 1) {
+  // FIX (deep audit, Team & Invites re-pass — feature gap): this used to be
+  // an unconditional `session.planTier === 'solo' && active.length <= 1`
+  // early return, discarding pending/expired/deactivated before TeamClient
+  // ever saw them. A workspace reaching Solo with a still-live pending
+  // invite (sent on a higher plan, then downgraded before it was accepted —
+  // reachable exactly the way the overSeatLimit comment below documents:
+  // api/billing/webhook's subscription.create sets plan_tier from an
+  // external Paystack change with no seat check) had no way to even SEE
+  // that invite, let alone revoke or resend it — the whole page was the
+  // upgrade wall, with no escape but upgrading first. Same for a
+  // deactivated member sitting on the Deactivated list with nothing to
+  // reactivate them into a >1-seat plan for. Only show the wall when there
+  // is genuinely nothing else on this page to manage; a viewer without
+  // canInvite already sees empty arrays for these three regardless (they
+  // couldn't act on the rows anyway), so the wall still applies for them.
+  const hasManageableExtras = pending.length > 0 || expired.length > 0 || deactivated.length > 0
+  if (session.planTier === 'solo' && active.length <= 1 && !hasManageableExtras) {
     return <SoloUpsell />
   }
 
