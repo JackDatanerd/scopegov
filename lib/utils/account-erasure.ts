@@ -49,11 +49,38 @@ export function anonymizedEmail(userId: string): string {
  */
 export async function anonymizeAuthUser(service: any, userId: string): Promise<{ ok: boolean; error?: string }> {
   try {
+    // FIX (fresh independent audit, Workspace lifecycle + Onboarding —
+    // traced out-of-section, since it's the same GoTrue call
+    // workspace/profile/route.ts makes): the admin updateUserById call
+    // below merges `user_metadata` key-by-key rather than replacing it —
+    // GoTrue's own model layer "sets all user data from a map of
+    // updates, ensuring it doesn't override attributes that are not in
+    // the provided map," and only an explicit `null` for a given key
+    // deletes it. Passing `{}` (as this used to) has zero keys, so the
+    // merge touches nothing at all: the real display name — and
+    // anything else living in user_metadata, such as an OAuth-provided
+    // avatar_url/name or terms_version — survived completely intact in
+    // auth.users.raw_user_meta_data, forever, directly contradicting
+    // this very function's own header comment above ("drop metadata
+    // (display name, avatar)") and this file's stated purpose as a
+    // compliance product's erasure. Fetch whatever keys actually exist
+    // and null out every one of them explicitly, so the merge actually
+    // deletes them instead of silently no-op'ing.
+    const { data: existing, error: getError } = await service.auth.admin.getUserById(userId)
+    if (getError) {
+      // Already gone from auth (hard-deleted elsewhere): nothing left to erase there.
+      if ((getError as any).status === 404 || /not found/i.test(getError.message || '')) return { ok: true }
+      return { ok: false, error: getError.message }
+    }
+    const existingMetadata = (existing?.user as any)?.user_metadata || {}
+    const clearedMetadata: Record<string, null> = {}
+    for (const key of Object.keys(existingMetadata)) clearedMetadata[key] = null
+
     const { error } = await service.auth.admin.updateUserById(userId, {
       email: anonymizedEmail(userId),
       email_confirm: true,                      // no confirmation mail to the placeholder address
       password: randomBytes(32).toString('base64url'),
-      user_metadata: {},
+      user_metadata: clearedMetadata,
       ban_duration: BAN_FOREVER,
     })
     if (error) {

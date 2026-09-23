@@ -147,6 +147,31 @@ export async function GET() {
       })
     }
 
+    // FIX (fresh independent audit, Workspace lifecycle + Onboarding):
+    // the block above only ever handles the active workspace being
+    // INCOMPLETE. Nothing symmetric existed for the active workspace
+    // already being DONE — this function fell straight through to
+    // "first owned incomplete workspace, else first member-incomplete
+    // one" regardless of whether the workspace the user is actually
+    // sitting in right now needs nothing at all. Concretely reachable:
+    // middleware.ts deliberately never gates the /onboarding PAGE on
+    // onboarding_complete (see its own `isOnboarding` exemption), so a
+    // fully onboarded user can land here directly — a bookmark, the
+    // back button, a typed URL, anything short of the "Create new
+    // workspace" link (which sets ?new=1 and bypasses this route
+    // entirely). If that user separately owns or belongs to some OTHER,
+    // long-abandoned incomplete workspace, they used to get silently
+    // switched into resuming THAT one — the client's mount effect calls
+    // switchIntoWorkspace() on whatever workspaceId this route returns
+    // — swapping their real active workspace out from under them for a
+    // wizard they never asked to revisit. That directly contradicts
+    // this function's own header comment: "'complete' — every active
+    // membership is already onboarded (direct nav to /onboarding after
+    // the fact): send them onward." The active workspace's own
+    // completeness is authoritative and short-circuits everything else.
+    const activeComplete = active.find((m: any) => m.workspace_id === activeWorkspaceId && !!m.workspaces.onboarding_completed_at)
+    if (activeComplete) return NextResponse.json({ status: 'complete' })
+
     if (ownedIncomplete.length > 0) {
       const w = ownedIncomplete[0].workspaces
       return NextResponse.json(await buildResumePayload(service, w))
