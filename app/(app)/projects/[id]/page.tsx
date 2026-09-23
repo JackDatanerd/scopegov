@@ -198,6 +198,19 @@ export default async function ProjectPage({ params, searchParams }: Props) {
     .order('id', { ascending: false })
     .limit(50)
 
+  // FIX (re-audit, Projects & Dashboard section 7): this unconditionally
+  // dropped `metadata` for every event type — the scope_adjustment_made
+  // carve-out above is the only exception — regardless of whether the
+  // viewer actually has VIEW_FINANCIALS. That over-corrected the original
+  // leak: it's right to withhold financial detail from members WITHOUT the
+  // permission, but for members WITH it, the Dashboard's own global feed
+  // (app/(app)/dashboard/page.tsx's formatEvent) already shows exactly this
+  // detail for these same two event types — a project's own Activity tab
+  // showing strictly LESS than the workspace-wide feed for the same event,
+  // to the same permitted viewer, was never the intent the comment above
+  // describes. Mirrors the Dashboard's own gating exactly: `to` on a status
+  // change isn't financial data (shown unconditionally there too); the
+  // retainer-renewal amount is, so it's still gated on viewFinancials here.
   const activity = (activityRaw || []).map((a: any) => {
     const { metadata, ...rest } = a
     if (a.event_type === 'project.scope_adjustment_made' && metadata) {
@@ -210,6 +223,15 @@ export default async function ProjectPage({ params, searchParams }: Props) {
           newValue: metadata.new_value ?? null,
           reason:   metadata.reason ?? null,
         },
+      }
+    }
+    if (a.event_type === 'project.status_changed' && metadata) {
+      return { ...rest, statusChange: { to: metadata.to ?? null } }
+    }
+    if (a.event_type === 'project.retainer_renewed' && metadata && viewFinancials) {
+      return {
+        ...rest,
+        retainerRenewal: { currency: metadata.currency ?? null, newMonthlyAmount: metadata.new_monthly_amount ?? null },
       }
     }
     return rest

@@ -17,11 +17,21 @@
 // below mirrors app/(app)/projects/new/page.tsx's client picker; it's
 // deliberately narrower — existing clients only, no "+ New client" — since
 // this is a correction to an already-created project, not intake.
+//
+// FEATURE GAP closed (re-audit, Projects & Dashboard section 7): the API's
+// structural-edit rule (`clientId`/`type`/`currency`, all blocked once a SOW
+// exists) treats all three fields identically, but this modal only ever
+// exposed client and currency — `type` itself had no editor at all, so a
+// project picked as the wrong type at intake (e.g. "web" meant to be
+// "retainer") had no correction path short of delete-and-recreate. Uses the
+// same PROJECT_TYPES list app/(app)/projects/new/page.tsx's picker uses, and
+// the same `hasAnySow` gate as client/currency above it.
 
 import { useState, useEffect } from 'react'
 import { CURRENCIES } from '@/lib/constants/workspace-options'
 import { PROJECT_TYPE_LABELS } from '@/lib/utils/format'
-import type { Client } from '@/lib/supabase/types'
+import { PROJECT_TYPES } from '@/lib/utils/project-input'
+import type { Client, ProjectType } from '@/lib/supabase/types'
 
 export default function EditProjectModal({
   project, canViewFinancials, onClose, onSaved,
@@ -41,6 +51,7 @@ export default function EditProjectModal({
     : 'A SOW is out for signature at this value — withdraw it before changing the value.'
 
   const [name, setName] = useState<string>(project.name || '')
+  const [type, setType] = useState<ProjectType>(project.type)
   const [disc, setDisc] = useState<string>(project.disc || '')
   const [contractValue, setContractValue] = useState<string>(
     project.contract_value !== null && project.contract_value !== undefined ? String(project.contract_value) : ''
@@ -97,7 +108,15 @@ export default function EditProjectModal({
     }
     if (!hasAnySow && currency !== (project.currency || 'USD')) body.currency = currency
     if (!hasAnySow && clientId && clientId !== project.client_id) body.clientId = clientId
-    if (project.type === 'retainer' && retainerMonths !== (project.retainer_duration_months ? String(project.retainer_duration_months) : '')) {
+    // Same structural-edit gate as client/currency: the API blocks a type
+    // change once a SOW exists (see PATCH /api/projects/[id]).
+    if (!hasAnySow && type !== project.type) body.type = type
+    // retainerMonths is only meaningful (and only shown below) for the
+    // CURRENTLY SELECTED type, not the project's original one — a type
+    // switch away from retainer clears it server-side automatically
+    // (see PATCH's own retainer_duration_months reset), and a switch INTO
+    // retainer needs the field to actually be sendable.
+    if (type === 'retainer' && retainerMonths !== (project.type === 'retainer' && project.retainer_duration_months ? String(project.retainer_duration_months) : '')) {
       body.retainerDurationMonths = retainerMonths
     }
     if (Object.keys(body).length === 0) { onClose(); return }
@@ -120,11 +139,26 @@ export default function EditProjectModal({
       <div className="modal" style={{ maxWidth: 520 }} onClick={(e) => e.stopPropagation()}>
         <h2 className="modal-title">Edit project</h2>
         <p style={{ fontSize: 12.5, color: 'var(--text-3)', marginBottom: 14 }}>
-          {PROJECT_TYPE_LABELS[project.type] || project.type} project. Changes are recorded in the activity log.
+          Changes are recorded in the activity log.
         </p>
 
         <label className="form-label">Project name</label>
         <input className="form-input" value={name} maxLength={200} onChange={e => setName(e.target.value)} style={{ marginBottom: 12 }} />
+
+        <label className="form-label">Project type</label>
+        {hasAnySow ? (
+          <p style={{ fontSize: 12.5, marginBottom: 12 }}>
+            {PROJECT_TYPE_LABELS[project.type] || project.type}
+            <span style={{ fontSize: 11.5, color: 'var(--text-3)', display: 'block', marginTop: 2 }}>
+              Type is fixed once a SOW exists.
+            </span>
+          </p>
+        ) : (
+          <select className="form-input" value={type} style={{ marginBottom: 12 }}
+            onChange={e => setType(e.target.value as ProjectType)}>
+            {PROJECT_TYPES.map(t => <option key={t} value={t}>{PROJECT_TYPE_LABELS[t] || t}</option>)}
+          </select>
+        )}
 
         <label className="form-label">Client</label>
         {hasAnySow ? (
@@ -207,7 +241,7 @@ export default function EditProjectModal({
           </div>
         </div>
 
-        {project.type === 'retainer' && (
+        {type === 'retainer' && (
           <div style={{ marginBottom: 12 }}>
             <label className="form-label">Retainer duration (months)</label>
             <input className="form-input" inputMode="numeric" value={retainerMonths} style={{ maxWidth: 140 }}

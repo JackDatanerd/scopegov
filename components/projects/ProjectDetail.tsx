@@ -2275,6 +2275,24 @@ function ActivityTab({ activity }: { activity: any[] }) {
                     {a.adjustment.reason && <> — {a.adjustment.reason}</>}
                   </div>
                 )}
+                {/* FIX (re-audit, Projects & Dashboard section 7): this tab
+                    used to drop metadata unconditionally, so a status change
+                    or retainer renewal showed as a bare event line here even
+                    for a viewer with full permission to see the target
+                    status / renewal amount — while the Dashboard's global
+                    feed already showed both. See page.tsx's server-side
+                    extraction (the retainer amount only arrives at all when
+                    the viewer has VIEW_FINANCIALS). */}
+                {a.statusChange?.to && (
+                  <div className="feed-text" style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>
+                    Status changed to &ldquo;{a.statusChange.to}&rdquo;
+                  </div>
+                )}
+                {a.retainerRenewal?.newMonthlyAmount != null && (
+                  <div className="feed-text" style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>
+                    New monthly amount: {formatCurrency(a.retainerRenewal.newMonthlyAmount, a.retainerRenewal.currency || 'USD')}
+                  </div>
+                )}
                 <div className="feed-time">{formatRelative(a.created_at)}</div>
               </div>
             </div>

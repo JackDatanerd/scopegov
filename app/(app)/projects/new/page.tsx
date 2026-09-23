@@ -595,6 +595,19 @@ function NewProjectPageInner() {
                 <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Project</div><div>{projectName || '—'}</div></div>
                 <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Type</div><div>{PROJECT_TYPES.find(pt => pt.key === projectType)?.label || projectType}</div></div>
                 <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Contract value</div><div>{contractValue ? `${currency} ${contractValue}` : '—'}</div></div>
+                {/* FIX (re-audit, Projects & Dashboard section 7): this review
+                    step — the explicit "last check before Guardian generates
+                    the SOW" checkpoint — never showed start date, internal
+                    reference, or (for a retainer) its billing duration, even
+                    though all three were already set back on step 0 and
+                    already saved to the project. A typo in any of them
+                    (wrong duration, wrong PO number) had no chance to be
+                    caught here before generation. */}
+                {startDate && <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Start date</div><div>{startDate}</div></div>}
+                {internalRef && <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Internal ref</div><div>{internalRef}</div></div>}
+                {projectType === 'retainer' && (
+                  <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Retainer duration</div><div>{retainerMonths ? `${retainerMonths} months` : '—'}</div></div>
+                )}
               </div>
             </div>
 
