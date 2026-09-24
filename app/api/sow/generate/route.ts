@@ -18,6 +18,7 @@ import { sanitizeRichText } from '@/lib/utils/sanitize'
 import { applyAgencyStandards, ensureContractValueStated, type AgencyStandards } from '@/lib/ai/sow-content'
 import { pickAgencyStandards } from '@/lib/utils/agency-standards'
 import { canReadProject } from '@/lib/utils/project-access'
+import { isTerminalStatus } from '@/lib/utils/project-status'
 import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
 import Anthropic from '@anthropic-ai/sdk'
 import {
@@ -105,11 +106,23 @@ export async function POST(request: NextRequest) {
     // Fetch project + client + workspace for context
     const { data: project } = await (service as any)
       .from('projects')
-      .select('id,name,disc,type,contract_value,currency,clients(name,email,company_name),workspaces(agency_name,governing_law,sow_language)')
+      .select('id,name,disc,type,status,contract_value,currency,clients(name,email,company_name),workspaces(agency_name,governing_law,sow_language)')
       .eq('id', projectId).eq('workspace_id', session.workspaceId).is('deleted_at', null).single()
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
     if (!(await canReadProject(service, session, projectId)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
+    // FIX (section-9 fix round): send-sow.ts already refuses to send a SOW to a
+    // Complete/Archived project ("its scope of work has already been settled") — this
+    // route, which creates the draft in the first place, never checked the same thing.
+    // The draft could be generated (burning an AI call) but could then never be sent,
+    // with nothing telling the agency why until they tried. Fail at creation time
+    // instead, with the same message send-sow.ts uses.
+    if (isTerminalStatus(project.status)) {
+      return NextResponse.json({
+        error: `This project is ${String(project.status).toLowerCase()} — a SOW can no longer be generated. Reopen the project first.`,
+      }, { status: 409 })
+    }
 
     // One live SOW per project. A SOW that is out for signature, or already signed, is the
     // agreement — generating another version next to it left two signable documents for one

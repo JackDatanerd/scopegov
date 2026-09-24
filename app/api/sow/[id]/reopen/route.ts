@@ -5,6 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
+import { isTerminalStatus } from '@/lib/utils/project-status'
 import { insertNextSowVersion } from '@/lib/documents/sow-version'
 
 // FIX (section-9 audit, 9-G1 + 9-G2 — the headline structural gap):
@@ -55,6 +56,17 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         { error: `A ${sow.status.replace(/_/g, ' ')} SOW can't be reopened.` },
         { status: 400 }
       )
+
+    // FIX (section-9 fix round): same gap as generate — send-sow.ts refuses to send a
+    // SOW to a Complete/Archived project, but reopen (which also just creates a fresh
+    // draft) never checked. A withdrawn/declined/expired SOW on a project closed out in
+    // the meantime could still be "reopened" into a new draft that could then never be
+    // sent, with no explanation until the send attempt itself.
+    if (sow.projects && isTerminalStatus(sow.projects.status)) {
+      return NextResponse.json({
+        error: `This project is ${String(sow.projects.status).toLowerCase()} — a SOW can no longer be reopened. Reopen the project first.`,
+      }, { status: 409 })
+    }
 
     // If a draft already exists on this project (e.g. someone hit this
     // twice, or a request-changes draft is already open), point the caller

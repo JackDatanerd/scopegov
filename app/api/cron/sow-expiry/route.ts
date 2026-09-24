@@ -98,6 +98,22 @@ export async function POST(request: NextRequest) {
           metadata:     { version: sow.version, expired_at: sow.expires_at },
         })
 
+        // FIX (section-9 fix round): sign/decline/withdraw/request-changes/reopen all
+        // reconcile projects.status/stall_reason when a SOW's story moves on — this cron
+        // was the one lifecycle transition that never did. Left unfixed, a project the
+        // sow-stall cron had already flipped to Stalled/'sow_unsigned' stayed stuck there
+        // forever once the SOW itself expired, and the manual-resume check in
+        // app/api/projects/[id]/route.ts (`stall_reason === 'sow_unsigned'`) kept telling
+        // the agency to "Resend the SOW... it resumes automatically" — impossible once
+        // expired, since remind() requires a live token. Same fix shape as decline's:
+        // only undo the auto-stall this exact SOW caused (Stalled + 'sow_unsigned'); a
+        // project stalled manually, or already moved on for an unrelated reason, is left
+        // alone. A no-op for a 'changes_requested' expiry, whose project is already at
+        // 'Changes Requested', not 'Stalled'.
+        await (service as any).from('projects').update({
+          status: 'Awaiting Signature', stall_reason: null, updated_at: now,
+        }).eq('id', sow.project_id).eq('status', 'Stalled').eq('stall_reason', 'sow_unsigned')
+
         // A 'changes_requested' version was already answered by the client and superseded by a
         // newer draft — its link expiring is bookkeeping, not news. Announcing "signing link
         // expired, start a new version" for it told the team to redo work already in progress.

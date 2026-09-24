@@ -112,11 +112,22 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .eq('project_id', project.id).eq('status', 'draft')
       .order('version', { ascending: false }).limit(1).maybeSingle()
     if (openDraft) {
-      const { error: attachErr } = await (service as any).from('sow_documents')
+      // FIX (section-9 fix round): every other guarded write in this file verifies
+      // rows-affected via .select('id') + a length check, not just the absence of
+      // `error` — an update matching zero rows (e.g. this exact draft got sent in
+      // the instant between the read above and this write) returns no error either,
+      // and the old code treated that as success: the client's note was silently
+      // attached to nothing, with no new draft ever created to carry it and no sign
+      // the request had failed. Fall through to creating a fresh version below in
+      // that case, exactly as if there had been no open draft at all.
+      const { data: attached, error: attachErr } = await (service as any).from('sow_documents')
         .update({ metadata: { ...(openDraft.metadata || {}), changeRequest }, updated_at: now })
         .eq('id', openDraft.id).eq('status', 'draft')
-      if (!attachErr) newSow = { id: openDraft.id, version: openDraft.version }
-    } else {
+        .select('id')
+      if (attachErr) console.error('request-changes: attach to open draft failed', attachErr.message)
+      if (Array.isArray(attached) && attached.length > 0) newSow = { id: openDraft.id, version: openDraft.version }
+    }
+    if (!newSow) {
       const created = await insertNextSowVersion(service, project.id, {
         workspace_id:        sow.workspace_id,
         status:              'draft',
