@@ -2009,8 +2009,20 @@ export async function sendWorkspaceCreatedEmail(params: { to: string; name: stri
 // migration 065) — the one workspace-lifecycle transition in this file
 // that would otherwise confirm nothing to anyone. Sent to the restorer
 // and, best-effort, to every member whose access just came back.
-export async function sendWorkspaceRestoredEmail(params: { to: string; name: string; agencyName: string; restoredByName: string; isRestorer: boolean }) {
-  const { to, name: nameRaw, agencyName: agencyNameRaw, restoredByName: restoredByRaw, isRestorer } = params
+//
+// FIX (deep audit, Workspace lifecycle + Onboarding re-pass — round 2,
+// minor): restore_workspace_atomic (migration 065) only repoints
+// active_workspace_id for the RESTORER — deliberately, per its own
+// comment, so a member who'd moved on to using another workspace in the
+// meantime isn't yanked back somewhere they didn't ask to go. That left
+// this email's `cta: 'Open workspace →'` pointing every non-restorer
+// recipient straight at '/dashboard', which resolves to whatever THEIR
+// active workspace already is — not this one. The workspace does show up
+// correctly in their switcher, but the one-click promise didn't hold.
+// Route non-restorers through /workspace-open, which switches them into
+// this specific workspace first, then lands them on /dashboard for real.
+export async function sendWorkspaceRestoredEmail(params: { to: string; name: string; agencyName: string; restoredByName: string; isRestorer: boolean; workspaceId: string }) {
+  const { to, name: nameRaw, agencyName: agencyNameRaw, restoredByName: restoredByRaw, isRestorer, workspaceId } = params
   const name = escapeHtml(nameRaw)
   const agencyName = escapeHtml(agencyNameRaw)
   const restoredBy = escapeHtml(restoredByRaw)
@@ -2032,7 +2044,9 @@ export async function sendWorkspaceRestoredEmail(params: { to: string; name: str
       </p>
     `,
     cta: 'Open workspace →',
-    ctaUrl: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard`,
+    ctaUrl: isRestorer
+      ? `${process.env.NEXT_PUBLIC_APP_URL}/dashboard`
+      : `${process.env.NEXT_PUBLIC_APP_URL}/workspace-open?id=${workspaceId}`,
   })
   return deliver({ from: systemFrom(), to, subject: `${agencyNameRaw} has been restored`, html })
 }

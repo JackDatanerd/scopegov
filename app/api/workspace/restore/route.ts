@@ -188,7 +188,7 @@ export async function POST(request: NextRequest) {
     try {
       if (user.email) {
         await sendWorkspaceRestoredEmail({
-          to: user.email, name: restorerName, agencyName, restoredByName: restorerName, isRestorer: true,
+          to: user.email, name: restorerName, agencyName, restoredByName: restorerName, isRestorer: true, workspaceId,
         }).catch(e => console.error('Workspace restored email (restorer) failed (non-fatal):', e))
       }
       const { data: reactivated } = await (service as any)
@@ -198,7 +198,7 @@ export async function POST(request: NextRequest) {
       for (const m of (reactivated || [])) {
         if (m.user_id === user.id || !m.user?.email) continue
         await sendWorkspaceRestoredEmail({
-          to: m.user.email, name: m.user.name || m.user.email, agencyName, restoredByName: restorerName, isRestorer: false,
+          to: m.user.email, name: m.user.name || m.user.email, agencyName, restoredByName: restorerName, isRestorer: false, workspaceId,
         }).catch((e: unknown) => console.error('Workspace restored email failed for', m.user.email, e))
       }
     } catch (e) { console.error('Workspace restored notification sweep failed (non-fatal):', e) }

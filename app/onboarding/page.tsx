@@ -483,14 +483,32 @@ function OnboardingWizard() {
       // to resume it — the user got shoved into starting a brand-new
       // third workspace instead. Ask the server directly before assuming
       // there's nothing left to resume.
+      //
+      // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — round
+      // 2, flagship): this only ever matched status === 'resume', but
+      // onboarding-status can just as legitimately come back 'waiting' —
+      // pickFallbackMembership (see workspace/delete's own comment) prefers
+      // a completed workspace when one exists, but falls back to the
+      // OLDEST membership otherwise, completed or not. A user who discards
+      // their in-progress workspace and lands, via that fallback, on an
+      // older membership where someone ELSE is still the creator gets
+      // exactly that: 'waiting', not 'resume'. Falling through to
+      // '/onboarding?new=1' here — the one flag that explicitly SKIPS this
+      // very status check — silently hid that pending membership and let
+      // the user spin up a third workspace instead of seeing the waiting
+      // screen. 'complete' is included too for the same reason: nothing
+      // structurally rules it out here, and it costs nothing to let the
+      // mount effect's own already-hardened per-status handling decide,
+      // rather than re-deciding a subset of it here a second time.
       setOtherWorkspaces([])
       try {
         const res  = await fetch('/api/workspace/onboarding-status')
         const json = await res.json().catch(() => ({}))
-        if (res.ok && json.status === 'resume' && json.workspaceId) {
+        if (res.ok && json.workspaceId &&
+            (json.status === 'resume' || json.status === 'waiting' || json.status === 'complete')) {
           // Best-effort switch, then a full reload so the mount effect's
-          // own (already-hardened) resume logic re-runs from scratch and
-          // populates every field from the server — rather than
+          // own (already-hardened) per-status logic re-runs from scratch
+          // and populates every field from the server — rather than
           // duplicating that logic a second time here.
           try {
             await fetch('/api/workspace/switch', {
