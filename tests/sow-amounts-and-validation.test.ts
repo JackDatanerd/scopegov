@@ -38,11 +38,21 @@ describe('parseTableAmount', () => {
   })
 })
 
+// FIX (section-9 re-audit, independent pass): 'parties', 'governing_law' and
+// 'signature' are now checked for non-empty content too (same treatment as
+// oos/payment) — the fixture needs real content for all three or every
+// existing "passes cleanly" assertion below would start failing for the
+// wrong reason.
 const good = () => [
+  { id: 'parties', visible: true, content: '<p>Agency and Client.</p>' },
   { id: 'deliverables', visible: true, content: '', table: [{ deliverable: 'Marketing site' }] },
   { id: 'oos', visible: true, content: '<p>Hosting</p>' },
   { id: 'payment', visible: true, content: '<p>Total USD 10,000.00 payable 50/50.</p>' },
+  { id: 'governing_law', visible: true, content: '<p>Governed by the laws of Kenya.</p>' },
+  { id: 'signature', visible: true, content: '<p>By signing below, both parties agree.</p>' },
 ]
+
+const byId = (sections: any[], id: string) => sections.find(s => s.id === id)
 
 describe('validateSowForSend', () => {
   it('passes a complete SOW with no warnings', () => {
@@ -54,24 +64,40 @@ describe('validateSowForSend', () => {
     expect(validateSowForSend({ sections: good(), metadata: {}, contractValue: 0 }).errors).toHaveLength(1)
   })
   it('blocks empty Out of Scope and empty deliverables', () => {
-    const s = good(); s[0].table = []; s[1].content = '<p></p>'
+    const s = good(); byId(s, 'deliverables').table = []; byId(s, 'oos').content = '<p></p>'
     expect(validateSowForSend({ sections: s, metadata: {}, contractValue: 10000 }).errors).toHaveLength(2)
   })
   it('warns (does not block) when Payment Terms omit the contract value, in US or EU format', () => {
-    const s = good(); s[2].content = '<p>Total USD 8,000 payable.</p>'
+    const s = good(); byId(s, 'payment').content = '<p>Total USD 8,000 payable.</p>'
     const r = validateSowForSend({ sections: s, metadata: {}, contractValue: 10000 })
     expect(r.errors).toHaveLength(0)
     expect(r.warnings).toHaveLength(1)
-    s[2].content = '<p>Gesamt 10.000,00 EUR</p>'
+    byId(s, 'payment').content = '<p>Gesamt 10.000,00 EUR</p>'
     expect(validateSowForSend({ sections: s, metadata: {}, contractValue: 10000 }).warnings).toHaveLength(0)
+  })
+  // FIX (section-9 re-audit, independent pass): flagship finding — parties/
+  // governing_law/signature are required (can't be hidden — see
+  // REQUIRED_SECTION_IDS in lib/sow/sections.ts) but their content could be
+  // emptied via the generic PATCH content-edit path with nothing here ever
+  // refusing to send them blank. governing_law is the most material: this
+  // app hard-blocks GENERATION entirely without a governing law, so it
+  // should equally refuse to SEND one with that section wiped empty.
+  it('blocks empty Parties, Governing Law and Signature sections', () => {
+    const s = good()
+    byId(s, 'parties').content = ''
+    byId(s, 'governing_law').content = '<p></p>'
+    byId(s, 'signature').content = ''
+    const r = validateSowForSend({ sections: s, metadata: {}, contractValue: 10000 })
+    expect(r.errors).toHaveLength(3)
+    expect(r.errors.some(e => e.includes('Governing Law'))).toBe(true)
   })
   it('requires a milestone schedule to foot to the contract value', () => {
     const s: any[] = [...good(), { id: 'payment_schedule', visible: true, table: [{ milestone: 'A', amount: '6.000,00' }, { milestone: 'B', amount: '4.000,00' }] }]
     const meta = { paymentStructure: 'milestones' }
     expect(validateSowForSend({ sections: s, metadata: meta, contractValue: 10000 }).errors).toHaveLength(0)
-    s[3].table[1].amount = '3.000,00'
+    byId(s, 'payment_schedule').table[1].amount = '3.000,00'
     expect(validateSowForSend({ sections: s, metadata: meta, contractValue: 10000 }).errors).toHaveLength(1)
-    s[3].table[1].amount = 'later'
+    byId(s, 'payment_schedule').table[1].amount = 'later'
     expect(validateSowForSend({ sections: s, metadata: meta, contractValue: 10000 }).errors[0]).toContain('read the amount')
   })
   // FIX (fix round, SOW-B3): the footing check used to only sum rows with a

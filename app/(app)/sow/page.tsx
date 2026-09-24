@@ -94,6 +94,16 @@ export default async function SowPage() {
     pending: pendingCount ?? safeSows.filter((s: any) => s.status === 'awaiting_signature').length,
   }
 
+  // FIX (section-9 re-audit, independent pass): the solo-tier banner below
+  // was the ONLY place this page ever told the user the table was
+  // truncated — but `stats.total` (an exact, uncapped count) and `safeSows`
+  // (capped at `limit`) can diverge for ANY workspace, not just solo ones,
+  // once a paid-tier workspace's SOW history exceeds 500 rows. Without this
+  // page having any pagination or filtering, that workspace would see e.g.
+  // "Total SOWs: 612" above a table silently showing only the newest 500,
+  // with the oldest 112 simply missing and nothing on screen to say so.
+  const isTruncated = !isSoloCapped && stats.total > safeSows.length
+
   return (
     <div className="page" style={{ maxWidth: 960 }}>
       <div className="page-hd">
@@ -109,6 +119,12 @@ export default async function SowPage() {
           <Link href="/settings?tab=billing">
             <button className="btn btn-primary btn-sm">Upgrade</button>
           </Link>
+        </div>
+      )}
+
+      {isTruncated && (
+        <div className="banner banner-info" style={{ marginBottom: 20 }}>
+          <span>Showing the {limit} most recent of {stats.total} SOWs. Older SOWs aren&rsquo;t listed on this page.</span>
         </div>
       )}
 

@@ -67,6 +67,27 @@ export function validateSowForSend(input: {
   if (!textOf(byId('payment')?.content))
     errors.push('Fill in the Payment Terms section before sending this SOW.')
 
+  // FIX (section-9 re-audit, independent pass): 'parties', 'governing_law' and
+  // 'signature' are in REQUIRED_SECTION_IDS (lib/sow/sections.ts) — the editor
+  // refuses to HIDE them — but nothing ever refused to send them EMPTY. All
+  // three are boilerplate the agency can freely edit via the generic
+  // content-edit path (PATCH /api/sow/[id]), which only caps max length, never
+  // enforces a minimum. governing_law is the most material of the three: this
+  // app hard-blocks generation entirely when workspaces.governing_law is unset
+  // ("a real, material legal term of the contract" — see api/sow/generate),
+  // yet a signed document could still carry a completely blank Governing Law
+  // section — visibly broken too, since it renders through the same numbered
+  // SowSection/RichText path as every other prose section, which prints
+  // nothing under the heading when content is empty (the exact "floating
+  // heading" failure class SowTable already got a placeholder for, just never
+  // extended to prose). Same treatment as oos/payment above.
+  if (!textOf(byId('parties')?.content))
+    errors.push('Fill in the Parties section before sending this SOW.')
+  if (!textOf(byId('governing_law')?.content))
+    errors.push('Fill in the Governing Law section before sending this SOW.')
+  if (!textOf(byId('signature')?.content))
+    errors.push('Fill in the Signature section before sending this SOW.')
+
   // Payment Terms is authored prose; the contract value is data. Nothing else ties
   // them together, and a contract value edited after generation leaves the old
   // figure printed in the signed document.
