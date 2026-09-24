@@ -9,6 +9,7 @@ import TeamClient from '@/components/team/TeamClient'
 import Link from 'next/link'
 import { PLAN_LIMITS } from '@/lib/utils/format'
 import { permissionsRequireMfa } from '@/lib/auth/mfa-policy'
+import { roleWithinCeiling } from '@/lib/utils/permission-ceiling'
 
 export const metadata = { title: 'Team' }
 
@@ -104,8 +105,13 @@ export default async function TeamPage() {
     id: r.id, name: r.name, description: r.description, is_default: r.is_default,
   }))
   const active  = allMembers.filter((m: any) => m.status === 'active').map(withMfa)
-  const pending = canInvite ? allMembers.filter((m: any) => m.status === 'invited').map(stripPermissions).map(redactStrangerProfile) : []
-  const expired = canInvite ? allMembers.filter((m: any) => m.status === 'expired').map(stripPermissions).map(redactStrangerProfile) : []
+  // An invite past its expiry is expired for every purpose here even if the daily cron hasn't flipped its
+  // status yet: it shows under Expired (with Resend) instead of a "Pending" pill that can't be used.
+  const nowMs = Date.now()
+  const isLapsed = (m: any) => m.status === 'invited' && !!m.invite_token_expires_at
+    && new Date(m.invite_token_expires_at).getTime() <= nowMs
+  const pending = canInvite ? allMembers.filter((m: any) => m.status === 'invited' && !isLapsed(m)).map(stripPermissions).map(redactStrangerProfile) : []
+  const expired = canInvite ? allMembers.filter((m: any) => m.status === 'expired' || isLapsed(m)).map(stripPermissions).map(redactStrangerProfile) : []
   const deactivated = canInvite ? (deactivatedRes.data || []).map(stripPermissions).map(redactStrangerProfile) : []
 
   // FIX (deep audit, Team & Invites re-pass — feature gap): this used to be
@@ -156,6 +162,7 @@ export default async function TeamPage() {
       workspaceId={session.workspaceId}
       overSeatLimit={overSeatLimit}
       seatLimit={seatLimit ?? null}
+      assignableRoleIds={(rolesRes.data || []).filter((r: any) => roleWithinCeiling(session, r)).map((r: any) => r.id)}
     />
   )
 }

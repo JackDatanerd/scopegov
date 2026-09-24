@@ -51,6 +51,19 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
 
     const wasInvite = member.status === 'invited' || member.status === 'expired'
 
+    // A pending invite holds no permissions of its own yet, so the check above passes trivially for
+    // it — check the ROLE it would grant, the same standard Resend applies, so someone can't cancel
+    // an invite into a role above their own.
+    if (wasInvite && member.role_id) {
+      const { data: inviteRole } = await service.from('roles').select('permissions').eq('id', member.role_id).maybeSingle()
+      const beyondRole = permissionsBeyondActorForTarget(session, inviteRole?.permissions)
+      if (beyondRole.length > 0) {
+        return NextResponse.json({
+          error: `Cannot revoke an invite for a role that holds permissions you don't have yourself: ${beyondRole.join(', ')}`,
+        }, { status: 403 })
+      }
+    }
+
     // Projects where this person is the only assigned member: once they are
     // gone, nobody without VIEW_ALL_PROJECTS can see them. Collected before the
     // assignments are archived so the caller can be told.
@@ -323,6 +336,17 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const overridesChanged = Object.keys(overrideDiff).length > 0
     if (!roleChanged && !overridesChanged) return NextResponse.json({ ok: true, unchanged: true })
 
+    // A pending (or expired) invite is accepted against the authority of whoever `invited_by` names:
+    // the accept route refuses it if that person can no longer grant the role. Changing the role of
+    // an invite from a different admin's seat would otherwise leave it pointing at the original
+    // inviter, who may not be able to grant the new role — the invitee would hit a dead end that
+    // only a Resend fixes. So a role change on an invite is a re-issue: the person making it must be
+    // able to invite, and becomes the inviter of record.
+    const isPendingInvite = targetMember.status === 'invited' || targetMember.status === 'expired'
+    const reattributeInvite = roleChanged && isPendingInvite
+    if (reattributeInvite && !hasPermission(session, 'INVITE_MEMBERS'))
+      return NextResponse.json({ error: 'Changing the role on a pending invite also needs the INVITE_MEMBERS permission, because you become the person who invited them.' }, { status: 403 })
+
     let oldRoleName: string | null = null
     let oldRolePermissions: Record<string, unknown> | null = null
     if (targetMember.role_id) {
@@ -383,6 +407,12 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       throw new Error(error.message)
     }
 
+    if (reattributeInvite) {
+      const { error: reattrErr } = await service.from('workspace_members')
+        .update({ invited_by: session.id }).eq('id', id).in('status', ['invited', 'expired'])
+      if (reattrErr) console.error('Invite re-attribution failed (role changed regardless):', reattrErr)
+    }
+
     let affectedWorkflowNames: string[] = []
     if (simulatedPerms && targetMember.effective_permissions?.['APPROVE_DOCUMENTS'] === true && simulatedPerms['APPROVE_DOCUMENTS'] !== true && targetMember.user_id) {
       const { data: affectedSteps } = await service
@@ -407,6 +437,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         ...actor, ...target, eventType: 'member.role_changed',
         metadata: {
           role: { from: oldRoleName, to: newRoleName },
+          ...(reattributeInvite ? { pending_invite: true, inviter_now: session.email } : {}),
           ...(affectedWorkflowNames.length ? { orphaned_approval_workflows: affectedWorkflowNames } : {}),
         },
       })

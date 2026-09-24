@@ -382,6 +382,13 @@ function WorkflowEditorModal({ workflow, defaultType, roles, members, workspaceC
               {s.kind === 'user' && (
                 <select className="finp" value={s.id} onChange={e => updateStep(s.key, { id: e.target.value })}>
                   <option value="">Select person…</option>
+                  {/* A step can still name someone who has since left or been deactivated. They are no
+                      longer in `members`, so without this the dropdown fell back to "Select person…"
+                      while the step kept the old id — the admin saw a blank and saved a dead step
+                      without noticing. Show them, flagged, so the step reads as what it is. */}
+                  {s.id && !members.some(m => m.id === s.id) && (
+                    <option value={s.id} disabled>Former member — no longer in this workspace</option>
+                  )}
                   {members.map(m => (
                     <option key={m.id} value={m.id} disabled={!m.canApprove && m.id !== s.id}>
                       {m.name}{!m.canApprove ? ' (can\u2019t approve — missing permission)' : ''}

@@ -497,4 +497,98 @@ describe.skipIf(!URL_)('Postgres replay (migrations 001..latest on a real databa
       await pool.query(fs.readFileSync(path.join(MIGRATIONS, f), 'utf8'))
     })
   })
+
+  // ── migration 076: billing defaults + configurable document numbering ─────
+  describe('migration 076 — document numbering and billing defaults', () => {
+    const assign = async (w: number, type: string) => (await sql(`SELECT public.assign_document_number($1,$2) AS n`, [W(w), type]))[0].n as string
+    const setSeq = (w: number, type: string, prefix: string | null, next: number) =>
+      sql(`SELECT public.set_document_sequence($1,$2,$3,$4)`, [W(w), type, prefix, next])
+
+    beforeAll(async () => { await makeUser(95); await makeWorkspace(95, 95) })
+
+    it('default numbering is unchanged: SOW-0001, SOW-0002, CO-0001, INV-0001', async () => {
+      expect(await assign(95, 'sow')).toBe('SOW-0001')
+      expect(await assign(95, 'sow')).toBe('SOW-0002')
+      expect(await assign(95, 'co')).toBe('CO-0001')
+      expect(await assign(95, 'invoice')).toBe('INV-0001')
+    })
+
+    it('a custom prefix and starting number are honoured, and the count carries on from there', async () => {
+      await setSeq(95, 'invoice', 'ACME-INV', 121)
+      expect(await assign(95, 'invoice')).toBe('ACME-INV-0121')
+      expect(await assign(95, 'invoice')).toBe('ACME-INV-0122')
+      // the other document types are untouched
+      expect(await assign(95, 'sow')).toBe('SOW-0003')
+    })
+
+    it('an empty prefix goes back to the default, and the default is stored as NULL', async () => {
+      await setSeq(95, 'invoice', '', 200)
+      expect(await assign(95, 'invoice')).toBe('INV-0200')
+      const [row] = await sql(`SELECT prefix FROM public.workspace_document_sequences WHERE workspace_id=$1 AND document_type='invoice'`, [W(95)])
+      expect(row.prefix).toBeNull()
+    })
+
+    it('numbers past 9999 are no longer cut to four characters', async () => {
+      await setSeq(95, 'co', null, 9999)
+      expect(await assign(95, 'co')).toBe('CO-9999')
+      expect(await assign(95, 'co')).toBe('CO-10000')
+      expect(await assign(95, 'co')).toBe('CO-10001')
+    })
+
+    it('rejects a prefix that is malformed and a number out of range', async () => {
+      await expect(setSeq(95, 'invoice', 'bad prefix', 5)).rejects.toThrow(/invalid_prefix/)
+      await expect(setSeq(95, 'invoice', 'INV-', 5)).rejects.toThrow(/invalid_prefix/)
+      await expect(setSeq(95, 'invoice', 'INV', 0)).rejects.toThrow(/invalid_next_number/)
+      await expect(setSeq(95, 'invoice', 'INV', 100000000)).rejects.toThrow(/invalid_next_number/)
+      await expect(setSeq(95, 'quote', 'INV', 5)).rejects.toThrow(/Invalid document_type/)
+    })
+
+    it('refuses a next number that would collide with one already issued under the same prefix', async () => {
+      // Two issued invoices: INV-0200 (above) is handed out via the sequence, but the collision check reads
+      // real documents, so insert numbered invoice rows directly (FK checks off — only the numbers matter here).
+      const c = await pool.connect()
+      try {
+        await c.query('BEGIN')
+        await c.query(`SET LOCAL session_replication_role = replica`)
+        for (const n of ['INV-0050', 'INV-0060']) {
+          await c.query(`INSERT INTO public.invoices (workspace_id, project_id, sow_id, title, amount, invoice_number, created_by)
+                         VALUES ($1, gen_random_uuid(), gen_random_uuid(), 'x', 100, $2, $3)`, [W(95), n, U(95)])
+        }
+        await c.query('COMMIT')
+      } catch (e) { await c.query('ROLLBACK').catch(() => {}); throw e } finally { c.release() }
+
+      await expect(setSeq(95, 'invoice', 'INV', 60)).rejects.toThrow(/next_number_too_low:61/)
+      await expect(setSeq(95, 'invoice', 'INV', 10)).rejects.toThrow(/next_number_too_low:61/)
+      await setSeq(95, 'invoice', 'INV', 61)                                  // the earliest allowed
+      expect(await assign(95, 'invoice')).toBe('INV-0061')
+      // a DIFFERENT prefix has its own history, so the same low number is fine there
+      await setSeq(95, 'invoice', 'BILL', 1)
+      expect(await assign(95, 'invoice')).toBe('BILL-0001')
+    })
+
+    it('is closed to the API roles and open to the service role', async () => {
+      for (const fn of [`public.set_document_sequence('${W(95)}','invoice','INV',5)`, `public.assign_document_number('${W(95)}','invoice')`]) {
+        await asRole('authenticated', U(95), async c => { expect(await denied(c, `SELECT ${fn}`)).toBe(true) })
+        await asRole('anon', null, async c => { expect(await denied(c, `SELECT ${fn}`)).toBe(true) })
+      }
+      await asRole('service_role', null, async c => { await c.query(`SELECT public.assign_document_number('${W(95)}','sow')`) })
+    })
+
+    it('billing defaults start neutral and are range-checked', async () => {
+      const [ws] = await sql(`SELECT default_tax_rate, default_tax_inclusive, default_payment_terms_days FROM public.workspaces WHERE id=$1`, [W(95)])
+      expect(Number(ws.default_tax_rate)).toBe(0)
+      expect(ws.default_tax_inclusive).toBe(true)
+      expect(ws.default_payment_terms_days).toBeNull()
+      await sql(`UPDATE public.workspaces SET default_tax_rate = 16, default_payment_terms_days = 14 WHERE id=$1`, [W(95)])
+      await expect(sql(`UPDATE public.workspaces SET default_tax_rate = 101 WHERE id=$1`, [W(95)])).rejects.toThrow(/default_tax_rate_range/)
+      await expect(sql(`UPDATE public.workspaces SET default_payment_terms_days = 366 WHERE id=$1`, [W(95)])).rejects.toThrow(/payment_terms_days_range/)
+    })
+
+    it('migration 076 can be applied a second time without error, and keeps the settings', async () => {
+      const f = fs.readdirSync(MIGRATIONS).find(x => x.startsWith('076_'))!
+      await pool.query(fs.readFileSync(path.join(MIGRATIONS, f), 'utf8'))
+      const [ws] = await sql(`SELECT default_tax_rate FROM public.workspaces WHERE id=$1`, [W(95)])
+      expect(Number(ws.default_tax_rate)).toBe(16)
+    })
+  })
 })

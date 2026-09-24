@@ -310,6 +310,25 @@ export default async function ProjectPage({ params, searchParams }: Props) {
     .eq('id', session.workspaceId)
     .single()
 
+  // FEATURE (Settings & Team round): workspace billing defaults (migration 076) — read separately and
+  // tolerantly, like the client-reminder columns in Settings, so a deploy that runs ahead of the
+  // migration shows a plain invoice form instead of failing the whole project page.
+  let billingDefaults = { taxRate: 0, taxInclusive: true, paymentTermsDays: null as number | null }
+  {
+    const { data: bd, error: bdErr } = await (service as any)
+      .from('workspaces')
+      .select('default_tax_rate,default_tax_inclusive,default_payment_terms_days')
+      .eq('id', session.workspaceId)
+      .maybeSingle()
+    if (!bdErr && bd) {
+      billingDefaults = {
+        taxRate: Number(bd.default_tax_rate) || 0,
+        taxInclusive: bd.default_tax_inclusive ?? true,
+        paymentTermsDays: bd.default_payment_terms_days ?? null,
+      }
+    }
+  }
+
   return (
     <ProjectDetail
       project={project}
@@ -320,6 +339,7 @@ export default async function ProjectPage({ params, searchParams }: Props) {
       invoices={invoices || []}
       reconciliation={reconciliation || []}
       defaultPaymentInstructions={workspaceBilling?.default_payment_instructions || ''}
+      billingDefaults={billingDefaults}
       effectiveContractValue={effectiveContractValue}
       initialTab={tab}
       isNewProject={isNew === '1'}

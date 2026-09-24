@@ -26,7 +26,10 @@ export async function POST(request: NextRequest) {
     if (!CUSTOM_ROLE_PLANS.includes(session.planTier))
       return NextResponse.json({ error: 'Custom roles require Pro, Agency, or an active trial' }, { status: 403 })
 
-    const { name, description, permissions: rawPermissions, isDefault } = await request.json()
+    const body = await request.json().catch(() => null)
+    if (!body || typeof body !== 'object' || Array.isArray(body))
+      return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+    const { name, description, permissions: rawPermissions, isDefault } = body as Record<string, any>
     if (typeof name !== 'string' || !name.trim())
       return NextResponse.json({ error: 'Role name required' }, { status: 400 })
     // FIX (deep audit, Team & Invites section): no length cap existed at

@@ -37,11 +37,25 @@ export async function checkSeatLimit(
   const limits = PLAN_LIMITS[planTier]
   if (!limits?.seats) return { ok: true }
 
-  const { count, error } = await service
-    .from('workspace_members')
-    .select('id', { count: 'exact', head: true })
-    .eq('workspace_id', workspaceId)
-    .in('status', countedStatuses)
+  // A pending invite whose expiry has passed no longer holds a seat, even before the daily
+  // invite-cleanup cron flips it to 'expired' — otherwise a dead invite blocks a real one for up to a day.
+  const nowIso = new Date().toISOString()
+  const settled = countedStatuses.filter(st => st !== 'invited')
+  let count = 0
+  let error: any = null
+  if (settled.length > 0) {
+    const r = await service.from('workspace_members')
+      .select('id', { count: 'exact', head: true })
+      .eq('workspace_id', workspaceId).in('status', settled)
+    error = r.error; count += r.count || 0
+  }
+  if (!error && countedStatuses.includes('invited')) {
+    const r = await service.from('workspace_members')
+      .select('id', { count: 'exact', head: true })
+      .eq('workspace_id', workspaceId).eq('status', 'invited')
+      .or(`invite_token_expires_at.is.null,invite_token_expires_at.gt.${nowIso}`)
+    error = r.error; count += r.count || 0
+  }
 
   // Fail open on a DB error here, same reasoning as checkInviteRateLimit
   // (lib/utils/rate-limit.ts) — a broken seat-count query should never be
@@ -51,7 +65,7 @@ export async function checkSeatLimit(
     return { ok: true }
   }
 
-  if ((count || 0) >= limits.seats) {
+  if (count >= limits.seats) {
     return {
       ok: false,
       message: `This workspace is at its ${limits.seats}-seat limit on the ${limits.name} plan. Deactivate a member or upgrade in Settings \u2192 Billing first.`,

@@ -93,6 +93,7 @@ describe('S-1 fix: sameValue treats structurally-empty values as blank', () => {
           proactive_risk_threshold: 10000, auto_client_reminders: false, client_reminder_after_days: 3, client_reminder_max: 3,
           tax_id: null, phone: null, website: null, default_payment_instructions: null, reply_to_email: null,
           legal_address: null, slug: 'acme', slug_changed_at: null }, error: null }
+      if (t === 'workspaces' && first(ops) === 'update') return { data: [{ id: 'w1' }], error: null }
       return { data: null, error: null, count: 0 }
     }
     const { PATCH } = await import('@/app/api/workspace/settings/route')

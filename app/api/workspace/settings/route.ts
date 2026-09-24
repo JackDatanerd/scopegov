@@ -31,6 +31,9 @@ const COLUMNS: Record<string, string> = {
   defaultPaymentInstructions: 'default_payment_instructions',
   replyToEmail:               'reply_to_email',
   legalAddress:               'legal_address',
+  defaultTaxRate:             'default_tax_rate',
+  defaultTaxInclusive:        'default_tax_inclusive',
+  defaultPaymentTermsDays:    'default_payment_terms_days',
 }
 
 // Recorded as "changed" in the audit trail without the value: identifiers and
@@ -139,6 +142,24 @@ function parseField(key: string, value: unknown): unknown {
       if (v.length > 254 || !isDeliverableAddress(v)) throw new FieldError('Enter a valid reply-to email address')
       return v
     }
+    case 'defaultTaxRate': {
+      // Pre-fills every new invoice / change order (Billing defaults). Numeric(5,2) in the DB.
+      const n = typeof value === 'number' ? value : Number(String(value).trim())
+      if (String(value).trim() === '' || !Number.isFinite(n) || n < 0 || n > 100)
+        throw new FieldError('Default tax rate must be a number from 0 to 100')
+      return Math.round(n * 100) / 100
+    }
+    case 'defaultTaxInclusive':
+      if (typeof value !== 'boolean') throw new FieldError('Tax inclusive setting must be true or false')
+      return value
+    case 'defaultPaymentTermsDays': {
+      // null / blank = no default due date.
+      if (value === null || (typeof value === 'string' && value.trim() === '')) return null
+      const n = typeof value === 'number' ? value : Number(String(value).trim())
+      if (!Number.isInteger(n) || n < 0 || n > 365)
+        throw new FieldError('Payment terms must be a whole number of days from 0 to 365')
+      return n
+    }
     case 'legalAddress': {
       if (value === null) return null
       if (typeof value !== 'object' || Array.isArray(value)) throw new FieldError('Invalid legal address')
@@ -185,7 +206,7 @@ export async function PATCH(request: NextRequest) {
 
     const { data: current, error: currentErr } = await (service as any)
       .from('workspaces')
-      .select(Object.values(COLUMNS).join(', '))
+      .select(`${Object.values(COLUMNS).join(', ')}, updated_at`)
       .eq('id', session.workspaceId).single()
     if (currentErr || !current) {
       console.error('Workspace settings: could not load workspace:', currentErr)
@@ -217,19 +238,31 @@ export async function PATCH(request: NextRequest) {
       }
     }
 
-    if (changedKeys.length === 0) return NextResponse.json({ ok: true, unchanged: true })
+    // The values as the server will store them (trimmed, whitespace-collapsed, length-capped, …).
+    // The editor re-baselines its conflict check on THESE, not on what it typed — otherwise a
+    // value the server normalised ("Acme  Studio" → "Acme Studio") makes the very next edit of
+    // the same field look like a concurrent change by someone else.
+    if (changedKeys.length === 0) return NextResponse.json({ ok: true, unchanged: true, values: proposed })
 
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
     for (const key of changedKeys) updates[COLUMNS[key]] = proposed[key]
 
-    const { error } = await (service as any)
-      .from('workspaces').update(updates).eq('id', session.workspaceId)
+    // Compare-and-swap on updated_at: the conflict check above and this write are two round
+    // trips, so two admins saving in the same instant could both pass it. Only write if the row
+    // is still the one we read.
+    let write = (service as any).from('workspaces').update(updates).eq('id', session.workspaceId)
+    if (current.updated_at) write = write.eq('updated_at', current.updated_at)
+    const { data: written, error } = await write.select('id')
 
     if (error) {
-      if ((error as any).code === '23505')
-        return NextResponse.json({ error: 'That workspace handle is already taken. Please choose another.' }, { status: 409 })
       console.error('Workspace settings update failed:', error)
       return NextResponse.json({ error: 'Failed to update workspace settings' }, { status: 500 })
+    }
+    if (!written || written.length === 0) {
+      return NextResponse.json({
+        error: 'These settings were changed by someone else at the same moment. Reload the page to see the latest values, then re-apply your change.',
+        conflicts: [],
+      }, { status: 409 })
     }
 
     await logAudit(service, {
@@ -240,7 +273,7 @@ export async function PATCH(request: NextRequest) {
       metadata: { fields: changedKeys, changes },
     })
 
-    return NextResponse.json({ ok: true, changed: changedKeys })
+    return NextResponse.json({ ok: true, changed: changedKeys, values: proposed })
   } catch (err) {
     if (err instanceof FieldError) return NextResponse.json({ error: err.message }, { status: err.status })
     console.error('Workspace settings error:', err)

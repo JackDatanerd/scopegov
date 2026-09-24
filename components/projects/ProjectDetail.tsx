@@ -84,6 +84,7 @@ interface Props {
   invoices: any[]
   reconciliation: any[]
   defaultPaymentInstructions?: string
+  billingDefaults?: { taxRate: number; taxInclusive: boolean; paymentTermsDays: number | null }
   effectiveContractValue: number
   initialTab: string
   isNewProject: boolean
@@ -97,7 +98,7 @@ interface Props {
 export default function ProjectDetail({
   project, milestones, amendments, team, activity, invoices, reconciliation,
   effectiveContractValue, initialTab, permissions, pendingApprovals = {}, session,
-  defaultPaymentInstructions = '',
+  defaultPaymentInstructions = '', billingDefaults,
 }: Props) {
   const router = useRouter()
   const [tab,        setTab]        = useState(initialTab)
@@ -376,7 +377,7 @@ export default function ProjectDetail({
         {tab === 'sow'      && <SowTab project={project} sows={project.sow_documents || []} amendments={amendments} permissions={permissions} router={router} pendingApprovals={pendingApprovals} />}
         {tab === 'guardian' && <GuardianTab project={project} flags={project.guardian_flags || []} exceptions={project.exceptions_log || []} permissions={permissions} router={router} team={team} />}
         {tab === 'co'       && <CoTab project={project} cos={project.change_orders || []} permissions={permissions} currency={currency} pendingApprovals={pendingApprovals} team={team} />}
-        {tab === 'billing'  && <BillingTab project={project} milestones={milestones} invoices={invoices} reconciliation={reconciliation} permissions={permissions} currency={currency} router={router} defaultPaymentInstructions={defaultPaymentInstructions} pendingApprovals={pendingApprovals} />}
+        {tab === 'billing'  && <BillingTab project={project} milestones={milestones} invoices={invoices} reconciliation={reconciliation} permissions={permissions} currency={currency} router={router} defaultPaymentInstructions={defaultPaymentInstructions} billingDefaults={billingDefaults} pendingApprovals={pendingApprovals} />}
         {tab === 'discussion' && (
           <ProjectDiscussion
             projectId={project.id}

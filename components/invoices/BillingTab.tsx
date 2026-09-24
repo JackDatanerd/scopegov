@@ -24,6 +24,7 @@ interface Props {
   currency: string
   router: any
   defaultPaymentInstructions?: string
+  billingDefaults?: { taxRate: number; taxInclusive: boolean; paymentTermsDays: number | null }
   // FIX (section-12 audit — feature gap follow-through): invoices can now
   // be gated by an approval workflow (see /api/invoices/[id]/send). An
   // invoice's own status stays 'draft' the whole time it's pending — this
@@ -34,7 +35,7 @@ interface Props {
   pendingApprovals?: Record<string, { id: string; current_step: number; total_steps: number; sendFailed?: boolean; sendFailedReason?: string | null }>
 }
 
-export default function BillingTab({ project, milestones, invoices, reconciliation, permissions, currency, router, defaultPaymentInstructions = '', pendingApprovals = {} }: Props) {
+export default function BillingTab({ project, milestones, invoices, reconciliation, permissions, currency, router, defaultPaymentInstructions = '', billingDefaults, pendingApprovals = {} }: Props) {
   const [creating, setCreating]   = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [payingId, setPayingId]   = useState<string | null>(null)
@@ -449,6 +450,7 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
           sows={billableSows}
           cos={billableCos}
           defaultPaymentInstructions={defaultPaymentInstructions}
+          billingDefaults={billingDefaults}
           onClose={() => setCreating(false)}
           onCreated={async () => { setCreating(false); await refresh() }}
         />
@@ -609,11 +611,22 @@ function MetricBlock({ label, value, color }: { label: string; value: string; co
 }
 
 // ── CREATE INVOICE ────────────────────────────────────────────
-function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos, defaultPaymentInstructions, onClose, onCreated }: any) {
+// The due date `days` from today, as the yyyy-mm-dd a date input expects (local calendar day).
+function dueDateFromTerms(days: number | null | undefined): string {
+  if (days == null || !Number.isFinite(days)) return ''
+  const d = new Date()
+  d.setDate(d.getDate() + days)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos, defaultPaymentInstructions, billingDefaults, onClose, onCreated }: any) {
   const [source, setSource] = useState<{ type: 'milestone' | 'sow' | 'co' | ''; id: string }>({ type: '', id: '' })
   const [title, setTitle]   = useState('')
   const [amount, setAmount] = useState('')
-  const [dueDate, setDueDate] = useState('')
+  // FEATURE (Settings & Team round): workspace billing defaults pre-fill the due date and tax terms.
+  // A milestone or change order picked below still brings its own terms over these.
+  const defaultDue = dueDateFromTerms(billingDefaults?.paymentTermsDays)
+  const [dueDate, setDueDate] = useState(defaultDue)
   // FIX (section-12 audit — feature gap): po_number was fully modeled and
   // rendered on every invoice PDF/portal view but had no input anywhere in
   // the product — see the create-route comment for the full explanation.
@@ -627,8 +640,8 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
   // way to carry tax at all. Defaults to 0 (no behavior change for
   // agencies that don't need it); the amount entered is always the final
   // amount the client owes — this rate just breaks it out on the PDF.
-  const [taxRate, setTaxRate] = useState('0')
-  const [taxInclusive, setTaxInclusive] = useState(true)
+  const [taxRate, setTaxRate] = useState(String(billingDefaults?.taxRate ?? 0))
+  const [taxInclusive, setTaxInclusive] = useState<boolean>(billingDefaults?.taxInclusive ?? true)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
 
@@ -757,8 +770,12 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
         // against a milestone required retyping tax terms and a due date
         // the system already had on file. Same failure pattern as the
         // payment-instructions field before that got wired to Settings.
-        setDueDate(m.due_date || '')
-        setTaxRate(m.tax_rate != null ? String(m.tax_rate) : '0')
+        setDueDate(m.due_date || defaultDue)
+        // payment_milestones.tax_rate is NOT NULL DEFAULT 0 and nothing in the product sets it, so a
+        // milestone's 0% means "no tax terms of its own", not "tax-free on purpose": fall back to the
+        // workspace's billing defaults, and only let a milestone that really carries a rate win.
+        const milestoneTaxed = (Number(m.tax_rate) || 0) > 0
+        setTaxRate(milestoneTaxed ? String(m.tax_rate) : String(billingDefaults?.taxRate ?? 0))
         // FIX (section-12 audit): this unconditionally copied the
         // milestone's own tax_inclusive, but the effect above that forces
         // exclusive-tax while itemized only re-runs on `itemized`
@@ -767,7 +784,7 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
         // behind the selector, which stays visually locked to "Before
         // tax" — the same display-vs-state mismatch that effect exists
         // to prevent. Respect the same invariant here.
-        setTaxInclusive(itemized ? false : (m.tax_inclusive ?? true))
+        setTaxInclusive(itemized ? false : (milestoneTaxed ? (m.tax_inclusive ?? true) : (billingDefaults?.taxInclusive ?? true)))
       }
     } else if (type === 'sow') {
       const s = sows.find((x: any) => x.id === id)

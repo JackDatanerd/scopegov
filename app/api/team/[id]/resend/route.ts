@@ -41,9 +41,12 @@ import { roleWithinCeiling } from '@/lib/utils/permission-ceiling'
 // Resending an invite doesn't need a new row at all — it needs a fresh
 // token, a fresh expiry, and another email. Doing that in place on the
 // existing row is atomic by construction: if the email send fails, the
-// invite is exactly as it was, and the response says so. It also
-// preserves role_id, invited_by and invited_at rather than silently
-// re-attributing the invite to whoever clicked Resend.
+// invite is exactly as it was, and the response says so. It preserves
+// role_id and invited_at, but it DOES re-attribute invited_by to whoever
+// clicked Resend (the ceiling check below is what makes that safe): the
+// accept route re-checks that the inviter of record can still grant the
+// role, so the person re-issuing the invite has to be the one vouching for
+// it. The previous inviter is recorded in the audit entry.
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id }  = await params
@@ -162,10 +165,17 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       actorEmail: session.email, actorName: session.name,
       eventType: 'member.invite_resent', entityType: 'workspace_member',
       entityId: id, entityName: email,
-      metadata: emailSent ? {} : { email_send_failed: true },
+      metadata: {
+        ...(emailSent ? {} : { email_send_failed: true }),
+        ...(previous.invited_by && previous.invited_by !== session.id ? { previous_inviter_id: previous.invited_by } : {}),
+      },
     })
 
-    return NextResponse.json({ ok: true, ...(emailSent ? {} : { emailFailed: true }) })
+    // Only an invite that was still live keeps a working link after a failed resend; an expired one
+    // goes back to expired, so the old link is dead either way.
+    const previousStillLive = previous.status === 'invited' && !!previous.invite_token_expires_at
+      && new Date(previous.invite_token_expires_at).getTime() > Date.now()
+    return NextResponse.json({ ok: true, ...(emailSent ? {} : { emailFailed: true, previousLinkStillWorks: previousStillLive }) })
   } catch (err) {
     console.error('Invite resend error:', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

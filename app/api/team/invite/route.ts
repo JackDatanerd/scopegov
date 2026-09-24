@@ -81,7 +81,7 @@ export async function POST(request: NextRequest) {
     // Every membership row in this workspace that already belongs to this
     // person: matched by account AND by invited address, because an invite
     // sent before they registered has no user_id yet.
-    const memberSelect = 'id,status,user_id,invited_email'
+    const memberSelect = 'id,status,user_id,invited_email,invite_token_expires_at'
     const [byEmailRes, byUserRes] = await Promise.all([
       (service as any).from('workspace_members').select(memberSelect)
         .eq('workspace_id', wsId).eq('invited_email', normalizedEmail),
@@ -93,7 +93,12 @@ export async function POST(request: NextRequest) {
     const relatedRows = [...(byEmailRes.data || []), ...(byUserRes.data || [])]
       .filter((r: any, i: number, all: any[]) => all.findIndex(x => x.id === r.id) === i)
     const related: any[] = relatedRows || []
-    const byStatus = (st: string) => related.find(r => r.status === st)
+    // An invite whose expiry has passed is dead even if the daily cron hasn't flipped it to
+    // 'expired' yet — treat it as expired so it neither blocks a new invite nor is reported as pending.
+    const isLapsed = (r: any) => r.status === 'invited' && !!r.invite_token_expires_at
+      && new Date(r.invite_token_expires_at).getTime() <= Date.now()
+    const byStatus = (st: string) => related.find(r =>
+      st === 'invited' ? (r.status === 'invited' && !isLapsed(r)) : r.status === st)
 
     if (byStatus('active'))
       return NextResponse.json({ error: 'This person is already a member of the workspace' }, { status: 409 })
@@ -111,7 +116,7 @@ export async function POST(request: NextRequest) {
 
     // Expired, never-accepted invites for this address carry nothing worth
     // keeping; clear them so the new invite is the only row.
-    const expiredIds = related.filter(r => r.status === 'expired').map(r => r.id)
+    const expiredIds = related.filter(r => r.status === 'expired' || isLapsed(r)).map(r => r.id)
     if (expiredIds.length > 0) {
       await (service as any).from('workspace_members').delete().in('id', expiredIds)
     }

@@ -6,6 +6,7 @@
 'use client'
 import { fetchWithStepUp } from '@/lib/client/step-up'
 import { useState } from 'react'
+import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import type { SessionUser } from '@/lib/supabase/types'
 import { initials, avatarColour, formatDate, ALL_PERMISSIONS, PLAN_LIMITS } from '@/lib/utils/format'
@@ -42,9 +43,12 @@ interface Props {
   // Paired with overSeatLimit — the seat count the banner below should
   // actually name, instead of a hardcoded "1 seat".
   seatLimit?:         number | null
+  // Roles the viewer is allowed to hand out (their own permissions cover every permission in the role).
+  // The server enforces this regardless; this only stops the pickers offering choices that will be refused.
+  assignableRoleIds?: string[]
 }
 
-export default function TeamClient({ members, pendingInvites, expiredInvites = [], deactivatedMembers = [], roles, session, canInvite, canManageRoles, workspaceId, overSeatLimit, seatLimit }: Props) {
+export default function TeamClient({ members, pendingInvites, expiredInvites = [], deactivatedMembers = [], roles, session, canInvite, canManageRoles, workspaceId, overSeatLimit, seatLimit, assignableRoleIds }: Props) {
   const router  = useRouter()
   const searchParams = useSearchParams()
   // FIX (deep audit, section 5 re-pass): Settings computed a `manageRoles`
@@ -102,6 +106,14 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
   const [error,   setError]   = useState('')
   const [notice,  setNotice]  = useState('')
 
+  // Seats: every active member plus every live pending invite holds one (the same count the invite
+  // route enforces), so the meter and the Invite button agree with what the server will accept.
+  const seatsInUse = members.length + pendingInvites.length
+  const atSeatCapacity = canInvite && seatLimit != null && !overSeatLimit && seatsInUse >= seatLimit
+  const assignable = assignableRoleIds ? new Set(assignableRoleIds) : null
+  const roleOptionLabel = (r: any, suffix = '') =>
+    `${r.name}${suffix}${assignable && !assignable.has(r.id) ? ' \u2014 above your access' : ''}`
+
   // Opening a dialog starts clean: an error from an earlier, unrelated action
   // shouldn't greet the person inside a different dialog.
   function openModal(next: 'invite' | 'role') { setError(''); setNotice(''); setModal(next) }
@@ -122,7 +134,7 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
       // of a plain success message, since otherwise this looks identical
       // to a working invite until the invitee asks why nothing arrived.
       if (json.emailFailed) {
-        setNotice('Invite created, but the email couldn\u2019t be sent. Use Resend below to try again.')
+        setNotice('Invite created, but the email couldn\u2019t be sent. Use Copy link below to share it yourself, or Resend to try the email again.')
       }
       router.refresh()
     } catch (err: unknown) {
@@ -170,17 +182,37 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
   // Resending doesn't need a new row — it needs a fresh token, a fresh
   // expiry and another email. api/team/[id]/resend does exactly that in
   // place, which is atomic by construction: if anything fails, the
-  // invite is exactly as it was. It also preserves role_id, invited_by
-  // and invited_at rather than re-attributing the invite to whoever
-  // happened to click Resend.
+  // invite is exactly as it was. It keeps role_id and invited_at, and
+  // makes whoever clicked Resend the inviter of record (accept re-checks
+  // that the inviter can still grant the role).
   async function handleResendInvite(m: any) {
     setError(''); setNotice('')
     const res = await fetch(`/api/team/${m.id}/resend`, { method: 'POST' })
     const json = await res.json().catch(() => ({}))
     if (!res.ok) { setError(json.error || 'Could not resend invite'); return }
     setNotice(json.emailFailed
-      ? 'The email couldn\u2019t be sent, so nothing changed \u2014 any link already sent still works. Try Resend again shortly.'
+      ? (json.previousLinkStillWorks
+          ? 'The email couldn\u2019t be sent, so nothing changed \u2014 the link already sent still works. Try Resend again shortly, or use Copy link.'
+          : 'The email couldn\u2019t be sent, and this invite is still expired. Try Resend again shortly, or use Copy link to share a fresh link yourself.')
       : 'Invite resent. The previous link is no longer valid.')
+    router.refresh()
+  }
+
+  // Hands the admin the invite URL to share themselves (WhatsApp, Slack, …) when the email bounced or
+  // landed in spam. A live invite returns its existing link; an expired one is re-issued (no email).
+  async function handleCopyLink(m: any) {
+    setError(''); setNotice('')
+    const res = await fetch(`/api/team/${m.id}/link`, { method: 'POST' })
+    const json = await res.json().catch(() => ({}))
+    if (!res.ok) { setError(json.error || 'Could not create an invite link'); return }
+    try {
+      await navigator.clipboard.writeText(json.inviteUrl)
+      setNotice(json.reissued
+        ? 'A new invite link was created and copied \u2014 it works for 7 days and replaces the old one.'
+        : 'Invite link copied. Anyone with the link can join with this invitation, so share it only with the person invited.')
+    } catch {
+      setNotice(`Copy this invite link: ${json.inviteUrl}`)
+    }
     router.refresh()
   }
 
@@ -334,11 +366,25 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
       <div className="page-hd">
         <div>
           <h1 className="page-title">Team</h1>
-          <p className="page-sub">{members.length} active · {pendingInvites.length} pending invite{pendingInvites.length !== 1 ? 's' : ''}</p>
+          <p className="page-sub">
+            {members.length} active · {pendingInvites.length} pending invite{pendingInvites.length !== 1 ? 's' : ''}
+            {canInvite && seatLimit != null && (
+              <> · <strong>{seatsInUse} of {seatLimit}</strong> seat{seatLimit === 1 ? '' : 's'} in use</>
+            )}
+          </p>
+          {atSeatCapacity && (
+            <p className="fhint" style={{ marginTop: 4 }}>
+              Every seat is taken. Revoke a pending invite, deactivate a member, or upgrade in{' '}
+              <Link href="/settings?tab=billing" style={{ color: 'var(--green)', textDecoration: 'underline' }}>Settings &rarr; Billing</Link>{' '}
+              to invite someone else.
+            </p>
+          )}
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           {canInvite && (
-            <button className="btn btn-primary" onClick={() => openModal('invite')}>
+            <button className="btn btn-primary" disabled={atSeatCapacity}
+              title={atSeatCapacity ? 'Every seat on your plan is in use' : undefined}
+              onClick={() => openModal('invite')}>
               <i className="ti ti-user-plus" style={{ fontSize: 13 }} /> Invite member
             </button>
           )}
@@ -516,6 +562,9 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
                             <button className="btn btn-ghost btn-xs" onClick={() => handleResendInvite(m)}>
                               Resend
                             </button>
+                            <button className="btn btn-ghost btn-xs" onClick={() => handleCopyLink(m)}>
+                              Copy link
+                            </button>
                             <button className="btn btn-ghost btn-xs" style={{ color: 'var(--red)' }}
                               onClick={() => handleRevokeInvite(m.id)}>
                               Revoke
@@ -566,6 +615,9 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
                             )}
                             <button className="btn btn-ghost btn-xs" onClick={() => handleResendInvite(m)}>
                               Resend
+                            </button>
+                            <button className="btn btn-ghost btn-xs" onClick={() => handleCopyLink(m)}>
+                              Copy link
                             </button>
                             <button className="btn btn-ghost btn-xs" style={{ color: 'var(--red)' }}
                               onClick={() => handleRevokeInvite(m.id)}>
@@ -740,7 +792,9 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
                 <select className="finp" value={inviteRoleId}
                   onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setInviteRoleId(e.target.value)}>
                   <option value="">{(() => { const d = roles.find((r: any) => r.is_default); return d ? `Default role (${d.name})` : 'Default role' })()}</option>
-                  {roles.map((r: any) => <option key={r.id} value={r.id}>{r.name}</option>)}
+                  {roles.map((r: any) => (
+                    <option key={r.id} value={r.id} disabled={!!assignable && !assignable.has(r.id)}>{roleOptionLabel(r)}</option>
+                  ))}
                 </select>
               </div>
               <div className="modal-footer">
@@ -832,11 +886,18 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
               <select className="finp" value={roleEditRoleId}
                 onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setRoleEditRoleId(e.target.value)}>
                 <option value="">No role — removes all role-based permissions</option>
-                {roles.map((r: any) => <option key={r.id} value={r.id}>{r.name}{r.is_default ? ' (default)' : ''}</option>)}
+                {roles.map((r: any) => (
+                  <option key={r.id} value={r.id} disabled={!!assignable && !assignable.has(r.id)}>
+                    {roleOptionLabel(r, r.is_default ? ' (default)' : '')}
+                  </option>
+                ))}
               </select>
               <span className="fhint">
                 You can only assign a role whose permissions you hold yourself. Changing this takes effect
                 immediately for that person.
+                {(roleEditMember?.status === 'invited' || roleEditMember?.status === 'expired') && (
+                  <> This person hasn&apos;t joined yet: changing the role of a pending invite makes you the person who invited them, and needs the invite permission.</>
+                )}
               </span>
               {roleEditRoleId === '' && !Object.values(roleEditMember.permission_overrides || {}).some(v => v === true) && (
                 <p className="ferr" style={{ marginTop: 8 }}>

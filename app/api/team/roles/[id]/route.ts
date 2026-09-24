@@ -56,6 +56,18 @@ export async function PATCH(
       .from('roles').select('name, description, permissions, is_default').eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
     if (!existingRole) return NextResponse.json({ error: 'Role not found' }, { status: 404 })
 
+    // The Edit role form always sends the role's full permission map, even when only the name or
+    // description was changed. Every permission-specific gate below (owner protection, ceiling,
+    // orphan floors, the atomic RPC) exists for permission CHANGES — an unchanged map is treated as
+    // not sent, so renaming a role that a co-admin or the owner also holds isn't blocked by a
+    // "permissions can't be changed" refusal that has nothing to do with what was edited.
+    if (permissions !== undefined) {
+      const d = diffPermissionMaps(existingRole.permissions, permissions)
+      if (d.granted.length === 0 && d.revoked.length === 0) permissions = undefined
+    }
+    if (permissions === undefined && name === undefined && description === undefined && isDefault === undefined)
+      return NextResponse.json({ ok: true, unchanged: true })
+
     // Floor check for EVERY change to a role — its permissions, its name or
     // description, and making it the workspace default. A role that currently
     // holds anything the actor doesn't hold can't be edited, renamed or

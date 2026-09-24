@@ -31,7 +31,8 @@ import ChangeEmailSection from '@/components/settings/ChangeEmailSection'
 // showing the wrong currency until the person happened to touch the
 // field. Import the single source of truth instead of a second,
 // drifting copy of the list.
-import { CURRENCIES } from '@/lib/constants/workspace-options'
+import { CURRENCIES, INDUSTRIES } from '@/lib/constants/workspace-options'
+import DocumentNumberingSection from '@/components/settings/DocumentNumberingSection'
 import { GRACE_DAYS } from '@/lib/billing/plans'
 import { isValidTimeZone } from '@/lib/utils/timezone'
 import { sameValue } from '@/lib/utils/audit-diff'
@@ -44,7 +45,18 @@ type SettingsTab = 'account' | 'workspace' | 'branding' | 'defaults' | 'guardian
 // embedded webview or a polyfill gap shouldn't be able to break the
 // Workspace tab from rendering at all, just fall back to a short list of
 // common zones covering this product's actual customer base.
-const IANA_TIMEZONES: string[] = (() => {
+const FALLBACK_TIMEZONES: string[] = [
+  'UTC', 'Africa/Nairobi', 'Africa/Lagos', 'Africa/Johannesburg', 'Africa/Cairo',
+  'Africa/Accra', 'Europe/London', 'Europe/Paris', 'Europe/Berlin', 'Europe/Madrid',
+  'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles',
+  'America/Sao_Paulo', 'Asia/Dubai', 'Asia/Kolkata', 'Asia/Singapore',
+  'Asia/Shanghai', 'Asia/Tokyo', 'Australia/Sydney',
+]
+
+// The full runtime list. Node (server render) and the browser can ship different ICU data, so this
+// is only read AFTER mount (see WorkspaceTab) — the first render, on the server and in the browser,
+// uses FALLBACK_TIMEZONES, which keeps hydration identical.
+function runtimeTimezones(): string[] {
   try {
     if (typeof Intl.supportedValuesOf === 'function') {
       const list = Intl.supportedValuesOf('timeZone')
@@ -52,14 +64,8 @@ const IANA_TIMEZONES: string[] = (() => {
       return list.includes('UTC') ? list : ['UTC', ...list]
     }
   } catch { /* fall through to static list */ }
-  return [
-    'UTC', 'Africa/Nairobi', 'Africa/Lagos', 'Africa/Johannesburg', 'Africa/Cairo',
-    'Africa/Accra', 'Europe/London', 'Europe/Paris', 'Europe/Berlin', 'Europe/Madrid',
-    'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles',
-    'America/Sao_Paulo', 'Asia/Dubai', 'Asia/Kolkata', 'Asia/Singapore',
-    'Asia/Shanghai', 'Asia/Tokyo', 'Australia/Sydney',
-  ]
-})()
+  return FALLBACK_TIMEZONES
+}
 
 // FIX (deep audit, section 5 re-pass): completes the SOW-language feature.
 // `sow_language` already existed as a writable workspace column and was
@@ -111,6 +117,9 @@ function workspaceToForm(ws: any) {
     website:                    ws?.website || '',
     replyToEmail:               ws?.reply_to_email || '',
     defaultPaymentInstructions: ws?.default_payment_instructions || '',
+    defaultTaxRate:             String(ws?.default_tax_rate ?? 0),
+    defaultTaxInclusive:        ws?.default_tax_inclusive ?? true,
+    defaultPaymentTermsDays:    ws?.default_payment_terms_days != null ? String(ws.default_payment_terms_days) : '',
     autoClientReminders:        ws?.auto_client_reminders ?? false,
     clientReminderAfterDays:    String(ws?.client_reminder_after_days ?? 3),
     clientReminderMax:          String(ws?.client_reminder_max ?? 3),
@@ -138,7 +147,10 @@ function cleanAddress(a: any): Record<string, string> {
 function toServerValue(key: string, value: any): unknown {
   switch (key) {
     case 'autoClientReminders':
+    case 'defaultTaxInclusive':
     case 'proactiveRiskAlertsEnabled': return !!value
+    case 'defaultTaxRate':             return Math.round(Number(value) * 100) / 100
+    case 'defaultPaymentTermsDays':    return trimText(value) === '' ? null : Number(value)
     case 'clientReminderAfterDays':
     case 'clientReminderMax':
     case 'proactiveRiskThreshold':     return Number(value)
@@ -235,7 +247,7 @@ const IN_APP_NOTIF_ITEMS = [
   // lib/utils/project-messages.ts. No email counterpart exists for
   // mentions, so this belongs here rather than in NOTIF_ITEMS.
   { key: 'project_message_mention',       label: '@-mentions in project discussion', desc: 'When someone @-mentions you in a project message' },
-  { key: 'member_joined',                 label: 'Teammate joined',         desc: 'When someone you invited accepts and joins the workspace (requires managing team roles)' },
+  { key: 'member_joined',                 label: 'Teammate joined',         desc: 'When someone accepts an invitation and joins the workspace (sent to members who can invite people)' },
   // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — minor):
   // previously silently controlled by the 'member_joined' toggle above,
   // with no way to mute one without the other. Split out.
@@ -297,6 +309,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
   // own successful saves) — sent alongside changes so a concurrent edit by a
   // colleague is detected instead of overwritten.
   const baseRef = useRef<Record<string, unknown>>(workspaceSnapshot(workspace))
+  const lastPatchJson = useRef<any>(null)
 
   const patchWorkspace = async (url: string, body: Record<string, any>) => {
     const changes: Record<string, unknown> = {}
@@ -313,7 +326,13 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
       return true
     }
     const ok = await patch(url, { ...changes, expected })
-    if (ok) baseRef.current = { ...baseRef.current, ...changes }
+    if (ok) {
+      // Re-baseline on what the SERVER stored (it trims, collapses whitespace, caps length…), not on
+      // what was typed — otherwise the next edit of the same field sends a stale `expected` and
+      // gets a false "changed by someone else" conflict until the page is reloaded.
+      const stored = lastPatchJson.current?.values
+      baseRef.current = { ...baseRef.current, ...changes, ...(stored && typeof stored === 'object' ? stored : {}) }
+    }
     return ok
   }
   const [brandColour, setBrandColour] = useState(() => workspace?.brand_colour || '#1A5C3A')
@@ -346,9 +365,11 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
 
   async function patch(path: string, body: any) {
     setSaving(true); setError(''); setConflict(false)
+    lastPatchJson.current = null
     try {
       const res  = await fetch(path, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       const json = await res.json().catch(() => ({}))
+      lastPatchJson.current = json
       if (!res.ok) {
         if (Array.isArray(json.conflicts)) setConflict(true)
         throw new Error(json.error || 'Save failed')
@@ -433,7 +454,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
         )}
 
         {tab === 'guardian' && (
-          <GuardianTab form={guardianForm} setForm={setGuardianForm} permissions={permissions} onSave={patchWorkspace} saving={saving} />
+          <GuardianTab form={guardianForm} setForm={setGuardianForm} permissions={permissions} onSave={patchWorkspace} saving={saving} currency={workspace?.currency || 'USD'} />
         )}
 
         {tab === 'billing' && <BillingTab workspace={workspace} billing={billing} session={session} permissions={permissions} />}
@@ -716,6 +737,10 @@ function AccountTab({ session, supabase, router, mfaMandatory }: any) {
 
 // ── WORKSPACE ─────────────────────────────────────────────────
 function WorkspaceTab({ form, setForm, permissions, onSave, saving }: any) {
+  // Full runtime timezone list, read after mount (see runtimeTimezones).
+  const [zones, setZones] = useState<string[]>(FALLBACK_TIMEZONES)
+  useEffect(() => { setZones(runtimeTimezones()) }, [])
+
   if (!permissions.manageWorkspace) return <Restricted />
 
   function set<K extends string>(key: K, value: string | boolean) {
@@ -743,7 +768,15 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving }: any) {
         <div className="f2">
           <div className="fgrp">
             <label className="flbl">Industry</label>
-            <input className="finp" value={form.industry} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('industry', e.target.value)} />
+            {/* A fixed list, like onboarding: the server only accepts these values, so a free-text box
+                could never save anything but an exact match. */}
+            <select className="finp" value={form.industry} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => set('industry', e.target.value)}>
+              {!form.industry && <option value="">Select an industry…</option>}
+              {form.industry && !(INDUSTRIES as readonly string[]).includes(form.industry) && (
+                <option value={form.industry}>{form.industry} (not in the list — please re-select)</option>
+              )}
+              {INDUSTRIES.map(i => <option key={i} value={i}>{i}</option>)}
+            </select>
           </div>
           <div className="fgrp">
             <label className="flbl">Default currency</label>
@@ -760,12 +793,12 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving }: any) {
               {/* A saved zone that this browser's list doesn't name (an alias
                   such as Asia/Kolkata, or free text from before this was a
                   select) still shows as its own option. */}
-              {form.timezone && !IANA_TIMEZONES.includes(form.timezone) && (
+              {form.timezone && !zones.includes(form.timezone) && (
                 <option value={form.timezone}>
                   {form.timezone.replace(/_/g, ' ')}{isValidTimeZone(form.timezone) ? '' : ' (unrecognized — please re-select)'}
                 </option>
               )}
-              {IANA_TIMEZONES.map((tz: string) => <option key={tz} value={tz}>{tz.replace(/_/g, ' ')}</option>)}
+              {zones.map((tz: string) => <option key={tz} value={tz}>{tz.replace(/_/g, ' ')}</option>)}
             </select>
             <span className="fhint">The audit log and your audit, portfolio and report PDFs show times in this timezone. CSV and JSON exports always use UTC.</span>
           </div>
@@ -877,10 +910,35 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving }: any) {
           <textarea className="finp" rows={3} value={form.defaultPaymentInstructions}
             onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => set('defaultPaymentInstructions', e.target.value)} />
         </div>
+        <div className="settings-section-title" style={{ marginTop: 24 }}>
+          Billing defaults <span className="fhint" style={{ fontWeight: 400 }}>— pre-fill new invoices and change orders; editable on each one</span>
+        </div>
+        <div className="f2">
+          <div className="fgrp">
+            <label className="flbl">Default tax rate (%)</label>
+            <input className="finp" type="number" min={0} max={100} step="0.01" value={form.defaultTaxRate}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('defaultTaxRate', e.target.value)} />
+            <span className="fhint">e.g. 16 for Kenyan VAT. Leave at 0 if you don&apos;t charge tax.</span>
+          </div>
+          <div className="fgrp">
+            <label className="flbl">Amounts entered are</label>
+            <select className="finp" value={form.defaultTaxInclusive ? 'inclusive' : 'exclusive'}
+              onChange={(e: React.ChangeEvent<HTMLSelectElement>) => set('defaultTaxInclusive', e.target.value === 'inclusive')}>
+              <option value="inclusive">Tax-inclusive (the amount is what the client pays)</option>
+              <option value="exclusive">Before tax (tax is added on top)</option>
+            </select>
+          </div>
+        </div>
+        <div className="fgrp">
+          <label className="flbl">Default payment terms (days) <span className="fhint">— optional; sets each new invoice&apos;s due date this many days out</span></label>
+          <input className="finp" type="number" min={0} max={365} step={1} style={{ maxWidth: 160 }} value={form.defaultPaymentTermsDays}
+            placeholder="e.g. 14" onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('defaultPaymentTermsDays', e.target.value)} />
+        </div>
         <button className="btn btn-primary btn-sm" disabled={saving}
           onClick={() => onSave('/api/workspace/settings', form)}>
           {saving ? <span className="spin" /> : 'Save changes'}
         </button>
+        <DocumentNumberingSection />
       </div>
     </div>
   )
@@ -1157,6 +1215,10 @@ function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab }: any
   const [typeData, setTypeData] = useState<{ revisionRounds: number; paymentStructure: string; isOverride: boolean } | null>(null)
   const [typeStd, setTypeStd] = useState<StandardsForm>({ revisionPolicy: '', paymentTerms: '', outOfScope: '', assumptions: '' })
   const [typeLoading, setTypeLoading] = useState(false)
+  // A failed load must NOT fall through to the hardcoded 2 rounds / 50_50 / blank standards below:
+  // saving from that state would write a real override made of placeholders.
+  const [typeLoadFailed, setTypeLoadFailed] = useState(false)
+  const [reloadTick, setReloadTick] = useState(0)
   const [localError, setLocalError] = useState('')
   const isGlobal = scope === 'global'
 
@@ -1168,17 +1230,17 @@ function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab }: any
   })
 
   useEffect(() => {
-    setLocalError('')
+    setLocalError(''); setTypeLoadFailed(false)
     if (isGlobal) { setTypeData(null); return }
     let cancelled = false
     setTypeLoading(true)
     fetch(`/api/workspace/defaults?projectType=${scope}`)
-      .then(r => r.json())
+      .then(r => r.ok ? r.json() : Promise.reject(new Error('load failed')))
       .then(json => { if (!cancelled) { setTypeData(json); setTypeStd(stdFromJson(json)) } })
-      .catch(() => { if (!cancelled) setTypeData(null) })
+      .catch(() => { if (!cancelled) { setTypeData(null); setTypeLoadFailed(true) } })
       .finally(() => { if (!cancelled) setTypeLoading(false) })
     return () => { cancelled = true }
-  }, [scope, isGlobal])
+  }, [scope, isGlobal, reloadTick])
 
   if (!permissions.manageWorkspace) return <Restricted />
 
@@ -1298,8 +1360,14 @@ function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab }: any
           </button>{' '}and applies to every SOW, regardless of project type.
         </p>
         {localError && <p className="ferr" style={{ marginTop: 10 }}>{localError}</p>}
+        {typeLoadFailed && (
+          <p className="ferr" style={{ marginTop: 10 }}>
+            Couldn&apos;t load this project type&apos;s defaults, so nothing is shown to edit.{' '}
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setReloadTick(t => t + 1)}>Try again</button>
+          </p>
+        )}
         <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
-          <button className="btn btn-primary btn-sm" disabled={saving || typeLoading} onClick={saveCurrent}>
+          <button className="btn btn-primary btn-sm" disabled={saving || typeLoading || typeLoadFailed} onClick={saveCurrent}>
             {saving ? <span className="spin" /> : isGlobal ? 'Save defaults' : `Save ${PROJECT_TYPE_LABELS[scope]} override`}
           </button>
           {!isGlobal && typeData?.isOverride && (
@@ -1313,7 +1381,7 @@ function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab }: any
   )
 }
 
-function GuardianTab({ form, setForm, permissions, onSave, saving }: any) {
+function GuardianTab({ form, setForm, permissions, onSave, saving, currency }: any) {
   if (!permissions.manageWorkspace) return <Restricted />
 
   function set(key: string, value: any) {
@@ -1348,10 +1416,10 @@ function GuardianTab({ form, setForm, permissions, onSave, saving }: any) {
         </div>
         {form.riskEnabled && (
           <div className="fgrp" style={{ marginTop: 12 }}>
-            <label className="flbl">Contract value threshold</label>
+            <label className="flbl">Contract value threshold <span className="fhint">({currency})</span></label>
             <input type="number" className="finp" style={{ maxWidth: 200 }} value={form.riskThreshold}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('riskThreshold', e.target.value)} min={0} />
-            <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 5 }}>Alert when a project over this value has no signed SOW.</p>
+            <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 5 }}>Alert when a project over this value has no signed SOW. The value is in your workspace currency ({currency}); projects billed in another currency aren&apos;t compared against it.</p>
           </div>
         )}
         <button className="btn btn-primary btn-sm" disabled={saving}
@@ -1805,6 +1873,7 @@ function NotificationsTab({ permissions }: { permissions: { manageWorkspace: boo
   const [locked,  setLocked]  = useState<Record<string, boolean>>({})
   const [saving,  setSaving]  = useState<string | null>(null)
   const [loadErr, setLoadErr] = useState('')
+  const [toggleErr, setToggleErr] = useState('')
 
   useEffect(() => {
     fetch('/api/notifications/preferences')
@@ -1833,6 +1902,7 @@ function NotificationsTab({ permissions }: { permissions: { manageWorkspace: boo
       ? setInAppPrefs(p => ({ ...p, [key]: v }))
       : setPrefs(p => ({ ...(p || {}), [key]: v }))
     write(next) // optimistic
+    setToggleErr('')
     setSaving(`${key}:${channel}`)
     try {
       const res = await fetch('/api/notifications/preferences', {
@@ -1842,6 +1912,7 @@ function NotificationsTab({ permissions }: { permissions: { manageWorkspace: boo
       if (!res.ok) throw new Error()
     } catch {
       write(current) // revert on failure
+      setToggleErr('Could not save that change — it has been put back. Try again.')
     } finally { setSaving(null) }
   }
 
@@ -1851,6 +1922,7 @@ function NotificationsTab({ permissions }: { permissions: { manageWorkspace: boo
       <div className="settings-section">
         <div className="settings-section-title">Email notifications</div>
         {loadErr && <p className="ferr">{loadErr}</p>}
+        {toggleErr && <p className="ferr">{toggleErr}</p>}
         {!prefs && !loadErr && <p style={{ fontSize: 12, color: 'var(--text-3)' }}>Loading…</p>}
         {prefs && NOTIF_ITEMS.map(item => (
           <div key={item.key} className="settings-row">

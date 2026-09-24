@@ -45,9 +45,16 @@ export async function PATCH(request: NextRequest) {
 
     if (logoStoragePath !== undefined && logoStoragePath !== null && logoStoragePath !== '') {
       // Only a logo object inside this workspace's own folder can be referenced.
-      const validPath = new RegExp(`^${session.workspaceId}/logo\\.(png|jpe?g)$`)
+      // The upload route only ever writes logo.png or logo.jpg — `jpeg` never exists as an object.
+      const validPath = new RegExp(`^${session.workspaceId}/logo\\.(png|jpg)$`)
       if (typeof logoStoragePath !== 'string' || !validPath.test(logoStoragePath)) {
         return NextResponse.json({ error: 'Invalid logoStoragePath' }, { status: 400 })
+      }
+      // …and it has to actually be there: pointing the workspace at an object that was never
+      // uploaded would break the logo on every generated PDF and email.
+      const { data: existing } = await service.storage.from('logos').list(session.workspaceId, { search: logoStoragePath.split('/')[1] })
+      if (!Array.isArray(existing) || !existing.some((o: any) => o.name === logoStoragePath.split('/')[1])) {
+        return NextResponse.json({ error: 'That logo has not been uploaded' }, { status: 400 })
       }
       proposed.logo_storage_path = logoStoragePath
     }

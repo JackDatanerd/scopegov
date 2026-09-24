@@ -121,6 +121,15 @@ export default async function SettingsPage() {
       .eq('id', session.workspaceId).maybeSingle()
     if (!crErr && cr) clientReminders = cr
   }
+  // FEATURE (Settings & Team round): billing defaults (migration 076) — same tolerant, separate read so a deploy
+  // that runs ahead of the migration degrades to "no defaults" instead of taking the whole page down.
+  let billingDefaults: { default_tax_rate?: number; default_tax_inclusive?: boolean; default_payment_terms_days?: number | null } = {}
+  if (canManageWorkspace) {
+    const { data: bd, error: bdErr } = await (service as any)
+      .from('workspaces').select('default_tax_rate,default_tax_inclusive,default_payment_terms_days')
+      .eq('id', session.workspaceId).maybeSingle()
+    if (!bdErr && bd) billingDefaults = bd
+  }
   const workspace = wsRes.data && !canManageWorkspace
     ? {
         ...wsRes.data,
@@ -129,7 +138,7 @@ export default async function SettingsPage() {
         legal_address: null,
         default_payment_instructions: null,
       }
-    : (wsRes.data ? { ...wsRes.data, reply_to_email: replyToEmail, ...clientReminders } : wsRes.data)
+    : (wsRes.data ? { ...wsRes.data, reply_to_email: replyToEmail, ...clientReminders, ...billingDefaults } : wsRes.data)
 
   // FIX (deep audit, Auth+MFA re-pass): SettingsClient's AccountTab used to
   // compute this itself via permissionsRequireMfa(session.permissions) —
