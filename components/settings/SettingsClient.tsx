@@ -185,7 +185,7 @@ const NOTIF_ITEMS = [
   { key: 'invoice_payment_received', label: 'Invoice payment received', desc: 'When a client pays an invoice, in full or in part' },
   { key: 'invoice_overdue',       label: 'Invoice overdue',         desc: 'When an invoice passes its due date unpaid' },
   { key: 'approval_requested',    label: 'Approval requested',      desc: 'When a document needs your approval' },
-  { key: 'trial_ending',          label: 'Trial ending',            desc: '3 days before trial expires' },
+  { key: 'trial_ending',          label: 'Trial ending',            desc: '3, 2 and 1 days before your trial expires' },
   // FIX (build, cron section): co-stall/sow-stall now actually notify —
   // same "wire it server-side, add the toggle" pattern as the three above.
   { key: 'sow_stalled',           label: 'SOW stalled',             desc: "When a client hasn't signed a SOW in 7+ days" },
@@ -1944,18 +1944,21 @@ function WorkspaceNotificationDefaultsSection() {
       .catch(() => setLoadErr('Could not load workspace notification defaults.'))
   }, [])
 
-  async function save(key: string, isInAppOnly: boolean, patch: { enabled?: boolean; locked?: boolean }) {
+  async function save(key: string, isInAppOnly: boolean, patch: { enabled?: boolean; locked?: boolean; inAppEnabled?: boolean }) {
     if (!defaults) return
     const current = defaults[key] || { emailEnabled: true, inAppEnabled: true, locked: false }
     const enabled = patch.enabled !== undefined ? patch.enabled : (isInAppOnly ? current.inAppEnabled : current.emailEnabled)
     const locked  = patch.locked !== undefined ? patch.locked : current.locked
-    const next = { ...current, locked, ...(isInAppOnly ? { inAppEnabled: enabled } : { emailEnabled: enabled }) }
+    // The bell default of an EMAIL event — previously not settable by an admin at all.
+    const inAppEnabled = patch.inAppEnabled
+    const next = { ...current, locked, ...(isInAppOnly ? { inAppEnabled: enabled } : { emailEnabled: enabled }),
+      ...(inAppEnabled !== undefined ? { inAppEnabled } : {}) }
     setDefaults(d => ({ ...(d || {}), [key]: next })) // optimistic
     setSaving(key)
     try {
       const res = await fetch('/api/workspace/notification-defaults', {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ eventType: key, enabled, locked }),
+        body: JSON.stringify({ eventType: key, enabled, locked, ...(inAppEnabled !== undefined ? { inAppEnabled } : {}) }),
       })
       if (!res.ok) throw new Error()
     } catch {
@@ -1994,11 +1997,24 @@ function WorkspaceNotificationDefaultsSection() {
                 />
                 Lock
               </label>
-              <button
-                className={`toggle ${enabled ? 'on' : 'off'}`}
-                disabled={saving === item.key}
-                onClick={() => save(item.key, item.inAppOnly, { enabled: !enabled })}
-              />
+              {!item.inAppOnly && (
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-3)' }}>
+                  Bell
+                  <button
+                    className={`toggle ${d.inAppEnabled ? 'on' : 'off'}`} aria-label={`${item.label}: bell default`}
+                    disabled={saving === item.key}
+                    onClick={() => save(item.key, false, { inAppEnabled: !d.inAppEnabled })}
+                  />
+                </span>
+              )}
+              <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-3)' }}>
+                {item.inAppOnly ? 'Bell' : 'Email'}
+                <button
+                  className={`toggle ${enabled ? 'on' : 'off'}`} aria-label={`${item.label}: ${item.inAppOnly ? 'bell' : 'email'} default`}
+                  disabled={saving === item.key}
+                  onClick={() => save(item.key, item.inAppOnly, { enabled: !enabled })}
+                />
+              </span>
             </div>
           </div>
         )

@@ -87,6 +87,6 @@ export async function GET(request: NextRequest) {
     })
   } catch (err) {
     console.error('Guardian check history error:', err)
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

@@ -10,6 +10,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { checkAiRateLimitByProject, recordAiUsageByProject } from '@/lib/utils/rate-limit'
+import { checkedSend } from '@/lib/email/delivery'
 
 // BUG-016: verify the Postmark inbound webhook before processing.
 //
@@ -261,17 +262,15 @@ export async function POST(request: NextRequest) {
           // Notify APPROVE_FLAGS holders — full-confidence flags only
           const emails = await getMemberEmailsWithPermission(service, project.workspace_id, 'APPROVE_FLAGS', 25, 'guardian_flag', project.id)
           if (emails.length) {
-            try {
-              await sendGuardianFlagEmail({
-                to: emails,
-                projectName:  project.name,
-                severity,
-                description:  classification.reasoning,
-                sowReference: classification.matchedReference || 'General scope',
-                projectUrl:   `${process.env.NEXT_PUBLIC_APP_URL}/projects/${project.id}?tab=guardian`,
-                path:         `Email from ${fromEmail}`,
-              })
-            } catch (e) { console.error('Flag email failed:', e) }
+            await checkedSend(() => sendGuardianFlagEmail({
+              to: emails,
+              projectName:  project.name,
+              severity,
+              description:  classification.reasoning,
+              sowReference: classification.matchedReference || 'General scope',
+              projectUrl:   `${process.env.NEXT_PUBLIC_APP_URL}/projects/${project.id}?tab=guardian`,
+              path:         `Email from ${fromEmail}`,
+            }), 'guardian flag email (inbound)')
           }
         }
         await notifyMembersWithPermission(service, {

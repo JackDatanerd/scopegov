@@ -146,6 +146,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ ok: true, adjustmentId: adjustment.id })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('guardian/scope-adjustment error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

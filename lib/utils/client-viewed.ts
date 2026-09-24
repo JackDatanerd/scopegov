@@ -22,7 +22,9 @@ const SCANNER =
 export function looksLikeLinkScanner(userAgent: string | null | undefined): boolean {
   // Every real browser sends a User-Agent; a request without one is a script.
   if (!userAgent || !userAgent.trim()) return true
-  return SCANNER.test(userAgent)
+  // CUBOT phones put "CUBOT" in the UA model token ("...; CUBOT KingKong 5) ..."), which the `bot\b`
+  // alternative reads as a crawler — a real person opening the link on one never registered as a view.
+  return SCANNER.test(userAgent.replace(/\bcubot\b/gi, ' '))
 }
 
 export type ViewedKind = 'sow' | 'co' | 'invoice'

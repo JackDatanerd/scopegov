@@ -73,6 +73,6 @@ export async function DELETE(
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error('Flag attachment DELETE error:', err)
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Internal server error' }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

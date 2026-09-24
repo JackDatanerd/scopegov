@@ -48,3 +48,9 @@ describe('timeAgo', () => {
     expect(timeAgo(ago(23 * 86400_000), now)).toMatch(/Aug/)
   })
 })
+
+describe('notificationHref — trial countdown', () => {
+  it('sends a trial_ending notification to billing settings', () => {
+    expect(notificationHref(n('trial_ending', 'workspace', 'w1'))).toBe('/settings?tab=billing')
+  })
+})

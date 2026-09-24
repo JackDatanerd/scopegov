@@ -84,7 +84,7 @@ export async function PATCH(request: NextRequest) {
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
       return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
     }
-    const { eventType, enabled, locked } = body as Record<string, unknown>
+    const { eventType, enabled, locked, inAppEnabled } = body as Record<string, unknown>
     if (typeof eventType !== 'string' || !ALL_EVENT_TYPES.includes(eventType)) {
       return NextResponse.json({ error: 'Unknown event type' }, { status: 400 })
     }
@@ -93,6 +93,12 @@ export async function PATCH(request: NextRequest) {
     }
     if (typeof locked !== 'boolean') {
       return NextResponse.json({ error: '"locked" must be true or false' }, { status: 400 })
+    }
+
+    // Optional: the bell default for an EMAIL event (which has both channels). Omitting it leaves the
+    // stored value alone — this route used to force it back to true on every write.
+    if (inAppEnabled !== undefined && typeof inAppEnabled !== 'boolean') {
+      return NextResponse.json({ error: '\"inAppEnabled\" must be true or false' }, { status: 400 })
     }
 
     const service = createServiceClient()
@@ -111,13 +117,15 @@ export async function PATCH(request: NextRequest) {
       .eq('event_type', eventType)
       .maybeSingle()
 
-    const payload = {
+    const payload: Record<string, unknown> = {
       workspace_id:   session.workspaceId,
       event_type:     eventType,
       email_enabled:  isInAppOnly ? true : enabled,
-      in_app_enabled: isInAppOnly ? enabled : true,
       locked,
     }
+    if (isInAppOnly) payload.in_app_enabled = enabled
+    else if (typeof inAppEnabled === 'boolean') payload.in_app_enabled = inAppEnabled
+    else if (!existing?.id) payload.in_app_enabled = true   // brand-new row; an existing row keeps its value
 
     const { error } = existing?.id
       ? await (service as any).from('workspace_notification_defaults').update(payload).eq('id', existing.id)
@@ -139,7 +147,7 @@ export async function PATCH(request: NextRequest) {
       actorId: session.id, actorEmail: session.email, actorName: session.name,
       eventType: 'workspace.notification_defaults_updated',
       entityType: 'workspace_defaults', entityId: session.workspaceId, entityName: session.workspaceName,
-      metadata: { event_type: eventType, enabled, locked },
+      metadata: { event_type: eventType, enabled, locked, ...(typeof inAppEnabled === 'boolean' ? { in_app_enabled: inAppEnabled } : {}) },
     })
     return NextResponse.json({ ok: true })
   } catch (err) {

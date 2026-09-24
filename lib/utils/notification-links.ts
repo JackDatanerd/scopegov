@@ -42,6 +42,9 @@ export function notificationHref(n: Pick<AppNotification, 'type' | 'entity_type'
   if ((n.entity_type === 'flag' || n.entity_type === 'exception') && n.project_id)
     return `/projects/${n.project_id}?tab=guardian`
 
+  // Trial countdown: the only action is choosing a plan.
+  if (n.entity_type === 'workspace' && n.type === 'trial_ending') return '/settings?tab=billing'
+
   // Workspace-level team events (joined / role changed / ownership transferred).
   if (n.entity_type === 'team') return '/team'
 

@@ -1,6 +1,6 @@
 // components/notifications/NotificationsClient.tsx
 'use client'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { notificationHref, timeAgo, type AppNotification } from '@/lib/utils/notification-links'
@@ -18,6 +18,11 @@ export default function NotificationsClient() {
   const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState('')
 
+  // Bumped by every reload; a page that comes back for an older reload (the person flipped All ↔ Unread
+  // quickly, or reloaded after "Mark all read" while an earlier request was still on the wire) is dropped
+  // instead of overwriting the list that belongs to the current filter.
+  const reloadSeq = useRef(0)
+
   const fetchPage = useCallback(async (f: Filter, after: string | null) => {
     const qs = new URLSearchParams({ limit: '30' })
     if (f === 'unread') qs.set('unread', '1')
@@ -29,22 +34,27 @@ export default function NotificationsClient() {
   }, [])
 
   const reload = useCallback(async (f: Filter) => {
+    const mySeq = ++reloadSeq.current
     setLoading(true); setError('')
     try {
       const page = await fetchPage(f, null)
+      if (mySeq !== reloadSeq.current) return
       setItems(page.notifications); setUnreadCount(page.unreadCount)
       setHasMore(page.hasMore); setCursor(page.nextCursor)
-    } catch (e: unknown) { setError(e instanceof Error ? e.message : 'Could not load notifications') }
-    finally { setLoading(false) }
+    } catch (e: unknown) {
+      if (mySeq === reloadSeq.current) setError(e instanceof Error ? e.message : 'Could not load notifications')
+    } finally { if (mySeq === reloadSeq.current) setLoading(false) }
   }, [fetchPage])
 
   useEffect(() => { reload(filter) }, [filter, reload])
 
   async function loadMore() {
     if (!cursor) return
+    const mySeq = reloadSeq.current
     setLoadingMore(true); setError('')
     try {
       const page = await fetchPage(filter, cursor)
+      if (mySeq !== reloadSeq.current) return // the list was reloaded (filter changed) while this page loaded
       setItems(prev => {
         const seen = new Set(prev.map(n => n.id))
         return [...prev, ...page.notifications.filter(n => !seen.has(n.id))]
@@ -91,10 +101,16 @@ export default function NotificationsClient() {
     if (!n.read) {
       setItems(prev => prev.map(x => x.id === n.id ? { ...x, read: true } : x))
       setUnreadCount(c => Math.max(0, c - 1))
-      // Fire and forget: navigation must not wait on it, and the next load resyncs a failure.
+      // Fire and forget: navigation must not wait on it. A rejected request (fetch only throws on a
+      // network error — an HTTP 4xx/5xx resolves) puts the row back to unread instead of lying.
       fetch('/api/notifications', {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: [n.id] }),
-      }).catch(() => {})
+      }).then(res => {
+        if (!res.ok) throw new Error('mark-read failed')
+      }).catch(() => {
+        setItems(prev => prev.map(x => x.id === n.id ? { ...x, read: false } : x))
+        setUnreadCount(c => c + 1)
+      })
     }
     if (href) router.push(href)
   }

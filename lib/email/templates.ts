@@ -159,7 +159,7 @@ export async function sendSowEmail(params: {
   const agencyName  = escapeHtml(agencyNameRaw)
   const projectName = escapeHtml(projectNameRaw)
 
-  const expiryDate = new Date(expiresAt).toLocaleDateString('en-GB', { day:'numeric', month:'long', year:'numeric' })
+  const expiryDate = new Date(expiresAt).toLocaleDateString('en-GB', { day:'numeric', month:'long', year:'numeric', timeZone: 'UTC' })
 
   const html = baseTemplate({
     agencyName,
@@ -560,7 +560,7 @@ export async function sendInviteEmail(params: {
         and Guardian scope monitoring.
       </p>
       <p style="font-size:12px;color:${C.text3};margin:0;">
-        This invitation expires on ${new Date(expiresAt).toLocaleDateString('en-GB', { day:'numeric', month:'long', year:'numeric' })}.
+        This invitation expires on ${new Date(expiresAt).toLocaleDateString('en-GB', { day:'numeric', month:'long', year:'numeric', timeZone: 'UTC' })}.
       </p>
     `,
     cta: 'Accept invitation →',
@@ -1347,7 +1347,7 @@ export async function sendInvoiceEmail(params: {
           <span style="color:${C.text2};">${title}</span>
           <span style="font-weight:600;color:${C.green};">${money(amount, currency)}</span>
         </div>
-        ${dueDate ? `<div style="font-size:12px;color:${C.text3};margin-top:6px;">Due ${new Date(dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}</div>` : ''}
+        ${dueDate ? `<div style="font-size:12px;color:${C.text3};margin-top:6px;">Due ${new Date(dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })}</div>` : ''}
       </div>
       ${paymentInstructions ? `
       <div style="background:${C.bg};border:1px solid ${C.border};border-radius:6px;padding:14px 16px;margin:16px 0;">
@@ -1400,7 +1400,7 @@ export async function sendInvoiceReminderEmail(params: {
         A friendly reminder that <strong>${money(balanceDue, currency)}</strong> is
         ${isOverdue ? 'now overdue' : 'outstanding'} on invoice${invoiceNumber ? ` ${invoiceNumber}` : ''} for
         <strong>${projectName}</strong>.
-        ${dueDate ? ` Due date was ${new Date(dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}.` : ''}
+        ${dueDate ? ` Due date was ${new Date(dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })}.` : ''}
       </p>
       ${paymentInstructions ? `
       <div style="background:${C.bg};border:1px solid ${C.border};border-radius:6px;padding:14px 16px;margin:16px 0;">
@@ -2197,7 +2197,7 @@ export async function sendClientDocumentReminderEmail(params: {
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
         A friendly reminder from <strong>${agencyName}</strong> that ${what} ${status}.
       </p>
-      ${expiresAt ? `<p style="font-size:12px;color:${C.text3};margin:0 0 16px;">This link expires ${new Date(expiresAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}.</p>` : ''}
+      ${expiresAt ? `<p style="font-size:12px;color:${C.text3};margin:0 0 16px;">This link expires ${new Date(expiresAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })}.</p>` : ''}
     `,
     cta: isSow ? 'Review & sign →' : needsCountersignature ? 'Review & sign →' : 'Review & respond →',
     ctaUrl: portalUrl,

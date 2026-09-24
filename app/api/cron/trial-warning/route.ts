@@ -6,6 +6,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { sendTrialWarningEmail } from '@/lib/email/templates'
 import { getMembersWithPermission, filterByNotificationPreference } from '@/lib/utils/permissions-query'
+import { notifyUsers } from '@/lib/utils/notify'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
 import { insertAuditRow } from '@/lib/utils/audit'
 import { CronRun, fetchAll } from '@/lib/utils/cron-run'
@@ -54,13 +55,50 @@ export async function POST(request: NextRequest) {
         const daysLeft = Math.max(0, Math.ceil((new Date(ws.trial_ends_at).getTime() - now.getTime()) / 86400000))
         if (daysLeft <= 0) continue // already ended — payment-overdue's expiry step handles day 0
 
-        const holders = await getMembersWithPermission(service, ws.id, 'MANAGE_BILLING', 25, undefined, 'trial_ending', 'email')
+        // Who can act on it: everyone holding MANAGE_BILLING, plus the creator — but only while the
+        // creator is STILL an active member. After an ownership transfer and departure they were
+        // being warned about a workspace they no longer belong to.
+        const allHolders = await getMembersWithPermission(service, ws.id, 'MANAGE_BILLING', 25)
+        const holders = await filterByNotificationPreference(service, ws.id, 'trial_ending', allHolders)
         const audience = new Map<string, { id: string; name: string; email: string }>()
         for (const h of holders) audience.set(h.email.toLowerCase(), h)
-        if (ws.created_by && ws.creator?.email && !audience.has(ws.creator.email.toLowerCase())) {
+        let creatorIsActive = false
+        if (ws.created_by) {
+          const { data: cm } = await (service as any).from('workspace_members').select('id')
+            .eq('workspace_id', ws.id).eq('user_id', ws.created_by).eq('status', 'active').limit(1).maybeSingle()
+          creatorIsActive = !!cm
+        }
+        if (creatorIsActive && ws.creator?.email && !audience.has(ws.creator.email.toLowerCase())) {
           const [creator] = await filterByNotificationPreference(service, ws.id, 'trial_ending',
             [{ id: ws.created_by, name: ws.creator.name, email: ws.creator.email }])
           if (creator) audience.set(creator.email.toLowerCase(), creator)
+        }
+
+        // The bell. `trial_ending` has always shown a Bell toggle in Settings, but nothing ever created
+        // an in-app row for it, so the toggle did nothing. Once per workspace per calendar day (the
+        // audit row is the dedupe key, like the emails below); each person's in-app preference and
+        // the workspace default are applied by notifyUsers.
+        const { data: bellSent } = await (service as any).from('audit_log').select('id')
+          .eq('workspace_id', ws.id).eq('event_type', 'billing.trial_ending_bell')
+          .eq('metadata->>day', today).limit(1).maybeSingle()
+        if (!bellSent) {
+          const res = await notifyUsers(service, {
+            workspaceId: ws.id,
+            recipientIds: [...allHolders.map(h => h.id), creatorIsActive ? ws.created_by : null],
+            type: 'trial_ending', eventType: 'trial_ending',
+            title: daysLeft === 1 ? 'Your trial ends tomorrow' : `Your trial ends in ${daysLeft} days`,
+            body: 'Choose a plan in Settings → Billing to keep your workspace running without interruption.',
+            entityType: 'workspace', entityId: ws.id,
+          })
+          if (res.inserted) {
+            await insertAuditRow(service, {
+              workspace_id: ws.id, actor_id: null,
+              actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
+              event_type: 'billing.trial_ending_bell', entity_type: 'workspace',
+              entity_id: ws.id, entity_name: ws.agency_name,
+              metadata: { days_left: daysLeft, day: today, recipients: res.recipients.length },
+            })
+          }
         }
 
         for (const person of Array.from(audience.values())) {

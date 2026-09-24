@@ -55,6 +55,7 @@ export async function POST(
     if (error) throw new Error(error.message)
     return NextResponse.json({ ok: true })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('projects/[id]/messages/read error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

@@ -60,6 +60,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       workspaceId: session.workspaceId,
       actorId: session.id, actorEmail: session.email, actorName: session.name,
       reason: (sendFailed ? 'Abandoned after a failed send — ' : '') + (req.requested_by === session.id ? 'Cancelled by requester' : 'Cancelled by admin'),
+      returnedToDraft: true,
     })
 
     return NextResponse.json({ ok: true })

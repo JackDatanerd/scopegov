@@ -62,7 +62,7 @@ describe('GET /api/search', () => {
   })
 
   it('every block failing is an outage (500), not an empty result set', async () => {
-    for (const t of ['clients', 'projects', 'client_contacts', 'change_orders', 'sow_documents', 'invoices', 'guardian_flags'])
+    for (const t of ['clients', 'projects', 'client_contacts', 'change_orders', 'sow_documents', 'invoices', 'guardian_flags', 'workspace_members'])
       tables[t] = { data: null, error: { message: 'db down' } }
     const res = await GET(req('acme'))
     expect(res.status).toBe(500)
@@ -132,6 +132,45 @@ describe('GET /api/search', () => {
     const json = await (await GET(req('acme'))).json()
     expect(json.results.filter((r: any) => r.type === 'contact')).toHaveLength(0)
     expect(json.results.filter((r: any) => r.type === 'client')).toHaveLength(1)
+  })
+
+  it('also fetches names that START with the query, so a busy workspace cannot push the exact match past the row limit', async () => {
+    await GET(req('Acme Site'))
+    for (const table of ['clients', 'projects']) {
+      const qs = queried.filter(x => x.table === table)
+      expect(qs.some(q => q.calls.some(c => c[0] === 'ilike' && c[1] === 'search_text' && c[2] === 'acme site%'))).toBe(true)
+      expect(qs.some(q => q.calls.some(c => c[0] === 'order' && c[1] === 'created_at'))).toBe(true)
+    }
+  })
+
+  it('finds a project by its internal reference', async () => {
+    await GET(req('PRJ-2041'))
+    const projects = queried.filter(x => x.table === 'projects')
+    expect(projects.some(q => q.calls.some(c => c[0] === 'ilike' && c[1] === 'internal_ref' && c[2] === '%prj-2041%'))).toBe(true)
+  })
+
+  it('finds documents and flags through their CLIENT, not only their project', async () => {
+    tables.clients = { data: [{ id: 'c1', name: 'Globex', company_name: null, email: null, status: 'active' }], error: null }
+    await GET(req('globex'))
+    for (const table of ['change_orders', 'sow_documents', 'invoices', 'guardian_flags']) {
+      const qs = queried.filter(x => x.table === table)
+      expect(qs.some(q => q.calls.some(c => c[0] === 'in' && c[1] === 'projects.client_id' && c[2].includes('c1')))).toBe(true)
+    }
+  })
+
+  it('matches contacts on the accent-folded search_text (\"jose\" finds \"José\")', async () => {
+    await GET(req('José'))
+    const contacts = queried.find(x => x.table === 'client_contacts')!
+    expect(contacts.calls).toContainEqual(['ilike', 'search_text', '%jose%'])
+  })
+
+  it('returns matching active team members without exposing e-mail', async () => {
+    tables.workspace_members = { data: [{ id: 'm1', users: { id: 'u1', name: 'Wanjiru Kamau' }, roles: { name: 'Admin' } }], error: null }
+    const json = await (await GET(req('wanjiru'))).json()
+    expect(json.results.find((r: any) => r.type === 'member')).toMatchObject({ title: 'Wanjiru Kamau', href: '/team', sub: 'Team · Admin' })
+    const q = queried.find(x => x.table === 'workspace_members')!
+    expect(q.calls).toContainEqual(['eq', 'status', 'active'])
+    expect((q.calls.find(c => c[0] === 'select')![1] as string)).not.toContain('email')
   })
 
   it('throttles a user who searches too fast', async () => {

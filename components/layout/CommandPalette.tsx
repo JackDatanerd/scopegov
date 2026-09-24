@@ -22,11 +22,12 @@ const TYPE_ICONS: Record<string, string> = {
   // now searchable too — see that route's fix comment.
   guardian_flag: 'ti-shield-bolt',
   contact:       'ti-address-book',
+  member:        'ti-user-circle',
 }
 
 // Group headings shown when the result type changes (results arrive already grouped by type).
 const TYPE_LABELS: Record<string, string> = {
-  project: 'Projects', client: 'Clients', contact: 'Client contacts', change_order: 'Change orders',
+  project: 'Projects', client: 'Clients', contact: 'Client contacts', member: 'Team', change_order: 'Change orders',
   sow: 'Statements of work', invoice: 'Invoices', guardian_flag: 'Scope flags',
 }
 
@@ -59,6 +60,9 @@ export default function CommandPalette({ permissions = [] }: Props) {
   // A monotonic sequence ref, bumped per request and checked on resolve,
   // fixes it without needing AbortController plumbing through fetch.
   const seq = useRef(0)
+  // The query the currently shown results were fetched for. Results stay on screen (no flicker) while
+  // the next request is pending, so Enter must not act on a list that belongs to an earlier query.
+  const resultsFor = useRef('')
 
   // Cmd+K / Ctrl+K shortcut
   useEffect(() => {
@@ -91,7 +95,7 @@ export default function CommandPalette({ permissions = [] }: Props) {
     // the Quick navigation panel.
     const mySeq = ++seq.current
     if (!q.trim() || q.trim().length < 2) {
-      setResults([]); setLoading(false); setStatus('idle'); setPartial(false)
+      setResults([]); setLoading(false); setStatus('idle'); setPartial(false); resultsFor.current = ''
       return
     }
     debounce.current = setTimeout(async () => {
@@ -103,6 +107,7 @@ export default function CommandPalette({ permissions = [] }: Props) {
         const json = await res.json().catch(() => null)
         if (mySeq !== seq.current) return
         if (!res.ok || !json) { setResults([]); setStatus('error'); return }
+        resultsFor.current = q.trim()
         setResults(json.results || [])
         setPartial(!!json.partial)
         setStatus('ok')
@@ -129,7 +134,7 @@ export default function CommandPalette({ permissions = [] }: Props) {
     if (e.nativeEvent.isComposing) return
     if (e.key === 'ArrowDown')  { e.preventDefault(); setIdx(i => Math.min(i + 1, results.length - 1)) }
     if (e.key === 'ArrowUp')    { e.preventDefault(); setIdx(i => Math.max(i - 1, 0)) }
-    if (e.key === 'Enter' && results[idx]) navigate(results[idx].href)
+    if (e.key === 'Enter' && results[idx] && resultsFor.current === query.trim()) navigate(results[idx].href)
   }
 
   // The list scrolls inside a 360px box but the selection only moved a highlight, so with more than
@@ -165,7 +170,7 @@ export default function CommandPalette({ permissions = [] }: Props) {
             onKeyDown={handleKeyDown}
             role="combobox" aria-expanded={results.length > 0} aria-controls="cmdk-list" aria-autocomplete="list"
             aria-activedescendant={results.length > 0 ? `cmdk-opt-${idx}` : undefined}
-            placeholder="Search projects, clients, contacts, SOWs, change orders, invoices, flags…"
+            placeholder="Search projects, clients, contacts, team, SOWs, change orders, invoices, flags…"
             style={{ flex: 1, border: 'none', outline: 'none', fontSize: 14, background: 'transparent', color: 'var(--text)' }}
           />
           {loading && <span className="spin spin-dark" style={{ width: 14, height: 14 }} />}

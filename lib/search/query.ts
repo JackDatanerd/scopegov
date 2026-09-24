@@ -16,7 +16,7 @@
 //   • "Cafe" never matched "Café";
 //   • a "<" in the query was a tsquery syntax error, silently swallowed.
 // They now use the same substring matching as every other block, against a
-// generated, accent-folded `search_text` column (migration 061), with the
+// generated, accent-folded `search_text` column (migration 062), with the
 // query normalised here by the same rules.
 
 import { escapeIlike } from '@/lib/audit/search'
@@ -74,6 +74,11 @@ export function plainTokens(raw: string): string[] {
 /** `%term%` with LIKE metacharacters escaped so what was typed matches literally. */
 export function likePattern(token: string): string {
   return `%${escapeIlike(token)}%`
+}
+
+/** `term%` — anchors at the start, so names that BEGIN with what was typed are always fetched. */
+export function prefixLike(text: string): string {
+  return `${escapeIlike(text)}%`
 }
 
 export function isSearchable(raw: string | null | undefined): boolean {

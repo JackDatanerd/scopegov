@@ -4,7 +4,8 @@ import { getSession } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { resolveEntity, canReadProject, canWriteGovernance, isValidEntityType } from '@/lib/utils/flag-governance'
-import { notifyMembersWithPermission, notifyUsers } from '@/lib/utils/notify'
+import { notifyUsers } from '@/lib/utils/notify'
+import { getMembersWithPermission } from '@/lib/utils/permissions-query'
 
 export async function GET(
   request: NextRequest,
@@ -104,7 +105,7 @@ export async function POST(
     // exactly that case, so comments on active, undecided flags reached
     // nobody. Fall back to the same APPROVE_FLAGS broadcast used when the
     // flag was first raised.
-    await notifyEntityOwner(service, session, entityType, entityId, entity.projectId, comment.id)
+    await notifyEntityOwner(service, session, entityType, entityId, entity.projectId, comment.id, text)
 
     return NextResponse.json({
       comment: {
@@ -114,7 +115,7 @@ export async function POST(
     })
   } catch (err) {
     console.error('Flag comments POST error:', err)
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Internal server error' }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
 
@@ -124,7 +125,8 @@ async function notifyEntityOwner(
   entityType: 'flag' | 'exception',
   entityId: string,
   projectId: string,
-  commentId: string
+  commentId: string,
+  commentText: string
 ) {
   try {
     let ownerId: string | null = null
@@ -136,46 +138,43 @@ async function notifyEntityOwner(
         .select('resolved_by, escalated_to, sow_reference')
         .eq('id', entityId).single()
       ownerId = flag?.resolved_by || flag?.escalated_to || null
-      title = `New comment on scope flag — ${flag?.sow_reference || ''}`
-
-      // FIX (audit round 6): no owner yet (open/borderline, unescalated) —
-      // broadcast to whoever could act on it instead of notifying no one.
-      if (!ownerId) {
-        await notifyMembersWithPermission(service, {
-          workspaceId: session.workspaceId, permission: 'APPROVE_FLAGS', eventType: 'flag_comment_added',
-          type: 'flag_comment_added', title,
-          body: `${session.name} left a comment.`,
-          entityType: 'flag', entityId, excludeUserId: session.id, projectId,
-        })
-        return
-      }
+      // No trailing " — " when the flag cites no SOW reference.
+      title = `New comment on scope flag${flag?.sow_reference ? ` — ${flag.sow_reference}` : ''}`
     } else {
       const { data: exception } = await service
         .from('exceptions_log')
         .select('granted_by, deliverable')
         .eq('id', entityId).single()
       ownerId = exception?.granted_by || null
-      title = `New comment on exception — ${exception?.deliverable || ''}`
+      title = `New comment on exception${exception?.deliverable ? ` — ${exception.deliverable}` : ''}`
     }
 
-    if (!ownerId || ownerId === session.id) return
+    // Who hears about a comment:
+    //  • the owner (resolver / escalatee / grantor) — or, for a brand-new undecided flag with no owner
+    //    yet, everyone who could act on it (audit round 6);
+    //  • everyone who has already commented on this thread. Replies used to reach only the owner, so
+    //    an owner answering a question left the person who asked it — the previous commenter — unaware.
+    const recipientIds = new Set<string>()
+    if (ownerId) recipientIds.add(ownerId)
+    else if (entityType === 'flag') {
+      const actors = await getMembersWithPermission(
+        service, session.workspaceId, 'APPROVE_FLAGS', 25, projectId, undefined, 'in_app', session.id
+      )
+      actors.forEach(a => recipientIds.add(a.id))
+    }
+    const { data: prior } = await service.from('flag_comments')
+      .select('author_id').eq('entity_type', entityType).eq('entity_id', entityId).neq('id', commentId)
+    for (const row of prior || []) if (row.author_id) recipientIds.add(row.author_id)
+    recipientIds.delete(session.id)
+    if (recipientIds.size === 0) return
 
-    // FIX (deep audit, notifications section): this used to check
-    // notification_preferences directly and only ever look at the user's
-    // own override — never workspace_notification_defaults, so an admin's
-    // org-wide default or lock for 'flag_comment_added' had no effect on
-    // this specific-owner path, even though the sibling no-owner/broadcast
-    // branch above (via notifyMembersWithPermission) went through the real
-    // choke point. Route through the same one so both branches resolve
-    // identically.
-    // FIX (Notifications & email fix round): this was a hand-rolled insert whose `{ error }`
-    // was never read, and it never checked that the owner is still an ACTIVE member or can
-    // still open the project (a removed / re-scoped owner kept getting alerts naming the
-    // project). notifyUsers enforces both, honours the in-app preference, and reads the error.
+    // notifyUsers is the single choke point: active membership, project access, the in-app
+    // preference / workspace default, and the insert's own error are all handled there.
+    const snippet = commentText.length > 140 ? `${commentText.slice(0, 137)}…` : commentText
     await notifyUsers(service, {
-      workspaceId: session.workspaceId, recipientIds: [ownerId],
+      workspaceId: session.workspaceId, recipientIds: Array.from(recipientIds),
       type: 'flag_comment_added', eventType: 'flag_comment_added',
-      title, body: `${session.name} left a comment.`,
+      title, body: `${session.name}: ${snippet}`,
       entityType, entityId, projectId, excludeUserId: session.id,
     })
   } catch {

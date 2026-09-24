@@ -44,6 +44,7 @@ export async function GET(
     const { count } = await query
     return NextResponse.json({ count: count || 0 })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('projects/[id]/messages/unread-count error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

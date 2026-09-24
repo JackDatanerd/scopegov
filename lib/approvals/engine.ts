@@ -568,6 +568,12 @@ export async function cancelApprovalRequest(service: any, params: {
   actorEmail: string
   actorName: string
   reason?: string
+  /**
+   * True only when the document goes back to an editable draft (a plain "cancel approval").
+   * Every other caller deletes, voids, closes, completes, withdraws or supersedes the document, and the
+   * requester must not be told it is "an editable draft again" when it no longer exists or is locked.
+   */
+  returnedToDraft?: boolean
 }) {
   // FIX (fix round, section-11 flagship finding): this used to match only
   // status='pending' — a request that fully cleared approval but then
@@ -709,7 +715,7 @@ export async function cancelApprovalRequest(service: any, params: {
           recipient_id: request.requested_by,
           type:         'approval_cancelled',
           title:        'Your approval request was cancelled',
-          body:         `${params.actorName} cancelled the request for ${docTitle}${projectName ? ` on ${projectName}` : ''}${params.reason ? ` — ${params.reason}` : ''}. It is now an editable draft again.`,
+          body:         `${params.actorName} cancelled the request for ${docTitle}${projectName ? ` on ${projectName}` : ''}${params.reason ? ` — ${params.reason}` : ''}.${params.returnedToDraft ? ' It is now an editable draft again.' : ''}`,
           entity_type:  'approval_request',
           entity_id:    request.id,
         }])
@@ -1100,9 +1106,13 @@ async function notifyStepApprovers(service: any, args: {
   const documentLabel = documentLabelFor(args.documentType)
   const actionVerb = args.documentType === 'co_counter' ? 'accept the client\'s counter on' : 'send'
 
+  // Only people actually REACHED count. An approver whose bell row failed to insert, or whose email was
+  // rejected (sendEmail returns { ok: false } rather than throwing — the old `.catch` never fired), used to
+  // be counted as notified, so a request could sit with nobody told and no "no reachable approver" alert.
+  const reached = new Set<string>()
   if (inAppRecipients.length) {
     try {
-      await insertNotificationRows(service, inAppRecipients.map(r => ({
+      const inserted = await insertNotificationRows(service, inAppRecipients.map(r => ({
         workspace_id: args.workspaceId,
         recipient_id: r.id,
         type:         'approval_requested',
@@ -1111,12 +1121,13 @@ async function notifyStepApprovers(service: any, args: {
         entity_type:  'approval_request',
         entity_id:    args.requestId,
       })))
+      if (inserted) inAppRecipients.forEach(r => reached.add(r.id))
     } catch { /* never let a notification failure break the approval flow */ }
   }
 
   const appUrl = process.env.NEXT_PUBLIC_APP_URL || ''
-  await Promise.all(emailRecipients.map(r =>
-    sendApprovalRequestedEmail({
+  await Promise.all(emailRecipients.map(async r => {
+    const delivery = await sendApprovalRequestedEmail({
       to: r.email, approverName: r.name,
       documentLabel, documentTitle: args.documentTitle, projectName: args.projectName,
       amount: args.amount, currency: args.currency,
@@ -1124,10 +1135,12 @@ async function notifyStepApprovers(service: any, args: {
       requestedByName: args.requestedBy.name,
       isCounter: args.documentType === 'co_counter',
       url: `${appUrl}/approvals?highlight=${args.requestId}`,
-    }).catch(e => console.error('approval requested email failed:', e))
-  ))
+    }).catch((e): { ok: false; error: string } => ({ ok: false, error: String(e) }))
+    if (delivery.ok) reached.add(r.id)
+    else console.error('approval requested email failed:', delivery.error)
+  }))
 
-  return notifiedIds.size
+  return reached.size
 }
 
 // FIX (Notifications & email fix round): the three in-app inserts in this file (step

@@ -1,0 +1,33 @@
+Notifications & email + Search — independent pass, fix round
+Base: 1e9ca40.  Verified: tsc clean; vitest 500 passed (33 pre-existing skips).
+
+APPLY migration 073 (supabase/migrations/073_contact_search_text.sql) BEFORE/WITH this deploy.
+Until it is applied the contacts block of /api/search reports itself as `partial`.
+
+SEARCH
+ - Every block also fetches names that START with the query and orders newest-first (exact match could be
+   dropped by an unordered LIMIT before ranking). FETCH 12 -> 15.
+ - Projects searchable by internal_ref.
+ - SOWs / change orders / invoices / flags searchable by their CLIENT's name.
+ - Client contacts: accent-folded search_text (migration 073).
+ - Active team members searchable by name (no e-mail exposed).
+ - CommandPalette: Enter no longer opens a result belonging to an earlier query; Team group + icon.
+ - Comments said "migration 061"; it is 062.
+
+NOTIFICATIONS & EMAIL
+ - trial_ending now creates a bell notification (once per workspace per day) linking to Settings > Billing;
+   creator only warned while still an active member; copy says "3, 2 and 1 days".
+ - Workspace defaults: admin can set the BELL default of email events; PATCH no longer resets in_app_enabled.
+ - Approvals: only approvers actually reached (bell insert ok / email accepted) count as notified;
+   cancel notice says "editable draft again" only for a real cancel (returnedToDraft).
+ - Guardian flag / escalation e-mails use checkedSend (provider rejections are logged, not swallowed).
+ - Flag comments: earlier commenters are notified of replies; snippet in body; no dangling " — " title.
+ - Removed raw error.message from 500 responses in 18 route files (now logged server-side, generic to client).
+ - client-viewed: CUBOT phones no longer treated as link scanners.
+ - Reply-To: falls back to the active workspace owner for portal/cron-triggered client e-mails.
+ - NotificationsClient: stale-response guard on filter switch; failed mark-read reverts the row.
+ - E-mail template dates pinned to UTC.
+
+TESTS ADDED: reply-to, notification-defaults-route, flag-comments-notify, trial-warning-cron (+ extended
+search-route, client-viewed, notification-links).
+NOT COVERED BY TESTS: approvals engine reach-count, CommandPalette Enter guard, NotificationsClient race.

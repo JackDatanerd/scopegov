@@ -73,7 +73,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     return NextResponse.json({ ok: true })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('clients/[id]/contacts/[contactId] error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
 
@@ -103,6 +104,7 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
 
     return NextResponse.json({ ok: true })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('clients/[id]/contacts/[contactId] error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

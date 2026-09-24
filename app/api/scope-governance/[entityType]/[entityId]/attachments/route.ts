@@ -169,6 +169,6 @@ export async function POST(
     })
   } catch (err) {
     console.error('Flag attachments POST error:', err)
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Internal server error' }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

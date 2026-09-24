@@ -8,6 +8,7 @@ import { sanitizePlainText } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
 import { sendEscalationEmail } from '@/lib/email/templates'
 import { filterByNotificationPreference, filterToProjectAccess } from '@/lib/utils/permissions-query'
+import { checkedSend } from '@/lib/email/delivery'
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -236,17 +237,17 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
             [{ id: resolvedEscalateTo }], 'email'
           )
           if (emailAllowed) {
-            try {
-              await sendEscalationEmail({
-                to:           assignee.email,
-                assigneeName: assignee.name,
-                agencyName:   session.agencyName,
-                entityType:   'scope flag',
-                entityName:   projectName,
-                note:         safeNote,
-                url:          `${process.env.NEXT_PUBLIC_APP_URL}/projects/${flag.project_id}?tab=guardian`,
-              })
-            } catch (e) { console.error('Escalation email failed:', e) }
+            // sendEscalationEmail returns { ok:false } on a provider rejection instead of throwing, so the
+            // old try/catch logged nothing for exactly the failures it existed to catch.
+            await checkedSend(() => sendEscalationEmail({
+              to:           assignee.email,
+              assigneeName: assignee.name,
+              agencyName:   session.agencyName,
+              entityType:   'scope flag',
+              entityName:   projectName,
+              note:         safeNote,
+              url:          `${process.env.NEXT_PUBLIC_APP_URL}/projects/${flag.project_id}?tab=guardian`,
+            }), 'flag escalation email')
           }
         }
 
@@ -433,6 +434,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     return NextResponse.json({ ok: true })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('guardian/flags/[id] error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

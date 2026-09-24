@@ -11,6 +11,7 @@ import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { canReadProject } from '@/lib/utils/project-access'
 import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
+import { checkedSend } from '@/lib/email/delivery'
 
 // FEATURE (deep audit, section 13 — feature gap): cron/guardian-health pages ops
 // the moment classification_failed checks pile up unresolved past 24h, but until
@@ -147,19 +148,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         if (!isBorderline) {
           const emails = await getMemberEmailsWithPermission(service, session.workspaceId, 'APPROVE_FLAGS', 25, 'guardian_flag', project.id, session.id)
           if (emails.length) {
-            try {
-              await sendGuardianFlagEmail({
-                to:           emails,
-                projectName:  project.name,
-                severity,
-                description:  classification.reasoning,
-                sowReference: classification.matchedReference || 'General scope',
-                projectUrl:   `${process.env.NEXT_PUBLIC_APP_URL}/projects/${project.id}?tab=guardian`,
-                path:         'retry',
-              })
-            } catch (emailErr) {
-              console.error('Guardian flag email failed:', emailErr)
-            }
+            await checkedSend(() => sendGuardianFlagEmail({
+              to:           emails,
+              projectName:  project.name,
+              severity,
+              description:  classification.reasoning,
+              sowReference: classification.matchedReference || 'General scope',
+              projectUrl:   `${process.env.NEXT_PUBLIC_APP_URL}/projects/${project.id}?tab=guardian`,
+              path:         'retry',
+            }), 'guardian flag email (retry)')
           }
         }
         await notifyMembersWithPermission(service, {
@@ -184,6 +181,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     })
   } catch (err) {
     console.error('Guardian check retry error:', err)
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

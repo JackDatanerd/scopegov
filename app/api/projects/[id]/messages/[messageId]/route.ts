@@ -112,7 +112,7 @@ export async function PATCH(
     return NextResponse.json({ message: { id: messageId, body: text, editedAt: now } })
   } catch (err) {
     console.error('Project message PATCH error:', err)
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Internal server error' }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
 
@@ -159,6 +159,6 @@ export async function DELETE(
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error('Project message DELETE error:', err)
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Internal server error' }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

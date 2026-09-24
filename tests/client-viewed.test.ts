@@ -13,6 +13,12 @@ describe('looksLikeLinkScanner', () => {
   it('lets real browsers through', () => {
     for (const ua of [CHROME, SAFARI_IOS, FIREFOX]) expect(looksLikeLinkScanner(ua)).toBe(false)
   })
+  it('does not mistake a CUBOT phone for a crawler, but still catches real bots', () => {
+    const cubot = 'Mozilla/5.0 (Linux; Android 11; CUBOT KingKong 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36'
+    expect(looksLikeLinkScanner(cubot)).toBe(false)
+    expect(looksLikeLinkScanner('Mozilla/5.0 (compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)')).toBe(true)
+    expect(looksLikeLinkScanner('Mozilla/5.0 (compatible; Googlebot/2.1)')).toBe(true)
+  })
   it('flags mail-gateway, preview and script clients — they would report "opened" seconds after every send', () => {
     for (const ua of [
       'Slackbot-LinkExpanding 1.0', 'WhatsApp/2.23', 'facebookexternalhit/1.1', 'Mozilla/5.0 (compatible; Googlebot/2.1)',

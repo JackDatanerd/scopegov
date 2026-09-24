@@ -15,6 +15,7 @@ import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { canReadProject } from '@/lib/utils/project-access'
 import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
+import { checkedSend } from '@/lib/email/delivery'
 
 export async function POST(request: NextRequest) {
   try {
@@ -287,19 +288,15 @@ export async function POST(request: NextRequest) {
           const emails = await getMemberEmailsWithPermission(service, session.workspaceId, 'APPROVE_FLAGS', 25, 'guardian_flag', projectId, session.id)
 
           if (emails.length) {
-            try {
-              await sendGuardianFlagEmail({
-                to:           emails,
-                projectName:  project.name,
-                severity,
-                description:  classification.reasoning,
-                sowReference: classification.matchedReference || 'General scope',
-                projectUrl:   `${process.env.NEXT_PUBLIC_APP_URL}/projects/${projectId}?tab=guardian`,
-                path:         source,
-              })
-            } catch (emailErr) {
-              console.error('Guardian flag email failed:', emailErr)
-            }
+            await checkedSend(() => sendGuardianFlagEmail({
+              to:           emails,
+              projectName:  project.name,
+              severity,
+              description:  classification.reasoning,
+              sowReference: classification.matchedReference || 'General scope',
+              projectUrl:   `${process.env.NEXT_PUBLIC_APP_URL}/projects/${projectId}?tab=guardian`,
+              path:         source,
+            }), 'guardian flag email')
           }
         }
         await notifyMembersWithPermission(service, {
@@ -324,6 +321,6 @@ export async function POST(request: NextRequest) {
     })
   } catch (err) {
     console.error('Guardian check error:', err)
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

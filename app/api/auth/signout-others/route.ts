@@ -53,8 +53,9 @@ export async function POST() {
 
     return NextResponse.json({ ok: true })
   } catch (err) {
+    console.error('auth/signout-others error:', err)
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Error' },
+      { error: 'Internal server error' },
       { status: 500 }
     )
   }

@@ -58,8 +58,9 @@ export async function GET(
 
     return NextResponse.json({ members: members || [] })
   } catch (err) {
+    console.error('projects/[id]/members/available error:', err)
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Error' },
+      { error: 'Internal server error' },
       { status: 500 }
     )
   }

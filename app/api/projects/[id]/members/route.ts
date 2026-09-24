@@ -116,8 +116,9 @@ export async function POST(
 
     return NextResponse.json({ ok: true })
   } catch (err) {
+    console.error('projects/[id]/members error:', err)
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Error' },
+      { error: 'Internal server error' },
       { status: 500 }
     )
   }
@@ -195,8 +196,9 @@ export async function DELETE(
 
     return NextResponse.json({ ok: true })
   } catch (err) {
+    console.error('projects/[id]/members error:', err)
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Error' },
+      { error: 'Internal server error' },
       { status: 500 }
     )
   }

@@ -130,6 +130,7 @@ export async function POST(request: NextRequest) {
     })
     return NextResponse.json({ clientId: client.id })
   } catch (err) {
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Error' }, { status: 500 })
+    console.error('clients error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
