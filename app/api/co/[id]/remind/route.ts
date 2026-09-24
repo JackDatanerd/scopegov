@@ -86,7 +86,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // client's email. Same fix as app/api/sow/[id]/remind/route.ts.
     if (!client?.email)
       return NextResponse.json({ error: 'This client has no email address on file.' }, { status: 400 })
-    const cc = await withPrimaryContactCc(service, project?.client_id, client.email, client.cc_emails)
+    const cc = await withPrimaryContactCc(service, project?.client_id, client.email, client.cc_emails, 'co')
 
     // FIX (re-audit, notifications section): checkReminderCooldown reads
     // the audit log, then the caller acts — a check-then-act race, not an

@@ -106,7 +106,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       })
       return NextResponse.json({ error: 'This client has no email address on file.' }, { status: 400 })
     }
-    const cc = await withPrimaryContactCc(service, project?.client_id, client.email, client.cc_emails)
+    const cc = await withPrimaryContactCc(service, project?.client_id, client.email, client.cc_emails, 'invoice')
     const replyTo = await resolveReplyTo(service, session.workspaceId, session.email)
     const delivery = await checkedSend(() => sendInvoiceReminderEmail({
       to:          client.email,

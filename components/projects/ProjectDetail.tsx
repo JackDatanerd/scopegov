@@ -1149,6 +1149,9 @@ const VERDICT_COPY: Record<string, { icon: string; color: string; bg: string; ti
   out_of_scope:          { icon: 'ti-shield-x', color: 'var(--red)', bg: 'var(--red-lt)', title: 'Out of scope — flag created below' },
   duplicate:             { icon: 'ti-copy', color: 'var(--text-3)', bg: 'var(--surface-2)', title: 'Duplicate of a recent check — skipped' },
   pending:               { icon: 'ti-clock', color: 'var(--text-3)', bg: 'var(--surface-2)', title: 'No signed SOW yet — nothing to check against' },
+  // FEATURE (independent pass, section 13): a check saved without a verdict (no signed SOW yet, or an
+  // inbound rate limit) is no longer stranded — the guardian-health sweep classifies it automatically.
+  queued:                { icon: 'ti-hourglass', color: 'var(--text-3)', bg: 'var(--surface-2)', title: 'Saved — will be checked automatically' },
   classification_failed: { icon: 'ti-alert-triangle', color: 'var(--red)', bg: 'var(--red-lt)', title: 'Classification failed — try again in a moment' },
 }
 
@@ -1319,6 +1322,9 @@ function GuardianTab({ project, flags, exceptions = [], permissions, router, tea
                 <i className={`ti ${v.icon}`} style={{ fontSize: 16, color: v.color, marginTop: 1 }} />
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: 13, fontWeight: 500, color: v.color }}>{v.title}</div>
+                  {lastResult.message && (
+                    <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>{lastResult.message}</div>
+                  )}
                   {lastResult.matchedReference && (
                     <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>Matched against: {lastResult.matchedReference}</div>
                   )}
@@ -1400,25 +1406,84 @@ function GuardianTab({ project, flags, exceptions = [], permissions, router, tea
 // value, reason, who granted it — is fixed once created; only the
 // governance discussion around it, via FlagCollaboration, is interactive).
 function ExceptionCard({ exception, permissions, currency }: any) {
+  const router = useRouter()
   const canWrite = permissions.approveFlags || permissions.grantExceptions
+  // FEATURE (independent pass, section 13): an exception was write-once — a typo in the value or
+  // reason permanently skewed Reports and the at-risk rollup. GRANT_EXCEPTIONS holders can now
+  // correct it (PATCH /api/guardian/exceptions/[id]); the before/after is kept in the audit log.
+  const [editing, setEditing] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [what, setWhat] = useState<string>(exception.granted_what || '')
+  const [reason, setReason] = useState<string>(exception.reason || '')
+  const [value, setValue] = useState<string>(String(exception.estimated_value ?? 0))
+
+  async function save() {
+    setSaving(true); setError('')
+    try {
+      const res = await fetch(`/api/guardian/exceptions/${exception.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ grantedWhat: what, reason, ...(permissions.viewFinancials ? { estimatedValue: value } : {}) }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json.error || 'Could not save')
+      setEditing(false)
+      router.refresh()
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Could not save')
+    } finally { setSaving(false) }
+  }
+
   return (
     <div className="surface surface-p" style={{ marginBottom: 10 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 13, fontWeight: 500 }}>{exception.granted_what || exception.deliverable || 'Exception'}</div>
-          {exception.reason && (
-            <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 4 }}>{exception.reason}</div>
+      {editing ? (
+        <div>
+          {error && <p className="ferr" style={{ marginBottom: 6 }}>{error}</p>}
+          <div className="fgrp">
+            <label className="flbl">What was granted</label>
+            <input className="finp" value={what} onChange={e => setWhat(e.target.value)} maxLength={1000} />
+          </div>
+          <div className="fgrp">
+            <label className="flbl">Reason</label>
+            <textarea className="finp" rows={2} value={reason} onChange={e => setReason(e.target.value)} maxLength={2000} />
+          </div>
+          {permissions.viewFinancials && (
+            <div className="fgrp">
+              <label className="flbl">Estimated value ({currency})</label>
+              <input className="finp" inputMode="decimal" value={value} onChange={e => setValue(e.target.value)} />
+            </div>
           )}
-          <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 6 }}>
-            {formatRelative(exception.created_at)}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn btn-primary btn-xs" onClick={save} disabled={saving || !what.trim() || !reason.trim()}>
+              {saving ? <span className="spin" /> : 'Save changes'}
+            </button>
+            <button className="btn btn-ghost btn-xs" onClick={() => { setEditing(false); setError('') }} disabled={saving}>Cancel</button>
           </div>
         </div>
-        {permissions.viewFinancials && (
-          <div style={{ fontFamily: 'IBM Plex Mono, monospace', fontSize: 13, color: 'var(--text-2)', whiteSpace: 'nowrap' }}>
-            {formatCurrency(exception.estimated_value || 0, currency)}
+      ) : (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 13, fontWeight: 500 }}>{exception.granted_what || exception.deliverable || 'Exception'}</div>
+            {exception.reason && (
+              <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 4 }}>{exception.reason}</div>
+            )}
+            <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 6 }}>
+              {formatRelative(exception.created_at)}
+              {exception.updated_at ? ` · edited ${formatRelative(exception.updated_at)}` : ''}
+            </div>
           </div>
-        )}
-      </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            {permissions.viewFinancials && (
+              <div style={{ fontFamily: 'IBM Plex Mono, monospace', fontSize: 13, color: 'var(--text-2)', whiteSpace: 'nowrap' }}>
+                {formatCurrency(exception.estimated_value || 0, currency)}
+              </div>
+            )}
+            {permissions.grantExceptions && (
+              <button className="btn btn-ghost btn-xs" onClick={() => setEditing(true)}>Edit</button>
+            )}
+          </div>
+        </div>
+      )}
       <FlagCollaboration entityType="exception" entityId={exception.id} canWrite={canWrite} />
     </div>
   )
@@ -1520,7 +1585,7 @@ function GuardianHistoryPanel({ projectId, canRetry }: { projectId: string; canR
             // already gets this right by returning a synthetic outcome
             // string for these two cases (see lastResult above) — apply
             // the same derivation to the history rows.
-            const displayOutcome = c.isDuplicate ? 'duplicate' : c.classificationFailed ? 'classification_failed' : c.outcome
+            const displayOutcome = c.isDuplicate ? 'duplicate' : c.classificationFailed ? 'classification_failed' : c.queued ? 'queued' : c.outcome
             const v = VERDICT_COPY[displayOutcome] || VERDICT_COPY.pending
             return (
               <div key={c.id} style={{
@@ -1538,7 +1603,13 @@ function GuardianHistoryPanel({ projectId, canRetry }: { projectId: string; canR
                     <span style={{ color: 'var(--text-4)' }}>·</span>
                     <span style={{ color: 'var(--text-4)' }}>{formatRelative(c.submittedAt)}</span>
                     {c.isRetroactive && <span className="pill pill-slate pill-sm">Retroactive</span>}
+                    {c.source === 'email' && c.senderKnown === false && (
+                      <span className="pill pill-amber pill-sm" title="This sender is not the client's email, a CC address or a saved contact">Unrecognised sender</span>
+                    )}
                   </div>
+                  {c.subject && (
+                    <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>Subject: {c.subject}</div>
+                  )}
                   {c.contentPreview && (
                     <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 3, lineHeight: 1.4 }}>
                       {c.contentPreview}{c.contentPreview.length >= 240 ? '…' : ''}
@@ -1546,6 +1617,11 @@ function GuardianHistoryPanel({ projectId, canRetry }: { projectId: string; canR
                   )}
                   {c.matchedReference && (
                     <div style={{ fontSize: 11, color: 'var(--text-4)', marginTop: 2 }}>Matched: {c.matchedReference}</div>
+                  )}
+                  {Array.isArray(c.attachmentNames) && c.attachmentNames.length > 0 && (
+                    <div style={{ fontSize: 11, color: 'var(--text-4)', marginTop: 2 }}>
+                      <i className="ti ti-paperclip" style={{ fontSize: 11 }} /> {c.attachmentNames.length} attachment{c.attachmentNames.length !== 1 ? 's' : ''} not analysed: {c.attachmentNames.join(', ')}
+                    </div>
                   )}
                   {c.isDuplicate && (
                     <div style={{ fontSize: 11, color: 'var(--text-4)', marginTop: 2 }}>Duplicate of an earlier check</div>
@@ -1589,6 +1665,8 @@ function FlagCard({ flag, permissions, router, projectId, team }: any) {
   const [showException, setShowException] = useState(false)
   const [showEscalate,  setShowEscalate]  = useState(false)
   const [showClose,     setShowClose]     = useState(false)
+  const [showSource,    setShowSource]    = useState(false)
+  const canSeeSource = permissions.approveFlags || permissions.grantExceptions || permissions.createCo || permissions.viewGuardianHistory
 
   async function handleAction(action: string, extra: Record<string, unknown> = {}) {
     setActing(true); setActionError('')
@@ -1675,11 +1753,25 @@ function FlagCard({ flag, permissions, router, projectId, team }: any) {
               resolved flag previously had no action available at all. */}
           {flag.status === 'resolved' && permissions.approveFlags && (
             <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+              {/* Reopen: only where nothing downstream depends on the outcome (the API enforces the same
+                  rule) — not a flag resolved by an exception or a change order. */}
+              {flag.resolution === 'closed' && !flag.change_order_id && (
+                <button className="btn btn-ghost btn-xs" onClick={() => handleAction('reopen')} disabled={acting}>Reopen</button>
+              )}
               <button className="btn btn-ghost btn-xs" onClick={() => setShowClose(true)} disabled={acting}>Close</button>
+            </div>
+          )}
+          {/* FEATURE (independent pass, section 13): closed / dismissed flags were terminal. */}
+          {flag.status === 'closed' && permissions.approveFlags && !flag.change_order_id && (
+            <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+              <button className="btn btn-ghost btn-xs" onClick={() => handleAction('reopen')} disabled={acting}>Reopen</button>
             </div>
           )}
         </div>
         {actionError && <p className="ferr" style={{ marginTop: 4 }}>{actionError}</p>}
+        {canSeeSource && (
+          <FlagSource flagId={flag.id} open={showSource} onToggle={() => setShowSource(v => !v)} />
+        )}
         <FlagCollaboration
           entityType="flag"
           entityId={flag.id}
@@ -1718,6 +1810,61 @@ function FlagCard({ flag, permissions, router, projectId, team }: any) {
             return ok
           }}
         />
+      )}
+    </div>
+  )
+}
+
+// FEATURE (independent pass, section 13): a flag showed only the model's one-sentence reasoning — the
+// client's actual message, who sent it and when were visible only in the separate history panel (and
+// only with ACCESS_GUARDIAN_HISTORY). Anyone who can act on a flag can now read the request behind it.
+function FlagSource({ flagId, open, onToggle }: { flagId: string; open: boolean; onToggle: () => void }) {
+  const [state, setState] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
+  const [source, setSource] = useState<any>(null)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (!open || state !== 'idle') return
+    setState('loading')
+    fetch(`/api/guardian/flags/${flagId}`)
+      .then(async res => {
+        const json = await res.json().catch(() => ({}))
+        if (!res.ok) throw new Error(json.error || 'Could not load the original request')
+        setSource(json.source || null); setState('done')
+      })
+      .catch((e: unknown) => { setError(e instanceof Error ? e.message : 'Could not load the original request'); setState('error') })
+  }, [open, state, flagId])
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <button className="btn btn-ghost btn-xs" onClick={onToggle}>
+        <i className={`ti ${open ? 'ti-chevron-up' : 'ti-quote'}`} style={{ fontSize: 11 }} /> {open ? 'Hide original request' : 'View original request'}
+      </button>
+      {open && (
+        <div style={{ marginTop: 8, padding: '10px 12px', background: 'var(--surface-2)', borderRadius: 8, fontSize: 12 }}>
+          {state === 'loading' && <span style={{ color: 'var(--text-3)' }}>Loading…</span>}
+          {state === 'error' && <span style={{ color: 'var(--red)' }}>{error}</span>}
+          {state === 'done' && !source && <span style={{ color: 'var(--text-3)', fontStyle: 'italic' }}>No original request is linked to this flag.</span>}
+          {state === 'done' && source && (
+            <>
+              <div style={{ color: 'var(--text-3)', marginBottom: 6 }}>
+                {source.channel === 'email'
+                  ? `Email${source.fromEmail ? ` from ${source.fromEmail}` : ''}`
+                  : `Pasted by ${source.submittedByName || 'a team member'}`}
+                {' · '}{formatRelative(source.submittedAt)}
+                {source.isRetroactive ? ' · retroactive' : ''}
+                {source.senderKnown === false ? ' · unrecognised sender' : ''}
+              </div>
+              {source.subject && <div style={{ color: 'var(--text-3)', marginBottom: 4 }}>Subject: {source.subject}</div>}
+              <div style={{ whiteSpace: 'pre-wrap', color: 'var(--text-1)', lineHeight: 1.5, maxHeight: 260, overflowY: 'auto' }}>{source.content}</div>
+              {source.attachmentNames?.length > 0 && (
+                <div style={{ color: 'var(--text-4)', marginTop: 6 }}>
+                  <i className="ti ti-paperclip" style={{ fontSize: 11 }} /> Attachments (not analysed): {source.attachmentNames.join(', ')}
+                </div>
+              )}
+            </>
+          )}
+        </div>
       )}
     </div>
   )

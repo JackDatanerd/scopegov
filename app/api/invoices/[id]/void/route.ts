@@ -157,7 +157,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       // FIX (deep audit, section 14 — traced bug): same missing
       // withPrimaryContactCc call as invoices/[id]/remind — see that
       // route's comment.
-      const cc = await withPrimaryContactCc(service, invoice.projects?.client_id, client.email, client.cc_emails)
+      const cc = await withPrimaryContactCc(service, invoice.projects?.client_id, client.email, client.cc_emails, 'invoice')
       const replyTo = await resolveReplyTo(service, session.workspaceId, session.email)
       const delivery = await checkedSend(() => sendDocumentCancelledEmail({
         replyTo,

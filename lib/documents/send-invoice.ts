@@ -97,7 +97,7 @@ export async function sendInvoiceDocument(service: any, params: {
   // lib/utils/client-contacts.ts — the client's designated primary
   // contact, if any, is now CC'd alongside cc_emails rather than never
   // being consulted at all.
-  const ccEmails = await withPrimaryContactCc(service, project.client_id, client.email, client.cc_emails)
+  const ccEmails = await withPrimaryContactCc(service, project.client_id, client.email, client.cc_emails, 'invoice')
 
   const jwtSecret = await getWorkspaceJwtSecret(service, workspaceId)
   if (!jwtSecret) return { ok: false, error: 'Workspace signing secret not found', status: 500 }

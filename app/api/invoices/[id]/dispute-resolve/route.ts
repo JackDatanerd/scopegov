@@ -71,7 +71,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const project = invoice.projects
     const client = project?.clients
     if (client?.email && invoice.token) {
-      const cc = await withPrimaryContactCc(service, project?.client_id, client.email, client.cc_emails)
+      const cc = await withPrimaryContactCc(service, project?.client_id, client.email, client.cc_emails, 'invoice')
       const delivery = await checkedSend(() => sendInvoiceDisputeResolvedEmail({
         to: client.email, cc, clientName: client.name || 'there',
         agencyName: project?.workspaces?.agency_name || session.agencyName,

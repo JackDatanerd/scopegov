@@ -7,6 +7,9 @@ import BillingDetailsCard from '@/components/clients/BillingDetailsCard'
 import ClientContactCard from '@/components/clients/ClientContactCard'
 import ClientContactsCard from '@/components/clients/ClientContactsCard'
 import ArchiveClientButton from '@/components/clients/ArchiveClientButton'
+import ClientDangerZone from '@/components/clients/ClientDangerZone'
+import { IN_PROGRESS_STATUSES } from '@/lib/utils/project-status'
+import { computeContractPositions } from '@/lib/reports/contract-position'
 
 interface Props { params: Promise<{ id: string }> }
 
@@ -64,7 +67,7 @@ export default async function ClientDetailPage({ params }: Props) {
   const { data: contacts = [] } = canViewClientData
     ? await (service as any)
         .from('client_contacts')
-        .select('id,name,email,role,is_primary,created_at')
+        .select('id,name,email,role,role_type,is_primary,created_at')
         .eq('client_id', id)
         .order('is_primary', { ascending: false })
         .order('created_at', { ascending: true })
@@ -88,7 +91,7 @@ export default async function ClientDetailPage({ params }: Props) {
 
   const { data: projectsAll = [] } = await (service as any)
     .from('projects')
-    .select('id,name,disc,type,status,contract_value,currency,created_at,guardian_flags(status),change_orders(status),sow_documents(status)')
+    .select('id,name,disc,type,status,contract_value,currency,retainer_duration_months,created_at,guardian_flags(status),change_orders(status),sow_documents(status)')
     .eq('client_id', id).eq('workspace_id', session.workspaceId).is('deleted_at', null)
     .order('created_at', { ascending: false })
 
@@ -119,7 +122,8 @@ export default async function ClientDetailPage({ params }: Props) {
   // per-project status badges (this codebase uses the same pattern on
   // app/(app)/projects/page.tsx). Wiring it up rather than dropping the
   // now-explained dead join.
-  const ACTIVE_STATUSES = ['Active', 'Awaiting Signature', 'Intake', 'Changes Requested', 'Stalled']
+  // (was a local copy of this list — one shared definition now)
+  const ACTIVE_STATUSES: readonly string[] = IN_PROGRESS_STATUSES
   const PENDING_CO_STATUSES = ['awaiting_response', 'countered', 'stalled', 'awaiting_countersignature', 'expired']
   function projectBadges(p: any) {
     const openFlags = (p.guardian_flags || []).filter((f: any) => f.status === 'open' || f.status === 'borderline_review').length
@@ -141,6 +145,62 @@ export default async function ClientDetailPage({ params }: Props) {
   // instead of just the count of projects they can actually see. Use the
   // already-permission-filtered `projectsRaw` instead.
   const activeProjectCount = (projectsRaw || []).filter((p: any) => ACTIVE_STATUSES.includes(p.status)).length
+
+  // ── FEATURE (independent pass, section 14): client-level money overview ──────────────────────
+  // The page listed projects but never answered "what does this client owe me?". Reuses the same
+  // computeContractPositions() the invoice PDFs and the rollup use (so the numbers can't disagree
+  // with them), over ONLY the projects this viewer may see, grouped per currency. Outstanding =
+  // unpaid balance of sent / partially-paid / overdue invoices (post-tax, what is actually owed).
+  type Money = { contracted: number; invoiced: number; paid: number; outstanding: number; overdue: number; atRisk: number }
+  const moneyByCurrency = new Map<string, Money>()
+  if (canViewFinancials && (projectsRaw || []).length > 0) {
+    try {
+      const positions = await computeContractPositions(service, projectsRaw)
+      const ids = (projectsRaw as any[]).map(p => p.id)
+      const { data: openInvoices } = await (service as any)
+        .from('invoices').select('project_id, amount, amount_paid, status')
+        .in('project_id', ids).in('status', ['sent', 'partially_paid', 'overdue'])
+      const cur = (pid: string) => (projectsRaw as any[]).find(p => p.id === pid)?.currency || 'USD'
+      const bucket = (c: string): Money => {
+        let m = moneyByCurrency.get(c)
+        if (!m) { m = { contracted: 0, invoiced: 0, paid: 0, outstanding: 0, overdue: 0, atRisk: 0 }; moneyByCurrency.set(c, m) }
+        return m
+      }
+      for (const p of projectsRaw as any[]) {
+        const pos = positions.get(p.id); if (!pos) continue
+        const m = bucket(p.currency || 'USD')
+        m.contracted += pos.contractedValue; m.invoiced += pos.invoicedToDate; m.paid += pos.paidToDate; m.atRisk += pos.atRiskValue
+      }
+      for (const inv of (openInvoices || []) as any[]) {
+        const owed = Math.max(0, (Number(inv.amount) || 0) - (Number(inv.amount_paid) || 0))
+        const m = bucket(cur(inv.project_id))
+        m.outstanding += owed
+        if (inv.status === 'overdue') m.overdue += owed
+      }
+    } catch (e) { console.error('Client financial summary failed:', e) }
+  }
+  const showMoney = [...moneyByCurrency.values()].some(m => m.invoiced > 0 || m.outstanding > 0 || m.contracted > 0)
+
+  // ── Recent activity on the client record itself (needs VIEW_AUDIT_LOG) ──────────────────────
+  const canViewAudit = hasPermission(session, 'VIEW_AUDIT_LOG')
+  const { data: activity = [] } = canViewAudit
+    ? await (service as any).from('audit_log')
+        .select('id, event_type, actor_name, created_at, metadata')
+        .eq('workspace_id', session.workspaceId).eq('entity_type', 'client').eq('entity_id', id)
+        .order('created_at', { ascending: false }).limit(8)
+    : { data: [] }
+  const ACTIVITY_LABEL: Record<string, string> = {
+    'client.created': 'Client created', 'client.updated': 'Details updated', 'client.merged': 'Merged another client into this one',
+    'client.deleted': 'Deleted',
+  }
+
+  // ── Merge / delete controls ─────────────────────────────────────────────────────────────────
+  const canDeleteClients = hasPermission(session, 'DELETE_PROJECTS')
+  const canMergeClients = canEditClientData && canViewClientData && canDeleteClients
+  const { data: mergeTargets = [] } = canMergeClients
+    ? await (service as any).from('clients').select('id,name,email,status')
+        .eq('workspace_id', session.workspaceId).neq('id', id).order('name').limit(500)
+    : { data: [] }
 
   function pillVariant(status: string): string {
     const m: Record<string, string> = {
@@ -185,6 +245,27 @@ export default async function ClientDetailPage({ params }: Props) {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 280px', gap: 24, alignItems: 'start' }}>
         {/* Projects */}
         <div>
+          {showMoney && (
+            <div style={{ marginBottom: 20 }}>
+              <div className="sec-hd" style={{ marginBottom: 12 }}><div className="sec-title">Money</div></div>
+              {[...moneyByCurrency.entries()].map(([currency, m]) => (
+                <div key={currency} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10, marginBottom: 10 }}>
+                  {([
+                    ['Contracted', m.contracted, false], ['Invoiced', m.invoiced, false], ['Paid', m.paid, false],
+                    ['Outstanding', m.outstanding, m.outstanding > 0], ['Overdue', m.overdue, m.overdue > 0],
+                    ['CO awaiting reply', m.atRisk, false],
+                  ] as Array<[string, number, boolean]>).map(([label, value, warn]) => (
+                    <div key={label} className="surface surface-p" style={{ padding: '10px 12px' }}>
+                      <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 3 }}>{label}{moneyByCurrency.size > 1 ? ` · ${currency}` : ''}</div>
+                      <div style={{ fontSize: 15, fontWeight: 500, fontFamily: 'IBM Plex Mono, monospace', color: label === 'Overdue' && warn ? 'var(--red)' : label === 'Outstanding' && warn ? 'var(--amber)' : undefined }}>
+                        {formatCurrency(value, currency)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
           <div className="sec-hd" style={{ marginBottom: 12 }}>
             <div className="sec-title">Projects ({(projects || []).length})</div>
             {hasTotalValue && (
@@ -272,6 +353,9 @@ export default async function ClientDetailPage({ params }: Props) {
               ccEmails={client.cc_emails}
               paymentTermsNote={client.payment_terms_note}
               notes={client.notes}
+              timezone={client.timezone}
+              emailBouncedAt={client.email_bounced_at}
+              emailBounceKind={client.email_bounce_kind}
               editable={canEditClientData}
             />
           ) : (
@@ -312,6 +396,31 @@ export default async function ClientDetailPage({ params }: Props) {
               <p style={{ fontSize: 13, color: 'var(--text-2)', margin: 0 }}>{formatDate(client.created_at)}</p>
             </div>
           </div>
+
+          {canViewAudit && (activity || []).length > 0 && (
+            <div style={{ marginTop: 20 }}>
+              <div className="sec-hd" style={{ marginBottom: 12 }}><div className="sec-title">Recent activity</div></div>
+              <div className="surface surface-p">
+                {(activity || []).map((a: any) => (
+                  <div key={a.id} className="settings-row" style={{ alignItems: 'flex-start' }}>
+                    <div>
+                      <div style={{ fontSize: 12.5 }}>{ACTIVITY_LABEL[a.event_type] || a.event_type}</div>
+                      {Array.isArray(a.metadata?.fields) && a.metadata.fields.length > 0 && (
+                        <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{a.metadata.fields.join(', ')}</div>
+                      )}
+                      <div style={{ fontSize: 11, color: 'var(--text-4)' }}>{a.actor_name} · {formatDate(a.created_at)}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <ClientDangerZone
+            clientId={client.id} clientName={client.name} visibleProjectCount={(projectsRaw || []).length}
+            others={(mergeTargets || []).map((c: any) => ({ id: c.id, name: c.name, email: c.email, status: c.status }))}
+            canMerge={canMergeClients} canDelete={canEditClientData && canDeleteClients}
+          />
         </div>
       </div>
     </div>

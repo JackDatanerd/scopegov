@@ -13,11 +13,13 @@
 // consulted anywhere a document went out, which is what the comment above
 // was written to eventually solve. lib/utils/client-contacts.ts now CCs
 // whichever contact is marked primary on every invoice/SOW/CO send, so
-// "make primary" is a real routing decision, not just a label. Finer
-// role-based routing (a distinct contact for billing vs. scope questions)
-// is still unbuilt — `role` here is a free-text label with no fixed
-// vocabulary to route against, so it stays a future decision for whoever
-// defines what those roles actually mean.
+// "make primary" is a real routing decision, not just a label.
+//
+// FEATURE (independent pass, section 14): role-based routing is built. The free-text `role` label
+// still routes nothing (nobody can guess what "AP" or "Accounts Payable" means), but each contact now
+// also has a structured "Receives" setting — Billing / Scope & approvals / Everything else — chosen
+// from a dropdown. Billing contacts are CC'd on invoices; Scope & approvals contacts on SOWs and
+// change orders.
 
 'use client'
 import { useState } from 'react'
@@ -28,8 +30,11 @@ interface Contact {
   name: string
   email: string
   role: string | null
+  role_type?: 'billing' | 'scope' | 'approver' | 'other' | null
   is_primary: boolean
 }
+
+const ROLE_TYPE_LABEL: Record<string, string> = { billing: 'Billing', scope: 'Scope', approver: 'Approver', other: 'Other' }
 
 export default function ClientContactsCard({
   clientId, contacts, editable,
@@ -40,7 +45,9 @@ export default function ClientContactsCard({
   const [busyId, setBusyId] = useState<string | null>(null)
   const [error, setError] = useState('')
 
-  async function remove(contactId: string) {
+  async function remove(contactId: string, contactName: string, wasPrimary: boolean) {
+    // One click used to delete a contact (and possibly the CC'd primary) irreversibly.
+    if (!window.confirm(`Remove ${contactName}?${wasPrimary ? ' They are the primary contact, so nobody will be CC’d by default afterwards.' : ''}`)) return
     setBusyId(contactId); setError('')
     try {
       const res  = await fetch(`/api/clients/${clientId}/contacts/${contactId}`, { method: 'DELETE' })
@@ -87,7 +94,8 @@ export default function ClientContactsCard({
 
       {contacts.length > 0 && (
         <p style={{ fontSize: 11, color: 'var(--text-4)', marginBottom: 8 }}>
-          The primary contact is CC&rsquo;d on invoices, SOWs, and change orders sent to this client.
+          The primary contact is CC&rsquo;d on every invoice, SOW, and change order. Billing contacts are also CC&rsquo;d on invoices;
+          scope and approver contacts on SOWs and change orders.
         </p>
       )}
 
@@ -107,6 +115,9 @@ export default function ClientContactsCard({
                 {c.name}
                 {c.is_primary && <span className="pill pill-green pill-sm">Primary</span>}
                 {c.role && <span style={{ fontSize: 11, color: 'var(--text-3)' }}>· {c.role}</span>}
+                {c.role_type && c.role_type !== 'other' && (
+                  <span className="pill pill-blue pill-sm" title="Receives copies of this kind of document">{ROLE_TYPE_LABEL[c.role_type]}</span>
+                )}
               </div>
               <a href={`mailto:${c.email}`} style={{ fontSize: 12, color: 'var(--green)' }}>{c.email}</a>
             </div>
@@ -118,7 +129,7 @@ export default function ClientContactsCard({
                   </button>
                 )}
                 <button className="btn btn-ghost btn-xs" disabled={busyId === c.id} onClick={() => setEditingId(c.id)}>Edit</button>
-                <button className="btn btn-ghost btn-xs" disabled={busyId === c.id} onClick={() => remove(c.id)}>
+                <button className="btn btn-ghost btn-xs" disabled={busyId === c.id} onClick={() => remove(c.id, c.name, c.is_primary)}>
                   {busyId === c.id ? <span className="spin" /> : 'Remove'}
                 </button>
               </div>
@@ -144,6 +155,7 @@ function ContactForm({ clientId, initial, onDone, onCancel }: {
   const [name, setName] = useState(initial?.name || '')
   const [email, setEmail] = useState(initial?.email || '')
   const [role, setRole] = useState(initial?.role || '')
+  const [roleType, setRoleType] = useState<string>(initial?.role_type || 'other')
   const [isPrimary, setIsPrimary] = useState(initial?.is_primary || false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -157,7 +169,7 @@ function ContactForm({ clientId, initial, onDone, onCancel }: {
         {
           method: initial ? 'PATCH' : 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, email, role, isPrimary }),
+          body: JSON.stringify({ name, email, role, roleType, isPrimary }),
         }
       )
       const json = await res.json()
@@ -180,6 +192,15 @@ function ContactForm({ clientId, initial, onDone, onCancel }: {
           <label className="flbl">Role <span className="fhint">— optional</span></label>
           <input className="finp" value={role} onChange={e => setRole(e.target.value)} placeholder="Billing contact" />
         </div>
+      </div>
+      <div className="fgrp">
+        <label className="flbl">Receives copies of</label>
+        <select className="finp" value={roleType} onChange={e => setRoleType(e.target.value)}>
+          <option value="other">Nothing extra (directory only)</option>
+          <option value="billing">Invoices (billing contact)</option>
+          <option value="scope">SOWs &amp; change orders (scope contact)</option>
+          <option value="approver">SOWs &amp; change orders (approver)</option>
+        </select>
       </div>
       <div className="fgrp">
         <label className="flbl">Email</label>

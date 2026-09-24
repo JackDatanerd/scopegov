@@ -28,6 +28,9 @@ export async function GET(request: NextRequest) {
     const projectId = searchParams.get('projectId')
     const before     = searchParams.get('before') // ISO timestamp cursor — created_at of the last row already loaded
     if (!projectId) return NextResponse.json({ error: 'projectId is required' }, { status: 400 })
+    // An unparseable cursor used to reach Postgres and come back as a 500.
+    if (before && Number.isNaN(Date.parse(before)))
+      return NextResponse.json({ error: 'Invalid before cursor' }, { status: 400 })
 
     const service = createServiceClient()
 
@@ -45,7 +48,7 @@ export async function GET(request: NextRequest) {
         id, source, source_metadata, submitted_by, submitted_at, is_retroactive,
         is_duplicate, duplicate_of_id, match_confidence, creep_confidence,
         matched_against, matched_reference, outcome, classified_at,
-        classification_failed, flag_id, content, created_at,
+        classification_failed, classification_attempts, flag_id, content, created_at,
         users!guardian_checks_submitted_by_fkey(name)
       `)
       .eq('project_id', projectId)
@@ -64,6 +67,14 @@ export async function GET(request: NextRequest) {
         id:                 c.id,
         source:             c.source,
         fromEmail:          c.source_metadata?.from || null,
+        subject:            c.source_metadata?.subject || null,
+        // false = the sender isn't the client's email, CC list or a saved contact (informational).
+        senderKnown:        typeof c.source_metadata?.sender_known === 'boolean' ? c.source_metadata.sender_known : null,
+        attachmentNames:    Array.isArray(c.source_metadata?.attachments) ? c.source_metadata.attachments : [],
+        // Stored but not yet classified because no SOW was signed / the inbound rate limit was hit —
+        // the guardian-health sweep classifies these automatically.
+        queued:             !c.is_duplicate && !c.classification_failed && c.outcome === 'pending',
+        classificationAttempts: c.classification_attempts ?? 0,
         submittedByName:    c.users?.name || (c.source === 'email' ? null : 'Unknown'),
         submittedAt:        c.submitted_at,
         isRetroactive:      c.is_retroactive,
@@ -87,6 +98,6 @@ export async function GET(request: NextRequest) {
     })
   } catch (err) {
     console.error('Guardian check history error:', err)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    return NextResponse.json({ error: 'Could not load check history' }, { status: 500 })
   }
 }

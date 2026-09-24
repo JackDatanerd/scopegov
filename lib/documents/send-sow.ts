@@ -118,7 +118,7 @@ export async function sendSowDocument(service: any, params: {
   // lib/utils/client-contacts.ts — CC the client's designated primary
   // contact, if any, alongside cc_emails instead of never consulting
   // client_contacts at all.
-  const ccEmails = await withPrimaryContactCc(service, project.client_id, client.email, client.cc_emails)
+  const ccEmails = await withPrimaryContactCc(service, project.client_id, client.email, client.cc_emails, 'sow')
 
   // jwt_secret lives in workspace_secrets now, not on workspaces itself —
   // see migration 013.

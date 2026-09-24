@@ -50,23 +50,47 @@ export async function POST(request: NextRequest) {
     let processed = 0
     const errors: Array<{ workspaceId: string; error: string }> = []
 
-    for (const ws of workspaces) {
-      try {
-        await rollupWorkspace(service, ws.id, snapshotDate)
-        processed++
-      } catch (e) {
-        errors.push({ workspaceId: ws.id, error: e instanceof Error ? e.message : 'unknown' })
-        console.error(`Scope-health rollup failed for workspace ${ws.id}:`, e)
+    // FIX (independent pass, section 13): workspaces were processed strictly one after another,
+    // always in id order, inside a 300s budget. Once the run no longer fit, the SAME tail of
+    // workspaces was cut off every single day (no snapshot, no trend line) with nothing reporting
+    // it. Now: a small concurrency pool, a wall-clock budget that stops starting new work before
+    // the platform kills the function, a start offset that rotates daily so any overflow is spread
+    // across workspaces instead of always hitting the same ones, and an explicit `deferred` count.
+    const CONCURRENCY = 5
+    const BUDGET_MS = 260_000
+    const started = Date.now()
+    const offset = workspaces.length ? Math.floor(Date.now() / 86400000) % workspaces.length : 0
+    const ordered = [...workspaces.slice(offset), ...workspaces.slice(0, offset)]
+    let cursor = 0
+    let deferred = 0
+    const worker = async () => {
+      while (true) {
+        if (Date.now() - started > BUDGET_MS) return
+        const i = cursor++
+        if (i >= ordered.length) return
+        const ws = ordered[i]
+        try {
+          await rollupWorkspace(service, ws.id, snapshotDate)
+          processed++
+        } catch (e) {
+          errors.push({ workspaceId: ws.id, error: e instanceof Error ? e.message : 'unknown' })
+          console.error(`Scope-health rollup failed for workspace ${ws.id}:`, e)
+        }
       }
+    }
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, Math.max(1, ordered.length)) }, worker))
+    deferred = Math.max(0, ordered.length - Math.min(cursor, ordered.length))
+    if (deferred > 0) {
+      errors.push({ workspaceId: '(budget)', error: `${deferred} workspace(s) not reached before the time budget — they rotate to the front tomorrow` })
     }
 
     if (errors.length > 0) {
       await alertCronFailure(service, 'scope-health-rollup', new Error(
         `${errors.length} workspace(s) failed: ` + errors.slice(0, 10).map(e => `${e.workspaceId}: ${e.error}`).join(' | '))).catch(() => {})
     }
-    await recordCronHeartbeat(service, 'scope-health-rollup', { processed, failed: errors.length })
+    await recordCronHeartbeat(service, 'scope-health-rollup', { processed, failed: errors.length, deferred })
     return NextResponse.json(
-      { ok: errors.length === 0, processed, failed: errors.length, errors },
+      { ok: errors.length === 0, processed, failed: errors.length, deferred, errors },
       { status: errors.length ? 207 : 200 },
     )
   } catch (err) {

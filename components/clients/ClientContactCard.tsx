@@ -10,7 +10,7 @@
 // edit surface for everything BillingDetailsCard doesn't cover.
 
 'use client'
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
 interface Props {
@@ -22,11 +22,16 @@ interface Props {
   ccEmails: string[] | null
   paymentTermsNote: string | null
   notes: string | null
+  // FEATURE (independent pass, section 14): clients.timezone had an API field but no UI and no reader.
+  // Now editable here and shown; email_bounced_at surfaces the Resend webhook's bounce/complaint signal.
+  timezone?: string | null
+  emailBouncedAt?: string | null
+  emailBounceKind?: string | null
   editable: boolean
 }
 
 export default function ClientContactCard({
-  clientId, name, companyName, email, phone, ccEmails, paymentTermsNote, notes, editable,
+  clientId, name, companyName, email, phone, ccEmails, paymentTermsNote, notes, timezone, emailBouncedAt, emailBounceKind, editable,
 }: Props) {
   const router = useRouter()
   const [editing, setEditing] = useState(false)
@@ -41,7 +46,24 @@ export default function ClientContactCard({
     ccEmails: (ccEmails || []).join(', '),
     paymentTermsNote: paymentTermsNote || '',
     notes: notes || '',
+    timezone: timezone || '',
   })
+
+  // The form was initialised from props once and never re-synced, so after another teammate's edit
+  // (or a router.refresh) the next Edit opened with stale values and would overwrite the newer data.
+  useEffect(() => {
+    if (editing) return
+    setForm({
+      name: name || '', companyName: companyName || '', email: email || '', phone: phone || '',
+      ccEmails: (ccEmails || []).join(', '), paymentTermsNote: paymentTermsNote || '', notes: notes || '',
+      timezone: timezone || '',
+    })
+  }, [editing, name, companyName, email, phone, ccEmails, paymentTermsNote, notes, timezone])
+
+  const zones = useMemo<string[]>(() => {
+    try { return typeof (Intl as any).supportedValuesOf === 'function' ? (Intl as any).supportedValuesOf('timeZone') : [] }
+    catch { return [] }
+  }, [])
 
   function set<K extends keyof typeof form>(key: K, value: string) {
     setForm(f => ({ ...f, [key]: value }))
@@ -55,7 +77,7 @@ export default function ClientContactCard({
         body: JSON.stringify({
           name: form.name, companyName: form.companyName, email: form.email,
           phone: form.phone, ccEmails: form.ccEmails, paymentTermsNote: form.paymentTermsNote,
-          notes: form.notes,
+          notes: form.notes, timezone: form.timezone,
         }),
       })
       const json = await res.json()
@@ -80,10 +102,22 @@ export default function ClientContactCard({
           <span className="settings-row-key" style={{ fontSize: 12 }}>Email</span>
           <a href={`mailto:${email}`} style={{ fontSize: 13, color: 'var(--green)' }}>{email}</a>
         </div>
+        {emailBouncedAt && (
+          <div className="auth-error" style={{ margin: '8px 0', fontSize: 12 }}>
+            <i className="ti ti-mail-exclamation" style={{ fontSize: 13, marginRight: 5 }} />
+            Email to this address {emailBounceKind === 'complaint' ? 'was marked as spam' : 'bounced'} on {new Date(emailBouncedAt).toISOString().slice(0, 10)} — the client may not be receiving documents. Check the address{editable ? ' and correct it below' : ''}.
+          </div>
+        )}
         {phone && (
           <div className="settings-row">
             <span className="settings-row-key" style={{ fontSize: 12 }}>Phone</span>
             <span className="settings-row-val">{phone}</span>
+          </div>
+        )}
+        {timezone && (
+          <div className="settings-row">
+            <span className="settings-row-key" style={{ fontSize: 12 }}>Timezone</span>
+            <span className="settings-row-val">{timezone}</span>
           </div>
         )}
         {ccEmails && ccEmails.length > 0 && (
@@ -141,9 +175,15 @@ export default function ClientContactCard({
         </div>
       </div>
       <div className="fgrp">
-        <label className="flbl">CC on emails <span className="fhint">— optional, comma-separated</span></label>
+        <label className="flbl">CC on emails <span className="fhint">— optional, comma-separated, up to 10</span></label>
         <input className="finp" value={form.ccEmails} onChange={e => set('ccEmails', e.target.value)}
           placeholder="finance@acme.com, legal@acme.com" />
+      </div>
+      <div className="fgrp">
+        <label className="flbl">Timezone <span className="fhint">— optional, e.g. Africa/Nairobi</span></label>
+        <input className="finp" list="client-timezones" value={form.timezone} onChange={e => set('timezone', e.target.value)}
+          placeholder="Africa/Nairobi" />
+        {zones.length > 0 && <datalist id="client-timezones">{zones.map(z => <option key={z} value={z} />)}</datalist>}
       </div>
       <div className="fgrp">
         <label className="flbl">Payment terms note <span className="fhint">— optional</span></label>
@@ -163,7 +203,9 @@ export default function ClientContactCard({
           setForm({
             name: name || '', companyName: companyName || '', email: email || '', phone: phone || '',
             ccEmails: (ccEmails || []).join(', '), paymentTermsNote: paymentTermsNote || '', notes: notes || '',
+            timezone: timezone || '',
           })
+          setError('')
         }}>
           Cancel
         </button>

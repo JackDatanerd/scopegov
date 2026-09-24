@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto'
 import { notifyUsers } from '@/lib/utils/notify'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
@@ -7,8 +8,62 @@ import { getClientIp } from '@/lib/utils/request-ip'
 import { sanitizePlainText } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
 import { sendEscalationEmail } from '@/lib/email/templates'
-import { filterByNotificationPreference, filterToProjectAccess } from '@/lib/utils/permissions-query'
 import { checkedSend } from '@/lib/email/delivery'
+import { filterByNotificationPreference, filterToProjectAccess } from '@/lib/utils/permissions-query'
+import { severityFor } from '@/lib/ai/guardian-pipeline'
+
+const MAX_VALUE = 1e12
+
+/** Trimmed, sanitized, length-capped text — or null when the value isn't a string. */
+function cleanText(v: unknown, max: number): string | null {
+  if (typeof v !== 'string') return null
+  return sanitizePlainText(v.trim()).slice(0, max)
+}
+
+// The four permissions that make the original client message relevant to a person.
+const SOURCE_VIEW_PERMISSIONS = ['APPROVE_FLAGS', 'GRANT_EXCEPTIONS', 'CREATE_CHANGE_ORDERS', 'ACCESS_GUARDIAN_HISTORY'] as const
+
+// FEATURE (independent pass, section 13): a flag only ever showed the model's one-sentence
+// reasoning — the client's actual message (and who/when/where it came from) was visible only
+// through a separate history panel gated on ACCESS_GUARDIAN_HISTORY. Anyone who can act on a
+// flag can now read the request that produced it, on demand.
+export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    const { id } = await params
+    const session = await getSession()
+    if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!SOURCE_VIEW_PERMISSIONS.some(p => hasPermission(session, p)))
+      return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
+
+    const service = createServiceClient()
+    const { data: flag } = await (service as any).from('guardian_flags')
+      .select('id, project_id, check_id').eq('id', id).eq('workspace_id', session.workspaceId).single()
+    if (!flag) return NextResponse.json({ error: 'Flag not found' }, { status: 404 })
+    if (!(await canReadProject(service, session, flag.project_id)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    if (!flag.check_id) return NextResponse.json({ source: null })
+
+    const { data: check } = await (service as any).from('guardian_checks')
+      .select('id, content, source, source_metadata, submitted_at, is_retroactive, users!guardian_checks_submitted_by_fkey(name)')
+      .eq('id', flag.check_id).eq('workspace_id', session.workspaceId).maybeSingle()
+    if (!check) return NextResponse.json({ source: null })
+
+    const meta = check.source_metadata || {}
+    return NextResponse.json({
+      source: {
+        checkId: check.id, content: check.content, channel: check.source,
+        fromEmail: meta.from || null, subject: meta.subject || null,
+        senderKnown: typeof meta.sender_known === 'boolean' ? meta.sender_known : null,
+        attachmentNames: Array.isArray(meta.attachments) ? meta.attachments : [],
+        submittedAt: check.submitted_at, isRetroactive: !!check.is_retroactive,
+        submittedByName: check.users?.name || null,
+      },
+    })
+  } catch (err) {
+    console.error('Guardian flag source error:', err)
+    return NextResponse.json({ error: 'Could not load the original request' }, { status: 500 })
+  }
+}
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -16,18 +71,30 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-    const body    = await request.json()
-    const { action, projectId, reason, escalateTo, escalationNote } = body
+    let body: any
+    try { body = await request.json() } catch { return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 }) }
+    const { action, escalateTo } = body || {}
+    if (typeof action !== 'string') return NextResponse.json({ error: 'action is required' }, { status: 400 })
+    const reason = cleanText(body?.reason, 500)
+    const escalationNote = typeof body?.escalationNote === 'string' ? body.escalationNote.trim() : ''
     const service = createServiceClient()
     const now     = new Date().toISOString()
 
-    // FIX (re-audit): added check_id + the linked guardian_checks.creep_
+    // FIX (independent pass, section 13 — critical): the embed below was `guardian_checks(...)`
+    // with no hint. guardian_flags and guardian_checks have foreign keys in BOTH directions
+    // (guardian_flags.check_id → guardian_checks, named fk_flag_check, and
+    // guardian_checks.flag_id → guardian_flags), so PostgREST refuses the un-hinted embed
+    // (PGRST201 "more than one relationship"), `flag` came back null and EVERY action on this
+    // route — resolve, close, exception, escalate, draft_co, confirm, dismiss — returned
+    // "Flag not found". The explicit !fk_flag_check hint picks the many-to-one side (as
+    // co/[id] already does for its nested embed).
+    // (earlier note) added check_id + the linked guardian_checks.creep_
     // confidence so 'confirm_out_of_scope' below can give the flag a real
     // severity instead of leaving it at the placeholder 'info' forever —
     // see that case for the full note.
     const { data: flag } = await (service as any)
       .from('guardian_flags')
-      .select('id,status,project_id,description,severity,sow_reference,change_order_id,check_id,escalated_to,escalation_note,projects(name),guardian_checks(creep_confidence)')
+      .select('id,status,project_id,description,severity,sow_reference,change_order_id,check_id,escalated_to,escalation_note,resolution,projects(name),guardian_checks!fk_flag_check(creep_confidence)')
       .eq('id', id)
       .eq('workspace_id', session.workspaceId)
       .single()
@@ -54,10 +121,14 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         // converted to a change order, silently overwriting that state.
         if (flag.status !== 'open')
           return NextResponse.json({ error: `Cannot resolve a flag with status "${flag.status}"` }, { status: 409 })
-        await (service as any).from('guardian_flags').update({
+        // Compare-and-swap: the status check above and this write used to be two separate steps.
+        const { data: resolvedRows, error: resolveErr } = await (service as any).from('guardian_flags').update({
           status: 'resolved', resolution: 'closed',
           resolved_by: session.id, resolved_at: now, updated_at: now,
-        }).eq('id', id)
+        }).eq('id', id).eq('status', 'open').select('id')
+        if (resolveErr) throw new Error(resolveErr.message)
+        if (!resolvedRows?.length)
+          return NextResponse.json({ error: 'This flag was just changed by someone else — refresh and try again.' }, { status: 409 })
         await logAudit(service, {
           workspaceId: session.workspaceId, actorId: session.id,
           actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
@@ -72,10 +143,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           return NextResponse.json({ error: 'Missing permission: APPROVE_FLAGS' }, { status: 403 })
         if (!['open', 'resolved'].includes(flag.status))
           return NextResponse.json({ error: `Cannot close a flag with status "${flag.status}"` }, { status: 409 })
-        await (service as any).from('guardian_flags').update({
+        const { data: closedRows, error: closeErr } = await (service as any).from('guardian_flags').update({
           status: 'closed', resolution: 'closed', close_reason: reason || null,
           resolved_by: session.id, resolved_at: now, updated_at: now,
-        }).eq('id', id)
+        }).eq('id', id).eq('status', flag.status).select('id')
+        if (closeErr) throw new Error(closeErr.message)
+        if (!closedRows?.length)
+          return NextResponse.json({ error: 'This flag was just changed by someone else — refresh and try again.' }, { status: 409 })
         await logAudit(service, {
           workspaceId: session.workspaceId, actorId: session.id,
           actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
@@ -91,35 +165,53 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         if (flag.status !== 'open')
           return NextResponse.json({ error: `Cannot grant an exception on a flag with status "${flag.status}"` }, { status: 409 })
         const { estimatedValue, grantedWhat, exceptionReason } = body
-        // FIX (deep audit, section 13, finding #1): estimatedValue/
-        // exceptionReason were accepted here but nothing on the frontend
-        // ever sent them (FlagCard's generic handleAction posted only
-        // {action, projectId}) — every exception silently recorded $0 and
-        // an empty reason, corrupting the Reports "exceptions granted"
-        // total and cron/scope-health-rollup's contract-value-at-risk
-        // math. Now that ExceptionModal collects both, require the reason
-        // — the whole point of this record is documenting why scope was
-        // given away for free — and reject a non-numeric value instead of
-        // silently coercing it to 0.
-        if (!exceptionReason || !exceptionReason.trim())
+        // (earlier fix) the reason is required — the whole point of this record is documenting why
+        // scope was given away for free — and a non-numeric value is rejected rather than coerced to 0.
+        const reasonText = cleanText(exceptionReason, 2000)
+        if (!reasonText)
           return NextResponse.json({ error: 'A reason is required to grant an exception' }, { status: 400 })
-        const parsedValue = estimatedValue === undefined || estimatedValue === '' ? 0 : parseFloat(estimatedValue)
-        if (Number.isNaN(parsedValue) || parsedValue < 0)
+        // FIX (independent pass, section 13): parseFloat accepted "12abc" (→12), and "1e999" /
+        // "Infinity" parsed to Infinity, which passed the `< 0` check and was inserted — poisoning
+        // every SUM in Reports and the contract-value-at-risk rollup. Strict finite, bounded number.
+        let parsedValue: number
+        if (estimatedValue === undefined || estimatedValue === null || estimatedValue === '') parsedValue = 0
+        else if (typeof estimatedValue === 'number') parsedValue = estimatedValue
+        else if (typeof estimatedValue === 'string' && /^\s*\d+(\.\d+)?\s*$/.test(estimatedValue)) parsedValue = Number(estimatedValue)
+        else parsedValue = NaN
+        if (!Number.isFinite(parsedValue) || parsedValue < 0 || parsedValue > MAX_VALUE)
           return NextResponse.json({ error: 'Estimated value must be a non-negative number' }, { status: 400 })
-        await (service as any).from('exceptions_log').insert({
+        parsedValue = Math.round(parsedValue * 100) / 100
+
+        // FIX (independent pass, section 13): this used to insert the exceptions_log row and THEN
+        // flip the flag, with neither write checked. A double submit produced two exception rows
+        // (double-counted in Reports / at-risk value), and a failed insert still marked the flag
+        // resolved-by-exception with no exception on record. Claim the flag first (compare-and-swap
+        // on status='open'), then insert; if the insert fails the claim is released.
+        const { data: claimedRows, error: claimErr } = await (service as any).from('guardian_flags').update({
+          status: 'resolved', resolution: 'exception',
+          resolved_by: session.id, resolved_at: now, updated_at: now,
+        }).eq('id', id).eq('status', 'open').select('id')
+        if (claimErr) throw new Error(claimErr.message)
+        if (!claimedRows?.length)
+          return NextResponse.json({ error: 'This flag was just changed by someone else — refresh and try again.' }, { status: 409 })
+
+        const { error: excErr } = await (service as any).from('exceptions_log').insert({
           project_id:   flag.project_id,
           workspace_id: session.workspaceId,
           flag_id:      id,
           deliverable:  flag.sow_reference,
-          granted_what: sanitizePlainText(grantedWhat || flag.description),
+          granted_what: cleanText(grantedWhat, 1000) || sanitizePlainText(String(flag.description || '')).slice(0, 1000),
           granted_by:   session.id,
           estimated_value: parsedValue,
-          reason:       sanitizePlainText(exceptionReason.trim()),
+          reason:       reasonText,
         })
-        await (service as any).from('guardian_flags').update({
-          status: 'resolved', resolution: 'exception',
-          resolved_by: session.id, resolved_at: now, updated_at: now,
-        }).eq('id', id)
+        if (excErr) {
+          console.error('exceptions_log insert failed — releasing flag claim:', excErr.message)
+          await (service as any).from('guardian_flags').update({
+            status: 'open', resolution: null, resolved_by: null, resolved_at: null, updated_at: now,
+          }).eq('id', id).eq('status', 'resolved').eq('resolution', 'exception')
+          return NextResponse.json({ error: 'Could not record the exception — nothing was changed. Please try again.' }, { status: 500 })
+        }
         await logAudit(service, {
           workspaceId: session.workspaceId, actorId: session.id,
           actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
@@ -137,8 +229,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         // trigger it. Match the sibling 'resolve'/'close' actions.
         if (!hasPermission(session, 'APPROVE_FLAGS'))
           return NextResponse.json({ error: 'Missing permission: APPROVE_FLAGS' }, { status: 403 })
-        if (!escalationNote || escalationNote.length < 10)
+        if (escalationNote.length < 10)
           return NextResponse.json({ error: 'Escalation note must be at least 10 characters' }, { status: 400 })
+        if (escalationNote.length > 2000)
+          return NextResponse.json({ error: 'Escalation note is too long (2,000 characters max)' }, { status: 400 })
 
         // FIX (deep audit, section 13, finding #7): this action had no
         // status guard at all — a resolved/closed/converted_to_co flag
@@ -212,11 +306,14 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         const previousEscalation = { to: flag.escalated_to ?? null, note: flag.escalation_note ?? null }
 
         // Spec §6.3: escalation NEVER changes status — it is an overlay
-        await (service as any).from('guardian_flags').update({
+        const { data: escRows, error: escErr } = await (service as any).from('guardian_flags').update({
           escalated_to:    resolvedEscalateTo || session.id,
           escalation_note: safeNote,
           updated_at:      now,
-        }).eq('id', id)
+        }).eq('id', id).in('status', ['open', 'borderline_review']).select('id')
+        if (escErr) throw new Error(escErr.message)
+        if (!escRows?.length)
+          return NextResponse.json({ error: 'This flag was just changed by someone else — refresh and try again.' }, { status: 409 })
 
         // FIX (deep audit, section 13, finding #7): unlike co/[id]/escalate,
         // this action never sent an email or created an in-app notification
@@ -237,8 +334,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
             [{ id: resolvedEscalateTo }], 'email'
           )
           if (emailAllowed) {
-            // sendEscalationEmail returns { ok:false } on a provider rejection instead of throwing, so the
-            // old try/catch logged nothing for exactly the failures it existed to catch.
+            // sendEscalationEmail returns { ok:false } on a provider rejection instead of throwing.
             await checkedSend(() => sendEscalationEmail({
               to:           assignee.email,
               assigneeName: assignee.name,
@@ -336,7 +432,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           // same debt the other fix claimed to have eliminated. Write the
           // native array directly, matching every other CO-creating path.
           line_items:   [{
-            id:          crypto.randomUUID(),
+            id:          randomUUID(),
             description: flag.description,
             quantity:    1,
             rate:        0,
@@ -348,9 +444,17 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         }).select('id').single()
 
         if (co) {
-          await (service as any).from('guardian_flags').update({
-            change_order_id: co.id, updated_at: now,
-          }).eq('id', id)
+          // The claim already moved the flag to converted_to_co; failing to record the CO id must
+          // not be silent (the flag would point at nothing) — retry once, then surface it.
+          let linkErr: any = null
+          for (let attempt = 0; attempt < 2; attempt++) {
+            const r = await (service as any).from('guardian_flags').update({
+              change_order_id: co.id, updated_at: now,
+            }).eq('id', id)
+            linkErr = r.error
+            if (!linkErr) break
+          }
+          if (linkErr) console.error('Could not link flag → change order:', id, co.id, linkErr.message)
           await logAudit(service, {
             workspaceId: session.workspaceId, actorId: session.id,
             actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
@@ -391,12 +495,16 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         // cron/scope-health-rollup's contract-value-at-risk math, which has
         // no 'info' bucket at all).
         const creepConfidence = flag.guardian_checks?.creep_confidence
-        const severity = typeof creepConfidence === 'number'
-          ? (creepConfidence >= 0.90 ? 'high' : creepConfidence >= 0.75 ? 'medium' : 'low')
+        const numericCreep = creepConfidence == null ? NaN : Number(creepConfidence)
+        const severity = Number.isFinite(numericCreep)
+          ? severityFor('out_of_scope', numericCreep)
           : 'medium' // no linked check (shouldn't happen via the normal flow) — safe non-extreme default
-        await (service as any).from('guardian_flags').update({
+        const { data: confirmRows, error: confirmErr } = await (service as any).from('guardian_flags').update({
           status: 'open', severity, updated_at: now,
-        }).eq('id', id)
+        }).eq('id', id).eq('status', 'borderline_review').select('id')
+        if (confirmErr) throw new Error(confirmErr.message)
+        if (!confirmRows?.length)
+          return NextResponse.json({ error: 'This flag was just changed by someone else — refresh and try again.' }, { status: 409 })
         await logAudit(service, {
           workspaceId: session.workspaceId, actorId: session.id,
           actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
@@ -415,10 +523,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           return NextResponse.json({ error: 'Missing permission: APPROVE_FLAGS' }, { status: 403 })
         if (flag.status !== 'borderline_review')
           return NextResponse.json({ error: `Cannot dismiss a flag with status "${flag.status}"` }, { status: 409 })
-        await (service as any).from('guardian_flags').update({
+        const { data: dismissRows, error: dismissErr } = await (service as any).from('guardian_flags').update({
           status: 'closed', resolution: 'not_out_of_scope', close_reason: reason || null,
           resolved_by: session.id, resolved_at: now, updated_at: now,
-        }).eq('id', id)
+        }).eq('id', id).eq('status', 'borderline_review').select('id')
+        if (dismissErr) throw new Error(dismissErr.message)
+        if (!dismissRows?.length)
+          return NextResponse.json({ error: 'This flag was just changed by someone else — refresh and try again.' }, { status: 409 })
         await logAudit(service, {
           workspaceId: session.workspaceId, actorId: session.id,
           actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
@@ -428,13 +539,43 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         break
       }
 
+      case 'reopen': {
+        // FEATURE (independent pass, section 13): resolved/closed/dismissed flags were terminal — a
+        // borderline item dismissed by mistake, or a flag closed too early, could never be brought
+        // back. Reopen is allowed only where nothing downstream depends on the outcome: a plain
+        // close, or a dismissed borderline. A flag resolved by an exception (an exceptions_log row
+        // exists — correct that instead) or converted to / resolved by a change order is not reopenable.
+        if (!hasPermission(session, 'APPROVE_FLAGS'))
+          return NextResponse.json({ error: 'Missing permission: APPROVE_FLAGS' }, { status: 403 })
+        const reopenable =
+          (flag.status === 'closed' && flag.resolution !== 'exception' && flag.resolution !== 'change_order') ||
+          (flag.status === 'resolved' && flag.resolution === 'closed')
+        if (!reopenable || flag.change_order_id)
+          return NextResponse.json({ error: `A flag that is ${String(flag.status).replace(/_/g, ' ')}${flag.resolution ? ` (${String(flag.resolution).replace(/_/g, ' ')})` : ''} can't be reopened.` }, { status: 409 })
+        const restoredStatus = flag.resolution === 'not_out_of_scope' ? 'borderline_review' : 'open'
+        const { data: reopenRows, error: reopenErr } = await (service as any).from('guardian_flags').update({
+          status: restoredStatus, resolution: null, resolved_by: null, resolved_at: null, close_reason: null, updated_at: now,
+        }).eq('id', id).eq('status', flag.status).select('id')
+        if (reopenErr) throw new Error(reopenErr.message)
+        if (!reopenRows?.length)
+          return NextResponse.json({ error: 'This flag was just changed by someone else — refresh and try again.' }, { status: 409 })
+        await logAudit(service, {
+          workspaceId: session.workspaceId, actorId: session.id,
+          actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
+          eventType: 'flag.reopened', entityType: 'guardian_flag', entityId: id,
+          entityName: projectName,
+          metadata: { previous_status: flag.status, previous_resolution: flag.resolution ?? null, restored_status: restoredStatus },
+        })
+        break
+      }
+
       default:
-        return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 })
+        return NextResponse.json({ error: `Unknown action: ${String(action).slice(0, 40)}` }, { status: 400 })
     }
 
     return NextResponse.json({ ok: true })
   } catch (err) {
-    console.error('guardian/flags/[id] error:', err)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    console.error('Guardian flag action error:', err)
+    return NextResponse.json({ error: 'Could not complete that action — please try again.' }, { status: 500 })
   }
 }

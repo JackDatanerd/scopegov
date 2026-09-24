@@ -380,7 +380,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // ── 10. Confirm to client (Event 4) ───────────────────────
     // Portal links use NEXT_PUBLIC_PORTAL_URL || NEXT_PUBLIC_APP_URL everywhere else.
     const portalBase = process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL
-    const confirmCc = await withPrimaryContactCc(service, project.client_id, client.email, client.cc_emails)
+    const confirmCc = await withPrimaryContactCc(service, project.client_id, client.email, client.cc_emails, 'sow')
     const replyTo = await resolveReplyTo(service, sow.workspace_id, null)
     await checkedSend(() => sendSowSignedClientEmail({
       replyTo,

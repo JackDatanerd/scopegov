@@ -1,0 +1,98 @@
+Guardian / Scope governance (section 13) + Clients (section 14) — independent audit, fix round 1
+===============================================================================================
+
+DEPLOY ORDER: run supabase/migrations/077_guardian_clients_independent_pass.sql FIRST, then deploy the
+code. The code reads/writes new columns (guardian_checks.classification_attempts / last_attempt_at,
+clients.email_bounced_at, client_contacts.role_type, exceptions_log.updated_at) and calls new functions
+(guardian_find_duplicate_check, client_contact_add, client_contact_update, merge_clients). Two unique
+indexes are created only if existing data allows it (RAISE NOTICE otherwise) — see the migration.
+No new env vars, no npm changes.
+
+VERIFY AFTER DEPLOY (one-off, needs the live PostgREST):
+  GET /rest/v1/guardian_flags?select=id,guardian_checks(creep_confidence)&limit=1   -> expect HTTP 300 / PGRST201
+  (that is the bug fixed below; with the hint  guardian_checks!fk_flag_check(creep_confidence)  it returns 200)
+
+SECTION 13 — BUGS FIXED
+ 1. flags/[id] PATCH: un-hinted embed guardian_checks(...) is ambiguous (FKs in both directions) -> every flag
+    action returned "Flag not found". Hinted !fk_flag_check. Same class: co/[id] outer guardian_flags embed
+    -> guardian_flags!fk_co_flag.
+ 2. Duplicate detection never worked: pgvector comes back from PostgREST as text; cosine returned 0 for every
+    pair. Now a pgvector RPC (guardian_find_duplicate_check) with an in-process fallback that parses the vector.
+ 3. stripHtml mangled PLAIN text ("load time < 2s and error rate > 1%" lost text; "<a@b.com>" vanished). New
+    toPlainText() only strips content that actually contains HTML tags.
+ 4. Inbound quote-stripping leaked whole quoted threads (Outlook) / missed wrapped Gmail headers. Rewritten to cut
+    at the first reply marker; forwards (the documented workflow) keep the forwarded body. Uses Postmark's
+    StrippedTextReply when present.
+ 5. Classifier failed OPEN (missing/garbled creepConfidence -> "in scope", no flag, no failure record); contradictory
+    verdicts silently resolved; matchedAgainst=amendment with no amendments. Now fail-closed / borderline.
+ 6. Unchecked writes: flag insert (check/inbound/retry), verdict write, exceptions_log insert. Shared pipeline
+    (lib/ai/guardian-pipeline.ts) checks every write and returns a check to the retryable state on failure.
+ 7. No compare-and-swap: double-submitted exception created two exceptions_log rows; retry could double-flag;
+    resolve/close/confirm/dismiss/escalate races. All CAS now (+ unique index one-exception-per-flag).
+ 8. Inbound lost mail: rate-limited -> 200 drop; failed insert -> 200; no MessageID idempotency. Now stored,
+    queued for the sweep, 500 on failed insert (Postmark redelivers), idempotent on MessageID.
+ 9. Inbound accepted any non-archived project (Draft etc.) and used an unanchored address regex
+    ("evilproj-x@...", "proj-x@guard....evil.com" matched). Anchored; no AI spend without a signed SOW.
+10. scope-adjustment: trusted client oldValue, wrote snapshot before history (unaudited change on failure),
+    no type/length/duplicate validation. Now server-derived old value, history-first with rollback, validation.
+    append_scope_deliverables now bumps snapshot.version so the CAS sees CO appends.
+11. Input validation: content type/length (20,000 cap), estimatedValue (Infinity/"12abc"), escalation note,
+    close reason, comment body, history cursor, source enum.
+12. Housekeeping: attachment extension sanitising + content-length precheck; comments now bump flag updated_at
+    (stall reminders fired on active flags) and notify BOTH resolver and escalatee; randomUUID imported;
+    scope-health-rollup: concurrency pool + time budget + rotating start (tail starvation) + deferred count;
+    guardian-health: exact count queries over classifiable checks only (was a 1,000-row capped select
+    diluted by unclassifiable rows) + per-workspace breakdown in alerts.
+    (ai_usage_log pruning and the expired-CO flag release were fixed upstream by other sessions meanwhile.)
+
+SECTION 13 — FEATURE GAPS CLOSED
+ * Backlog re-classification: guardian-health now sweeps failed checks (5 attempts, 15m*2^n backoff) AND checks
+   stored "pending" because no SOW was signed / inbound rate limit — they used to be stranded forever.
+ * Inbound: subject included, StrippedTextReply, short-message floor 20 -> 8, auto-responder/bounce filter,
+   sender-recognised flag, attachment names recorded.
+ * Flag -> "View original request" (content, sender, subject, when) on demand.
+ * Reopen for closed / plain-resolved / dismissed-borderline flags.
+ * Exception correction (PATCH /api/guardian/exceptions/[id], before/after in audit).
+ * Classifier input 2,000 -> 6,000 chars.
+
+SECTION 14 — BUGS FIXED
+ 1. PATCH client: blank name -> NULL -> 500 with raw DB error; null/non-string -> TypeError 500; empty email
+    silently ignored while audit claimed an update. Shared parser (lib/utils/client-input.ts) for POST + PATCH.
+ 2. billingAddress stored as ANY json; formatAddressLines() .trim() on a non-string crashed every PDF/portal/send
+    for that client. Whitelisted string fields, length caps, all-empty -> NULL.
+ 3. Contacts: primary swap now one transaction (client_contact_add/update); duplicate-email + 25-contact caps;
+    type checks; Remove has a confirm.
+ 4. cc_emails: cap 10, de-duplicated, never repeats the primary (re-normalised when the primary changes).
+ 5. Client list/API swallowed read errors ("No clients yet" during an outage) and silently truncated at 1,000 rows.
+ 6. No length caps anywhere; timezone unvalidated.
+ 7. Forms initialised from props once (stale overwrite after another edit) — now re-sync.
+ 8. Case-insensitive duplicate-email check (+ unique index on lower(email) when data allows).
+
+SECTION 14 — FEATURE GAPS CLOSED
+ * Delete a client with no projects; merge duplicate clients (single transaction, migration merge_clients).
+ * Contact routing by structured role_type: billing -> invoices, scope/approver -> SOWs & COs
+   (lib/utils/client-contacts.ts docType param; all 20 send/remind/portal call sites updated).
+ * Client page: Money overview (contracted/invoiced/paid/outstanding/overdue per currency), recent activity.
+ * Audit trail records before -> after for client + contact edits; clients created via project creation now audited.
+ * clients.timezone: editable + validated.
+ * Resend webhook marks the client's primary email bounced/complained (badge on page + list; cleared on delivery
+   or when the address is edited).
+ * List: pagination (5,000), sortable columns, phone search, "archived matches" hint, row is a real link,
+   409 -> "open existing client", CSV export (formula-injection safe).
+
+TRACED (other sections) — small edits
+ * app/(app)/projects/[id]/page.tsx: guardian_flags now selects `resolution`, exceptions_log selects `updated_at`.
+ * app/api/projects/route.ts: client.created audit row.
+
+NOT BUILT (deliberate)
+ * Auto-reply to mail sent to an archived/complete project: unauthenticated-sender backscatter risk. The old code
+   comment claiming Postmark handles it was wrong; the comment is corrected.
+ * Per-project sensitivity override and a false-positive feedback loop for the classifier: need product decisions
+   (UI in the Projects edit modal + how dismissals should bias the prompt).
+ * HEIC / .msg / .xlsx evidence uploads: needs the flag-evidence bucket's allowed_mime_types migration.
+ * CSV client IMPORT; server-side client search; a per-client document list.
+ * Roster visibility: every member can list all client names/companies (contact data is redacted). Left as is —
+   decide whether VIEW_OWN_PROJECTS members should see only their clients.
+
+TESTS ADDED: guardian-email, guardian-verdict, client-input, client-contacts-routing (40 cases, all passing under
+an offline harness; the full suite/tsc could not be run here — no node_modules/network).

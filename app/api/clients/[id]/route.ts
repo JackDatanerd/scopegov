@@ -17,6 +17,13 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
+import { parseClientInput } from '@/lib/utils/client-input'
+
+// ilike treats % and _ as wildcards — an email like jo_hn@x.com must match literally.
+const escapeLike = (v: string) => v.replace(/[\\%_]/g, m => `\${m}`)
+
+// Free-text fields whose VALUE is not copied into the audit trail (only "changed").
+const AUDIT_REDACT = new Set(['notes'])
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -29,107 +36,129 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const service = createServiceClient()
 
     const { data: existing } = await (service as any)
-      .from('clients').select('id,name')
+      .from('clients').select('*')
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
     if (!existing) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-    const body    = await request.json()
+    let body: any
+    try { body = await request.json() } catch { return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 }) }
+    if (!body || typeof body !== 'object' || Array.isArray(body))
+      return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
 
-    // FIX (audit round 6): every field this route can write — including
-    // email, phone, notes, and cc_emails — was gated only by CREATE_PROJECTS,
-    // the same permission that gates the billing fields (a documented,
-    // deliberate tradeoff for those). But GET/page reads redact exactly
-    // those contact fields behind VIEW_CLIENT_DATA. That meant a role with
-    // CREATE_PROJECTS but not VIEW_CLIENT_DATA could blindly overwrite a
-    // client's email — the address every invoice/SOW/CO actually gets sent
-    // to — despite never being allowed to see what it currently was.
-    // Require VIEW_CLIENT_DATA too whenever the payload touches a
-    // contact-visibility field; billing-only edits (billingAddress,
-    // vatNumber, name, companyName, timezone) keep the original
-    // CREATE_PROJECTS-only behavior.
+    // (audit round 6) Contact-visibility fields require VIEW_CLIENT_DATA as well — a role that can't SEE
+    // a client's email must not be able to blindly overwrite the address every invoice/SOW/CO goes to.
     const contactFields = ['email', 'phone', 'notes', 'paymentTermsNote', 'ccEmails']
     if (contactFields.some(f => body[f] !== undefined) && !hasPermission(session, 'VIEW_CLIENT_DATA')) {
       return NextResponse.json({ error: 'Missing permission: VIEW_CLIENT_DATA' }, { status: 403 })
     }
 
-    const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
+    // Shared, type-checked parser (see lib/utils/client-input.ts) — replaces the per-route field
+    // handling that let non-strings 500, blanked NOT NULL columns and stored arbitrary JSON.
+    const parsed = parseClientInput(body, 'update', { currentEmail: existing.email })
+    if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 })
+    const updates: Record<string, unknown> = { ...parsed.updates, updated_at: new Date().toISOString() }
 
-    const fieldMap: Record<string, string> = {
-      name:              'name',
-      companyName:       'company_name',
-      phone:             'phone',
-      timezone:          'timezone',
-      notes:             'notes',
-      paymentTermsNote:  'payment_terms_note',
-      vatNumber:         'vat_number',
-    }
-    for (const [key, col] of Object.entries(fieldMap)) {
-      if (body[key] !== undefined) updates[col] = typeof body[key] === 'string' ? body[key].trim() || null : body[key]
-    }
-
-    // FIX (audit round 6): status (active/archived) has existed as a
-    // column with a CHECK constraint since the initial schema, but nothing
-    // anywhere ever wrote it — a client could never be archived, and the
-    // client list had no way to hide ones an agency no longer works with.
+    // status (active/archived)
     if (body.status !== undefined) {
       if (!['active', 'archived'].includes(body.status))
         return NextResponse.json({ error: 'status must be "active" or "archived"' }, { status: 400 })
       updates.status = body.status
     }
 
-    // billingAddress is a structured object ({ line1, line2, city, region,
-    // postalCode, country }), stored as-is in the billing_address jsonb
-    // column — this is what makes it show up as the "Bill To" address on
-    // Invoice/SOW/CO PDFs (see lib/pdf/renderer.tsx).
-    if (body.billingAddress !== undefined) {
-      updates.billing_address = body.billingAddress
-    }
-
-    const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-
-    // FIX (audit round 6): cc_emails was never editable anywhere despite
-    // being read by every document-send route — see api/clients/route.ts
-    // POST for the fuller explanation. Same validation here.
-    if (body.ccEmails !== undefined) {
-      const raw = Array.isArray(body.ccEmails) ? body.ccEmails : String(body.ccEmails || '').split(/[,\n]/)
-      const normalized = raw.map((e: string) => e.trim().toLowerCase()).filter(Boolean)
-      const invalid = normalized.find((e: string) => !EMAIL_RE.test(e))
-      if (invalid) return NextResponse.json({ error: `Invalid CC email address: ${invalid}` }, { status: 400 })
-      updates.cc_emails = normalized
-    }
-
-    // Email changes go through the same duplicate check as creation.
-    if (body.email !== undefined && body.email.trim()) {
-      const newEmail = body.email.toLowerCase().trim()
-      // FIX (audit round 6): format was never validated, only presence —
-      // see api/clients/route.ts POST for why that matters here.
-      if (!EMAIL_RE.test(newEmail))
-        return NextResponse.json({ error: 'Please enter a valid email address' }, { status: 400 })
+    // Email changes go through the same duplicate check as creation (case-insensitive).
+    const emailChanged = typeof updates.email === 'string' && updates.email !== String(existing.email || '').toLowerCase()
+    if (emailChanged) {
       const { data: dupe } = await (service as any)
         .from('clients').select('id').eq('workspace_id', session.workspaceId)
-        .eq('email', newEmail).neq('id', id).single()
-      if (dupe) return NextResponse.json({ error: 'A client with this email already exists' }, { status: 409 })
-      updates.email = newEmail
+        .ilike('email', escapeLike(updates.email as string)).neq('id', id).limit(1).maybeSingle()
+      if (dupe) return NextResponse.json({ error: 'A client with this email already exists', existingClientId: dupe.id }, { status: 409 })
+
+      // The new primary must not also sit in the CC list, and a corrected address gets a clean
+      // delivery-health slate (the bounce marker belonged to the OLD address).
+      if (updates.cc_emails === undefined && Array.isArray(existing.cc_emails)) {
+        const filtered = existing.cc_emails.filter((e: string) => String(e).toLowerCase() !== updates.email)
+        if (filtered.length !== existing.cc_emails.length) updates.cc_emails = filtered
+      }
+      updates.email_bounced_at = null
+      updates.email_bounce_kind = null
     }
 
     const { error } = await (service as any)
       .from('clients').update(updates).eq('id', id).eq('workspace_id', session.workspaceId)
-    // FIX (audit round 6): close the same TOCTOU-race error-shape gap as
-    // the POST route — see its comment for the full reasoning.
     if (error?.code === '23505')
       return NextResponse.json({ error: 'A client with this email already exists' }, { status: 409 })
+    if (error) throw new Error(error.message)
+
+    // FIX (independent pass, section 14): the audit row recorded only Object.keys(body) — which
+    // fields were SENT, not what changed (and it listed a field as updated even when the route
+    // ignored it). A change to the email / CC list / billing address redirects where every invoice
+    // goes, and nothing recorded the old value. Now: real before → after for what changed.
+    const changes: Record<string, { from?: unknown; to?: unknown; changed?: true }> = {}
+    for (const [col, next] of Object.entries(updates)) {
+      if (col === 'updated_at' || col === 'email_bounced_at' || col === 'email_bounce_kind') continue
+      const prev = existing[col]
+      if (JSON.stringify(prev ?? null) === JSON.stringify(next ?? null)) continue
+      changes[col] = AUDIT_REDACT.has(col) ? { changed: true } : { from: prev ?? null, to: next ?? null }
+    }
+    if (Object.keys(changes).length > 0) {
+      await logAudit(service, {
+        workspaceId: session.workspaceId, actorId: session.id,
+        actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
+        eventType: 'client.updated', entityType: 'client',
+        entityId: id, entityName: (updates.name as string) || existing.name,
+        metadata: { fields: Object.keys(changes), changes },
+      })
+    }
+
+    return NextResponse.json({ ok: true })
+  } catch (err) {
+    console.error('Client update error:', err)
+    return NextResponse.json({ error: 'Could not update the client' }, { status: 500 })
+  }
+}
+
+// FEATURE (independent pass, section 14): a client created by mistake (a typo, a duplicate) could
+// never be removed — only archived, and it stayed on the roster forever. A client with NO projects
+// can now be deleted outright. projects.client_id has no cascade, so a client that has (or ever had,
+// including soft-deleted) projects is refused — archive or merge it instead.
+export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    const { id } = await params
+    const session = await getSession()
+    if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!hasPermission(session, 'DELETE_PROJECTS'))
+      return NextResponse.json({ error: 'Missing permission: DELETE_PROJECTS' }, { status: 403 })
+
+    const service = createServiceClient()
+    const { data: client } = await (service as any)
+      .from('clients').select('id, name, email, company_name')
+      .eq('id', id).eq('workspace_id', session.workspaceId).single()
+    if (!client) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+
+    const { count: projectCount, error: countErr } = await (service as any)
+      .from('projects').select('id', { count: 'exact', head: true })
+      .eq('workspace_id', session.workspaceId).eq('client_id', id)
+    if (countErr) throw new Error(countErr.message)
+    if ((projectCount || 0) > 0)
+      return NextResponse.json({
+        error: `${client.name} has ${projectCount} project${projectCount === 1 ? '' : 's'} on record (including deleted ones), so it can't be deleted. Archive it, or merge it into another client.`,
+      }, { status: 409 })
+
+    const { error } = await (service as any).from('clients').delete().eq('id', id).eq('workspace_id', session.workspaceId)
+    if (error?.code === '23503')
+      return NextResponse.json({ error: 'This client is still referenced by other records and can’t be deleted. Archive it instead.' }, { status: 409 })
     if (error) throw new Error(error.message)
 
     await logAudit(service, {
       workspaceId: session.workspaceId, actorId: session.id,
       actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
-      eventType: 'client.updated', entityType: 'client',
-      entityId: id, entityName: existing.name, metadata: { fields: Object.keys(body) },
+      eventType: 'client.deleted', entityType: 'client',
+      entityId: id, entityName: client.name,
+      metadata: { email: client.email, company_name: client.company_name },
     })
-
     return NextResponse.json({ ok: true })
   } catch (err) {
-    console.error('clients/[id] error:', err)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    console.error('Client delete error:', err)
+    return NextResponse.json({ error: 'Could not delete the client' }, { status: 500 })
   }
 }

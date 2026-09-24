@@ -163,7 +163,7 @@ export async function POST(request: NextRequest) {
             })
             if (!claimed) throw new Error('could not record the reminder — not sending')
 
-            const cc = await withPrimaryContactCc(service, project?.client_id, client.email, client.cc_emails)
+            const cc = await withPrimaryContactCc(service, project?.client_id, client.email, client.cc_emails, kind as 'invoice' | 'sow' | 'co')
             const log = { workspaceId: ws.id, kind: `${kind}.auto_reminder`, entityType: ENTITY[kind], entityId: doc.id, projectId: project?.id }
             let result: { ok: boolean; error?: string }
 

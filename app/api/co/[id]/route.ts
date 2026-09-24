@@ -30,7 +30,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       // `!fk_flag_check` disambiguates to the correct direction, same
       // hint pattern already used elsewhere in this codebase (see
       // lib/utils/permissions-query.ts, app/api/team/[id]/route.ts).
-      .select('*, projects(id,name,currency), guardian_flags(description,severity,sow_reference,guardian_checks!fk_flag_check(content))')
+      // FIX (independent pass, section 13 trace): the OUTER guardian_flags embed is ambiguous for the
+      // same reason — change_orders.flag_id → guardian_flags (fk_co_flag) AND
+      // guardian_flags.change_order_id → change_orders both exist — so it needs its own hint.
+      .select('*, projects(id,name,currency), guardian_flags!fk_co_flag(description,severity,sow_reference,guardian_checks!fk_flag_check(content))')
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!co) return NextResponse.json({ error: 'Not found' }, { status: 404 })

@@ -26,33 +26,53 @@
 // Finer role-based routing (billing vs. scope-question contacts) stays a
 // future decision for whoever defines what those roles actually mean.
 
+// FIX (independent pass, section 14 — feature): the note above deferred role-based routing until
+// somebody defined a role vocabulary. `client_contacts.role_type` (migration 077) is that structured,
+// non-guessable vocabulary — billing | scope | approver | other — chosen from a dropdown, not typed as
+// free text. When a caller says what kind of document it is sending, contacts whose role_type fits are
+// CC'd too (the free-text `role` label is still never used for routing):
+//   invoice → billing contacts;   sow / co → scope + approver contacts.
+// The primary contact is always included, exactly as before, and every address is de-duplicated
+// against clients.email and cc_emails.
+export type ContactDocType = 'invoice' | 'sow' | 'co'
+const ROLE_TYPES_FOR: Record<ContactDocType, string[]> = {
+  invoice: ['billing'],
+  sow:     ['scope', 'approver'],
+  co:      ['scope', 'approver'],
+}
+
 export async function withPrimaryContactCc(
   service: any,
   clientId: string,
   clientEmail: string | null | undefined,
-  existingCc: string[] | null | undefined
+  existingCc: string[] | null | undefined,
+  docType?: ContactDocType,
 ): Promise<string[]> {
   const cc = existingCc || []
   try {
-    const { data: primary } = await service
-      .from('client_contacts')
-      .select('email')
-      .eq('client_id', clientId)
-      .eq('is_primary', true)
-      .maybeSingle()
+    if (!clientId) return cc
+    const routedTypes = docType ? ROLE_TYPES_FOR[docType] : []
+    let q = service.from('client_contacts').select('email, is_primary, role_type').eq('client_id', clientId)
+    q = routedTypes.length
+      ? q.or(`is_primary.eq.true,role_type.in.(${routedTypes.join(',')})`)
+      : q.eq('is_primary', true)
+    const { data: rows } = await q
 
-    if (!primary?.email) return cc
-
-    const primaryEmail = String(primary.email).toLowerCase().trim()
-    const alreadyIncluded = [clientEmail, ...cc].some(
-      e => (e || '').toLowerCase().trim() === primaryEmail
-    )
-    return alreadyIncluded ? cc : [...cc, primary.email]
+    const seen = new Set([clientEmail, ...cc].map(e => (e || '').toLowerCase().trim()).filter(Boolean))
+    const extra: string[] = []
+    for (const r of (Array.isArray(rows) ? rows : (rows ? [rows] : []))) {
+      const email = String(r?.email || '').trim()
+      const key = email.toLowerCase()
+      if (!email || seen.has(key)) continue
+      seen.add(key)
+      extra.push(email)
+    }
+    return extra.length ? [...cc, ...extra] : cc
   } catch (e) {
     // Never let a lookup failure here block sending the document itself —
     // the client's own email/cc_emails are still the primary delivery
-    // path; the primary contact is an addition, not a requirement.
-    console.error('Primary contact CC lookup failed:', e)
+    // path; the contacts are an addition, not a requirement.
+    console.error('Contact CC lookup failed:', e)
     return cc
   }
 }

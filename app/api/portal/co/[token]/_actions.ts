@@ -286,7 +286,7 @@ export async function POST_COUNTER(request: NextRequest, token: string) {
       }), 'CO countered (agency) email')
     }
     if (client?.email) {
-      const cc = await withPrimaryContactCc(service, co.projects?.client_id, client.email, client.cc_emails)
+      const cc = await withPrimaryContactCc(service, co.projects?.client_id, client.email, client.cc_emails, 'co')
       const replyTo = await resolveReplyTo(service, co.workspace_id, null)
       await checkedSend(() => sendClientResponseReceivedEmail({
         replyTo,

@@ -12,7 +12,7 @@
 // that page stays server-rendered.
 
 'use client'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
 interface BillingAddress {
@@ -44,6 +44,14 @@ export default function BillingDetailsCard({ clientId, vatNumber, billingAddress
   const [error,   setError]   = useState('')
   const [form, setForm] = useState<BillingAddress>(billingAddress || {})
   const [vat,  setVat]  = useState(vatNumber || '')
+
+  // Re-sync from props when not editing (another teammate's edit / router.refresh) — the form was
+  // initialised once and the next Edit would otherwise overwrite newer data with stale values.
+  useEffect(() => {
+    if (editing) return
+    setForm(billingAddress || {})
+    setVat(vatNumber || '')
+  }, [editing, billingAddress, vatNumber])
 
   const addressLines = formatAddress(billingAddress)
   const hasAddress = addressLines.length > 0

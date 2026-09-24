@@ -3,14 +3,13 @@ export const runtime = 'nodejs'
 import crypto from 'crypto'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
-import { classifyGuardianCheck, getEmbedding, cosineSimilarity, resolveMatchedAmendmentId, type Sensitivity } from '@/lib/ai/guardian'
-import { stripHtml } from '@/lib/utils/format'
-import { sendGuardianFlagEmail } from '@/lib/email/templates'
+import { toPlainText, MAX_CHECK_CONTENT_CHARS, type Sensitivity } from '@/lib/ai/guardian'
+import { classifyAndRecord, findDuplicateCheck, tryEmbedding, GUARDIAN_SYSTEM_ACTOR } from '@/lib/ai/guardian-pipeline'
+import {
+  extractUnquotedContent, isForwardSubject, cleanSubject, isAutomatedMessage, senderEmail, matchGuardianAddress,
+} from '@/lib/ai/guardian-email'
 import { logAudit } from '@/lib/utils/audit'
-import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
-import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { checkAiRateLimitByProject, recordAiUsageByProject } from '@/lib/utils/rate-limit'
-import { checkedSend } from '@/lib/email/delivery'
 
 // BUG-016: verify the Postmark inbound webhook before processing.
 //
@@ -64,257 +63,177 @@ export async function POST(request: NextRequest) {
     }
 
     const rawBody  = await request.text()
-
     let payload: any
     try { payload = JSON.parse(rawBody) }
     catch { return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 }) }
 
-    const toEmail    = payload.OriginalRecipient || payload.To || ''
-    const fromEmail  = payload.From || ''
-    const subject    = payload.Subject || ''
-    const textBody   = payload.TextBody || ''
-    const htmlBody   = payload.HtmlBody || ''
-    const content    = textBody || stripHtml(htmlBody)
+    const toEmail    = String(payload.OriginalRecipient || payload.To || '')
+    const fromEmail  = String(payload.From || '')
+    const fromAddr   = senderEmail(payload)
+    const subject    = String(payload.Subject || '')
+    const messageId  = typeof payload.MessageID === 'string' && payload.MessageID ? payload.MessageID.slice(0, 200) : null
 
-    if (!content.trim()) {
-      return NextResponse.json({ ok: true, message: 'Empty content — skipped' })
-    }
-
-    // Extract project ID from guardian email address
-    // Format: proj-{8chars}@guard.scopegov.app
+    // Extract the project from the guardian address (proj-{8chars}@guard.scopegov.app).
+    // matchGuardianAddress anchors the whole address (the old regex also matched
+    // "evilproj-abc@…" and "proj-abc@guard.scopegov.app.evil.com").
     const guardianDomain = process.env.NEXT_PUBLIC_GUARDIAN_EMAIL_DOMAIN || 'guard.scopegov.app'
-    // FIX (audit round 6): String.replace('.', ...) with no /g flag only
-    // escapes the FIRST dot. For a two-dot domain like guard.scopegov.app,
-    // the second dot stayed a live regex wildcard (matches any character),
-    // loosening the match beyond what was intended. Escape every dot.
-    const emailMatch     = toEmail.match(new RegExp(`proj-([a-z0-9]+)@${guardianDomain.replace(/\./g, '\\.')}`, 'i'))
-    if (!emailMatch) {
+    const guardianPrefix = matchGuardianAddress(toEmail, guardianDomain)
+    if (!guardianPrefix) {
       return NextResponse.json({ ok: true, message: 'Not a Guardian address — ignored' })
     }
 
-    const guardianPrefix = emailMatch[1]
-    const service        = createServiceClient()
+    // Bounces / out-of-office / list mail would otherwise cost two AI calls each and raise junk flags.
+    if (isAutomatedMessage(payload)) {
+      return NextResponse.json({ ok: true, message: 'Automated message — skipped' })
+    }
 
-    // Find project by guardian_email
-    // FIX (deep audit, Settings section — missing-column bug): same
-    // unchecked-error pattern as /api/guardian/check — see that route's
-    // comment. Distinguish "query errored" from "genuinely no matching
-    // project" in the logs rather than lumping both under one warning.
-    const { data: project, error: projectErr } = await (service as any)
+    const service = createServiceClient()
+
+    const { data: projects, error: projectErr } = await (service as any)
       .from('projects')
-      .select(`id, name, status, workspace_id,
+      .select(`id, name, status, workspace_id, client_id,
         workspaces(id, agency_name, guardian_sensitivity_tier),
         project_scope_snapshot(deliverables, out_of_scope)`)
       .ilike('guardian_email', `proj-${guardianPrefix}@%`)
-      .single()
+      .limit(1)
+    const project = projects?.[0]
 
     if (!project) {
-      if (projectErr) console.error('Guardian inbound: project fetch failed', projectErr)
-      else console.warn(`No project found for guardian email prefix: ${guardianPrefix}`)
+      // A read error must be retried by Postmark (500), not swallowed as "no such project".
+      if (projectErr) {
+        console.error('Guardian inbound: project fetch failed', projectErr)
+        return NextResponse.json({ error: 'Internal error' }, { status: 500 })
+      }
+      console.warn(`No project found for guardian email prefix: ${guardianPrefix}`)
       return NextResponse.json({ ok: true, message: 'No matching project' })
     }
 
-    // Auto-reply if project is Archived/Complete
-    if (['Archived','Complete'].includes(project.status)) {
-      // Spec §5.2: archived/completed projects auto-reply
-      return NextResponse.json({ ok: true, message: 'Project inactive — auto-reply handled by Postmark' })
+    // Archived / Complete projects accept no new checks. (There is deliberately NO auto-reply:
+    // Postmark inbound never sends one, and replying to an unauthenticated sender's
+    // address is a backscatter vector. The old comment claiming Postmark handles it was wrong.)
+    if (['Archived', 'Complete'].includes(project.status)) {
+      return NextResponse.json({ ok: true, message: 'Project inactive — message not processed' })
     }
 
-    // Strip quoted replies — take first 500 chars of unquoted content
-    const cleanContent = extractUnquotedContent(content)
-    if (!cleanContent.trim() || cleanContent.length < 20) {
+    // Idempotency: Postmark re-delivers on any non-2xx (and after our own 500s). Without this a
+    // redelivery re-ran the whole paid pipeline.
+    if (messageId) {
+      const { data: seen } = await (service as any).from('guardian_checks')
+        .select('id').eq('project_id', project.id).eq('source_metadata->>message_id', messageId).limit(1)
+      if (seen?.length) return NextResponse.json({ ok: true, message: 'Already processed', checkId: seen[0].id })
+    }
+
+    // ── Build the text to classify ────────────────────────────
+    // Prefer Postmark's own reply-stripping; fall back to ours. The SUBJECT is part of the
+    // request ("Request: add a Spanish version") and used to be dropped entirely.
+    const isForward = isForwardSubject(subject)
+    const stripped  = typeof payload.StrippedTextReply === 'string' ? toPlainText(payload.StrippedTextReply) : ''
+    const fullText  = payload.TextBody ? toPlainText(String(payload.TextBody)) : toPlainText(String(payload.HtmlBody || ''))
+    const bodyText  = (!isForward && stripped) ? stripped : extractUnquotedContent(fullText, { isForward })
+    const subj      = cleanSubject(subject)
+    let cleanContent = [subj ? `Subject: ${subj}` : '', bodyText].filter(Boolean).join('\n\n').trim()
+    if (cleanContent.length > MAX_CHECK_CONTENT_CHARS) cleanContent = cleanContent.slice(0, MAX_CHECK_CONTENT_CHARS)
+
+    // The old floor was 20 characters, which discarded real requests like "Add dark mode".
+    if (cleanContent.length < 8 || (!bodyText && !subj)) {
       return NextResponse.json({ ok: true, message: 'Only quoted reply — skipped' })
     }
 
     const sensitivity = (project.workspaces?.guardian_sensitivity_tier || 'medium') as Sensitivity
-    // FIX: one-to-one relation (see /api/guardian/check for details) — no [0]
-    const snapshot    = project.project_scope_snapshot
+    const snapshot    = project.project_scope_snapshot // one-to-one → object
 
-    // FIX (audit round 6): this route runs the exact same paid embedding +
-    // classification pipeline as /api/guardian/check, which got rate
-    // limiting in a prior round specifically because of that cost — this
-    // sibling endpoint was missed. It's arguably the higher-risk of the
-    // two: it needs zero UI interaction, just email volume to the
-    // project's guardian address. No user session exists here to key a
-    // limit on, so this is keyed by project instead (see rate-limit.ts).
+    // ── Sender recognition (informational — never blocks) ─────
+    const senderKnown = await isKnownSender(service, project.workspace_id, project.client_id, fromAddr)
+    const attachments = Array.isArray(payload.Attachments)
+      ? payload.Attachments.slice(0, 10).map((a: any) => String(a?.Name || '').slice(0, 120)).filter(Boolean) : []
+    const sourceMetadata: Record<string, unknown> = {
+      from: fromEmail, from_address: fromAddr, subject, to: toEmail,
+      ...(messageId ? { message_id: messageId } : {}),
+      sender_known: senderKnown,
+      ...(attachments.length ? { attachments } : {}),
+    }
+
+    const baseRow = {
+      project_id: project.id, workspace_id: project.workspace_id, content: cleanContent,
+      source: 'email', submitted_by: null, submitted_at: new Date().toISOString(),
+    }
+    const insertCheck = async (extra: Record<string, unknown>) => {
+      const { data, error } = await (service as any).from('guardian_checks')
+        .insert({ ...baseRow, ...extra }).select('id').single()
+      if (error) {
+        // Unique (project, message_id) violation = a concurrent delivery of the same email won the race.
+        if ((error as any).code === '23505') return { id: null as string | null, raced: true }
+        throw new Error(`Could not store check: ${error.message}`) // → 500 → Postmark redelivers (was: silent 200 = email lost)
+      }
+      return { id: data.id as string, raced: false }
+    }
+
+    // ── No signed SOW yet: keep the mail, spend nothing ───────
+    // Re-classified automatically by the guardian-health sweep after the SOW is signed.
+    if (!snapshot) {
+      const r = await insertCheck({ source_metadata: sourceMetadata, is_duplicate: false, outcome: 'pending' })
+      return NextResponse.json({ ok: true, outcome: 'pending', checkId: r.id })
+    }
+
+    // ── Rate limit: KEEP the email (previously dropped with a 200 → lost forever) ──
     const limited = await checkAiRateLimitByProject(service, project.id, 'guardian.inbound')
     if (!limited.allowed) {
-      console.warn(`Guardian inbound rate limit hit for project ${project.id}`)
-      return NextResponse.json({ ok: true, message: 'Rate limited — try again later' })
+      console.warn(`Guardian inbound rate limit hit for project ${project.id} — queued for sweep`)
+      const r = await insertCheck({ source_metadata: { ...sourceMetadata, rate_limited: true }, is_duplicate: false, outcome: 'pending' })
+      return NextResponse.json({ ok: true, outcome: 'pending', queued: true, checkId: r.id })
     }
 
     // ── Embedding + dedup ─────────────────────────────────────
-    let embedding: number[] | null = null
-    try { embedding = await getEmbedding(cleanContent.slice(0, 500)) }
-    catch { /* non-fatal */ }
-
-    // FIX (audit round 6): record usage as soon as a real attempt was made
-    // (same reasoning as api/guardian/check) rather than only on the
-    // eventual full-success path.
+    const embedding = await tryEmbedding(cleanContent)
     await recordAiUsageByProject(service, project.workspace_id, project.id, 'guardian.inbound')
+    const duplicateOfId = embedding ? await findDuplicateCheck(service, project.id, embedding) : null
+    const isDuplicate = !!duplicateOfId
 
-    let isDuplicate    = false
-    let duplicateOfId: string | null = null
+    const row = await insertCheck({
+      source_metadata: sourceMetadata, is_duplicate: isDuplicate, duplicate_of_id: duplicateOfId,
+      embedding: isDuplicate ? null : embedding, outcome: 'pending',
+    })
+    if (row.raced || !row.id) return NextResponse.json({ ok: true, message: 'Already processed' })
 
-    if (embedding) {
-      // FIX (re-audit): same dead-end dedup gap as guardian/check — see that
-      // file's note. A check that was never actually classified ('pending'
-      // or 'classification_failed') must not be a valid dedup match, or a
-      // legitimate resubmission just silently bounces off the orphaned
-      // original forever instead of ever getting classified.
-      const { data: recentChecks } = await (service as any)
-        .from('guardian_checks')
-        .select('id, embedding')
-        .eq('project_id', project.id)
-        .eq('is_duplicate', false)
-        .not('embedding', 'is', null)
-        .neq('outcome', 'pending')
-        .neq('outcome', 'classification_failed')
-        .gte('created_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
-        .limit(100)
-
-      for (const check of (recentChecks || [])) {
-        if (!check.embedding) continue
-        if (cosineSimilarity(embedding, check.embedding) > 0.85) {
-          isDuplicate = true; duplicateOfId = check.id; break
-        }
-      }
-    }
-
-    // Write check row
-    const { data: checkRow } = await (service as any).from('guardian_checks').insert({
-      project_id:      project.id,
-      workspace_id:    project.workspace_id,
-      content:         cleanContent,
-      source:          'email',
-      source_metadata: { from: fromEmail, subject, to: toEmail },
-      submitted_by:    null, // inbound — no user session
-      submitted_at:    new Date().toISOString(),
-      is_duplicate:    isDuplicate,
-      duplicate_of_id: duplicateOfId,
-      embedding:       isDuplicate ? null : embedding,
-      outcome:         'pending',
-    }).select('id').single()
-
-    if (isDuplicate || !snapshot || !checkRow) {
-      return NextResponse.json({ ok: true, outcome: isDuplicate ? 'duplicate' : 'pending' })
-    }
-
-    // ── Classify ──────────────────────────────────────────────
-    const { data: amendments } = await (service as any)
-      .from('amendments').select('id,title,added_deliverables').eq('project_id', project.id)
-
-    let classification
-    try {
-      classification = await classifyGuardianCheck({
-        content: cleanContent,
-        snapshot: { deliverables: snapshot.deliverables || [], outOfScope: snapshot.out_of_scope || [] },
-        amendments: amendments || [],
-        sensitivity,
+    if (isDuplicate) {
+      await logAudit(service, {
+        workspaceId: project.workspace_id, actorId: null, actorEmail: GUARDIAN_SYSTEM_ACTOR.email, actorName: GUARDIAN_SYSTEM_ACTOR.name,
+        eventType: 'check.duplicate_skipped', entityType: 'guardian_check', entityId: row.id, entityName: project.name,
+        metadata: { duplicate_of: duplicateOfId, source: 'email' },
       })
-    } catch {
-      await (service as any).from('guardian_checks')
-        .update({ classification_failed: true }).eq('id', checkRow.id)
-      return NextResponse.json({ ok: true, outcome: 'classification_failed' })
+      return NextResponse.json({ ok: true, outcome: 'duplicate' })
     }
 
-    // FIX (deep audit, section 13 — feature gap): see resolveMatchedAmendmentId's
-    // comment in lib/ai/guardian.ts — mirrors the same fix in api/guardian/check.
-    const matchedAmendmentId = resolveMatchedAmendmentId(
-      amendments || [], classification.matchedAgainst, classification.matchedReference,
-    )
-    await (service as any).from('guardian_checks').update({
-      match_confidence:  classification.matchConfidence,
-      creep_confidence:  classification.creepConfidence,
-      matched_against:   classification.matchedAgainst,
-      matched_reference: classification.matchedReference,
-      matched_amendment_id: matchedAmendmentId,
-      outcome:           classification.outcome,
-      classified_at:     new Date().toISOString(),
-    }).eq('id', checkRow.id)
-
-    // ── Create flag if out_of_scope OR borderline ─────────────
-    // FIX (audit round 6): mirrors api/guardian/check — 'borderline' used
-    // to be a dead end here too. See that route's STEP 6 comment for the
-    // full reasoning.
-    if (classification.outcome === 'out_of_scope' || classification.outcome === 'borderline') {
-      const isBorderline = classification.outcome === 'borderline'
-      const severity = isBorderline ? 'info' : (
-        classification.creepConfidence >= 0.90 ? 'high'
-        : classification.creepConfidence >= 0.75 ? 'medium' : 'low'
-      )
-
-      const { data: flag } = await (service as any).from('guardian_flags').insert({
-        project_id:    project.id,
-        workspace_id:  project.workspace_id,
-        check_id:      checkRow.id,
-        type:          'scope_creep',
-        severity,
-        description:   classification.reasoning,
-        sow_reference: classification.matchedReference || 'General scope',
-        status:        isBorderline ? 'borderline_review' : 'open',
-      }).select('id').single()
-
-      if (flag) {
-        await (service as any).from('guardian_checks').update({ flag_id: flag.id }).eq('id', checkRow.id)
-
-        if (!isBorderline) {
-          // Notify APPROVE_FLAGS holders — full-confidence flags only
-          const emails = await getMemberEmailsWithPermission(service, project.workspace_id, 'APPROVE_FLAGS', 25, 'guardian_flag', project.id)
-          if (emails.length) {
-            await checkedSend(() => sendGuardianFlagEmail({
-              to: emails,
-              projectName:  project.name,
-              severity,
-              description:  classification.reasoning,
-              sowReference: classification.matchedReference || 'General scope',
-              projectUrl:   `${process.env.NEXT_PUBLIC_APP_URL}/projects/${project.id}?tab=guardian`,
-              path:         `Email from ${fromEmail}`,
-            }), 'guardian flag email (inbound)')
-          }
-        }
-        await notifyMembersWithPermission(service, {
-          workspaceId: project.workspace_id, permission: 'APPROVE_FLAGS', eventType: 'guardian_flag',
-          type: 'guardian_flag',
-          title: isBorderline ? `Borderline scope item — ${project.name}` : `Scope flag — ${project.name}`,
-          body: classification.reasoning?.slice(0, 140) || (isBorderline
-            ? 'A possible scope item needs a quick look.'
-            : 'A new out-of-scope request was flagged.'),
-          entityType: 'project', entityId: project.id, projectId: project.id,
-        })
-
-        // FIX (re-audit): was actorId: 'system' — an invalid uuid for the
-        // actor_id FK, which made this insert fail silently every time
-        // (see lib/utils/audit.ts). null is the correct "no human actor"
-        // value; actorName/actorEmail below still identify this as Guardian.
-        await logAudit(service, {
-          workspaceId: project.workspace_id, actorId: null,
-          actorEmail: 'guardian@scopegov.app', actorName: 'Guardian',
-          eventType: isBorderline ? 'flag.borderline_created' : 'flag.raised', entityType: 'guardian_flag',
-          entityId: flag.id, entityName: project.name,
-          metadata: { severity, source: 'email', from: fromEmail },
-        })
-      }
+    // ── Classify → record → flag ──────────────────────────────
+    const res = await classifyAndRecord(service, {
+      check: { id: row.id, content: cleanContent },
+      project: { id: project.id, name: project.name, workspace_id: project.workspace_id },
+      snapshot, sensitivity, actor: GUARDIAN_SYSTEM_ACTOR,
+      auditEvent: 'check.classified', emailPath: `Email from ${fromEmail}`,
+      flagMeta: { source: 'email', from: fromEmail, sender_known: senderKnown },
+    })
+    if (res.status === 'failed') {
+      // Stored + marked retryable (classification_failed); the sweep and the manual Retry button pick it up.
+      return NextResponse.json({ ok: true, outcome: 'classification_failed', checkId: row.id })
     }
-
-    return NextResponse.json({ ok: true, checkId: checkRow.id, outcome: classification.outcome })
+    return NextResponse.json({ ok: true, checkId: row.id, outcome: res.classification.outcome })
   } catch (err) {
     console.error('Guardian inbound error:', err)
     return NextResponse.json({ error: 'Internal error' }, { status: 500 })
   }
 }
 
-function extractUnquotedContent(text: string): string {
-  // Remove quoted reply lines (starting with >) and forwarded message headers
-  const lines = text.split('\n')
-  const unquoted = lines.filter(line => {
-    const trimmed = line.trim()
-    if (trimmed.startsWith('>')) return false
-    if (trimmed.match(/^On .+ wrote:$/)) return false
-    if (trimmed.match(/^-{3,}/)) return false
-    if (trimmed.match(/^From:\s/i)) return false
-    if (trimmed.match(/^Sent:\s/i)) return false
-    return true
-  })
-  return unquoted.join('\n').trim()
+/** Is the sender the project's client (primary email, CC list, or a saved contact)? */
+async function isKnownSender(service: any, workspaceId: string, clientId: string | null, addr: string): Promise<boolean> {
+  if (!clientId || !addr) return false
+  try {
+    const { data: client } = await service.from('clients')
+      .select('email, cc_emails').eq('id', clientId).eq('workspace_id', workspaceId).maybeSingle()
+    if (!client) return false
+    const known = new Set<string>([String(client.email || '').toLowerCase(), ...((client.cc_emails || []) as string[]).map(e => String(e).toLowerCase())])
+    if (known.has(addr)) return true
+    const { data: contact } = await service.from('client_contacts')
+      .select('id').eq('client_id', clientId).eq('email', addr).limit(1)
+    return !!contact?.length
+  } catch { return false }
 }

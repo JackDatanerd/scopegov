@@ -132,7 +132,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }
     // Confirm receipt to the client — they previously got nothing back after declining.
     if (client.email) {
-      const cc = await withPrimaryContactCc(service, project.client_id, client.email, client.cc_emails)
+      const cc = await withPrimaryContactCc(service, project.client_id, client.email, client.cc_emails, 'sow')
       const replyTo = await resolveReplyTo(service, sow.workspace_id, null)
       await checkedSend(() => sendClientResponseReceivedEmail({
         replyTo,

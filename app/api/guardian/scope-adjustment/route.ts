@@ -4,6 +4,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { canReadProject } from '@/lib/utils/project-access'
+import { sanitizePlainText } from '@/lib/utils/sanitize'
 
 export async function POST(request: NextRequest) {
   try {
@@ -12,9 +13,24 @@ export async function POST(request: NextRequest) {
     if (!hasPermission(session, 'EDIT_SOW'))
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
 
-    const { projectId, deliverable, oldValue, newValue, reason, field: rawField } = await request.json()
-    if (!projectId || !deliverable || !newValue || !reason?.trim())
+    let body: any
+    try { body = await request.json() } catch { return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 }) }
+    const { projectId, deliverable, field: rawField } = body || {}
+    // FIX (independent pass, section 13): values were only truthiness-checked — an object/number
+    // `newValue` was written straight into the snapshot as a "title", a whitespace-only value
+    // passed, `reason.trim()` threw a TypeError (500) for non-strings, and there was no length
+    // cap. The client-supplied `oldValue` is no longer trusted at all (see below).
+    if (typeof projectId !== 'string' || typeof deliverable !== 'string' || !deliverable
+        || typeof body?.newValue !== 'string' || typeof body?.reason !== 'string')
       return NextResponse.json({ error: 'deliverable, newValue, and reason are required' }, { status: 400 })
+    const newValue = sanitizePlainText(body.newValue.trim())
+    const reason   = sanitizePlainText(body.reason.trim())
+    if (!newValue || !reason)
+      return NextResponse.json({ error: 'deliverable, newValue, and reason are required' }, { status: 400 })
+    if (newValue.length > 200)
+      return NextResponse.json({ error: 'The new title is too long (200 characters max)' }, { status: 400 })
+    if (reason.length > 1000)
+      return NextResponse.json({ error: 'The reason is too long (1,000 characters max)' }, { status: 400 })
 
     // FEATURE (deep audit, section 13 — feature gap): this route only ever
     // matched against project_scope_snapshot.deliverables — an out_of_scope
@@ -78,16 +94,14 @@ export async function POST(request: NextRequest) {
     }
 
     let matched = false
+    let previousTitle = deliverable
     const sourceList = field === 'out_of_scope' ? (snap.out_of_scope || []) : (snap.deliverables || [])
+    const titleOf = (d: any): string => (d && typeof d === 'object' ? String(d.title ?? '') : String(d ?? ''))
     const updatedList = sourceList.map((d: any) => {
-      // FIX (deep audit, section 13): only rename the FIRST match. Two
-      // entries sharing the same title (a duplicate entry, however it
-      // got there) would previously all get silently renamed to the same
-      // newValue in one call — `matched` was tracked as a single boolean,
-      // but nothing stopped the `.map()` from touching every match it saw.
+      // Only rename the FIRST match (two entries sharing a title must not both be renamed).
       if (matched) return d
       if (d && typeof d === 'object' && d.title === deliverable) {
-        matched = true
+        matched = true; previousTitle = d.title
         return { ...d, title: newValue } // preserve any other fields on the entry, not just title
       }
       if (d === deliverable) { matched = true; return { title: newValue } }
@@ -99,6 +113,32 @@ export async function POST(request: NextRequest) {
         error: `That ${fieldLabel} ("${deliverable}") was not found in the current scope snapshot — it may have changed since this page loaded. Refresh and try again.`,
       }, { status: 409 })
     }
+    if (previousTitle === newValue)
+      return NextResponse.json({ error: `The new title is the same as the current one.` }, { status: 400 })
+    // A rename must not silently create two entries with the same title (later renames/matches
+    // are by title, so a duplicate makes one of them unreachable).
+    const lower = newValue.toLowerCase()
+    const clash = sourceList.some((d: any) => titleOf(d).toLowerCase() === lower && titleOf(d) !== previousTitle)
+    if (clash)
+      return NextResponse.json({ error: `Another ${fieldLabel} is already titled "${newValue}".` }, { status: 409 })
+
+    // FIX (independent pass, section 13): the history row is now written FIRST and removed if the
+    // snapshot write then fails. Previously the snapshot changed first and a failed history insert
+    // left an UNAUDITED scope change behind while the user saw a 500 (whose retry then failed with
+    // a 409 "not found", because the rename had in fact landed). old_value is also derived from the
+    // snapshot itself now — it used to be whatever the caller sent, or '' if they sent nothing.
+    const { data: adjustment, error: adjErr } = await (service as any)
+      .from('scope_adjustments').insert({
+        project_id:   projectId,
+        workspace_id: session.workspaceId,
+        deliverable:  previousTitle,
+        field,
+        old_value:    previousTitle,
+        new_value:    newValue,
+        reason,
+        adjusted_by:  session.id,
+      }).select('id').single()
+    if (adjErr || !adjustment) throw new Error(adjErr?.message || 'Could not record the adjustment')
 
     const { data: updatedSnap, error: snapErr } = await (service as any)
       .from('project_scope_snapshot')
@@ -112,41 +152,25 @@ export async function POST(request: NextRequest) {
       .eq('version', snap.version) // compare-and-swap — fails (0 rows) if someone else updated it first
       .select('id')
 
-    if (snapErr) throw new Error(snapErr.message)
-    if (!updatedSnap || updatedSnap.length === 0) {
+    if (snapErr || !updatedSnap || updatedSnap.length === 0) {
+      await (service as any).from('scope_adjustments').delete().eq('id', adjustment.id)
+      if (snapErr) throw new Error(snapErr.message)
       return NextResponse.json({
         error: 'The scope snapshot changed while processing this adjustment — please retry.',
       }, { status: 409 })
     }
-
-    // Only recorded once the snapshot write (if any) has actually
-    // succeeded, so this history entry can never describe a change that
-    // didn't really land.
-    const { data: adjustment, error: adjErr } = await (service as any)
-      .from('scope_adjustments').insert({
-        project_id:   projectId,
-        workspace_id: session.workspaceId,
-        deliverable,
-        field,
-        old_value:    oldValue || '',
-        new_value:    newValue,
-        reason:       reason.trim(),
-        adjusted_by:  session.id,
-      }).select('id').single()
-
-    if (adjErr) throw new Error(adjErr.message)
 
     await logAudit(service, {
       workspaceId: session.workspaceId, actorId: session.id,
       actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
       eventType: 'project.scope_adjustment_made', entityType: 'project',
       entityId: projectId, entityName: project.name,
-      metadata: { deliverable, field, old_value: oldValue, new_value: newValue, reason },
+      metadata: { deliverable: previousTitle, field, old_value: previousTitle, new_value: newValue, reason },
     })
 
     return NextResponse.json({ ok: true, adjustmentId: adjustment.id })
   } catch (err) {
-    console.error('guardian/scope-adjustment error:', err)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    console.error('Scope adjustment error:', err)
+    return NextResponse.json({ error: 'Could not save the scope adjustment — please try again.' }, { status: 500 })
   }
 }

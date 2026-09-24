@@ -109,7 +109,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const client = sow.projects?.clients
     let emailed = true
     if (client?.email) {
-      const cc = await withPrimaryContactCc(service, sow.projects?.client_id, client.email, client.cc_emails)
+      const cc = await withPrimaryContactCc(service, sow.projects?.client_id, client.email, client.cc_emails, 'sow')
       const replyTo = await resolveReplyTo(service, session.workspaceId, session.email)
       const delivery = await checkedSend(() => sendDocumentCancelledEmail({
         replyTo,

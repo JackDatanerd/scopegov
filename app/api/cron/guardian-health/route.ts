@@ -1,4 +1,5 @@
 export const runtime = 'nodejs'
+export const maxDuration = 120
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
@@ -7,6 +8,8 @@ import { sendEmail } from '@/lib/email/send'
 import { systemFrom } from '@/lib/email/from'
 import { alertCronFailure } from '@/lib/utils/cron-alert'
 import { recordCronHeartbeat } from '@/lib/utils/cron-heartbeat'
+import { reclassifyCheck, GUARDIAN_SYSTEM_ACTOR, MAX_AUTO_CLASSIFICATION_ATTEMPTS } from '@/lib/ai/guardian-pipeline'
+import { recordAiUsageByProject } from '@/lib/utils/rate-limit'
 
 // FIX (audit round 3): local copy replaced with the shared,
 // null-safe helper — see lib/utils/verify-cron.ts.
@@ -71,35 +74,113 @@ async function markAlerted(service: any, key: string): Promise<void> {
   await service.from('ops_alert_state').upsert({ key, last_sent_at: new Date().toISOString() })
 }
 
+const SWEEP_BATCH = 10               // AI calls per run (cost + duration bound)
+const SWEEP_BUDGET_MS = 90_000       // stop starting new work after this
+const SWEEP_MAX_AGE_DAYS = 90        // don't resurrect very old backlog
+const BACKOFF_BASE_MS = 15 * 60000   // 15m, 30m, 60m, … per failed attempt
+
+function groupByWorkspace(rows: Array<{ workspace_id: string }>): string {
+  const counts = new Map<string, number>()
+  for (const r of rows) counts.set(r.workspace_id, (counts.get(r.workspace_id) || 0) + 1)
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10)
+    .map(([ws, n]) => `  workspace ${ws}: ${n}`).join('\n')
+}
+
+// FEATURE (independent pass, section 13): this cron used to only PAGE on classification
+// failures. Nothing ever retried them automatically, and checks stored `pending` because no SOW
+// was signed at submission time (or because the inbound rate limit was hit) were stranded
+// forever — retry only handled classification_failed, by hand. The sweep below re-classifies
+// both kinds in place (bounded per run, exponential backoff, capped attempts).
+async function sweepUnclassified(service: any) {
+  const now = Date.now()
+  const oldest = new Date(now - SWEEP_MAX_AGE_DAYS * 86400000).toISOString()
+  const cols = 'id, workspace_id, project_id, classification_failed, classification_attempts, last_attempt_at, created_at'
+
+  const { data: failedRows, error: failedErr } = await service.from('guardian_checks').select(cols)
+    .eq('outcome', 'pending').eq('is_duplicate', false).eq('classification_failed', true)
+    .lt('classification_attempts', MAX_AUTO_CLASSIFICATION_ATTEMPTS).gte('created_at', oldest)
+    .order('created_at', { ascending: true }).limit(40)
+  if (failedErr) throw new Error(`guardian sweep (failed): ${failedErr.message}`)
+
+  // Backlog: pending, never failed, and the project NOW has a signed-SOW snapshot.
+  const { data: backlogRows, error: backlogErr } = await service.from('guardian_checks')
+    .select(`${cols}, projects!inner(project_scope_snapshot!inner(id))`)
+    .eq('outcome', 'pending').eq('is_duplicate', false).eq('classification_failed', false)
+    .lt('classification_attempts', MAX_AUTO_CLASSIFICATION_ATTEMPTS).gte('created_at', oldest)
+    .order('created_at', { ascending: true }).limit(40)
+  if (backlogErr) throw new Error(`guardian sweep (backlog): ${backlogErr.message}`)
+
+  const due = (r: any) => {
+    if (!r.last_attempt_at) return true
+    const wait = BACKOFF_BASE_MS * Math.pow(2, Number(r.classification_attempts || 0))
+    return now - new Date(r.last_attempt_at).getTime() >= wait
+  }
+  const candidates = [...(failedRows || []), ...(backlogRows || [])].filter(due).slice(0, SWEEP_BATCH)
+
+  const started = Date.now()
+  const stats = { candidates: candidates.length, classified: 0, flagged: 0, failed: 0, skipped: 0 }
+  for (const c of candidates) {
+    if (Date.now() - started > SWEEP_BUDGET_MS) break
+    try {
+      await recordAiUsageByProject(service, c.workspace_id, c.project_id, 'guardian.sweep')
+      const res = await reclassifyCheck(service, c.id, {
+        actor: GUARDIAN_SYSTEM_ACTOR, auditEvent: 'check.swept', emailPath: 'automatic re-check',
+        requireFailed: false, maxAttempts: MAX_AUTO_CLASSIFICATION_ATTEMPTS,
+      })
+      if (res.status === 'classified') { stats.classified++; if (res.flagId) stats.flagged++ }
+      else if (res.status === 'failed') stats.failed++
+      else stats.skipped++
+    } catch (e) {
+      stats.failed++
+      console.error('Guardian sweep item failed:', c.id, e)
+    }
+  }
+  return stats
+}
+
 export async function POST(request: NextRequest) {
   if (!verifyCronSecret(request))
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   try {
-    const service  = createServiceClient()
+    const service  = createServiceClient() as any
     const since15m = new Date(Date.now() - 15 * 60000).toISOString()
 
-    const { data: recent, error: recentErr } = await (service as any)
-      .from('guardian_checks')
-      .select('id, classification_failed')
-      .gte('created_at', since15m)
-      .eq('is_duplicate', false)
-    if (recentErr) throw new Error(`guardian-health select: ${recentErr.message}`)
+    // FIX (independent pass, section 13): the failure rate used to be computed in JS over an
+    // unpaginated row select (silently capped at PostgREST's 1,000 rows) and its denominator
+    // included checks that were never classifiable at all (pending because no SOW was signed),
+    // which diluted the rate and could hide a real outage. Exact counts over classifiable checks only.
+    const windowBase = () => service.from('guardian_checks')
+      .select('id', { count: 'exact', head: true }).gte('created_at', since15m).eq('is_duplicate', false)
+    const [{ count: totalCount, error: totalErr }, { count: failedCount, error: failedCountErr }] = await Promise.all([
+      windowBase().or('classification_failed.eq.true,outcome.neq.pending'),
+      windowBase().eq('classification_failed', true),
+    ])
+    if (totalErr) throw new Error(`guardian-health total: ${totalErr.message}`)
+    if (failedCountErr) throw new Error(`guardian-health failed: ${failedCountErr.message}`)
 
-    const total  = (recent || []).length
-    const failed = (recent || []).filter((c: any) => c.classification_failed).length
+    const total  = totalCount || 0
+    const failed = failedCount || 0
     const rate   = total > 0 ? failed / total : 0
 
     if (rate > 0.01 && total >= 5) {
+      const { data: failedRows } = await service.from('guardian_checks').select('workspace_id')
+        .gte('created_at', since15m).eq('is_duplicate', false).eq('classification_failed', true).limit(500)
       const msg = `Classification failure rate: ${(rate * 100).toFixed(1)}% (${failed}/${total} in last 15 min)`
       console.error(`[GUARDIAN ALERT] ${msg}`)
       if (!(await isOnCooldown(service, 'guardian_health:elevated_failure_rate', 60 * 60000))) {
-        if (await alertOps('Elevated classification failure rate', [msg]))
+        if (await alertOps('Elevated classification failure rate', [msg, 'By workspace:', groupByWorkspace(failedRows || [])]))
           await markAlerted(service, 'guardian_health:elevated_failure_rate')
       }
     }
 
-    // Alert on unresolved failures > 24h
+    // ── Sweep: retry failed + classify the backlog ────────────
+    let sweep: Awaited<ReturnType<typeof sweepUnclassified>> | { error: string } = { candidates: 0, classified: 0, flagged: 0, failed: 0, skipped: 0 }
+    try { sweep = await sweepUnclassified(service) }
+    catch (e) { console.error('Guardian sweep error:', e); sweep = { error: e instanceof Error ? e.message : 'sweep failed' } }
+
+    // Alert on failures that are still unresolved after 24h (auto-retries included — a check
+    // only stays here once the sweep has exhausted its attempts, or the outage is ongoing).
     const since24h = new Date(Date.now() - 24 * 3600000).toISOString()
     const { count: unresolvedCount, error: unresolvedErr } = await (service as any)
       .from('guardian_checks')
@@ -113,16 +194,18 @@ export async function POST(request: NextRequest) {
     if (unresolvedErr) throw new Error(`guardian-health unresolved-failures count: ${unresolvedErr.message}`)
 
     if ((unresolvedCount || 0) > 0) {
+      const { data: stuckRows } = await service.from('guardian_checks').select('workspace_id')
+        .eq('classification_failed', true).eq('outcome', 'pending').lt('created_at', since24h).limit(500)
       const msg = `${unresolvedCount} unresolved classification failures older than 24h`
       console.error(`[GUARDIAN ALERT] ${msg}`)
       if (!(await isOnCooldown(service, 'guardian_health:unresolved_failures', 6 * 3600000))) {
-        if (await alertOps('Unresolved classification failures', [msg]))
+        if (await alertOps('Unresolved classification failures', [msg, 'By workspace:', groupByWorkspace(stuckRows || [])]))
           await markAlerted(service, 'guardian_health:unresolved_failures')
       }
     }
 
-    await recordCronHeartbeat(service, 'guardian-health', { total, failed })
-    return NextResponse.json({ ok: true, total, failed, rate: rate.toFixed(3) })
+    await recordCronHeartbeat(service, 'guardian-health', { total, failed, sweep })
+    return NextResponse.json({ ok: true, total, failed, rate: rate.toFixed(3), sweep })
   } catch (err) {
     console.error('Guardian health check error:', err)
     await alertCronFailure(createServiceClient(), 'guardian-health', err).catch(() => {})

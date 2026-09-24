@@ -386,7 +386,7 @@ export async function finalizeCoAcceptance(service: any, params: {
   if (client?.email) {
     const portalBase = process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL
     const portalUrl  = `${portalBase}/portal/co/${coToken || ''}`
-    const acceptedCc = await withPrimaryContactCc(service, project.client_id, client.email, client.cc_emails)
+    const acceptedCc = await withPrimaryContactCc(service, project.client_id, client.email, client.cc_emails, 'co')
     const replyTo = await resolveReplyTo(service, co.workspace_id, null)
     await checkedSend(() => sendCoAcceptedClientEmail({
       replyTo,

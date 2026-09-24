@@ -126,7 +126,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // after pressing "dispute" — every other client response (SOW decline /
     // change request, CO decline / counter) already sends a receipt.
     if (client?.email) {
-      const cc = await withPrimaryContactCc(service, project?.client_id, client.email, client.cc_emails)
+      const cc = await withPrimaryContactCc(service, project?.client_id, client.email, client.cc_emails, 'invoice')
       const replyTo = await resolveReplyTo(service, invoice.workspace_id, null)
       await checkedSend(() => sendClientResponseReceivedEmail({
         replyTo,

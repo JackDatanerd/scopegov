@@ -139,6 +139,16 @@ export async function POST(request: NextRequest) {
           .single()
         if (clientErr) throw new Error(clientErr.message)
         resolvedClientId = created.id
+        // FIX (independent pass, section 14 trace): clients created through project creation left no
+        // `client.created` audit row (POST /api/clients writes one), so the client's history started
+        // with an unexplained record.
+        await insertAuditRow(service, {
+          workspace_id: session.workspaceId, actor_id: session.id,
+          actor_email: session.email, actor_name: session.name,
+          event_type: 'client.created', entity_type: 'client',
+          entity_id: created.id, entity_name: newClient.name.trim(),
+          metadata: { via: 'project_creation' },
+        })
       }
     }
 

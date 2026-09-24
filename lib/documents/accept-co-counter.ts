@@ -137,7 +137,7 @@ export async function acceptCoCounter(service: any, params: {
   })
 
   const portalUrl = `${process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL}/portal/co/${newToken}`
-  const cc = await withPrimaryContactCc(service, project?.client_id, client.email, client.cc_emails)
+  const cc = await withPrimaryContactCc(service, project?.client_id, client.email, client.cc_emails, 'co')
   const replyTo = await resolveReplyTo(service, workspaceId, actorEmail)
   const delivery = await checkedSend(() => sendCoCountersignatureRequestEmail({
     replyTo,

@@ -2,6 +2,9 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import ClientsClient from '@/components/clients/ClientsClient'
+import { fetchPaged } from '@/lib/utils/paginate'
+
+const MAX_CLIENTS = 5000
 
 export const metadata = { title: 'Clients' }
 
@@ -10,12 +13,19 @@ export default async function ClientsPage() {
   if (!session) redirect('/login')
 
   const service = createServiceClient()
-  const { data: clients = [] } = await (service as any)
-    .from('clients')
-    .select(`id, name, company_name, email, phone, status, created_at,
-      projects(id, status, contract_value, currency, deleted_at)`)
-    .eq('workspace_id', session.workspaceId)
-    .order('name')
+  // FIX (independent pass, section 14): a plain select is silently capped at PostgREST's 1,000 rows
+  // (the tail of a large roster just vanished), and a failed read was destructured away into an empty
+  // list — "No clients yet" during an outage, which invites creating duplicates. Paged; an error now
+  // throws to the error boundary instead of masquerading as an empty roster.
+  const { rows: clients, truncated } = await fetchPaged<any>((from, to) =>
+    (service as any)
+      .from('clients')
+      .select(`id, name, company_name, email, phone, status, created_at, email_bounced_at,
+        projects(id, status, contract_value, currency, deleted_at)`, { count: 'exact' })
+      .eq('workspace_id', session.workspaceId)
+      .order('name').order('id')
+      .range(from, to),
+    { maxRows: MAX_CLIENTS })
 
   const canViewFinancials = hasPermission(session, 'VIEW_FINANCIALS')
   const canViewClientData = hasPermission(session, 'VIEW_CLIENT_DATA')
@@ -50,6 +60,7 @@ export default async function ClientsPage() {
     ...c,
     email: canViewClientData ? c.email : null,
     phone: canViewClientData ? c.phone : null,
+    email_bounced_at: canViewClientData ? c.email_bounced_at : null,
     // FIX (audit round 6): this join had no deleted_at filter, so
     // clientStats() on the list page counted soft-deleted projects while
     // the client detail page (which does filter .is('deleted_at', null))
@@ -76,6 +87,7 @@ export default async function ClientsPage() {
       canCreate={canCreateClient}
       canViewFinancials={canViewFinancials}
       canViewClientData={canViewClientData}
+      truncated={truncated}
     />
   )
 }

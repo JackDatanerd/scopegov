@@ -3,17 +3,30 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
+import { parseClientInput } from '@/lib/utils/client-input'
+import { fetchPaged } from '@/lib/utils/paginate'
+
+// ilike treats % and _ as wildcards — an email like jo_hn@x.com must match literally.
+const escapeLike = (v: string) => v.replace(/[\\%_]/g, m => `\${m}`)
+const MAX_CLIENTS_LISTED = 5000
 
 export async function GET() {
   try {
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const service = createServiceClient()
-    const { data: clients } = await (service as any)
-      .from('clients')
-      .select('id,name,company_name,email,status,created_at')
-      .eq('workspace_id', session.workspaceId)
-      .order('name')
+    // FIX (independent pass, section 14): the read error was ignored (an outage rendered as an
+    // empty list — "No clients yet" — which invites creating duplicates), and a plain select is
+    // silently capped at PostgREST's 1,000 rows, so the tail of a big roster vanished. Paged, with
+    // errors surfaced and an explicit `truncated` flag.
+    const { rows: clients, truncated } = await fetchPaged<any>((from, to) =>
+      (service as any)
+        .from('clients')
+        .select('id,name,company_name,email,status,created_at,email_bounced_at', { count: 'exact' })
+        .eq('workspace_id', session.workspaceId)
+        .order('name').order('id')
+        .range(from, to),
+      { maxRows: MAX_CLIENTS_LISTED })
 
     // FIX (audit round 4, finding #3): VIEW_CLIENT_DATA was enforced by
     // redacting fields server-side on the client-detail page, but this
@@ -37,8 +50,11 @@ export async function GET() {
     // was always going to 403.
     const canCreateClient = hasPermission(session, 'CREATE_PROJECTS') && canViewClientData
 
-    return NextResponse.json({ clients: result, canCreateClient })
-  } catch { return NextResponse.json({ error: 'Error' }, { status: 500 }) }
+    return NextResponse.json({ clients: result, canCreateClient, truncated })
+  } catch (err) {
+    console.error('Clients list error:', err)
+    return NextResponse.json({ error: 'Could not load clients' }, { status: 500 })
+  }
 }
 
 export async function POST(request: NextRequest) {
@@ -59,58 +75,34 @@ export async function POST(request: NextRequest) {
     if (!hasPermission(session, 'VIEW_CLIENT_DATA'))
       return NextResponse.json({ error: 'Missing permission: VIEW_CLIENT_DATA' }, { status: 403 })
 
-    const body    = await request.json()
-    const { name, companyName, email, phone, notes, timezone, billingAddress, vatNumber, ccEmails } = body
-    if (!name?.trim() || !email?.trim())
-      return NextResponse.json({ error: 'Name and email required' }, { status: 400 })
-    // FIX (audit round 6): only presence was checked, not shape — an
-    // unvalidated address here is what every invoice/SOW/CO for this
-    // client actually gets sent to, so a typo means silent, permanent
-    // delivery failure with no error at creation time.
-    const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-    if (!EMAIL_RE.test(email.trim()))
-      return NextResponse.json({ error: 'Please enter a valid email address' }, { status: 400 })
-
-    // FIX (audit round 6): cc_emails is read by every document-send route
-    // (invoice/SOW/CO send, remind, void, withdraw, portal accept) but had
-    // no create/edit path anywhere — every client's cc_emails was
-    // permanently stuck at '{}'. Accept it here (and in PATCH) same as any
-    // other contact field: comma/newline-separated string or array, each
-    // entry validated and lowercased like the primary email.
-    let normalizedCcEmails: string[] = []
-    if (ccEmails) {
-      const raw = Array.isArray(ccEmails) ? ccEmails : String(ccEmails).split(/[,\n]/)
-      normalizedCcEmails = raw.map((e: string) => e.trim().toLowerCase()).filter(Boolean)
-      const invalid = normalizedCcEmails.find(e => !EMAIL_RE.test(e))
-      if (invalid)
-        return NextResponse.json({ error: `Invalid CC email address: ${invalid}` }, { status: 400 })
-    }
+    let body: any
+    try { body = await request.json() } catch { return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 }) }
+    const parsed = parseClientInput(body, 'create')
+    if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 })
+    const u = parsed.updates as any
 
     const service = createServiceClient()
 
-    // Duplicate email check
+    // Duplicate email check (case-insensitive — legacy rows may not be lower-cased)
     const { data: existing } = await (service as any)
       .from('clients').select('id,name').eq('workspace_id', session.workspaceId)
-      .eq('email', email.toLowerCase().trim()).single()
+      .ilike('email', escapeLike(u.email)).limit(1).maybeSingle()
     if (existing)
-      return NextResponse.json({ error: 'A client with this email already exists', existingClientId: existing.id }, { status: 409 })
+      return NextResponse.json({ error: 'A client with this email already exists', existingClientId: existing.id, existingClientName: existing.name }, { status: 409 })
 
     const { data: client, error } = await (service as any)
       .from('clients').insert({
         workspace_id: session.workspaceId,
-        name:         name.trim(),
-        company_name: companyName?.trim() || null,
-        email:        email.toLowerCase().trim(),
-        cc_emails:    normalizedCcEmails,
-        phone:        phone?.trim() || null,
-        notes:        notes?.trim() || null,
-        timezone:     timezone || null,
-        // Phase 11: billing_address/vat_number existed in the schema since
-        // 001_initial_schema.sql but were never reachable from this route —
-        // every client created before now has them NULL, which is fine, the
-        // PDF renderer treats them as optional and just omits the block.
-        billing_address: billingAddress || null,
-        vat_number:      vatNumber?.trim() || null,
+        name:         u.name,
+        company_name: u.company_name ?? null,
+        email:        u.email,
+        cc_emails:    u.cc_emails ?? [],
+        phone:        u.phone ?? null,
+        notes:        u.notes ?? null,
+        timezone:     u.timezone ?? null,
+        billing_address: u.billing_address ?? null,
+        vat_number:      u.vat_number ?? null,
+        payment_terms_note: u.payment_terms_note ?? null,
       }).select('id').single()
 
     // FIX (audit round 6): the manual dupe-check above has a TOCTOU window
@@ -126,11 +118,11 @@ export async function POST(request: NextRequest) {
       workspaceId: session.workspaceId, actorId: session.id,
       actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
       eventType: 'client.created', entityType: 'client',
-      entityId: client.id, entityName: name.trim(), metadata: {},
+      entityId: client.id, entityName: u.name, metadata: {},
     })
     return NextResponse.json({ clientId: client.id })
   } catch (err) {
-    console.error('clients error:', err)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    console.error('Client create error:', err)
+    return NextResponse.json({ error: 'Could not create the client' }, { status: 500 })
   }
 }

@@ -24,8 +24,11 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
+import { EMAIL_RE, CLIENT_LIMITS, CONTACT_ROLE_TYPES, type ContactRoleType } from '@/lib/utils/client-input'
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const MAX_CONTACTS_PER_CLIENT = 25
+const escapeLike = (v: string) => v.replace(/[\\%_]/g, m => `\${m}`)
+const CONTACT_COLS = 'id,name,email,role,role_type,is_primary,created_at'
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -41,12 +44,13 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
     if (!client) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-    const { data: contacts } = await (service as any)
+    const { data: contacts, error } = await (service as any)
       .from('client_contacts')
-      .select('id,name,email,role,is_primary,created_at')
+      .select(CONTACT_COLS)
       .eq('client_id', id)
       .order('is_primary', { ascending: false })
       .order('created_at', { ascending: true })
+    if (error) throw new Error(error.message)
 
     return NextResponse.json({ contacts: contacts || [] })
   } catch (err) {
@@ -69,41 +73,54 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
     if (!client) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-    const body = await request.json()
-    const { name, email, role, isPrimary } = body
-    if (!name?.trim() || !email?.trim())
+    let body: any
+    try { body = await request.json() } catch { return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 }) }
+    // FIX (independent pass, section 14): fields were never type-checked (a non-string name threw a
+    // TypeError → 500), and nothing capped lengths, the number of contacts, or repeated emails.
+    if (typeof body?.name !== 'string' || !body.name.trim() || typeof body?.email !== 'string' || !body.email.trim())
       return NextResponse.json({ error: 'Name and email required' }, { status: 400 })
-    if (!EMAIL_RE.test(email.trim()))
+    const name  = body.name.trim()
+    const email = body.email.trim().toLowerCase()
+    if (name.length > CLIENT_LIMITS.name) return NextResponse.json({ error: `Name is too long (${CLIENT_LIMITS.name} characters max)` }, { status: 400 })
+    if (email.length > CLIENT_LIMITS.email || !EMAIL_RE.test(email))
       return NextResponse.json({ error: 'Please enter a valid email address' }, { status: 400 })
+    if (body.role !== undefined && body.role !== null && typeof body.role !== 'string')
+      return NextResponse.json({ error: 'Role must be text' }, { status: 400 })
+    const role = typeof body.role === 'string' ? body.role.trim().slice(0, 100) || null : null
+    const roleType: ContactRoleType = body.roleType === undefined ? 'other' : body.roleType
+    if (!CONTACT_ROLE_TYPES.includes(roleType))
+      return NextResponse.json({ error: `roleType must be one of: ${CONTACT_ROLE_TYPES.join(', ')}` }, { status: 400 })
 
-    // Supabase JS has no multi-statement transaction here (same
-    // limitation noted for create_workspace_atomic() elsewhere in this
-    // schema) — unset any existing primary first, then insert. The
-    // unique partial index (client_contacts_one_primary) is still the
-    // backstop against a genuine race producing two primaries.
-    if (isPrimary) {
-      await (service as any).from('client_contacts')
-        .update({ is_primary: false }).eq('client_id', id).eq('is_primary', true)
+    const { count } = await (service as any).from('client_contacts')
+      .select('id', { count: 'exact', head: true }).eq('client_id', id)
+    if ((count || 0) >= MAX_CONTACTS_PER_CLIENT)
+      return NextResponse.json({ error: `A client can have at most ${MAX_CONTACTS_PER_CLIENT} contacts.` }, { status: 409 })
+
+    const { data: dupe } = await (service as any).from('client_contacts')
+      .select('id,name').eq('client_id', id).ilike('email', escapeLike(email)).limit(1).maybeSingle()
+    if (dupe) return NextResponse.json({ error: `${dupe.name} already has this email address.` }, { status: 409 })
+
+    // FIX (independent pass, section 14): the old primary was demoted in one statement and the new
+    // contact inserted in another — a failure in between left the client with NO primary contact.
+    // client_contact_add (migration 077) does both in a single transaction under a row lock.
+    const { data: newId, error } = await (service as any).rpc('client_contact_add', {
+      p_client_id: id, p_name: name, p_email: email, p_role: role, p_role_type: roleType, p_is_primary: body.isPrimary === true,
+    })
+    if (error?.code === '23505') {
+      return NextResponse.json({
+        error: /email/i.test(error.message) ? 'A contact with this email already exists for this client.' : 'Only one primary contact is allowed per client',
+      }, { status: 409 })
     }
-
-    const { data: contact, error } = await (service as any)
-      .from('client_contacts').insert({
-        client_id:  id,
-        name:       name.trim(),
-        email:      email.toLowerCase().trim(),
-        role:       role?.trim() || null,
-        is_primary: !!isPrimary,
-      }).select('id,name,email,role,is_primary,created_at').single()
-
-    if (error?.code === '23505')
-      return NextResponse.json({ error: 'Only one primary contact is allowed per client' }, { status: 409 })
     if (error) throw new Error(error.message)
+
+    const { data: contact } = await (service as any).from('client_contacts').select(CONTACT_COLS).eq('id', newId).single()
 
     await logAudit(service, {
       workspaceId: session.workspaceId, actorId: session.id,
       actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
       eventType: 'client_contact.created', entityType: 'client_contact',
-      entityId: contact.id, entityName: `${name.trim()} (${client.name})`, metadata: {},
+      entityId: newId, entityName: `${name} (${client.name})`,
+      metadata: { email, role, role_type: roleType, is_primary: body.isPrimary === true },
     })
 
     return NextResponse.json({ contact })

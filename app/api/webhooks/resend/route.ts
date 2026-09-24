@@ -65,6 +65,7 @@ export async function POST(request: NextRequest) {
     if (!updated || updated.length === 0) return NextResponse.json({ ok: true, unchanged: true })
 
     if (next === 'bounced' || next === 'complained') await alertSender(service, row, next)
+    await trackClientEmailHealth(service, row, next)
     return NextResponse.json({ ok: true, status: next })
   } catch (err) {
     console.error('[resend-webhook] processing failed:', err)
@@ -106,4 +107,30 @@ async function alertSender(service: any, row: any, status: 'bounced' | 'complain
   await notifyMembersWithPermission(service, {
     ...shared, type, permission: doc?.permission || 'MANAGE_WORKSPACE_SETTINGS', eventType: '',
   })
+}
+
+// FEATURE (independent pass, section 14): the bounce alert above reaches only the sender, once. Nothing
+// stayed on the CLIENT record, so the next teammate to send that client something had no idea the
+// address was dead. The client's primary email (only — a bounced CC is not the client's address) is now
+// marked on the record (shown on the client page and list) and cleared again by the next successful
+// delivery to it or by editing the address. Best-effort: a failure here never fails the webhook.
+async function trackClientEmailHealth(service: any, row: any, status: string) {
+  try {
+    const to = String((row.to_emails || [])[0] || '').trim().toLowerCase()
+    if (!to || !row.workspace_id) return
+    if (status === 'bounced' || status === 'complained') {
+      const { error } = await service.from('clients')
+        .update({ email_bounced_at: new Date().toISOString(), email_bounce_kind: status === 'complained' ? 'complaint' : 'bounce' })
+        .eq('workspace_id', row.workspace_id).eq('email', to)
+      if (error) console.error('[resend-webhook] could not mark client email bounce:', error.message)
+    } else if (status === 'delivered') {
+      // Only a plain bounce clears on delivery — a spam complaint stays until the address is changed.
+      const { error } = await service.from('clients')
+        .update({ email_bounced_at: null, email_bounce_kind: null })
+        .eq('workspace_id', row.workspace_id).eq('email', to).eq('email_bounce_kind', 'bounce')
+      if (error) console.error('[resend-webhook] could not clear client email bounce:', error.message)
+    }
+  } catch (e) {
+    console.error('[resend-webhook] client email health update failed:', e)
+  }
 }

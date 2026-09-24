@@ -60,7 +60,11 @@ export async function POST(
     if (!canWriteGovernance(session))
       return NextResponse.json({ error: 'Missing permission: APPROVE_FLAGS or GRANT_EXCEPTIONS' }, { status: 403 })
 
-    const body = await request.json()
+    let body: any
+    try { body = await request.json() } catch { return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 }) }
+    // A non-string body (number/array/object) used to throw on `.trim()` → 500.
+    if (body?.body !== undefined && typeof body.body !== 'string')
+      return NextResponse.json({ error: 'Comment body must be text' }, { status: 400 })
     const text = (body?.body || '').trim()
     if (!text) return NextResponse.json({ error: 'Comment body is required' }, { status: 400 })
     if (text.length > 4000) return NextResponse.json({ error: 'Comment is too long' }, { status: 400 })
@@ -93,6 +97,15 @@ export async function POST(
       entityType: entityType === 'flag' ? 'guardian_flag' : 'exception',
       entityId, metadata: { comment_id: comment.id },
     })
+
+    // FIX (independent pass, section 13): comments didn't touch the flag's updated_at, so
+    // cron/guardian-flag-stall (which measures inactivity by updated_at) kept sending
+    // "this flag has been open X days" reminders on flags that were being actively discussed.
+    if (entityType === 'flag') {
+      const { error: touchErr } = await (service as any).from('guardian_flags')
+        .update({ updated_at: new Date().toISOString() }).eq('id', entityId)
+      if (touchErr) console.error('Could not bump flag activity timestamp:', touchErr.message)
+    }
 
     // Notify whoever owns this flag/exception (resolved it, is escalated to
     // it, or granted the exception) — not a broadcast to every permitted
@@ -129,7 +142,10 @@ async function notifyEntityOwner(
   commentText: string
 ) {
   try {
-    let ownerId: string | null = null
+    // FIX (independent pass, section 13): a flag escalated to one person and then resolved by another
+    // only notified the resolver (`resolved_by || escalated_to`) — the escalatee never heard about the
+    // discussion. Both are owners now.
+    let ownerIds: string[] = []
     let title = 'New comment'
 
     if (entityType === 'flag') {
@@ -137,7 +153,7 @@ async function notifyEntityOwner(
         .from('guardian_flags')
         .select('resolved_by, escalated_to, sow_reference')
         .eq('id', entityId).single()
-      ownerId = flag?.resolved_by || flag?.escalated_to || null
+      ownerIds = [flag?.resolved_by, flag?.escalated_to].filter((v: any): v is string => !!v)
       // No trailing " — " when the flag cites no SOW reference.
       title = `New comment on scope flag${flag?.sow_reference ? ` — ${flag.sow_reference}` : ''}`
     } else {
@@ -145,7 +161,7 @@ async function notifyEntityOwner(
         .from('exceptions_log')
         .select('granted_by, deliverable')
         .eq('id', entityId).single()
-      ownerId = exception?.granted_by || null
+      ownerIds = exception?.granted_by ? [exception.granted_by] : []
       title = `New comment on exception${exception?.deliverable ? ` — ${exception.deliverable}` : ''}`
     }
 
@@ -155,7 +171,7 @@ async function notifyEntityOwner(
     //  • everyone who has already commented on this thread. Replies used to reach only the owner, so
     //    an owner answering a question left the person who asked it — the previous commenter — unaware.
     const recipientIds = new Set<string>()
-    if (ownerId) recipientIds.add(ownerId)
+    if (ownerIds.length) ownerIds.forEach(o => recipientIds.add(o))
     else if (entityType === 'flag') {
       const actors = await getMembersWithPermission(
         service, session.workspaceId, 'APPROVE_FLAGS', 25, projectId, undefined, 'in_app', session.id

@@ -1,9 +1,11 @@
 export const runtime = 'nodejs'
 
+import { randomUUID } from 'crypto'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { getClientIp } from '@/lib/utils/request-ip'
 import { resolveEntity, canReadProject, canWriteGovernance, isValidEntityType } from '@/lib/utils/flag-governance'
 
 // Private bucket, created manually in the Supabase dashboard (same as the
@@ -107,6 +109,12 @@ export async function POST(
     if (!(await canReadProject(service, session, entity.projectId)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
+    // request.formData() buffers the whole body before the size check below can run — refuse an
+    // obviously oversized upload up front (allowing for multipart overhead).
+    const declaredLength = Number(request.headers.get('content-length') || 0)
+    if (declaredLength > MAX_FILE_BYTES + 512 * 1024)
+      return NextResponse.json({ error: 'File exceeds 10 MB limit' }, { status: 413 })
+
     const formData = await request.formData()
     const file = formData.get('file')
     if (!(file instanceof File)) return NextResponse.json({ error: 'No file provided' }, { status: 400 })
@@ -115,8 +123,14 @@ export async function POST(
     if (!ALLOWED_TYPES.has(file.type))
       return NextResponse.json({ error: `Unsupported file type: ${file.type || 'unknown'}` }, { status: 400 })
 
-    const ext = (file.name.split('.').pop() || 'bin').toLowerCase().slice(0, 10)
-    const storagePath = `${session.workspaceId}/${entityType}/${entityId}/${crypto.randomUUID()}.${ext}`
+    // FIX (independent pass, section 13): the extension came straight from the client's filename
+    // (and a name with no dot returned the WHOLE name), so slashes/spaces/unicode/'?'/'#' ended up
+    // in the storage object key — Supabase rejects some, turning an ordinary upload into a 500.
+    // Only [a-z0-9] survives; the display name is length-capped and stripped of path separators.
+    const rawExt = file.name.includes('.') ? (file.name.split('.').pop() || '') : ''
+    const ext = rawExt.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 10) || 'bin'
+    const displayName = file.name.replace(/[\\/]+/g, '_').slice(0, 200) || 'attachment'
+    const storagePath = `${session.workspaceId}/${entityType}/${entityId}/${randomUUID()}.${ext}`
 
     const buffer = Buffer.from(await file.arrayBuffer())
     if (!matchesDeclaredType(file.type, buffer)) {
@@ -134,7 +148,7 @@ export async function POST(
         project_id: entity.projectId,
         entity_type: entityType,
         entity_id: entityId,
-        file_name: file.name,
+        file_name: displayName,
         file_size: file.size,
         mime_type: file.type,
         storage_path: storagePath,
@@ -152,23 +166,23 @@ export async function POST(
 
     await logAudit(service, {
       workspaceId: session.workspaceId, actorId: session.id,
-      actorEmail: session.email, actorName: session.name,
+      actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
       eventType: 'flag_attachment.added',
       entityType: entityType === 'flag' ? 'guardian_flag' : 'exception',
-      entityId, metadata: { attachment_id: attachment.id, file_name: file.name },
+      entityId, metadata: { attachment_id: attachment.id, file_name: displayName },
     })
 
     const { data: signed } = await service.storage.from(BUCKET).createSignedUrl(storagePath, 3600)
 
     return NextResponse.json({
       attachment: {
-        id: attachment.id, fileName: file.name, fileSize: file.size, mimeType: file.type,
+        id: attachment.id, fileName: displayName, fileSize: file.size, mimeType: file.type,
         uploadedAt: attachment.uploaded_at, uploadedByName: session.name,
         downloadUrl: signed?.signedUrl || null,
       },
     })
   } catch (err) {
     console.error('Flag attachments POST error:', err)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    return NextResponse.json({ error: 'Upload failed — please try again.' }, { status: 500 })
   }
 }
