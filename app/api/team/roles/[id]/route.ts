@@ -155,6 +155,29 @@ export async function PATCH(
       )
       if (approvalPermissionOrphanedBy(approvalSnapshot, approvalSimulated))
         return NextResponse.json({ error: APPROVE_DOCUMENTS_ORPHAN_MESSAGE }, { status: 409 })
+
+      // FIX (re-audit, section-11 finding): the check above only catches a
+      // WORKSPACE-WIDE loss of APPROVE_DOCUMENTS. It says nothing about THIS
+      // role specifically being the assigned approver on a request that's
+      // already waiting on a decision — if some other role still holds the
+      // permission, the edit sails through even though every holder of
+      // THIS role can no longer decide their own assigned step the moment
+      // it lands (hasPermission fails first, before the role/user match is
+      // even checked). That's the exact dead-end the DELETE handler below
+      // already refuses to create (see its own liveApprovalSteps check) —
+      // revoking the permission via PATCH has the identical effect on a
+      // live step as deleting the role outright, so it needs the same
+      // guard.
+      const { count: liveApprovalSteps } = await service
+        .from('approval_steps')
+        .select('id, approval_requests!inner(workspace_id, status)', { count: 'exact', head: true })
+        .eq('approver_role_id', id).eq('status', 'pending')
+        .eq('approval_requests.workspace_id', session.workspaceId).eq('approval_requests.status', 'pending')
+      if ((liveApprovalSteps || 0) > 0) {
+        return NextResponse.json({
+          error: `This role is the current approver on ${liveApprovalSteps} approval request${liveApprovalSteps === 1 ? '' : 's'} still waiting for a decision. Reassign or cancel ${liveApprovalSteps === 1 ? 'it' : 'them'} from the Approvals page first, or leave Approve documents on this role until they clear.`,
+        }, { status: 409 })
+      }
     }
 
     if (permissions !== undefined) {

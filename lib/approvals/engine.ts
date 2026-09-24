@@ -787,6 +787,22 @@ export async function sendApprovalReminder(
 // the reason on a request that had in fact succeeded. The retry now CLAIMS
 // the request first (sending_started_at) and the send runs inside the same
 // try/catch as the original auto-send.
+//
+// FIX (re-audit, section-11 finding): the mechanical send itself used to run
+// under params.actor — whoever clicked Retry, which the route's own
+// authorization allows to be any MANAGE_WORKSPACE_SETTINGS admin, not
+// necessarily the original requester. That's inconsistent with the original
+// auto-send on final approval (dispatchSend above, under recordApprovalDecision),
+// which deliberately sends AS the requester so the client-facing email's
+// Reply-To (resolveReplyTo falls back to the actor's own address when the
+// workspace has no shared reply_to_email) and the sow.sent/co.sent/
+// invoice.sent audit row both point at the person actually accountable for
+// the document, not whichever admin happened to retry it. A retry is the
+// same lifecycle stage, not a new action with a new sender — it now looks
+// the requester up and sends under their identity, exactly like the
+// original attempt would have. `params.actor` is still who the
+// approval.send_retried audit event below is attributed to — that log is
+// about who performed the retry, not who the document was sent as.
 export async function retryFailedSend(service: any, params: {
   requestId: string
   workspaceId: string
@@ -794,12 +810,17 @@ export async function retryFailedSend(service: any, params: {
 }): Promise<{ ok: true; deliveryWarning?: string | null } | { ok: false; error: string }> {
   const { data: request } = await service
     .from('approval_requests')
-    .select('id, document_type, document_id, project_id, context, status, send_failed_at')
+    .select('id, document_type, document_id, project_id, context, status, send_failed_at, requested_by')
     .eq('id', params.requestId).eq('workspace_id', params.workspaceId).single()
 
   if (!request) return { ok: false, error: 'Approval request not found' }
   if (request.status !== 'approved' || !request.send_failed_at)
     return { ok: false, error: 'This request has nothing to retry' }
+
+  const { data: requester } = await service
+    .from('users').select('id, name, email').eq('id', request.requested_by).maybeSingle()
+  if (!requester)
+    return { ok: false, error: 'The person who requested this no longer has an account, so it could not be sent automatically. Cancel this request and send the document again.' }
 
   const claimStamp = new Date().toISOString()
   const staleBefore = new Date(Date.now() - 2 * 60 * 1000).toISOString()
@@ -813,7 +834,7 @@ export async function retryFailedSend(service: any, params: {
 
   const outcome = await dispatchSend(service, request, {
     workspaceId: params.workspaceId,
-    actorId: params.actor.id, actorEmail: params.actor.email, actorName: params.actor.name,
+    actorId: requester.id, actorEmail: requester.email, actorName: requester.name,
     approvalRequestId: request.id,
   })
 

@@ -7,6 +7,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
 import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
 import { computeInvoiceTotals, enteredAmountOf, parseDateOnly } from '@/lib/documents/invoice-totals'
+import { baseContractValue } from '@/lib/reports/contract-position'
 import { getPendingApprovalForDocument, cancelApprovalRequest } from '@/lib/approvals/engine'
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -162,8 +163,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         if (co) { cap = Number(co.subtotal); sourceColumn = 'co_id'; sourceId = invoice.co_id; sourceLabel = "this change order's accepted amount" }
       } else if (invoice.sow_id) {
         const { data: proj } = await (service as any)
-          .from('projects').select('contract_value').eq('id', invoice.project_id).maybeSingle()
-        if (proj) { cap = Number(proj.contract_value) || 0; sourceColumn = 'sow_id'; sourceId = invoice.sow_id; sourceLabel = "this SOW's contract value" }
+          .from('projects').select('contract_value, type, retainer_duration_months').eq('id', invoice.project_id).maybeSingle()
+        // FIX (re-audit, section-12 finding): same raw-contract_value bug as
+        // POST /api/invoices — see baseContractValue()'s own comment for why
+        // a retainer project's monthly rate isn't the SOW's real cap.
+        if (proj) { cap = baseContractValue(proj); sourceColumn = 'sow_id'; sourceId = invoice.sow_id; sourceLabel = "this SOW's contract value" }
       }
       if (cap != null && sourceColumn && sourceId) {
         const { data: others } = await (service as any)

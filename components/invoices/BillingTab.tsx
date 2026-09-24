@@ -9,6 +9,7 @@ import { useState, useEffect } from 'react'
 import { nanoid } from 'nanoid'
 import { formatCurrency, formatCurrencyExact, roundCurrency, formatDate, invoiceStatusLabel, invoicePill } from '@/lib/utils/format'
 import RichTextField from '@/components/ui/RichTextField'
+import { baseContractValue } from '@/lib/reports/contract-position'
 
 const METHOD_LABELS: Record<string, string> = {
   bank_transfer: 'Bank transfer', stripe: 'Stripe', check: 'Check', cash: 'Cash', other: 'Other',
@@ -74,7 +75,14 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
       .filter((i: any) => i[column] === id && i.status !== 'void')
       .reduce((s: number, i: any) => s + Number(i.subtotal ?? i.amount ?? 0), 0)
   const billableSows = signedSows
-    .map((s: any) => ({ ...s, remaining: Number(project.contract_value || 0) - alreadyInvoicedAgainst('sow_id', s.id) }))
+    // FIX (re-audit, section-12 finding): remaining used the raw
+    // project.contract_value column directly, which for a retainer
+    // project is only the MONTHLY rate — the picker showed (and the
+    // API enforced) a "remaining" figure capped at one month's fee no
+    // matter how many months the term actually covers. baseContractValue()
+    // is the same helper the reconciliation/dashboard numbers already use
+    // for this exact reason.
+    .map((s: any) => ({ ...s, remaining: baseContractValue(project) - alreadyInvoicedAgainst('sow_id', s.id) }))
     .filter((s: any) => s.remaining > 0.01)
   const billableCos = acceptedCos
     .map((c: any) => ({ ...c, remaining: Number(c.subtotal || 0) - alreadyInvoicedAgainst('co_id', c.id) }))
@@ -111,6 +119,24 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
   // one CO in flight, until the daily reconciliation snapshot next runs.
   const atRiskValue      = latestSnapshot ? latestSnapshot.at_risk_value
     : (project.change_orders || []).filter((c: any) => ['awaiting_response', 'countered', 'awaiting_countersignature'].includes(c.status)).reduce((s: number, c: any) => s + (c.total || 0), 0)
+
+  // FIX (re-audit, section-12 finding): the "Contracted" figure shown above
+  // always read raw project.contract_value directly, instead of following
+  // the same latestSnapshot-then-live-fallback pattern already used for
+  // every other metric on this row. That's wrong two ways at once: for a
+  // retainer project it's one month's rate, not rate × term (same root
+  // cause as baseContractValue() below); and for ANY project with an
+  // accepted change order, it silently excludes the CO's value entirely —
+  // accepting a CO amends the contract via the `amendments` table, it does
+  // NOT rewrite projects.contract_value (only a retainer-renewal CO does
+  // that, via finalize-co.ts, and is deliberately excluded from
+  // amendments for that reason so it isn't double-counted here). The
+  // nightly snapshot's contracted_value (contract_reconciliation_snapshots,
+  // written by cron/reconciliation-rollup from this exact same
+  // computeContractPosition/baseContractValue logic) already gets this
+  // right — this metric just never read it.
+  const contractedValue = latestSnapshot ? latestSnapshot.contracted_value
+    : baseContractValue(project) + acceptedCos.filter((c: any) => !c.is_retainer_renewal).reduce((s: number, c: any) => s + Number(c.total || 0), 0)
 
   async function refresh() { router.refresh() }
 
@@ -213,7 +239,7 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
 
       {/* Phase 4: reconciliation summary */}
       <div style={{ display: 'flex', gap: 28, marginBottom: 20, flexWrap: 'wrap' }}>
-        <MetricBlock label="Contracted" value={formatCurrency(project.contract_value || 0, currency)} />
+        <MetricBlock label="Contracted" value={formatCurrency(contractedValue, currency)} />
         <MetricBlock label="Invoiced to date" value={formatCurrency(invoicedToDate, currency)} color="var(--blue)" />
         <MetricBlock label="Paid to date" value={formatCurrency(paidToDate, currency)} color="var(--green)" />
         {atRiskValue > 0 && <MetricBlock label="At risk (pending COs)" value={formatCurrency(atRiskValue, currency)} color="var(--gold)" />}

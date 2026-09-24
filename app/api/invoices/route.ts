@@ -7,7 +7,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
 import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
 import { computeInvoiceTotals, parseDateOnly } from '@/lib/documents/invoice-totals'
-import { computeContractPosition } from '@/lib/reports/contract-position'
+import { computeContractPosition, baseContractValue } from '@/lib/reports/contract-position'
 
 // GET /api/invoices?projectId=&status= — workspace-wide (or project-scoped) list
 export async function GET(request: NextRequest) {
@@ -123,7 +123,7 @@ export async function POST(request: NextRequest) {
     // could be created (and later sent) for a project sitting in the trash.
     const { data: project } = await (service as any)
       .from('projects')
-      .select('id, name, currency, status, contract_value')
+      .select('id, name, currency, status, contract_value, type, retainer_duration_months')
       .eq('id', projectId).eq('workspace_id', session.workspaceId).is('deleted_at', null).single()
 
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
@@ -176,7 +176,15 @@ export async function POST(request: NextRequest) {
       if (!sow) return NextResponse.json({ error: 'SOW not found on this project' }, { status: 404 })
       if (sow.status !== 'signed')
         return NextResponse.json({ error: 'Only a signed SOW can be invoiced against' }, { status: 400 })
-      sowCap = Number(project.contract_value) || 0
+      // FIX (re-audit, section-12 finding): project.contract_value is the
+      // MONTHLY rate for a retainer project (baseContractValue() is the
+      // helper the rest of the app already uses to turn that into the
+      // real contracted total — see lib/reports/contract-position.ts).
+      // This cap used the raw column directly, so billing a retainer
+      // project against its signed SOW for anything beyond one month's
+      // rate was refused as "exceeding the SOW's contract value" — a cap
+      // that was really just one month of a multi-month contract.
+      sowCap = baseContractValue(project)
       sourceKind = 'sow'; sourceId = sowId
     }
     if (coId) {
