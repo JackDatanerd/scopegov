@@ -11,7 +11,7 @@ import type { EmailOtpType } from '@supabase/supabase-js'
 import { safeRedirectPath } from '@/lib/utils/safe-redirect'
 import { logLoginOnce } from '@/lib/auth/login-audit'
 import { decodeJwtPayload, authenticationAgeSeconds, loginMethodFromAmr } from '@/lib/auth/auth-time'
-import { resolveActorName } from '@/lib/auth/session'
+import { resolveActorName, pickFallbackMembership } from '@/lib/auth/session'
 import { TERMS_VERSION_PATTERN } from '@/lib/auth/terms'
 
 // FIX (deep audit, Auth+MFA independent re-pass — CRITICAL): this used to
@@ -30,6 +30,16 @@ import { TERMS_VERSION_PATTERN } from '@/lib/auth/terms'
 // even selected here). Mirrors getSession()'s own active_workspace_id-
 // first-then-fallback-then-deleted_at-filtered shape, scoped down to just
 // what this route needs.
+//
+// FIX (Auth+MFA + RLS/permissions joint independent re-pass — HIGH): the
+// fallback branch below used to be its own fourth reimplementation of
+// "pick the oldest active membership," predating pickFallbackMembership()
+// and never updated once that helper landed — a returning OAuth/email-
+// confirmation user with an older, never-onboarded workspace and a newer,
+// completed one (invited into it), and a stale/unset active_workspace_id,
+// could be sent to /onboarding and have their login misattributed despite
+// having a real, completed workspace. Now calls the shared helper directly
+// so this route can't drift from it again.
 async function resolveOnboardingMember(
   service: ReturnType<typeof createServiceClient>,
   userId: string
@@ -50,17 +60,18 @@ async function resolveOnboardingMember(
     }
   }
 
-  // Fall back to the oldest active membership whose workspace isn't
-  // soft-deleted, same as getSession()'s own fallback.
+  // Fall back to the oldest active membership that has completed
+  // onboarding, else the oldest active membership, period — same rule as
+  // getSession()'s own fallback, via the same shared helper.
   const { data: candidates } = await (service as any)
     .from('workspace_members')
     .select('workspace_id, workspaces(onboarding_completed_at, deleted_at)')
     .eq('user_id', userId)
     .eq('status', 'active')
     .order('created_at', { ascending: true })
-    .limit(5)
+    .limit(25)
 
-  const fallback = (candidates || []).find((m: any) => !m.workspaces?.deleted_at)
+  const fallback = pickFallbackMembership(candidates)
   return fallback ? { workspaceId: fallback.workspace_id, onboardingCompletedAt: fallback.workspaces?.onboarding_completed_at || null } : null
 }
 

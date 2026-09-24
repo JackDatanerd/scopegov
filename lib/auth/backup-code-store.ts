@@ -4,7 +4,7 @@
 // ones. Shared by /api/auth/mfa/verify (first enrolment) and
 // /api/auth/mfa/backup-codes (regenerate).
 //
-// ATOMIC (migration 066, issue_backup_codes): retiring the old codes and
+// ATOMIC (migration 068, issue_backup_codes): retiring the old codes and
 // inserting the new ones happen in ONE transaction under an advisory lock. The
 // previous two-statement version (a) only logged a failure to retire the old
 // codes while telling the person they no longer worked, and (b) let two

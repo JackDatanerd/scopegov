@@ -14,7 +14,7 @@
 //   - the person signed in (password / OAuth / recovery) AND has no second factor, or
 //   - the person completed a TOTP challenge (second-factor accounts), or
 //   - they passed POST /api/auth/step-up (password or TOTP), which records a grant
-//     bound to THIS session in public.step_up_grants (migration 066).
+//     bound to THIS session in public.step_up_grants (migration 068).
 
 import { NextResponse } from 'next/server'
 import { decodeJwtPayload, authenticationAgeSeconds, lastTotpAtSeconds, type JwtPayload } from '@/lib/auth/auth-time'

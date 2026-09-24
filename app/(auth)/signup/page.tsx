@@ -43,6 +43,22 @@ export default function SignupPage() {
     if (password.length < 8) { setError('Password must be at least 8 characters.'); return }
     setLoading(true); setError('')
     try {
+      // FIX (deep audit, Auth+MFA section — signup password-policy bypass):
+      // this used to go straight to supabase.auth.signUp() below with no
+      // check beyond the client's bare length>=8 above, so the common-
+      // password blocklist, the email-match check, and the 72-byte bcrypt
+      // cap that every OTHER password-setting route in this app enforces
+      // (change-password, reset-password, invite-signup) never applied to
+      // the actual biggest source of new passwords. validatePassword()
+      // itself can't run in the browser (it needs Node's Buffer for the
+      // byte-length check), so it's run here via a small server endpoint
+      // before the account is created.
+      const policyCheck = await fetch('/api/auth/validate-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password, email }),
+      }).then(r => r.json()).catch(() => ({ error: null }))
+      if (policyCheck?.error) { setError(policyCheck.error); setLoading(false); return }
       // FIX (deep audit, Auth+MFA section, standalone pass): `name` was
       // forwarded as-is with no length cap — unlike every structurally
       // comparable field in this codebase (agency_name, workspace name),

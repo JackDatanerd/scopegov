@@ -4,7 +4,7 @@
 // app runs itself: /api/auth/mfa/verify, /api/auth/mfa/recover, the current-
 // password check in /api/auth/change-password and /api/auth/step-up.
 //
-// ATOMIC (migration 066): the old limiter read the ledger, ran the check, then
+// ATOMIC (migration 068): the old limiter read the ledger, ran the check, then
 // wrote the failure — so a burst of parallel guesses all passed the read before
 // any failure landed. beginAuthAttempt() now RESERVES a slot inside one SQL
 // function (advisory lock + insert + count) BEFORE the credential is checked. A

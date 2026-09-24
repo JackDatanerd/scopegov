@@ -290,6 +290,31 @@ describe.skipIf(!URL_)('Postgres replay (migrations 001..latest on a real databa
     })
   })
 
+  // ── middleware_gate_state fallback ─────────────────────────────────────────
+  describe('middleware_gate_state onboarding fallback', () => {
+    it('prefers a completed workspace over an older, never-onboarded one when active_workspace_id is stale', async () => {
+      // Carol owns an older workspace that never finished onboarding, and is
+      // also an active member of a newer workspace (Dave's) that has. Her
+      // active_workspace_id is stale/unset, so middleware_gate_state has to
+      // fall back — and must pick the completed one, exactly like
+      // pickFallbackMembership()/getSession() would, not just the oldest.
+      await makeUser(80); await makeWorkspace(80, 80)   // Carol's own, never onboarded
+      await sql(`UPDATE public.workspaces SET created_at = now() - interval '30 days' WHERE id = $1`, [W(80)])
+      await sql(`UPDATE public.workspace_members SET created_at = now() - interval '30 days' WHERE workspace_id = $1 AND user_id = $2`, [W(80), U(80)])
+
+      await makeUser(81); await makeWorkspace(81, 81)   // Dave's, completed
+      await sql(`UPDATE public.workspaces SET onboarding_completed_at = now() WHERE id = $1`, [W(81)])
+      await addMember(81, 80, 'Owner', 'active')         // Carol also joins Dave's
+
+      await sql(`UPDATE public.users SET active_workspace_id = NULL WHERE id = $1`, [U(80)])
+
+      const [gate] = await asRole('authenticated', U(80), c =>
+        c.query(`SELECT public.middleware_gate_state(ARRAY[]::text[]) g`).then(r => r.rows))
+      expect(gate.g.has_workspace).toBe(true)
+      expect(gate.g.onboarding_complete).toBe(true)   // was false before this fix — picked the older, incomplete workspace
+    })
+  })
+
   // ── users.name ───────────────────────────────────────────────────────────
   describe('users.name constraint', () => {
     it('rejects newlines and over-long names at the database', async () => {

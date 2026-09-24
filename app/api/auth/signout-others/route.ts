@@ -5,16 +5,23 @@ import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/
 import { logAudit } from '@/lib/utils/audit'
 import { resolveActiveWorkspaceId, resolveActorName } from '@/lib/auth/session'
 
-// FEATURE (deep audit, Auth+MFA section — feature gap): there was no way
-// for a user to see or revoke sessions on other devices/browsers at all.
-// A full "list your active sessions" UI needs infrastructure this app
-// doesn't have (GoTrue's admin API doesn't expose a per-session listing
-// through supabase-js today), but supabase-js's signOut() has supported a
-// `scope` option since v2.31 — 'others' revokes every refresh token for
-// this user except the one making the call — which covers the common,
-// actually-useful case (you think a device might still be logged in
-// somewhere — a shared computer, a lost phone, a session from before a
-// password reset) without needing to build session enumeration first.
+// FEATURE (deep audit, Auth+MFA section — feature gap): originally there
+// was no way for a user to see or revoke sessions on other devices/
+// browsers at all. supabase-js's signOut() has supported a `scope` option
+// since v2.31 — 'others' revokes every refresh token for this user except
+// the one making the call — which covers the common, actually-useful case
+// (you think a device might still be logged in somewhere — a shared
+// computer, a lost phone, a session from before a password reset) in one
+// call, with no per-session enumeration needed.
+//
+// A full per-session list/revoke UI (reading auth.sessions directly via a
+// SECURITY DEFINER function, since GoTrue's admin API doesn't expose
+// per-session listing through supabase-js) was since built separately —
+// see list_user_sessions()/revoke_user_session() (migration 068),
+// GET /api/auth/sessions, DELETE /api/auth/sessions/[id], and
+// components/settings/SessionsSection.tsx. This route is kept alongside
+// it as the one-click "sign out everywhere else" action; it doesn't
+// require knowing which sessions exist first.
 export async function POST() {
   try {
     const supabase = await createServerSupabaseClient()
