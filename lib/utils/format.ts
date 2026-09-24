@@ -227,12 +227,20 @@ const CO_STATUS_LABELS: Record<string, string> = {
   // it fell through to the raw '.replace(/_/g, " ")' fallback, same as
   // SOW's own 'expired' before it got one (see SOW_STATUS_LABELS above).
   expired: 'Expired',
+  // FIX (CO-logic fix round): 'awaiting_countersignature' (migration 014)
+  // was missing here despite being used everywhere else in the codebase —
+  // ProjectDetail.tsx's coStatusLabel() call fell through to the raw
+  // fallback for it, rendering the pill as lowercase "awaiting
+  // countersignature" next to every sibling status's proper Title Case.
+  awaiting_countersignature: 'Awaiting Countersignature',
 }
 const CO_STATUS_COLOURS: Record<string, string> = {
   draft: 'badge-slate', awaiting_response: 'badge-amber', accepted: 'badge-green',
   declined: 'badge-red', countered: 'badge-purple', closed: 'badge-slate',
   stalled: 'badge-red', withdrawn: 'badge-slate', exception_granted: 'badge-blue',
   expired: 'badge-red',
+  // FIX (CO-logic fix round): same gap as the label map above.
+  awaiting_countersignature: 'badge-amber',
 }
 export function coStatusLabel(status: string) {
   return CO_STATUS_LABELS[status] ?? status.replace(/_/g, ' ')

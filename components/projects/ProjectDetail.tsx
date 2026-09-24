@@ -49,6 +49,12 @@ function coPill(status: string): string {
     withdrawn: 'slate', exception_granted: 'blue',
     // FIX (doc-completeness audit, migration 014)
     awaiting_countersignature: 'amber',
+    // FIX (CO-logic fix round): 'expired' fell through to the default
+    // ('slate') here — the same neutral grey as draft/closed/withdrawn —
+    // even though it's meant to read as alarming, same as declined/
+    // stalled, and matches lib/utils/format.ts's own
+    // CO_STATUS_COLOURS.expired ('badge-red').
+    expired: 'red',
   }
   return m[status] || 'slate'
 }

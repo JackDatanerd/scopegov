@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
+import { isTerminalStatus } from '@/lib/utils/project-status'
 import { cancelApprovalRequest } from '@/lib/approvals/engine'
 import { insertNextCoVersion } from '@/lib/documents/co-version'
 import { sendDocumentCancelledEmail } from '@/lib/email/templates'
@@ -48,7 +49,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { data: co } = await (service as any)
       .from('change_orders')
       .select(`id, title, note, status, version, project_id, flag_id, root_co_id,
-        projects(name, client_id, clients(name, email, cc_emails), workspaces(agency_name, brand_colour)),
+        projects(name, status, client_id, clients(name, email, cc_emails), workspaces(agency_name, brand_colour)),
         line_items, subtotal, tax_rate, tax_inclusive, total,
         counter_amount, counter_note, is_retainer_renewal, renewal_term_months,
         timeline_impact_days, scope_impact_note`)
@@ -57,6 +58,20 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!co) return NextResponse.json({ error: 'Change order not found' }, { status: 404 })
     if (!(await canReadProject(service, session, co.project_id)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
+    // FIX (CO-logic fix round): same gap as generate/reopen already had on the
+    // SOW side — send-co.ts refuses to send a CO to a Complete/Archived
+    // project, but revise (which also just creates a fresh draft) never
+    // checked, unlike its two sibling creation routes (POST /api/co and
+    // POST /api/co/draft, both of which already guard this). A declined/
+    // withdrawn/closed/countered/expired CO on a project closed out in the
+    // meantime could still be "revised" into a new draft that could then
+    // never be sent, with no explanation until the send attempt itself.
+    if (isTerminalStatus(co.projects?.status)) {
+      return NextResponse.json({
+        error: `This project is ${String(co.projects.status).toLowerCase()} — a change order can no longer be revised. Reopen the project first.`,
+      }, { status: 409 })
+    }
 
     if (!REVISABLE.includes(co.status))
       return NextResponse.json(
