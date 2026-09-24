@@ -334,9 +334,23 @@ app/
 - `jwtSecret` isolated in its own `workspace_secrets` table (RLS deny-all, service_role only) — not just excluded from API responses. A column on `workspaces` itself would be readable by any active member directly via Supabase's REST API regardless of what our own routes return, since RLS is row-level, not column-level (BUG-062 / migration 013)
 - Middleware refreshes session on every request
 
-### Background jobs (Vercel Cron)
-All 15 jobs from spec §1.13 are scheduled in `vercel.json`.
-All require `Authorization: Bearer {CRON_SECRET}` header.
+### Background jobs (crons)
+The single list of every cron — cadence, recommended UTC schedule, watchdog tolerance — is
+[`lib/cron/manifest.ts`](lib/cron/manifest.ts). `npm run cron:schedule` prints it as a checklist.
+
+**`vercel.json` schedules nothing** (it is `{}`). The primary scheduler is the external `scopegov-cron-worker`
+(Cloudflare Worker, not in this repo); `.github/workflows/vercel-crons.yml` is a redundant backup for the four
+frequent jobs only. So a **new cron route has to be registered in the Cloudflare worker by hand** — nothing in this
+repo can do it. `tests/cron-infra.test.ts` fails the build if a route under `app/api/cron/` and the manifest disagree,
+and `cron-heartbeat-watchdog` (which derives its expectations from the manifest) pages ops if a registered cron
+stops reporting.
+
+Every job requires `Authorization: Bearer {CRON_SECRET}`, exports `POST` (canonical) and `GET`, and reports through
+`lib/utils/cron-run.ts` (`CronRun`): a failed step or query alerts ops and withholds the heartbeat; a single bad row
+alerts but keeps the heartbeat. Every run is also appended to `cron_run_history` (migration 075, kept 60 days):
+
+    SELECT cron_name, ok, duration_ms, error, created_at
+      FROM cron_run_history WHERE NOT ok ORDER BY created_at DESC LIMIT 50;
 
 ### Guardian pipeline
 1. Embedding computed (always — BUG-060)

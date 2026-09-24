@@ -7,8 +7,6 @@ import { SignJWT } from 'jose'
 import { nanoid } from 'nanoid'
 import { logAudit } from '@/lib/utils/audit'
 import { sendSowSignedAgencyEmail, sendSowSignedClientEmail } from '@/lib/email/templates'
-import { parseTableAmount } from '@/lib/sow/table-schema'
-import { roundCurrency } from '@/lib/utils/format'
 import { renderSowPdf } from '@/lib/pdf/renderer'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
@@ -16,12 +14,13 @@ import { getWorkspaceJwtSecret, isWorkspaceDeleted } from '@/lib/utils/workspace
 import { checkRevokedToken, verifySowJwt } from '../_shared'
 import { checkPortalRateLimit, recordPortalAction } from '@/lib/utils/portal-rate-limit'
 import { getClientIp } from '@/lib/utils/request-ip'
-import { cleanTextField, decodeHtmlEntities } from '@/lib/utils/sanitize'
+import { cleanTextField } from '@/lib/utils/sanitize'
 import { isValidSignatureImage } from '@/lib/utils/signature'
 import { checkedSend } from '@/lib/email/delivery'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
 import { computeContentHash, storeExecutedPdf } from '@/lib/documents/executed-pdf'
 import { createHash } from 'node:crypto'
+import { createSowMilestones, ensureGuardianEmail, writeScopeSnapshot } from '@/lib/documents/post-signing'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
@@ -128,6 +127,17 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!updatedSow || updatedSow.length === 0)
       return NextResponse.json({ error: 'This SOW was already signed' }, { status: 409 })
 
+    // FIX (cron/portal audit round 3): everything below runs AFTER the signature has been durably recorded
+    // (the compare-and-swap above is the commit point). It used to sit directly under the route's outer try,
+    // so any throw from a later step — an email helper, the PDF render's follow-up writes, a lookup — returned
+    // "Could not complete signing. Please try again." to a client whose signature HAD been recorded. Their
+    // retry then hit 409 "already signed", and the agency/client confirmation emails, the PDF and the audit
+    // entry that hadn't run yet were never produced. Post-commit failures are now caught here, logged, and the
+    // client is told the truth (signed); api/cron/signing-integrity repairs whatever state was left behind.
+    let clientToken = token
+    let guardianEmail: string = project.guardian_email || ''
+    try {
+
     // ── 1b. Reissue a long-lived token for post-signature access ─────
     // FIX (re-audit, portal section): the signing token carries a flat
     // 30-day expiry *from when the SOW was sent* (send-sow.ts), and this
@@ -140,7 +150,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // moment of signature — same pattern the CO accept-counter flow
     // already uses correctly — decouples "how long do they have to sign"
     // from "how long can they keep the record of having signed."
-    let clientToken = token
     try {
       const jwtSecret = await getWorkspaceJwtSecret(service, sow.workspace_id)
       if (jwtSecret) {
@@ -155,9 +164,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           .setJti(nanoid())
           .sign(secret)
 
-        await (service as any).from('sow_documents').update({
+        // FIX (cron/portal audit round 3): the result of this write was never read. On a failure the row kept the
+        // OLD token while `clientToken` (the link emailed to the client) and the 'superseded' record below both
+        // pointed at the NEW one — a confirmation email whose link resolves to nothing. Only switch over once
+        // the write has actually landed; otherwise the original link stays in effect (it still resolves the
+        // signed document), exactly as the catch below already intends.
+        const { error: reissueErr } = await (service as any).from('sow_documents').update({
           token: newToken, expires_at: newExpiresAt.toISOString(),
         }).eq('id', sow.id)
+        if (reissueErr) throw new Error(`token reissue write failed: ${reissueErr.message}`)
         clientToken = newToken
 
         // FIX (portal audit, section 18 — flagship finding): the ORIGINAL
@@ -191,91 +206,53 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // feature that trusts it — and the manual PATCH path in
     // app/api/projects/[id]/route.ts already clears it on this exact
     // transition (BUG-046), so this brings the automated path to parity.
-    await (service as any).from('projects').update({
-      status:        'Active',
-      stall_reason:  null,
-      updated_at:    now,
-    }).eq('id', project.id).neq('status', 'Active')
-
-    // ── 3. Guardian email ──────────────────────────────────────
-    // Stable for the life of the project. It used to be rebuilt from THIS SOW's id on every
-    // signature, so a later re-sign changed the address and mail the client had already been
-    // told to forward to it was silently dropped ("No matching project"). Only generated when
-    // the project has none, derived from the project id, and checked for collisions (the
-    // inbound handler resolves a project with .single() on this value).
-    const guardianDomain = process.env.NEXT_PUBLIC_GUARDIAN_EMAIL_DOMAIN || 'guard.scopegov.app'
-    let guardianEmail: string = project.guardian_email || ''
-    if (!guardianEmail) {
-      const compact = String(project.id).replace(/-/g, '')
-      for (const len of [8, 12, 16, 20, 32]) {
-        const candidate = `proj-${compact.slice(0, len)}@${guardianDomain}`
-        const { data: clash } = await (service as any)
-          .from('projects').select('id').ilike('guardian_email', candidate).neq('id', project.id).limit(1)
-        if (!clash || clash.length === 0) { guardianEmail = candidate; break }
-      }
-      if (guardianEmail) {
-        const { error: gErr } = await (service as any).from('projects').update({ guardian_email: guardianEmail }).eq('id', project.id)
-        if (gErr) {
-          console.error('SOW sign: could not set guardian_email:', gErr.message)
-          await logAudit(service, {
-            workspaceId: sow.workspace_id, actorId: null, actorEmail: 'system@scopegov.app', actorName: 'ScopeGov',
-            eventType: 'sow.guardian_email_failed', entityType: 'sow', entityId: sow.id, metadata: { project_id: project.id, error: gErr.message },
-          })
-        }
-      }
+    // FIX (cron/portal audit round 3): the result was never read. If this write failed the SOW was already
+    // 'signed' but the project sat at 'Awaiting Signature' forever — the retainer cron only bills Active
+    // projects, and sow-stall stopped watching it because the SOW is no longer awaiting a signature. One retry
+    // for a transient failure; if it still fails it is recorded, and api/cron/signing-integrity repairs it.
+    let activateErr: { message: string } | null = null
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const { error } = await (service as any).from('projects').update({
+        status:        'Active',
+        stall_reason:  null,
+        updated_at:    now,
+      }).eq('id', project.id).neq('status', 'Active')
+      activateErr = error
+      if (!error) break
+    }
+    if (activateErr) {
+      console.error('SOW sign: could not activate the project:', activateErr.message)
+      await logAudit(service, {
+        workspaceId: sow.workspace_id, actorId: null, actorEmail: 'system@scopegov.app', actorName: 'ScopeGov',
+        eventType: 'sow.project_activation_failed', entityType: 'sow', entityId: sow.id,
+        metadata: { project_id: project.id, error: activateErr.message },
+      }).catch(() => {})
     }
 
-    // ── 4. Create scope snapshot (spec §0.13 — in same transaction) ─
-    // FIX (re-audit): the 'deliverables' section moved from prose `content`
-    // to a structured `table` (lib/sow/table-schema.ts) in the doc-quality
-    // refactor, but this extraction never followed — it was reading a field
-    // that's now always ''. Every SOW signed since then wrote an EMPTY
-    // deliverables array into project_scope_snapshot, which Guardian's
-    // scope-creep classifier and CO drafting both rely on as the agreed
-    // baseline. Read the table first; fall back to the old HTML extraction
-    // only for pre-refactor SOWs that may still carry prose content with no
-    // table rows.
-    const sections = sow.sections || []
-    const deliverablesSection = sections.find((s: any) => s.id === 'deliverables')
-    const deliverables = (deliverablesSection?.table || []).length > 0
-      ? (deliverablesSection.table as Array<Record<string, string>>)
-          .map(row => ({ title: (row.deliverable || '').trim() }))
-          .filter(d => d.title)
-      : extractDeliverables(deliverablesSection?.content || '')
-    const outOfScope = extractDeliverables(sections.find((s: any) => s.id === 'oos')?.content || '')
+    // ── 3. Guardian email ──────────────────────────────────────
+    // Stable for the life of the project (see ensureGuardianEmail): it used to be rebuilt from THIS SOW's id on
+    // every signature, so a later re-sign changed the address and mail the client had already been told to
+    // forward to it was silently dropped.
+    const guardian = await ensureGuardianEmail(service, project)
+    guardianEmail = guardian.email
+    if (guardian.error) {
+      console.error('SOW sign: could not set guardian_email:', guardian.error)
+      await logAudit(service, {
+        workspaceId: sow.workspace_id, actorId: null, actorEmail: 'system@scopegov.app', actorName: 'ScopeGov',
+        eventType: 'sow.guardian_email_failed', entityType: 'sow', entityId: sow.id, metadata: { project_id: project.id, error: guardian.error },
+      }).catch(() => {})
+    }
 
-    // FIX (deep audit, section 13 — cross-cutting): select version too and
-    // advance it on update — see migration 045's note. This snapshot write
-    // (a re-signed SOW replacing the prior scope) previously left `version`
-    // untouched, which is exactly what let app/api/guardian/scope-adjustment
-    // route.ts's compare-and-swap miss a re-sign landing between its read
-    // and its write: version matched the stale value it read, the write
-    // "succeeded", and it silently clobbered the just-re-signed scope.
-    const { data: existingSnap } = await (service as any)
-      .from('project_scope_snapshot').select('id,version').eq('project_id', project.id).maybeSingle()
-
-    // supabase-js returns errors instead of throwing — an unchecked failure here left a signed
-    // SOW with NO Guardian baseline and no record that anything had gone wrong.
-    const snapResult = existingSnap
-      ? await (service as any).from('project_scope_snapshot').update({
-          deliverables, out_of_scope: outOfScope,
-          last_updated_at: now, last_updated_by: 'signing',
-          version: (existingSnap.version || 1) + 1,
-        }).eq('project_id', project.id)
-      : await (service as any).from('project_scope_snapshot').insert({
-          project_id:      project.id,
-          deliverables,
-          out_of_scope:    outOfScope,
-          last_updated_at: now,
-          last_updated_by: 'signing',
-        })
-    if (snapResult.error) {
-      console.error('SOW sign: scope snapshot write failed:', snapResult.error.message)
+    // ── 4. Create scope snapshot (spec §0.13) ────────────────────
+    // Shared with the repair sweep — see writeScopeSnapshot for the deliverables-table / version-bump history.
+    const snap = await writeScopeSnapshot(service, project.id, sow.sections || [], now)
+    if (snap.error) {
+      console.error('SOW sign: scope snapshot write failed:', snap.error)
       await logAudit(service, {
         workspaceId: sow.workspace_id, actorId: null, actorEmail: 'system@scopegov.app', actorName: 'ScopeGov',
         eventType: 'sow.snapshot_failed', entityType: 'sow', entityId: sow.id,
-        metadata: { project_id: project.id, error: snapResult.error.message },
-      })
+        metadata: { project_id: project.id, error: snap.error },
+      }).catch(() => {})
     }
 
     // ── 5. Mark firstSowSignedAt if null ─────────────────────
@@ -287,7 +264,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }
 
     // ── 6. Create payment milestones from SOW metadata ────────
-    await createMilestones(service, project.id, sow.id, sow.workspace_id, sow.metadata, project.contract_value, project.currency, sow.sections || [])
+    await createSowMilestones(service, project.id, sow.id, sow.workspace_id, sow.metadata, project.contract_value, project.currency, sow.sections || [])
 
     // ── 6b. Fingerprint what was agreed ───────────────────────
     // SHA-256 over the exact content the client signed (sections incl. tables, metadata,
@@ -416,202 +393,18 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       attachments: pdfAttachment ? [pdfAttachment] : undefined,
     }), 'SOW signed (client) email')
 
+    } catch (postErr) {
+      console.error('SOW sign: post-signature step failed after the signature was recorded:', postErr)
+      await logAudit(service, {
+        workspaceId: sow.workspace_id, actorId: null, actorEmail: 'system@scopegov.app', actorName: 'ScopeGov',
+        eventType: 'sow.post_signing_failed', entityType: 'sow', entityId: sow.id,
+        metadata: { project_id: project.id, error: postErr instanceof Error ? postErr.message : String(postErr) },
+      }).catch(() => {})
+    }
+
     return NextResponse.json({ ok: true, guardianEmail, token: clientToken })
   } catch (err) {
     console.error('SOW sign error:', err)
     return NextResponse.json({ error: 'Could not complete signing. Please try again.' }, { status: 500 })
-  }
-}
-
-// Pulls plain-text items out of a rich-text section: <li> items, falling back to paragraphs.
-// `[\s\S]*?` (not `.`) so an item that spans lines is not silently dropped, entities are decoded
-// (Guardian classifies client messages against this text, so "R&amp;D" must read "R&D"), and the
-// cap is generous — an out-of-scope list past 50 items used to be cut off without a word.
-function extractDeliverables(html: string): Array<{ title: string }> {
-  if (!html) return []
-  const clean = (fragment: string) =>
-    decodeHtmlEntities(fragment.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim()
-  const items: Array<{ title: string }> = []
-  const liRegex = /<li[^>]*>([\s\S]*?)<\/li>/gi
-  let match
-  while ((match = liRegex.exec(html)) !== null) {
-    const text = clean(match[1])
-    if (text) items.push({ title: text })
-  }
-  if (!items.length) {
-    const pRegex = /<p[^>]*>([\s\S]*?)<\/p>/gi
-    while ((match = pRegex.exec(html)) !== null) {
-      const text = clean(match[1])
-      if (text && text.length > 3) items.push({ title: text })
-    }
-  }
-  return items.slice(0, 200)
-}
-
-// FIX (re-audit): this used to (a) insert milestones one at a time in a
-// loop, so a failure partway through a multi-milestone structure (e.g. the
-// 50/50 split) could leave only the first milestone on file with no
-// indication anything was wrong, and (b) swallow any failure into
-// console.error only — the SOW still ends up 'signed' with NO payment
-// milestones at all, silently blocking invoicing for the project with
-// nothing operator-visible. Insert as a single batch (one INSERT statement
-// is atomic — either all rows land or none do, no partial split) and log
-// an audit entry on failure so it's at least discoverable, rather than a
-// server log line nobody will see.
-async function createMilestones(
-  service: any, projectId: string, sowId: string, workspaceId: string,
-  metadata: any, contractValue: number, currency: string, sections: any[]
-) {
-  try {
-    const structure = metadata?.paymentStructure || '50_50'
-    const milestones = []
-
-    if (structure === '50_50') {
-      // FIX (bug — payment split not summing to contract value): rounding
-      // each half independently (roundCurrency(cv * 0.5) applied to both)
-      // can produce two halves that don't sum back to the contract value
-      // when the total has an odd cent — e.g. $1599.97 * 0.5 = $799.985,
-      // which rounds to $799.99 on both sides, summing to $1599.98, a
-      // cent more than the contract. Round the first share, then set the
-      // second to whatever's left — guarantees an exact sum every time,
-      // with any leftover cent absorbed by the final milestone. Standard
-      // practice for splitting a currency total across N shares.
-      const upfront = roundCurrency(contractValue * 0.5)
-      const final   = roundCurrency(contractValue - upfront)
-      milestones.push(
-        { title: 'Upfront payment (50%)',   amount: upfront, trigger: 'Project kick-off',       type: 'percentage', percentage: 50 },
-        { title: 'Final payment (50%)',      amount: final,   trigger: 'Final delivery approval', type: 'percentage', percentage: 50 },
-      )
-    } else if (structure === '100_upfront') {
-      milestones.push({ title: 'Full payment', amount: roundCurrency(contractValue), trigger: 'Before work commences', type: 'fixed', percentage: null })
-    } else if (structure === 'on_delivery') {
-      milestones.push({ title: 'Full payment', amount: roundCurrency(contractValue), trigger: 'Final delivery approval', type: 'fixed', percentage: null })
-    } else if (structure === 'monthly') {
-      // FIX (section-9 re-pass): this created the milestone with no
-      // due_date. app/api/cron/retainer-milestones de-dupes each month's
-      // row strictly by matching due_date to the 1st of the target
-      // month, so a NULL due_date here could never match — the cron's
-      // first run after signing couldn't tell this row apart from "no
-      // milestone yet for this month" and inserted a second full-amount
-      // "Monthly retainer" row for the same month. Setting due_date to
-      // the 1st of the signing month gives the cron the same key it
-      // computes for itself, closing that gap.
-      // FIX (cron/portal audit round 2): this stamped the FIRST of the signing month. Signed on the 20th, that is a
-      // due date 19 days in the past — payment-overdue then flagged the brand-new milestone "overdue" (and
-      // notified/emailed finance) the next morning, for a contract signed a day earlier. Stamp the signing DAY
-      // instead. The retainer cron no longer keys on the exact date: it counts a month as present when ANY
-      // retainer_monthly row's due_date falls inside it (and migration 063's unique index is per month), so
-      // this row still suppresses a second one for the same month.
-      const signedOn = new Date()
-      const signingDay = `${signedOn.getUTCFullYear()}-${String(signedOn.getUTCMonth() + 1).padStart(2, '0')}-${String(signedOn.getUTCDate()).padStart(2, '0')}`
-      milestones.push({ title: 'Monthly retainer', amount: roundCurrency(contractValue), trigger: 'Monthly — first of month', type: 'retainer_monthly', percentage: null, dueDate: signingDay })
-    } else if (structure === 'milestones') {
-      // FIX (section-9 audit, real bug — now genuinely fixed): 'milestones'
-      // is a selectable payment structure (the SOW boilerplate literally
-      // prints "Payable in milestones as defined below") but there was
-      // never any table/UI for an agency to actually define what those
-      // milestones are — deliverables/timeline/roles all had dedicated
-      // table sections, payment schedule never did. This branch used to
-      // fall into the generic `else` below and silently create ONE
-      // "Project payment" milestone for the FULL contract value,
-      // contradicting the SOW's own printed text.
-      //
-      // FEATURE (built): lib/sow/table-schema.ts now defines a real
-      // payment_schedule table section, same architecture as deliverables/
-      // timeline/roles — the agency itemizes it in SowEditor, AI
-      // generation proposes a starting split (with amounts always
-      // server-computed, never AI money-math — see
-      // app/api/sow/generate/route.ts), and this reads those rows
-      // directly instead of guessing. The send route (see send/route.ts)
-      // now validates this foots to the contract value BEFORE the SOW
-      // ever reaches the client, so this sign-time check is a backstop,
-      // not the primary safety net — it should only ever trip if that
-      // send-time validation was somehow bypassed.
-      const scheduleSection = (sections || []).find((s: any) => s.id === 'payment_schedule')
-      const rows: any[] = Array.isArray(scheduleSection?.table) ? scheduleSection.table : []
-      const parsedRows = rows
-        .map((r: any) => ({
-          title: String(r?.milestone || '').trim(),
-          // FIX (section-9 audit, 9-G6): bare Number() on a free-text
-          // cell makes "1,500" NaN, which dropped the row and silently
-          // collapsed the whole negotiated schedule to a single lump-sum
-          // milestone. Same parser the send-time validation uses.
-          amount: parseTableAmount(r?.amount) ?? 0,
-          trigger: String(r?.trigger || '').trim(),
-        }))
-        .filter(r => r.title && r.amount > 0)
-      const scheduleSum = parsedRows.reduce((s, r) => s + r.amount, 0)
-
-      if (parsedRows.length > 0 && Math.abs(scheduleSum - contractValue) < 0.01) {
-        for (const r of parsedRows) {
-          milestones.push({
-            title:   r.title.slice(0, 200),
-            amount:  roundCurrency(r.amount),
-            trigger: (r.trigger || 'As defined in the SOW').slice(0, 500),
-            type: 'fixed', percentage: null,
-          })
-        }
-      } else {
-        // Genuinely defensive at this point (send-time validation should
-        // have already blocked this) — an honest fallback rather than a
-        // silent one, and flagged in the audit log so it's discoverable
-        // if it ever does happen (e.g. a future edit path that bypasses
-        // the send-time check).
-        //
-        // FIX (build, Reports & Audit re-pass): this and the two other
-        // logAudit calls in this function were `actorId: ''` — an empty
-        // string is just as invalid a uuid as the literal 'system' string
-        // this codebase already fixed everywhere else (see
-        // lib/utils/audit.ts). The insert failed silently (supabase-js
-        // doesn't throw on a DB error, and it was never checked here), so
-        // these two "make sure this is discoverable if it ever happens"
-        // events were, in fact, never discoverable. null is the correct
-        // value.
-        milestones.push({
-          title: 'Project payment', amount: roundCurrency(contractValue),
-          trigger: 'Full contract value — no itemized milestone schedule was defined in this SOW',
-          type: 'fixed', percentage: null,
-        })
-        await logAudit(service, {
-          workspaceId, actorId: null, actorEmail: 'system@scopegov.app', actorName: 'ScopeGov',
-          eventType: 'sow.milestone_schedule_undefined', entityType: 'sow', entityId: sowId,
-          metadata: { project_id: projectId, contract_value: contractValue, rows_found: rows.length, rows_valid: parsedRows.length, schedule_sum: scheduleSum },
-        }).catch(() => {})
-      }
-    } else {
-      milestones.push({ title: 'Project payment', amount: roundCurrency(contractValue), trigger: 'As per agreement', type: 'fixed', percentage: null })
-    }
-
-    const { error: insertErr } = await (service as any).from('payment_milestones').insert(
-      milestones.map(m => ({
-        project_id:   projectId,
-        sow_id:       sowId,
-        title:        m.title,
-        type:         m.type,
-        amount:       m.amount,
-        percentage:   m.percentage,
-        trigger:      m.trigger,
-        due_date:     (m as any).dueDate ?? null,
-        tax_rate:     0,
-        tax_inclusive: false,
-        status:       'pending',
-      }))
-    )
-
-    if (insertErr) {
-      console.error('Milestone creation failed:', insertErr)
-      await logAudit(service, {
-        workspaceId, actorId: null, actorEmail: 'system@scopegov.app', actorName: 'ScopeGov',
-        eventType: 'sow.milestones_creation_failed', entityType: 'sow', entityId: sowId,
-        metadata: { project_id: projectId, error: insertErr.message || String(insertErr) },
-      }).catch(() => {})
-    }
-  } catch (e) {
-    console.error('Milestone creation failed:', e)
-    await logAudit(service, {
-      workspaceId, actorId: null, actorEmail: 'system@scopegov.app', actorName: 'ScopeGov',
-      eventType: 'sow.milestones_creation_failed', entityType: 'sow', entityId: sowId,
-      metadata: { project_id: projectId, error: e instanceof Error ? e.message : String(e) },
-    }).catch(() => {})
   }
 }

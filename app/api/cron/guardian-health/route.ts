@@ -101,12 +101,16 @@ export async function POST(request: NextRequest) {
 
     // Alert on unresolved failures > 24h
     const since24h = new Date(Date.now() - 24 * 3600000).toISOString()
-    const { count: unresolvedCount } = await (service as any)
+    const { count: unresolvedCount, error: unresolvedErr } = await (service as any)
       .from('guardian_checks')
       .select('id', { count: 'exact', head: true })
       .eq('classification_failed', true)
       .lt('created_at', since24h)
       .eq('outcome', 'pending')
+    // FIX (cron/portal audit round 3): the error was never read, so a failed count looked like "0
+    // unresolved failures" — the alert this query exists to raise silently could never fire while the
+    // query was failing, and the heartbeat still said healthy. Fail the run (alert + no heartbeat).
+    if (unresolvedErr) throw new Error(`guardian-health unresolved-failures count: ${unresolvedErr.message}`)
 
     if ((unresolvedCount || 0) > 0) {
       const msg = `${unresolvedCount} unresolved classification failures older than 24h`

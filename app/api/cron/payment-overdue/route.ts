@@ -223,18 +223,28 @@ export async function POST(request: NextRequest) {
   })
 
   // ── 3. Grace-period reminder (before the day-GRACE_DAYS enforcement) ────────────────────
-  // The window is exactly 24h wide, so each workspace lands in it on exactly one daily run; the
-  // audit-log check makes a manual re-run in the same window a no-op.
+  // FIX (cron/portal audit round 3): the reminder used to be selected with a window exactly 24h wide
+  // ([now-(d+1) days, now-d days)) on the assumption that consecutive daily runs tile the timeline with
+  // no gap. They don't: a run that starts a little later than yesterday's leaves a gap nobody is ever
+  // selected in, and a skipped run (deploy, outage, the scheduler dropping a tick) leaves a whole
+  // day-wide hole — a workspace whose grace period started in it never got the "2 days left" warning and
+  // went straight to being downgraded. A missed warning on a billing downgrade is the worst place for a
+  // fragile window.
+  //
+  // Now: everything that has reached the reminder point (started at or before now - reminderDaysIn) and
+  // has not yet reached enforcement (started after now - GRACE_DAYS) is a candidate on every run, and
+  // "already reminded" is decided per grace period — a reminder row logged at or after this grace
+  // period's own start means it has been sent — so a late/skipped run catches up and a re-run is a no-op.
   await run.step('3 grace reminder', async () => {
     const reminderDaysIn = GRACE_DAYS - GRACE_REMINDER_DAYS_LEFT
-    const windowStart = new Date(now.getTime() - (reminderDaysIn + 1) * 86400000).toISOString()
-    const windowEnd   = new Date(now.getTime() - reminderDaysIn * 86400000).toISOString()
+    const reminderPoint  = new Date(now.getTime() - reminderDaysIn * 86400000).toISOString()
+    const graceCutoff    = new Date(now.getTime() - GRACE_DAYS * 86400000).toISOString()
     const graceReminderDue = await fetchAll<any>('grace reminder select', (from, to) =>
       (service as any).from('billing')
-        .select(`workspace_id, ${WS_EMBED}`)
+        .select(`workspace_id, grace_period_started_at, ${WS_EMBED}`)
         .not('grace_period_started_at', 'is', null)
-        .lt('grace_period_started_at', windowEnd)
-        .gte('grace_period_started_at', windowStart)
+        .lte('grace_period_started_at', reminderPoint)
+        .gte('grace_period_started_at', graceCutoff)
         .order('workspace_id')
         .range(from, to))
 
@@ -242,11 +252,14 @@ export async function POST(request: NextRequest) {
       try {
         const ws = b.workspaces
         if (!ws || ws.deleted_at) continue
-        const { data: alreadySent } = await (service as any)
+        // An error here used to be ignored (`data` only), which reads as "not sent yet" and re-sent the
+        // email on every run for as long as the lookup kept failing.
+        const { data: alreadySent, error: sentErr } = await (service as any)
           .from('audit_log').select('id')
           .eq('workspace_id', ws.id).eq('event_type', 'billing.payment_failed_grace_reminder')
-          .gte('created_at', windowStart)
+          .gte('created_at', b.grace_period_started_at)
           .limit(1).maybeSingle()
+        if (sentErr) throw new Error(`reminder dedupe lookup failed: ${sentErr.message}`)
         if (alreadySent) continue
 
         const recipients = await getBillingRecipients(service, ws.id, ws.creator)
@@ -259,12 +272,16 @@ export async function POST(request: NextRequest) {
             })
           } catch (e) { console.error('Grace reminder email failed for', r.email, e) }
         }
-        await insertAuditRow(service, {
+        const logged = await insertAuditRow(service, {
           workspace_id: ws.id, actor_id: null,
           actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
           event_type: 'billing.payment_failed_grace_reminder', entity_type: 'workspace',
-          entity_id: ws.id, entity_name: ws.agency_name, metadata: { grace_days_left: GRACE_REMINDER_DAYS_LEFT },
+          entity_id: ws.id, entity_name: ws.agency_name,
+          metadata: { grace_days_left: GRACE_REMINDER_DAYS_LEFT, grace_period_started_at: b.grace_period_started_at },
         })
+        // audit_log is append-only, so the "sent" marker cannot be rolled back — if it failed to write the
+        // reminder will go out again tomorrow. Say so loudly rather than duplicate silently.
+        if (logged === false) run.rowError(`grace reminder ${b.workspace_id}`, new Error('reminder sent but its dedupe audit row failed to write — will be re-sent next run'))
       } catch (e) { run.rowError(`grace reminder ${b.workspace_id}`, e) }
     }
   })

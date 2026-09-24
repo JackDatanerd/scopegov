@@ -120,4 +120,38 @@ describe('retainer-milestones cron', () => {
     expect(state.milestones).toHaveLength(0)
     expect(out.skippedNoValue).toBe(1)
   })
+
+  it('OPEN-ENDED retainer (no term): bills the current month, never backfills history, never announces an end', async () => {
+    vi.setSystemTime(new Date('2026-03-05T06:00:00Z'))
+    // signed in January with no term and nothing ever generated (the old cron skipped these projects entirely)
+    state.projects = [project({ retainer_duration_months: null })]
+    const out = await call()
+    expect(state.milestones.map(m => m.due_date)).toEqual(['2026-03-01'])
+    expect(out.generated).toBe(1)
+    expect(out.endedNotified).toBe(0)
+    expect(state.notified).toHaveLength(0)
+    expect(state.audit.find(a => a.event_type === 'payment.milestone_generated')?.metadata).toMatchObject({ open_ended: true, backfilled: false })
+  })
+
+  it('open-ended: keeps billing year after year and is idempotent within a month', async () => {
+    vi.setSystemTime(new Date('2028-07-02T06:00:00Z'))
+    state.projects = [project({ retainer_duration_months: null })]
+    await call()
+    expect(state.milestones.map(m => m.due_date)).toEqual(['2028-07-01'])
+    await call()
+    expect(state.milestones).toHaveLength(1)
+    vi.setSystemTime(new Date('2028-08-01T06:00:00Z'))
+    await call()
+    expect(state.milestones.map(m => m.due_date)).toEqual(['2028-07-01', '2028-08-01'])
+    expect(state.notified).toHaveLength(0)
+  })
+
+  it('open-ended: a retainer signed this month keeps the sign route\'s row and gets no duplicate', async () => {
+    vi.setSystemTime(new Date('2026-03-25T06:00:00Z'))
+    state.projects = [project({ retainer_duration_months: null, sow_documents: [{ id: 's1', status: 'signed', signed_at: '2026-03-20T10:00:00Z' }] })]
+    state.milestones = [{ project_id: 'p1', type: 'retainer_monthly', due_date: '2026-03-20' }]
+    const out = await call()
+    expect(out.generated).toBe(0)
+    expect(state.milestones).toHaveLength(1)
+  })
 })

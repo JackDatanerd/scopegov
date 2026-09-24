@@ -1,5 +1,6 @@
 export const runtime = 'nodejs'
 
+import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
 import { markFirstViewed } from '@/lib/utils/client-viewed'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
@@ -172,7 +173,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       co: {
         id:          co.id,
         title:       co.title,
-        note:        co.note,
+        // FIX (cron/portal audit round 3): rendered with dangerouslySetInnerHTML on a public, unauthenticated page.
+        // It was sanitized only when written through the API; the SOW portal already re-sanitizes on READ (hydrateSections).
+        // Any other path into this column (a direct PostgREST write by a low-privilege member, a future import, an
+        // old row) would be stored XSS against every client who opens the link — and against any agency member who
+        // previews it while signed in. Defense in depth: sanitize what leaves the server, not just what enters it.
+        note:        sanitizeRichTextOrNull(co.note),
         mode,
         projectName: co.projects?.name,
         agencyName:  ws?.agency_name,

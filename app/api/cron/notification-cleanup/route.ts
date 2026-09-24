@@ -5,9 +5,10 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
 import { alertCronFailure } from '@/lib/utils/cron-alert'
-import { recordCronHeartbeat } from '@/lib/utils/cron-heartbeat'
+import { CronRun } from '@/lib/utils/cron-run'
+import { pruneInBatches } from '@/lib/utils/retention'
 
-// Retention for the two append-only tables this fix round introduced or relied on.
+// Retention for the append-only tables this codebase writes to without ever reading back past a window.
 //
 // FIX (Notifications & email fix round): nothing ever deleted a notification. Every project event
 // fans out to up to 25 recipients, so `notifications` only grew, and its only index was partial
@@ -15,36 +16,30 @@ import { recordCronHeartbeat } from '@/lib/utils/cron-heartbeat'
 // are kept 90 days (long enough to scroll back through a project's history); anything older than
 // 180 days is dropped even if it was never opened — an unread notification about an event half a
 // year ago is not actionable. email_log (delivery/bounce tracking) is kept 180 days.
-
-// SCHEDULING: crons are triggered by the external scopegov-cron-worker (vercel.json no longer lists
-// them), so this endpoint does nothing until the worker calls it — daily, e.g. 02:30 UTC:
-//   POST /api/cron/notification-cleanup   (Authorization: Bearer $CRON_SECRET)
 //
-// FIX (deep audit, notifications/search re-pass): this comment used to say
-// 'notification-cleanup' was deliberately left OUT of EXPECTATIONS in
-// cron-heartbeat-watchdog/route.ts until the worker was confirmed to call
-// it, "since registering it before it is scheduled would alert on every
-// deploy" — but a later round (cron + portal audit round 2, closing
-// heartbeat gaps across section 17) registered it there without coming
-// back to update this warning, so the two files have been contradicting
-// each other. cron_heartbeats has no seed row for any cron and the
-// watchdog gives a never-seen cron no grace period ("no row at all reads
-// the same as stale... needs a human, not a free pass") — so if the
-// external worker's schedule was never actually updated to include this
-// route, ops has been getting a false "never ran" page roughly hourly
-// (the alert's own cooldown) ever since that round shipped.
-// Kept registered rather than pulled back out: silently dropping
-// heartbeat coverage risks masking a real failure later, which is worse
-// than a loud, cooldown-limited false alarm now. MANUAL VERIFICATION
-// NEEDED: confirm the scopegov-cron-worker schedule actually includes
-// `notification-cleanup` (same category of external-scheduling check
-// already flagged for the GitHub Actions CRON_SECRET/APP_BASE_URL
-// secrets) — if it doesn't, add it there rather than removing the
-// EXPECTATIONS entry.
+// FIX (cron/portal audit round 3):
+//   • Deletes are batched (lib/utils/retention.ts). A single unbounded DELETE over a table that had never
+//     been pruned could exceed the statement timeout and fail identically every night.
+//   • Runs on CronRun: a failed step now alerts immediately (it used to return 207 and rely on the
+//     watchdog noticing the missing heartbeat ~27h later) and the steps are independent.
+//   • ai_usage_log is pruned here. Its migration comment said "lib/utils/rate-limit.ts / a future cron
+//     route" would do it; rate-limit.ts never did and no cron ever did, so it grew by one row per AI call
+//     forever. The rate-limit windows are minutes-to-hours; 30 days is generous.
+//   • cron_run_history (migration 074) is pruned to 60 days.
+//   • The two nightly snapshot tables are downsampled to month-start rows once older than 400 days
+//     (prune_snapshot_history, migration 074) — daily granularity is only ever charted for the recent
+//     window, and they otherwise grow by workspaces x days / projects x days without bound.
+//
+// SCHEDULING: crons are triggered by the external scopegov-cron-worker (vercel.json no longer lists
+// them) — daily, e.g. 02:30 UTC. See lib/cron/manifest.ts, which is the single list of what has to be
+// registered there and what the watchdog expects.
 
-const READ_RETENTION_DAYS = 90
-const ANY_RETENTION_DAYS  = 180
-const EMAIL_LOG_DAYS      = 180
+const READ_RETENTION_DAYS     = 90
+const ANY_RETENTION_DAYS      = 180
+const EMAIL_LOG_DAYS          = 180
+const AI_USAGE_DAYS           = 30
+const CRON_HISTORY_DAYS       = 60
+const SNAPSHOT_DAILY_KEEP_DAYS = 400
 
 export async function POST(request: NextRequest) {
   if (!verifyCronSecret(request))
@@ -52,31 +47,48 @@ export async function POST(request: NextRequest) {
 
   const service = createServiceClient() as any
   try {
+    const run = new CronRun(service, 'notification-cleanup')
     const now = Date.now()
     const iso = (days: number) => new Date(now - days * 86400000).toISOString()
+    const remaining: string[] = []
 
-    const { error: readErr, count: readCount } = await service
-      .from('notifications').delete({ count: 'exact' })
-      .eq('read', true).lt('created_at', iso(READ_RETENTION_DAYS))
-    if (readErr) console.error('Read-notification purge failed:', readErr.message)
+    await run.step('prune read notifications', async () => {
+      const r = await pruneInBatches(service, 'notifications', q => q.eq('read', true).lt('created_at', iso(READ_RETENTION_DAYS)))
+      run.result.readPurged = r.deleted
+      if (r.truncated) remaining.push('notifications(read)')
+    })
+    await run.step('prune old notifications', async () => {
+      const r = await pruneInBatches(service, 'notifications', q => q.lt('created_at', iso(ANY_RETENTION_DAYS)))
+      run.result.oldPurged = r.deleted
+      if (r.truncated) remaining.push('notifications(old)')
+    })
+    await run.step('prune email_log', async () => {
+      const r = await pruneInBatches(service, 'email_log', q => q.lt('created_at', iso(EMAIL_LOG_DAYS)))
+      run.result.emailLogPurged = r.deleted
+      if (r.truncated) remaining.push('email_log')
+    })
+    await run.step('prune ai_usage_log', async () => {
+      const r = await pruneInBatches(service, 'ai_usage_log', q => q.lt('created_at', iso(AI_USAGE_DAYS)))
+      run.result.aiUsagePurged = r.deleted
+      if (r.truncated) remaining.push('ai_usage_log')
+    })
+    await run.step('prune cron_run_history', async () => {
+      const r = await pruneInBatches(service, 'cron_run_history', q => q.lt('created_at', iso(CRON_HISTORY_DAYS)))
+      run.result.cronHistoryPurged = r.deleted
+      if (r.truncated) remaining.push('cron_run_history')
+    })
+    await run.step('downsample snapshot history', async () => {
+      const { data, error } = await service.rpc('prune_snapshot_history', { p_keep_daily_days: SNAPSHOT_DAILY_KEEP_DAYS })
+      if (error) throw new Error(error.message)
+      run.result.snapshotsDownsampled = data ?? null
+    })
 
-    const { error: oldErr, count: oldCount } = await service
-      .from('notifications').delete({ count: 'exact' })
-      .lt('created_at', iso(ANY_RETENTION_DAYS))
-    if (oldErr) console.error('Old-notification purge failed:', oldErr.message)
+    // A table that ran out of batch/time budget is not a failure — tomorrow's run continues — but it is
+    // worth seeing in the result and the run history.
+    if (remaining.length) run.result.moreRemaining = remaining
 
-    const { error: logErr, count: logCount } = await service
-      .from('email_log').delete({ count: 'exact' })
-      .lt('created_at', iso(EMAIL_LOG_DAYS))
-    if (logErr) console.error('email_log purge failed:', logErr.message)
-
-    const failed = !!(readErr || oldErr || logErr)
-    const result = {
-      readPurged: readCount || 0, oldPurged: oldCount || 0, emailLogPurged: logCount || 0,
-    }
-    // A failed purge must not refresh the heartbeat — the watchdog should page instead.
-    if (!failed) await recordCronHeartbeat(service, 'notification-cleanup', result)
-    return NextResponse.json({ ok: !failed, ...result }, { status: failed ? 207 : 200 })
+    const { body, status } = await run.finish()
+    return NextResponse.json(body, { status })
   } catch (err) {
     console.error('Notification cleanup cron error:', err)
     await alertCronFailure(createServiceClient(), 'notification-cleanup', err).catch(() => {})

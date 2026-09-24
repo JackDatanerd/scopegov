@@ -11,9 +11,11 @@
 //   anonymizeAuthUser  — at day 30: replace the login email with a non-routable one, set an unknown
 //                        password, drop metadata (display name, avatar) and remove MFA factors.
 //
-// KNOWN LIMIT: the GoTrue admin API offers no call to delete OAuth identity rows
-// (auth.identities.identity_data still holds the provider's email/name). The ban stops them being
-// usable; to purge them completely, run the SQL in migration 063's footer or use the dashboard.
+// The parts the GoTrue admin API cannot reach — auth.identities (the OAuth provider's copy of the email/name),
+// and the person's email / display name / IP denormalized onto audit_log rows — are handled by the
+// erase_user_pii() SQL function (migration 075), which api/cron/invite-cleanup calls right before this
+// module's anonymizeAuthUser(). (Until round 3 the identities were a documented "known limit" and audit_log was
+// never touched at all.)
 
 import { randomBytes } from 'node:crypto'
 

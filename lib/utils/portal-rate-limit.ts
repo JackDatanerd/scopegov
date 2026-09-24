@@ -34,6 +34,7 @@ const LIMITS: Record<string, { max: number; windowMinutes: number }> = {
   // FEATURE (portal audit, section 18): new client-facing mutating action —
   // same coverage requirement as every entry above it.
   'invoice.dispute':     { max: 10, windowMinutes: 10 },
+  'invoice.paid':        { max: 10, windowMinutes: 10 },
   // Read-only, but each request renders a PDF (CPU-heavy) for an unauthenticated link holder — an
   // unthrottled loop of them is a cheap way to burn function time. Generous enough that a person
   // downloading and re-downloading never notices.

@@ -6,6 +6,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { resolveInvoiceToken } from '@/lib/documents/invoice-token'
 import { formatAddress } from '@/lib/utils/format'
+import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
 
 // GET /api/portal/invoice/[token] — read-only. No pay button, no checkout
 // flow: this is a document-delivery + status view, not a payment processor.
@@ -17,6 +18,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const resolved = await resolveInvoiceToken(service, token, `id, title, amount, amount_paid, currency, status, due_date, sent_at,
         payment_instructions, invoice_number, po_number, project_id, milestone_id, workspace_id,
         subtotal, tax_rate, tax_inclusive, line_items, sow_id, co_id, first_viewed_at, disputed_at, dispute_note, dispute_resolved_at, dispute_resolution_note,
+        payment_claimed_at, payment_claim_reference, payment_claim_cleared_at,
         projects(id, name, clients(name, company_name, billing_address, vat_number),
           workspaces(agency_name, brand_colour, logo_storage_path,
             legal_address, tax_id, phone, website)),
@@ -79,7 +81,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         status: invoice.status,
         dueDate: invoice.due_date,
         sentAt: invoice.sent_at,
-        paymentInstructions: invoice.payment_instructions,
+        // FIX (cron/portal audit round 3): rendered with dangerouslySetInnerHTML on the public invoice page — sanitized
+        // on READ as well as on write (see the identical note on the CO portal route).
+        paymentInstructions: sanitizeRichTextOrNull(invoice.payment_instructions),
         invoiceNumber: invoice.invoice_number,
         poNumber: invoice.po_number || null,
         milestoneTrigger,
@@ -97,6 +101,15 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         disputeNote: invoice.dispute_note || null,
         disputeResolvedAt: invoice.dispute_resolved_at || null,
         disputeResolutionNote: invoice.dispute_resolution_note || null,
+        // FEATURE (cron/portal audit round 3): the client's own "I've paid" notice — see ./paid/route.ts. `open`
+        // is false once the agency has recorded a payment (which clears the claim).
+        paymentClaim: invoice.payment_claimed_at
+          ? {
+              claimedAt: invoice.payment_claimed_at,
+              reference: invoice.payment_claim_reference || null,
+              open: !invoice.payment_claim_cleared_at || new Date(invoice.payment_claim_cleared_at) < new Date(invoice.payment_claimed_at),
+            }
+          : null,
         lineItems: typeof invoice.line_items === 'string' ? JSON.parse(invoice.line_items) : (invoice.line_items || []),
         projectName: invoice.projects?.name,
         clientName: invoice.projects?.clients?.name,

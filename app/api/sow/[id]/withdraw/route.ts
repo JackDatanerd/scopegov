@@ -84,6 +84,16 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .update({ status: 'Intake', updated_at: now })
       .eq('id', sow.projects?.id)
       .in('status', ['Awaiting Signature','Changes Requested'])
+    // FIX (cron/portal audit round 3): sow-stall flips a project whose SOW sat unsigned for 7 days to
+    // 'Stalled' / stall_reason 'sow_unsigned'. This revert only listed Awaiting Signature / Changes
+    // Requested, so withdrawing a SOW that had gone stale — the most natural time to withdraw one — left the
+    // project on 'Stalled' with a "SOW unsigned" reason and no SOW out at all. send, reopen, request-changes,
+    // sign, decline and sow-expiry all reconcile that exact state; this was the odd one out. Same guard they
+    // use: only undo the auto-stall THIS SOW caused; a project stalled for any other reason is left alone.
+    await (service as any).from('projects')
+      .update({ status: 'Intake', stall_reason: null, updated_at: now })
+      .eq('id', sow.projects?.id)
+      .eq('status', 'Stalled').eq('stall_reason', 'sow_unsigned')
 
     await logAudit(service, {
       workspaceId: session.workspaceId,

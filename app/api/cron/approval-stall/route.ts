@@ -24,7 +24,7 @@ export async function POST(request: NextRequest) {
   // "needs attention" register and this cron can't drift apart.
   const threshold = APPROVAL_STALL_DAYS // days
   const cutoff    = new Date(now.getTime() - threshold * 86400000).toISOString()
-  let reminded = 0, escalated = 0, sendFailureEscalated = 0, healed = 0, unresponsiveEscalated = 0
+  let reminded = 0, escalated = 0, sendFailureEscalated = 0, healed = 0, unresponsiveEscalated = 0, notFound = 0
 
   // FIX (section-11 audit, pass 2): reminders repeated forever with no
   // escalation for an approver who WAS reachable but never acted, and the
@@ -68,8 +68,12 @@ export async function POST(request: NextRequest) {
         const result = await sendApprovalReminder(service, r.id)
         if (result === 'sent') {
           const reminderCount = (r.reminder_count || 0) + 1
-          await (service as any).from('approval_requests')
+          // FIX (cron/portal audit round 3): this update's result was never read. If it failed, updated_at
+          // never moved, so the request came straight back next run and the approver was re-reminded every
+          // day (and reminder_count never reached the escalation threshold) with nothing reporting it.
+          const { error: bumpErr } = await (service as any).from('approval_requests')
             .update({ updated_at: now.toISOString(), reminder_count: reminderCount }).eq('id', r.id)
+          if (bumpErr) throw new Error(`reminder bookkeeping failed (the approver WAS reminded): ${bumpErr.message}`)
           await insertAuditRow(service, {
             workspace_id: r.workspace_id, actor_id: null,
             actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
@@ -80,27 +84,43 @@ export async function POST(request: NextRequest) {
 
           // Reachable but unresponsive: after N reminders, tell the people who can
           // reassign the step instead of nudging the same approver indefinitely.
+          // FIX (cron/portal audit round 3): `escalated_at` used to mean two different things — "the
+          // approver was reachable but unresponsive" (here) AND "nobody could be reached" (the branch
+          // below) — so a request that had once raised the no-approver alert could never get this
+          // escalation (the guard below saw `escalated_at` set), and the reverse muted the no-approver
+          // alert for 7 days. `escalated_at` now means only this escalation; the no-approver alert
+          // dedupes on its own audit rows. The claim is taken BEFORE notifying (CAS on escalated_at IS
+          // NULL) so a failed bookkeeping write can't re-notify the admins every run.
           if (reminderCount >= ESCALATE_AFTER_REMINDERS && !r.escalated_at) {
-            await notifyMembersWithPermission(service, {
-              workspaceId: r.workspace_id, permission: 'MANAGE_WORKSPACE_SETTINGS',
-              eventType: 'approval_no_reachable_approver', type: 'approval_unresponsive',
-              title: 'An approval is still waiting on its approver',
-              body: `A ${documentLabelFor(r.document_type)} approval has been waiting through ${reminderCount} reminders. You can reassign the step from the Approvals page.`,
-              entityType: 'approval_request', entityId: r.id, projectId: r.project_id,
-            })
-            await (service as any).from('approval_requests')
-              .update({ escalated_at: now.toISOString() }).eq('id', r.id)
-            await insertAuditRow(service, {
-              workspace_id: r.workspace_id, actor_id: null,
-              actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
-              event_type: 'approval.escalated', entity_type: 'approval_request', entity_id: r.id,
-              metadata: { reminder_count: reminderCount },
-            })
-            unresponsiveEscalated++
+            const { data: claimed, error: claimErr } = await (service as any).from('approval_requests')
+              .update({ escalated_at: now.toISOString() }).eq('id', r.id).is('escalated_at', null).select('id')
+            if (claimErr) throw new Error(`escalation claim failed: ${claimErr.message}`)
+            if (claimed?.length) {
+              await notifyMembersWithPermission(service, {
+                workspaceId: r.workspace_id, permission: 'MANAGE_WORKSPACE_SETTINGS',
+                eventType: 'approval_no_reachable_approver', type: 'approval_unresponsive',
+                title: 'An approval is still waiting on its approver',
+                body: `A ${documentLabelFor(r.document_type)} approval has been waiting through ${reminderCount} reminders. You can reassign the step from the Approvals page.`,
+                entityType: 'approval_request', entityId: r.id, projectId: r.project_id,
+              })
+              await insertAuditRow(service, {
+                workspace_id: r.workspace_id, actor_id: null,
+                actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
+                event_type: 'approval.escalated', entity_type: 'approval_request', entity_id: r.id,
+                metadata: { reminder_count: reminderCount },
+              })
+              unresponsiveEscalated++
+            }
           }
         } else if (result === 'no_recipients') {
-          // Alert once a week per request, not on every run.
-          if (r.escalated_at && now.getTime() - new Date(r.escalated_at).getTime() < REALERT_AFTER_MS) continue
+          // Alert once a week per request, not on every run — deduped on the audit trail of THIS alert
+          // (see the escalated_at note above). A failed lookup must not read as "never alerted".
+          const since = new Date(now.getTime() - REALERT_AFTER_MS).toISOString()
+          const { data: recent, error: recentErr } = await (service as any).from('audit_log').select('id')
+            .eq('workspace_id', r.workspace_id).eq('event_type', 'approval.no_reachable_approver')
+            .eq('entity_id', r.id).gte('created_at', since).limit(1).maybeSingle()
+          if (recentErr) throw new Error(`no-approver dedupe lookup failed: ${recentErr.message}`)
+          if (recent) continue
           // A broken approver assignment (role with no active holder, or a user no longer active)
           // needs a human to fix the assignment, not another silent retry.
           await insertAuditRow(service, {
@@ -122,11 +142,11 @@ export async function POST(request: NextRequest) {
             body: `A pending approval has been stalled for ${threshold}+ days and its assigned approver (role or user) can't be reached — check the approval workflow's assignment.`,
             entityType: 'approval_request', entityId: r.id,
           })
-          await (service as any).from('approval_requests')
-            .update({ escalated_at: now.toISOString() }).eq('id', r.id)
           escalated++
         }
-        // 'not_found': orphaned / already-resolved row race — nothing to do.
+        // 'not_found': already-resolved row race, or an orphan (current step missing). Counted in the
+        // result so a persistent orphan is visible in cron_run_history instead of vanishing silently.
+        else if (result === 'not_found') { notFound++; console.warn(`[cron:approval-stall] approval ${r.id}: reminder target not found (resolved mid-run, or orphaned)`) }
       } catch (e) { run.rowError(`approval ${r.id}`, e) }
     }
   })
@@ -151,8 +171,9 @@ export async function POST(request: NextRequest) {
           body: `A ${documentLabelFor(r.document_type)} was approved ${threshold}+ days ago but couldn't be sent automatically (${r.send_failed_reason || 'send failed'}) and hasn't been retried.`,
           entityType: 'approval_request', entityId: r.id, projectId: r.project_id,
         })
-        await (service as any).from('approval_requests')
+        const { error: bumpErr } = await (service as any).from('approval_requests')
           .update({ updated_at: now.toISOString() }).eq('id', r.id)
+        if (bumpErr) throw new Error(`send-failure bookkeeping failed (admins WERE notified): ${bumpErr.message}`)
         await insertAuditRow(service, {
           workspace_id: r.workspace_id, actor_id: null,
           actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
@@ -164,7 +185,7 @@ export async function POST(request: NextRequest) {
     }
   })
 
-  Object.assign(run.result, { reminded, escalated, sendFailureEscalated, healed, unresponsiveEscalated })
+  Object.assign(run.result, { reminded, escalated, sendFailureEscalated, healed, unresponsiveEscalated, notFound })
   const { body, status } = await run.finish()
   return NextResponse.json(body, { status })
 }

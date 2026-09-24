@@ -106,7 +106,7 @@ export async function POST(request: NextRequest) {
   // row is left untouched so tomorrow's run retries (the row still matches the query).
   await run.step('anonymize deleted accounts', async () => {
     const candidates = await fetchAll<any>('anonymization candidates select', (from, to) =>
-      (service as any).from('users').select('id')
+      (service as any).from('users').select('id, email')
         .not('deleted_at', 'is', null)
         .lt('deleted_at', iso(30))
         .not('email', 'like', 'deleted-%@deleted.scopegov.app')
@@ -131,6 +131,16 @@ export async function POST(request: NextRequest) {
           console.warn(`[invite-cleanup] user ${u.id} has deleted_at set but is an active workspace member — NOT anonymized; review manually`)
           continue
         }
+        // FIX (cron/portal audit round 3): erasure used to stop at public.users + the auth record. The person's
+        // email, display name and IP stayed on every audit_log row they ever produced (denormalized, append-only,
+        // kept for the life of the workspace), their notifications kept naming them, and the OAuth provider's copy
+        // of their email/name stayed in auth.identities (a documented "known limit" — the admin API can't delete
+        // it). erase_user_pii (migration 075) does all of that in one call, BEFORE the profile row is scrubbed:
+        // if it fails the profile still carries the old email, tomorrow's run finds the row again and retries
+        // (it is idempotent). The old email is passed so audit events NAMING the person are scrubbed too.
+        const { error: piiErr } = await (service as any).rpc('erase_user_pii', { p_user_id: u.id, p_email: u.email })
+        if (piiErr) throw new Error(`PII erasure failed: ${piiErr.message}`)
+
         const auth = await anonymizeAuthUser(service, u.id)
         if (!auth.ok) throw new Error(`auth anonymization failed: ${auth.error}`)
 

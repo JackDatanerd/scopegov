@@ -71,9 +71,10 @@ function NewProjectPageInner() {
   // FIX (deep audit, section 7 — flagship finding): retainer_duration_months
   // is read by api/cron/retainer-milestones to decide when to stop
   // generating monthly retainer invoices, but had no field anywhere in
-  // the product to set it — it was permanently null, so the cron's
-  // `.not('retainer_duration_months', 'is', null)` filter matched zero
-  // projects, ever. Only meaningful for the 'retainer' project type.
+  // the product to set it. Only meaningful for the 'retainer' project type.
+  // Blank = an open-ended retainer (cron/portal audit round 3: billed monthly
+  // until the project is completed or archived, instead of silently never
+  // billed after the first month).
   const [retainerMonths, setRetainerMonths] = useState('12')
 
   // Step 1: Brief
@@ -458,9 +459,14 @@ function NewProjectPageInner() {
               </div>
               {projectType === 'retainer' ? (
                 <div className="fgrp">
-                  <label className="flbl">Retainer duration <span className="fhint">— months</span></label>
+                  <label className="flbl">Retainer duration <span className="fhint">— months, or leave blank for open-ended</span></label>
                   <input type="number" className="finp" value={retainerMonths} min={1} max={60} step="1" placeholder="12"
                     onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRetainerMonths(e.target.value)} />
+                  {!retainerMonths && (
+                    <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 4 }}>
+                      Open-ended: a monthly payment milestone is generated every month until you complete or archive the project.
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="fgrp">
@@ -606,7 +612,7 @@ function NewProjectPageInner() {
                 {startDate && <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Start date</div><div>{startDate}</div></div>}
                 {internalRef && <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Internal ref</div><div>{internalRef}</div></div>}
                 {projectType === 'retainer' && (
-                  <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Retainer duration</div><div>{retainerMonths ? `${retainerMonths} months` : '—'}</div></div>
+                  <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Retainer duration</div><div>{retainerMonths ? `${retainerMonths} months` : 'Open-ended'}</div></div>
                 )}
               </div>
             </div>

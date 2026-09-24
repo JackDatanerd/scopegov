@@ -419,4 +419,82 @@ describe.skipIf(!URL_)('Postgres replay (migrations 001..latest on a real databa
       expect(rows.find(r => r.id === 'logos')!.allowed_mime_types).toEqual(['image/png', 'image/jpeg'])
     })
   })
+
+  // ── cron + portal audit round 3 (migration 075) ─────────────────────────
+  describe('cron/portal audit round 3 (migration 075)', () => {
+    it('erase_user_pii pseudonymizes the actor\'s audit rows, removes identities + notifications, and leaves audit_log append-only', async () => {
+      await makeUser(90, 'erase.me@test.dev'); await makeUser(91, 'bystander@test.dev'); await makeWorkspace(90, 90)
+      await sql(`INSERT INTO public.audit_log (workspace_id, actor_id, actor_email, actor_name, ip_address, event_type, entity_type) VALUES ($1,$2,'erase.me@test.dev','Erase Me','203.0.113.9','test.a','x')`, [W(90), U(90)])
+      await sql(`INSERT INTO public.audit_log (workspace_id, actor_id, actor_email, actor_name, ip_address, event_type, entity_type) VALUES ($1,$2,'bystander@test.dev','Bystander','203.0.113.10','test.b','x')`, [W(90), U(91)])
+      await sql(`INSERT INTO public.audit_log (workspace_id, actor_id, actor_email, actor_name, event_type, entity_type, entity_name) VALUES ($1,$2,'bystander@test.dev','Bystander','member.invited','member','erase.me@test.dev')`, [W(90), U(91)])
+      await sql(`INSERT INTO public.notifications (workspace_id, recipient_id, type, title, body) VALUES ($1,$2,'t','Hi Erase Me','body')`, [W(90), U(90)])
+      await sql(`INSERT INTO auth.identities (provider_id, user_id, provider, identity_data, email) VALUES ('g-90', $1, 'google', '{"email":"erase.me@test.dev"}', 'erase.me@test.dev')`, [U(90)])
+
+      const [{ r }] = await sql(`SELECT public.erase_user_pii($1, 'erase.me@test.dev') AS r`, [U(90)])
+      expect(r.audit_actor_rows).toBe(1)
+      expect(r.audit_target_rows).toBe(1)
+      expect(r.notifications).toBe(1)
+      expect(r.identities).toBeGreaterThanOrEqual(1)
+
+      const mine = await sql(`SELECT actor_email, actor_name, ip_address FROM public.audit_log WHERE actor_id = $1`, [U(90)])
+      expect(mine).toHaveLength(1)
+      expect(mine[0].actor_email).toBe(`deleted-${U(90)}@deleted.scopegov.app`)
+      expect(mine[0].actor_name).toBe('[Deleted user]')
+      expect(mine[0].ip_address).toBeNull()
+      // someone else's row is untouched, except the event that named the erased person as its target
+      const other = await sql(`SELECT actor_name, ip_address, entity_name FROM public.audit_log WHERE actor_id = $1 ORDER BY event_type`, [U(91)])
+      expect(other.map(o => o.actor_name)).toEqual(['Bystander', 'Bystander'])
+      expect(other.find(o => o.entity_name === '[Deleted user]')).toBeTruthy()
+      expect(await sql(`SELECT 1 FROM public.notifications WHERE recipient_id = $1`, [U(90)])).toHaveLength(0)
+      expect(await sql(`SELECT 1 FROM auth.identities WHERE user_id = $1`, [U(90)])).toHaveLength(0)
+      // the switch is transaction-local: the log is append-only again straight afterwards
+      await expect(sql(`UPDATE public.audit_log SET actor_name = 'tampered'`)).rejects.toThrow()
+      // idempotent
+      const [{ r: again }] = await sql(`SELECT public.erase_user_pii($1, 'erase.me@test.dev') AS r`, [U(90)])
+      expect(again.audit_actor_rows).toBe(0)
+    })
+
+    it('erase_user_pii and prune_snapshot_history are service-role only', async () => {
+      await asRole('authenticated', U(90), async c => {
+        expect(await denied(c, `SELECT public.erase_user_pii('${U(91)}'::uuid, NULL)`)).toBe(true)
+        expect(await denied(c, `SELECT public.prune_snapshot_history(400)`)).toBe(true)
+      })
+      await asRole('anon', null, async c => {
+        expect(await denied(c, `SELECT public.erase_user_pii('${U(91)}'::uuid, NULL)`)).toBe(true)
+      })
+    })
+
+    it('prune_snapshot_history keeps recent daily rows and only month-start rows once old', async () => {
+      await makeUser(92); await makeWorkspace(92, 92)
+      const ins = (d: string) => sql(`INSERT INTO public.scope_health_snapshots (workspace_id, snapshot_date) VALUES ($1, $2::date)`, [W(92), d])
+      await ins(new Date(Date.now() - 10 * 86400000).toISOString().slice(0, 10))        // recent: kept whatever the day
+      await ins('2020-03-01')   // old month-start: kept
+      await ins('2020-03-15')   // old mid-month: deleted
+      await ins('2020-03-16')   // old mid-month: deleted
+      const [{ r }] = await sql(`SELECT public.prune_snapshot_history(400) AS r`)
+      expect(r.scope_health).toBeGreaterThanOrEqual(2)
+      const left = await sql(`SELECT snapshot_date::text AS d FROM public.scope_health_snapshots WHERE workspace_id = $1 ORDER BY snapshot_date`, [W(92)])
+      expect(left.map(x => x.d)).toContain('2020-03-01')
+      expect(left.map(x => x.d)).not.toContain('2020-03-15')
+      expect(left).toHaveLength(2)
+      await expect(sql(`SELECT public.prune_snapshot_history(10)`)).rejects.toThrow(/>= 90/)
+    })
+
+    it('cron_run_history takes service writes and is closed to the API roles', async () => {
+      await sql(`INSERT INTO public.cron_run_history (cron_name, ok, duration_ms, result) VALUES ('t', true, 12, '{"n":1}')`)
+      await asRole('authenticated', U(90), async c => {
+        expect(await denied(c, `SELECT * FROM public.cron_run_history`)).toBe(true)
+      })
+    })
+
+    it('invoices carry the payment-claim columns with length guards', async () => {
+      const cols = await sql(`SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='invoices' AND column_name LIKE 'payment_claim%'`)
+      expect(cols.map(c => c.column_name).sort()).toEqual(['payment_claim_cleared_at', 'payment_claim_note', 'payment_claim_reference', 'payment_claimed_at'])
+    })
+
+    it('migration 075 can be applied a second time without error', async () => {
+      const f = fs.readdirSync(MIGRATIONS).find(x => x.startsWith('075_'))!
+      await pool.query(fs.readFileSync(path.join(MIGRATIONS, f), 'utf8'))
+    })
+  })
 })

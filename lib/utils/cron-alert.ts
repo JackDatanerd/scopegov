@@ -25,6 +25,7 @@
 
 import { sendEmail } from '@/lib/email/send'
 import { systemFrom } from '@/lib/email/from'
+import { recordCronRunHistory } from '@/lib/utils/cron-history'
 
 const escapeHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
@@ -66,13 +67,20 @@ async function sendOpsAlert(
 
 export async function alertCronFailure(
   service: any, cronName: string, err: unknown, cooldownMs = 60 * 60_000,
+  opts?: { history?: boolean; durationMs?: number; result?: Record<string, unknown> },
 ): Promise<boolean> {
   const message = err instanceof Error ? (err.stack || err.message) : String(err)
+  // Every failed run lands in cron_run_history (the ops email below is cooldown-limited; the history is not).
+  if (opts?.history !== false) {
+    await recordCronRunHistory(service, cronName, { ok: false, durationMs: opts?.durationMs, result: opts?.result ?? null, error: message })
+  }
   return sendOpsAlert(service, `cron:${cronName}:failure`, `${cronName} failed`, message, cooldownMs)
 }
 
 export async function alertCronMissedHeartbeat(
-  service: any, cronName: string, message: string, cooldownMs = 60 * 60_000,
+  service: any, cronName: string, message: string, cooldownMs = 12 * 60 * 60_000,
 ): Promise<boolean> {
-  return sendOpsAlert(service, `cron:${cronName}:missed`, `${cronName} hasn't run recently`, message, cooldownMs)
+  // '__many__' is the watchdog's single digest for a wide outage (see cron-heartbeat-watchdog).
+  const subject = cronName === '__many__' ? 'multiple crons have gone quiet' : `${cronName} hasn't run recently`
+  return sendOpsAlert(service, `cron:${cronName}:missed`, subject, message, cooldownMs)
 }

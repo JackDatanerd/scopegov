@@ -8,7 +8,7 @@ export const maxDuration = 300
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
-import { collectAttachmentPaths, removeStoragePaths } from '@/lib/utils/storage-cleanup'
+import { collectAttachmentPaths, collectExecutedPdfPaths, removePurgedFiles } from '@/lib/utils/storage-cleanup'
 import { alertCronFailure } from '@/lib/utils/cron-alert'
 import { recordCronHeartbeat } from '@/lib/utils/cron-heartbeat'
 
@@ -64,8 +64,11 @@ export async function POST(request: NextRequest) {
       // purge deletes — collect the paths first, and skip this project (retry
       // next run) if we can't, rather than orphan its files.
       let filePaths: string[]
+      let pdfPaths: string[]
       try {
         filePaths = await collectAttachmentPaths(service, { projectId: p.id })
+        // Executed SOW/CO PDFs live in the private `pdfs` bucket (migration 061) — same ordering rule.
+        pdfPaths = await collectExecutedPdfPaths(service, { projectId: p.id })
       } catch (e) {
         console.error(`Project purge skipped for ${p.id} — could not list its attachment files:`, e)
         failures.push({ id: p.id, error: `attachment lookup failed: ${e instanceof Error ? e.message : 'unknown'}` })
@@ -81,8 +84,8 @@ export async function POST(request: NextRequest) {
       purgedCount++
 
       // Best-effort: the project is already gone, a stuck file must not fail the run.
-      if (filePaths.length) {
-        const r = await removeStoragePaths(service, filePaths)
+      if (filePaths.length || pdfPaths.length) {
+        const r = await removePurgedFiles(service, filePaths, pdfPaths)
         filesRemoved += r.removed
         filesFailed += r.failed
       }

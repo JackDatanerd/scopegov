@@ -59,3 +59,41 @@ describe('removeStoragePaths', () => {
     expect(r).toEqual({ removed: 0, failed: 2 })
   })
 })
+
+// ── cron/portal audit round 3: executed SOW/CO PDFs live in the private `pdfs` bucket ──────────────
+import { collectExecutedPdfPaths, removePurgedFiles } from '@/lib/utils/storage-cleanup'
+import { EXECUTED_PDF_BUCKET } from '@/lib/documents/executed-pdf'
+
+describe('collectExecutedPdfPaths (executed SOW / CO PDFs, migration 061)', () => {
+  it('uses the recorded pdf_path, and falls back to the deterministic path for a signed/accepted document whose path was never persisted', async () => {
+    const svc = fakeService({
+      sow_documents: [
+        { id: 's1', workspace_id: 'w1', status: 'signed', pdf_path: 'w1/sow/s1.pdf' },
+        { id: 's2', workspace_id: 'w1', status: 'signed', pdf_path: null },      // upload ok, UPDATE lost
+        { id: 's3', workspace_id: 'w1', status: 'draft', pdf_path: null },       // never executed: nothing to remove
+      ],
+      change_orders: [
+        { id: 'c1', workspace_id: 'w1', status: 'accepted', pdf_path: null },
+        { id: 'c2', workspace_id: 'w1', status: 'declined', pdf_path: null },
+      ],
+    })
+    const paths = await collectExecutedPdfPaths(svc, { projectId: 'p' })
+    expect(paths.sort()).toEqual(['w1/co/c1.pdf', 'w1/sow/s1.pdf', 'w1/sow/s2.pdf'])
+  })
+
+  it('throws (so the purge is skipped, not run blind) when a lookup fails', async () => {
+    const svc = fakeService({ sow_documents: [], change_orders: { error: 'db down' } })
+    await expect(collectExecutedPdfPaths(svc, { workspaceId: 'w' })).rejects.toThrow(/db down/)
+  })
+
+  it('removePurgedFiles removes evidence from its bucket and executed PDFs from the private pdfs bucket', async () => {
+    const log: any[] = []
+    const svc = fakeService({}, log)
+    const r = await removePurgedFiles(svc, ['e/1.png'], ['w1/sow/s1.pdf'])
+    expect(r).toEqual({ removed: 2, failed: 0 })
+    expect(log).toEqual([
+      { bucket: EVIDENCE_BUCKET, paths: ['e/1.png'] },
+      { bucket: EXECUTED_PDF_BUCKET, paths: ['w1/sow/s1.pdf'] },
+    ])
+  })
+})

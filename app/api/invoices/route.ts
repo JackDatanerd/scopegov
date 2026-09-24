@@ -184,7 +184,12 @@ export async function POST(request: NextRequest) {
       // project against its signed SOW for anything beyond one month's
       // rate was refused as "exceeding the SOW's contract value" — a cap
       // that was really just one month of a multi-month contract.
-      sowCap = baseContractValue(project)
+      // FIX (cron/portal audit round 3): an OPEN-ENDED retainer (no term — see api/cron/retainer-milestones) has no
+      // fixed contract total, so there is nothing for a SOW-wide cap to be. baseContractValue() fell back to one
+      // month's rate for it, which capped the SOW's cumulative billing at a single month — invoicing month two
+      // against the SOW was refused as "only 0.00 remains billable".
+      const openEndedRetainer = project.type === 'retainer' && !((project.retainer_duration_months || 0) > 0)
+      sowCap = openEndedRetainer ? null : baseContractValue(project)
       sourceKind = 'sow'; sourceId = sowId
     }
     if (coId) {

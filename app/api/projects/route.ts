@@ -50,8 +50,8 @@ export async function POST(request: NextRequest) {
       normalizedCurrency = curP.value
     }
 
-    // retainer_duration_months is read by api/cron/retainer-milestones, which
-    // only considers projects where it is NOT NULL. A value for a
+    // retainer_duration_months is read by api/cron/retainer-milestones. NULL means an open-ended retainer
+    // (billed monthly until the project is completed or archived); a number is a fixed term. A value for a
     // non-retainer type has no effect and is ignored.
     let retainerDuration: number | null = null
     if (typeP.value === 'retainer') {

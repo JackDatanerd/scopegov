@@ -42,13 +42,29 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (note.length < 10)
       return NextResponse.json({ error: 'Please describe the issue (minimum 10 characters)' }, { status: 400 })
 
-    const resolved = await resolveInvoiceToken(service, token, `id, title, invoice_number, status, workspace_id, project_id, projects(id, name, client_id, clients(name, email, cc_emails), workspaces(agency_name, brand_colour))`)
+    const resolved = await resolveInvoiceToken(service, token, `id, title, invoice_number, status, workspace_id, project_id, disputed_at, dispute_note, dispute_resolved_at, projects(id, name, client_id, clients(name, email, cc_emails), workspaces(agency_name, brand_colour))`)
     if (!resolved.ok) return NextResponse.json({ error: resolved.error }, { status: resolved.status })
     const invoice = resolved.invoice
 
     const now = new Date().toISOString()
     const project = invoice.projects
     const client  = project?.clients
+
+    // FIX (cron/portal audit round 3): the only limit on this endpoint was per-IP (10 / 10 min), and EVERY call
+    // stamps the invoice, notifies up to 25 finance members in-app AND by email, and sends the client a receipt.
+    // A link holder — or a client double-clicking, or a mail-scanner replaying the POST — could bury the agency's
+    // inbox and bell in minutes, and rotating IPs defeats a per-IP limit entirely. Throttle per INVOICE:
+    //   • the same message re-sent while the thread is still open is acknowledged without re-notifying anyone
+    //     (idempotent — a retry after a timeout must not double-notify), and
+    //   • a different message is accepted at most once every 15 minutes while the thread is open.
+    // Once the agency resolves it, a fresh dispute is always allowed (it re-opens the thread, as before).
+    if (invoice.disputed_at && !invoice.dispute_resolved_at) {
+      if (invoice.dispute_note && String(invoice.dispute_note).trim() === note) return NextResponse.json({ ok: true, duplicate: true })
+      const since = Date.now() - new Date(invoice.disputed_at).getTime()
+      if (since < 15 * 60_000) {
+        return NextResponse.json({ error: 'You flagged this invoice a moment ago — the team has your message. Please wait a few minutes before adding to it.' }, { status: 429 })
+      }
+    }
 
     // Not a CAS-guarded lifecycle transition — status is untouched, this
     // just stamps when + what. A client can re-flag with an updated note

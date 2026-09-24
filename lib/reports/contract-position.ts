@@ -37,9 +37,18 @@ export interface PositionProject {
 
 const CHUNK = 100 // ids per .in() — keeps the request URL well under proxy limits
 
-export function baseContractValue(p: PositionProject): number {
+/**
+ * `billedMonths` is only consulted for an OPEN-ENDED retainer (no term — see api/cron/retainer-milestones): its
+ * "contract" is the months committed so far (one retainer_monthly milestone each), since there is no fixed total to
+ * quote. Without it the position showed a single month's fee as the whole contract while invoiced-to-date kept
+ * growing past it every month.
+ */
+export function baseContractValue(p: PositionProject, billedMonths?: number): number {
   const v = Number(p.contract_value) || 0
-  if (p.type === 'retainer' && (p.retainer_duration_months || 0) > 0) return v * (p.retainer_duration_months as number)
+  if (p.type === 'retainer') {
+    if ((p.retainer_duration_months || 0) > 0) return v * (p.retainer_duration_months as number)
+    return v * Math.max(1, billedMonths || 0)
+  }
   return v
 }
 
@@ -65,6 +74,16 @@ export async function computeContractPositions(
           .order('id').range(from, to)),
     ])
 
+    // Open-ended retainers (no term): their contracted value is the months committed so far.
+    const openEnded = chunk.filter(id => { const pr = byId.get(id)!; return pr.type === 'retainer' && !((pr.retainer_duration_months || 0) > 0) })
+    const monthsBilled = new Map<string, number>()
+    if (openEnded.length) {
+      const rows = await fetchAll<any>('position retainer months', (from, to) =>
+        service.from('payment_milestones').select('id, project_id')
+          .in('project_id', openEnded).eq('type', 'retainer_monthly').order('id').range(from, to))
+      for (const r of rows) monthsBilled.set(r.project_id, (monthsBilled.get(r.project_id) || 0) + 1)
+    }
+
     for (const id of chunk) {
       const project = byId.get(id)!
       const isRetainer = project.type === 'retainer'
@@ -74,7 +93,7 @@ export async function computeContractPositions(
         .reduce((s: number, a: any) => s + (Number(a.financial_impact) || 0), 0)
       const billed = invoices.filter((inv: any) => inv.project_id === id && !['draft', 'void'].includes(inv.status))
       out.set(id, {
-        contractedValue: baseContractValue(project) + amendmentTotal,
+        contractedValue: baseContractValue(project, monthsBilled.get(id)) + amendmentTotal,
         invoicedToDate:  billed.reduce((s: number, inv: any) => s + (Number(inv.subtotal ?? inv.amount) || 0), 0),
         paidToDate:      billed.reduce((s: number, inv: any) => s + (Number(inv.amount_paid) || 0), 0),
         atRiskValue:     openCos.filter((c: any) => c.project_id === id).reduce((s: number, c: any) => s + (Number(c.total) || 0), 0),

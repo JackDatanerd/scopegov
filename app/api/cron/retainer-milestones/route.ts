@@ -15,6 +15,17 @@ import { CronRun, fetchAll } from '@/lib/utils/cron-run'
 // Daily. Generates one 'retainer_monthly' payment milestone per month for every Active retainer,
 // and tells the team once when a retainer's term has run out.
 //
+// FEATURE (cron/portal audit round 3): OPEN-ENDED retainers. retainer_duration_months is optional (the
+// new-project form lets the field be cleared, parseRetainerMonths accepts blank -> NULL), but this cron used to
+// select only `retainer_duration_months IS NOT NULL` — so a retainer created with no term got exactly ONE milestone
+// (the signing month's, from the sign route) and was then never billed again, with nothing anywhere saying so.
+// A NULL term now means "open-ended": one milestone per month until the project is completed or archived, and no
+// "term ended" announcement. Deliberately NO historical backfill for them: retainers that were silently unbilled
+// before this shipped would otherwise get every missed month since signing generated at once, all instantly
+// overdue and paged to finance — for months the agency very likely invoiced by hand. Open-ended billing starts
+// at the current month; a month is only ever missed if the cron is down across a whole month boundary AND the
+// following month's run is also missed, which the watchdog pages on long before.
+//
 // All date arithmetic is UTC (the sign route stamps signed_at in UTC; mixing in the server's local
 // zone made "which month is this" depend on where the function happened to run).
 export async function POST(request: NextRequest) {
@@ -37,7 +48,6 @@ export async function POST(request: NextRequest) {
         .select('id, workspace_id, name, contract_value, currency, retainer_duration_months, created_at, sow_documents(id, status, signed_at), clients(name)')
         .eq('type', 'retainer')
         .eq('status', 'Active')
-        .not('retainer_duration_months', 'is', null)
         .is('deleted_at', null)
         .order('id')
         .range(from, to))
@@ -47,7 +57,10 @@ export async function POST(request: NextRequest) {
         const signedSow = (p.sow_documents || []).find((s: any) => s.status === 'signed')
         if (!signedSow?.signed_at) continue
 
-        const duration     = p.retainer_duration_months || 12
+        // null = open-ended (see the header). `|| 12` is gone: a stored 0 can't happen (parseRetainerMonths
+        // enforces 1..60), and it silently invented a 12-month term for anything falsy.
+        const duration: number | null = p.retainer_duration_months != null ? Number(p.retainer_duration_months) : null
+        const openEnded    = duration == null
         const signedDate   = new Date(signedSow.signed_at)
         const signedYear   = signedDate.getUTCFullYear()
         const signedMonth0 = signedDate.getUTCMonth()
@@ -74,8 +87,9 @@ export async function POST(request: NextRequest) {
           if (existingErr) throw new Error(`existing milestones lookup: ${existingErr.message}`)
           const have = new Set<string>((existingRows || []).filter((r: any) => r.due_date).map((r: any) => String(r.due_date).slice(0, 7)))
 
-          const lastIndex = Math.min(monthsSigned, duration - 1)
-          for (let i = 0; i <= lastIndex; i++) {
+          const lastIndex  = openEnded ? monthsSigned : Math.min(monthsSigned, (duration as number) - 1)
+          const firstIndex = openEnded ? Math.max(0, monthsSigned) : 0 // open-ended: current month forward, no backfill
+          for (let i = firstIndex; i <= lastIndex; i++) {
             const target      = new Date(Date.UTC(signedYear, signedMonth0 + i, 1))
             const targetYear  = target.getUTCFullYear()
             const targetMonth = target.getUTCMonth() + 1
@@ -110,21 +124,22 @@ export async function POST(request: NextRequest) {
               actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
               event_type: 'payment.milestone_generated', entity_type: 'project',
               entity_id: p.id, entity_name: monthLabel,
-              metadata: { month: monthKey, amount: p.contract_value, backfilled: monthKey !== currentKey },
+              metadata: { month: monthKey, amount: p.contract_value, backfilled: monthKey !== currentKey, ...(openEnded ? { open_ended: true } : {}) },
             })
             generated++
           }
         }
 
         // ── 2. Term ended → tell the team once per term ───────────────────────────────────
-        if (monthsSigned >= duration) {
+        if (!openEnded && monthsSigned >= (duration as number)) {
+          const termMonths = duration as number
           // Dedup is per TERM LENGTH, not per project: when a retainer is extended (renewal CO or a
           // manual edit) and later runs out again, that second ending must be announced too. The old
           // (workspace, event, project) key found the first ending's audit row and stayed silent.
           const { data: alreadyNotified, error: dedupErr } = await (service as any)
             .from('audit_log').select('id')
             .eq('workspace_id', p.workspace_id).eq('event_type', 'retainer.ended')
-            .eq('entity_id', p.id).eq('metadata->>duration_months', String(duration))
+            .eq('entity_id', p.id).eq('metadata->>duration_months', String(termMonths))
             .limit(1).maybeSingle()
           if (dedupErr) throw new Error(`retainer.ended dedup lookup: ${dedupErr.message}`)
           if (alreadyNotified) continue
@@ -137,14 +152,14 @@ export async function POST(request: NextRequest) {
             actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
             event_type: 'retainer.ended', entity_type: 'project',
             entity_id: p.id, entity_name: p.name,
-            metadata: { duration_months: duration, months_completed: monthsSigned },
+            metadata: { duration_months: termMonths, months_completed: monthsSigned },
           })
           if (!marked) throw new Error(`could not record retainer.ended for project ${p.id}`)
 
           await notifyMembersWithPermission(service, {
             workspaceId: p.workspace_id, permission: 'VIEW_FINANCIALS', eventType: 'retainer_ending',
             type: 'retainer_ending', title: `Retainer term ended — ${p.name}`,
-            body: `The ${duration}-month retainer for ${p.clients?.name || 'this client'} on ${p.name} has run its course. No further monthly milestones will be generated unless the term is extended (a retainer-renewal change order extends it automatically).`,
+            body: `The ${termMonths}-month retainer for ${p.clients?.name || 'this client'} on ${p.name} has run its course. No further monthly milestones will be generated unless the term is extended (a retainer-renewal change order extends it automatically).`,
             entityType: 'project', entityId: p.id, projectId: p.id,
           })
 
@@ -155,7 +170,7 @@ export async function POST(request: NextRequest) {
                 to: emails,
                 clientName: p.clients?.name || 'Client',
                 projectName: p.name,
-                durationMonths: duration,
+                durationMonths: termMonths,
                 projectUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects/${p.id}?tab=billing`,
               })
             }

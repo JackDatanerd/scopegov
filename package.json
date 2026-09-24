@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "cron:schedule": "node --experimental-strip-types scripts/print-cron-schedule.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.27.0",

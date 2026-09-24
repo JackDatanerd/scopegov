@@ -143,6 +143,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { data: refreshed } = await (service as any)
       .from('invoices').select('amount, amount_paid, status').eq('id', id).single()
 
+    // FEATURE (cron/portal audit round 3): a recorded payment answers the client's "I've paid" notice (see
+    // api/portal/invoice/[token]/paid) — clear it so the portal stops showing it as pending and automatic
+    // reminders can resume if the invoice is still open (a partial payment). Best-effort: never fails the payment.
+    const { error: claimClearErr } = await (service as any).from('invoices')
+      .update({ payment_claim_cleared_at: new Date().toISOString() })
+      .eq('id', id).not('payment_claimed_at', 'is', null).is('payment_claim_cleared_at', null)
+    if (claimClearErr) console.error('Payment recorded: could not clear the client payment claim (non-fatal):', claimClearErr.message)
+
     const isFullyPaid = refreshed?.status === 'paid'
     const balanceRemaining = Math.max(0, Number(refreshed?.amount || 0) - Number(refreshed?.amount_paid || 0))
 

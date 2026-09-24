@@ -23,6 +23,8 @@ export const EMAIL_EVENT_TYPES = [
   'payment_milestone_overdue', 'retainer_ending', 'guardian_flag_stalled', 'invoice_disputed',
   // Added in the Notifications & email fix round:
   'project_assigned',
+  // Added in cron/portal audit round 3: a client says they have paid, from the invoice portal.
+  'invoice_payment_claimed',
 ] as const
 
 export const IN_APP_ONLY_EVENT_TYPES = [

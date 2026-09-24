@@ -7,7 +7,7 @@ export const maxDuration = 300
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
-import { collectAttachmentPaths, removeStoragePaths } from '@/lib/utils/storage-cleanup'
+import { collectAttachmentPaths, collectExecutedPdfPaths, removePurgedFiles } from '@/lib/utils/storage-cleanup'
 import { alertCronFailure } from '@/lib/utils/cron-alert'
 import { recordCronHeartbeat } from '@/lib/utils/cron-heartbeat'
 
@@ -66,8 +66,10 @@ export async function POST(request: NextRequest) {
       // Same ordering as project-purge: list the evidence files BEFORE the rows
       // that reference them are deleted; skip (retry next run) if we can't.
       let filePaths: string[]
+      let pdfPaths: string[]
       try {
         filePaths = await collectAttachmentPaths(service, { workspaceId: w.id })
+        pdfPaths = await collectExecutedPdfPaths(service, { workspaceId: w.id })
       } catch (e) {
         console.error(`Workspace purge skipped for ${w.id} — could not list its attachment files:`, e)
         failures.push({ id: w.id, error: `attachment lookup failed: ${e instanceof Error ? e.message : 'unknown'}` })
@@ -82,9 +84,9 @@ export async function POST(request: NextRequest) {
       }
       purgedCount++
 
-      if (filePaths.length) {
-        const r = await removeStoragePaths(service, filePaths)
-        if (r.failed) console.error(`Workspace ${w.id}: ${r.failed} evidence file(s) could not be removed (non-fatal)`)
+      if (filePaths.length || pdfPaths.length) {
+        const r = await removePurgedFiles(service, filePaths, pdfPaths)
+        if (r.failed) console.error(`Workspace ${w.id}: ${r.failed} evidence / executed-PDF file(s) could not be removed (non-fatal)`)
       }
       // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): the DB
       // row is gone at this point, but purge_workspace() never touched

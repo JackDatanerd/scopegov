@@ -1,0 +1,70 @@
+CRON (section 17) + PORTAL (section 18) — independent audit, round 3
+=====================================================================
+Base: 3dc3665 / a92dd09.   Tests: 624 pass (incl. the 40-test Postgres replay), tsc clean.
+
+DEPLOY ORDER
+  1. Run supabase/migrations/075_cron_portal_audit_round3.sql FIRST. The new code reads/calls objects it creates
+     (cron_run_history, prune_snapshot_history, erase_user_pii, invoices.payment_claim_*). Code before migration =
+     notification-cleanup reports failed steps, the invoice portal + client-reminders select columns that don't exist yet.
+  2. Deploy.
+  3. Register the NEW cron `signing-integrity` (daily) in the Cloudflare scopegov-cron-worker. Nothing in this repo can
+     schedule it; until you do, the watchdog will page "signing-integrity: never recorded". `npm run cron:schedule`
+     prints every cron + recommended UTC schedule + endpoint. The hours for the daily jobs in lib/cron/manifest.ts are
+     RECOMMENDED slots (the worker's real config isn't visible from the repo) — compare and change whichever side is wrong.
+
+BUGS FIXED
+  1  project-purge / workspace-purge orphaned executed SOW/CO PDFs in the private `pdfs` bucket (storage-cleanup.ts
+     called pdf_path "a red herring" — false since migration 061). Now collected before the purge, removed after.
+  2  sow-expiry, co-expiry, invoice-expiry, guardian-flag-stall (+ guardian-health's count) ignored write/read errors
+     and finished green. Moved onto CronRun; row errors alert, a failed SELECT fails the run.
+  3  billing-reconcile reported ok when Paystack was unreadable for EVERY subscription. Now: all fail = 500 + alert +
+     no heartbeat; some fail = alert, heartbeat kept.
+  4  Watchdog re-paged every hour (1h cooldown, hourly run). Now 6-24h cooldown, and ONE digest when >=4 are stale.
+     Expectations derive from lib/cron/manifest.ts.
+  5  ai_usage_log was never pruned (comment said rate-limit.ts did; it doesn't). Pruned at 30d in notification-cleanup.
+  6  SOW sign route: post-commit failures returned 500 after the signature was recorded (retry -> 409, emails never
+     sent). Project-activation write unchecked. Token-reissue write unchecked (client got a link to nothing).
+     Now: caught + audited (sow.post_signing_failed / sow.project_activation_failed), activation retried once,
+     reissue only switches over when the write lands. Logic moved to lib/documents/post-signing.ts (shared).
+  7  payment-overdue grace reminder used a 24h window that a late/skipped run leaves gaps in -> warning silently
+     missed before a downgrade. Now every workspace between reminder point and enforcement is a candidate; "already
+     sent" is per grace period; dedupe-lookup errors no longer read as "not sent".
+  8  approval-stall: escalated_at meant two things; unchecked bookkeeping writes; not_found silent. Fixed (no-approver
+     alert dedupes on its own audit rows; escalation claimed by CAS before notifying).
+  9  co-expiry left the linked Guardian flag in converted_to_co (decline/close/withdraw all release it). Now released
+     (guarded on change_order_id so a re-claimed flag is never released).
+ 10  CO note + invoice payment_instructions rendered via dangerouslySetInnerHTML with write-side sanitising only.
+     Now also sanitised on read (as the SOW portal already did).
+ 11  Invoice dispute could be spammed (per-IP limit only; each call pages up to 25 people). Per-invoice throttle.
+ 12  guardian-flag-stall re-loaded flags of finished/deleted projects every run (unbounded). Filtered in the query.
+     (approval-stall's equivalent left as-is: approval_requests.project_id nullability not confirmed.)
+ 13  Stale docs: README "15 jobs in vercel.json", watchdog "10 crons" header, notification-cleanup comments, retainer
+     comments. (Old migration comments left alone.)
+ 14  SOW withdraw left a sow-stall'd project on Stalled/'sow_unsigned' (every other transition reconciles it).
+ 15  (found while fixing retainers) POST/PATCH /api/invoices capped SOW-linked invoicing at ONE month's rate for a
+     retainer with no term.
+
+FEATURES BUILT
+  1  lib/cron/manifest.ts — single in-repo list of every cron; `npm run cron:schedule`; parity tests
+     (tests/cron-infra.test.ts) fail if a route, the manifest, the watchdog, or the GitHub workflow disagree.
+  2  api/cron/signing-integrity (+ lib/documents/signing-integrity.ts) — repairs signed SOWs / accepted COs whose
+     post-signature steps partly failed (project not activated, no milestones, no Guardian baseline/address, missing
+     amendment); reports content_hash / frozen-PDF gaps + retainer-renewal amendments it can't honestly recreate.
+  3  Erasure reaches the rest of the PII: erase_user_pii() pseudonymises audit_log actor email/name/IP + events naming
+     the person, deletes their notifications and auth.identities (the old "known limit"). Called by invite-cleanup
+     before the auth/profile scrub; idempotent; audit_log stays append-only.
+  4  Retention: batched deletes (lib/utils/retention.ts), ai_usage_log, cron_run_history, month-start downsampling of
+     the two nightly snapshot tables past 400 days.
+  5  cron_run_history (migration 075): every run's outcome/duration/counters/error, 60 days.
+  6  Portal: client "I've paid" (POST /api/portal/invoice/[token]/paid + page UI): tells finance (bell, email, audit),
+     pauses automatic reminders, cleared when a payment is recorded. Does NOT change invoice status.
+     client-reminders: one "coming due" heads-up 3 days before the due date (counts separately from the overdue nag).
+  7  Open-ended retainers: a retainer with no term is billed monthly until completed/archived (was: billed once, then
+     never, silently). No historical backfill for them (see route header). Contract position uses months billed.
+  8  Test harness: tests/helpers/fake-supabase.ts + 100+ new cron/portal tests (verified to FAIL against the old code).
+
+NOT DONE / JUDGEMENT CALLS
+  - No agency-side badge for open payment claims (bell + email + audit event + portal state only).
+  - signing-integrity never recomputes content_hash or re-renders the executed PDF (would fake a record).
+  - Dead 'stalled' message on the CO portal page left (harmless).
+  - The dailies' schedule hours in the manifest are recommendations, not read from the worker.

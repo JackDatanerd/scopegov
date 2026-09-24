@@ -1379,10 +1379,12 @@ export async function sendInvoiceReminderEmail(params: {
   projectName: string; invoiceNumber?: string | null; title: string
   balanceDue: number; currency: string; dueDate?: string | null
   portalUrl: string; brandColour?: string; isOverdue?: boolean
+  /** A heads-up BEFORE the due date (cron/client-reminders "due soon"): wording says "due on", not "was due". */
+  dueSoon?: boolean
   paymentInstructions?: string | null
 }) {
   const { to, cc, clientName: clientNameRaw, agencyName: agencyNameRaw, projectName: projectNameRaw, invoiceNumber, title: titleRaw,
-    balanceDue, currency, dueDate, portalUrl, brandColour, isOverdue, paymentInstructions: paymentInstructionsRaw } = params
+    balanceDue, currency, dueDate, portalUrl, brandColour, isOverdue, dueSoon, paymentInstructions: paymentInstructionsRaw } = params
   const clientName  = escapeHtml(clientNameRaw)
   const agencyName  = escapeHtml(agencyNameRaw)
   const projectName = escapeHtml(projectNameRaw)
@@ -1393,14 +1395,14 @@ export async function sendInvoiceReminderEmail(params: {
     agencyName,
     headerColour: isOverdue ? C.amber : (brandColour || C.green),
     label: 'Payment reminder',
-    headline: isOverdue ? `Overdue: ${title}` : `Reminder: ${title}`,
+    headline: isOverdue ? `Overdue: ${title}` : dueSoon ? `Due soon: ${title}` : `Reminder: ${title}`,
     body: `
       <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${clientName},</p>
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
         A friendly reminder that <strong>${money(balanceDue, currency)}</strong> is
-        ${isOverdue ? 'now overdue' : 'outstanding'} on invoice${invoiceNumber ? ` ${invoiceNumber}` : ''} for
+        ${isOverdue ? 'now overdue' : dueSoon ? 'coming due' : 'outstanding'} on invoice${invoiceNumber ? ` ${invoiceNumber}` : ''} for
         <strong>${projectName}</strong>.
-        ${dueDate ? ` Due date was ${new Date(dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })}.` : ''}
+        ${dueDate ? ` ${dueSoon ? 'It is due on' : 'Due date was'} ${new Date(dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })}.` : ''}
       </p>
       ${paymentInstructions ? `
       <div style="background:${C.bg};border:1px solid ${C.border};border-radius:6px;padding:14px 16px;margin:16px 0;">
@@ -1418,7 +1420,7 @@ export async function sendInvoiceReminderEmail(params: {
     replyTo: params.replyTo,
     to,
     cc:      cc?.filter(Boolean) || [],
-    subject: `${isOverdue ? 'Overdue' : 'Reminder'}: Invoice${invoiceNumber ? ` ${invoiceNumber}` : ''} — ${projectNameRaw}`,
+    subject: `${isOverdue ? 'Overdue' : dueSoon ? 'Due soon' : 'Reminder'}: Invoice${invoiceNumber ? ` ${invoiceNumber}` : ''} — ${projectNameRaw}`,
     html,
   }, params.log)
 }
@@ -1720,6 +1722,56 @@ export async function sendInvoiceDisputedEmail(params: {
     from:    systemFrom(),
     to,
     subject: `Invoice question from ${clientNameRaw} — ${projectNameRaw}`,
+    html,
+  })
+}
+
+// Sent to the agency (VIEW_FINANCIALS holders) when a client says, from the invoice portal, that they have paid.
+// It does NOT mean the invoice is paid — only the agency can record a payment — so the copy says "check your
+// account", and the CTA goes straight to the billing tab where the payment is recorded.
+export async function sendInvoicePaymentClaimedEmail(params: {
+  to: string[]; clientName: string; projectName: string
+  invoiceNumber?: string | null; balanceDue: number; currency: string
+  reference?: string | null; note?: string | null; projectUrl: string
+}) {
+  const { to, clientName: clientNameRaw, projectName: projectNameRaw, invoiceNumber, balanceDue, currency,
+    reference: referenceRaw, note: noteRaw, projectUrl } = params
+  if (to.length === 0) return
+  const clientName  = escapeHtml(clientNameRaw)
+  const projectName = escapeHtml(projectNameRaw)
+  const reference   = escapeHtml(referenceRaw)
+  const note        = escapeHtml(noteRaw)
+  const amount = `${currency} ${Number(balanceDue).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.green,
+    label: 'Client says paid',
+    headline: `${clientName} says they've paid an invoice`,
+    body: `
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        <strong>${clientName}</strong> used the client portal to tell you they have paid invoice${invoiceNumber ? ` ${escapeHtml(invoiceNumber)}` : ''} on
+        <strong>${projectName}</strong> (outstanding balance <strong>${amount}</strong>).
+      </p>
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        Nothing has been marked as paid — check your account, and record the payment when it arrives. Automatic
+        reminders to this client are paused for this invoice until you do.
+      </p>
+      ${reference || note ? `
+      <div style="background:${C.bg};border:1px solid ${C.border};border-radius:6px;padding:14px 16px;margin:16px 0;">
+        ${reference ? `<p style="font-size:13px;color:${C.text2};margin:0 0 6px;line-height:1.6;"><strong>Reference:</strong> ${reference}</p>` : ''}
+        ${note ? `<p style="font-size:13px;color:${C.text2};margin:0;line-height:1.6;white-space:pre-line;">${note}</p>` : ''}
+      </div>` : ''}
+    `,
+    cta: 'Record the payment →',
+    ctaUrl: projectUrl,
+    showPreferencesLink: true,
+  })
+
+  return deliver({
+    from:    systemFrom(),
+    to,
+    subject: `${clientNameRaw} says they've paid — ${projectNameRaw}${invoiceNumber ? ` (${invoiceNumber})` : ''}`,
     html,
   })
 }

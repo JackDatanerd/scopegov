@@ -216,6 +216,7 @@ const NOTIF_ITEMS = [
   { key: 'guardian_flag_stalled', label: 'Scope flag stalled',      desc: "When an open scope flag hasn't been actioned in 5+ days" },
   { key: 'invoice_disputed',      label: 'Invoice disputed',        desc: 'When a client flags a question or concern about an invoice from the portal' },
   { key: 'project_assigned',      label: 'Added to a project',      desc: 'When a teammate adds you to a project' },
+  { key: 'invoice_payment_claimed', label: 'Client says they paid',   desc: 'When a client tells you from the invoice portal that they have paid (you still record the payment)' },
 ]
 
 // FIX (re-audit, notifications section): both of these are fully wired

@@ -38,6 +38,8 @@ export class CronRun {
   private rowFailures: string[] = []
   readonly result: Record<string, unknown> = {}
 
+  private readonly startedAt = Date.now()
+
   constructor(private service: any, readonly name: string) {}
 
   /** Run one independent step. A throw is recorded (and logged) but never aborts sibling steps. */
@@ -71,12 +73,17 @@ export class CronRun {
   async finish(): Promise<{ body: Record<string, unknown>; status: number }> {
     if (this.failures.length === 0) {
       if (this.rowFailures.length > 0) {
-        await alertCronFailure(this.service, this.name, new Error(`Completed with row-level failures: ${this.rowFailures.join(' | ')}`))
+        // history:false — the run is recorded once, as a success carrying its rowErrors, below.
+        await alertCronFailure(this.service, this.name, new Error(`Completed with row-level failures: ${this.rowFailures.join(' | ')}`), undefined, { history: false })
       }
-      await recordCronHeartbeat(this.service, this.name, this.result)
+      await recordCronHeartbeat(
+        this.service, this.name,
+        this.rowFailures.length ? { ...this.result, rowErrors: this.rowFailures } : this.result,
+        { durationMs: Date.now() - this.startedAt },
+      )
       return { body: { ok: true, ...this.result, ...(this.rowFailures.length ? { rowErrors: this.rowFailures } : {}) }, status: 200 }
     }
-    await alertCronFailure(this.service, this.name, new Error(this.failures.join(' | ')))
+    await alertCronFailure(this.service, this.name, new Error(this.failures.join(' | ')), undefined, { durationMs: Date.now() - this.startedAt, result: this.result })
     return { body: { ok: false, ...this.result, errors: this.failures }, status: 500 }
   }
 }

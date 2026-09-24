@@ -167,7 +167,12 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         // FIX (re-audit, section-12 finding): same raw-contract_value bug as
         // POST /api/invoices — see baseContractValue()'s own comment for why
         // a retainer project's monthly rate isn't the SOW's real cap.
-        if (proj) { cap = baseContractValue(proj); sourceColumn = 'sow_id'; sourceId = invoice.sow_id; sourceLabel = "this SOW's contract value" }
+        // (Round 3: an open-ended retainer — type retainer, no term — has no fixed total to cap against; see the
+        // same note in POST /api/invoices.)
+        if (proj) {
+          const openEndedRetainer = proj.type === 'retainer' && !((proj.retainer_duration_months || 0) > 0)
+          cap = openEndedRetainer ? null : baseContractValue(proj); sourceColumn = 'sow_id'; sourceId = invoice.sow_id; sourceLabel = "this SOW's contract value"
+        }
       }
       if (cap != null && sourceColumn && sourceId) {
         const { data: others } = await (service as any)

@@ -48,6 +48,8 @@ interface InvoiceData {
   disputeNote: string | null
   disputeResolvedAt?: string | null
   disputeResolutionNote?: string | null
+  // FEATURE (cron/portal audit round 3): the client's own "I've paid" notice.
+  paymentClaim?: { claimedAt: string; reference: string | null; open: boolean } | null
 }
 
 interface Payment {
@@ -87,6 +89,11 @@ export default function InvoicePortalPage() {
   const [disputeNote, setDisputeNote] = useState('')
   const [disputeSubmitting, setDisputeSubmitting] = useState(false)
   const [disputeError, setDisputeError] = useState('')
+  const [paidOpen, setPaidOpen] = useState(false)
+  const [paidReference, setPaidReference] = useState('')
+  const [paidNote, setPaidNote] = useState('')
+  const [paidSubmitting, setPaidSubmitting] = useState(false)
+  const [paidError, setPaidError] = useState('')
 
   useEffect(() => {
     fetch(`/api/portal/invoice/${token}`)
@@ -119,6 +126,26 @@ export default function InvoicePortalPage() {
       setDisputeError('Something went wrong — please try again.')
     } finally {
       setDisputeSubmitting(false)
+    }
+  }
+
+  async function submitPaid() {
+    setPaidSubmitting(true)
+    setPaidError('')
+    try {
+      const res = await fetch(`/api/portal/invoice/${token}/paid`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reference: paidReference.trim(), note: paidNote.trim() }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) { setPaidError(json.error || 'Something went wrong'); return }
+      setInvoice(inv => inv ? { ...inv, paymentClaim: { claimedAt: json.claimedAt || new Date().toISOString(), reference: paidReference.trim() || null, open: true } } : inv)
+      setPaidOpen(false)
+    } catch {
+      setPaidError('Something went wrong — please try again.')
+    } finally {
+      setPaidSubmitting(false)
     }
   }
 
@@ -350,6 +377,20 @@ export default function InvoicePortalPage() {
               <i className="ti ti-download" style={{ fontSize: 13 }} /> Download PDF
             </a>
 
+            {/* FEATURE (cron/portal audit round 3): "I've already paid" — tells the agency (who still records the
+                payment themselves) and pauses automatic reminders. */}
+            {invoice.status !== 'paid' && balanceDue > 0 && !(invoice.paymentClaim && invoice.paymentClaim.open) && !paidOpen && (
+              <button type="button" className="btn btn-ghost" onClick={() => setPaidOpen(true)}>
+                <i className="ti ti-check" style={{ fontSize: 13 }} /> I&apos;ve already paid this
+              </button>
+            )}
+            {invoice.paymentClaim && invoice.paymentClaim.open && invoice.status !== 'paid' && (
+              <span style={{ fontSize: 12.5, color: '#2F5D45', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <i className="ti ti-circle-check" style={{ fontSize: 13 }} /> You told us you paid on {fmtDate(invoice.paymentClaim.claimedAt)}
+                {invoice.paymentClaim.reference ? ` (ref: ${invoice.paymentClaim.reference})` : ''} — the agency will confirm once it arrives
+              </span>
+            )}
+
             {/* FEATURE (portal audit, section 18): the invoice portal's only
                 client-facing action. Shows "already flagged" once disputed
                 rather than re-offering the form. */}
@@ -374,13 +415,47 @@ export default function InvoicePortalPage() {
             </div>
           )}
 
+          {paidOpen && (
+            <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid #F0F0EA' }}>
+              <div className="portal-section-title">Tell the agency you&apos;ve paid</div>
+              <p style={{ fontSize: 12.5, color: '#909090', margin: '0 0 10px', lineHeight: 1.6 }}>
+                This doesn&apos;t mark the invoice as paid — the agency does that when the money arrives. It lets them
+                know to look for it, and stops automatic payment reminders in the meantime.
+              </p>
+              <input
+                value={paidReference}
+                onChange={e => setPaidReference(e.target.value)}
+                maxLength={200}
+                placeholder="Payment reference or transaction ID (optional)"
+                style={{ width: '100%', boxSizing: 'border-box', border: '1px solid #E5E1D8', borderRadius: 6, padding: '10px 12px', fontSize: 13.5, fontFamily: 'inherit', marginBottom: 8 }}
+              />
+              <textarea
+                value={paidNote}
+                onChange={e => setPaidNote(e.target.value)}
+                maxLength={1000}
+                placeholder="Anything else they should know — date, method, amount if it was partial (optional)"
+                rows={3}
+                style={{ width: '100%', boxSizing: 'border-box', border: '1px solid #E5E1D8', borderRadius: 6, padding: '10px 12px', fontSize: 13.5, fontFamily: 'inherit', resize: 'vertical' }}
+              />
+              {paidError && <div style={{ fontSize: 12.5, color: '#B91C1C', marginTop: 6 }}>{paidError}</div>}
+              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                <button type="button" className="btn" style={{ background: accent, color: '#FFF', padding: '10px 22px' }} disabled={paidSubmitting} onClick={submitPaid}>
+                  {paidSubmitting ? <span className="spin" style={{ width: 14, height: 14 }} /> : 'Let the agency know'}
+                </button>
+                <button type="button" className="btn btn-ghost" onClick={() => { setPaidOpen(false); setPaidError('') }}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+
           {disputeOpen && (!invoice.disputedAt || !!invoice.disputeResolvedAt) && (
             <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid #F0F0EA' }}>
               <div className="portal-section-title">What&apos;s the issue?</div>
               <textarea
                 value={disputeNote}
                 onChange={e => setDisputeNote(e.target.value)}
-                placeholder="e.g. this amount doesn't match what we discussed, or we already paid this via..."
+                placeholder="e.g. this amount doesn't match what we discussed, or the line items look wrong..."
                 rows={4}
                 style={{ width: '100%', boxSizing: 'border-box', border: '1px solid #E5E1D8', borderRadius: 6, padding: '10px 12px', fontSize: 13.5, fontFamily: 'inherit', resize: 'vertical' }}
               />
