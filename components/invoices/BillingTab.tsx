@@ -216,7 +216,13 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
       const res = await fetch(`/api/invoices/${id}/dispute-resolve`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ note }),
       })
-      if (!res.ok) { const j = await res.json(); throw new Error(j.error) }
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json.error)
+      // FIX (section-11/12 fix round): `emailed` now reflects an actual delivery
+      // check (see the route) instead of always being true whenever the code
+      // reached the send call — say so when it's false, same as Send/Void above.
+      if (json.emailed === false)
+        alert('The dispute is marked resolved, but the notification email to the client could not be delivered. You may want to let them know directly.')
       await refresh()
     } catch (err: unknown) { setError(err instanceof Error ? err.message : 'Failed to resolve the dispute') }
     finally { setBusyId(null) }
@@ -1413,6 +1419,14 @@ function VoidInvoiceModal({ invoice, onClose, onVoided }: any) {
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error)
+      // FIX (section-11/12 fix round): the void route now reports whether the
+      // "this invoice is void" email actually reached the client (the Resend
+      // SDK can reject a send without the request failing) — same pattern the
+      // Send button above already surfaces via emailSent. Voiding still
+      // succeeds either way; this just stops it from silently implying the
+      // client was told when they weren't.
+      if (json.clientNotified === false)
+        alert('The invoice is now void, but the notification email to the client could not be delivered. You may want to let them know directly.')
       onVoided()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to void invoice')

@@ -9,6 +9,7 @@ import { canReadProject } from '@/lib/utils/project-access'
 import { sendDocumentCancelledEmail } from '@/lib/email/templates'
 import { cancelApprovalRequest } from '@/lib/approvals/engine'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
+import { checkedSend } from '@/lib/email/delivery'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -141,23 +142,32 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // FIX (doc-completeness audit): notify the client — only relevant if
     // it had actually been sent to them (draft invoices never reached
     // them, so there's nothing to warn them about).
+    // FIX (section-11/12 fix round): this was the one caller of
+    // sendDocumentCancelledEmail left on a bare try/catch instead of
+    // checkedSend — sow/[id]/withdraw, co/[id]/close, and co/[id]/withdraw
+    // all send this same "document cancelled" email through checkedSend and
+    // return clientNotified so the UI can warn on a rejected delivery (the
+    // Resend SDK resolves `{ error }` instead of throwing, so a plain
+    // try/catch can never see that failure). This route was reporting a
+    // silent success — the invoice was voided, but if the client's email
+    // was rejected, nobody was told the client never actually heard about it.
     const client = invoice.projects?.clients
+    let clientNotified = true
     if (invoice.sent_at && client?.email) {
-      try {
-        // FIX (deep audit, section 14 — traced bug): same missing
-        // withPrimaryContactCc call as invoices/[id]/remind — see that
-        // route's comment.
-        const cc = await withPrimaryContactCc(service, invoice.projects?.client_id, client.email, client.cc_emails)
-        const replyTo = await resolveReplyTo(service, session.workspaceId, session.email)
-        await sendDocumentCancelledEmail({
-          replyTo,
-          to: client.email, cc,
-          clientName: client.name, agencyName: invoice.projects?.workspaces?.agency_name,
-          projectName: invoice.projects?.name, documentLabel: 'Invoice',
-          documentTitle: invoice.title, action: 'voided', reason: reason || null,
-          brandColour: invoice.projects?.workspaces?.brand_colour,
-        })
-      } catch (e) { console.error('Invoice voided client email failed:', e) }
+      // FIX (deep audit, section 14 — traced bug): same missing
+      // withPrimaryContactCc call as invoices/[id]/remind — see that
+      // route's comment.
+      const cc = await withPrimaryContactCc(service, invoice.projects?.client_id, client.email, client.cc_emails)
+      const replyTo = await resolveReplyTo(service, session.workspaceId, session.email)
+      const delivery = await checkedSend(() => sendDocumentCancelledEmail({
+        replyTo,
+        to: client.email, cc,
+        clientName: client.name, agencyName: invoice.projects?.workspaces?.agency_name,
+        projectName: invoice.projects?.name, documentLabel: 'Invoice',
+        documentTitle: invoice.title, action: 'voided', reason: reason || null,
+        brandColour: invoice.projects?.workspaces?.brand_colour,
+      }), 'Invoice voided (client) email')
+      clientNotified = delivery.ok
     }
 
     await logAudit(service, {
@@ -168,7 +178,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       metadata: { reason: reason || null, ...(paidSoFar > 0 ? { amount_paid_at_void: paidSoFar, payments_kept: true } : {}) },
     })
 
-    return NextResponse.json({ ok: true })
+    return NextResponse.json({ ok: true, clientNotified })
   } catch (err) {
     console.error('Invoice void error:', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

@@ -65,6 +65,20 @@ function shortTypeLabel(documentType: ApprovalRequest['document_type']): string 
   return documentType === 'sow' ? 'SOW' : documentType === 'invoice' ? 'Invoice' : documentType === 'co_counter' ? 'CO counter' : 'CO'
 }
 
+// FIX (section-11/12 fix round): this confirm text used to claim, unconditionally,
+// that cancelling returns the document to an editable draft. True for sow/co/invoice
+// (they genuinely stay status:'draft' the whole time their gate is pending) — but a
+// co_counter gate (accepting a client's counter-offer) leaves the underlying CO at
+// status:'countered' the whole time (see accept-co-counter.ts), never draft.
+// Cancelling one of those doesn't make anything editable again — the CO just stays
+// 'countered', still awaiting the agency's decision on the counter. Matches the same
+// document_type branch now applied server-side in POST /api/approvals/[id]/cancel.
+function cancelConfirmMessage(documentType: ApprovalRequest['document_type']): string {
+  return documentType === 'co_counter'
+    ? 'Cancel this approved request? The change order stays as-is, still awaiting a decision on the counter-offer — accepting it again will need a fresh approval.'
+    : 'Cancel this approved request? The document goes back to being an editable draft, and sending it again will need a fresh approval.'
+}
+
 // Which project tab shows the document being decided, so an approver can open
 // it before deciding. canReadProject already gates who may decide, so anyone
 // eligible is entitled to that tab.
@@ -262,7 +276,7 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
                   {/* FIX (section-11 audit, pass 2): a send-failed request could be retried
                       but never abandoned — and the document stayed edit-locked meanwhile. */}
                   <button className="btn btn-ghost btn-sm" onClick={() => {
-                    if (confirm('Cancel this approved request? The document goes back to being an editable draft, and sending it again will need a fresh approval.')) post(r.id, 'cancel')
+                    if (confirm(cancelConfirmMessage(r.document_type))) post(r.id, 'cancel')
                   }} disabled={busyId === r.id}>
                     Cancel request
                   </button>
@@ -472,7 +486,9 @@ function ApprovalDetailModal({ request, session, canManageWorkflows, onClose, on
           <div className="auth-error" style={{ marginBottom: 14 }}>
             <strong>Approved, but couldn&apos;t be sent.</strong> {request.send_failed_reason || 'The send failed.'}
             <div style={{ marginTop: 6, fontSize: 12 }}>
-              Retry once the problem is fixed — no re-approval is needed. Or cancel this request to make the document editable again (sending it afterwards will need a new approval).
+              Retry once the problem is fixed — no re-approval is needed. Or cancel this request{request.document_type === 'co_counter'
+                ? ' — the change order stays as-is, still awaiting a decision on the counter-offer (accepting it again will need a new approval).'
+                : ' to make the document editable again (sending it afterwards will need a new approval).'}
             </div>
           </div>
         )}
@@ -597,7 +613,7 @@ function ApprovalDetailModal({ request, session, canManageWorkflows, onClose, on
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {canCancel && (
               <button className="btn btn-ghost" onClick={() => {
-                if (!sendFailed || confirm('Cancel this approved request? The document goes back to being an editable draft, and sending it again will need a fresh approval.')) act('cancel')
+                if (!sendFailed || confirm(cancelConfirmMessage(request.document_type))) act('cancel')
               }} disabled={!!acting}>
                 {acting === 'cancel' ? <span className="spin" /> : sendFailed ? 'Cancel request' : 'Cancel request'}
               </button>

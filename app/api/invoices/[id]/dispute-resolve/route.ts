@@ -13,6 +13,7 @@ import { canReadProject } from '@/lib/utils/project-access'
 import { cleanTextField } from '@/lib/utils/sanitize'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
 import { sendInvoiceDisputeResolvedEmail } from '@/lib/email/templates'
+import { checkedSend } from '@/lib/email/delivery'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -58,22 +59,28 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     })
 
     // Best effort — the dispute is resolved either way.
+    // FIX (section-11/12 fix round): `emailed` was set to true right after the
+    // `await`, inside a bare try/catch — the same gap as invoices/[id]/void
+    // (see that route's comment): the Resend SDK resolves `{ error }` instead
+    // of throwing on a rejected send, so this reported `emailed: true` even
+    // when the client was never actually told. checkedSend (already used by
+    // this invoice's own remind route, and by SOW/CO withdraw/close for the
+    // equivalent client-facing email) makes `emailed` reflect what actually
+    // happened.
     let emailed = false
-    try {
-      const project = invoice.projects
-      const client = project?.clients
-      if (client?.email && invoice.token) {
-        const cc = await withPrimaryContactCc(service, project?.client_id, client.email, client.cc_emails)
-        await sendInvoiceDisputeResolvedEmail({
-          to: client.email, cc, clientName: client.name || 'there',
-          agencyName: project?.workspaces?.agency_name || session.agencyName,
-          projectName: project?.name || invoice.title, invoiceNumber: invoice.invoice_number, note,
-          portalUrl: `${process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL}/portal/invoice/${invoice.token}`,
-          brandColour: project?.workspaces?.brand_colour,
-        })
-        emailed = true
-      }
-    } catch (e) { console.error('Dispute-resolved email failed:', e) }
+    const project = invoice.projects
+    const client = project?.clients
+    if (client?.email && invoice.token) {
+      const cc = await withPrimaryContactCc(service, project?.client_id, client.email, client.cc_emails)
+      const delivery = await checkedSend(() => sendInvoiceDisputeResolvedEmail({
+        to: client.email, cc, clientName: client.name || 'there',
+        agencyName: project?.workspaces?.agency_name || session.agencyName,
+        projectName: project?.name || invoice.title, invoiceNumber: invoice.invoice_number, note,
+        portalUrl: `${process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL}/portal/invoice/${invoice.token}`,
+        brandColour: project?.workspaces?.brand_colour,
+      }), 'Invoice dispute resolved (client) email')
+      emailed = delivery.ok
+    }
 
     return NextResponse.json({ ok: true, emailed })
   } catch (err) {

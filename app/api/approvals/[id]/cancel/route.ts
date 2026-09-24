@@ -60,7 +60,16 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       workspaceId: session.workspaceId,
       actorId: session.id, actorEmail: session.email, actorName: session.name,
       reason: (sendFailed ? 'Abandoned after a failed send — ' : '') + (req.requested_by === session.id ? 'Cancelled by requester' : 'Cancelled by admin'),
-      returnedToDraft: true,
+      // FIX (section-11/12 fix round): this was hardcoded true regardless of
+      // document_type. A sow/co/invoice gate genuinely leaves the document at
+      // status:'draft' the whole time it's pending, so "editable draft again" is
+      // accurate for those — but a co_counter gate (accepting a client's counter-
+      // offer) leaves the underlying CO at status:'countered' the whole time (see
+      // accept-co-counter.ts, which never touches status until the approval
+      // clears). Cancelling one of those doesn't return anything to draft — the
+      // CO just stays 'countered', still awaiting the agency's decision — so the
+      // notification text this drives must not claim it does.
+      returnedToDraft: req.document_type !== 'co_counter',
     })
 
     return NextResponse.json({ ok: true })

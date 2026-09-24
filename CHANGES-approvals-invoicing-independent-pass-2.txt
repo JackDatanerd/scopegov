@@ -1,0 +1,70 @@
+Approval workflows engine (section 11) + Invoicing (section 12) — independent re-audit, fix round 2
+====================================================================================================
+
+Full independent re-pass over both sections again, deliberately ignoring every existing audit
+comment (including the ones from the previous "independent-pass" round), consulted only afterward
+to check whether one was itself wrong or misleading — none were. Read every file under
+api/approval-workflows, api/approvals, components/approvals, app/(app)/approvals, lib/approvals,
+api/invoices/*, components/invoices, app/(app)/invoices, api/pdf/invoice, plus the RPCs in migration
+069 and the shared notification/eligibility helpers the engine depends on. 0 feature gaps found —
+both sections are unusually complete. 3 bugs found, all fixed below; all three are messaging/
+delivery-reporting bugs (nothing that corrupts data), but all three left an agency user or a client
+with a false picture of what actually happened. No migration needed; no new environment variables;
+no npm changes.
+
+BUGS FIXED
+
+1. app/api/approvals/[id]/cancel/route.ts — cancelApprovalRequest() call
+   returnedToDraft was hardcoded true regardless of the request's document_type. That flag drives one
+   sentence in cancelApprovalRequest's notification to the requester ("It is now an editable draft
+   again.") and is accurate for document_type sow/co/invoice — all three genuinely stay status:'draft'
+   the entire time their approval gate is pending. It is NOT accurate for document_type 'co_counter'
+   (an approval gate on accepting a client's counter-offer): accept-co-counter.ts never touches the
+   change order's status until the approval actually clears, so a co_counter approval sits pending
+   with the CO still at status:'countered' the whole time. Cancelling one of those doesn't return
+   anything to an editable draft — the CO just stays 'countered', still awaiting the agency's decision
+   on the counter — so telling the requester it did was simply false for this one document type.
+   Traced the same false claim to two more places driven by the same conflation: the "needs your
+   attention" cancel-confirm dialog and the approval-detail-modal cancel-confirm dialog in
+   components/approvals/ApprovalsClient.tsx (both said "The document goes back to being an editable
+   draft" unconditionally), and the send-failed banner's inline copy in the same file ("cancel this
+   request to make the document editable again").
+   Fix: returnedToDraft is now `req.document_type !== 'co_counter'` in the cancel route. In
+   ApprovalsClient.tsx, added a small `cancelConfirmMessage(documentType)` helper (same style as the
+   existing documentLabelFor/shortTypeLabel helpers) that returns the accurate co_counter-specific
+   copy, wired into both confirm() call sites; the send-failed banner's inline sentence now branches
+   the same way. No API contract change beyond the notification text — cancel still succeeds exactly
+   as before for every document type.
+
+2. app/api/invoices/[id]/void/route.ts
+   The "this invoice is void" email sent to the client was wrapped in a bare try/catch instead of
+   checkedSend — the one caller of sendDocumentCancelledEmail left on the old pattern.
+   sow/[id]/withdraw, co/[id]/close, and co/[id]/withdraw all send this exact same
+   sendDocumentCancelledEmail for the exact same purpose (tell the client their document is no longer
+   valid) through checkedSend, and all three return clientNotified so the UI can warn when delivery
+   was actually rejected. A bare try/catch can never catch that: the Resend SDK resolves `{ error }`
+   instead of throwing on a rejected send (API-level failure — unverified domain, quota, invalid
+   recipient), so this route reported a silent, unconditional success. The invoice was correctly
+   voided either way, but if the client's email bounced at the provider, nobody — not the agency user
+   who clicked Void, not anyone reviewing the audit log — had any way to know the client was never
+   actually told their invoice was voided. VoidInvoiceModal (BillingTab.tsx) had no handling for this
+   at all, confirming the gap was end-to-end, not just server-side.
+   Fix: switched to checkedSend, same as its three siblings; route now returns
+   `{ ok: true, clientNotified }`. VoidInvoiceModal's submit() now alerts when clientNotified is
+   false, matching the existing pattern the Send button already uses for emailSent === false.
+
+3. app/api/invoices/[id]/dispute-resolve/route.ts
+   Same underlying gap as #2, one route over. `emailed` was set to true immediately after the `await`
+   on sendInvoiceDisputeResolvedEmail, inside a bare try/catch — so a rejected delivery (same Resend
+   resolves-not-throws failure mode as above) still reported `emailed: true` to the caller. This
+   route's own sibling in the same feature area — invoices/[id]/remind — already uses checkedSend for
+   this exact reason (its comment spells out the failure mode in detail); dispute-resolve just never
+   got the same treatment when it was added.
+   Fix: switched to checkedSend; `emailed` now reflects delivery.ok. BillingTab.tsx's resolveDispute()
+   now alerts when emailed is false, matching the same pattern applied to Void above and already used
+   for Send.
+
+NOT CHANGED
+No other files touched. In particular: lib/approvals/engine.ts's cancelApprovalRequest() itself needed
+no change — it already omits the "editable draft" sentence entirely when returnedToDraft is falsy, so
+passing the correct value through was sufficient; no message-construction change was needed there.
