@@ -251,9 +251,11 @@ export function coStatusColour(status: string) {
 
 const FLAG_STATUS_LABELS: Record<string, string> = {
   open: 'Open', resolved: 'Resolved', closed: 'Closed', converted_to_co: 'CO Created',
+  borderline_review: 'Needs review',
 }
 const FLAG_STATUS_COLOURS: Record<string, string> = {
   open: 'badge-red', resolved: 'badge-green', closed: 'badge-slate', converted_to_co: 'badge-blue',
+  borderline_review: 'badge-amber',
 }
 export function flagStatusLabel(status: string) {
   return FLAG_STATUS_LABELS[status] ?? status.replace(/_/g, ' ')

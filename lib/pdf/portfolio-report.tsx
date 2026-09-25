@@ -7,7 +7,7 @@
 import React from 'react'
 import { Document, Page, View, Text, StyleSheet, renderToBuffer } from '@react-pdf/renderer'
 import type { PortfolioData } from '@/lib/reports/portfolio-data'
-import { formatDateTimeInZone } from '@/lib/utils/timezone'
+import { formatDateTimeInZone, formatDateInZone } from '@/lib/utils/timezone'
 import { PDF_FONT, sanitizeForPdf } from '@/lib/pdf/fonts'
 
 export interface PortfolioReportData {
@@ -24,8 +24,15 @@ export interface PortfolioReportData {
 function fmtDateTime(iso: string, tz?: string) {
   return formatDateTimeInZone(iso, tz)
 }
-function fmtDate(iso: string) {
-  return new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
+// A timestamp's calendar date in the WORKSPACE's zone — the header above already prints in that zone, and this
+// used to format in the server's zone, so a flag raised just after midnight could show as the previous day.
+function fmtDate(iso: string, tz?: string) {
+  return formatDateInZone(iso, tz)
+}
+// Snapshot dates are plain calendar days (YYYY-MM-DD, no time): format them as-is. Running them through a zone
+// conversion would shift them by a day in any zone behind UTC.
+function fmtSnapshotDate(day: string) {
+  return new Date(`${day}T00:00:00Z`).toLocaleDateString('en-GB', { timeZone: 'UTC', day: 'numeric', month: 'short', year: 'numeric' })
 }
 function fmtMoney(amount: number, currency: string): string {
   try {
@@ -64,16 +71,18 @@ function sampleHistory<T>(rows: T[], max: number): T[] {
 }
 
 const FLAG_COL = { project: 130, flag: 210, severity: 55 }
-const STALL_COL = { kind: 32, project: 190, since: 90 }
+const STALL_COL = { kind: 32, project: 170, status: 90, since: 80 }
+const RISK_COL = { project: 200, flags: 110, docs: 60 }
+const EXC_COL = { date: 80, what: 270 }
+const RISK_ROWS = 20
+const EXC_ROWS = 15
 
 function PortfolioReportDocument({ report }: { report: PortfolioReportData }) {
   const { data, canViewFinancials } = report
   const c = data.current
 
-  const stalledItems = [
-    ...data.stalledSows.map(sw => ({ kind: 'SOW', title: sw.projectName, sub: sw.clientName, since: sw.since, amount: null as number | null, currency: null as string | null })),
-    ...data.stalledCos.map(co => ({ kind: 'CO', title: `${co.title} — ${co.projectName}`, sub: null as string | null, since: co.since, amount: co.total, currency: co.currency })),
-  ].sort((a, b) => new Date(a.since).getTime() - new Date(b.since).getTime())
+  const tz = report.timeZone
+  const stuck = data.stuckDocs
 
   return (
     <Document>
@@ -149,16 +158,46 @@ function PortfolioReportDocument({ report }: { report: PortfolioReportData }) {
           </>
         )}
 
+        {data.projectRisk.length > 0 && (
+          <>
+            <Text style={s.h2}>
+              Projects by risk ({data.projectRisk.length > RISK_ROWS ? `top ${RISK_ROWS} of ${data.projectRisk.length}` : data.projectRisk.length})
+            </Text>
+            <View style={s.tableHdr}>
+              <Text style={[s.th, { width: RISK_COL.project }]}>Project</Text>
+              <Text style={[s.th, { width: RISK_COL.flags }]}>Open flags</Text>
+              <Text style={[s.th, { width: RISK_COL.docs }]}>Stuck docs</Text>
+              <Text style={[s.th, { flex: 1 }]}>Value at risk</Text>
+            </View>
+            {data.projectRisk.slice(0, RISK_ROWS).map((r, i) => (
+              <View key={i} style={s.row} wrap={false}>
+                <View style={{ width: RISK_COL.project }}>
+                  <Text style={s.td}>{r.projectName}</Text>
+                  {r.clientName && <Text style={s.tdSub}>{r.clientName}</Text>}
+                </View>
+                <View style={{ width: RISK_COL.flags }}>
+                  <Text style={s.td}>{r.openFlags}{r.highFlags > 0 ? ` (${r.highFlags} high)` : ''}</Text>
+                  {r.borderlineFlags > 0 && <Text style={s.tdSub}>+{r.borderlineFlags} awaiting review</Text>}
+                </View>
+                <Text style={[s.td, { width: RISK_COL.docs }]}>{r.stuckDocs}</Text>
+                <Text style={[s.td, { flex: 1 }]}>
+                  {canViewFinancials && r.atRisk !== null ? fmtMoney(r.atRisk, r.currency) : '—'}
+                </Text>
+              </View>
+            ))}
+          </>
+        )}
+
         <Text style={s.h2}>
           Open scope flags ({data.openFlagsTotal > data.openFlags.length
-            ? `highest severity first: ${data.openFlags.length} of ${data.openFlagsTotal}`
+            ? `highest severity first: ${data.openFlags.length} of ${data.openFlagsTotal} — the CSV export lists every one`
             : data.openFlags.length})
         </Text>
         {data.openFlags.length === 0 ? (
           <Text style={s.emptyNote}>No open flags across the portfolio.</Text>
         ) : (
           <>
-            <View style={s.tableHdr} fixed>
+            <View style={s.tableHdr}>
               <Text style={[s.th, { width: FLAG_COL.project }]}>Project</Text>
               <Text style={[s.th, { width: FLAG_COL.flag }]}>Flag</Text>
               <Text style={[s.th, { width: FLAG_COL.severity }]}>Severity</Text>
@@ -176,7 +215,7 @@ function PortfolioReportDocument({ report }: { report: PortfolioReportData }) {
                 </View>
                 <Text style={[s.td, { width: FLAG_COL.severity, textTransform: 'capitalize' }]}>{f.severity}</Text>
                 <View style={{ flex: 1 }}>
-                  <Text style={s.td}>{fmtDate(f.createdAt)}</Text>
+                  <Text style={s.td}>{fmtDate(f.createdAt, tz)}</Text>
                   {/* FIX (fix round, Portfolio section 8): truthy check hid a genuine
                       $0 contract value; the CSV export of this same data shows 0. */}
                   {canViewFinancials && f.contractValue != null ? (
@@ -188,29 +227,30 @@ function PortfolioReportDocument({ report }: { report: PortfolioReportData }) {
           </>
         )}
 
-        <Text style={s.h2}>Stalled documents ({stalledItems.length})</Text>
-        {stalledItems.length === 0 ? (
-          <Text style={s.emptyNote}>Nothing stalled across the portfolio.</Text>
+        <Text style={s.h2}>Documents needing action ({stuck.length})</Text>
+        {stuck.length === 0 ? (
+          <Text style={s.emptyNote}>No stalled, declined or expired documents across the portfolio.</Text>
         ) : (
           <>
-            <View style={s.tableHdr} fixed>
+            <View style={s.tableHdr}>
               <Text style={[s.th, { width: STALL_COL.kind }]}>Type</Text>
               <Text style={[s.th, { width: STALL_COL.project }]}>Document</Text>
+              <Text style={[s.th, { width: STALL_COL.status }]}>Status</Text>
               <Text style={[s.th, { width: STALL_COL.since }]}>Since</Text>
               <Text style={[s.th, { flex: 1 }]}>Amount</Text>
             </View>
-            {stalledItems.map((item, i) => (
+            {stuck.map((item, i) => (
               <View key={i} style={s.row} wrap={false}>
                 <Text style={[s.td, { width: STALL_COL.kind }]}>{item.kind}</Text>
                 <View style={{ width: STALL_COL.project }}>
-                  <Text style={s.td}>{item.title}</Text>
-                  {item.sub && <Text style={s.tdSub}>{item.sub}</Text>}
+                  <Text style={s.td}>{item.kind === 'CO' ? `${item.title} — ${item.projectName}` : item.projectName}</Text>
+                  {item.clientName && <Text style={s.tdSub}>{item.clientName}</Text>}
                 </View>
-                <Text style={[s.td, { width: STALL_COL.since }]}>{fmtDate(item.since)}</Text>
+                <Text style={[s.td, { width: STALL_COL.status }]}>{item.reason}</Text>
+                <Text style={[s.td, { width: STALL_COL.since }]}>{fmtDate(item.since, tz)}</Text>
                 <Text style={[s.td, { flex: 1 }]}>
-                  {/* FIX (fix round, Portfolio section 8): same $0-hidden issue as the
-                      open-flags table above. */}
-                  {canViewFinancials && item.amount != null ? fmtMoney(item.amount, item.currency || 'USD') : '—'}
+                  {/* A genuine $0 total must show as $0 (truthy check hid it before). */}
+                  {canViewFinancials && item.total != null ? fmtMoney(item.total, item.currency || 'USD') : '—'}
                 </Text>
               </View>
             ))}
@@ -226,6 +266,30 @@ function PortfolioReportDocument({ report }: { report: PortfolioReportData }) {
                 ? ` — representing ${fmtMoney(c.exceptionsValueTotal, data.currency)} in scope given away outside a change order.`
                 : '.'}
             </Text>
+            {data.exceptions.length > 0 && (
+              <>
+                <View style={[s.tableHdr, { marginTop: 8 }]}>
+                  <Text style={[s.th, { width: EXC_COL.date }]}>Granted</Text>
+                  <Text style={[s.th, { width: EXC_COL.what }]}>Project / what was granted</Text>
+                  <Text style={[s.th, { flex: 1 }]}>Value</Text>
+                </View>
+                {data.exceptions.slice(0, EXC_ROWS).map((e, i) => (
+                  <View key={i} style={s.row} wrap={false}>
+                    <Text style={[s.td, { width: EXC_COL.date }]}>{fmtDate(e.createdAt, tz)}</Text>
+                    <View style={{ width: EXC_COL.what }}>
+                      <Text style={s.td}>{e.projectName}</Text>
+                      <Text style={s.tdSub}>{e.grantedWhat}</Text>
+                    </View>
+                    <Text style={[s.td, { flex: 1 }]}>
+                      {canViewFinancials && e.estimatedValue !== null ? fmtMoney(e.estimatedValue, e.currency) : '—'}
+                    </Text>
+                  </View>
+                ))}
+                {data.exceptionsTotal > Math.min(data.exceptions.length, EXC_ROWS) && (
+                  <Text style={s.tdSub}>Newest {Math.min(data.exceptions.length, EXC_ROWS)} of {data.exceptionsTotal} shown — the CSV export lists all of them.</Text>
+                )}
+              </>
+            )}
           </>
         )}
 
@@ -234,7 +298,7 @@ function PortfolioReportDocument({ report }: { report: PortfolioReportData }) {
           <Text style={s.emptyNote}>Not enough daily snapshots yet to show a trend.</Text>
         ) : (
           <>
-            <View style={s.tableHdr} fixed>
+            <View style={s.tableHdr}>
               <Text style={[s.th, { width: 100 }]}>Date</Text>
               <Text style={[s.th, { width: 100 }]}>Open flags</Text>
               <Text style={[s.th, { flex: 1 }]}>Value at risk ({data.currency} only)</Text>
@@ -247,7 +311,7 @@ function PortfolioReportDocument({ report }: { report: PortfolioReportData }) {
                 instead of a bare dash, matching the CSV export's row. */}
             {sampleHistory(data.history, 30).map((h, i) => (
               <View key={i} style={s.row} wrap={false}>
-                <Text style={[s.td, { width: 100 }]}>{fmtDate(h.date)}</Text>
+                <Text style={[s.td, { width: 100 }]}>{fmtSnapshotDate(h.date)}</Text>
                 <Text style={[s.td, { width: 100 }]}>{h.openFlagsCount}</Text>
                 <Text style={[s.td, { flex: 1 }]}>
                   {!canViewFinancials

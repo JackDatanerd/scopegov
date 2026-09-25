@@ -1,35 +1,291 @@
-SCOPEGOV — Projects & Dashboard (section 7) + Portfolio (section 8) fix round
-Baseline: repo tarball 1789846080384. Apply migrations 057 BEFORE deploying the code
-(the app now reads the VIEW_PORTFOLIO permission). Migration 055/056 belong to other rounds.
+ScopeGov — fix round: Projects & Dashboard (section 7) + Portfolio (section 8)
+================================================================================
+Base commit this round started from: 3dc3665
+Applied on top of: 2170843 (repo moved twice mid-round; re-applied both times,
+resolving conflicts against the Settings & Team round, the CO-logic fix round,
+the cron/portal round 3, and the open-ended-retainer feature added by the
+Guardian/Clients round — see the contract-value.ts notes below for how that
+merged with this round's own effective-value work).
 
-MIGRATION
-  057_view_portfolio_permission.sql   new VIEW_PORTFOLIO permission; backfills every role/member
-                                      that has VIEW_ALL_PROJECTS; create_workspace_atomic reseeded.
+Extract to: C:\Users\jackk\Desktop\MyWebApps\scopegov\scopegov
 
-PORTFOLIO (section 8)
-  lib/reports/scope-health.ts (new)   ONE live computation used by the page, exports and the cron.
-  lib/reports/portfolio-data.ts       headline figures live (were a 24h-old snapshot next to live lists),
-                                      severity-ordered list, currency breakdown, client-name redaction.
-  api/cron/scope-health-rollup        no more zero-snapshot on a failed read; upsert error checked; 207 on partial failure.
-  api/reports/portfolio (+/export)    VIEW_PORTFOLIO gate; CSV/PDF now contain the period-scoped history;
-                                      audit row written after the file exists.
-  components/portfolio/…, lib/pdf/portfolio-report.tsx, portfolio/page.tsx, Sidebar, CommandPalette,
-  lib/auth/mfa-policy.ts, lib/supabase/types.ts, tests/mfa-policy.test.ts   permission wiring + UI.
+  tar -xzf ~/Downloads/scopegov-projects-portfolio-fixes.tar.gz --strip-components=1 -C .
+  git add -A
+  git commit -m "Projects/Dashboard + Portfolio: fix round (plan limit, cross-tenant leak, retainer value, activity feed, mentions, scope-health risk breakdown)"
+  git push
 
-PROJECTS & DASHBOARD (section 7)
-  lib/utils/project-status.ts, project-input.ts (new)   shared status groups + field validators.
-  api/projects (POST/GET), api/projects/[id] (GET/PATCH/DELETE), complete, archive, unarchive,
-  reopen (new), members, members/available, messages, messages/read, messages/[messageId].
-  lib/utils/attention.ts              finished projects never need attention; borderline_review counts.
-  dashboard/page.tsx, projects/page.tsx, projects/[id]/page.tsx, projects/new/page.tsx,
-  ProjectsClient, ProjectDetail, ProjectDiscussion, EditProjectModal (new).
-  api/billing/upgrade                 downgrade guard uses the same project-limit rule as create.
-  api/cron/guardian-flag-stall        skips finished/deleted projects.
-  lib/utils/format.ts                 formatCurrencyGroups(emptyCurrency).
+Deploy order: run migration 077 BEFORE deploying this code. It adds
+projects.stalled_at / change_orders.stalled_at (with triggers) and the
+project_unread_message_counts() function. The Dashboard, Projects list and
+Portfolio pages select stalled_at; the Projects list's unread badges call the
+function (and degrade to "no badges" if it's missing, so that part alone
+isn't a hard blocker — the stalled_at columns are).
 
-TESTS ADDED   tests/project-input.test.ts, tests/attention.test.ts, tests/scope-health.test.ts
+After deploying, save the now-current live repo:
+  tar --exclude=node_modules --exclude=.next --exclude=.git --exclude=.env.local -czf ~/Downloads/scopegov-full.tar.gz .
 
-NOT DONE / OUT OF SCOPE
-  - purge_project still deletes DB rows but does not remove Storage objects (cron/project-purge).
-  - SettingsClient billing label still says "N projects" (pricing page says "Active projects").
-  - Pending approval_requests are not cancelled when a Draft project is soft-deleted.
+Verification: tsc --noEmit clean on every file this round touched (4 unrelated
+pre-existing errors remain in app/(app)/clients/[id]/page.tsx,
+app/api/cron/guardian-health/route.ts and lib/utils/client-input.ts — confirmed
+present on a clean checkout of 2170843 before any of these changes, nothing to
+do with sections 7/8). Full suite: 708 passed, 0 failed, 49 skipped (unrelated
+pg-replay suite, skipped everywhere in this environment). New tests: 50, across
+tests/attention.test.ts (extended), tests/contract-value-and-limit.test.ts,
+tests/projects-activity-mentions-access.test.ts, tests/portfolio-risk.test.ts.
+The Portfolio PDF was rendered by hand (8-page, 60-flag / 45-doc / 30-risk-row /
+20-exception fixture) and inspected page by page for the header-repeat bug.
+
+
+SECTION 7 — Projects & Dashboard
+=================================
+
+Bugs fixed
+----------
+B7-1 / B7-6 — plan project limit could be exceeded via reopen; error gave
+  impossible advice.
+  lib/utils/project-limit.ts (new) is the one place the limit is checked and
+  explained. POST /api/projects and POST /api/projects/[id]/reopen both call
+  it before writing AND re-check after writing (isOverLimit), rolling back if
+  a concurrent request won the race. The message now says "delete a draft,
+  complete another project, or upgrade" instead of "complete or archive"
+  (Draft/Intake projects can do neither).
+
+B7-2 — status-change activity showed "status changed to " with nothing after
+  it, on both the Dashboard feed and the project Activity tab.
+  PATCH /api/projects/[id]/route.ts now writes metadata as
+  { status: {from,to}, from, to } — both a structured shape and the flat
+  from/to every reader was already looking for. Other fields edited in the
+  same request get their own project.updated audit row instead of vanishing
+  behind the status event.
+
+B7-3 — cross-tenant leak in canReadProject: the VIEW_ALL_PROJECTS branch
+  returned true for ANY project id, with no workspace check. Reachable via
+  GET/POST /api/projects/[id]/messages/read and /unread-count with a foreign
+  workspace's project id (read a competitor's unread count; write a
+  read-marker row against their project).
+  lib/utils/project-access.ts now checks the project belongs to the caller's
+  workspace before returning true for VIEW_ALL_PROJECTS.
+
+B7-4 — Pause said "Guardian monitoring stops" but Guardian inbound only
+  skipped Archived/Complete; a paused project kept raising flags from
+  forwarded email.
+  app/api/guardian/inbound/route.ts now also skips a project whose status is
+  Stalled with stall_reason 'manual' (the SOW-unsigned auto-stall is
+  unaffected — nobody decided that one). Manual "Check content" from the
+  Guardian tab still works.
+
+B7-5 / G7-2 — contract value was computed five different, disagreeing ways
+  (base only vs. base+amendments; retainer monthly rate treated as the whole
+  value; legacy retainer-renewal amendments double-counted).
+  lib/utils/contract-value.ts (new) is the one definition, reused by
+  lib/reports/contract-position.ts, the Dashboard, the Projects list, the
+  project page/header, and lib/reports/scope-health.ts (Portfolio). It also
+  absorbs the open-ended-retainer rule the Guardian/Clients round added to
+  contract-position.ts (months contracted so far via
+  loadRetainerMonthsBilled) so there is still exactly one implementation, not
+  two that happen to agree today.
+
+B7-7 — re-adding an existing team member overwrote added_at/added_by and
+  logged a duplicate project_member.added event.
+  POST /api/projects/[id]/members/route.ts is now a no-op (returns
+  alreadyMember: true) when the member is already on the project; a 23505 on
+  insert (lost a concurrent-add race) is treated the same way.
+
+B7-8 — "At risk (pending COs)" on the project header excluded stalled change
+  orders, while reconciliation and Portfolio counted them.
+  components/projects/ProjectDetail.tsx's openCos filter now includes
+  'stalled'.
+
+B7-9 — the project team query shipped every member's effective_permissions
+  to the browser for no reason.
+  Dropped from the select in app/(app)/projects/[id]/page.tsx.
+
+B7-10 — the project Activity tab: unlabelled events, a blank actor for
+  system rows, capped at 50 with no way to see older history.
+  lib/utils/activity-format.ts (new) is a shared event -> sentence formatter
+  used by both the Dashboard feed and the project Activity tab (see G7-3).
+  lib/utils/project-activity.ts + GET /api/projects/[id]/activity add
+  "Load older activity" paging to the tab.
+
+Cosmetic: borderline_review now has a flag-status label ("Needs review") and
+  colour; the TeamTab comment claiming a last-manager guard exists (there
+  isn't one) is corrected.
+
+Feature gaps closed
+--------------------
+G7-1 — retainer contract_value is the monthly rate everywhere it's used (the
+  retainer cron, the sign route, contract-position), but every input/summary
+  called it plain "Contract value" with no /mo. Wizard, EditProjectModal and
+  the project page now label it "Monthly retainer amount" / show "/mo" and a
+  computed total, and explain the open-ended case (no term = billed until
+  completed/archived) consistently with the Guardian/Clients round's own
+  addition of that feature.
+
+G7-2 — see B7-5 above (lib/utils/contract-value.ts).
+
+G7-3 — Dashboard activity feed: previously knew ~20 event types and dropped
+  the project name for the rest; Guardian classifications, link-views and
+  reminders filled most of the 14-row window.
+  lib/utils/activity-format.ts covers every event type in the audit log with
+  a plain-language sentence; DASHBOARD_NOISE_EVENT_PATTERNS filters
+  machinery events out of the Dashboard feed in SQL (they're still shown on
+  a project's own Activity tab, where the full history is the point).
+
+G7-4 — Discussion tab:
+  - Polling only ever fetched NEW messages, so an edit or delete by someone
+    else was invisible until reload. GET .../messages now accepts
+    changedSince and returns a `changed` array of anything edited/deleted
+    since the last poll; ProjectDiscussion.tsx merges it in.
+  - VIEW_ALL_PROJECTS admins not on the team could not be @mentioned.
+    lib/utils/project-messages.ts's listMentionable() (team ∪ VIEW_ALL) is
+    now what both the mention picker (GET .../messages/mentionable, new) and
+    the server-side validator (resolveMentions) use.
+  - A mention token's display name was trusted as typed — @[Alice](bob-id)
+    rendered "Alice" while notifying Bob. resolveMentions now rewrites every
+    valid token to the mentioned user's real name, and a token for someone
+    who can't see the project degrades to plain "@Name" text (notifies
+    nobody, doesn't error the request).
+  - The composer showed the raw @[Name](uuid) token while typing; it now
+    shows "@Name" (tokensToDisplay/displayToTokens round-trip), and
+    Enter/Tab/arrow keys complete a mention from the picker.
+  - Only mentions notified anyone, and there was no unread signal outside
+    the project page itself. lib/utils/project-unread.ts +
+    migration 077's project_unread_message_counts() add a per-project unread
+    badge to the Projects list (degrades to no badges if the function isn't
+    deployed).
+
+G7-5 — a manually paused project sat in "Needs attention" forever.
+  lib/utils/attention.ts: a manual pause is quiet for
+  MANUAL_PAUSE_ATTENTION_DAYS (14) days, then surfaces with its age ("Paused
+  for 20 days"). A pause from the SOW-unsigned auto-stall, or one with no
+  recorded stalled_at (pre-migration data), keeps the old immediate-surface
+  behaviour. Depends on migration 077's projects.stalled_at.
+
+
+SECTION 8 — Portfolio
+=======================
+
+Bugs fixed
+----------
+B8-1 (reproduced) — every PDF table header was `fixed`, so on a multi-page
+  export every earlier table's header repeated above whatever table actually
+  started that page.
+  lib/pdf/portfolio-report.tsx: dropped `fixed` from all three (now five)
+  table headers. Verified on an 8-page fixture with a header-row scan per
+  page.
+
+B8-2 — the flag list was one shared cap of 100, severity-sorted, so
+  filtering to "Low" after enough High/Medium flags existed came up empty
+  ("No open flags — scope under control") despite real Low flags existing.
+  lib/reports/portfolio-data.ts now caps PER SEVERITY (100 of each by
+  default; the CSV export asks for 5,000 of each = effectively all).
+  openFlagsBySeverity (already exact) is what the severity filter's "N of
+  total" now reads from, not the length of a shared list.
+
+B8-3 — "stalled since" was projects.updated_at / change_orders.updated_at,
+  so an unrelated edit reset it.
+  Migration 077 adds a real stalled_at column + trigger on both tables (set
+  on entry to Stalled, cleared on exit). scope-health.ts's stuck-document
+  list uses it, falling back to updated_at only for rows written before the
+  migration.
+
+B8-4 — "View exception log →" went to /reports, which needs
+  VIEW_ALL_PROJECTS (a stricter permission than the page's own
+  VIEW_PORTFOLIO), and wasn't a log, just a top-8 table.
+  The Portfolio page now has its own exceptions list (see G8-4) and the
+  outbound link is only shown to viewers who can actually use /reports.
+
+B8-5 — scope-health's effective value had the same "one month = whole
+  retainer value, renewal amendments double-counted" bug as B7-5.
+  lib/reports/scope-health.ts now computes it via
+  lib/utils/contract-value.ts, the same function everything else uses.
+
+B8-6 — PDF row dates used the server's timezone; the header already used the
+  workspace's.
+  lib/pdf/portfolio-report.tsx's fmtDate now takes the workspace timezone
+  (already threaded through as report.timeZone) via formatDateInZone.
+  Snapshot dates (plain YYYY-MM-DD, no time component) get their own
+  fmtSnapshotDate that does NOT apply a timezone conversion — running a bare
+  calendar date through one would shift it a day in any zone behind UTC.
+
+Feature gaps closed
+--------------------
+G8-1 — no per-project or per-client breakdown of "value at risk".
+  lib/reports/scope-health.ts now returns projectRisk: for every in-progress
+  project with any signal (open flags, exceptions, or a stuck document),
+  its flag exposure, exception exposure, and total — summing, per currency,
+  to the same headline figure. Surfaced as a new "Projects by risk" table on
+  the dashboard (with a by-client rollup toggle) and in the PDF/CSV.
+
+G8-2 — "Stalled documents" only covered stalled SOWs/COs; the Dashboard's
+  own Needs-attention register already treats declined/expired/
+  changes-requested SOWs and declined/expired/countered COs as action items,
+  and the Portfolio didn't.
+  scope-health.ts's stuckDocs covers all of them (only the CURRENT SOW
+  version per project, so a reopened-and-resent SOW's old declined version
+  doesn't linger as a phantom action item). Renamed on-screen and in the
+  exports to "Documents needing action"; the headline "Stalled documents"
+  tile is unchanged (still counts only the genuinely stalled ones) but now
+  also shows a "+N declined/expired" aside.
+
+G8-3 — no explanation of the at-risk formula; the trend chart had no axis.
+  A "How is 'contract value at risk' calculated?" `<details>` on the
+  dashboard states the formula using riskModel (returned by the API, not
+  hardcoded prose, so it can't drift from lib/reports/scope-health.ts's
+  actual constants). The SVG trend chart gained three horizontal gridlines
+  with value labels.
+
+G8-4 — no portfolio-wide exceptions list.
+  scope-health.ts now returns every exception (all-time, newest first);
+  portfolio-data.ts exposes a capped, permission-scoped `exceptions` array
+  plus the exact `exceptionsTotal`. Surfaced in the Exceptions panel (top 5,
+  expandable), the PDF, and the CSV.
+
+Not verified by hand: the daily scope-health-rollup cron (history/trend
+  data) is scheduled by an external worker not in this repo, per the
+  original audit note. Nothing in this round changes what it writes except
+  that contract_value_at_risk will step up once, at deploy, for
+  retainer-heavy workspaces (see the note in lib/reports/scope-health.ts) —
+  the shared value fix applies to the live figures immediately but old
+  snapshots keep their old numbers.
+
+
+Files in this tarball
+======================
+app/(app)/dashboard/page.tsx
+app/(app)/projects/[id]/page.tsx
+app/(app)/projects/new/page.tsx
+app/(app)/projects/page.tsx
+app/api/guardian/inbound/route.ts
+app/api/projects/[id]/activity/route.ts                    (new)
+app/api/projects/[id]/members/route.ts
+app/api/projects/[id]/messages/[messageId]/route.ts
+app/api/projects/[id]/messages/mentionable/route.ts        (new)
+app/api/projects/[id]/messages/route.ts
+app/api/projects/[id]/reopen/route.ts
+app/api/projects/[id]/route.ts
+app/api/projects/route.ts
+app/api/reports/portfolio/export/route.ts
+components/portfolio/PortfolioDashboard.tsx
+components/projects/EditProjectModal.tsx
+components/projects/ProjectDetail.tsx
+components/projects/ProjectDiscussion.tsx
+components/projects/ProjectsClient.tsx
+lib/pdf/portfolio-report.tsx
+lib/reports/contract-position.ts
+lib/reports/portfolio-data.ts
+lib/reports/scope-health.ts
+lib/utils/activity-format.ts                                (new)
+lib/utils/attention.ts
+lib/utils/contract-value.ts                                 (new)
+lib/utils/format.ts
+lib/utils/project-access.ts
+lib/utils/project-activity.ts                                (new)
+lib/utils/project-limit.ts                                   (new)
+lib/utils/project-messages.ts
+lib/utils/project-unread.ts                                   (new)
+supabase/migrations/077_stalled_at.sql                        (new)
+tests/attention.test.ts
+tests/contract-value-and-limit.test.ts                        (new)
+tests/portfolio-risk.test.ts                                  (new)
+tests/projects-activity-mentions-access.test.ts               (new)

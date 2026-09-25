@@ -31,7 +31,18 @@ import { hasPermission } from '@/lib/auth/session'
 // it. Scope the query by workspace_id here too so the primitive itself is
 // safe regardless of what the caller does around it.
 export async function canReadProject(service: any, session: SessionUser, projectId: string): Promise<boolean> {
-  if (hasPermission(session, 'VIEW_ALL_PROJECTS')) return true
+  // FIX (Projects & Dashboard independent pass): the comment above promised the workspace scoping
+  // lived in the primitive, but the VIEW_ALL_PROJECTS branch returned true for ANY project id — the
+  // scoping only existed on the project_members branch. messages/read and messages/unread-count call
+  // this with no scoped project fetch of their own, so an owner/admin of workspace A could pass a
+  // workspace-B project UUID and (a) read that project's unread-message count and (b) write a
+  // read-marker row against it. VIEW_ALL now means "every project IN THIS WORKSPACE".
+  if (hasPermission(session, 'VIEW_ALL_PROJECTS')) {
+    if (typeof projectId !== 'string' || !projectId) return false
+    const { data } = await service
+      .from('projects').select('id').eq('id', projectId).eq('workspace_id', session.workspaceId).limit(1)
+    return !!(data && data.length)
+  }
   // FIX (deep audit, RLS+permissions re-pass round 3): this queried
   // project_members directly, joining in workspace_members but filtering
   // only on user_id — never on workspace_members.status. The single thing

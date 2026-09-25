@@ -214,17 +214,31 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (!written || written.length === 0)
       return NextResponse.json({ error: 'This project changed while you were editing it. Refresh and try again.' }, { status: 409 })
 
-    await logAudit(service, {
+    // Audit. `changes` is { field: { from, to } }; the status event's readers (Dashboard feed, project
+    // Activity tab) look for a flat `metadata.to`, which this row never carried — so every pause/resume
+    // rendered as "status changed to " with nothing after it. The flat from/to are written alongside the
+    // structured `status` diff. And when a status change rides along with other edits, the other edits
+    // get their own project.updated row instead of disappearing behind the status event.
+    const auditBase = {
       workspaceId: session.workspaceId,
       actorId:     session.id,
       actorEmail:  session.email,
       actorName:   session.name,
-      eventType:   statusChanged ? 'project.status_changed' : 'project.updated',
-      entityType:  'project',
+      entityType:  'project' as const,
       entityId:    id,
       entityName:  (updates.name as string) || project.name,
-      metadata:    changes,
-    })
+    }
+    if (statusChanged) {
+      await logAudit(service, {
+        ...auditBase, eventType: 'project.status_changed',
+        metadata: { status: changes.status, from: project.status, to: body.status },
+      })
+      const { status: _status, ...otherChanges } = changes
+      if (Object.keys(otherChanges).length > 0)
+        await logAudit(service, { ...auditBase, eventType: 'project.updated', metadata: otherChanges })
+    } else {
+      await logAudit(service, { ...auditBase, eventType: 'project.updated', metadata: changes })
+    }
 
     return NextResponse.json({ ok: true })
   } catch (err) {

@@ -3,6 +3,9 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import ProjectsClient from '@/components/projects/ProjectsClient'
+import { isAttentionWorthy, attentionReason } from '@/lib/utils/attention'
+import { effectiveContractValue, monthlyRetainerRate, loadRetainerMonthsBilled } from '@/lib/utils/contract-value'
+import { loadUnreadMessageCounts } from '@/lib/utils/project-unread'
 
 export const metadata = { title: 'Projects' }
 
@@ -19,12 +22,13 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
   let query = (service as any)
     .from('projects')
     .select(`
-      id, name, disc, type, status, stall_reason, contract_value, currency,
+      id, name, disc, type, status, stall_reason, stalled_at, contract_value, retainer_duration_months, currency,
       start_date, created_at, updated_at, internal_ref,
       clients(id, name, company_name),
       guardian_flags(status, severity),
       change_orders(id, status, title, total),
-      sow_documents(id, status, version, sent_at, signed_at)
+      sow_documents(id, status, version, sent_at, signed_at),
+      amendments(financial_impact, change_orders(is_retainer_renewal))
     `)
     .eq('workspace_id', session.workspaceId)
     .is('deleted_at', null)
@@ -46,82 +50,84 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
     }
   }
 
-  const { data: projects = [] } = await query
+  const { data: projectRows = [] } = await query
 
-  // FIX (fix round, Projects & Dashboard section 7): viewFinancials used to
-  // only control what ProjectsClient (a Client Component) *rendered* —
-  // contract_value and change_orders[].total were fetched here and passed
-  // into it wholesale regardless of permission, so both travelled to the
-  // browser in every RSC payload for a member without VIEW_FINANCIALS, same
-  // as any other prop. Same class of bug already fixed on the project detail
-  // page (app/(app)/projects/[id]/page.tsx's own comment describes it) and
-  // on the Dashboard (a plain server component, so it never had this
-  // exposure) — just missed here. Strip at the source instead of trusting
-  // the client component to hide what it's already been given.
-  const canViewFinancials = hasPermission(session, 'VIEW_FINANCIALS')
-  const safeProjects = canViewFinancials
-    ? projects
-    : (projects || []).map((p: any) => ({
-        ...p,
-        contract_value: null,
-        change_orders: Array.isArray(p.change_orders)
-          ? p.change_orders.map((co: any) => ({ ...co, total: null }))
-          : p.change_orders,
-      }))
+  // Effective value = the shared definition (lib/utils/contract-value.ts): base — a retainer's monthly
+  // rate × term — plus accepted change orders. The list used to show the stored base alone.
+  const retainerMonths = await loadRetainerMonthsBilled(service, projectRows || [])
+  const projects = (projectRows || []).map((p: any) => {
+    const { amendments, ...rest } = p
+    return { ...rest, effective_value: effectiveContractValue(p, amendments, retainerMonths.get(p.id)), monthly_rate: monthlyRetainerRate(p) }
+  })
 
-  // FIX (section-11/12 audit — flagship feature gap): see lib/utils/attention.ts
-  // — mirrors the same pending-approvals fetch the Dashboard now does, so
-  // both screens agree on which projects are stuck in an approval chain.
-  // A separate query (not an embedded approval_requests(...) above) to
-  // keep the pending-only filter from inner-joining out projects with zero
-  // pending requests.
-  // FIX (fix round, section-11 flagship finding): broadened to also match
-  // an approved-but-send-failed request (status='approved', send_failed_at
-  // set — migration 053), same reasoning as the Dashboard's matching fix —
-  // that state is just as stuck as a pending decision, but never matched
-  // status='pending' so it was invisible here.
+  const unreadByProject = await loadUnreadMessageCounts(service, session.id, projects.map((p: any) => p.id))
+
+  // Pending approval requests, so a document stuck in an approval chain counts as "needs attention"
+  // (same fetch and same broadened match — pending, or approved-but-send-failed — as the Dashboard).
+  // A separate query rather than an embed: an embedded filter would inner-join away projects with none.
   let pendingApprovalsQuery = (service as any)
     .from('approval_requests')
     .select('project_id, created_at, updated_at, send_failed_at')
     .eq('workspace_id', session.workspaceId)
     .or('status.eq.pending,and(status.eq.approved,send_failed_at.not.is.null)')
-  if (!canViewAll) {
-    const ids = (projects || []).map((p: any) => p.id)
-    pendingApprovalsQuery = pendingApprovalsQuery.in('project_id', ids)
-  }
+  if (!canViewAll) pendingApprovalsQuery = pendingApprovalsQuery.in('project_id', projects.map((p: any) => p.id))
   const { data: pendingApprovalRows = [] } = await pendingApprovalsQuery
-  const pendingApprovalsByProject = new Map<string, Array<{ created_at: string; send_failed_at: string | null }>>()
+  const pendingApprovalsByProject = new Map<string, Array<{ createdAt: string; sendFailed: boolean }>>()
   for (const r of (pendingApprovalRows || [])) {
     const list = pendingApprovalsByProject.get(r.project_id) || []
     // Last activity, not creation time — same clock the approval-stall cron uses.
-    list.push({ created_at: r.updated_at || r.created_at, send_failed_at: r.send_failed_at })
+    list.push({ createdAt: r.updated_at || r.created_at, sendFailed: !!r.send_failed_at })
     pendingApprovalsByProject.set(r.project_id, list)
   }
-  const projectsWithApprovals = (safeProjects || []).map((p: any) => ({
-    ...p, pending_approvals: pendingApprovalsByProject.get(p.id),
-  }))
 
-  // FIX (deep audit, section 7): fetch the workspace's actual Guardian
-  // settings so "needs attention" here matches the Dashboard instead of
-  // silently falling back to isAttentionWorthy's hardcoded defaults.
+  // The workspace's real Guardian settings, so "needs attention" matches the Dashboard.
   const { data: ws } = await (service as any)
     .from('workspaces')
     .select('proactive_risk_alerts_enabled, proactive_risk_threshold, currency')
     .eq('id', session.workspaceId)
     .maybeSingle()
+  const workspaceSettings = {
+    proactiveRiskAlertsEnabled: ws?.proactive_risk_alerts_enabled,
+    proactiveRiskThreshold: ws?.proactive_risk_threshold,
+    currency: ws?.currency,
+  }
+
+  // Attention is decided HERE, from the full (unstripped) data, and only the verdict is sent to the
+  // browser. Deciding it in the client component meant a member without VIEW_FINANCIALS — whose
+  // contract values are stripped below — got a different answer from the Dashboard for the same project
+  // (the "high-value project, no signed SOW" rule needs the value).
+  const canViewFinancials = hasPermission(session, 'VIEW_FINANCIALS')
+  const safeProjects = projects.map((p: any) => {
+    const attnProject = {
+      ...p, contractValue: p.effective_value, stallReason: p.stall_reason, stalledAt: p.stalled_at,
+      guardianFlags: p.guardian_flags, changeOrders: p.change_orders, sowDocuments: p.sow_documents,
+      pendingApprovals: pendingApprovalsByProject.get(p.id),
+    }
+    const needsAttention = isAttentionWorthy({ project: attnProject, workspace: workspaceSettings })
+    const { stalled_at: _stalledAt, ...rest } = p
+    const base = {
+      ...rest,
+      needs_attention: needsAttention,
+      unread_messages: unreadByProject.get(p.id) || 0,
+      attention_reason: needsAttention ? attentionReason({ project: attnProject }) : null,
+    }
+    // Strip financials at the source (they'd otherwise travel to the browser in the RSC payload).
+    return canViewFinancials ? base : {
+      ...base,
+      contract_value: null, effective_value: null, monthly_rate: null,
+      change_orders: Array.isArray(p.change_orders)
+        ? p.change_orders.map((co: any) => ({ ...co, total: null }))
+        : p.change_orders,
+    }
+  })
 
   return (
     <ProjectsClient
-      projects={projectsWithApprovals}
+      projects={safeProjects}
       initialFilter={filter === 'attention' ? 'attention' : null}
       canCreate={canCreate}
       canViewFinancials={canViewFinancials}
       session={session}
-      workspaceSettings={{
-        proactiveRiskAlertsEnabled: ws?.proactive_risk_alerts_enabled,
-        proactiveRiskThreshold: ws?.proactive_risk_threshold,
-        currency: ws?.currency,
-      }}
     />
   )
 }

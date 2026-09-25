@@ -91,7 +91,7 @@ export async function POST(request: NextRequest) {
 
     const { data: projects, error: projectErr } = await (service as any)
       .from('projects')
-      .select(`id, name, status, workspace_id, client_id,
+      .select(`id, name, status, stall_reason, workspace_id, client_id,
         workspaces(id, agency_name, guardian_sensitivity_tier),
         project_scope_snapshot(deliverables, out_of_scope)`)
       .ilike('guardian_email', `proj-${guardianPrefix}@%`)
@@ -121,6 +121,16 @@ export async function POST(request: NextRequest) {
       const { data: seen } = await (service as any).from('guardian_checks')
         .select('id').eq('project_id', project.id).eq('source_metadata->>message_id', messageId).limit(1)
       if (seen?.length) return NextResponse.json({ ok: true, message: 'Already processed', checkId: seen[0].id })
+    }
+
+    // FIX (Projects & Dashboard independent pass): the project's Pause confirmation promises "Guardian
+    // monitoring stops while it's paused", but only Archived/Complete were skipped here — a manually
+    // paused project kept raising flags and notifying the team from forwarded emails. A manual pause
+    // is a deliberate "stop watching this"; honour it. (A pause that came from the SOW-unsigned stall
+    // is not a decision by anyone, so it is unchanged. Manual "Check content" from the Guardian tab
+    // still works while paused.)
+    if (project.status === 'Stalled' && project.stall_reason === 'manual') {
+      return NextResponse.json({ ok: true, message: 'Project paused — email not checked' })
     }
 
     // ── Build the text to classify ────────────────────────────

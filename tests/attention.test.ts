@@ -30,3 +30,33 @@ describe('attention', () => {
     }
   })
 })
+
+describe('attention — manual pause', () => {
+  const now = Date.parse('2026-09-24T12:00:00Z')
+  const daysAgo = (d: number) => new Date(now - d * 86400000).toISOString()
+  const paused = (over: any = {}) => ({ now, ...ctx({ status: 'Stalled', stallReason: 'manual', ...over }) })
+
+  it('a manual pause from a few days ago is a decision, not a problem', () => {
+    const c = paused({ stalledAt: daysAgo(3) })
+    expect(isAttentionWorthy(c)).toBe(false)
+    expect(attentionReason(c)).not.toMatch(/pause|stalled/i)
+  })
+  it('a manual pause nobody has revisited for two weeks is surfaced, with its age', () => {
+    const c = paused({ stalledAt: daysAgo(20) })
+    expect(isAttentionWorthy(c)).toBe(true)
+    expect(attentionReason(c)).toBe('Paused for 20 days')
+  })
+  it('a recent pause still surfaces other problems (an open flag)', () => {
+    const c = paused({ stalledAt: daysAgo(1), guardianFlags: [{ status: 'open' }] })
+    expect(isAttentionWorthy(c)).toBe(true)
+    expect(attentionReason(c)).toMatch(/open scope flag/)
+  })
+  it('a pause with no recorded start keeps the old behaviour (surfaced)', () => {
+    expect(isAttentionWorthy(paused({ stalledAt: null }))).toBe(true)
+  })
+  it('an unsigned-SOW stall is never treated as a deliberate pause', () => {
+    const c = { now, ...ctx({ status: 'Stalled', stallReason: 'sow_unsigned', stalledAt: daysAgo(1) }) }
+    expect(isAttentionWorthy(c)).toBe(true)
+    expect(attentionReason(c)).toBe('SOW unsigned — project stalled')
+  })
+})

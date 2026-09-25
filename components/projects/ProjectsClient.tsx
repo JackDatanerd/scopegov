@@ -3,7 +3,6 @@ import { useState, useMemo } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import type { SessionUser } from '@/lib/supabase/types'
-import { isAttentionWorthy, attentionReason } from '@/lib/utils/attention'
 import { formatCurrency, formatCurrencyGroups, formatDate, projectStatusLabel, PROJECT_TYPE_ICONS } from '@/lib/utils/format'
 
 type ProjectRow = any // all .from() calls use (supabase as any) per BUG-039
@@ -45,6 +44,23 @@ function tabFor(p: ProjectRow): string {
   return STATUS_TO_TAB[p.status]
 }
 
+const EMPTY_TAB_TEXT: Record<string, string> = {
+  active: 'No active projects yet', awaiting: 'No projects awaiting a signature', drafts: 'No draft projects',
+  completed: 'No completed projects yet', archived: 'No archived projects', all: 'No projects yet',
+}
+
+// New Discussion messages since the viewer last opened the project's Discussion tab.
+function UnreadBadge({ count }: { count?: number }) {
+  if (!count) return null
+  return (
+    <span title={`${count} unread discussion message${count === 1 ? '' : 's'}`}
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 10.5, fontWeight: 600,
+        color: 'var(--blue)', background: 'var(--blue-lt, var(--surface-2))', borderRadius: 999, padding: '1px 7px', marginLeft: 6 }}>
+      <i className="ti ti-message" style={{ fontSize: 10 }} />{count > 99 ? '99+' : count}
+    </span>
+  )
+}
+
 function pillVariant(status: string): string {
   const m: Record<string, string> = {
     'Active': 'green', 'Awaiting Signature': 'amber', 'Changes Requested': 'amber',
@@ -60,21 +76,9 @@ interface Props {
   canCreate: boolean
   canViewFinancials: boolean
   session: SessionUser
-  // FIX (deep audit, section 7): this page previously never received the
-  // workspace's actual Guardian settings at all, so "needs attention"
-  // here silently used isAttentionWorthy's hardcoded defaults (10000
-  // threshold, alerts enabled) regardless of what the workspace had
-  // configured in Settings — meaning a project could show as attention-
-  // worthy here and not on the Dashboard (which did pass real settings),
-  // or vice versa, for the exact same project.
-  workspaceSettings?: {
-    proactiveRiskAlertsEnabled?: boolean
-    proactiveRiskThreshold?: number
-    currency?: string
-  }
 }
 
-export default function ProjectsClient({ projects, canCreate, canViewFinancials, workspaceSettings, initialFilter }: Props) {
+export default function ProjectsClient({ projects, canCreate, canViewFinancials, initialFilter }: Props) {
   const [tab,    setTab]    = useState(initialFilter === 'attention' ? 'all' : 'active')
   // The dashboard's "Attention register" shows 6 rows; this is where the rest live.
   const [attentionOnly, setAttentionOnly] = useState(initialFilter === 'attention')
@@ -100,19 +104,13 @@ export default function ProjectsClient({ projects, canCreate, canViewFinancials,
     return list
   }, [projects, tab, search, attentionOnly]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Attention is decided ON THE SERVER (app/(app)/projects/page.tsx) with the same predicate, inputs and
+  // workspace settings as the Dashboard, and arrives as p.needs_attention / p.attention_reason. It used
+  // to be re-derived here from the payload — which for a member without VIEW_FINANCIALS has the contract
+  // value stripped, so the "high-value project, no signed SOW" rule fired on the Dashboard and not here
+  // for the very same project.
   function projectAttention(p: ProjectRow) {
-    return isAttentionWorthy({
-      project: {
-        ...p, contractValue: p.contract_value, stallReason: p.stall_reason,
-        guardianFlags: p.guardian_flags, changeOrders: p.change_orders, sowDocuments: p.sow_documents,
-        pendingApprovals: (p as any).pending_approvals?.map((a: any) => ({ createdAt: a.created_at, sendFailed: !!a.send_failed_at })),
-      },
-      workspace: {
-        proactiveRiskAlertsEnabled: workspaceSettings?.proactiveRiskAlertsEnabled,
-        proactiveRiskThreshold: workspaceSettings?.proactiveRiskThreshold,
-        currency: workspaceSettings?.currency,
-      },
-    })
+    return !!p.needs_attention
   }
 
   // Every project the dashboard counts (finished projects never need attention
@@ -214,7 +212,7 @@ export default function ProjectsClient({ projects, canCreate, canViewFinancials,
           <div className="empty-state">
             <i className="ti ti-search empty-state-icon" />
             <p className="empty-state-title">No projects found</p>
-            <p className="empty-state-sub">{search ? `No results for "${search}"` : attentionOnly ? 'Nothing needs attention right now.' : `No ${tab} projects yet`}</p>
+            <p className="empty-state-sub">{search ? `No results for "${search}"` : attentionOnly ? 'Nothing needs attention right now.' : (EMPTY_TAB_TEXT[tab] || 'No projects yet')}</p>
           </div>
         </div>
       ) : view === 'grouped' ? (
@@ -257,8 +255,11 @@ function ClientGroup({ group, canViewFinancials, projectAttention }: {
   // lib/utils/format.ts — this used to sum contract_value across the
   // group regardless of currency, then label the sum with the first
   // project's currency.
-  const totalValueDisplay = formatCurrencyGroups(group.projects, true)
-  const hasValue = group.projects.some(p => (p.contract_value || 0) > 0)
+  // Effective value (base + accepted change orders; a retainer's monthly rate × term) — the stored base
+  // alone ignored every accepted CO.
+  const totalValueDisplay = formatCurrencyGroups(
+    group.projects.map(p => ({ contract_value: p.effective_value, currency: p.currency })), true)
+  const hasValue = group.projects.some(p => (p.effective_value || 0) > 0)
 
   return (
     <div style={{ marginBottom: 10 }}>
@@ -294,13 +295,7 @@ function ClientGroup({ group, canViewFinancials, projectAttention }: {
 function ProjectGroupRow({ project: p, canViewFinancials, hasAttention }: {
   project: ProjectRow; canViewFinancials: boolean; hasAttention: boolean
 }) {
-  const reason = hasAttention ? attentionReason({
-    project: {
-      ...p, contractValue: p.contract_value, stallReason: p.stall_reason,
-      guardianFlags: p.guardian_flags, changeOrders: p.change_orders, sowDocuments: p.sow_documents,
-      pendingApprovals: (p as any).pending_approvals?.map((a: any) => ({ createdAt: a.created_at, sendFailed: !!a.send_failed_at })),
-    }
-  }) : null
+  const reason: string | null = hasAttention ? (p.attention_reason || null) : null
 
   return (
     <Link href={`/projects/${p.id}`}>
@@ -316,6 +311,7 @@ function ProjectGroupRow({ project: p, canViewFinancials, hasAttention }: {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ fontSize: 13, fontWeight: 500 }}>{p.name}</span>
             {p.disc && <span style={{ fontSize: 11, color: 'var(--text-3)' }}>{p.disc}</span>}
+            <UnreadBadge count={p.unread_messages} />
           </div>
           {reason && (
             <div style={{ fontSize: 11, color: 'var(--amber)', marginTop: 2 }}>
@@ -323,9 +319,10 @@ function ProjectGroupRow({ project: p, canViewFinancials, hasAttention }: {
             </div>
           )}
         </div>
-        {canViewFinancials && p.contract_value > 0 && (
-          <span style={{ fontSize: 12, color: 'var(--text-3)', fontFamily: 'IBM Plex Mono, monospace' }}>
-            {formatCurrency(p.contract_value, p.currency)}
+        {canViewFinancials && p.effective_value > 0 && (
+          <span style={{ fontSize: 12, color: 'var(--text-3)', fontFamily: 'IBM Plex Mono, monospace', textAlign: 'right' }}>
+            {formatCurrency(p.effective_value, p.currency)}
+            {p.monthly_rate > 0 && <span style={{ display: 'block', fontSize: 10.5 }}>{formatCurrency(p.monthly_rate, p.currency)}/mo</span>}
           </span>
         )}
         <span className={`pill pill-${pillVariant(p.status)}`}>{projectStatusLabel(p.status)}</span>
@@ -342,18 +339,12 @@ function ProjectTableRow({ project: p, canViewFinancials, hasAttention }: {
   // click via the client router — the row used to assign window.location,
   // which reloaded the whole app and had no link semantics at all.
   const router = useRouter()
-  const reason = hasAttention ? attentionReason({
-    project: {
-      ...p, contractValue: p.contract_value, stallReason: p.stall_reason,
-      guardianFlags: p.guardian_flags, changeOrders: p.change_orders, sowDocuments: p.sow_documents,
-      pendingApprovals: (p as any).pending_approvals?.map((a: any) => ({ createdAt: a.created_at, sendFailed: !!a.send_failed_at })),
-    }
-  }) : null
+  const reason: string | null = hasAttention ? (p.attention_reason || null) : null
   return (
     <tr style={{ cursor: 'pointer' }} onClick={() => router.push(`/projects/${p.id}`)}>
       <td>
         <Link href={`/projects/${p.id}`} onClick={e => e.stopPropagation()} style={{ color: 'inherit', textDecoration: 'none' }}>
-          <div className="td-primary">{p.name}</div>
+          <div className="td-primary">{p.name} <UnreadBadge count={p.unread_messages} /></div>
         </Link>
         {p.disc && <div className="td-sub">{p.disc}</div>}
       </td>
@@ -363,7 +354,8 @@ function ProjectTableRow({ project: p, canViewFinancials, hasAttention }: {
       </td>
       {canViewFinancials && (
         <td className="td-mono" style={{ textAlign: 'right' }}>
-          {p.contract_value ? formatCurrency(p.contract_value, p.currency) : '—'}
+          {p.effective_value ? formatCurrency(p.effective_value, p.currency) : '—'}
+          {p.monthly_rate > 0 && <div className="td-sub">{formatCurrency(p.monthly_rate, p.currency)}/mo</div>}
         </td>
       )}
       <td><span className={`pill pill-${pillVariant(p.status)}`}>{projectStatusLabel(p.status)}</span></td>

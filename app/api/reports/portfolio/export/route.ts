@@ -3,7 +3,7 @@ export const maxDuration = 60
 
 // app/api/reports/portfolio/export/route.ts
 //   ?format=csv|pdf   (default csv)
-//   &period=30d|90d|6m|12m   (default 90d — same options as the dashboard)
+//   &period=30d|90d|6m|12m|all   (default 90d — same options as the dashboard)
 //
 // FEATURE (deep audit, section 8): the Portfolio dashboard had no export
 // at all — every other rollup surface in the product (the audit log via
@@ -44,7 +44,10 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid period' }, { status: 400 })
 
     const service = createServiceClient()
-    const data = await getPortfolioData(service, session.workspaceId, period, canViewFinancials, canViewClients)
+    // The CSV is the complete record (every open flag and exception); the PDF is a readable summary, so it
+    // keeps the dashboard's per-severity cap and says so.
+    const data = await getPortfolioData(service, session.workspaceId, period, canViewFinancials, canViewClients,
+      format === 'csv' ? { flagsPerSeverity: 5000, exceptionsLimit: 5000 } : {})
     const filenameBase = filenameSlug(session.workspaceName, period)
 
     // Build the file FIRST, audit after: the audit row used to be written
@@ -141,17 +144,40 @@ function toCsv(data: Awaited<ReturnType<typeof getPortfolioData>>, canViewFinanc
   }
   lines.push('')
 
-  const stalledItems = [
-    ...data.stalledSows.map(sw => ({ kind: 'SOW', project: sw.projectName, client: sw.clientName || '', since: sw.since, amount: '' as number | string, currency: '' })),
-    ...data.stalledCos.map(co => ({
-      kind: 'CO', project: `${co.title} — ${co.projectName}`, client: '', since: co.since,
-      amount: canViewFinancials ? (co.total ?? '') : 'redacted', currency: co.currency,
-    })),
-  ]
-  lines.push(`Stalled documents (${stalledItems.length})`)
-  lines.push(['Type', 'Document', 'Client', 'Stalled since', 'Amount', 'Currency'].map(csvCell).join(','))
-  for (const item of stalledItems) {
-    lines.push([item.kind, item.project, item.client, new Date(item.since).toISOString(), item.amount, item.currency].map(csvCell).join(','))
+  // Projects by risk — the answer to "where is the 'contract value at risk' coming from?".
+  lines.push(`Projects by risk (${data.projectRisk.length})`)
+  lines.push(['Project', 'Client', 'Status', 'Contract value', 'Open flags', 'High-severity flags', 'Flags awaiting review',
+    'Flag exposure', 'Exceptions', 'Exception exposure', 'Contract value at risk', 'Stuck documents', 'Currency'].map(csvCell).join(','))
+  for (const r of data.projectRisk) {
+    lines.push([
+      r.projectName, r.clientName || '', r.status, money(r.effectiveValue), r.openFlags, r.highFlags, r.borderlineFlags,
+      money(r.flagRisk), r.exceptionsCount, money(r.exceptionsRisk), money(r.atRisk), r.stuckDocs, r.currency,
+    ].map(csvCell).join(','))
+  }
+  lines.push('')
+
+  // Every document needing the agency's action, not just the stalled ones: declined / expired / changes-
+  // requested SOWs and declined / expired / countered COs are exactly what the Dashboard's Needs attention
+  // lists, and used to be missing here.
+  lines.push(`Documents needing action (${data.stuckDocs.length})`)
+  lines.push(['Type', 'Status', 'Document', 'Project', 'Client', 'Since', 'Amount', 'Currency'].map(csvCell).join(','))
+  for (const d of data.stuckDocs) {
+    lines.push([
+      d.kind, d.reason, d.title, d.projectName, d.clientName || '', new Date(d.since).toISOString(),
+      d.total === null && d.kind === 'CO' ? (canViewFinancials ? '' : 'redacted') : (d.total ?? ''), d.currency,
+    ].map(csvCell).join(','))
+  }
+  lines.push('')
+
+  lines.push(data.exceptionsTotal > data.exceptions.length
+    ? `Exceptions granted (newest ${data.exceptions.length} of ${data.exceptionsTotal})`
+    : `Exceptions granted (${data.exceptions.length})`)
+  lines.push(['Granted', 'Project', 'Client', 'Deliverable', 'What was granted', 'Reason', 'Estimated value', 'Currency'].map(csvCell).join(','))
+  for (const e of data.exceptions) {
+    lines.push([
+      new Date(e.createdAt).toISOString(), e.projectName, e.clientName || '', e.deliverable, e.grantedWhat, e.reason,
+      money(e.estimatedValue), e.currency,
+    ].map(csvCell).join(','))
   }
   lines.push('')
 

@@ -27,7 +27,8 @@ export interface ParsedMention {
 export function extractMentions(body: string): ParsedMention[] {
   const seen = new Map<string, ParsedMention>()
   for (const match of Array.from(body.matchAll(MENTION_TOKEN))) {
-    const [, displayName, userId] = match
+    const [, displayName, rawId] = match
+    const userId = rawId.toLowerCase() // uuids are stored lowercase; an upper-case token would dedupe wrongly
     if (!seen.has(userId)) seen.set(userId, { userId, displayName })
   }
   return Array.from(seen.values())
@@ -61,27 +62,77 @@ export function splitBodySegments(body: string): BodySegment[] {
   return segments
 }
 
-// Shared by both the create (POST) and edit (PATCH) message routes —
-// mentioning someone outside the project shouldn't silently notify a
-// stranger, and shouldn't error the whole request either (the token was
-// probably stale — e.g. the person was removed from the project between
-// typing and sending/editing).
-export async function filterMentionsToProjectMembers(
-  service: any,
-  workspaceId: string,
-  projectId: string,
-  mentions: ParsedMention[]
-): Promise<ParsedMention[]> {
-  const { data: members } = await service
-    .from('project_members')
-    .select('workspace_members!inner(user_id)')
-    .eq('project_id', projectId)
-    .eq('workspace_members.workspace_id', workspaceId)
+export interface Mentionable { id: string; name: string; email: string; avatarUrl: string | null }
 
-  const memberIds = new Set(
-    (members || []).map((m: any) => m.workspace_members?.user_id).filter(Boolean)
-  )
-  return mentions.filter(m => memberIds.has(m.userId))
+// Who can be @-mentioned on a project: everyone who can actually SEE it — the assigned team (active
+// members only) PLUS everyone with VIEW_ALL_PROJECTS (owners/admins see every project without being on its
+// team). The picker used to offer only the assigned team, so an admin who follows a project without being
+// assigned to it could never be pulled into its discussion; the server-side check was the same list.
+export async function listMentionable(service: any, workspaceId: string, projectId: string): Promise<Mentionable[]> {
+  const [{ data: team }, { data: members }] = await Promise.all([
+    service.from('project_members_active').select('member_user_id')
+      .eq('project_id', projectId).eq('project_workspace_id', workspaceId),
+    service.from('workspace_members')
+      .select('user_id, effective_permissions, users!workspace_members_user_id_fkey(id, name, email, avatar_url)')
+      .eq('workspace_id', workspaceId).eq('status', 'active'),
+  ])
+  const onTeam = new Set((team || []).map((r: any) => r.member_user_id))
+  return (members || [])
+    .filter((m: any) => m.users && (onTeam.has(m.user_id) || m.effective_permissions?.VIEW_ALL_PROJECTS === true))
+    .map((m: any) => ({ id: m.users.id as string, name: m.users.name as string, email: m.users.email as string, avatarUrl: m.users.avatar_url || null }))
+}
+
+// A display name is typed inside the token's brackets, so it can never contain one.
+const tokenName = (name: string) => name.replace(/[\[\]()]/g, '').trim() || 'User'
+
+// Shared by both the create (POST) and edit (PATCH) message routes.
+//
+// Returns the mentions that are valid (the person can see this project) with their REAL names, and the
+// body rewritten to match: a token for a valid user carries that user's actual name (the token used to be
+// trusted as typed, so `@[Alice](<bob's id>)` rendered "@Alice" while notifying Bob), and a token for
+// someone who can't see the project degrades to plain "@Name" text — a stale token shouldn't notify a
+// stranger, and shouldn't error the whole request either.
+export async function resolveMentions(
+  service: any, workspaceId: string, projectId: string, body: string,
+): Promise<{ mentions: ParsedMention[]; body: string }> {
+  const parsed = extractMentions(body)
+  if (parsed.length === 0) return { mentions: [], body }
+  const byId = new Map((await listMentionable(service, workspaceId, projectId)).map(m => [m.id.toLowerCase(), m]))
+  const mentions: ParsedMention[] = []
+  for (const m of parsed) {
+    const u = byId.get(m.userId)
+    if (u) mentions.push({ userId: m.userId, displayName: tokenName(u.name) })
+  }
+  const canonical = body.replace(MENTION_TOKEN, (_full, name: string, id: string) => {
+    const u = byId.get(id.toLowerCase())
+    return u ? `@[${tokenName(u.name)}](${u.id.toLowerCase()})` : `@${name}`
+  })
+  return { mentions, body: canonical }
+}
+
+// ── Composer round-trip ──────────────────────────────────────────────────────────────────────────
+// The composer shows "@Alice Smith" (not the raw @[Alice Smith](uuid) token) and remembers who each
+// picked name refers to. On send, picked names are turned back into tokens; on edit, tokens are turned
+// into names and the map is rebuilt from the body.
+
+export function tokensToDisplay(body: string): { text: string; picked: Record<string, string> } {
+  const picked: Record<string, string> = {}
+  const text = body.replace(MENTION_TOKEN, (_m, name: string, id: string) => {
+    picked[name] = id.toLowerCase()
+    return `@${name}`
+  })
+  return { text, picked }
+}
+
+export function displayToTokens(text: string, picked: Record<string, string>): string {
+  let out = text
+  // Longest names first so "@Alice Smith" wins over "@Alice".
+  for (const name of Object.keys(picked).sort((a, b) => b.length - a.length)) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    // NB: a plain string with an escaped backslash — inside a template literal `\p` would be swallowed.
+    out = out.replace(new RegExp('@' + escaped + '(?![\\p{L}\\p{N}_])', 'gu'), () => `@[${name}](${picked[name]})`)
+  }
+  return out
 }
 
 // FIX (deep audit, section 7): previously only ever called from the POST

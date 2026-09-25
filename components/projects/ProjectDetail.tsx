@@ -7,6 +7,7 @@ import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import type { SessionUser } from '@/lib/supabase/types'
+import type { ShapedActivity } from '@/lib/utils/activity-format'
 import BillingTab from '@/components/invoices/BillingTab'
 import FlagCollaboration from './FlagCollaboration'
 import ProjectDiscussion from './ProjectDiscussion'
@@ -80,12 +81,16 @@ interface Props {
   milestones: any[]
   amendments: any[]
   team: any[]
-  activity: any[]
+  activity: ShapedActivity[]
+  activityHasMore?: boolean
   invoices: any[]
   reconciliation: any[]
   defaultPaymentInstructions?: string
   billingDefaults?: { taxRate: number; taxInclusive: boolean; paymentTermsDays: number | null }
-  effectiveContractValue: number
+  // Shared definition (lib/utils/contract-value.ts). All null when the viewer lacks VIEW_FINANCIALS.
+  effectiveContractValue: number | null
+  baseContractValue: number | null
+  amendmentImpact: number | null
   initialTab: string
   isNewProject: boolean
   session: SessionUser
@@ -96,8 +101,8 @@ interface Props {
 }
 
 export default function ProjectDetail({
-  project, milestones, amendments, team, activity, invoices, reconciliation,
-  effectiveContractValue, initialTab, permissions, pendingApprovals = {}, session,
+  project, milestones, amendments, team, activity, activityHasMore = false, invoices, reconciliation,
+  effectiveContractValue: effectiveContractValueProp, baseContractValue: baseContractValueProp, amendmentImpact: amendmentImpactProp, initialTab, permissions, pendingApprovals = {}, session,
   defaultPaymentInstructions = '', billingDefaults,
 }: Props) {
   const router = useRouter()
@@ -139,11 +144,19 @@ export default function ProjectDetail({
     }
   }
 
-  const recoveredAmt  = amendments.reduce((s: number, a: any) => s + (a.financial_impact || 0), 0)
+  // Computed once server-side from the shared definition (retainer term value; retainer-renewal
+  // amendments excluded) — this used to re-sum every amendment here, which double-counted legacy
+  // renewals and treated a retainer's monthly rate as its whole value.
+  const effectiveContractValue = effectiveContractValueProp ?? 0
+  const recoveredAmt  = amendmentImpactProp ?? 0
+  const isRetainer    = project.type === 'retainer'
+  const monthlyRate   = isRetainer ? (Number(project.contract_value) || 0) : null
   // FIX (doc-completeness audit, migration 014)
-  const openCos       = (project.change_orders || []).filter((co: any) => ['awaiting_response','countered','awaiting_countersignature'].includes(co.status))
+  // 'stalled' = sent, unanswered: still exposure. contract-position (reconciliation) and the Portfolio
+  // both count it; this header didn't, so the three disagreed about the same change orders.
+  const openCos       = (project.change_orders || []).filter((co: any) => ['awaiting_response','countered','stalled','awaiting_countersignature'].includes(co.status))
   const atRiskAmt     = openCos.reduce((s: number, co: any) => s + (co.total || 0), 0)
-  const baseValue     = project.contract_value || 0
+  const baseValue     = baseContractValueProp ?? 0
   // FIX (re-audit, Guardian ghost-feature finding): this badge only ever
   // counted status === 'open', so a borderline_review flag — which needs a
   // human to confirm or dismiss it just as much as an open flag needs
@@ -206,8 +219,8 @@ export default function ProjectDetail({
 
   async function handlePauseResume(next: 'Stalled' | 'Active') {
     const msg = next === 'Stalled'
-      ? `Pause "${project.name}"? Guardian monitoring stops while it's paused, and it will show as stalled.`
-      : `Resume "${project.name}"? Guardian monitoring restarts.`
+      ? `Pause "${project.name}"? Forwarded client emails are not checked by Guardian while it's paused (you can still check content by hand from the Guardian tab), and the project shows as paused.`
+      : `Resume "${project.name}"? Guardian starts checking forwarded client emails again — anything received while paused is not back-checked.`
     if (!confirm(msg)) return
     setPausing(true); setError('')
     try {
@@ -337,7 +350,10 @@ export default function ProjectDetail({
 
         {permissions.viewFinancials && (
           <div style={{ display: 'flex', gap: 28, marginBottom: 16, flexWrap: 'wrap' }}>
-            <MetricBlock label="Original value" value={formatCurrency(baseValue, currency)} />
+            {monthlyRate != null && (
+              <MetricBlock label="Monthly rate" value={`${formatCurrency(monthlyRate, currency)}/mo`} />
+            )}
+            <MetricBlock label={isRetainer ? (project.retainer_duration_months > 0 ? 'Original term value' : 'Contracted to date') : 'Original value'} value={formatCurrency(baseValue, currency)} />
             {recoveredAmt > 0 && <MetricBlock label="Recovered" value={`+${formatCurrency(recoveredAmt, currency)}`} color="var(--green)" />}
             {atRiskAmt > 0 && <MetricBlock label="At risk (pending COs)" value={formatCurrency(atRiskAmt, currency)} color="var(--gold)" />}
             <MetricBlock label="Effective total" value={formatCurrency(effectiveContractValue, currency)} bold />
@@ -373,7 +389,7 @@ export default function ProjectDetail({
 
       {/* Tab content */}
       <div style={{ padding: '24px 40px', maxWidth: 1080 }}>
-        {tab === 'overview' && <OverviewTab project={project} milestones={milestones} amendments={amendments} permissions={permissions} currency={currency} router={router} />}
+        {tab === 'overview' && <OverviewTab project={project} milestones={milestones} amendments={amendments} permissions={permissions} currency={currency} router={router} baseValue={baseValue} />}
         {tab === 'sow'      && <SowTab project={project} sows={project.sow_documents || []} amendments={amendments} permissions={permissions} router={router} pendingApprovals={pendingApprovals} />}
         {tab === 'guardian' && <GuardianTab project={project} flags={project.guardian_flags || []} exceptions={project.exceptions_log || []} permissions={permissions} router={router} team={team} />}
         {tab === 'co'       && <CoTab project={project} cos={project.change_orders || []} permissions={permissions} currency={currency} pendingApprovals={pendingApprovals} team={team} />}
@@ -390,7 +406,7 @@ export default function ProjectDetail({
               .map((u: any) => ({ id: u.id, name: u.name, email: u.email, avatarUrl: u.avatar_url }))}
           />
         )}
-        {tab === 'activity' && <ActivityTab activity={activity} />}
+        {tab === 'activity' && <ActivityTab projectId={project.id} initial={activity} initialHasMore={activityHasMore} />}
         {tab === 'team'     && <TeamTab project={project} team={team} permissions={permissions} />}
       </div>
     </div>
@@ -458,7 +474,8 @@ function ScopeAdjustModal({ projectId, deliverable, field = 'deliverables', onCl
 }
 
 // ── OVERVIEW TAB ──────────────────────────────────────────────
-function OverviewTab({ project, milestones, amendments, permissions, currency, router }: any) {
+function OverviewTab({ project, milestones, amendments, permissions, currency, router, baseValue }: any) {
+  const isRetainer = project.type === 'retainer'
   // FIX: one-to-one relation (see /api/guardian/check for details) — no [0]
   const snapshot     = project.project_scope_snapshot
   const deliverables = snapshot?.deliverables || []
@@ -501,8 +518,17 @@ function OverviewTab({ project, milestones, amendments, permissions, currency, r
             </div>
             {permissions.viewFinancials && (
               <div>
-                <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 2 }}>Contract value</div>
-                <div style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{formatCurrency(project.contract_value || 0, currency)}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 2 }}>{isRetainer ? 'Monthly retainer rate' : 'Contract value'}</div>
+                <div style={{ fontFamily: 'IBM Plex Mono, monospace' }}>
+                  {formatCurrency(project.contract_value || 0, currency)}{isRetainer ? '/mo' : ''}
+                  {isRetainer && (
+                    <span style={{ fontFamily: 'inherit', fontSize: 11, color: 'var(--text-3)' }}>
+                      {project.retainer_duration_months > 0
+                        ? ` · ${formatCurrency(baseValue, currency)} over ${project.retainer_duration_months} months`
+                        : ` · open-ended (${formatCurrency(baseValue, currency)} contracted so far)`}
+                    </span>
+                  )}
+                </div>
               </div>
             )}
             <div>
@@ -2390,16 +2416,39 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
 }
 
 // ── ACTIVITY TAB ──────────────────────────────────────────────
-function ActivityTab({ activity }: { activity: any[] }) {
-  function eventColour(type: string) {
-    if (type.includes('signed') || type.includes('accepted') || type.includes('completed')) return 'var(--green)'
-    if (type.includes('declined') || type.includes('stalled') || type.includes('failed')) return 'var(--red)'
-    if (type.includes('flag') || type.includes('guardian')) return 'var(--amber)'
-    return 'var(--blue)'
+// Rows arrive pre-shaped from lib/utils/activity-format.ts (a sentence + optional detail line; no raw
+// audit metadata ever reaches the browser). Older history pages in through /api/projects/[id]/activity —
+// the tab used to stop dead at the newest 50 events.
+const TONE_COLOUR: Record<string, string> = {
+  green: 'var(--green)', red: 'var(--red)', amber: 'var(--amber)', blue: 'var(--blue)',
+}
+
+function ActivityTab({ projectId, initial, initialHasMore }: { projectId: string; initial: ShapedActivity[]; initialHasMore: boolean }) {
+  const [rows, setRows]       = useState<ShapedActivity[]>(initial)
+  const [hasMore, setHasMore] = useState(initialHasMore)
+  const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState('')
+
+  // A router.refresh() hands down a fresh first page; keep it authoritative.
+  useEffect(() => { setRows(initial); setHasMore(initialHasMore) }, [initial, initialHasMore])
+
+  async function loadMore() {
+    setLoading(true); setLoadError('')
+    try {
+      const res  = await fetch(`/api/projects/${projectId}/activity?offset=${rows.length}`)
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json.error || 'Could not load more activity')
+      const seen = new Set(rows.map(r => r.id))
+      setRows([...rows, ...(json.rows || []).filter((r: ShapedActivity) => !seen.has(r.id))])
+      setHasMore(!!json.hasMore)
+    } catch (err: unknown) {
+      setLoadError(err instanceof Error ? err.message : 'Could not load more activity')
+    } finally { setLoading(false) }
   }
+
   return (
     <div>
-      {activity.length === 0 ? (
+      {rows.length === 0 ? (
         <div className="surface">
           <div className="empty-state" style={{ padding: '32px 24px' }}>
             <i className="ti ti-clock empty-state-icon" />
@@ -2408,49 +2457,28 @@ function ActivityTab({ activity }: { activity: any[] }) {
         </div>
       ) : (
         <div className="surface surface-p">
-          {activity.map((a: any) => (
+          {rows.map(a => (
             <div key={a.id} className="feed-item">
-              <div className="feed-dot" style={{ background: eventColour(a.event_type), marginTop: 6 }} />
+              <div className="feed-dot" style={{ background: TONE_COLOUR[a.tone] || 'var(--blue)', marginTop: 6 }} />
               <div className="feed-body">
                 <div className="feed-text">
-                  <strong>{a.actor_name}</strong> · {a.event_type.replace(/\./g, ' ').replace(/_/g, ' ')}
-                  {a.entity_name && <> on <em>{a.entity_name}</em></>}
+                  {a.actor && <><strong>{a.actor}</strong>{' '}</>}{a.text}
                 </div>
-                {/* FIX (deep audit, section 13 — feature gap): scope
-                    adjustments were recorded in full detail but rendered
-                    identically to every other bare event line — no way to
-                    see what actually changed without querying the DB
-                    directly. See app/(app)/projects/[id]/page.tsx for the
-                    server-side extraction that makes this safe to show
-                    (no financial metadata is ever forwarded here). */}
-                {a.adjustment && (
-                  <div className="feed-text" style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>
-                    Changed {a.adjustment.field} &ldquo;{a.adjustment.oldValue}&rdquo; → &ldquo;{a.adjustment.newValue}&rdquo;
-                    {a.adjustment.reason && <> — {a.adjustment.reason}</>}
-                  </div>
-                )}
-                {/* FIX (re-audit, Projects & Dashboard section 7): this tab
-                    used to drop metadata unconditionally, so a status change
-                    or retainer renewal showed as a bare event line here even
-                    for a viewer with full permission to see the target
-                    status / renewal amount — while the Dashboard's global
-                    feed already showed both. See page.tsx's server-side
-                    extraction (the retainer amount only arrives at all when
-                    the viewer has VIEW_FINANCIALS). */}
-                {a.statusChange?.to && (
-                  <div className="feed-text" style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>
-                    Status changed to &ldquo;{a.statusChange.to}&rdquo;
-                  </div>
-                )}
-                {a.retainerRenewal?.newMonthlyAmount != null && (
-                  <div className="feed-text" style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>
-                    New monthly amount: {formatCurrency(a.retainerRenewal.newMonthlyAmount, a.retainerRenewal.currency || 'USD')}
-                  </div>
+                {a.detail && (
+                  <div className="feed-text" style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>{a.detail}</div>
                 )}
                 <div className="feed-time">{formatRelative(a.created_at)}</div>
               </div>
             </div>
           ))}
+          {(hasMore || loadError) && (
+            <div style={{ padding: '12px 0 4px', textAlign: 'center' }}>
+              {loadError && <div style={{ fontSize: 12.5, color: 'var(--red)', marginBottom: 8 }}>{loadError}</div>}
+              <button className="btn btn-ghost btn-sm" onClick={loadMore} disabled={loading}>
+                {loading ? 'Loading…' : 'Load older activity'}
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -2498,7 +2526,7 @@ function TeamTab({ project, team, permissions }: any) {
   const [removeError, setRemoveError] = useState('')
 
   // FIX (fix round, Projects & Dashboard section 7): a failed removal (e.g.
-  // a permission race, or the last-manager guard on the API) used to fail
+  // a permission race or a network error — the API has no last-member guard) used to fail
   // completely silently — the spinner just stopped with no indication
   // anything went wrong, unlike addMember which already surfaces its errors.
   async function removeMember(memberId: string, name: string) {

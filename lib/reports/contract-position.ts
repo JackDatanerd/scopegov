@@ -20,6 +20,10 @@
 // amendment must not also be added on top — historical renewal amendments still carry the full total.
 
 import { fetchAll } from '@/lib/utils/fetch-all'
+import { amendmentImpact, baseContractValue, loadRetainerMonthsBilled, type PositionProject } from '@/lib/utils/contract-value'
+
+export { baseContractValue }
+export type { PositionProject }
 
 export interface ContractPosition {
   contractedValue: number
@@ -28,29 +32,7 @@ export interface ContractPosition {
   atRiskValue: number
 }
 
-export interface PositionProject {
-  id: string
-  contract_value: number | null
-  type?: string | null
-  retainer_duration_months?: number | null
-}
-
 const CHUNK = 100 // ids per .in() — keeps the request URL well under proxy limits
-
-/**
- * `billedMonths` is only consulted for an OPEN-ENDED retainer (no term — see api/cron/retainer-milestones): its
- * "contract" is the months committed so far (one retainer_monthly milestone each), since there is no fixed total to
- * quote. Without it the position showed a single month's fee as the whole contract while invoiced-to-date kept
- * growing past it every month.
- */
-export function baseContractValue(p: PositionProject, billedMonths?: number): number {
-  const v = Number(p.contract_value) || 0
-  if (p.type === 'retainer') {
-    if ((p.retainer_duration_months || 0) > 0) return v * (p.retainer_duration_months as number)
-    return v * Math.max(1, billedMonths || 0)
-  }
-  return v
-}
 
 export async function computeContractPositions(
   service: any, projects: PositionProject[],
@@ -75,22 +57,11 @@ export async function computeContractPositions(
     ])
 
     // Open-ended retainers (no term): their contracted value is the months committed so far.
-    const openEnded = chunk.filter(id => { const pr = byId.get(id)!; return pr.type === 'retainer' && !((pr.retainer_duration_months || 0) > 0) })
-    const monthsBilled = new Map<string, number>()
-    if (openEnded.length) {
-      const rows = await fetchAll<any>('position retainer months', (from, to) =>
-        service.from('payment_milestones').select('id, project_id')
-          .in('project_id', openEnded).eq('type', 'retainer_monthly').order('id').range(from, to))
-      for (const r of rows) monthsBilled.set(r.project_id, (monthsBilled.get(r.project_id) || 0) + 1)
-    }
+    const monthsBilled = await loadRetainerMonthsBilled(service, chunk.map(id => byId.get(id)!))
 
     for (const id of chunk) {
       const project = byId.get(id)!
-      const isRetainer = project.type === 'retainer'
-      const amendmentTotal = amendments
-        .filter((a: any) => a.project_id === id)
-        .filter((a: any) => !(isRetainer && a.change_orders?.is_retainer_renewal))
-        .reduce((s: number, a: any) => s + (Number(a.financial_impact) || 0), 0)
+      const amendmentTotal = amendmentImpact(amendments.filter((a: any) => a.project_id === id), project.type)
       const billed = invoices.filter((inv: any) => inv.project_id === id && !['draft', 'void'].includes(inv.status))
       out.set(id, {
         contractedValue: baseContractValue(project, monthsBilled.get(id)) + amendmentTotal,

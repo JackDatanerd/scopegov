@@ -439,9 +439,21 @@ function NewProjectPageInner() {
 
             <div className="f2">
               <div className="fgrp">
-                <label className="flbl">Contract value</label>
-                <input type="number" className="finp" value={contractValue} min={0} step="0.01" placeholder="5000"
+                {/* For a retainer this number is the MONTHLY rate — the retainer billing cron invoices it every
+                    month and the project's total is rate × months. It was labelled plain "Contract value", so
+                    entering the whole engagement's total invoiced that total every month. */}
+                <label className="flbl">{projectType === 'retainer' ? 'Monthly retainer amount' : 'Contract value'}</label>
+                <input type="number" className="finp" value={contractValue} min={0} step="0.01" placeholder={projectType === 'retainer' ? '2500' : '5000'}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) => setContractValue(e.target.value)} />
+                {projectType === 'retainer' && (
+                  <div className="fhint" style={{ marginTop: 4 }}>
+                    Billed every month.{!retainerMonths
+                      ? ' Open-ended: it keeps billing until you complete or archive the project.'
+                      : Number(contractValue) > 0 && Number(retainerMonths) > 0
+                        ? ` Over ${retainerMonths} months that is ${currency} ${(Number(contractValue) * Number(retainerMonths)).toLocaleString('en-US', { maximumFractionDigits: 2 })}.`
+                        : ' Total value = monthly amount × months.'}
+                  </div>
+                )}
               </div>
               <div className="fgrp">
                 <label className="flbl">Currency</label>
@@ -600,7 +612,7 @@ function NewProjectPageInner() {
                 <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Client</div><div>{clientName || '—'}</div></div>
                 <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Project</div><div>{projectName || '—'}</div></div>
                 <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Type</div><div>{PROJECT_TYPES.find(pt => pt.key === projectType)?.label || projectType}</div></div>
-                <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Contract value</div><div>{contractValue ? `${currency} ${contractValue}` : '—'}</div></div>
+                <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>{projectType === 'retainer' ? 'Monthly retainer amount' : 'Contract value'}</div><div>{contractValue ? `${currency} ${contractValue}${projectType === 'retainer' ? '/mo' : ''}` : '—'}</div></div>
                 {/* FIX (re-audit, Projects & Dashboard section 7): this review
                     step — the explicit "last check before Guardian generates
                     the SOW" checkpoint — never showed start date, internal

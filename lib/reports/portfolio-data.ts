@@ -20,7 +20,7 @@
 
 import { PERIOD_LABELS as ALL_PERIOD_LABELS, type PeriodKey } from './period'
 import {
-  computeScopeHealth, IN_PROGRESS_STATUSES, SEVERITY_RANK, type CurrencyRollup,
+  computeScopeHealth, SEVERITY_RANK, SEVERITY_MULTIPLIER, OPEN_FLAG_RISK_RATE, type CurrencyRollup,
 } from './scope-health'
 import { fetchPaged } from '@/lib/utils/paginate'
 
@@ -68,41 +68,51 @@ export interface PortfolioData {
   }>
   /** Live figures vs the first snapshot inside the period (null when there is no comparable snapshot). */
   trend: { openFlagsDelta: number; atRiskDelta: number | null } | null
-  /** Exact number of open flags (the list below is capped). */
+  /** Exact number of open flags (the list below is capped per severity). */
   openFlagsTotal: number
+  /**
+   * Up to `flagsPerSeverity` flags of EACH severity, high → medium → low then newest first. It is per severity
+   * (not one overall cap) so filtering the list to "low" can never come up empty just because the newest 100
+   * flags happened to be higher severity — the counts in `current.openFlagsBySeverity` say how many exist.
+   */
   openFlags: Array<{
     id: string; severity: string; description: string; sowReference: string
     createdAt: string; projectId: string; projectName: string; clientName: string | null
     contractValue: number | null; currency: string
   }>
-  stalledSows: Array<{ projectId: string; projectName: string; clientName: string | null; since: string }>
-  stalledCos: Array<{
-    id: string; title: string; total: number | null; currency: string
-    projectId: string; projectName: string; since: string
+  /**
+   * Every document that needs the agency's action, oldest first: stalled SOWs and COs (the Stalled tile) plus
+   * declined / expired / changes-requested SOWs and declined / expired / countered COs — the same states the
+   * Dashboard's Needs-attention register already treats as action items.
+   */
+  stuckDocs: Array<{
+    kind: 'SOW' | 'CO'; reason: string; stalled: boolean; title: string; total: number | null; currency: string
+    projectId: string; projectName: string; clientName: string | null; since: string
   }>
+  /** "Projects by risk": in-progress projects with at least one signal, biggest exposure first. */
+  projectRisk: Array<{
+    projectId: string; projectName: string; clientName: string | null; status: string; currency: string
+    effectiveValue: number | null
+    openFlags: number; highFlags: number; borderlineFlags: number
+    flagRisk: number | null; exceptionsCount: number; exceptionsRisk: number | null; atRisk: number | null
+    stuckDocs: number
+  }>
+  /** Newest exceptions (all-time), capped; `exceptionsTotal` is the exact count. */
+  exceptions: Array<{
+    id: string; projectId: string; projectName: string; clientName: string | null
+    deliverable: string; grantedWhat: string; reason: string
+    estimatedValue: number | null; currency: string; createdAt: string
+  }>
+  exceptionsTotal: number
+  /** The constants behind "Contract value at risk", so the on-page explanation can never drift from the maths. */
+  riskModel: { openFlagRate: number; severityMultipliers: { high: number; medium: number; low: number } }
   /** True when at least one daily snapshot exists in the period (chart has history). */
   hasSnapshots: boolean
 }
 
 const PERIOD_DAYS: Record<PeriodKey, number | null> = { '30d': 30, '90d': 90, '6m': 180, '12m': 365, 'all': null }
-const OPEN_FLAGS_LIST_LIMIT = 100
-// FIX (re-audit, Portfolio section 8): this used to be a bare `.limit(500)`
-// with no pagination and no truncation check at all — the exact failure
-// mode the sibling scope_health_snapshots query below (and every query in
-// computeScopeHealth's own family) is deliberately built NOT to have. A
-// workspace with more than 500 stalled change orders across its in-progress
-// projects would silently get a cut-down list here with zero signal — no
-// error, no "N of total" (unlike the open-flags list just below, which
-// exposes `openFlagsTotal` precisely so a cap is never mistaken for a
-// complete count) — while computeScopeHealth's OWN independently-paginated
-// `stalledCoCount` tile could disagree with the length of this list. That
-// is the identical "5 open flags over a table of 2" inconsistency this
-// whole file was rewritten to eliminate (see the header comment), just
-// reintroduced for change orders instead of flags. Paged like history
-// below, with the same "throw rather than silently truncate" contract —
-// stalled COs are rarer than daily snapshot rows, so 20,000 is far more
-// headroom than this will ever need in practice, not a realistic ceiling.
-const STALLED_CO_MAX_ROWS = 20000
+const DEFAULT_FLAGS_PER_SEVERITY = 100
+const EXCEPTIONS_LIST_LIMIT = 25
 // One row per workspace per day (daily rollup cron) — 20,000 is ~54 years of
 // history, effectively unbounded for any real workspace, but still a real
 // cap with a real error on the other side of it (see the fetchPaged call
@@ -115,13 +125,16 @@ export async function getPortfolioData(
   period: PeriodKey,
   canViewFinancials: boolean,
   canViewClients: boolean = true,
+  opts: { flagsPerSeverity?: number; exceptionsLimit?: number } = {},
 ): Promise<PortfolioData> {
+  const flagsPerSeverity = opts.flagsPerSeverity ?? DEFAULT_FLAGS_PER_SEVERITY
+  const exceptionsLimit = opts.exceptionsLimit ?? EXCEPTIONS_LIST_LIMIT
   const days = PERIOD_DAYS[period]
   const since = days === null ? '2000-01-01' : new Date(Date.now() - days * 86400000).toISOString().split('T')[0]
   const now = new Date()
   const today = now.toISOString().split('T')[0]
 
-  const [health, snapPage, stalledCoPage] = await Promise.all([
+  const [health, snapPage] = await Promise.all([
     computeScopeHealth(service, workspaceId, { withDetail: true }),
     // BUG fixed (fix round, Portfolio section 8): this was a plain
     // `.select()` with no `.range()`/`.limit()` at all — unlike every other
@@ -143,19 +156,9 @@ export async function getPortfolioData(
       .gte('snapshot_date', since)
       .order('snapshot_date', { ascending: true })
       .range(from, to), { maxRows: HISTORY_MAX_ROWS }),
-    fetchPaged<any>((from, to) => service.from('change_orders')
-      .select('id, title, total, project_id, updated_at, projects!inner(id, name, currency, status, deleted_at)', { count: 'exact' })
-      .eq('workspace_id', workspaceId).eq('status', 'stalled')
-      .is('projects.deleted_at', null)
-      .in('projects.status', [...IN_PROGRESS_STATUSES])
-      .order('updated_at', { ascending: true })
-      .order('id', { ascending: true })
-      .range(from, to), { maxRows: STALLED_CO_MAX_ROWS }),
   ])
   if (snapPage.truncated)
     throw new Error(`Portfolio history truncated: scope_health_snapshots exceeded ${HISTORY_MAX_ROWS} rows for this workspace/period`)
-  if (stalledCoPage.truncated)
-    throw new Error(`Portfolio stalled change orders truncated: exceeded ${STALLED_CO_MAX_ROWS} rows for this workspace`)
 
   const snapshots: any[] = snapPage.rows
   const earliest = snapshots.length ? snapshots[0] : null
@@ -163,12 +166,15 @@ export async function getPortfolioData(
   const money = (n: number) => (canViewFinancials ? n : null)
   const projectById = new Map(health.projects.map(p => [p.id, p]))
 
-  // Severity first (a cap must never hide a high behind newer lows), then newest.
-  const sortedFlags = [...health.openFlags].sort((a, b) =>
-    (SEVERITY_RANK[a.severity] ?? 3) - (SEVERITY_RANK[b.severity] ?? 3)
-    || b.createdAt.localeCompare(a.createdAt)
-    || b.id.localeCompare(a.id),
-  )
+  // Severity first, then newest — capped PER SEVERITY (see the type comment): one overall cap hid every low
+  // flag behind newer higher ones, so the severity filter reported "no low flags — scope under control" while
+  // hundreds existed.
+  const flagsBySeverity: Record<string, typeof health.openFlags> = { high: [], medium: [], low: [] }
+  for (const f of health.openFlags) (flagsBySeverity[f.severity] || flagsBySeverity.low).push(f)
+  const listedFlags = ['high', 'medium', 'low'].flatMap(sev =>
+    flagsBySeverity[sev]
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
+      .slice(0, flagsPerSeverity))
 
   // History = persisted snapshots + today's live point, so the chart always
   // ends on what the tiles say even before tonight's cron has run.
@@ -252,7 +258,7 @@ export async function getPortfolioData(
     history,
     trend,
     openFlagsTotal: health.openFlagsCount,
-    openFlags: sortedFlags.slice(0, OPEN_FLAGS_LIST_LIMIT).map(f => {
+    openFlags: listedFlags.map(f => {
       const p = projectById.get(f.projectId)
       return {
         id: f.id,
@@ -267,18 +273,46 @@ export async function getPortfolioData(
         currency: p?.currency || 'USD',
       }
     }),
-    stalledSows: health.projects
-      .filter(p => p.status === 'Stalled' && p.stallReason === 'sow_unsigned')
-      .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
-      .map(p => ({
-        projectId: p.id, projectName: p.name,
-        clientName: canViewClients ? p.clientName : null, since: p.updatedAt,
-      })),
-    stalledCos: (stalledCoPage.rows || []).map((c: any) => ({
-      id: c.id, title: c.title, total: canViewFinancials ? c.total : null,
-      currency: c.projects?.currency || 'USD',
-      projectId: c.project_id, projectName: c.projects?.name || 'Unknown project', since: c.updated_at,
-    })),
+    stuckDocs: health.stuckDocs.map(d => {
+      const p = projectById.get(d.projectId)
+      return {
+        kind: d.kind, reason: d.reason, stalled: d.stalled, title: d.title,
+        total: canViewFinancials ? d.total : null,
+        currency: p?.currency || 'USD',
+        projectId: d.projectId, projectName: p?.name || 'Unknown project',
+        clientName: canViewClients ? (p?.clientName ?? null) : null,
+        since: d.since,
+      }
+    }),
+    projectRisk: health.projectRisk.map(r => {
+      const p = projectById.get(r.projectId)
+      return {
+        projectId: r.projectId, projectName: p?.name || 'Unknown project',
+        clientName: canViewClients ? (p?.clientName ?? null) : null,
+        status: p?.status || '', currency: p?.currency || 'USD',
+        effectiveValue: canViewFinancials && p ? p.effectiveValue : null,
+        openFlags: r.openFlags, highFlags: r.highFlags, borderlineFlags: r.borderlineFlags,
+        flagRisk: money(r.flagRisk), exceptionsCount: r.exceptionsCount,
+        exceptionsRisk: money(r.exceptionsRisk), atRisk: money(r.atRisk),
+        stuckDocs: r.stuckDocs,
+      }
+    }),
+    exceptions: health.exceptions.slice(0, exceptionsLimit).map(e => {
+      const p = projectById.get(e.projectId)
+      return {
+        id: e.id, projectId: e.projectId, projectName: p?.name || 'Unknown project',
+        clientName: canViewClients ? (p?.clientName ?? null) : null,
+        deliverable: e.deliverable, grantedWhat: e.grantedWhat, reason: e.reason,
+        estimatedValue: money(e.estimatedValue), currency: p?.currency || 'USD', createdAt: e.createdAt,
+      }
+    }),
+    exceptionsTotal: health.exceptionsCount,
+    riskModel: {
+      openFlagRate: OPEN_FLAG_RISK_RATE,
+      severityMultipliers: {
+        high: SEVERITY_MULTIPLIER.high, medium: SEVERITY_MULTIPLIER.medium, low: SEVERITY_MULTIPLIER.low,
+      },
+    },
     hasSnapshots: snapshots.length > 0,
   }
 }

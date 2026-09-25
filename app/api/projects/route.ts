@@ -1,9 +1,8 @@
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
-import { PLAN_LIMITS } from '@/lib/utils/format'
+import { wouldExceedLimit, isOverLimit, projectLimitMessage } from '@/lib/utils/project-limit'
 import { insertAuditRow } from '@/lib/utils/audit'
-import { LIMIT_COUNTED_STATUSES } from '@/lib/utils/project-status'
 import {
   parseProjectName, parseOptionalText, parseProjectType, parseContractValue,
   parseCurrencyCode, parseStartDate, parseRetainerMonths,
@@ -62,24 +61,10 @@ export async function POST(request: NextRequest) {
 
     const service = createServiceClient()
 
-    // Plan project limit. Pricing advertises "Active projects", so only
-    // projects that are still live count (LIMIT_COUNTED_STATUSES). Complete and
-    // Archived projects used to count too — and can never be deleted — so a
-    // Solo workspace was locked out permanently after its second delivery,
-    // and the downgrade error's advice ("archive or delete projects") could
-    // not actually get anyone under the limit.
-    const projectLimit = PLAN_LIMITS[session.planTier]?.projects
-    if (projectLimit != null) {
-      const { count: existingCount, error: countErr } = await (service as any)
-        .from('projects').select('id', { count: 'exact', head: true })
-        .eq('workspace_id', session.workspaceId).is('deleted_at', null)
-        .in('status', [...LIMIT_COUNTED_STATUSES])
-      if (countErr) throw new Error(`plan limit check failed: ${countErr.message}`)
-      if ((existingCount || 0) >= projectLimit) {
-        return NextResponse.json({
-          error: `Your ${PLAN_LIMITS[session.planTier].name} plan is limited to ${projectLimit} active project${projectLimit === 1 ? '' : 's'} (completed and archived projects don't count). Complete or archive one, or upgrade to create more.`,
-        }, { status: 403 })
-      }
+    // Plan project limit — one shared implementation (lib/utils/project-limit.ts), also enforced on
+    // reopen. Re-checked after the insert below to close the count-then-insert race.
+    if (await wouldExceedLimit(service, session.workspaceId, session.planTier)) {
+      return NextResponse.json({ error: projectLimitMessage(session.planTier, 'create') }, { status: 403 })
     }
 
     let resolvedClientId = clientId
@@ -196,6 +181,13 @@ export async function POST(request: NextRequest) {
       .single()
 
     if (projErr) throw new Error(projErr.message)
+
+    // Lost the count-then-insert race (a concurrent create took the last slot)? Undo — the project
+    // has no children yet, same as the member-insert rollback below.
+    if (await isOverLimit(service, session.workspaceId, session.planTier)) {
+      await (service as any).from('projects').delete().eq('id', project.id)
+      return NextResponse.json({ error: projectLimitMessage(session.planTier, 'create') }, { status: 403 })
+    }
 
     // ── Add creator as project member ─────────────────────────
     // The creator must be a member or a VIEW_OWN_PROJECTS-only user can't open

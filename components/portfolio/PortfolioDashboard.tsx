@@ -19,8 +19,22 @@ interface OpenFlag {
   createdAt: string; projectId: string; projectName: string; clientName: string | null
   contractValue: number | null; currency: string
 }
-interface StalledSow { projectId: string; projectName: string; clientName: string | null; since: string }
-interface StalledCo { id: string; title: string; total: number | null; currency: string; projectId: string; projectName: string; since: string }
+interface StuckDoc {
+  kind: 'SOW' | 'CO'; reason: string; stalled: boolean; title: string; total: number | null; currency: string
+  projectId: string; projectName: string; clientName: string | null; since: string
+}
+interface RiskRow {
+  projectId: string; projectName: string; clientName: string | null; status: string; currency: string
+  effectiveValue: number | null
+  openFlags: number; highFlags: number; borderlineFlags: number
+  flagRisk: number | null; exceptionsCount: number; exceptionsRisk: number | null; atRisk: number | null
+  stuckDocs: number
+}
+interface ExceptionItem {
+  id: string; projectId: string; projectName: string; clientName: string | null
+  deliverable: string; grantedWhat: string; reason: string
+  estimatedValue: number | null; currency: string; createdAt: string
+}
 
 interface CurrencyRow {
   currency: string; activeProjectCount: number; openFlagsCount: number
@@ -51,10 +65,16 @@ interface PortfolioData {
   trend: { openFlagsDelta: number; atRiskDelta: number | null } | null
   openFlagsTotal?: number
   openFlags: OpenFlag[]
-  stalledSows: StalledSow[]
-  stalledCos: StalledCo[]
+  stuckDocs: StuckDoc[]
+  projectRisk: RiskRow[]
+  exceptions: ExceptionItem[]
+  exceptionsTotal: number
+  riskModel: { openFlagRate: number; severityMultipliers: { high: number; medium: number; low: number } }
   hasSnapshots: boolean
 }
+
+// The flags table shows at most this many rows (the API returns up to this many PER severity).
+const FLAG_LIST_LIMIT = 100
 
 const PERIODS: { key: Period; label: string }[] = [
   { key: '30d', label: 'Last 30 days' },
@@ -115,10 +135,17 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName, canO
     return () => { cancelled = true }
   }, [period, reloadKey])
 
+  // The API returns up to 100 flags of EACH severity, so filtering to "low" is never starved by newer
+  // higher-severity flags. `flagsTotal` is the exact count for the chosen filter, so the header can say
+  // "showing 100 of 240" instead of implying the list is everything.
   const filteredFlags = useMemo(() => {
     if (!data) return []
-    return flagFilter === 'all' ? data.openFlags : data.openFlags.filter(f => f.severity === flagFilter)
+    const list = flagFilter === 'all' ? data.openFlags : data.openFlags.filter(f => f.severity === flagFilter)
+    return list.slice(0, FLAG_LIST_LIMIT)
   }, [data, flagFilter])
+  const flagsTotal = !data ? 0
+    : flagFilter === 'all' ? (data.openFlagsTotal ?? data.openFlags.length)
+    : data.current.openFlagsBySeverity[flagFilter]
 
   async function handleExport(format: 'csv' | 'pdf') {
     setExporting(format); setExportError('')
@@ -186,6 +213,7 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName, canO
             Live as of {formatRelative(data.current.asOf)}. The chart and “vs period start” figures use daily snapshots.
             {data.current.borderlineFlagsCount > 0 && ` ${data.current.borderlineFlagsCount} Guardian flag${data.current.borderlineFlagsCount === 1 ? '' : 's'} awaiting human review ${data.current.borderlineFlagsCount === 1 ? 'is' : 'are'} not counted as open.`}
           </p>
+          {canViewFinancials && <RiskExplainer model={data.riskModel} />}
           {data.current.byCurrency.length > 1 && (
             <div className="surface surface-p" style={{ marginBottom: 24 }}>
               <div className="sec-hd" style={{ marginBottom: 10 }}>
@@ -260,18 +288,23 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName, canO
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24, alignItems: 'start', marginBottom: 24 }}>
-            <StalledPanel sows={data.stalledSows} cos={data.stalledCos} canViewFinancials={canViewFinancials} canOpenProjects={canOpenProjects} />
+            <StalledPanel docs={data.stuckDocs} canViewFinancials={canViewFinancials} canOpenProjects={canOpenProjects} />
             <ExceptionsPanel
               count={data.current.exceptionsCount}
               value={data.current.exceptionsValueTotal}
+              items={data.exceptions}
+              total={data.exceptionsTotal}
               canViewFinancials={canViewFinancials}
+              canOpenProjects={canOpenProjects}
               currency={data.currency}
             />
           </div>
 
+          <ProjectsByRisk rows={data.projectRisk} canViewFinancials={canViewFinancials} canOpenProjects={canOpenProjects} />
+
           <div>
             <div className="sec-hd">
-              <div className="sec-title">Open scope flags ({data.openFlags.length}{data.openFlagsTotal && data.openFlagsTotal > data.openFlags.length ? ` of ${data.openFlagsTotal} · highest severity first` : ''})</div>
+              <div className="sec-title">Open scope flags ({filteredFlags.length}{flagsTotal > filteredFlags.length ? ` of ${flagsTotal} · highest severity first` : ''})</div>
               <div style={{ display: 'flex', gap: 4 }}>
                 {(['all', 'high', 'medium', 'low'] as const).map(s => (
                   <button key={s}
@@ -287,7 +320,11 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName, canO
                 <div className="empty-state" style={{ padding: '32px 24px' }}>
                   <i className="ti ti-shield-check empty-state-icon" />
                   <p className="empty-state-title">No open flags{flagFilter !== 'all' ? ` at ${flagFilter} severity` : ''}</p>
-                  <p className="empty-state-sub">Scope is under control across the portfolio right now.</p>
+                  <p className="empty-state-sub">
+                    {flagsTotal > 0
+                      ? `${flagsTotal} exist but could not be listed — reload to try again.`
+                      : 'Scope is under control across the portfolio right now.'}
+                  </p>
                 </div>
               </div>
             ) : (
@@ -389,7 +426,10 @@ function MetricStrip({ data, canViewFinancials }: { data: PortfolioData; canView
         <div className={`mc-val${(c.stalledSowCount + c.stalledCoCount) > 0 ? ' red' : ''}`}>
           {c.stalledSowCount + c.stalledCoCount}
         </div>
-        <div className="mc-sub">{c.stalledSowCount} SOW · {c.stalledCoCount} CO</div>
+        <div className="mc-sub">
+          {c.stalledSowCount} SOW · {c.stalledCoCount} CO
+          {(() => { const other = data.stuckDocs.filter(d => !d.stalled).length; return other > 0 ? ` · +${other} declined/expired` : '' })()}
+        </div>
       </div>
     </div>
   )
@@ -418,7 +458,7 @@ function sampleForChart<T>(rows: T[], max: number): T[] {
 
 function TrendChart({ points: allPoints, mode, currency }: { points: HistoryPoint[]; mode: 'risk' | 'flags'; currency: string }) {
   const [hover, setHover] = useState<number | null>(null)
-  const W = 640, H = 180, PAD = 8
+  const W = 640, H = 180, PAD = 8, PADL = 46 // left gutter for the y-axis labels
 
   // FIX (fix round, Portfolio section 8): in risk mode, a point whose own
   // currency didn't match today's dominant one arrives with
@@ -442,9 +482,13 @@ function TrendChart({ points: allPoints, mode, currency }: { points: HistoryPoin
     </div>
   }
 
-  const xFor = (i: number) => PAD + (i / (points.length - 1)) * (W - PAD * 2)
+  const xFor = (i: number) => PADL + (i / (points.length - 1)) * (W - PADL - PAD)
   const yFor = (v: number) => H - PAD - ((v - min) / range) * (H - PAD * 2)
 
+  // Three gridlines (top / middle / bottom) with their values — the chart had no axis at all, so a reader
+  // could only learn the scale by hovering.
+  const ticks = [max, min + range / 2, min]
+  const fmtTick = (v: number) => mode === 'risk' ? formatCurrency(v, currency, true) : String(Math.round(v))
   const linePath = values.map((v, i) => `${i === 0 ? 'M' : 'L'} ${xFor(i)} ${yFor(v)}`).join(' ')
   const areaPath = `${linePath} L ${xFor(values.length - 1)} ${H - PAD} L ${xFor(0)} ${H - PAD} Z`
   const colour = mode === 'risk' ? 'var(--red)' : 'var(--amber)'
@@ -459,6 +503,12 @@ function TrendChart({ points: allPoints, mode, currency }: { points: HistoryPoin
             <stop offset="100%" stopColor={colour} stopOpacity="0" />
           </linearGradient>
         </defs>
+        {ticks.map((t, i) => (
+          <g key={i}>
+            <line x1={PADL} x2={W - PAD} y1={yFor(t)} y2={yFor(t)} stroke="var(--border)" strokeWidth="1" strokeDasharray={i === 2 ? undefined : '3 3'} opacity={0.7} />
+            <text x={PADL - 6} y={yFor(t) + 3} textAnchor="end" fontSize="10" fill="var(--text-4)">{fmtTick(t)}</text>
+          </g>
+        ))}
         <path d={areaPath} fill="url(#portfolio-trend-fill)" />
         <path d={linePath} fill="none" stroke={colour} strokeWidth="1.75" />
         {values.map((v, i) => (
@@ -472,7 +522,7 @@ function TrendChart({ points: allPoints, mode, currency }: { points: HistoryPoin
           </>
         )}
       </svg>
-      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10.5, color: 'var(--text-4)', marginTop: 2 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10.5, color: 'var(--text-4)', marginTop: 2, paddingLeft: `${(PADL / W) * 100}%` }}>
         <span>{formatDate(points[0].date)}</span>
         <span>{formatDate(points[points.length - 1].date)}</span>
       </div>
@@ -519,15 +569,11 @@ function SeverityBreakdown({ breakdown }: { breakdown: { high: number; medium: n
   )
 }
 
-// ── STALLED DOCUMENTS ────────────────────────────────────────────
-// FIX (deep audit, section 8 — feature gap): this used to hard-truncate
-// to the first 8 items with no way to see the rest — a portfolio with
-// more than 8 stalled documents combined lost the remainder with no
-// count, no "view all", nothing. Neither the API route nor the query
-// behind it actually caps the list (only this component's own .slice()
-// did), so the data was already there; only the affordance to see past
-// it was missing. Show 8 by default and let the person expand to the
-// full list, same shape as the "show all" pattern elsewhere in the UI.
+// ── DOCUMENTS NEEDING ACTION ─────────────────────────────────────
+// Was "Stalled documents": only SOWs/COs that had gone quiet. A SOW the client DECLINED, a link that EXPIRED,
+// a counter-offer waiting on the agency — the Dashboard's Needs-attention register already lists all of those,
+// and this portfolio view (the one a principal reads to see where the agency is stuck) left them out. Same
+// states, same "current SOW only" rule. The first 8 show by default; the rest expand.
 const STALLED_PREVIEW_COUNT = 8
 
 // Deep-links into the SOW / CO tab of the project (not just its overview) and
@@ -537,50 +583,48 @@ function StalledRow({ href, children }: { href: string | null; children: React.R
   return href ? <Link href={href} style={style}>{children}</Link> : <div style={style}>{children}</div>
 }
 
-function StalledPanel({ sows, cos, canViewFinancials, canOpenProjects }: { sows: StalledSow[]; cos: StalledCo[]; canViewFinancials: boolean; canOpenProjects: boolean }) {
-  const [expanded, setExpanded] = useState(false)
-  const items = [
-    ...sows.map(s => ({ kind: 'SOW' as const, id: s.projectId, title: s.projectName, sub: s.clientName, since: s.since, projectId: s.projectId, amount: null as number | null, currency: null as string | null })),
-    // FIX (deep audit, section 8): each CO now carries its own project's
-    // currency instead of borrowing the single workspace-wide dominant
-    // one — see the fix note on StalledCo / the API route.
-    ...cos.map(c => ({ kind: 'CO' as const, id: c.id, title: c.title, sub: c.projectName, since: c.since, projectId: c.projectId, amount: c.total, currency: c.currency })),
-  ].sort((a, b) => new Date(a.since).getTime() - new Date(b.since).getTime())
+const REASON_PILL: Record<string, string> = {
+  'SOW unsigned': 'red', Stalled: 'red', Declined: 'red', Expired: 'red', 'Changes requested': 'amber', 'Counter-offer': 'amber',
+}
 
-  const visible = expanded ? items : items.slice(0, STALLED_PREVIEW_COUNT)
-  const hiddenCount = items.length - visible.length
+function StalledPanel({ docs, canViewFinancials, canOpenProjects }: { docs: StuckDoc[]; canViewFinancials: boolean; canOpenProjects: boolean }) {
+  const [expanded, setExpanded] = useState(false)
+  const visible = expanded ? docs : docs.slice(0, STALLED_PREVIEW_COUNT)
+  const hiddenCount = docs.length - visible.length
 
   return (
     <div className="surface surface-p">
       <div className="sec-hd" style={{ marginBottom: 14 }}>
-        <div className="sec-title">Stalled documents ({items.length})</div>
+        <div className="sec-title">Documents needing action ({docs.length})</div>
       </div>
-      {items.length === 0 ? (
-        <p style={{ fontSize: 12.5, color: 'var(--text-3)' }}>Nothing stalled across the portfolio.</p>
+      {docs.length === 0 ? (
+        <p style={{ fontSize: 12.5, color: 'var(--text-3)' }}>Nothing stalled, declined or expired across the portfolio.</p>
       ) : (
         <>
-          {visible.map(item => (
-            <StalledRow key={`${item.kind}-${item.id}`}
+          {visible.map((item, i) => (
+            <StalledRow key={`${item.kind}-${item.projectId}-${item.title}-${i}`}
               href={canOpenProjects ? `/projects/${item.projectId}?tab=${item.kind === 'SOW' ? 'sow' : 'co'}` : null}>
               <div style={{ minWidth: 0 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span className="pill pill-red pill-sm">{item.kind}</span>
-                  <span style={{ fontSize: 13, color: 'var(--text-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.title}</span>
+                  <span className={`pill pill-${REASON_PILL[item.reason] || 'slate'} pill-sm`}>{item.kind} · {item.reason}</span>
+                  <span style={{ fontSize: 13, color: 'var(--text-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {item.kind === 'CO' ? item.title : item.projectName}
+                  </span>
                 </div>
-                {item.sub && <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>{item.sub}</div>}
+                <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>
+                  {item.kind === 'CO' ? item.projectName : ''}{item.clientName ? `${item.kind === 'CO' ? ' · ' : ''}${item.clientName}` : ''}
+                </div>
               </div>
               <div style={{ textAlign: 'right', flexShrink: 0, marginLeft: 12 }}>
-                {/* FIX (fix round, Portfolio section 8): same $0-hidden-as-truthy-check
-                    issue as the open-flags table above — a net-zero change order would
-                    silently show no amount here while the CSV listed it as 0. */}
-                {canViewFinancials && item.amount != null ? (
-                  <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{formatCurrency(item.amount, item.currency || 'USD')}</div>
+                {/* A genuine $0 total shows as $0 (an explicit null check, not a truthy one). */}
+                {canViewFinancials && item.total != null ? (
+                  <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{formatCurrency(item.total, item.currency || 'USD')}</div>
                 ) : null}
                 <div style={{ fontSize: 10.5, color: 'var(--text-4)' }}>since {formatRelative(item.since)}</div>
               </div>
             </StalledRow>
           ))}
-          {(hiddenCount > 0 || expanded) && items.length > STALLED_PREVIEW_COUNT && (
+          {(hiddenCount > 0 || expanded) && docs.length > STALLED_PREVIEW_COUNT && (
             <button
               className="btn btn-ghost btn-xs"
               style={{ marginTop: 10 }}
@@ -596,7 +640,16 @@ function StalledPanel({ sows, cos, canViewFinancials, canOpenProjects }: { sows:
 }
 
 // ── EXCEPTIONS PANEL ─────────────────────────────────────────────
-function ExceptionsPanel({ count, value, canViewFinancials, currency }: { count: number; value: number | null; canViewFinancials: boolean; currency: string }) {
+// Was a count, a dollar figure and a link to a page that (a) needs VIEW_ALL_PROJECTS, which a portfolio-only
+// viewer doesn't have — a dead end for exactly the people this page is for — and (b) is a top-8 table, not a
+// log. The newest exceptions are listed here now; the link is only shown to people who can use it.
+const EXC_PREVIEW = 5
+function ExceptionsPanel({ count, value, items, total, canViewFinancials, canOpenProjects, currency }: {
+  count: number; value: number | null; items: ExceptionItem[]; total: number
+  canViewFinancials: boolean; canOpenProjects: boolean; currency: string
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const visible = expanded ? items : items.slice(0, EXC_PREVIEW)
   return (
     <div className="surface surface-p">
       <div className="sec-hd" style={{ marginBottom: 14 }}>
@@ -612,9 +665,175 @@ function ExceptionsPanel({ count, value, canViewFinancials, currency }: { count:
           outside a change order — worth reviewing if this trends upward.
         </p>
       )}
-      <Link href="/reports?mode=scope" style={{ fontSize: 11.5, color: 'var(--green)', display: 'inline-block', marginTop: 4 }}>
-        View exception log →
-      </Link>
+      {visible.length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          {visible.map(e => (
+            <StalledRow key={e.id} href={canOpenProjects ? `/projects/${e.projectId}?tab=guardian` : null}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 13, color: 'var(--text-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.grantedWhat}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>{e.projectName}{e.clientName ? ` · ${e.clientName}` : ''}</div>
+              </div>
+              <div style={{ textAlign: 'right', flexShrink: 0, marginLeft: 12 }}>
+                {canViewFinancials && e.estimatedValue !== null && (
+                  <div style={{ fontSize: 12, color: 'var(--text-2)' }}>{formatCurrency(e.estimatedValue, e.currency)}</div>
+                )}
+                <div style={{ fontSize: 10.5, color: 'var(--text-4)' }}>{formatRelative(e.createdAt)}</div>
+              </div>
+            </StalledRow>
+          ))}
+          {items.length > EXC_PREVIEW && (
+            <button className="btn btn-ghost btn-xs" style={{ marginTop: 10 }} onClick={() => setExpanded(v => !v)}>
+              {expanded ? 'Show less' : `Show ${items.length - EXC_PREVIEW} more`}
+            </button>
+          )}
+          {total > items.length && (
+            <p style={{ fontSize: 11, color: 'var(--text-4)', marginTop: 8 }}>Newest {items.length} of {total} — the CSV export lists all of them.</p>
+          )}
+        </div>
+      )}
+      {canOpenProjects && (
+        <Link href="/reports?mode=scope" style={{ fontSize: 11.5, color: 'var(--green)', display: 'inline-block', marginTop: 8 }}>
+          Open scope reports →
+        </Link>
+      )}
+    </div>
+  )
+}
+
+// ── HOW THE RISK NUMBER IS CALCULATED ────────────────────────────
+// The tile said "Severity-weighted estimate" and nothing else. The constants come from the API (riskModel), so
+// this text can never drift from the maths in lib/reports/scope-health.ts.
+function RiskExplainer({ model }: { model: PortfolioData['riskModel'] }) {
+  const pct = Math.round(model.openFlagRate * 1000) / 10
+  const m = model.severityMultipliers
+  return (
+    <details style={{ margin: '-8px 0 20px', fontSize: 12, color: 'var(--text-3)' }}>
+      <summary style={{ cursor: 'pointer', color: 'var(--text-2)' }}>How is “contract value at risk” calculated?</summary>
+      <div style={{ marginTop: 8, lineHeight: 1.55, maxWidth: 760 }}>
+        <p style={{ margin: '0 0 6px' }}>
+          Each <strong>open</strong> scope flag puts {pct}% of its project&apos;s contract value at risk, weighted by severity
+          (High ×{m.high}, Medium ×{m.medium}, Low ×{m.low}). A project&apos;s flag exposure is capped at 100% of its value.
+        </p>
+        <p style={{ margin: '0 0 6px' }}>
+          Exceptions granted on projects still in progress add their estimated value (weighted by the severity of the flag they resolved).
+          Completed and archived projects never count, and flags awaiting Guardian review aren&apos;t counted until confirmed.
+        </p>
+        <p style={{ margin: 0 }}>
+          “Contract value” is the agreed value plus accepted change orders — for a retainer, the monthly amount × its months
+          (an open-ended retainer counts the months contracted so far). It&apos;s an estimate of exposure, not a forecast.
+          The “Projects by risk” table below shows where the total comes from.
+        </p>
+      </div>
+    </details>
+  )
+}
+
+// ── PROJECTS BY RISK ─────────────────────────────────────────────
+// The page gave a workspace-wide total and no way to see WHICH projects it came from. The per-project rows
+// already existed inside computeScopeHealth; this surfaces them, sorted by exposure, with a by-client roll-up.
+const RISK_PREVIEW = 10
+
+function ProjectsByRisk({ rows, canViewFinancials, canOpenProjects }: { rows: RiskRow[]; canViewFinancials: boolean; canOpenProjects: boolean }) {
+  const router = useRouter()
+  const [view, setView] = useState<'project' | 'client'>('project')
+  const [expanded, setExpanded] = useState(false)
+  const hasClients = rows.some(r => r.clientName)
+
+  const clientRows = useMemo(() => {
+    const map = new Map<string, { client: string; projects: number; openFlags: number; highFlags: number; stuckDocs: number; risk: Map<string, number> }>()
+    for (const r of rows) {
+      const key = r.clientName || 'No client'
+      const g = map.get(key) || { client: key, projects: 0, openFlags: 0, highFlags: 0, stuckDocs: 0, risk: new Map<string, number>() }
+      g.projects++; g.openFlags += r.openFlags; g.highFlags += r.highFlags; g.stuckDocs += r.stuckDocs
+      if (r.atRisk !== null) g.risk.set(r.currency, (g.risk.get(r.currency) || 0) + r.atRisk)
+      map.set(key, g)
+    }
+    const sum = (g: { risk: Map<string, number> }) => Array.from(g.risk.values()).reduce((a, b) => a + b, 0)
+    return Array.from(map.values()).sort((a, b) => sum(b) - sum(a) || b.openFlags - a.openFlags || a.client.localeCompare(b.client))
+  }, [rows])
+
+  const list = view === 'project' ? rows : clientRows
+  const visibleCount = expanded ? list.length : Math.min(list.length, RISK_PREVIEW)
+
+  return (
+    <div style={{ marginBottom: 24 }}>
+      <div className="sec-hd">
+        <div className="sec-title">Projects by risk ({rows.length})</div>
+        {hasClients && (
+          <div style={{ display: 'flex', gap: 4 }}>
+            {(['project', 'client'] as const).map(v => (
+              <button key={v} className={`btn btn-xs ${view === v ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { setView(v); setExpanded(false) }}>
+                {v === 'project' ? 'By project' : 'By client'}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      {rows.length === 0 ? (
+        <div className="surface">
+          <div className="empty-state" style={{ padding: '28px 24px' }}>
+            <i className="ti ti-shield-check empty-state-icon" />
+            <p className="empty-state-title">No project is carrying risk</p>
+            <p className="empty-state-sub">No open flags, exceptions or stuck documents on any project in progress.</p>
+          </div>
+        </div>
+      ) : (
+        <div className="surface" style={{ overflow: 'hidden' }}>
+          <table className="gov-table" style={{ width: '100%' }}>
+            <thead>
+              <tr>
+                <th>{view === 'project' ? 'Project' : 'Client'}</th>
+                {view === 'client' && <th>Projects</th>}
+                <th>Open flags</th>
+                <th>Stuck docs</th>
+                {canViewFinancials && <th style={{ textAlign: 'right' }}>Value at risk</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {view === 'project'
+                ? rows.slice(0, visibleCount).map(r => (
+                    <tr key={r.projectId}
+                      style={canOpenProjects ? { cursor: 'pointer' } : undefined}
+                      onClick={canOpenProjects ? () => router.push(`/projects/${r.projectId}?tab=guardian`) : undefined}>
+                      <td>
+                        <div className="td-primary">{r.projectName}</div>
+                        {r.clientName && <div className="td-sub">{r.clientName}</div>}
+                      </td>
+                      <td>
+                        {r.openFlags}{r.highFlags > 0 && <span style={{ color: 'var(--red)', fontSize: 11.5 }}> ({r.highFlags} high)</span>}
+                        {r.borderlineFlags > 0 && <div className="td-sub">+{r.borderlineFlags} awaiting review</div>}
+                      </td>
+                      <td>{r.stuckDocs || '—'}</td>
+                      {canViewFinancials && (
+                        <td className="td-mono" style={{ textAlign: 'right' }}>
+                          {r.atRisk !== null ? formatCurrency(r.atRisk, r.currency) : '—'}
+                          {r.exceptionsCount > 0 && <div className="td-sub">{r.exceptionsCount} exception{r.exceptionsCount === 1 ? '' : 's'}</div>}
+                        </td>
+                      )}
+                    </tr>
+                  ))
+                : clientRows.slice(0, visibleCount).map(g => (
+                    <tr key={g.client}>
+                      <td className="td-primary">{g.client}</td>
+                      <td>{g.projects}</td>
+                      <td>{g.openFlags}{g.highFlags > 0 && <span style={{ color: 'var(--red)', fontSize: 11.5 }}> ({g.highFlags} high)</span>}</td>
+                      <td>{g.stuckDocs || '—'}</td>
+                      {canViewFinancials && (
+                        <td className="td-mono" style={{ textAlign: 'right' }}>
+                          {g.risk.size === 0 ? '—' : Array.from(g.risk.entries()).map(([cur, v]) => formatCurrency(v, cur)).join(' · ')}
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {list.length > RISK_PREVIEW && (
+        <button className="btn btn-ghost btn-xs" style={{ marginTop: 10 }} onClick={() => setExpanded(v => !v)}>
+          {expanded ? 'Show less' : `Show all ${list.length}`}
+        </button>
+      )}
     </div>
   )
 }

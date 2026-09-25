@@ -62,22 +62,28 @@ export async function POST(
 
     if (!member) return NextResponse.json({ error: 'Member not found' }, { status: 404 })
 
-    // The upsert below also "succeeds" for someone who is already on the project — only tell a
-    // person they were added when they actually were.
+    // Already on the project: nothing to do. This used to upsert anyway, which overwrote the original
+    // added_at / added_by (losing who added them and when) and wrote a second project_member.added
+    // audit row for a change that never happened.
     const { data: alreadyOn } = await (service as any)
       .from('project_members').select('member_id')
       .eq('project_id', projectId).eq('member_id', memberId).maybeSingle()
+    if (alreadyOn) return NextResponse.json({ ok: true, alreadyMember: true })
 
     const { error } = await (service as any)
       .from('project_members')
-      .upsert({
+      .insert({
         project_id: projectId,
         member_id:  memberId,
         added_at:   new Date().toISOString(),
         added_by:   session.id,
-      }, { onConflict: 'project_id,member_id' })
+      })
 
-    if (error) throw new Error(error.message)
+    if (error) {
+      // 23505 = a concurrent request added them between the check above and here: same outcome.
+      if ((error as any).code === '23505') return NextResponse.json({ ok: true, alreadyMember: true })
+      throw new Error(error.message)
+    }
 
     // FIX (deep audit, section 7): every other project mutation
     // (create/update/delete/archive/complete, even SOW/CO actions) writes
@@ -94,7 +100,7 @@ export async function POST(
     // FEATURE (Notifications & email fix round): nobody was told they'd been added to a project —
     // and for a member limited to their own projects that is the ONLY way a project appears for
     // them. In-app always (unless muted); email if they haven't opted out.
-    if (!alreadyOn && member.user_id && member.user_id !== session.id) {
+    if (member.user_id && member.user_id !== session.id) {
       try {
         await notifyUsers(service, {
           workspaceId: session.workspaceId, recipientIds: [member.user_id],

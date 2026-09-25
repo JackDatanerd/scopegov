@@ -1,3 +1,6 @@
+import { loadProjectActivity } from '@/lib/utils/project-activity'
+import { canReadProject } from '@/lib/utils/project-access'
+import { amendmentImpact, baseContractValue } from '@/lib/utils/contract-value'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect, notFound } from 'next/navigation'
@@ -119,19 +122,9 @@ export default async function ProjectPage({ params, searchParams }: Props) {
   // Check project access (own projects check)
   const canViewAll = hasPermission(session, 'VIEW_ALL_PROJECTS')
   if (!canViewAll) {
-    // FIX: project_members has no user_id column — it links to
-    // workspace_members via member_id, which links to users via user_id.
-    // The old query filtered directly on a nonexistent project_members.user_id,
-    // which errored on every call, so this check always failed and anyone
-    // without VIEW_ALL_PROJECTS got notFound() on every project, including
-    // ones they were legitimately assigned to.
-    const { data: membership } = await (service as any)
-      .from('project_members')
-      .select('id, workspace_members!inner(user_id)')
-      .eq('project_id', id)
-      .eq('workspace_members.user_id', session.id)
-      .maybeSingle()
-    if (!membership) notFound()
+    // Same rule as every API route (project_members_active: the member must still be ACTIVE in this
+    // workspace). This page used to run its own raw project_members query that ignored member status.
+    if (!(await canReadProject(service, session, id))) notFound()
   }
 
   // ── Fetch payment milestones ──────────────────────────────────────────
@@ -148,7 +141,7 @@ export default async function ProjectPage({ params, searchParams }: Props) {
   // ── Fetch amendments ──────────────────────────────────────────────────
   const { data: amendmentsRaw = [] } = await (service as any)
     .from('amendments')
-    .select('*')
+    .select('*, change_orders(is_retainer_renewal)')
     .eq('project_id', id)
     .order('created_at', { ascending: true })
 
@@ -161,81 +154,17 @@ export default async function ProjectPage({ params, searchParams }: Props) {
   // ── Fetch team members ────────────────────────────────────────────────
   const { data: team = [] } = await (service as any)
     .from('project_members')
-    .select('id, added_at, workspace_members(id, effective_permissions, users!workspace_members_user_id_fkey(id, name, email, avatar_url))')
+    .select('id, added_at, workspace_members(id, users!workspace_members_user_id_fkey(id, name, email, avatar_url))')
     .eq('project_id', id)
 
   // ── Fetch activity ────────────────────────────────────────────────────
-  // Projects & Dashboard deep audit: this matched `entity_id = project id`, so
-  // it only ever contained project.* rows — the SOW, change-order, flag,
-  // Guardian-check and invoice events (which carry their own entity ids) never
-  // appeared on a project's Activity tab. audit_log.project_id (migration 056)
-  // attaches every one of them to its project.
-  //
-  // FIX (deep audit, section 13 — feature gap): `metadata` used to be left
-  // out of the select entirely because most event types' metadata carries
-  // contract-value changes and amounts (project.updated) that this page
-  // withholds from members without VIEW_FINANCIALS everywhere else — so
-  // selecting it unconditionally would have reopened that exact leak. But
-  // that meant EVERY event type lost its detail, including
-  // 'project.scope_adjustment_made' — whose whole reason for existing is a
-  // reviewable "what changed and why" record (see api/guardian/
-  // scope-adjustment's own comment on why write-order guarantees this
-  // entry can never disagree with the real scope-of-record). With no
-  // detail rendered anywhere, that guarantee protected a record nobody
-  // could actually read. Fix: still select metadata (need it to build the
-  // safe view), but extract only the known-safe scope-adjustment fields
-  // (deliverable/field/old value/new value/reason — no dollar amounts) per
-  // row server-side, and never forward the raw `metadata` object itself to
-  // the client component. Every other event type keeps exactly the same
-  // shape as before.
-  const { data: activityRaw = [] } = await (service as any)
-    .from('audit_log')
-    .select('id, event_type, entity_name, actor_name, actor_email, created_at, metadata')
-    .eq('project_id', id)
-    .eq('workspace_id', session.workspaceId)
-    .not('event_type', 'like', 'project_message.%')
-    .order('created_at', { ascending: false })
-    .order('id', { ascending: false })
-    .limit(50)
-
-  // FIX (re-audit, Projects & Dashboard section 7): this unconditionally
-  // dropped `metadata` for every event type — the scope_adjustment_made
-  // carve-out above is the only exception — regardless of whether the
-  // viewer actually has VIEW_FINANCIALS. That over-corrected the original
-  // leak: it's right to withhold financial detail from members WITHOUT the
-  // permission, but for members WITH it, the Dashboard's own global feed
-  // (app/(app)/dashboard/page.tsx's formatEvent) already shows exactly this
-  // detail for these same two event types — a project's own Activity tab
-  // showing strictly LESS than the workspace-wide feed for the same event,
-  // to the same permitted viewer, was never the intent the comment above
-  // describes. Mirrors the Dashboard's own gating exactly: `to` on a status
-  // change isn't financial data (shown unconditionally there too); the
-  // retainer-renewal amount is, so it's still gated on viewFinancials here.
-  const activity = (activityRaw || []).map((a: any) => {
-    const { metadata, ...rest } = a
-    if (a.event_type === 'project.scope_adjustment_made' && metadata) {
-      return {
-        ...rest,
-        adjustment: {
-          field:    metadata.field === 'out_of_scope' ? 'excluded item' : 'deliverable',
-          deliverable: metadata.deliverable ?? null,
-          oldValue: metadata.old_value ?? null,
-          newValue: metadata.new_value ?? null,
-          reason:   metadata.reason ?? null,
-        },
-      }
-    }
-    if (a.event_type === 'project.status_changed' && metadata) {
-      return { ...rest, statusChange: { to: metadata.to ?? null } }
-    }
-    if (a.event_type === 'project.retainer_renewed' && metadata && viewFinancials) {
-      return {
-        ...rest,
-        retainerRenewal: { currency: metadata.currency ?? null, newMonthlyAmount: metadata.new_monthly_amount ?? null },
-      }
-    }
-    return rest
-  })
+  // audit_log.project_id (migration 056) attaches SOW / CO / flag / Guardian-check / invoice events to
+  // their project, not just project.* rows.
+  // Shaped server-side by lib/utils/project-activity.ts (sentences only — raw metadata never reaches the
+  // browser; money only for VIEW_FINANCIALS). "Load more" pages through /api/projects/[id]/activity.
+  const { rows: activity, hasMore: activityHasMore } =
+    await loadProjectActivity(service, session.workspaceId, id, viewFinancials)
+      .catch((e: unknown) => { console.error('Project page: activity load failed:', e); return { rows: [], hasMore: false } })
 
   // ── Fetch invoices (Phase 4a) ────────────────────────────────────────
   // FIX (re-audit): gated behind viewFinancials, same as milestones above.
@@ -262,13 +191,16 @@ export default async function ProjectPage({ params, searchParams }: Props) {
         .limit(90)
     : { data: [] }
 
-  // Effective contract value — financial_impact/contract_value are both
-  // financial figures, so this derived total is withheld the same way.
-  const amendmentTotal = (amendments || []).reduce(
-    (s: number, a: any) => s + (a.financial_impact || 0), 0
-  )
+  // Effective contract value — the shared definition (lib/utils/contract-value.ts): base (monthly rate ×
+  // term for retainers) + amendments, minus retainer-renewal amendments (a renewal replaces the rate; it
+  // must not also be added on top). All three are financial figures: withheld without VIEW_FINANCIALS.
+  // An OPEN-ENDED retainer (no term) has no fixed total: its contract is the months committed so far
+  // (one retainer_monthly milestone each) — see baseContractValue.
+  const retainerMonthsBilled = (milestones || []).filter((m: any) => m.type === 'retainer_monthly').length
+  const baseValue        = viewFinancials ? baseContractValue(project, retainerMonthsBilled) : null
+  const amendmentTotal   = viewFinancials ? amendmentImpact(amendmentsRaw, project.type) : null
   const effectiveContractValue = viewFinancials
-    ? (project.contract_value || 0) + amendmentTotal
+    ? Math.max(0, (baseValue as number) + (amendmentTotal as number))
     : null
 
   // ── Fetch in-flight approval requests (Phase 3) ─────────────────────────
@@ -341,6 +273,9 @@ export default async function ProjectPage({ params, searchParams }: Props) {
       defaultPaymentInstructions={workspaceBilling?.default_payment_instructions || ''}
       billingDefaults={billingDefaults}
       effectiveContractValue={effectiveContractValue}
+      baseContractValue={baseValue}
+      amendmentImpact={amendmentTotal}
+      activityHasMore={activityHasMore}
       initialTab={tab}
       isNewProject={isNew === '1'}
       session={session}

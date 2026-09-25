@@ -5,6 +5,8 @@ import Link from 'next/link'
 import { formatCurrency, formatCurrencyGroups, formatRelative, projectStatusLabel, PLAN_LABELS } from '@/lib/utils/format'
 import { isAttentionWorthy, attentionReason } from '@/lib/utils/attention'
 import { IN_PROGRESS_STATUSES } from '@/lib/utils/project-status'
+import { effectiveContractValue, monthlyRetainerRate, loadRetainerMonthsBilled } from '@/lib/utils/contract-value'
+import { shapeActivityRow, DASHBOARD_NOISE_EVENT_PATTERNS } from '@/lib/utils/activity-format'
 import type { SessionUser } from '@/lib/supabase/types'
 
 export const metadata = { title: 'Dashboard' }
@@ -32,52 +34,8 @@ function pillVariant(status: string): string {
   return map[status] || 'slate'
 }
 
-function feedColour(type: string): string {
-  if (type.includes('signed') || type.includes('accepted') || type.includes('completed')) return 'var(--green)'
-  if (type.includes('declined') || type.includes('stalled') || type.includes('failed')) return 'var(--red)'
-  if (type.includes('flag') || type.includes('guardian')) return 'var(--amber)'
-  return 'var(--blue)'
-}
-
-function formatEvent(a: any, canViewFinances: boolean): string {
-  const n = a.entity_name ? `"${a.entity_name}"` : ''
-  const actor = a.actor_name || 'System'
-  const map: Record<string, string> = {
-    'project.created': `${actor} created project ${n}`,
-    'project.status_changed': `${n} status changed to ${a.metadata?.to || ''}`,
-    'sow.sent': `SOW sent to client — ${n}`,
-    'sow.signed': `Client signed SOW — ${n}`,
-    'sow.declined': `Client declined SOW — ${n}`,
-    'co.accepted': `Change order accepted — ${n}`,
-    'co.declined': `Change order declined — ${n}`,
-    'co.countered': `Counter offer received on ${n}`,
-    // The renewal amount is a financial figure: only members with
-    // VIEW_FINANCIALS see it (it was shown to everyone before).
-    'project.retainer_renewed': canViewFinances
-      ? `Retainer renewed — ${n} now ${a.metadata?.currency || ''} ${a.metadata?.new_monthly_amount ?? ''}/mo`
-      : `Retainer renewed — ${n}`,
-    'project.completed': `${n} marked complete`,
-    'project.reopened': `${n} reopened`,
-    'project.archived': `${n} archived`,
-    'project.unarchived': `${n} unarchived`,
-    'co.sent': `Change order sent — ${n}`,
-    'flag.raised': `Scope flag raised on ${n}`,
-    // Same creation path as 'flag.raised' (guardian/check, guardian/checks/[id]/retry,
-    // guardian/inbound all do `isBorderline ? 'flag.borderline_created' : 'flag.raised'`),
-    // just the borderline branch. isAttentionWorthy() treats a borderline flag as just
-    // as actionable as an open one, so the feed should label it the same way.
-    'flag.borderline_created': `Scope flag raised on ${n}`,
-    'flag.resolved': `Scope flag resolved on ${n}`,
-    'member.invited': `${actor} invited a team member`,
-    // NOTE: no 'member.joined'/'member.left' entry here on purpose. Those events are
-    // always logged with entityType: 'workspace_member', which audit_resolve_project_id()
-    // (migration 056) has no case for and their metadata carries no project_id fallback —
-    // so project_id is always NULL on these rows. The query below already filters on
-    // `.not('project_id', 'is', null)`, so these rows never reach this function. Adding
-    // a label here would be dead code; fixing the scoping (if teammate-joined events are
-    // ever wanted on this feed) belongs in the query above, not in this map.
-  }
-  return map[a.event_type] || `${actor} · ${a.event_type.replace(/\./g, ' ')}`
+const TONE_COLOUR: Record<string, string> = {
+  green: 'var(--green)', red: 'var(--red)', amber: 'var(--amber)', blue: 'var(--blue)',
 }
 
 export default async function DashboardPage() {
@@ -126,8 +84,9 @@ export default async function DashboardPage() {
 
   let projQuery = (service as any)
     .from('projects')
-    .select(`id,name,disc,type,status,stall_reason,contract_value,currency,updated_at,
-      clients(id,name),guardian_flags(status),change_orders(status),sow_documents(id,status,version)`)
+    .select(`id,name,disc,type,status,stall_reason,stalled_at,contract_value,retainer_duration_months,currency,updated_at,
+      clients(id,name),guardian_flags(status),change_orders(status),sow_documents(id,status,version),
+      amendments(financial_impact,change_orders(is_retainer_renewal))`)
     .eq('workspace_id', session.workspaceId)
     .is('deleted_at', null)
     .order('updated_at', { ascending: false })
@@ -145,7 +104,16 @@ export default async function DashboardPage() {
     projQuery = projQuery.in('id', accessibleProjectIds)
   }
 
-  const { data: projects = [] } = await projQuery
+  const { data: projectRows = [] } = await projQuery
+  // "Contract value" everywhere on this page is the shared effective value (base — a retainer's monthly
+  // rate × term — plus accepted change orders). It used to be the stored base alone, so approving a CO
+  // never moved the tile, and a retainer counted one month's fee as its whole value.
+  const retainerMonths = await loadRetainerMonthsBilled(service, projectRows || [])
+  const projects = (projectRows || []).map((p: any) => {
+    const { amendments, ...rest } = p
+    return { ...rest, effective_value: effectiveContractValue(p, amendments, retainerMonths.get(p.id)), monthly_rate: monthlyRetainerRate(p) }
+  })
+  const projectNameById = new Map<string, string>(projects.map((p: any) => [p.id, p.name]))
 
   // FIX (audit round 4, finding #8): this was workspace-wide with no
   // project-membership filtering at all — a VIEW_OWN_PROJECTS-restricted
@@ -171,18 +139,22 @@ export default async function DashboardPage() {
   //     because SOW/CO/flag/invoice events carry their own entity ids. With
   //     project_id every project event is reachable for the projects they
   //     can access.
+  // The window is only 14 rows, so machinery events (every Guardian classification, every "client opened
+  // the link", every automated reminder) are filtered out in SQL — they used to fill the whole feed.
   let activityQuery = (service as any)
-    .from('audit_log').select('id,event_type,entity_name,actor_name,created_at,metadata')
+    .from('audit_log').select('id,event_type,entity_type,entity_name,actor_name,created_at,metadata,project_id')
     .eq('workspace_id', session.workspaceId)
     .not('project_id', 'is', null)
-    .not('event_type', 'like', 'project_message.%')
-    .order('created_at', { ascending: false }).limit(14)
+  for (const pattern of DASHBOARD_NOISE_EVENT_PATTERNS) activityQuery = activityQuery.not('event_type', 'like', pattern)
+  activityQuery = activityQuery.order('created_at', { ascending: false }).order('id', { ascending: false }).limit(14)
 
   if (!canViewAll) {
     activityQuery = activityQuery.in('project_id', accessibleProjectIds || [])
   }
 
-  const { data: activity = [] } = await activityQuery
+  const { data: activityRaw = [] } = await activityQuery
+  const activity = (activityRaw || []).map((a: any) =>
+    shapeActivityRow(a, { viewFinancials: canViewFinances, projectName: projectNameById.get(a.project_id) ?? null }))
 
   // FIX (section-11/12 audit — flagship feature gap): see lib/utils/attention.ts
   // — isAttentionWorthy() had no clause for a document stuck in an approval
@@ -225,7 +197,7 @@ export default async function DashboardPage() {
     (IN_PROGRESS_STATUSES as readonly string[]).includes(p.status))
   const attention = (projects || []).filter((p: any) =>
     isAttentionWorthy({
-      project: { ...p, contractValue: p.contract_value, stallReason: p.stall_reason,
+      project: { ...p, contractValue: p.effective_value, stallReason: p.stall_reason, stalledAt: p.stalled_at,
         guardianFlags: p.guardian_flags, changeOrders: p.change_orders, sowDocuments: p.sow_documents,
         pendingApprovals: pendingApprovalsByProject.get(p.id) },
       workspace: { proactiveRiskAlertsEnabled: ws?.proactive_risk_alerts_enabled, proactiveRiskThreshold: ws?.proactive_risk_threshold, currency: ws?.currency },
@@ -235,7 +207,8 @@ export default async function DashboardPage() {
   // lib/utils/format.ts — this used to sum contract_value across every
   // active project regardless of currency, then label the sum with
   // active[0]'s currency.
-  const activeValueDisplay = formatCurrencyGroups(active, true, ws?.currency || 'USD')
+  const activeValueDisplay = formatCurrencyGroups(
+    active.map((p: any) => ({ contract_value: p.effective_value, currency: p.currency })), true, ws?.currency || 'USD')
 
   return (
     <div className="page" style={{ maxWidth: 980 }}>
@@ -328,7 +301,7 @@ export default async function DashboardPage() {
                   <tbody>
                     {attention.slice(0, 6).map((p: any) => {
                       const reason = attentionReason({
-                        project: { ...p, contractValue: p.contract_value, stallReason: p.stall_reason,
+                        project: { ...p, contractValue: p.effective_value, stallReason: p.stall_reason, stalledAt: p.stalled_at,
                           guardianFlags: p.guardian_flags, changeOrders: p.change_orders, sowDocuments: p.sow_documents,
                           pendingApprovals: pendingApprovalsByProject.get(p.id) }
                       })
@@ -389,7 +362,8 @@ export default async function DashboardPage() {
                         <td style={{ color: 'var(--text-2)', fontSize: 13 }}>{p.clients?.name || '—'}</td>
                         {canViewFinances && (
                           <td className="td-mono" style={{ textAlign: 'right' }}>
-                            {p.contract_value ? formatCurrency(p.contract_value, p.currency) : '—'}
+                            {p.effective_value ? formatCurrency(p.effective_value, p.currency) : '—'}
+                            {p.monthly_rate ? <div className="td-sub">{formatCurrency(p.monthly_rate, p.currency)}/mo</div> : null}
                           </td>
                         )}
                         <td>
@@ -427,14 +401,14 @@ export default async function DashboardPage() {
         <div>
           <div className="sec-hd"><div className="sec-title">Activity log</div></div>
           <div className="surface surface-p" style={{ padding: '12px 16px' }}>
-            {!(activity || []).length ? (
+            {!activity.length ? (
               <p style={{ fontSize: 12, color: 'var(--text-3)', textAlign: 'center', padding: '20px 0' }}>No activity yet</p>
             ) : (
-              (activity || []).map((a: any) => (
+              activity.map((a: any) => (
                 <div key={a.id} className="feed-item">
-                  <div className="feed-dot" style={{ background: feedColour(a.event_type), marginTop: 6 }} />
+                  <div className="feed-dot" style={{ background: TONE_COLOUR[a.tone] || 'var(--blue)', marginTop: 6 }} />
                   <div className="feed-body">
-                    <div className="feed-text">{formatEvent(a, canViewFinances)}</div>
+                    <div className="feed-text">{a.actor ? `${a.actor} ` : ''}{a.text}</div>
                     <div className="feed-time">{formatRelative(a.created_at)}</div>
                   </div>
                 </div>

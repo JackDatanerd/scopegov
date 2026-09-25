@@ -8,7 +8,7 @@
 'use client'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { formatRelative } from '@/lib/utils/format'
-import { splitBodySegments } from '@/lib/utils/project-messages'
+import { splitBodySegments, tokensToDisplay, displayToTokens } from '@/lib/utils/project-messages'
 
 interface Message {
   id: string
@@ -110,6 +110,18 @@ export default function ProjectDiscussion({
   const [editDraft, setEditDraft] = useState('')
   const [mentionOpts, setMentionOpts] = useState<TeamMember[]>([])
   const [mentionActive, setMentionActive] = useState(false)
+  const [mentionIndex, setMentionIndex] = useState(0)
+  // Who can be @-mentioned: the project's team PLUS everyone who can see every project (owners/admins who
+  // aren't assigned to it). Loaded from the same list the server validates mentions against; the `team`
+  // prop (assigned members only) is the fallback if that request fails.
+  const [people, setPeople] = useState<TeamMember[]>(team)
+  // The composer shows "@Alice Smith", not the raw @[Alice Smith](uuid) token. `picked` remembers which
+  // user each picked name refers to; it is turned back into tokens on send (displayToTokens).
+  const pickedRef = useRef<Record<string, string>>({})
+  const editPickedRef = useRef<Record<string, string>>({})
+  // Server clock at the last successful sync — passed back as changedSince so edits/deletes made by
+  // OTHER people show up without a reload.
+  const syncedAtRef = useRef<string | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
 
@@ -122,6 +134,7 @@ export default function ProjectDiscussion({
       if (!res.ok) throw new Error(json.error || 'Could not load the discussion.')
       setMessages(json.messages || [])
       setHasMore(!!json.hasMore)
+      syncedAtRef.current = json.syncedAt || null
       setLoaded(true)
     } catch (e) { setError(e instanceof Error ? e.message : 'Could not load the discussion.'); setLoaded(true) }
   }, [base])
@@ -146,6 +159,15 @@ export default function ProjectDiscussion({
   }
 
   useEffect(() => { load() }, [load])
+
+  useEffect(() => {
+    let cancelled = false
+    fetch(`${base}/mentionable`).then(r => r.ok ? r.json() : null).then(json => {
+      if (cancelled || !json?.members) return
+      setPeople(json.members.map((m: any) => ({ id: m.id, name: m.name, email: '', avatarUrl: m.avatarUrl || null })))
+    }).catch(() => { /* keep the team fallback */ })
+    return () => { cancelled = true }
+  }, [base])
 
   // Mark read once the feed has loaded, and tell the parent tab badge
   // to clear — opening the tab is the read signal, same as most inbox UIs.
@@ -172,15 +194,23 @@ export default function ProjectDiscussion({
       if (document.visibilityState !== 'visible') return
       try {
         if (!newestRef.current) { await load(); return }
-        const res = await fetch(`${base}?after=${encodeURIComponent(newestRef.current)}`)
+        const qs = new URLSearchParams({ after: newestRef.current })
+        if (syncedAtRef.current) qs.set('changedSince', syncedAtRef.current)
+        const res = await fetch(`${base}?${qs.toString()}`)
         if (!res.ok) return
         const json = await res.json()
+        if (json.syncedAt) syncedAtRef.current = json.syncedAt
         const incoming: Message[] = json.messages || []
-        if (!incoming.length) return
+        const changed: Message[] = json.changed || []
+        if (!incoming.length && !changed.length) return
         setMessages(prev => {
           const have = new Set(prev.map(m => m.id))
           const fresh = incoming.filter(m => !have.has(m.id))
-          return fresh.length ? [...prev, ...fresh] : prev
+          const byId = new Map(changed.map(c => [c.id, c]))
+          const merged = byId.size
+            ? prev.map(m => { const c = byId.get(m.id); return c ? { ...m, body: c.body, deleted: c.deleted, editedAt: c.editedAt } : m })
+            : prev
+          return fresh.length ? [...merged, ...fresh] : merged
         })
       } catch { /* transient — next tick retries */ }
     }, 30000)
@@ -199,8 +229,9 @@ export default function ProjectDiscussion({
     const match = upToCaret.match(/@([^\s@]*)$/)
     if (match) {
       const q = match[1].toLowerCase()
-      const opts = team.filter(m => m.id !== currentUserId && m.name.toLowerCase().includes(q)).slice(0, 6)
+      const opts = people.filter(m => m.id !== currentUserId && m.name.toLowerCase().includes(q)).slice(0, 6)
       setMentionOpts(opts)
+      setMentionIndex(0)
       setMentionActive(opts.length > 0)
     } else {
       setMentionActive(false)
@@ -211,7 +242,8 @@ export default function ProjectDiscussion({
     const caret = textareaRef.current?.selectionStart ?? draft.length
     const upToCaret = draft.slice(0, caret)
     const rest = draft.slice(caret)
-    const replaced = upToCaret.replace(/@([^\s@]*)$/, `@[${member.name}](${member.id}) `)
+    pickedRef.current[member.name] = member.id
+    const replaced = upToCaret.replace(/@([^\s@]*)$/, `@${member.name} `)
     const next = replaced + rest
     setDraft(next)
     setMentionActive(false)
@@ -219,7 +251,7 @@ export default function ProjectDiscussion({
   }
 
   async function submit() {
-    const body = draft.trim()
+    const body = displayToTokens(draft.trim(), pickedRef.current)
     if (!body) return
     setPosting(true); setError('')
     try {
@@ -231,16 +263,19 @@ export default function ProjectDiscussion({
       if (!res.ok) { setError(json.error || 'Could not send that message.'); return }
       setMessages(prev => [...prev, json.message])
       setDraft('')
+      pickedRef.current = {}
     } finally { setPosting(false) }
   }
 
   function startEdit(m: Message) {
+    const { text, picked } = tokensToDisplay(m.body || '')
+    editPickedRef.current = picked
     setEditingId(m.id)
-    setEditDraft(m.body || '')
+    setEditDraft(text)
   }
 
   async function saveEdit(id: string) {
-    const body = editDraft.trim()
+    const body = displayToTokens(editDraft.trim(), editPickedRef.current)
     if (!body) return
     try {
       const res = await fetch(`${base}/${id}`, {
@@ -249,7 +284,7 @@ export default function ProjectDiscussion({
       })
       const json = await res.json()
       if (!res.ok) { setError(json.error || 'Could not save that edit.'); return }
-      setMessages(prev => prev.map(m => m.id === id ? { ...m, body, editedAt: json.message.editedAt } : m))
+      setMessages(prev => prev.map(m => m.id === id ? { ...m, body: json.message.body ?? body, editedAt: json.message.editedAt } : m))
       setEditingId(null)
     } catch { setError('Could not save that edit.') }
   }
@@ -352,13 +387,14 @@ export default function ProjectDiscussion({
             background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
             boxShadow: '0 8px 24px rgba(0,0,0,0.16)', overflow: 'hidden',
           }}>
-            {mentionOpts.map(m => (
+            {mentionOpts.map((m, i) => (
               <button
                 key={m.id}
+                onMouseDown={e => e.preventDefault()}
                 onClick={() => insertMention(m)}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
-                  padding: '7px 10px', background: 'none', border: 'none', cursor: 'pointer',
+                  padding: '7px 10px', background: i === mentionIndex ? 'var(--surface-2)' : 'none', border: 'none', cursor: 'pointer',
                   borderBottom: '1px solid var(--surface-2)',
                 }}
               >
@@ -378,6 +414,15 @@ export default function ProjectDiscussion({
             value={draft}
             onChange={e => handleDraftChange(e.target.value)}
             onKeyDown={e => {
+              if (mentionActive) {
+                // Enter/Tab picks the highlighted person (Enter used to do nothing while the picker was
+                // open, so the keyboard could never complete a mention); arrows move the highlight.
+                if (e.key === 'ArrowDown') { e.preventDefault(); setMentionIndex(i => (i + 1) % mentionOpts.length); return }
+                if (e.key === 'ArrowUp')   { e.preventDefault(); setMentionIndex(i => (i - 1 + mentionOpts.length) % mentionOpts.length); return }
+                if ((e.key === 'Enter' || e.key === 'Tab') && mentionOpts[mentionIndex]) {
+                  e.preventDefault(); insertMention(mentionOpts[mentionIndex]); return
+                }
+              }
               if (e.key === 'Enter' && !e.shiftKey && !mentionActive) {
                 e.preventDefault()
                 if (!posting) submit()

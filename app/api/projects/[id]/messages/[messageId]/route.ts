@@ -12,10 +12,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
-import {
-  extractMentions, MESSAGE_MAX_LENGTH,
-  filterMentionsToProjectMembers, notifyMentionedUsers,
-} from '@/lib/utils/project-messages'
+import { MESSAGE_MAX_LENGTH, resolveMentions, notifyMentionedUsers } from '@/lib/utils/project-messages'
 
 async function loadMessage(service: any, workspaceId: string, projectId: string, messageId: string) {
   const { data } = await service
@@ -44,9 +41,9 @@ export async function PATCH(
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
     const body = await request.json().catch(() => null)
-    const text = typeof body?.body === 'string' ? body.body.trim() : ''
-    if (!text) return NextResponse.json({ error: 'Message body is required' }, { status: 400 })
-    if (text.length > MESSAGE_MAX_LENGTH) return NextResponse.json({ error: 'Message is too long' }, { status: 400 })
+    const typed = typeof body?.body === 'string' ? body.body.trim() : ''
+    if (!typed) return NextResponse.json({ error: 'Message body is required' }, { status: 400 })
+    if (typed.length > MESSAGE_MAX_LENGTH) return NextResponse.json({ error: 'Message is too long' }, { status: 400 })
 
     const service = createServiceClient()
     const message = await loadMessage(service, session.workspaceId, projectId, messageId)
@@ -58,13 +55,23 @@ export async function PATCH(
     if (!(await canReadProject(service, session, projectId)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
+    // Mentions are resolved against who can actually see the project, and the body is rewritten to the
+    // canonical form (real names in tokens; stale tokens degrade to plain text) BEFORE it is stored.
+    const resolved = await resolveMentions(service, session.workspaceId, projectId, typed)
+    const text = resolved.body
+    if (text.length > MESSAGE_MAX_LENGTH) return NextResponse.json({ error: 'Message is too long' }, { status: 400 })
+
     const now = new Date().toISOString()
-    const { error } = await (service as any)
+    // deleted_at guard: a moderator deleting the message between the load above and this write must not
+    // have their deletion "edited" back into an updated row.
+    const { data: updated, error } = await (service as any)
       .from('project_messages')
       .update({ body: text, edited_at: now })
-      .eq('id', messageId)
+      .eq('id', messageId).is('deleted_at', null)
+      .select('id')
 
     if (error) throw new Error(error.message)
+    if (!updated || updated.length === 0) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     // Re-derive mentions from the edited body — a mention added on edit
     // still notifies (the person genuinely wasn't told before); a mention
@@ -77,10 +84,7 @@ export async function PATCH(
       .eq('message_id', messageId)
     const existingIds = new Set<string>((existing || []).map((r: any) => r.user_id))
 
-    const rawMentions = extractMentions(text)
-    const newMentions = rawMentions.length
-      ? await filterMentionsToProjectMembers(service, session.workspaceId, projectId, rawMentions)
-      : []
+    const newMentions = resolved.mentions
     const newIds = new Set(newMentions.map(m => m.userId))
 
     const toRemove = Array.from(existingIds).filter(id => !newIds.has(id))

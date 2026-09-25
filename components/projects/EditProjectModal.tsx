@@ -209,9 +209,14 @@ export default function EditProjectModal({
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 110px', gap: 10, marginBottom: 12 }}>
           {canViewFinancials ? (
             <div>
-              <label className="form-label">Contract value</label>
+              <label className="form-label">{type === 'retainer' ? 'Monthly retainer amount' : 'Contract value'}</label>
               <input className="form-input" inputMode="decimal" value={contractValue} disabled={valueLocked}
                 onChange={e => setContractValue(e.target.value)} />
+              {type === 'retainer' && (
+                <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>
+                  Billed every month — for the retainer duration below (total = monthly amount × months), or until the project is completed or archived if you leave the duration blank.
+                </div>
+              )}
             </div>
           ) : <div />}
           <div>

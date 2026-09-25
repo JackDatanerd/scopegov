@@ -12,8 +12,25 @@ import { isTerminalStatus } from '@/lib/utils/project-status'
 // can't silently drift from the cron's, imported by both.
 export const APPROVAL_STALL_DAYS = 2
 
+// A MANUAL pause is somebody's deliberate decision ("this client is on hold"), so it must not sit in the
+// Needs-attention register from minute one — but a pause nobody remembers is exactly what the register
+// is for. Recent manual pauses stay quiet; after this many days they are surfaced. (A pause with no
+// recorded start is surfaced immediately, the previous behaviour.)
+export const MANUAL_PAUSE_ATTENTION_DAYS = 14
+
+function isRecentManualPause(project: { status: string; stallReason?: string | null; stalledAt?: string | null }, now: number): boolean {
+  if (project.status !== 'Stalled' || project.stallReason !== 'manual' || !project.stalledAt) return false
+  const since = new Date(project.stalledAt).getTime()
+  if (Number.isNaN(since)) return false
+  return now - since < MANUAL_PAUSE_ATTENTION_DAYS * 86400000
+}
+
 export interface AttentionContext {
+  /** Clock override for tests. */
+  now?: number
   project: Project & {
+    // When the project entered Stalled (projects.stalled_at, migration 075).
+    stalledAt?: string | null
     guardianFlags?: Array<{ status: string }>
     changeOrders?: Array<{ status: string }>
     sowDocuments?: Array<{ status: string }>
@@ -37,14 +54,15 @@ export interface AttentionContext {
   }
 }
 
-export function isAttentionWorthy({ project, workspace }: AttentionContext): boolean {
+export function isAttentionWorthy({ project, workspace, now = Date.now() }: AttentionContext): boolean {
   // Projects & Dashboard deep audit: finished projects never need attention.
   // A declined/expired CO on a Complete or Archived project used to sit in
   // the dashboard's "Needs attention" list forever (the projects page counted
   // only its active/awaiting tabs, so the two disagreed).
   if (isTerminalStatus(project.status)) return false
-  // 1. Stalled project
-  if (project.status === 'Stalled') return true
+  // 1. Stalled project (a recent MANUAL pause is a decision, not a problem — the other clauses below
+  //    still apply to it)
+  if (project.status === 'Stalled' && !isRecentManualPause(project, now)) return true
 
   // 2. Any open guardian flags
   // borderline_review = Guardian flagged something a human must confirm or
@@ -142,12 +160,12 @@ export function isAttentionWorthy({ project, workspace }: AttentionContext): boo
   return false
 }
 
-export function attentionReason({ project }: AttentionContext): string | null {
+export function attentionReason({ project, now = Date.now() }: AttentionContext): string | null {
   if (isTerminalStatus(project.status)) return null
-  if (project.status === 'Stalled') {
-    return project.stallReason === 'sow_unsigned'
-      ? 'SOW unsigned — project stalled'
-      : 'Project manually stalled'
+  if (project.status === 'Stalled' && !isRecentManualPause(project, now)) {
+    if (project.stallReason === 'sow_unsigned') return 'SOW unsigned — project stalled'
+    const days = project.stalledAt ? Math.floor((now - new Date(project.stalledAt).getTime()) / 86400000) : null
+    return days != null && days >= 0 ? `Paused for ${days} days` : 'Project manually paused'
   }
   if (project.guardianFlags?.some(f => f.status === 'open')) {
     const count = project.guardianFlags.filter(f => f.status === 'open').length
