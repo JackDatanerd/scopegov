@@ -447,6 +447,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
             colour={brandColour} setColour={setBrandColour}
             preview={logoPreview} setPreview={setLogoPreview}
             savedSignature={workspace?.agency_signature_data || null}
+            expectedUpdatedAt={workspace?.updated_at || null}
             permissions={permissions} onSave={patch} saving={saving}
           />
         )}
@@ -976,7 +977,7 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedA
 }
 
 // ── BRANDING ──────────────────────────────────────────────────
-function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, savedSignature, permissions, onSave, saving }: any) {
+function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, savedSignature, expectedUpdatedAt, permissions, onSave, saving }: any) {
   const [logoFile,  setLogoFile]  = useState<File | null>(null)
   const [uploading, setUploading] = useState(false)
   const [fileError, setFileError] = useState('')
@@ -1045,7 +1046,11 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, save
           return
         }
       }
-      const ok = await onSave('/api/workspace/branding', { brandColour: colour, ...(logoStoragePath ? { logoStoragePath } : {}) })
+      const ok = await onSave('/api/workspace/branding', {
+        brandColour: colour,
+        ...(logoStoragePath ? { logoStoragePath } : {}),
+        ...(expectedUpdatedAt ? { expectedUpdatedAt } : {}),
+      })
       if (ok) setLogoFile(null)
     } finally { setUploading(false) }
   }

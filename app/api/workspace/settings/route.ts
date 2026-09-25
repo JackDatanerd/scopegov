@@ -56,8 +56,18 @@ const COLUMNS: Record<string, string> = {
 }
 
 // Recorded as "changed" in the audit trail without the value: identifiers and
-// free text that can carry bank or tax details.
-const AUDIT_REDACT = ['taxId', 'defaultPaymentInstructions', 'phone']
+// free text that can carry bank, tax, or contact details.
+// FIX (deep audit, Settings independent re-pass): legalAddress belongs here
+// by the exact rationale this list already exists for — a full registered/
+// mailing address is at least as identifying as a phone number, but unlike
+// taxId/defaultPaymentInstructions/phone it was never added, so every edit
+// to it was written verbatim (from/to, full street+city+region+postal+
+// country) into workspace.settings_updated audit metadata — readable by
+// anyone holding VIEW_AUDIT_LOG alone (no MANAGE_WORKSPACE_SETTINGS
+// required) and included as-is in JSON/CSV/PDF audit exports, since
+// lib/audit/redact.ts's money-word matcher has no reason to catch address
+// fields either.
+const AUDIT_REDACT = ['taxId', 'defaultPaymentInstructions', 'phone', 'legalAddress']
 
 const SUPPORTED_SOW_LANGUAGES = ['en', 'es', 'fr', 'pt', 'de', 'sw']
 const SENSITIVITY_TIERS = ['conservative', 'medium', 'aggressive']

@@ -31,7 +31,7 @@ export async function PATCH(request: NextRequest) {
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
       return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
     }
-    const { workspaceId: expectedWorkspaceId, brandColour, logoStoragePath, agencySignatureData } = body as Record<string, unknown>
+    const { workspaceId: expectedWorkspaceId, expectedUpdatedAt, brandColour, logoStoragePath, agencySignatureData } = body as Record<string, unknown>
     // FIX (deep audit, Onboarding round — traced multi-tab/multi-session
     // staleness risk): this route deliberately writes to session.workspaceId
     // rather than any client-supplied ID, to defeat a confused-deputy risk
@@ -90,11 +90,30 @@ export async function PATCH(request: NextRequest) {
     if (Object.keys(proposed).length === 0) return NextResponse.json({ ok: true, unchanged: true })
 
     const { data: current, error: currentErr } = await service
-      .from('workspaces').select('brand_colour, logo_storage_path, agency_signature_data')
+      .from('workspaces').select('brand_colour, logo_storage_path, agency_signature_data, updated_at')
       .eq('id', session.workspaceId).single()
     if (currentErr || !current) {
       console.error('Workspace branding: could not load workspace:', currentErr)
       return NextResponse.json({ error: 'Failed to update branding' }, { status: 500 })
+    }
+
+    // FIX (deep audit, Settings independent re-pass): unlike
+    // /api/workspace/settings (which compares every field's pre-edit value
+    // against what the DB actually holds before writing) and unlike
+    // /api/workspace/defaults, this route wrote straight through with no
+    // staleness check at all beyond the plain workspaceId match above — two
+    // admins saving branding at the same instant, or the same admin in two
+    // tabs, could silently lose one write. `expectedUpdatedAt` is optional
+    // (older/other callers that never send it keep working unchanged) but
+    // when the client does send the updated_at it loaded the form from, a
+    // mismatch means someone else's write landed since — refuse rather than
+    // clobber it, mirroring settings' own conflict shape (`conflicts: [...]`)
+    // so the existing "Reload latest settings" UI just works here too.
+    if (typeof expectedUpdatedAt === 'string' && expectedUpdatedAt !== current.updated_at) {
+      return NextResponse.json({
+        error: 'Branding was changed elsewhere since you loaded this page.',
+        conflicts: ['branding'],
+      }, { status: 409 })
     }
 
     // The signature image itself is never written to the audit trail.
