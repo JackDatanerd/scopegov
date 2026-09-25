@@ -208,6 +208,17 @@ export default async function ClientDetailPage({ params }: Props) {
         .eq('workspace_id', session.workspaceId).neq('id', id).order('name').limit(500)
     : { data: [] }
 
+  // FIX (independent pass round 2, section 14): DELETE /api/clients/[id] refuses when the client
+  // has ANY project on record, explicitly including soft-deleted ones — but the Danger Zone below
+  // used to gate the Delete button on the visible (non-deleted) project count alone. A client
+  // whose only projects were soft-deleted showed the button as available, and clicking it always
+  // 409'd with no way to see what was blocking it. Count all projects here (unfiltered by
+  // deleted_at) so the UI can match the API's real eligibility check.
+  const { count: totalProjectCount } = canDeleteClients
+    ? await (service as any).from('projects').select('id', { count: 'exact', head: true })
+        .eq('workspace_id', session.workspaceId).eq('client_id', id)
+    : { count: 0 }
+
   function pillVariant(status: string): string {
     const m: Record<string, string> = {
       'Active': 'green', 'Awaiting Signature': 'amber', 'Changes Requested': 'amber',
@@ -424,6 +435,7 @@ export default async function ClientDetailPage({ params }: Props) {
 
           <ClientDangerZone
             clientId={client.id} clientName={client.name} visibleProjectCount={(projectsRaw || []).length}
+            totalProjectCount={totalProjectCount || 0}
             others={(mergeTargets || []).map((c: any) => ({ id: c.id, name: c.name, email: c.email, status: c.status }))}
             canMerge={canMergeClients} canDelete={canEditClientData && canDeleteClients}
           />

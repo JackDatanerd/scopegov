@@ -9,6 +9,7 @@ import { insertNextCoVersion } from '@/lib/documents/co-version'
 import { sendDocumentCancelledEmail } from '@/lib/email/templates'
 import { checkedSend } from '@/lib/email/delivery'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
+import { resolveReplyTo } from '@/lib/email/reply-to'
 
 // FIX (section-10 audit, 10-G2 + 10-G3 + 10-G4):
 //
@@ -140,6 +141,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Could not create a revision' }, { status: 500 })
     }
     const revision = { id: result.id!, version: result.version! }
+    let clientNotified = true
 
     // A 'countered' CO is still live from the client's point of view —
     // superseding it with a revision means closing out the old one so it
@@ -183,6 +185,30 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           actorId: session.id, actorEmail: session.email, actorName: session.name,
           reason: `Superseded by revision v${revision.version}`,
         })
+
+        // FIX (independent pass round 2, traced from section 14 via client-contacts): a
+        // 'countered' CO is one the client has actually seen and responded to — every other
+        // route that closes out a CO the client has seen (close, withdraw) emails them so they
+        // aren't left staring at a stale link. This route imported sendDocumentCancelledEmail,
+        // checkedSend and withPrimaryContactCc for exactly that but never called them, so a
+        // client whose counter-offer got superseded by a revision was never told the old CO was
+        // closed — they'd just see the same link go dead with no explanation until a new one
+        // arrived (if it ever did).
+        const client = co.projects?.clients
+        if (client?.email) {
+          const cc = await withPrimaryContactCc(service, co.projects?.client_id, client.email, client.cc_emails, 'co')
+          const replyTo = await resolveReplyTo(service, session.workspaceId, session.email)
+          const delivery = await checkedSend(() => sendDocumentCancelledEmail({
+            replyTo,
+            to: client.email, cc,
+            clientName: client.name, agencyName: co.projects?.workspaces?.agency_name,
+            projectName: co.projects?.name, documentLabel: 'Change Order',
+            documentTitle: co.title, action: 'closed',
+            reason: `Superseded by revision v${revision.version}`,
+            brandColour: co.projects?.workspaces?.brand_colour,
+          }), 'CO superseded-by-revision (client) email')
+          clientNotified = delivery.ok
+        }
       } else {
         // The CO was no longer 'countered' by the time we got here (a
         // concurrent accept-counter or close already moved it on) — the
@@ -214,7 +240,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       },
     })
 
-    return NextResponse.json({ coId: revision.id, version: revision.version })
+    return NextResponse.json({ coId: revision.id, version: revision.version, clientNotified })
   } catch (err) {
     console.error('CO revise error:', err)
     return NextResponse.json({ error: 'Could not create a revision. Please try again.' }, { status: 500 })

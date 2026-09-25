@@ -55,9 +55,6 @@ export async function POST(request: NextRequest) {
     if (!['Active','Stalled'].includes(project.status) && !isRetroactive)
       return NextResponse.json({ error: 'Guardian only active on Active projects' }, { status: 400 })
 
-    const limited = await checkAiRateLimit(service, session.id, 'guardian.check')
-    if (!limited.allowed) return NextResponse.json({ error: limited.message }, { status: 429 })
-
     // project_scope_snapshot.project_id is UNIQUE → one-to-one, PostgREST returns an object.
     const snapshot    = project.project_scope_snapshot
     const sensitivity = (project.workspaces?.guardian_sensitivity_tier || 'medium') as Sensitivity
@@ -79,6 +76,15 @@ export async function POST(request: NextRequest) {
         message: 'Guardian not yet active — no signed SOW. This request is saved and will be checked automatically once the SOW is signed.',
       })
     }
+
+    // FIX (independent pass round 2, section 13): this rate-limit check used to run before the
+    // `!snapshot` branch above, so a user who'd exhausted their AI budget on other active
+    // projects could be blocked from even queuing a free, zero-cost note against a project with
+    // no signed SOW yet — directly contradicting the "spend NOTHING" comment above it. Moved here,
+    // immediately before the first step that actually costs anything, matching guardian/inbound's
+    // ordering (which already checks the snapshot before rate-limiting).
+    const limited = await checkAiRateLimit(service, session.id, 'guardian.check')
+    if (!limited.allowed) return NextResponse.json({ error: limited.message }, { status: 429 })
 
     // ── STEP 1: embedding (always — BUG-060) ──────────────────
     const embedding = await tryEmbedding(content)
