@@ -103,6 +103,18 @@ export async function POST(request: NextRequest) {
           error: 'You created this trial workspace, so leaving it would lock you out of starting another trial with no way back in to delete it. Delete it instead (Settings > Danger Zone) if you want to abandon it, or upgrade it off the trial plan first if you\u2019d rather hand it off.',
         }, { status: 400 })
       }
+      // FIX (deep audit, Workspace lifecycle round — flagship finding, see
+      // migration 080): leaving as the creator of a non-trial workspace used
+      // to be allowed outright, permanently orphaning `created_by` — nobody,
+      // ever, could transfer ownership away from a departed creator again
+      // (transfer-ownership's own authority check only works for their own
+      // live session), leaving deletion as the only remaining move. Point at
+      // the real way out — transfer ownership first — before it happens.
+      if (leaveErr.message?.includes('owner_must_transfer')) {
+        return NextResponse.json({
+          error: 'You created this workspace, so leaving it now would leave no one able to transfer ownership away from you ever again. Transfer ownership to another admin first (Settings > Danger Zone > Transfer ownership), or delete the workspace instead if no one else should keep it.',
+        }, { status: 400 })
+      }
       if (leaveErr.message?.includes('not_a_member')) {
         return NextResponse.json({ error: 'Not a member of that workspace' }, { status: 404 })
       }

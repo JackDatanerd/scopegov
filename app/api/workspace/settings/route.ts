@@ -195,6 +195,26 @@ export async function PATCH(request: NextRequest) {
     if (!body || typeof body !== 'object' || Array.isArray(body))
       return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
 
+    // FIX (deep audit, Onboarding round — traced multi-tab/multi-session
+    // staleness risk): this route deliberately writes to session.workspaceId
+    // rather than any client-supplied ID, to defeat a confused-deputy risk
+    // already hardened in the resume flow — the onboarding wizard doesn't
+    // send its own workspaceId here at all today. But the compare-and-swap
+    // below only catches a colleague editing the SAME row concurrently; it
+    // can't catch the session's active workspace having moved to a
+    // DIFFERENT, entirely valid workspace out from under a stale tab (e.g. a
+    // second tab or device that discarded or restored a workspace mid-
+    // wizard) — that just looks like an ordinary update of that other row.
+    // When the caller does tell us which workspace it thinks it's editing,
+    // require it to match — a visible, safe refusal instead of a silent
+    // misdirected write.
+    const expectedWorkspaceId = (body as any).workspaceId
+    if (expectedWorkspaceId !== undefined && expectedWorkspaceId !== session.workspaceId) {
+      return NextResponse.json({
+        error: 'You\u2019re no longer working on that workspace. Reload the page and try again.',
+      }, { status: 409 })
+    }
+
     // `expected` carries the values the editor loaded for the fields it is
     // sending. If the row has moved on since, the save is refused rather than
     // silently overwriting a colleague's change.

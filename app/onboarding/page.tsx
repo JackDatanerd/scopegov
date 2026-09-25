@@ -547,7 +547,7 @@ function OnboardingWizard() {
         // weren't.
         const res  = await fetch('/api/workspace/settings', {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ agencyName, industry, currency, timezone }),
+          body: JSON.stringify({ workspaceId, agencyName, industry, currency, timezone }),
         })
         const json = await res.json().catch(() => ({}))
         if (!res.ok) {

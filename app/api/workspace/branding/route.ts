@@ -31,7 +31,25 @@ export async function PATCH(request: NextRequest) {
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
       return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
     }
-    const { brandColour, logoStoragePath, agencySignatureData } = body as Record<string, unknown>
+    const { workspaceId: expectedWorkspaceId, brandColour, logoStoragePath, agencySignatureData } = body as Record<string, unknown>
+    // FIX (deep audit, Onboarding round — traced multi-tab/multi-session
+    // staleness risk): this route deliberately writes to session.workspaceId
+    // rather than any client-supplied ID, to defeat a confused-deputy risk
+    // already hardened in the resume flow — the onboarding wizard's own
+    // workspaceId in the body was ignored entirely. But nothing re-checked
+    // that the caller's own idea of which workspace it's editing still
+    // matched the session's active workspace before writing. A second tab or
+    // device that changed the session's active workspace mid-wizard
+    // (discarding it, restoring an older one) could leave a stale first tab
+    // silently writing branding onto whatever workspace the session fell
+    // back to instead. When the caller does tell us which workspace it
+    // thinks it's editing, require it to match — a visible, safe refusal
+    // instead of a silent misdirected write.
+    if (expectedWorkspaceId !== undefined && expectedWorkspaceId !== session.workspaceId) {
+      return NextResponse.json({
+        error: 'You\u2019re no longer working on that workspace. Reload the page and try again.',
+      }, { status: 409 })
+    }
     const service = createServiceClient() as any
 
     const proposed: Record<string, unknown> = {}

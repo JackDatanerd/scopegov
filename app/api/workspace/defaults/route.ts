@@ -158,14 +158,29 @@ async function saveDefaults(workspaceId: string, body: any, actor: SessionUser) 
 
   // The workspace-wide governing law is also the value SOW generation reads
   // from the workspace row; keep the two in step.
+  //
+  // FIX (deep audit, Onboarding round — flagship finding): this used to gate
+  // on `governingLawValue` being truthy, so clearing the field (submitting ''
+  // to intentionally unset it) was indistinguishable from not sending it at
+  // all — the workspace_defaults row correctly went back to NULL, but
+  // workspaces.governing_law (the column sow/generate actually reads and
+  // hard-blocks on) silently kept its last non-empty value forever. Anyone
+  // who cleared it here believed they'd unset it — the wizard showed no
+  // error — while SOW generation would go on quietly using the stale
+  // jurisdiction instead of hard-blocking, exactly the silently-wrong-
+  // jurisdiction failure this hard-block exists to prevent. Gate on the
+  // field having been provided at all (`!== undefined`), not on it being
+  // non-empty, and write through null exactly like the workspace_defaults
+  // row already does two lines above this block.
   let previousGoverningLaw: string | null = null
   let governingLawChanged = false
-  if (!scope && governingLawValue) {
+  if (!scope && governingLawValue !== undefined) {
     const { data: ws } = await service.from('workspaces').select('governing_law').eq('id', workspaceId).single()
     previousGoverningLaw = ws?.governing_law ?? null
-    if (previousGoverningLaw !== governingLawValue) {
+    const nextGoverningLaw = governingLawValue || null
+    if (previousGoverningLaw !== nextGoverningLaw) {
       const { error: wsError } = await service
-        .from('workspaces').update({ governing_law: governingLawValue, updated_at: new Date().toISOString() }).eq('id', workspaceId)
+        .from('workspaces').update({ governing_law: nextGoverningLaw, updated_at: new Date().toISOString() }).eq('id', workspaceId)
       if (wsError) {
         console.error('workspaces.governing_law write-through failed:', wsError)
         throw new Error('Your defaults were saved, but the governing law could not be updated. Try again.')
@@ -187,7 +202,7 @@ async function saveDefaults(workspaceId: string, body: any, actor: SessionUser) 
   if ('payment_terms' in payload)                 after.paymentTerms = payload.payment_terms
   if ('out_of_scope_clauses' in payload)          after.outOfScopeClauses = payload.out_of_scope_clauses
   if ('assumptions' in payload)                   after.assumptions = payload.assumptions
-  if (governingLawChanged)                        after.governingLaw = governingLawValue
+  if (governingLawChanged)                        after.governingLaw = governingLawValue || null
   const { changedKeys, changes } = diffFields(before, after)
 
   if (changedKeys.length > 0 || !existing) {
@@ -215,6 +230,26 @@ async function handleSave(request: NextRequest, label: string) {
     const auth = await authorised()
     if (auth.error) return auth.error
     const body = await request.json().catch(() => null)
+    // FIX (deep audit, Onboarding round — traced multi-tab/multi-session
+    // staleness risk): this route (like branding and settings) deliberately
+    // writes to session.workspaceId rather than any client-supplied ID, to
+    // defeat a confused-deputy risk already hardened in the resume flow. But
+    // nothing previously re-checked that the caller's own idea of which
+    // workspace it's editing (the onboarding wizard's local `workspaceId`
+    // state, sent here as body.workspaceId) still matched the session's
+    // active workspace before writing. A second tab or device that changed
+    // the session's active workspace mid-wizard (discarding it, restoring an
+    // older one) could leave a stale first tab silently writing these
+    // defaults onto whatever workspace the session fell back to instead.
+    // When the caller does tell us which workspace it thinks it's editing,
+    // require it to match — turning a silent misdirected write into a
+    // visible, safe refusal — rather than only when it's simply absent.
+    if (body && typeof body === 'object' && typeof body.workspaceId === 'string' &&
+        body.workspaceId !== auth.session!.workspaceId) {
+      return NextResponse.json({
+        error: 'You\u2019re no longer working on that workspace. Reload the page and try again.',
+      }, { status: 409 })
+    }
     await saveDefaults(auth.session!.workspaceId, body, auth.session!)
     return NextResponse.json({ ok: true })
   } catch (err) {
