@@ -1,0 +1,52 @@
+ScopeGov — Sections 11 (Approval workflows engine) + 12 (Invoicing)
+Independent audit pass 4
+
+SCOPE AUDITED
+  Section 11: api/approval-workflows, api/approvals, components/approvals,
+    app/(app)/approvals, app/(app)/settings/approvals, components/settings/
+    ApprovalWorkflowsClient.tsx, lib/approvals/*, api/cron/approval-stall,
+    migration 069's approval-related functions.
+  Section 12: api/invoices/*, components/invoices/BillingTab.tsx,
+    app/(app)/invoices, api/pdf/invoice, api/portal/invoice/*,
+    api/cron/invoice-expiry, lib/documents/{send-invoice,invoice-totals,
+    invoice-token,renew-invoice-token}.ts, migration 069's invoicing
+    functions.
+
+FEATURE GAPS FOUND: none. Both sections are complete — reassignment,
+  retry-send, self-healing stall recovery, self-approval/distinct-approver/
+  other-currency policy, invoice disputes, client payment claims, itemized
+  line items with AI drafting, receivables aging, CSV export, and
+  project-level/cumulative billing caps are all present and correctly wired
+  on both client and server.
+
+BUG FOUND AND FIXED (1)
+
+  components/approvals/ApprovalsClient.tsx — ApprovalDetailModal's Cancel
+  button skipped its own confirmation dialog for an ordinary PENDING
+  approval request.
+
+    if (!sendFailed || confirm(cancelConfirmMessage(request.document_type))) act('cancel')
+
+  `!sendFailed` short-circuits to true whenever the request hasn't finished
+  approving yet, so confirm() never ran for that — the overwhelmingly common
+  — case: clicking "Cancel request" on any in-flight chain, including a
+  multi-step one where earlier steps had already been signed off, cancelled
+  it immediately with zero warning and silently reverted the document to an
+  editable draft. Every other cancel/void/delete entry point in the app
+  (including the "needs your attention" send-failed banner on this same
+  page, two paragraphs up) confirms first. The dead ternary right next to it
+  — `sendFailed ? 'Cancel request' : 'Cancel request'`, identical on both
+  branches — was the tell that this was a leftover from an incomplete edit,
+  not an intentional design.
+
+  Fix: cancelConfirmMessage() now takes a `sendFailed` boolean and adjusts
+  its wording ("this pending approval request" vs "this approved request")
+  instead of assuming the approved case; the modal's Cancel button now
+  always calls confirm() before acting, for both states. The send-failed
+  banner's own call site was updated to pass sendFailed=true explicitly
+  (no behavior change there — it was already send-failed-only). Removed the
+  now-pointless ternary on the button label.
+
+NEXT
+  Re-audit both sections independently once more (per our usual "stop only
+  when a fresh pass finds nothing" rule) after this lands.
