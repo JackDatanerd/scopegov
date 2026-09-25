@@ -169,9 +169,17 @@ function toCsv(data: Awaited<ReturnType<typeof getPortfolioData>>, canViewFinanc
   lines.push(`Documents needing action (${data.stuckDocs.length})`)
   lines.push(['Type', 'Status', 'Document', 'Project', 'Client', 'Since', 'Amount', 'Currency'].map(csvCell).join(','))
   for (const d of data.stuckDocs) {
+    // FIX (Portfolio deep audit, feature gap follow-up): this used to only apply
+    // 'redacted' (vs. a blank) to CO rows, on the reasoning that only a CO ever
+    // had a genuine total to hide — a SOW row's total was always null anyway, so
+    // treating a null SOW total as "no data" rather than "redacted" made no visible
+    // difference. Now that SOW rows also carry the project's effective value here
+    // (see the FIX note on StuckDocument['total'] in scope-health.ts), a null SOW
+    // total means exactly what a null CO total means — hidden by permission, not
+    // absent — so the same 'redacted' treatment now applies to both kinds.
     lines.push([
       d.kind, d.reason, d.title, d.projectName, d.clientName || '', new Date(d.since).toISOString(),
-      d.total === null && d.kind === 'CO' ? (canViewFinancials ? '' : 'redacted') : (d.total ?? ''), d.currency,
+      d.total === null ? (canViewFinancials ? '' : 'redacted') : d.total, d.currency,
     ].map(csvCell).join(','))
   }
   lines.push('')

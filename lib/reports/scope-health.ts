@@ -91,6 +91,17 @@ export interface StuckDocument {
   stalled: boolean
   docId: string | null
   title: string
+  /**
+   * FIX (Portfolio deep audit, feature gap): sow_documents carries no
+   * monetary column of its own — a SOW documents the project's existing
+   * contract value, it isn't a separate dollar figure — so every SOW-kind
+   * entry used to hard-code this to null, leaving "Documents needing
+   * action" showing a real amount next to every stuck CO and a permanent
+   * blank next to every stuck SOW, understating exactly the exposure this
+   * panel exists to surface. A CO's total here is still that document's OWN
+   * requested amount; a SOW's is the project's effective contract value —
+   * different things, same "what's at stake" column.
+   */
   total: number | null
   projectId: string
   /** When it got stuck: stalled_at / declined_at / expires_at where known, else the row's updated_at. */
@@ -347,7 +358,7 @@ export async function computeScopeHealth(
       if (inProgress(p) && p.status === 'Stalled' && p.stallReason === 'sow_unsigned') {
         stuckDocs.push({
           kind: 'SOW', reason: 'SOW unsigned', stalled: true, docId: null, title: 'Statement of work',
-          total: null, projectId: p.id, since: p.stalledAt || p.updatedAt,
+          total: p.effectiveValue, projectId: p.id, since: p.stalledAt || p.updatedAt,
         })
       }
     }
@@ -370,12 +381,14 @@ export async function computeScopeHealth(
       if (!cur || (s.version ?? 0) > (cur.version ?? 0)) currentSow.set(s.project_id, s)
     }
     for (const [projectId, s] of Array.from(currentSow.entries())) {
-      if (!inProgress(projectById[projectId])) continue
+      const p = projectById[projectId]
+      if (!inProgress(p)) continue
       const reason = s.status === 'declined' ? 'Declined' : s.status === 'expired' ? 'Expired'
         : s.status === 'changes_requested' ? 'Changes requested' : null
       if (!reason) continue
       stuckDocs.push({
-        kind: 'SOW', reason, stalled: false, docId: s.id, title: 'Statement of work', total: null, projectId,
+        kind: 'SOW', reason, stalled: false, docId: s.id, title: 'Statement of work',
+        total: p.effectiveValue, projectId,
         since: (s.status === 'declined' ? s.declined_at : s.status === 'expired' ? s.expires_at : null) || s.updated_at,
       })
     }
