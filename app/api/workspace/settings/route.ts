@@ -10,9 +10,28 @@ import { INDUSTRIES, CURRENCIES } from '@/lib/constants/workspace-options'
 import { isValidTimeZone } from '@/lib/utils/timezone'
 import { diffFields, sameValue } from '@/lib/utils/audit-diff'
 
+// FEATURE (deep audit, Settings independent re-pass — feature gap):
+// workspaces.slug/slug_changed_at (migration 001) have existed since day
+// one — generated once at creation (workspace/create/route.ts) and never
+// read back or exposed anywhere since. slug_changed_at in particular was
+// never written by anything at all, which only makes sense as the
+// leftover half of a rename feature that was never finished. Give it the
+// one it was clearly built for: an editable workspace handle, rate-
+// limited by slug_changed_at the same way the column name implies. See
+// this route's slug case in parseField and the rate-limit/uniqueness
+// handling in PATCH below, and app/api/reports/{export,audit-export,
+// portfolio/export} for the three places that used to re-derive their
+// own throwaway version of this instead of reading the real one.
+const SLUG_MIN_DAYS_BETWEEN_CHANGES = 30
+
+function isValidSlug(v: string): boolean {
+  return /^[a-z0-9]+(-[a-z0-9]+)*$/.test(v) && v.length >= 3 && v.length <= 50
+}
+
 // API field name -> workspaces column.
 const COLUMNS: Record<string, string> = {
   name:                       'name',
+  slug:                       'slug',
   agencyName:                 'agency_name',
   industry:                   'industry',
   currency:                   'currency',
@@ -66,6 +85,12 @@ function parseField(key: string, value: unknown): unknown {
     case 'name': {
       const v = sanitizeDisplayName(requireString(value, 'Workspace name'))
       if (!v.trim()) throw new FieldError('Workspace name is required')
+      return v
+    }
+    case 'slug': {
+      const v = requireString(value, 'Workspace handle').trim().toLowerCase()
+      if (!isValidSlug(v))
+        throw new FieldError('Workspace handle must be 3\u201350 characters: lowercase letters, numbers, and single hyphens between them, with no leading or trailing hyphen')
       return v
     }
     case 'agencyName': {
@@ -224,9 +249,12 @@ export async function PATCH(request: NextRequest) {
 
     const service = createServiceClient()
 
+    // slug_changed_at isn't itself a settable field (it's not in COLUMNS —
+    // nothing accepts it from the client), but the slug rate-limit check
+    // below needs to read it alongside everything else.
     const { data: current, error: currentErr } = await (service as any)
       .from('workspaces')
-      .select(`${Object.values(COLUMNS).join(', ')}, updated_at`)
+      .select(`${Object.values(COLUMNS).join(', ')}, slug_changed_at, updated_at`)
       .eq('id', session.workspaceId).single()
     if (currentErr || !current) {
       console.error('Workspace settings: could not load workspace:', currentErr)
@@ -264,8 +292,23 @@ export async function PATCH(request: NextRequest) {
     // the same field look like a concurrent change by someone else.
     if (changedKeys.length === 0) return NextResponse.json({ ok: true, unchanged: true, values: proposed })
 
+    // The handle is a link surface (report filenames read it back — see the
+    // FEATURE comment above COLUMNS), so it isn't rewritten freely: rate-
+    // limited by slug_changed_at the same way the column name implies it
+    // was always meant to be, mirroring every other cooldown pattern in
+    // this codebase that gates a re-issue by "when did this last change."
+    if (changedKeys.includes('slug') && current.slug_changed_at) {
+      const nextAllowed = new Date(current.slug_changed_at).getTime() + SLUG_MIN_DAYS_BETWEEN_CHANGES * 24 * 60 * 60 * 1000
+      if (nextAllowed > Date.now()) {
+        return NextResponse.json({
+          error: `The workspace handle can be changed once every ${SLUG_MIN_DAYS_BETWEEN_CHANGES} days. It can next be changed on ${new Date(nextAllowed).toLocaleDateString()}.`,
+        }, { status: 409 })
+      }
+    }
+
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
     for (const key of changedKeys) updates[COLUMNS[key]] = proposed[key]
+    if (changedKeys.includes('slug')) updates.slug_changed_at = new Date().toISOString()
 
     // Compare-and-swap on updated_at: the conflict check above and this write are two round
     // trips, so two admins saving in the same instant could both pass it. Only write if the row
@@ -275,6 +318,9 @@ export async function PATCH(request: NextRequest) {
     const { data: written, error } = await write.select('id')
 
     if (error) {
+      // workspaces.slug is UNIQUE (migration 001) — someone else already holds it.
+      if ((error as any).code === '23505' && changedKeys.includes('slug'))
+        return NextResponse.json({ error: 'That workspace handle is already taken. Try another.' }, { status: 409 })
       console.error('Workspace settings update failed:', error)
       return NextResponse.json({ error: 'Failed to update workspace settings' }, { status: 500 })
     }

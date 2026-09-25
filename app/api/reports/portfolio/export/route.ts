@@ -48,7 +48,7 @@ export async function GET(request: NextRequest) {
     // keeps the dashboard's per-severity cap and says so.
     const data = await getPortfolioData(service, session.workspaceId, period, canViewFinancials, canViewClients,
       format === 'csv' ? { flagsPerSeverity: 5000, exceptionsLimit: 5000 } : {})
-    const filenameBase = filenameSlug(session.workspaceName, period)
+    const filenameBase = filenameSlug(session.workspaceSlug, session.workspaceName, period)
 
     // Build the file FIRST, audit after: the audit row used to be written
     // before generation, so a failed render still recorded a successful export.
@@ -94,8 +94,15 @@ export async function GET(request: NextRequest) {
   }
 }
 
-function filenameSlug(workspaceName: string, period: string): string {
-  const slug = workspaceName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'workspace'
+function filenameSlug(workspaceSlug: string, workspaceName: string, period: string): string {
+  // FIX (deep audit, Settings independent re-pass — feature gap): see
+  // reports/export/route.ts's sibling function for the full story — this
+  // was the second of three copies of the same re-derive-it-every-time
+  // logic. Use the canonical workspaces.slug now; fall back only for a
+  // defensively-empty value.
+  const slug = (workspaceSlug || '').trim()
+    || workspaceName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')
+    || 'workspace'
   const date = new Date().toISOString().slice(0, 10)
   return `${slug}-portfolio-${period}-${date}`
 }

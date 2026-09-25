@@ -27,7 +27,14 @@ export default async function SettingsPage() {
       // correctly; they just never came back on the next page load, so a
       // successful save looked exactly like a failed one (fields render
       // blank again on refresh, even though the data is in Postgres).
-      .select('id,name,agency_name,brand_colour,logo_storage_path,agency_signature_data,industry,currency,timezone,sow_language,governing_law,proactive_risk_threshold,proactive_risk_alerts_enabled,guardian_sensitivity_tier,plan_tier,trial_ends_at,created_at,created_by,tax_id,phone,website,default_payment_instructions,legal_address,updated_at')
+      // FEATURE (deep audit, Settings independent re-pass — feature gap):
+      // slug/slug_changed_at added alongside the fix above for the exact
+      // same reason — workspace/settings/route.ts now accepts and stores
+      // both (see that route's own comment), and they need to come back
+      // here or the new "Workspace handle" field in WorkspaceTab below
+      // would render blank on every load, and the rate-limit hint would
+      // have nothing to compute "next eligible" from.
+      .select('id,name,slug,slug_changed_at,agency_name,brand_colour,logo_storage_path,agency_signature_data,industry,currency,timezone,sow_language,governing_law,proactive_risk_threshold,proactive_risk_alerts_enabled,guardian_sensitivity_tier,plan_tier,trial_ends_at,created_at,created_by,tax_id,phone,website,default_payment_instructions,legal_address,updated_at')
       .eq('id', session.workspaceId)
       .single(),
     (service as any)

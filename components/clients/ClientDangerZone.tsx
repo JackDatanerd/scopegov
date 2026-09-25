@@ -116,7 +116,7 @@ export default function ClientDangerZone({
         {canDelete && totalProjectCount > 0 && visibleProjectCount === 0 && (
           <div style={{ marginTop: canMerge ? 12 : 0 }}>
             <p style={{ fontSize: 11, color: 'var(--text-4)', margin: 0 }}>
-              This client can't be deleted — it still has {totalProjectCount} project{totalProjectCount === 1 ? '' : 's'} on
+              This client can&apos;t be deleted — it still has {totalProjectCount} project{totalProjectCount === 1 ? '' : 's'} on
               record (including deleted ones). Archive it, or merge it into another client, instead.
             </p>
           </div>

@@ -10,6 +10,7 @@ import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import type { SessionUser } from '@/lib/supabase/types'
 import { initials, avatarColour, formatDate, ALL_PERMISSIONS, PLAN_LIMITS } from '@/lib/utils/format'
+import { roleHolderCounts } from '@/lib/utils/role-holders'
 
 // FIX (deep audit, section 6 — feature gap): mirrors the exact allowlist
 // api/team/roles POST enforces server-side. Kept as one shared constant
@@ -711,7 +712,28 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
               </thead>
               <tbody>
                 {roles.map((r: any) => {
-                  const memberCount = members.filter((m: any) => m.role_id === r.id).length
+                  // FIX (deep audit, Team & Invites independent re-pass —
+                  // display gap): this used to count only `members` (active).
+                  // DELETE /api/team/roles/[id] refuses a role held by ANY
+                  // active, pending/expired, OR deactivated row — three
+                  // categories this component already receives as props but
+                  // never looked at here. A role could show "0 Members" with
+                  // a plain "Delete role" tooltip while pending invites or
+                  // deactivated members still held it, so clicking Delete
+                  // did nothing but surface a 409 the UI gave no warning of.
+                  // Compute all three so the Members column and the Delete
+                  // button's own gating agree with what the server will
+                  // actually do, instead of only ever describing the active
+                  // slice of the truth.
+                  const { active: activeCount, pending: pendingCount, deactivated: deactivatedCount, total: totalHolders } =
+                    roleHolderCounts(r.id, { members, pendingInvites, expiredInvites, deactivatedMembers })
+                  const deleteBlockedReason = activeCount > 0
+                    ? `${activeCount} active member${activeCount === 1 ? '' : 's'} currently hold this role. Reassign them first.`
+                    : pendingCount > 0
+                    ? `${pendingCount} pending or expired invite${pendingCount === 1 ? '' : 's'} still use this role. Revoke or reassign first.`
+                    : deactivatedCount > 0
+                    ? `${deactivatedCount} deactivated member${deactivatedCount === 1 ? '' : 's'} still hold this role. Change their role first.`
+                    : null
                   const permCount   = Object.values(r.permissions || {}).filter(Boolean).length
                   return (
                     <tr key={r.id}>
@@ -720,7 +742,15 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
                         {r.is_default && <span className="pill pill-slate pill-sm" style={{ marginTop: 3 }}>Default</span>}
                       </td>
                       <td style={{ color: 'var(--text-2)', fontSize: 12 }}>{r.description || '—'}</td>
-                      <td style={{ textAlign: 'center', fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 18 }}>{memberCount}</td>
+                      <td style={{ textAlign: 'center' }}>
+                        <span style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 18 }}>{activeCount}</span>
+                        {(pendingCount > 0 || deactivatedCount > 0) && (
+                          <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 1 }}
+                            title="Not counted as active, but still holds this role and will block deletion">
+                            +{pendingCount + deactivatedCount} pending/inactive
+                          </div>
+                        )}
+                      </td>
                       <td style={{ textAlign: 'center' }}>
                         {/* FIX (deep audit, Team & Invites re-pass): hardcoded "/ 24"
                            went stale the moment a 25th permission (APPROVE_DOCUMENTS)
@@ -754,7 +784,8 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
                                   <i className="ti ti-star" style={{ fontSize: 13 }} />
                                 </button>
                                 <button className="btn-icon" style={{ color: 'var(--red)' }}
-                                  title={memberCount > 0 ? 'Reassign members before deleting' : 'Delete role'}
+                                  disabled={totalHolders > 0}
+                                  title={deleteBlockedReason || 'Delete role'}
                                   onClick={() => handleDeleteRole(r.id, r.name)}>
                                   <i className="ti ti-trash" style={{ fontSize: 13 }} />
                                 </button>

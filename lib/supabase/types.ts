@@ -536,6 +536,13 @@ export interface SessionUser {
   avatarUrl: string | null
   workspaceId: string
   workspaceName: string
+  // FEATURE (deep audit, Settings independent re-pass — feature gap):
+  // workspaces.slug has existed since migration 001 but was never surfaced
+  // to a session consumer — see workspace/settings/route.ts's slug case for
+  // where it's now editable, and the report-export routes for its first
+  // real consumer (a stable filename base instead of each one re-deriving
+  // its own throwaway version of the agency name every time).
+  workspaceSlug: string
   agencyName: string
   planTier: Plan
   trialEndsAt: string | null

@@ -81,7 +81,7 @@ export async function getSession(): Promise<SessionUser | null> {
           effective_permissions,
           workspace_id,
           workspaces (
-            id, name, agency_name, plan_tier, trial_ends_at, onboarding_completed_at,
+            id, name, slug, agency_name, plan_tier, trial_ends_at, onboarding_completed_at,
             brand_colour, logo_storage_path, deleted_at
           ),
           users!workspace_members_user_id_fkey (
@@ -108,7 +108,7 @@ export async function getSession(): Promise<SessionUser | null> {
           effective_permissions,
           workspace_id,
           workspaces (
-            id, name, agency_name, plan_tier, trial_ends_at, onboarding_completed_at,
+            id, name, slug, agency_name, plan_tier, trial_ends_at, onboarding_completed_at,
             brand_colour, logo_storage_path, deleted_at
           ),
           users!workspace_members_user_id_fkey (
@@ -143,6 +143,7 @@ export async function getSession(): Promise<SessionUser | null> {
       avatarUrl:            u?.avatar_url || null,
       workspaceId:          memberRow.workspace_id,
       workspaceName:        ws?.name || '',
+      workspaceSlug:        ws?.slug || '',
       agencyName:           ws?.agency_name || '',
       planTier:             ws?.plan_tier || 'trial',
       trialEndsAt:          ws?.trial_ends_at || null,

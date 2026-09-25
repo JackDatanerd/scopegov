@@ -247,7 +247,7 @@ export async function GET(request: Request) {
       const csv = toCsv(pageRows, canViewFinancials, truncated, totalCount)
       body = new Uint8Array(Buffer.from(CSV_BOM + csv, 'utf-8'))
       contentType = 'text/csv; charset=utf-8'
-      filename = exportFilename(session.workspaceName, fromDate, upper, 'csv')
+      filename = exportFilename(session.workspaceSlug, session.workspaceName, fromDate, upper, 'csv')
     } else {
       const pdfRows: AuditReportRow[] = pageRows.map(r => ({
         createdAt: r.created_at, eventType: r.event_type, actorName: r.actor_name || 'System',
@@ -271,7 +271,7 @@ export async function GET(request: Request) {
       })
       body = new Uint8Array(buffer)
       contentType = 'application/pdf'
-      filename = exportFilename(session.workspaceName, fromDate, upper, 'pdf')
+      filename = exportFilename(session.workspaceSlug, session.workspaceName, fromDate, upper, 'pdf')
     }
 
     // Log the export itself — but only once the file has actually been
@@ -302,8 +302,13 @@ export async function GET(request: Request) {
   }
 }
 
-function exportFilename(workspaceName: string, from: Date, to: Date, ext: 'csv' | 'pdf'): string {
-  const slug = (workspaceName || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'workspace'
+function exportFilename(workspaceSlug: string, workspaceName: string, from: Date, to: Date, ext: 'csv' | 'pdf'): string {
+  // FIX (deep audit, Settings independent re-pass — feature gap): third of
+  // three copies of the same re-derive-it-every-time logic — see
+  // reports/export/route.ts's sibling function for the full story.
+  const slug = (workspaceSlug || '').trim()
+    || (workspaceName || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')
+    || 'workspace'
   const d = (dt: Date) => dt.toISOString().slice(0, 10)
   return `${slug}-audit-log-${d(from)}-to-${d(to)}.${ext}`
 }

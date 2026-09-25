@@ -15,6 +15,7 @@ function actor(permissions: string[]): SessionUser {
     avatarUrl: null,
     workspaceId: 'ws-1',
     workspaceName: 'Test Workspace',
+    workspaceSlug: 'test-workspace',
     agencyName: 'Test Agency',
     planTier: 'pro',
     trialEndsAt: null,

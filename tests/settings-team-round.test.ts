@@ -75,7 +75,7 @@ beforeEach(() => {
 // Settings PATCH: billing defaults, normalised values, compare-and-swap
 // ═════════════════════════════════════════════════════════════════════════
 const WS_ROW = {
-  name: 'Acme', agency_name: 'Acme', industry: 'Other', currency: 'USD', timezone: 'Africa/Nairobi',
+  name: 'Acme', slug: 'acme', slug_changed_at: null, agency_name: 'Acme', industry: 'Other', currency: 'USD', timezone: 'Africa/Nairobi',
   sow_language: 'en', governing_law: 'Kenya', guardian_sensitivity_tier: 'medium', proactive_risk_alerts_enabled: true,
   proactive_risk_threshold: 10000, auto_client_reminders: false, client_reminder_after_days: 3, client_reminder_max: 3,
   tax_id: null, phone: null, website: null, default_payment_instructions: null, reply_to_email: null, legal_address: null,
@@ -143,6 +143,86 @@ describe('PATCH /api/workspace/settings — normalised values and the compare-an
     expect(res.status).toBe(409)
     const json = await res.json()
     expect(Array.isArray(json.conflicts)).toBe(true) // the client shows "Reload latest settings" off this
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════
+// FEATURE (deep audit, Settings independent re-pass — feature gap):
+// workspaces.slug/slug_changed_at existed since migration 001 but were
+// never editable or read back anywhere. PATCH /api/workspace/settings now
+// accepts `slug`, validates its format, rate-limits changes by
+// slug_changed_at, and surfaces a friendly conflict on the DB's own
+// uniqueness constraint.
+// ═════════════════════════════════════════════════════════════════════════
+describe('PATCH /api/workspace/settings — workspace handle (slug)', () => {
+  it('rejects an invalid handle (uppercase, too short, leading hyphen, bad characters) without writing', async () => {
+    session = mkSession(['MANAGE_WORKSPACE_SETTINGS']); settingsResolver()
+    const { PATCH } = await import('@/app/api/workspace/settings/route')
+    for (const bad of ['AB', 'ac', '-acme', 'acme_studio', 'acme studio', 'a'.repeat(51)]) {
+      const res = await PATCH(req('/api/workspace/settings', 'PATCH', { slug: bad }))
+      expect(res.status).toBe(400)
+    }
+    expect(updatesTo('workspaces')).toHaveLength(0)
+  })
+  it('lower-cases a valid handle and writes slug_changed_at alongside it', async () => {
+    session = mkSession(['MANAGE_WORKSPACE_SETTINGS']); settingsResolver()
+    const { PATCH } = await import('@/app/api/workspace/settings/route')
+    const res = await PATCH(req('/api/workspace/settings', 'PATCH', { slug: 'Acme-Studio' }))
+    expect(res.status).toBe(200)
+    expect((await res.json()).values.slug).toBe('acme-studio')
+    const update = updatesTo('workspaces')[0]
+    expect(update.slug).toBe('acme-studio')
+    expect(typeof update.slug_changed_at).toBe('string')
+  })
+  it('blocks a second change inside the 30-day cooldown with the next-eligible date', async () => {
+    session = mkSession(['MANAGE_WORKSPACE_SETTINGS'])
+    resolver = (t, ops) => {
+      if (t === 'workspaces' && first(ops) === 'select')
+        return { data: { ...WS_ROW, slug: 'acme', slug_changed_at: new Date().toISOString() }, error: null }
+      return { data: null, error: null }
+    }
+    const { PATCH } = await import('@/app/api/workspace/settings/route')
+    const res = await PATCH(req('/api/workspace/settings', 'PATCH', { slug: 'acme-2' }))
+    expect(res.status).toBe(409)
+    expect((await res.json()).error).toContain('30 days')
+    expect(updatesTo('workspaces')).toHaveLength(0)
+  })
+  it('allows changing it again once the cooldown has passed', async () => {
+    session = mkSession(['MANAGE_WORKSPACE_SETTINGS'])
+    const old = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString()
+    resolver = (t, ops) => {
+      if (t === 'workspaces' && first(ops) === 'select')
+        return { data: { ...WS_ROW, slug: 'acme', slug_changed_at: old }, error: null }
+      if (t === 'workspaces' && first(ops) === 'update') return { data: [{ id: 'w1' }], error: null }
+      return { data: null, error: null }
+    }
+    const { PATCH } = await import('@/app/api/workspace/settings/route')
+    const res = await PATCH(req('/api/workspace/settings', 'PATCH', { slug: 'acme-2' }))
+    expect(res.status).toBe(200)
+  })
+  it('a slug unchanged from its current value never triggers the cooldown check, even if slug_changed_at is recent', async () => {
+    session = mkSession(['MANAGE_WORKSPACE_SETTINGS'])
+    resolver = (t, ops) => {
+      if (t === 'workspaces' && first(ops) === 'select')
+        return { data: { ...WS_ROW, slug: 'acme', slug_changed_at: new Date().toISOString() }, error: null }
+      return { data: null, error: null }
+    }
+    const { PATCH } = await import('@/app/api/workspace/settings/route')
+    const res = await PATCH(req('/api/workspace/settings', 'PATCH', { slug: 'acme' }))
+    expect(res.status).toBe(200)
+    expect((await res.json()).unchanged).toBe(true)
+  })
+  it('turns a unique-constraint violation into a friendly "already taken" 409, not a generic 500', async () => {
+    session = mkSession(['MANAGE_WORKSPACE_SETTINGS'])
+    resolver = (t, ops) => {
+      if (t === 'workspaces' && first(ops) === 'select') return { data: WS_ROW, error: null }
+      if (t === 'workspaces' && first(ops) === 'update') return { data: null, error: { code: '23505', message: 'duplicate key' } }
+      return { data: null, error: null }
+    }
+    const { PATCH } = await import('@/app/api/workspace/settings/route')
+    const res = await PATCH(req('/api/workspace/settings', 'PATCH', { slug: 'taken-handle' }))
+    expect(res.status).toBe(409)
+    expect((await res.json()).error).toContain('already taken')
   })
 })
 

@@ -73,7 +73,7 @@ export async function GET(request: NextRequest) {
       metadata: { mode, format, period, currency: data.currency, truncated: data.truncated },
     })
 
-    const filenameBase = filenameSlug(session.workspaceName, mode, period)
+    const filenameBase = filenameSlug(session.workspaceSlug, session.workspaceName, mode, period)
 
     if (format === 'csv') {
       const csv = mode === 'scope' ? scopeToCsv(data) : financialToCsv(data)
@@ -106,8 +106,21 @@ export async function GET(request: NextRequest) {
   }
 }
 
-function filenameSlug(workspaceName: string, mode: string, period: string): string {
-  const slug = workspaceName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'workspace'
+function filenameSlug(workspaceSlug: string, workspaceName: string, mode: string, period: string): string {
+  // FIX (deep audit, Settings independent re-pass — feature gap): this used
+  // to re-derive its own throwaway slug from the workspace NAME on every
+  // export, duplicated three times across this route and its two siblings
+  // (audit-export, portfolio/export) — and none of the three agreed with
+  // each other on a stable identifier if the agency ever renamed itself.
+  // workspaces.slug (session.workspaceSlug) is the one the app actually
+  // treats as canonical now (see workspace/settings/route.ts's slug case),
+  // so use it directly; only fall back to re-deriving one from the name for
+  // a session predating that column being populated everywhere (there
+  // shouldn't be any, since it's NOT NULL, but this keeps a bad/empty value
+  // from ever producing an empty filename rather than throwing).
+  const slug = (workspaceSlug || '').trim()
+    || workspaceName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')
+    || 'workspace'
   const date = new Date().toISOString().slice(0, 10)
   return `${slug}-${mode}-report-${period}-${date}`
 }

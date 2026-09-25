@@ -106,6 +106,7 @@ const trimText = (v: unknown) => String(v ?? '').trim()
 function workspaceToForm(ws: any) {
   return {
     name:         ws?.name || '',
+    slug:         ws?.slug || '',
     agencyName:   ws?.agency_name || '',
     industry:     ws?.industry || '',
     timezone:     ws?.timezone || '',
@@ -436,7 +437,8 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
         {tab === 'account' && <AccountTab session={session} supabase={supabase} router={router} mfaMandatory={mfaMandatory} />}
 
         {tab === 'workspace' && (
-          <WorkspaceTab form={wsForm} setForm={setWsForm} permissions={permissions} onSave={patchWorkspace} saving={saving} />
+          <WorkspaceTab form={wsForm} setForm={setWsForm} permissions={permissions} onSave={patchWorkspace} saving={saving}
+            slugChangedAt={workspace?.slug_changed_at || null} />
         )}
 
         {tab === 'branding' && (
@@ -736,7 +738,7 @@ function AccountTab({ session, supabase, router, mfaMandatory }: any) {
 }
 
 // ── WORKSPACE ─────────────────────────────────────────────────
-function WorkspaceTab({ form, setForm, permissions, onSave, saving }: any) {
+function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedAt }: any) {
   // Full runtime timezone list, read after mount (see runtimeTimezones).
   const [zones, setZones] = useState<string[]>(FALLBACK_TIMEZONES)
   useEffect(() => { setZones(runtimeTimezones()) }, [])
@@ -746,6 +748,24 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving }: any) {
   function set<K extends string>(key: K, value: string | boolean) {
     setForm((f: any) => ({ ...f, [key]: value }))
   }
+
+  // FEATURE (deep audit, Settings independent re-pass — feature gap): see
+  // workspace/settings/route.ts's own comment on the slug case — this is
+  // the front door for the handle that column has always existed for but
+  // never had one. Lowercased and hyphen-cleaned as the person types, to
+  // match what the server will normalise it to anyway, so what they see
+  // here is what actually gets saved instead of surprising them after a
+  // reload. The 30-day cooldown mirrors SLUG_MIN_DAYS_BETWEEN_CHANGES —
+  // shown here only as an advisory hint; the server is the real gate.
+  const SLUG_MIN_DAYS_BETWEEN_CHANGES = 30
+  function setSlug(raw: string) {
+    const v = raw.toLowerCase().replace(/[^a-z0-9-]/g, '').replace(/-+/g, '-').replace(/^-/, '')
+    set('slug', v)
+  }
+  const nextSlugChangeAt = slugChangedAt
+    ? new Date(new Date(slugChangedAt).getTime() + SLUG_MIN_DAYS_BETWEEN_CHANGES * 24 * 60 * 60 * 1000)
+    : null
+  const slugLocked = !!(nextSlugChangeAt && nextSlugChangeAt.getTime() > Date.now())
   function setAddr(key: string, value: string) {
     setForm((f: any) => ({ ...f, legalAddress: { ...f.legalAddress, [key]: value } }))
   }
@@ -816,6 +836,17 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving }: any) {
             {SOW_LANGUAGES.map(l => <option key={l.code} value={l.code}>{l.label}</option>)}
           </select>
           <span className="fhint">The language every new SOW is drafted in — the client-facing content, and the standard clauses (parties, governing law, signature block).</span>
+        </div>
+        <div className="fgrp">
+          <label className="flbl">Workspace handle <span className="fhint">— used in exported report filenames</span></label>
+          <input className="finp" style={{ maxWidth: 280 }} value={form.slug} disabled={slugLocked}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSlug(e.target.value)}
+            placeholder="acme-studio" />
+          <span className="fhint">
+            {slugLocked
+              ? `Can be changed again on ${nextSlugChangeAt!.toLocaleDateString()}. Lowercase letters, numbers, and hyphens only.`
+              : 'Lowercase letters, numbers, and hyphens only. Changing it can be done again after 30 days, and takes effect on the next report you export.'}
+          </span>
         </div>
         <div className="settings-section-title" style={{ marginTop: 24 }}>
           Client reminders <span className="fhint" style={{ fontWeight: 400 }}>— nudge clients automatically</span>
