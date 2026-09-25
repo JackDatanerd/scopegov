@@ -201,7 +201,16 @@ function ScopeReport({ data }: { data: any }) {
         <div className="mc">
           <div className="mc-lbl">Flags raised</div>
           <div className="mc-val red">{metrics?.total_flags ?? 0}</div>
-          <div className="mc-sub">Confirmed out of scope{metrics?.dismissed_flags ? ` · ${metrics.dismissed_flags} dismissed` : ''}</div>
+          {/* FIX (deep audit, Reports & Audit re-pass — feature gap): this
+              line used to mention dismissed flags only, so a flag sitting in
+              borderline review (a separately-tracked, genuinely different
+              state — see lib/reports/scope-financial-data.ts point 4) had no
+              visibility here at all. */}
+          <div className="mc-sub">
+            Confirmed out of scope
+            {metrics?.dismissed_flags ? ` · ${metrics.dismissed_flags} dismissed` : ''}
+            {metrics?.pending_review_flags ? ` · ${metrics.pending_review_flags} pending review` : ''}
+          </div>
         </div>
         <div className="mc">
           <div className="mc-lbl">Converted to CO</div>
@@ -325,6 +334,41 @@ function ScopeReport({ data }: { data: any }) {
           )}
         </div>
       </div>
+
+      {/* FIX (deep audit, Reports & Audit re-pass — feature gap): see
+          lib/reports/scope-financial-data.ts point 10. total_flags only ever
+          broke down into "converted" vs "everything else" here — dismissed
+          and pending-review flags were correctly excluded from total_flags,
+          but a flag that reached a terminal state WITHOUT becoming a change
+          order (an exception grant, or a plain manual close) was still
+          silently inside total_flags with no bucket of its own, deflating
+          "Recovery rate" with no way to tell why. Mirrors the CO impact grid
+          in FinancialReport below, which already gives every one of its
+          buckets a visible home. */}
+      {metrics && (
+        <div className="surface surface-p" style={{ marginTop: 20 }}>
+          <div className="sec-hd" style={{ marginBottom: 14 }}>
+            <div className="sec-title">Flag outcome grid</div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 1, background: 'var(--border)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', overflow: 'hidden' }}>
+            {[
+              { label: 'Raised', val: metrics.total_flags, color: 'var(--text)' },
+              { label: 'Converted to CO', val: metrics.converted_to_co, color: 'var(--green)' },
+              { label: 'Closed (no CO)', val: metrics.closed_without_co_flags, color: 'var(--text-3)' },
+              { label: 'Still open', val: metrics.still_open_flags, color: 'var(--amber)' },
+              { label: 'Pending review', val: metrics.pending_review_flags, color: 'var(--amber)' },
+            ].map(item => (
+              <div key={item.label} style={{ background: 'var(--surface)', padding: '16px 18px' }}>
+                <div className="mc-lbl">{item.label}</div>
+                <div className="mc-val" style={{ color: item.color }}>{item.val ?? 0}</div>
+              </div>
+            ))}
+          </div>
+          <p style={{ fontSize: 12, color: 'var(--text-3)', margin: '10px 2px 0' }}>
+            Dismissed flags ({metrics.dismissed_flags ?? 0}) are excluded from "Raised" entirely — they were never confirmed out of scope.
+          </p>
+        </div>
+      )}
 
       {/* Scope adjustments */}
       {(adjustments || []).length > 0 && (

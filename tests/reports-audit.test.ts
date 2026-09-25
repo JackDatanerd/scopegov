@@ -82,6 +82,14 @@ describe('category filter', () => {
     expect(categoryFilter('nope')).toBeNull()
     expect(categoryFilter(undefined)).toBeNull()
   })
+  // FIX (deep audit, Reports & Audit re-pass — cosmetic): the 'team' category
+  // used to also list the literal pattern 'workspace.role_created', which no
+  // code emits (role creation is logged as 'role.created', already matched
+  // by 'role.%'). Harmless dead code, but pin the category down to exactly
+  // what it should match so it can't quietly grow another one.
+  it('team category matches only member.* and role.*', () => {
+    expect(categoryFilter('team')).toBe('event_type.like."member.%",event_type.like."role.%"')
+  })
 })
 
 describe('redactMetadata', () => {
@@ -159,6 +167,39 @@ describe('classifyFlag', () => {
     expect(classifyFlag({ status: 'closed', resolution: 'not_out_of_scope' }).counted).toBe(false)
     expect(classifyFlag({ status: 'borderline_review', resolution: null }).counted).toBe(false)
     expect(classifyFlag({ status: 'open', resolution: null }).counted).toBe(true)
+  })
+  // FIX (deep audit, Reports & Audit re-pass — feature gap): regression
+  // tests for closedWithoutCo, added so a flag resolved via an exception
+  // grant or a plain manual close is no longer invisible in the report —
+  // see lib/reports/scope-financial-data.ts point 10(b).
+  it('classifies exception grants and manual closes as closed-without-CO, not converted', () => {
+    expect(classifyFlag({ status: 'resolved', resolution: 'exception' })).toMatchObject({ converted: false, closedWithoutCo: true, counted: true })
+    expect(classifyFlag({ status: 'resolved', resolution: 'closed' })).toMatchObject({ converted: false, closedWithoutCo: true, counted: true })
+    expect(classifyFlag({ status: 'closed', resolution: 'closed' })).toMatchObject({ converted: false, closedWithoutCo: true, counted: true })
+  })
+  it('never double-counts a converted flag as closed-without-CO', () => {
+    expect(classifyFlag({ status: 'resolved', resolution: 'change_order' }).closedWithoutCo).toBe(false)
+    expect(classifyFlag({ status: 'converted_to_co', resolution: null }).closedWithoutCo).toBe(false)
+  })
+  it('leaves a still-open flag as neither converted nor closed-without-CO', () => {
+    expect(classifyFlag({ status: 'open', resolution: null })).toMatchObject({ converted: false, closedWithoutCo: false, counted: true })
+  })
+  it('the three outcome buckets always partition the counted total', () => {
+    const sample = [
+      { status: 'open', resolution: null },
+      { status: 'resolved', resolution: 'change_order' },
+      { status: 'converted_to_co', resolution: null },
+      { status: 'resolved', resolution: 'exception' },
+      { status: 'closed', resolution: 'closed' },
+      { status: 'borderline_review', resolution: null },
+      { status: 'closed', resolution: 'not_out_of_scope' },
+    ]
+    const counted = sample.map(classifyFlag).filter(c => c.counted)
+    const converted = counted.filter(c => c.converted).length
+    const closedWithoutCo = counted.filter(c => c.closedWithoutCo).length
+    const stillOpen = counted.filter(c => !c.converted && !c.closedWithoutCo).length
+    expect(converted + closedWithoutCo + stillOpen).toBe(counted.length)
+    expect(counted.length).toBe(5) // excludes the borderline_review and not_out_of_scope rows
   })
 })
 

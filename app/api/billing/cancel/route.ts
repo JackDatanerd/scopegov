@@ -1,3 +1,13 @@
+// FIX (deep audit, Billing re-pass — independent redo): no explicit
+// maxDuration was set, so this route ran under Vercel's platform default (as
+// low as 10s), the same class of bug already fixed in
+// app/api/sow/generate/route.ts and app/api/billing/webhook/route.ts.
+// cancelPaystackSubscription below carries its own 12s internal timeout
+// (lib/integrations/paystack.ts) on the user-facing "cancel my subscription"
+// request — a legitimately slow-but-successful Paystack response could
+// exceed the platform default on its own.
+export const maxDuration = 30
+
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'

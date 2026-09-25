@@ -101,29 +101,57 @@ describe('webhook claims', () => {
   const KEY = 'charge.success:abc'
   it('claims once, then reports an in-flight duplicate', async () => {
     const svc = fakeService({ processed_webhook_events: [] }, { processed_webhook_events: 'idempotency_key' })
-    expect(await claimWebhookEvent(svc, KEY, 1_000)).toBe('claimed')
-    expect(await claimWebhookEvent(svc, KEY, 1_500)).toBe('in_progress')
+    expect((await claimWebhookEvent(svc, KEY, 1_000)).status).toBe('claimed')
+    expect((await claimWebhookEvent(svc, KEY, 1_500)).status).toBe('in_progress')
   })
   it('a FAILED attempt releases the claim so the retry re-runs (the lost-payment bug)', async () => {
     const svc = fakeService({ processed_webhook_events: [] }, { processed_webhook_events: 'idempotency_key' })
-    expect(await claimWebhookEvent(svc, KEY, 1_000)).toBe('claimed')
-    await releaseWebhookEvent(svc, KEY)
-    expect(await claimWebhookEvent(svc, KEY, 2_000)).toBe('claimed')
+    const first = await claimWebhookEvent(svc, KEY, 1_000)
+    expect(first.status).toBe('claimed')
+    await releaseWebhookEvent(svc, KEY, first.claimedAt!)
+    expect((await claimWebhookEvent(svc, KEY, 2_000)).status).toBe('claimed')
   })
   it('a COMPLETED event is a duplicate on redelivery', async () => {
     const svc = fakeService({ processed_webhook_events: [] }, { processed_webhook_events: 'idempotency_key' })
-    await claimWebhookEvent(svc, KEY, 1_000)
-    await completeWebhookEvent(svc, KEY)
-    expect(await claimWebhookEvent(svc, KEY, 9_000)).toBe('duplicate')
+    const first = await claimWebhookEvent(svc, KEY, 1_000)
+    await completeWebhookEvent(svc, KEY, first.claimedAt!)
+    expect((await claimWebhookEvent(svc, KEY, 9_000)).status).toBe('duplicate')
     // a release must never delete a finished event
-    await releaseWebhookEvent(svc, KEY)
-    expect(await claimWebhookEvent(svc, KEY, 9_500)).toBe('duplicate')
+    await releaseWebhookEvent(svc, KEY, first.claimedAt!)
+    expect((await claimWebhookEvent(svc, KEY, 9_500)).status).toBe('duplicate')
   })
   it('takes over a claim left behind by a crashed attempt once it is stale', async () => {
     const svc = fakeService({ processed_webhook_events: [] }, { processed_webhook_events: 'idempotency_key' })
     await claimWebhookEvent(svc, KEY, 1_000)
-    expect(await claimWebhookEvent(svc, KEY, 1_000 + STALE_CLAIM_MS - 1)).toBe('in_progress')
-    expect(await claimWebhookEvent(svc, KEY, 1_000 + STALE_CLAIM_MS + 1)).toBe('claimed')
+    expect((await claimWebhookEvent(svc, KEY, 1_000 + STALE_CLAIM_MS - 1)).status).toBe('in_progress')
+    expect((await claimWebhookEvent(svc, KEY, 1_000 + STALE_CLAIM_MS + 1)).status).toBe('claimed')
+  })
+  // FIX (deep audit, Billing re-pass — independent redo): regression test for
+  // the ownership-check fix above. Without it, the ORIGINAL (stale, but not
+  // actually dead) attempt's release/complete would act on whatever row
+  // currently sits at that idempotency_key — including one a takeover retry
+  // has since claimed — either deleting the new owner's live claim or
+  // stamping it 'done' out from under it.
+  it('a stale-but-still-alive attempt can no longer release or complete a claim a retry has since taken over', async () => {
+    const svc = fakeService({ processed_webhook_events: [] }, { processed_webhook_events: 'idempotency_key' })
+    const original = await claimWebhookEvent(svc, KEY, 1_000)
+    expect(original.status).toBe('claimed')
+    // A retry sees the claim as stale and takes it over.
+    const takeover = await claimWebhookEvent(svc, KEY, 1_000 + STALE_CLAIM_MS + 1)
+    expect(takeover.status).toBe('claimed')
+    expect(takeover.claimedAt).not.toBe(original.claimedAt)
+    // The original attempt was slow, not dead — it now finally fails and
+    // tries to release ITS OWN (stale) claimedAt. This must not touch the
+    // takeover's live claim.
+    await releaseWebhookEvent(svc, KEY, original.claimedAt!)
+    expect((await claimWebhookEvent(svc, KEY, 1_000 + STALE_CLAIM_MS + 2)).status).toBe('in_progress')
+    // Nor may the original attempt's eventual success mark the takeover's
+    // claim done out from under it.
+    await completeWebhookEvent(svc, KEY, original.claimedAt!)
+    expect((await claimWebhookEvent(svc, KEY, 1_000 + STALE_CLAIM_MS + 3)).status).toBe('in_progress')
+    // The real (takeover) owner can still complete its own claim normally.
+    await completeWebhookEvent(svc, KEY, takeover.claimedAt!)
+    expect((await claimWebhookEvent(svc, KEY, 1_000 + STALE_CLAIM_MS + 4)).status).toBe('duplicate')
   })
 })
 

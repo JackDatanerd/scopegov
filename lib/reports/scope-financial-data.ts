@@ -47,6 +47,24 @@
 //     `projects` doesn't need it — it orders by `id` (random UUIDs), not a
 //     time-correlated column, so a new row can't shift an existing one's
 //     position.
+// 10. FIX (deep audit, Reports & Audit / Billing re-pass — feature gaps):
+//     two overlooked/half-built pieces of the scope report found on an
+//     independent redo of this section.
+//     (a) `pending_review_flags` (point 4 above) was computed and returned
+//         here but app/(app)/reports/page.tsx never rendered it — a dead
+//         field. Now rendered.
+//     (b) A flag closed via an exception grant (status 'resolved' /
+//         resolution 'exception') or a plain manual close (status
+//         'resolved' or 'closed' with resolution 'closed') was counted in
+//         `total_flags` but landed in NO visible bucket — not converted,
+//         not dismissed, not pending — silently deflating the shown
+//         "recovery rate" with no explanation, the exact ambiguity point 4
+//         was written to eliminate for the other two cases. `classifyFlag`
+//         now also reports `closedWithoutCo`, exposed here as
+//         `closed_without_co_flags`; what's left over (`status === 'open'`)
+//         is `still_open_flags`. The three now partition `total_flags`
+//         exactly: converted_to_co + closed_without_co_flags +
+//         still_open_flags === total_flags.
 
 import { PROJECT_TYPE_LABELS } from '@/lib/utils/format'
 import { fetchPaged } from '@/lib/utils/paginate'
@@ -89,7 +107,12 @@ export function classifyFlag(f: { status: string; resolution?: string | null }) 
   const dismissed = f.resolution === 'not_out_of_scope'
   const pendingReview = f.status === 'borderline_review'
   const converted = f.status === 'converted_to_co' || (f.status === 'resolved' && f.resolution === 'change_order')
-  return { dismissed, pendingReview, converted, counted: !dismissed && !pendingReview }
+  // FIX (deep audit, Reports & Audit re-pass — feature gap): see file header
+  // point 10(b). Covers exception grants (resolved/exception) and manual
+  // closes (resolved or closed, both with resolution 'closed') — every
+  // terminal outcome other than "became a change order".
+  const closedWithoutCo = !converted && (f.status === 'resolved' || f.status === 'closed')
+  return { dismissed, pendingReview, converted, closedWithoutCo, counted: !dismissed && !pendingReview }
 }
 
 // ── CO grid ────────────────────────────────────────────────────────────
@@ -184,6 +207,10 @@ export async function getScopeReportData(
       converted_to_co: counted.filter(x => x.c.converted).length,
       dismissed_flags: classified.filter(x => x.c.dismissed).length,
       pending_review_flags: classified.filter(x => x.c.pendingReview).length,
+      // FIX (deep audit, Reports & Audit re-pass — feature gap): see file
+      // header point 10(b). Partitions total_flags alongside converted_to_co.
+      closed_without_co_flags: counted.filter(x => x.c.closedWithoutCo).length,
+      still_open_flags: counted.filter(x => !x.c.converted && !x.c.closedWithoutCo).length,
       recovered_value: canSeeFinancials ? recoveredValue : null,
     },
     flagsByProject: Object.values(flagMapInCurrency).sort((a, b) => b.flag_count - a.flag_count),

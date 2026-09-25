@@ -167,9 +167,15 @@ describe('avatar storage + audit categories', () => {
   it('covers every stored avatar variant', () => {
     expect(avatarPaths('u1')).toEqual(['avatars/u1.png', 'avatars/u1.jpg'])
   })
-  it('files role creation under Team & roles as well as new role events', () => {
+  it('files role creation under Team & roles', () => {
     const team = AUDIT_CATEGORIES.find(c => c.id === 'team')!
     expect(team.patterns).toContain('role.%')
-    expect(team.patterns).toContain('workspace.role_created')
+    // FIX (deep audit, Reports & Audit re-pass — cosmetic): this test used
+    // to also require the literal pattern 'workspace.role_created', but no
+    // code anywhere emits that event type — role creation is logged as
+    // 'role.created', already matched by 'role.%' above. That pattern was
+    // dead weight (see lib/audit/categories.ts), removed there; pinning its
+    // absence here so it doesn't quietly come back.
+    expect(team.patterns).not.toContain('workspace.role_created')
   })
 })

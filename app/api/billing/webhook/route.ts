@@ -1,4 +1,17 @@
 export const runtime = 'nodejs'
+// FIX (deep audit, Billing re-pass — independent redo): no explicit
+// maxDuration was set, so this route ran under Vercel's platform default
+// (as low as 10s) — the same class of bug already fixed in
+// app/api/sow/generate/route.ts (see its comment). Paystack calls in this
+// file (cancelPaystackSubscription, fetchPaystackNextPaymentDate) each carry
+// their own 12s internal timeout (lib/integrations/paystack.ts), and
+// fetchPaystackNextPaymentDate runs on every ordinary renewal charge, not
+// just an edge case — a legitimately slow-but-successful Paystack response
+// could already exceed the platform default on its own, before counting the
+// DB round-trips and email sends around it. A mid-write kill never reaches
+// the catch block, so the claim (lib/billing/webhook-claims.ts) is left
+// 'processing' until STALE_CLAIM_MS lets a retry take over.
+export const maxDuration = 60
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
@@ -335,8 +348,28 @@ async function handleEvent(service: any, event: any): Promise<void> {
     case 'subscription.disable':
     case 'subscription.not_renew': {
       const res = await resolveWorkspace(service, data)
-      // Cancelling something we don't know about is harmless — log only.
-      if (!res.workspaceId) { console.log(`Paystack ${event.event} matched no workspace (ambiguous: ${res.ambiguous}) — ignoring`); return }
+      // FIX (deep audit, Billing re-pass — independent redo): every other
+      // "could not confidently resolve a workspace" branch in this file
+      // (invoice.payment_failed, charge.success with a plan code,
+      // subscription.create) calls unresolved()/alertBillingOps so a human
+      // sees it. This one only ever logged to console — a real cancellation
+      // or non-renewal signal from Paystack could vanish with zero
+      // visibility. Reachable when the event's subscription code has
+      // already been superseded on our side AND the customer code is
+      // ambiguous across more than one workspace (this app explicitly
+      // supports one login owning several — see lib/billing/resolve.ts's
+      // header). An unambiguous "genuinely unknown to us" case (no
+      // workspaceId, not ambiguous) is left as a log line, same as
+      // subscription.expiring_cards' silent skip for an unmatched item —
+      // there is nothing a human can act on for a subscription this app
+      // never created. An ambiguous one means we DID recognize the customer
+      // but couldn't tell which of their workspaces it's for, which is
+      // exactly the "needs a human" case this file alerts on everywhere else.
+      if (!res.workspaceId) {
+        if (res.ambiguous) await unresolved(service, event, `A subscription was ${event.event === 'subscription.not_renew' ? 'set to not renew' : 'disabled'}, but the customer code matches more than one workspace — could not tell which one to update.`)
+        else console.log(`Paystack ${event.event} matched no workspace — ignoring`)
+        return
+      }
       if (res.superseded) { console.log(`Paystack ${event.event} for a superseded subscription — ignoring (expected after a plan switch)`); return }
       // The cancel route already recorded it and logged it; don't duplicate.
       if (res.billing?.cancels_at_period_end) return
@@ -414,6 +447,12 @@ async function handleEvent(service: any, event: any): Promise<void> {
 export async function POST(request: NextRequest) {
   let service: any = null
   let claimedKey: string | null = null
+  // FIX (deep audit, Billing re-pass — independent redo): see
+  // lib/billing/webhook-claims.ts's header. complete/release now require the
+  // exact claimed_at this request was handed, so a slow-but-still-alive
+  // attempt whose claim was taken over by a retry in the meantime can never
+  // complete or delete the NEW owner's row out from under it.
+  let claimedAt: string | null = null
   try {
     const rawBody = await request.text()
     const sig     = request.headers.get('x-paystack-signature')
@@ -432,23 +471,24 @@ export async function POST(request: NextRequest) {
 
     const idempotencyKey = `${event.event}:${await sha256Hex(rawBody)}`
     const claim = await claimWebhookEvent(service, idempotencyKey)
-    if (claim === 'duplicate') {
+    if (claim.status === 'duplicate') {
       console.log('Duplicate Paystack webhook delivery, skipping:', idempotencyKey)
       return NextResponse.json({ received: true, duplicate: true })
     }
-    if (claim === 'in_progress') {
+    if (claim.status === 'in_progress') {
       // Another delivery of this exact event is being processed right now.
       return NextResponse.json({ error: 'Event is being processed' }, { status: 409 })
     }
     claimedKey = idempotencyKey
+    claimedAt = claim.claimedAt
 
     await handleEvent(service, event)
-    await completeWebhookEvent(service, idempotencyKey)
+    await completeWebhookEvent(service, idempotencyKey, claimedAt!)
     return NextResponse.json({ received: true })
   } catch (err) {
     console.error('Paystack webhook error:', err)
     // Give the event back so Paystack's retry actually re-runs it.
-    if (service && claimedKey) await releaseWebhookEvent(service, claimedKey)
+    if (service && claimedKey && claimedAt) await releaseWebhookEvent(service, claimedKey, claimedAt)
     return NextResponse.json({ error: 'Webhook processing failed' }, { status: 500 })
   }
 }

@@ -13,7 +13,10 @@ export const AUDIT_CATEGORIES: AuditCategory[] = [
   { id: 'projects',   label: 'Projects',             patterns: ['project.%', 'project_member.%', 'project_message.%', 'retainer.%'] },
   { id: 'clients',    label: 'Clients',              patterns: ['client.%', 'client_contact.%'] },
   { id: 'approvals',  label: 'Approvals',            patterns: ['approval.%', 'approval_workflow.%'] },
-  { id: 'team',       label: 'Team & roles',         patterns: ['member.%', 'role.%', 'workspace.role_created'] },
+  // FIX (deep audit, Reports & Audit re-pass — cosmetic): 'workspace.role_created'
+  // matched no real event type (role creation is logged as 'role.created',
+  // already covered by 'role.%' below) — dead pattern, removed.
+  { id: 'team',       label: 'Team & roles',         patterns: ['member.%', 'role.%'] },
   { id: 'security',   label: 'Security & sign-in',   patterns: ['security.%', 'user.%'] },
   { id: 'billing',    label: 'Billing',              patterns: ['billing.%'] },
   { id: 'workspace',  label: 'Workspace settings',   patterns: ['workspace.%'] },
