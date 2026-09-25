@@ -106,6 +106,19 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
   const [loading, setLoading] = useState(false)
   const [error,   setError]   = useState('')
   const [notice,  setNotice]  = useState('')
+  // FIX (independent re-audit, Team & Invites section — flagship finding):
+  // none of the row actions below (Resend, Copy link, Reset MFA, Deactivate,
+  // Reactivate, Revoke, Set default role, Delete role) ever disabled their
+  // own button while the request was in flight — a double-click, or slow
+  // network, could fire the same mutation twice before the first response
+  // came back and `router.refresh()` replaced the row. Most of these are
+  // now safe against that server-side regardless (deactivate_member_atomic,
+  // the reactivate/resend/link compare-and-swaps — see those routes' own
+  // fix notes), but a second in-flight request is still wasted work at
+  // best and a confusing double email/audit-log entry at worst. One shared
+  // id keyed to whichever row is mid-action; every handler below checks
+  // and sets it, and every triggering button disables on it.
+  const [busyId,  setBusyId]  = useState<string | null>(null)
 
   // Seats: every active member plus every live pending invite holds one (the same count the invite
   // route enforces), so the meter and the Invite button agree with what the server will accept.
@@ -144,27 +157,33 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
   }
 
   async function handleDeactivate(memberId: string, memberName: string) {
+    if (busyId) return
     if (!confirm(`Deactivate ${memberName}? They will lose workspace access immediately. Their project assignments are kept aside and restored if you reactivate them.`)) return
-    setError(''); setNotice('')
-    const res = await fetch(`/api/team/${memberId}`, { method: 'DELETE' })
-    const json = await res.json().catch(() => ({}))
-    if (!res.ok) { setError(json.error || 'Could not deactivate member'); return }
-    const notes = [json.warning, json.projectWarning, json.inviteWarning].filter(Boolean)
-    if (notes.length) setNotice(notes.join(' '))
-    router.refresh()
+    setError(''); setNotice(''); setBusyId(memberId)
+    try {
+      const res = await fetch(`/api/team/${memberId}`, { method: 'DELETE' })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) { setError(json.error || 'Could not deactivate member'); return }
+      const notes = [json.warning, json.projectWarning, json.inviteWarning].filter(Boolean)
+      if (notes.length) setNotice(notes.join(' '))
+      router.refresh()
+    } finally { setBusyId(null) }
   }
 
   // FEATURE (deep audit, Auth+MFA section — feature gap): closes the
   // "lost authenticator AND all backup codes" lockout — see
   // api/team/[id]/reset-mfa/route.ts's own comment for the full case.
   async function handleResetMfa(memberId: string, memberName: string) {
+    if (busyId) return
     if (!confirm(`Reset two-factor authentication for ${memberName}? They'll need to set it up again the next time their role requires it.`)) return
-    setError(''); setNotice('')
-    const res = await fetchWithStepUp(`/api/team/${memberId}/reset-mfa`, { method: 'POST' })
-    const json = await res.json().catch(() => ({}))
-    if (!res.ok) { setError(json.error || 'Could not reset two-factor authentication'); return }
-    setNotice(`Two-factor authentication reset for ${memberName}.`)
-    router.refresh()
+    setError(''); setNotice(''); setBusyId(memberId)
+    try {
+      const res = await fetchWithStepUp(`/api/team/${memberId}/reset-mfa`, { method: 'POST' })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) { setError(json.error || 'Could not reset two-factor authentication'); return }
+      setNotice(`Two-factor authentication reset for ${memberName}.`)
+      router.refresh()
+    } finally { setBusyId(null) }
   }
 
   // FIX (deep audit, Team & Invites section — HIGH, destructive): this
@@ -187,64 +206,76 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
   // makes whoever clicked Resend the inviter of record (accept re-checks
   // that the inviter can still grant the role).
   async function handleResendInvite(m: any) {
-    setError(''); setNotice('')
-    const res = await fetch(`/api/team/${m.id}/resend`, { method: 'POST' })
-    const json = await res.json().catch(() => ({}))
-    if (!res.ok) { setError(json.error || 'Could not resend invite'); return }
-    setNotice(json.emailFailed
-      ? (json.previousLinkStillWorks
-          ? 'The email couldn\u2019t be sent, so nothing changed \u2014 the link already sent still works. Try Resend again shortly, or use Copy link.'
-          : 'The email couldn\u2019t be sent, and this invite is still expired. Try Resend again shortly, or use Copy link to share a fresh link yourself.')
-      : 'Invite resent. The previous link is no longer valid.')
-    router.refresh()
+    if (busyId) return
+    setError(''); setNotice(''); setBusyId(m.id)
+    try {
+      const res = await fetch(`/api/team/${m.id}/resend`, { method: 'POST' })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) { setError(json.error || 'Could not resend invite'); return }
+      setNotice(json.emailFailed
+        ? (json.previousLinkStillWorks
+            ? 'The email couldn\u2019t be sent, so nothing changed \u2014 the link already sent still works. Try Resend again shortly, or use Copy link.'
+            : 'The email couldn\u2019t be sent, and this invite is still expired. Try Resend again shortly, or use Copy link to share a fresh link yourself.')
+        : 'Invite resent. The previous link is no longer valid.')
+      router.refresh()
+    } finally { setBusyId(null) }
   }
 
   // Hands the admin the invite URL to share themselves (WhatsApp, Slack, …) when the email bounced or
   // landed in spam. A live invite returns its existing link; an expired one is re-issued (no email).
   async function handleCopyLink(m: any) {
-    setError(''); setNotice('')
-    const res = await fetch(`/api/team/${m.id}/link`, { method: 'POST' })
-    const json = await res.json().catch(() => ({}))
-    if (!res.ok) { setError(json.error || 'Could not create an invite link'); return }
+    if (busyId) return
+    setError(''); setNotice(''); setBusyId(m.id)
     try {
-      await navigator.clipboard.writeText(json.inviteUrl)
-      setNotice(json.reissued
-        ? 'A new invite link was created and copied \u2014 it works for 7 days and replaces the old one.'
-        : 'Invite link copied. Anyone with the link can join with this invitation, so share it only with the person invited.')
-    } catch {
-      setNotice(`Copy this invite link: ${json.inviteUrl}`)
-    }
-    router.refresh()
+      const res = await fetch(`/api/team/${m.id}/link`, { method: 'POST' })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) { setError(json.error || 'Could not create an invite link'); return }
+      try {
+        await navigator.clipboard.writeText(json.inviteUrl)
+        setNotice(json.reissued
+          ? 'A new invite link was created and copied \u2014 it works for 7 days and replaces the old one.'
+          : 'Invite link copied. Anyone with the link can join with this invitation, so share it only with the person invited.')
+      } catch {
+        setNotice(`Copy this invite link: ${json.inviteUrl}`)
+      }
+      router.refresh()
+    } finally { setBusyId(null) }
   }
 
   async function handleRevokeInvite(memberId: string) {
+    if (busyId) return
     if (!confirm('Revoke this invitation? The link will stop working.')) return
-    setError('')
-    const res = await fetch(`/api/team/${memberId}`, { method: 'DELETE' })
-    if (!res.ok) {
-      const j = await res.json().catch(() => ({}))
-      setError(j.error || 'Could not revoke invite'); return
-    }
-    router.refresh()
+    setError(''); setBusyId(memberId)
+    try {
+      const res = await fetch(`/api/team/${memberId}`, { method: 'DELETE' })
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}))
+        setError(j.error || 'Could not revoke invite'); return
+      }
+      router.refresh()
+    } finally { setBusyId(null) }
   }
 
   async function handleReactivate(memberId: string, memberName: string) {
+    if (busyId) return
     if (!confirm(`Reactivate ${memberName}? They will regain their role and the projects they were assigned to.`)) return
-    setError(''); setNotice('')
-    const res = await fetch(`/api/team/${memberId}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'active' }),
-    })
-    const json = await res.json().catch(() => ({}))
-    if (!res.ok) { setError(json.error || 'Could not reactivate member'); return }
-    const parts = [
-      typeof json.projectsRestored === 'number' && json.projectsRestored > 0
-        ? `${memberName} is back, with ${json.projectsRestored} project assignment${json.projectsRestored === 1 ? '' : 's'} restored.`
-        : `${memberName} is back.`,
-      json.warning,
-    ].filter(Boolean)
-    setNotice(parts.join(' '))
-    router.refresh()
+    setError(''); setNotice(''); setBusyId(memberId)
+    try {
+      const res = await fetch(`/api/team/${memberId}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'active' }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) { setError(json.error || 'Could not reactivate member'); return }
+      const parts = [
+        typeof json.projectsRestored === 'number' && json.projectsRestored > 0
+          ? `${memberName} is back, with ${json.projectsRestored} project assignment${json.projectsRestored === 1 ? '' : 's'} restored.`
+          : `${memberName} is back.`,
+        json.warning,
+      ].filter(Boolean)
+      setNotice(parts.join(' '))
+      router.refresh()
+    } finally { setBusyId(null) }
   }
 
   // Reassign a member's role. The server re-verifies the role belongs to
@@ -336,8 +367,9 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
   // for why the swap has to go through set_default_role_atomic rather
   // than two separate calls); this is the UI action for it.
   async function handleSetDefaultRole(roleId: string, roleName: string) {
+    if (busyId) return
     if (!confirm(`Make "${roleName}" the default role? New members and invites with no role selected will get this role's permissions.`)) return
-    setError(''); setNotice('')
+    setError(''); setNotice(''); setBusyId(roleId)
     try {
       const res = await fetch(`/api/team/roles/${roleId}`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
@@ -349,17 +381,20 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
       router.refresh()
     } catch {
       setError('Could not set default role')
-    }
+    } finally { setBusyId(null) }
   }
 
   // FIX (deep audit, section 6): roles could be created but never deleted.
   async function handleDeleteRole(roleId: string, roleName: string) {
+    if (busyId) return
     if (!confirm(`Delete the "${roleName}" role? This can't be undone.`)) return
-    setError(''); setNotice('')
-    const res = await fetch(`/api/team/roles/${roleId}`, { method: 'DELETE' })
-    const json = await res.json().catch(() => ({}))
-    if (!res.ok) { setError(json.error || 'Could not delete role'); return }
-    router.refresh()
+    setError(''); setNotice(''); setBusyId(roleId)
+    try {
+      const res = await fetch(`/api/team/roles/${roleId}`, { method: 'DELETE' })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) { setError(json.error || 'Could not delete role'); return }
+      router.refresh()
+    } finally { setBusyId(null) }
   }
 
   return (
@@ -494,8 +529,8 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
                         </button>
                       )}
                       {!isMe && canManageRoles && (m.mfa === undefined || m.mfa === 'enrolled') && (
-                        <button className="btn btn-ghost btn-xs" onClick={() => handleResetMfa(m.id, name)}>
-                          Reset MFA
+                        <button className="btn btn-ghost btn-xs" disabled={busyId === m.id} onClick={() => handleResetMfa(m.id, name)}>
+                          {busyId === m.id ? <span className="spin spin-dark" /> : 'Reset MFA'}
                         </button>
                       )}
                       {/* FIX (deep audit, Team & Invites section): Deactivate
@@ -513,8 +548,8 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
                           their own ceiling. Only the client was blocking it. */}
                       {!isMe && canInvite && (
                         <button className="btn btn-ghost btn-xs" style={{ color: 'var(--red)', borderColor: '#FECACA' }}
-                          onClick={() => handleDeactivate(m.id, name)}>
-                          Deactivate
+                          disabled={busyId === m.id} onClick={() => handleDeactivate(m.id, name)}>
+                          {busyId === m.id ? <span className="spin spin-dark" /> : 'Deactivate'}
                         </button>
                       )}
                     </div>
@@ -555,20 +590,20 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
                           <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
                             <span className="pill pill-amber pill-sm">Pending</span>
                             {canManageRoles && (
-                              <button className="btn btn-ghost btn-xs"
+                              <button className="btn btn-ghost btn-xs" disabled={busyId === m.id}
                                 onClick={() => { setRoleEditMember(m); setRoleEditRoleId(m.role_id || '') }}>
                                 Change role
                               </button>
                             )}
-                            <button className="btn btn-ghost btn-xs" onClick={() => handleResendInvite(m)}>
-                              Resend
+                            <button className="btn btn-ghost btn-xs" disabled={busyId === m.id} onClick={() => handleResendInvite(m)}>
+                              {busyId === m.id ? <span className="spin spin-dark" /> : 'Resend'}
                             </button>
-                            <button className="btn btn-ghost btn-xs" onClick={() => handleCopyLink(m)}>
-                              Copy link
+                            <button className="btn btn-ghost btn-xs" disabled={busyId === m.id} onClick={() => handleCopyLink(m)}>
+                              {busyId === m.id ? <span className="spin spin-dark" /> : 'Copy link'}
                             </button>
-                            <button className="btn btn-ghost btn-xs" style={{ color: 'var(--red)' }}
+                            <button className="btn btn-ghost btn-xs" style={{ color: 'var(--red)' }} disabled={busyId === m.id}
                               onClick={() => handleRevokeInvite(m.id)}>
-                              Revoke
+                              {busyId === m.id ? <span className="spin spin-dark" /> : 'Revoke'}
                             </button>
                           </div>
                         </td>
@@ -609,20 +644,20 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
                           <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
                             <span className="pill pill-slate pill-sm">Expired</span>
                             {canManageRoles && (
-                              <button className="btn btn-ghost btn-xs"
+                              <button className="btn btn-ghost btn-xs" disabled={busyId === m.id}
                                 onClick={() => { setRoleEditMember(m); setRoleEditRoleId(m.role_id || '') }}>
                                 Change role
                               </button>
                             )}
-                            <button className="btn btn-ghost btn-xs" onClick={() => handleResendInvite(m)}>
-                              Resend
+                            <button className="btn btn-ghost btn-xs" disabled={busyId === m.id} onClick={() => handleResendInvite(m)}>
+                              {busyId === m.id ? <span className="spin spin-dark" /> : 'Resend'}
                             </button>
-                            <button className="btn btn-ghost btn-xs" onClick={() => handleCopyLink(m)}>
-                              Copy link
+                            <button className="btn btn-ghost btn-xs" disabled={busyId === m.id} onClick={() => handleCopyLink(m)}>
+                              {busyId === m.id ? <span className="spin spin-dark" /> : 'Copy link'}
                             </button>
-                            <button className="btn btn-ghost btn-xs" style={{ color: 'var(--red)' }}
+                            <button className="btn btn-ghost btn-xs" style={{ color: 'var(--red)' }} disabled={busyId === m.id}
                               onClick={() => handleRevokeInvite(m.id)}>
-                              Revoke
+                              {busyId === m.id ? <span className="spin spin-dark" /> : 'Revoke'}
                             </button>
                           </div>
                         </td>
@@ -658,13 +693,13 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
                           <td>
                             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
                               {canManageRoles && (
-                                <button className="btn btn-ghost btn-xs"
+                                <button className="btn btn-ghost btn-xs" disabled={busyId === m.id}
                                   onClick={() => { setRoleEditMember(m); setRoleEditRoleId(m.role_id || '') }}>
                                   Change role
                                 </button>
                               )}
-                              <button className="btn btn-ghost btn-xs" onClick={() => handleReactivate(m.id, name)}>
-                                Reactivate
+                              <button className="btn btn-ghost btn-xs" disabled={busyId === m.id} onClick={() => handleReactivate(m.id, name)}>
+                                {busyId === m.id ? <span className="spin spin-dark" /> : 'Reactivate'}
                               </button>
                             </div>
                           </td>
@@ -780,14 +815,15 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
                             {r.is_default ? null : (
                               <>
                                 <button className="btn-icon" title="Make this the default role"
+                                  disabled={busyId === r.id}
                                   onClick={() => handleSetDefaultRole(r.id, r.name)}>
-                                  <i className="ti ti-star" style={{ fontSize: 13 }} />
+                                  {busyId === r.id ? <span className="spin spin-dark" /> : <i className="ti ti-star" style={{ fontSize: 13 }} />}
                                 </button>
                                 <button className="btn-icon" style={{ color: 'var(--red)' }}
-                                  disabled={totalHolders > 0}
+                                  disabled={totalHolders > 0 || busyId === r.id}
                                   title={deleteBlockedReason || 'Delete role'}
                                   onClick={() => handleDeleteRole(r.id, r.name)}>
-                                  <i className="ti ti-trash" style={{ fontSize: 13 }} />
+                                  {busyId === r.id ? <span className="spin spin-dark" /> : <i className="ti ti-trash" style={{ fontSize: 13 }} />}
                                 </button>
                               </>
                             )}

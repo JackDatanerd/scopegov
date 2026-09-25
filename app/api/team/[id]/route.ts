@@ -237,12 +237,32 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         return NextResponse.json({ error: seatCheck.message }, { status: 409 })
       }
 
-      const { error: updateErr } = await service.from('workspace_members').update({
+      // FIX (independent re-audit, Team & Invites section): the `.eq('status',
+      // 'deactivated')` guard here was already a compare-and-swap in shape,
+      // but nothing checked whether it actually matched a row — an UPDATE
+      // that matches zero rows is not an error in Postgres/Supabase, it just
+      // returns no data. Two admins clicking Reactivate on the same member
+      // within the same moment both pass the `member.status !== 'deactivated'`
+      // check above (both read before either writes), then both run this
+      // UPDATE: the first flips the row and matches; the second's WHERE no
+      // longer matches anything (status is already 'active'), silently does
+      // nothing, and — with no check here — the code went on regardless to
+      // call restore_member_projects a second time, write a second
+      // 'member.reactivated' audit row, and send a second "reactivated"
+      // email, none of which should have happened for a member this request
+      // never actually touched. Same shape as the DELETE handler's own
+      // atomic RPC just above in this file, and the exact pattern
+      // workspace/settings/route.ts's own compare-and-swap already checks
+      // (`written.length === 0`) — this call site just never carried it over.
+      const { data: reactivated, error: updateErr } = await service.from('workspace_members').update({
         status: 'active', deactivated_at: null,
-      }).eq('id', id).eq('status', 'deactivated')
+      }).eq('id', id).eq('status', 'deactivated').select('id')
       if (updateErr) {
         console.error('Member reactivate failed:', updateErr)
         return NextResponse.json({ error: 'Could not reactivate this member. Try again.' }, { status: 500 })
+      }
+      if (!reactivated || reactivated.length === 0) {
+        return NextResponse.json({ error: 'This member was already reactivated \u2014 possibly by someone else a moment ago.' }, { status: 409 })
       }
 
       const { data: restored, error: restoreErr } = await service.rpc('restore_member_projects', { p_member_id: id })

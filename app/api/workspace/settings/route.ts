@@ -320,6 +320,36 @@ export async function PATCH(request: NextRequest) {
     for (const key of changedKeys) updates[COLUMNS[key]] = proposed[key]
     if (changedKeys.includes('slug')) updates.slug_changed_at = new Date().toISOString()
 
+    // FIX (independent re-audit, Settings section — flagship finding):
+    // proactive_risk_threshold is a bare number with no currency of its own —
+    // it's implicitly denominated in whatever workspaces.currency happens to
+    // be at read time (see lib/utils/attention.ts, which only compares it
+    // against a project when the PROJECT's currency matches the workspace's —
+    // a fix for the exact same class of bug, just on the other side of this
+    // comparison). Nothing stopped the workspace's OWN currency from changing
+    // out from under an already-saved threshold: the identical number that
+    // meant "$10,000" a moment ago silently means "KES 10,000" (~$77) the
+    // instant this save lands, with nothing in the response, the UI, or the
+    // audit log telling anyone their alert threshold just changed meaning.
+    // Depending on the direction, that either floods the workspace with
+    // false "high-value project, no signed SOW" alerts or quietly disables
+    // a real one. Whenever currency changes and the caller isn't ALSO
+    // explicitly setting a new threshold in this same request, reset it back
+    // to the column default (migration 001) so the number always describes a
+    // value in TODAY's currency, and say so in the response — recoverable
+    // and visible, never a threshold that quietly means something else.
+    const DEFAULT_RISK_THRESHOLD = 10000
+    const thresholdExplicitlySet = Object.prototype.hasOwnProperty.call(proposed, 'proactiveRiskThreshold')
+    let thresholdReset = false
+    if (changedKeys.includes('currency') && !thresholdExplicitlySet &&
+        Number(currentByKey.proactiveRiskThreshold ?? DEFAULT_RISK_THRESHOLD) !== DEFAULT_RISK_THRESHOLD) {
+      updates.proactive_risk_threshold = DEFAULT_RISK_THRESHOLD
+      changedKeys.push('proactiveRiskThreshold')
+      changes.proactiveRiskThreshold = { from: currentByKey.proactiveRiskThreshold, to: DEFAULT_RISK_THRESHOLD }
+      proposed.proactiveRiskThreshold = DEFAULT_RISK_THRESHOLD
+      thresholdReset = true
+    }
+
     // Compare-and-swap on updated_at: the conflict check above and this write are two round
     // trips, so two admins saving in the same instant could both pass it. Only write if the row
     // is still the one we read.
@@ -349,7 +379,13 @@ export async function PATCH(request: NextRequest) {
       metadata: { fields: changedKeys, changes },
     })
 
-    return NextResponse.json({ ok: true, changed: changedKeys, values: proposed })
+    return NextResponse.json({
+      ok: true, changed: changedKeys, values: proposed,
+      ...(thresholdReset ? {
+        thresholdReset: true,
+        warning: `Your currency changed, so the Guardian risk-alert threshold has been reset to ${DEFAULT_RISK_THRESHOLD.toLocaleString()} in the new currency. Review it under Settings \u2192 Guardian.`,
+      } : {}),
+    })
   } catch (err) {
     if (err instanceof FieldError) return NextResponse.json({ error: err.message }, { status: err.status })
     console.error('Workspace settings error:', err)

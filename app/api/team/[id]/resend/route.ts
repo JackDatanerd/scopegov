@@ -112,7 +112,21 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const inviteToken = nanoid(32)
     const expiresAt   = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
 
-    const { error: updateErr } = await (service as any)
+    // FIX (independent re-audit, Team & Invites section — flagship finding):
+    // no busy-guard exists anywhere in this flow — not in TeamClient.tsx (see
+    // that file's own fix note) and not here. Two admins clicking Resend on
+    // the same pending invite within the same second (or one admin
+    // double-clicking before the button disables) both read the same
+    // `member` row, both mint a fresh token, and both write. Only the LATER
+    // write survives; if the EARLIER call's email is what actually reaches
+    // the invitee's inbox, they click a link whose token this second write
+    // already replaced — dead on arrival — while both admins see a plain
+    // "Invite resent" success with no way to know one of the two sends is
+    // now worthless. Compare-and-swap on the exact token this request read:
+    // if it's no longer there, someone else already resent (or accepted, or
+    // revoked) this invite between our read and our write, and we say so
+    // instead of silently overwriting whatever they just did.
+    let updateQuery = (service as any)
       .from('workspace_members')
       .update({
         invite_token:            inviteToken,
@@ -121,10 +135,17 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         invited_by:              session.id,
       })
       .eq('id', id).eq('workspace_id', session.workspaceId)
+    if (member.invite_token) updateQuery = updateQuery.eq('invite_token', member.invite_token)
+    const { data: updatedRows, error: updateErr } = await updateQuery.select('id')
 
     if (updateErr) {
       console.error('Invite resend update failed:', updateErr)
       return NextResponse.json({ error: 'Could not resend this invite. Try again.' }, { status: 500 })
+    }
+    if (!updatedRows || updatedRows.length === 0) {
+      return NextResponse.json({
+        error: 'This invite was just changed by someone else \u2014 possibly resent or accepted a moment ago. Refresh the Team page to see its current state before trying again.',
+      }, { status: 409 })
     }
 
     const { data: ws } = await (service as any)

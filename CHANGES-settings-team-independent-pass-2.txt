@@ -1,0 +1,106 @@
+CHANGES — Settings & Team, independent re-audit round 2
+=========================================================
+
+Scope: app/(app)/settings (+ settings/approvals, settings/audit),
+api/workspace/settings, api/workspace/defaults, api/workspace/branding;
+app/(app)/team, api/team/*, api/team/invite, api/team/roles,
+app/invite/[token].
+
+This round's audit was done fresh — comments from prior rounds were not
+trusted going in, only checked against the code after independently
+landing on the same spot. Both sections were already extremely mature
+(see the four prior approvals/invoicing rounds and three prior
+settings/team rounds); no unbuilt features were found. Two genuine bugs
+were found and fixed below.
+
+------------------------------------------------------------------
+1. Settings — currency change silently re-denominates the Guardian
+   risk-alert threshold
+------------------------------------------------------------------
+Files: app/api/workspace/settings/route.ts, components/settings/SettingsClient.tsx
+
+workspaces.proactive_risk_threshold is a bare number with no currency
+column of its own — lib/utils/attention.ts already treats it as
+implicitly denominated in workspaces.currency (that file's own
+currency-match guard only compares a PROJECT's contract value against
+the threshold when the project's currency equals the workspace's — a
+fix for the same class of bug, on the other side of this comparison).
+
+Nothing stopped the workspace's OWN currency from being changed in
+Settings -> Workspace at any time, and nothing re-scaled, cleared, or
+even warned about the threshold when that happened. A threshold set to
+10000 while the workspace billed in USD ($10,000) silently became "KES
+10,000" (~$77) the instant the workspace switched to KES — either
+flooding the workspace with false "high-value project, no signed SOW"
+alerts, or (reversed) silently disabling a real one. Nothing in the
+response, the UI, or the audit log told anyone the threshold's meaning
+had just changed.
+
+Fix: PATCH /api/workspace/settings now resets proactive_risk_threshold
+to its column default (10000) in the same write whenever currency
+changes and the caller isn't ALSO explicitly setting a new threshold in
+that same request (so a direct API caller who deliberately sends both
+in one call is respected, not overridden). The response carries
+`thresholdReset: true` and a plain-language `warning`. SettingsClient
+surfaces that warning in a persistent (not auto-dismissing) banner and
+corrects the already-mounted Guardian tab's local state directly, since
+that tab's useState only reads the `workspace` prop on first mount and
+would otherwise keep showing the stale number until a full reload.
+
+------------------------------------------------------------------
+2. Team & Invites — no busy-guard on row actions; two real
+   compare-and-swap gaps found while fixing it
+------------------------------------------------------------------
+Files: components/team/TeamClient.tsx,
+       app/api/team/[id]/resend/route.ts,
+       app/api/team/[id]/link/route.ts,
+       app/api/team/[id]/route.ts
+
+None of TeamClient's row actions (Resend, Copy link, Reset MFA,
+Deactivate, Reactivate, Revoke, Set default role, Delete role) ever
+disabled their own button while the request was in flight. Added a
+single `busyId` state, guarded and set/cleared in every handler, wired
+to `disabled` (and a spinner swap) on every triggering button.
+
+Auditing WHY this mattered surfaced two real server-side gaps the
+client fix alone doesn't close (two different admins on two different
+sessions can still race each other):
+
+  - POST /api/team/[id]/resend and POST /api/team/[id]/link (the
+    expired-invite reissue branch) both rotate the same invite_token
+    column with no coordination between them. Two overlapping calls
+    (two admins, or Resend and Copy-link on the same expired invite)
+    both read the same token, both write a new one; only the later
+    write survives. If the EARLIER call's email is what reaches the
+    invitee, they click a token the second write already replaced —
+    dead on arrival — while both admins see a plain success with
+    nothing telling them one of the two writes just got clobbered.
+    Fixed with a compare-and-swap on the exact invite_token each
+    request read: if it no longer matches, the request 409s with a
+    clear "someone else already changed this invite" message instead
+    of silently overwriting.
+
+  - PATCH /api/team/[id] (status: 'active', reactivation) had a
+    `.eq('status', 'deactivated')` filter shaped like a compare-and-
+    swap but never checked whether it actually matched a row. Two
+    concurrent Reactivate clicks on the same member both pass the
+    earlier status check (both read before either writes); the second
+    UPDATE matches nothing (not an error in Postgres/Supabase, just no
+    rows), and the code went on regardless to call
+    restore_member_projects a second time, write a second
+    'member.reactivated' audit entry, and send a second "reactivated"
+    email for a request that never actually changed anything. Fixed by
+    checking the updated row count, matching the same pattern this
+    file's own DELETE handler and workspace/settings/route.ts's
+    compare-and-swap already use elsewhere.
+
+------------------------------------------------------------------
+Traced but not touched
+------------------------------------------------------------------
+lib/utils/permission-ceiling.ts, lib/utils/invite-authority.ts,
+lib/utils/owner-protection.ts, lib/utils/seat-limit.ts,
+lib/utils/rate-limit.ts, lib/utils/agency-standards.ts, and
+lib/utils/audit-diff.ts were all read closely as shared dependencies of
+this section (several are also used by Approvals/Invoicing and RLS+
+permissions). No issues found in any of them this round — noted here
+so a future pass doesn't have to re-derive that they were checked.

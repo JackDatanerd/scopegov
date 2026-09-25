@@ -303,6 +303,14 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
   const [saved,  setSaved]  = useState('')
   const [error,  setError]  = useState('')
   const [conflict, setConflict] = useState(false)
+  // FIX (independent re-audit, Settings section): surfaces workspace/settings'
+  // `warning` field — currently only sent when a currency change auto-resets
+  // the Guardian risk threshold (see that route's own comment). Deliberately
+  // NOT auto-cleared like `saved`: unlike a routine save confirmation, this is
+  // telling the person something they didn't ask for just changed, and it
+  // should stay visible until their next save attempt, not vanish after 2s
+  // while they're still on the Workspace tab.
+  const [warning, setWarning] = useState('')
 
   const [wsForm, setWsForm] = useState(() => workspaceToForm(workspace))
 
@@ -365,7 +373,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
 
 
   async function patch(path: string, body: any) {
-    setSaving(true); setError(''); setConflict(false)
+    setSaving(true); setError(''); setConflict(false); setWarning('')
     lastPatchJson.current = null
     try {
       const res  = await fetch(path, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
@@ -376,6 +384,22 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
         throw new Error(json.error || 'Save failed')
       }
       setSaved('Changes saved.'); setTimeout(() => setSaved(''), 2000)
+      // FIX (independent re-audit, Settings section — flagship finding):
+      // when this save changed the workspace's currency, the server may have
+      // just reset proactive_risk_threshold back to its default (see
+      // workspace/settings/route.ts's own comment on why a stale threshold
+      // in the OLD currency is actively dangerous, not just stale). Surface
+      // that plainly, and correct the Guardian tab's already-mounted local
+      // state directly — GuardianTab's useState only reads the `workspace`
+      // prop on first mount (see this component's own header comment on why
+      // state is lifted here), so without this a person who switches to
+      // Guardian right after this save would see the OLD, now-wrong number
+      // sitting in the field until a full page reload, and could re-save it
+      // right back over the server's reset.
+      if (json.warning) setWarning(json.warning)
+      if (json.thresholdReset && json.values && typeof json.values.proactiveRiskThreshold !== 'undefined') {
+        setGuardianForm(f => ({ ...f, riskThreshold: String(json.values.proactiveRiskThreshold) }))
+      }
       router.refresh()
       return true
     } catch (err: unknown) {
@@ -433,6 +457,11 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
           </div>
         )}
         {saved && <div className="auth-success" style={{ marginBottom: 14 }}>{saved}</div>}
+        {warning && (
+          <div className="auth-error" style={{ marginBottom: 14, background: '#FFFBEB', borderColor: '#FDE68A', color: '#92400E' }}>
+            {warning}
+          </div>
+        )}
 
         {tab === 'account' && <AccountTab session={session} supabase={supabase} router={router} mfaMandatory={mfaMandatory} />}
 

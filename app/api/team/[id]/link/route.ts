@@ -54,12 +54,28 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
 
       token = nanoid(32)
       expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
-      const { error: updateErr } = await service.from('workspace_members').update({
+      // FIX (independent re-audit, Team & Invites section — same race as
+      // Resend, see that route's own fix note): this reissue and Resend's
+      // reissue both rotate the same invite_token column with no coordination
+      // between them. Two admins clicking Copy link and Resend on the same
+      // expired invite within the same moment could otherwise have this
+      // write silently clobber Resend's just-emailed token (or vice versa),
+      // leaving whichever one "lost" pointing the recipient at a dead link
+      // with no error shown to either admin. Compare-and-swap on the exact
+      // token this request read.
+      let updateQuery = service.from('workspace_members').update({
         invite_token: token, invite_token_expires_at: expiresAt, status: 'invited', invited_by: session.id,
       }).eq('id', id).eq('workspace_id', session.workspaceId).in('status', ['invited', 'expired'])
+      if (member.invite_token) updateQuery = updateQuery.eq('invite_token', member.invite_token)
+      const { data: updatedRows, error: updateErr } = await updateQuery.select('id')
       if (updateErr) {
         console.error('Invite link re-issue failed:', updateErr)
         return NextResponse.json({ error: 'Could not create an invite link. Try again.' }, { status: 500 })
+      }
+      if (!updatedRows || updatedRows.length === 0) {
+        return NextResponse.json({
+          error: 'This invite was just changed by someone else \u2014 possibly resent or accepted a moment ago. Refresh the Team page to see its current state before trying again.',
+        }, { status: 409 })
       }
       reissued = true
     }
