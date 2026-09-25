@@ -177,8 +177,43 @@ function OnboardingWizard() {
       // doesn't get resumed instead.
       if (explicitNew) {
         try { localStorage.removeItem(STORAGE_KEY_PREFIX + user.id) } catch { /* ignore */ }
+        // FIX (fresh independent audit, section 4): explicitNew is reached both by a
+        // genuine full page load (Sidebar's "Create new workspace" link — a different
+        // route, so this component mounts fresh and every field below is already at
+        // its useState default) AND by discardWorkspace()'s own `router.replace
+        // ('/onboarding?new=1')` fallback — a query-string-only navigation on this
+        // SAME route, which does NOT remount the component. In that second case this
+        // branch used to only ever touch agencyName/restored/gate, so every other
+        // field — industry, currency, timezone, brandColour, the picked logoFile/
+        // logoPreview, revisionRounds, paymentStructure, governingLaw, inviteEmail,
+        // inviteRoleId, inviteRoles, trialConflict — silently carried the DISCARDED
+        // workspace's values into what the wizard presents as a blank new workspace.
+        // Concretely: a still-held logoFile got re-uploaded to the new workspace
+        // without the user ever touching the file picker again, and — worse —
+        // inviteRoles/inviteRoleId held a role id scoped to the now-deleted
+        // workspace, which the step-3 fetch effect never re-ran for (it's guarded on
+        // `inviteRoles.length > 0`, already true from the old session), so a step-3
+        // invite could be submitted with a roleId that doesn't exist in the new
+        // workspace at all. "Start a new workspace" now actually starts blank,
+        // whichever of the two paths got here.
         const userName = user.user_metadata?.name || ''
-        if (userName) setAgencyName(`${userName.split(' ')[0]}'s Agency`)
+        setAgencyName(userName ? `${userName.split(' ')[0]}'s Agency` : '')
+        setIndustry('')
+        setCurrency('USD')
+        setTimezone('America/New_York')
+        setBrandColour('#1A5C3A')
+        setLogoFile(null)
+        setLogoPreview(null)
+        setRevisionRounds('2')
+        setPaymentStructure('50_50')
+        setGoverningLaw('')
+        setInviteEmail('')
+        setInviteRoleId('')
+        setInviteRoles([])
+        setTrialConflict(false)
+        setError('')
+        setShowExit(false)
+        setStep(0)
         setRestored(true)
         setGate('create')
         return
@@ -770,7 +805,14 @@ function OnboardingWizard() {
   // step 0 of a blank wizard with everything they'd entered erased, in a
   // loop that erased their work every time they clicked "Go to dashboard."
   // Now returns whether it actually succeeded, and callers act on that.
-  async function complete(): Promise<boolean> {
+  // FIX (fresh independent audit, section 4 — minor): this used to always navigate to
+  // '/dashboard' itself on success. "Create first project" below then awaited complete()
+  // and, on true, pushed to '/projects/new' as a SECOND router.push right after — two
+  // navigations queued in the same tick, the dashboard one immediately superseded by the
+  // real destination. Harmless to final state (last push wins) but a wasted transition
+  // that can flash the dashboard before landing on the project form. Takes the intended
+  // destination as a parameter so there's only ever one push.
+  async function complete(redirectTo: string = '/dashboard'): Promise<boolean> {
     if (!workspaceId) return false
     setLoading(true); setError('')
     try {
@@ -785,7 +827,7 @@ function OnboardingWizard() {
         return false
       }
       clearSavedProgress()
-      router.push('/dashboard')
+      router.push(redirectTo)
       return true
     } catch {
       setError('Could not finish setting up your workspace — try again.')
@@ -1240,20 +1282,24 @@ function OnboardingWizard() {
             {error && <div className="auth-error">{error}</div>}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 280, margin: '0 auto' }}>
               <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', padding: '11px' }}
-                onClick={complete} disabled={loading}>
+                // FIX: complete() now takes an explicit redirectTo (see its own comment) —
+                // `onClick={complete}` would pass the click event itself as that argument,
+                // so router.push() ran on a SyntheticEvent instead of '/dashboard'. Wrap it.
+                onClick={() => complete()} disabled={loading}>
                 {loading ? <span className="spin" /> : <>Go to dashboard <i className="ti ti-arrow-right" style={{ fontSize: 12 }} /></>}
               </button>
               <button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'center' }}
                 disabled={loading}
-                onClick={async () => {
+                onClick={() => {
                   // FIX (round 3, Onboarding Finding 1): previously chained
                   // .then(() => router.push('/projects/new')) unconditionally
                   // — since complete() never surfaced failure, this always
                   // navigated onward even when onboarding was never actually
                   // marked complete, straight back into middleware's
-                  // /onboarding redirect. Only navigate on confirmed success.
-                  const ok = await complete()
-                  if (ok) router.push('/projects/new')
+                  // /onboarding redirect. Only navigate on confirmed success —
+                  // now handled by complete() itself (see its own comment on
+                  // the redirectTo parameter), so this no longer double-pushes.
+                  complete('/projects/new')
                 }}>
                 Create first project
               </button>

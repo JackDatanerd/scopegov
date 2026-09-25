@@ -30,6 +30,9 @@ import {
 import { TABLE_SECTION_IDS, type SowTableSectionId, type SowTableRow } from '@/lib/sow/table-schema'
 import { roundCurrency } from '@/lib/utils/format'
 import { insertNextSowVersion } from '@/lib/documents/sow-version'
+// FIX (fresh independent audit, section 9): needed to preserve a section's manual
+// show/hide state across a regenerate — see the existingSow overwrite branch below.
+import { REQUIRED_SECTION_IDS } from '@/lib/sow/sections'
 
 // FIX (section-9 audit, 9-B11): none of the free-text brief fields were
 // length-capped before going into the prompt. api/sow/parse-brief caps
@@ -323,9 +326,11 @@ export async function POST(request: NextRequest) {
     }
 
     // Check for existing draft SOW on this project
+    // FIX (fresh independent audit, section 9): `sections` added to the select — see
+    // the visible-flag preservation right below, in the existingSow branch.
     const { data: existingSow } = await (service as any)
       .from('sow_documents')
-      .select('id,version,metadata')
+      .select('id,version,metadata,sections')
       .eq('project_id', projectId)
       .eq('status', 'draft')
       .order('version', { ascending: false })
@@ -355,9 +360,29 @@ export async function POST(request: NextRequest) {
       // components/sow/SowEditor.tsx) and metadata.changeRequest (9-G8)
       // are both like this. Overwriting metadata wholesale silently
       // discarded them on every regenerate. Carry them forward.
+      //
+      // FIX (fresh independent audit, section 9 — same class of gap as 9-G4 above,
+      // just never extended past metadata): parsed.sections unconditionally set
+      // every section's `visible` back to its generation-time default (true, or
+      // paymentStructure === 'milestones' for payment_schedule) — silently
+      // reinstating any non-required section (Assumptions, IP, Roles, etc.) the
+      // agency had deliberately hidden in the editor since this draft was last
+      // generated. Same rule PATCH /api/sow/[id]'s sanitizeSectionList already
+      // uses for a whole-list write: a required section always stays visible;
+      // anything else keeps the existing draft's own boolean if it set one.
+      const oldVisibleById = new Map(
+        (Array.isArray(existingSow.sections) ? existingSow.sections : [])
+          .filter((s: any) => s && typeof s.id === 'string')
+          .map((s: any) => [s.id, s.visible])
+      )
+      const sectionsToWrite = parsed.sections.map(sec => {
+        if (REQUIRED_SECTION_IDS.includes(sec.id)) return sec
+        const prior = oldVisibleById.get(sec.id)
+        return typeof prior === 'boolean' ? { ...sec, visible: prior } : sec
+      })
       const { data: overwritten, error: overwriteErr } = await (service as any).from('sow_documents')
         .update({
-          sections: parsed.sections,
+          sections: sectionsToWrite,
           metadata: {
             ...parsed.metadata,
             ...(existingSow.metadata?.msaReference ? { msaReference: existingSow.metadata.msaReference } : {}),
