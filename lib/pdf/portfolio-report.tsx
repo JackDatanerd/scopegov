@@ -76,6 +76,15 @@ const RISK_COL = { project: 200, flags: 110, docs: 60 }
 const EXC_COL = { date: 80, what: 270 }
 const RISK_ROWS = 20
 const EXC_ROWS = 15
+// FIX (Portfolio independent pass): "Projects by risk" and "Exceptions"
+// were both deliberately capped, specifically to keep this a short,
+// readable summary (see the FIX notes at their own render sites below) —
+// but "Documents needing action" (stuckDocs) had no equivalent cap.
+// scope-health.ts returns every stalled/declined/expired/changes-requested/
+// countered document workspace-wide with no limit parameter to cap it with,
+// so a workspace with a lot of history could render an unbounded number of
+// rows here, against the export route's own 60-second timeout.
+const STALL_ROWS = 40
 
 function PortfolioReportDocument({ report }: { report: PortfolioReportData }) {
   const { data, canViewFinancials } = report
@@ -227,7 +236,9 @@ function PortfolioReportDocument({ report }: { report: PortfolioReportData }) {
           </>
         )}
 
-        <Text style={s.h2}>Documents needing action ({stuck.length})</Text>
+        <Text style={s.h2}>
+          Documents needing action ({stuck.length > STALL_ROWS ? `oldest ${STALL_ROWS} of ${stuck.length} — the CSV export lists every one` : stuck.length})
+        </Text>
         {stuck.length === 0 ? (
           <Text style={s.emptyNote}>No stalled, declined or expired documents across the portfolio.</Text>
         ) : (
@@ -239,7 +250,10 @@ function PortfolioReportDocument({ report }: { report: PortfolioReportData }) {
               <Text style={[s.th, { width: STALL_COL.since }]}>Since</Text>
               <Text style={[s.th, { flex: 1 }]}>Amount</Text>
             </View>
-            {stuck.map((item, i) => (
+            {/* FIX (Portfolio independent pass): capped like every other long list in this report —
+                see STALL_ROWS above. stuckDocs already arrives oldest-first (scope-health.ts), so the
+                cap keeps the most overdue items, matching the CSV export's own ordering intent. */}
+            {stuck.slice(0, STALL_ROWS).map((item, i) => (
               <View key={i} style={s.row} wrap={false}>
                 <Text style={[s.td, { width: STALL_COL.kind }]}>{item.kind}</Text>
                 <View style={{ width: STALL_COL.project }}>

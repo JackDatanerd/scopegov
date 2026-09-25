@@ -7,9 +7,18 @@ import { isAttentionWorthy, attentionReason } from '@/lib/utils/attention'
 import { IN_PROGRESS_STATUSES } from '@/lib/utils/project-status'
 import { effectiveContractValue, monthlyRetainerRate, loadRetainerMonthsBilled } from '@/lib/utils/contract-value'
 import { shapeActivityRow, DASHBOARD_NOISE_EVENT_PATTERNS } from '@/lib/utils/activity-format'
+import { fetchPaged } from '@/lib/utils/paginate'
 import type { SessionUser } from '@/lib/supabase/types'
 
 export const metadata = { title: 'Dashboard' }
+
+// FIX (Projects & Dashboard independent pass): see the matching constant and
+// comment in app/api/projects/route.ts — a plain, unbounded select against
+// `projects` silently truncates at PostgREST's 1000-row cap, and this page's
+// own comment elsewhere already assumed (incorrectly) that the Projects list
+// "fetches every project in the workspace uncapped" safely; neither page
+// actually guarded against the cap until now.
+const DASHBOARD_PROJECTS_MAX_ROWS = 20000
 
 // Projects & Dashboard deep audit: this used new Date().getHours() on the
 // SERVER (UTC on Vercel), so the greeting was wrong for almost everyone
@@ -82,15 +91,6 @@ export default async function DashboardPage() {
     .from('workspaces').select('proactive_risk_alerts_enabled,proactive_risk_threshold,currency,timezone')
     .eq('id', session.workspaceId).single()
 
-  let projQuery = (service as any)
-    .from('projects')
-    .select(`id,name,disc,type,status,stall_reason,stalled_at,contract_value,retainer_duration_months,currency,updated_at,
-      clients(id,name),guardian_flags(status),change_orders(status),sow_documents(id,status,version),
-      amendments(financial_impact,change_orders(is_retainer_renewal))`)
-    .eq('workspace_id', session.workspaceId)
-    .is('deleted_at', null)
-    .order('updated_at', { ascending: false })
-
   let accessibleProjectIds: string[] | null = null
   if (!canViewAll) {
     // FIX: project_members has neither workspace_id nor user_id columns —
@@ -101,10 +101,28 @@ export default async function DashboardPage() {
       .eq('workspace_members.user_id', session.id)
     accessibleProjectIds = (myIds || []).map((r: any) => r.project_id)
     if (!accessibleProjectIds?.length) return <EmptyDash session={session} canCreate={canCreate} daysLeft={daysLeft} greetingText={greeting(ws?.timezone)} />
-    projQuery = projQuery.in('id', accessibleProjectIds)
   }
 
-  const { data: projectRows = [] } = await projQuery
+  // FIX (Projects & Dashboard independent pass): fetchPaged so a workspace
+  // whose project count exceeds PostgREST's silent 1000-row cap can't lose
+  // projects off the Dashboard with no error and no signal — see the
+  // matching fix (and full reasoning) in GET /api/projects.
+  const projPage = await fetchPaged<any>((from, to) => {
+    let q = (service as any)
+      .from('projects')
+      .select(`id,name,disc,type,status,stall_reason,stalled_at,contract_value,retainer_duration_months,currency,updated_at,
+        clients(id,name),guardian_flags(status),change_orders(status),sow_documents(id,status,version),
+        amendments(financial_impact,change_orders(is_retainer_renewal))`, { count: 'exact' })
+      .eq('workspace_id', session.workspaceId)
+      .is('deleted_at', null)
+      .order('updated_at', { ascending: false })
+      .range(from, to)
+    if (accessibleProjectIds !== null) q = q.in('id', accessibleProjectIds)
+    return q
+  }, { maxRows: DASHBOARD_PROJECTS_MAX_ROWS })
+  if (projPage.truncated)
+    throw new Error(`Dashboard project list truncated: workspace exceeded ${DASHBOARD_PROJECTS_MAX_ROWS} projects`)
+  const projectRows = projPage.rows
   // "Contract value" everywhere on this page is the shared effective value (base — a retainer's monthly
   // rate × term — plus accepted change orders). It used to be the stored base alone, so approving a CO
   // never moved the tile, and a retainer counted one month's fee as its whole value.

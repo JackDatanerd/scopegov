@@ -6,8 +6,16 @@ import ProjectsClient from '@/components/projects/ProjectsClient'
 import { isAttentionWorthy, attentionReason } from '@/lib/utils/attention'
 import { effectiveContractValue, monthlyRetainerRate, loadRetainerMonthsBilled } from '@/lib/utils/contract-value'
 import { loadUnreadMessageCounts } from '@/lib/utils/project-unread'
+import { fetchPaged } from '@/lib/utils/paginate'
 
 export const metadata = { title: 'Projects' }
+
+// FIX (Projects & Dashboard independent pass): see the matching constant and
+// comment in app/api/projects/route.ts / app/(app)/dashboard/page.tsx — a
+// plain, unbounded select against `projects` silently truncates at
+// PostgREST's 1000-row cap, and this page's own uncapped read was what the
+// Dashboard's comment (elsewhere) assumed was already safe.
+const PROJECTS_MAX_ROWS = 20000
 
 export default async function ProjectsPage({ searchParams }: { searchParams: Promise<{ filter?: string }> }) {
   const { filter } = await searchParams
@@ -18,22 +26,7 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
   const canViewAll = hasPermission(session, 'VIEW_ALL_PROJECTS')
   const canCreate = hasPermission(session, 'CREATE_PROJECTS')
 
-  // BUG-058: two distinct query paths
-  let query = (service as any)
-    .from('projects')
-    .select(`
-      id, name, disc, type, status, stall_reason, stalled_at, contract_value, retainer_duration_months, currency,
-      start_date, created_at, updated_at, internal_ref,
-      clients(id, name, company_name),
-      guardian_flags(status, severity),
-      change_orders(id, status, title, total),
-      sow_documents(id, status, version, sent_at, signed_at),
-      amendments(financial_impact, change_orders(is_retainer_renewal))
-    `)
-    .eq('workspace_id', session.workspaceId)
-    .is('deleted_at', null)
-    .order('updated_at', { ascending: false })
-
+  let restrictedIds: string[] | null = null
   if (!canViewAll) {
     // FIX: project_members has neither workspace_id nor user_id columns —
     // see app/api/projects/route.ts for the full explanation. This
@@ -42,15 +35,35 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
       .from('project_members')
       .select('project_id, workspace_members!inner(user_id)')
       .eq('workspace_members.user_id', session.id)
-    const projectIds = (ids || []).map((r: { project_id: string }) => r.project_id)
-    if (projectIds.length > 0) {
-      query = query.in('id', projectIds)
-    } else {
-      return <EmptyProjects canCreate={canCreate} />
-    }
+    restrictedIds = (ids || []).map((r: { project_id: string }) => r.project_id)
+    if (restrictedIds.length === 0) return <EmptyProjects canCreate={canCreate} />
   }
 
-  const { data: projectRows = [] } = await query
+  // BUG-058: two distinct query paths
+  // FIX (Projects & Dashboard independent pass): fetchPaged so this can never
+  // silently truncate — see PROJECTS_MAX_ROWS above.
+  const page = await fetchPaged<any>((from, to) => {
+    let q = (service as any)
+      .from('projects')
+      .select(`
+        id, name, disc, type, status, stall_reason, stalled_at, contract_value, retainer_duration_months, currency,
+        start_date, created_at, updated_at, internal_ref,
+        clients(id, name, company_name),
+        guardian_flags(status, severity),
+        change_orders(id, status, title, total),
+        sow_documents(id, status, version, sent_at, signed_at),
+        amendments(financial_impact, change_orders(is_retainer_renewal))
+      `, { count: 'exact' })
+      .eq('workspace_id', session.workspaceId)
+      .is('deleted_at', null)
+      .order('updated_at', { ascending: false })
+      .range(from, to)
+    if (restrictedIds !== null) q = q.in('id', restrictedIds)
+    return q
+  }, { maxRows: PROJECTS_MAX_ROWS })
+  if (page.truncated)
+    throw new Error(`Projects list truncated: workspace exceeded ${PROJECTS_MAX_ROWS} projects`)
+  const projectRows = page.rows
 
   // Effective value = the shared definition (lib/utils/contract-value.ts): base — a retainer's monthly
   // rate × term — plus accepted change orders. The list used to show the stored base alone.

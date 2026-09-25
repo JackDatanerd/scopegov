@@ -3,11 +3,24 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { wouldExceedLimit, isOverLimit, projectLimitMessage } from '@/lib/utils/project-limit'
 import { insertAuditRow } from '@/lib/utils/audit'
+import { fetchPaged } from '@/lib/utils/paginate'
 import {
   parseProjectName, parseOptionalText, parseProjectType, parseContractValue,
   parseCurrencyCode, parseStartDate, parseRetainerMonths,
   MAX_PROJECT_DISC, MAX_PROJECT_REF,
 } from '@/lib/utils/project-input'
+
+// FIX (Projects & Dashboard independent pass): a plain, unbounded .select()
+// against `projects` — PostgREST silently caps a plain select at 1000 rows
+// (see lib/utils/paginate.ts), which this same codebase already guards
+// against for exactly this shape of read in lib/reports/scope-health.ts and
+// lib/reports/portfolio-data.ts, but not here. Complete/Archived projects
+// never count against any plan's project limit (lib/utils/project-limit.ts),
+// so a mature workspace's total project count is genuinely unbounded and can
+// plausibly cross 1000 over enough years — at which point this endpoint
+// would silently return a truncated list with no error and no signal
+// anything was cut off.
+const PROJECTS_MAX_ROWS = 20000
 
 export async function POST(request: NextRequest) {
   try {
@@ -247,13 +260,7 @@ export async function GET() {
     const canViewAll = hasPermission(session, 'VIEW_ALL_PROJECTS')
     const canViewFinancials = hasPermission(session, 'VIEW_FINANCIALS')
 
-    let query = (service as any)
-      .from('projects')
-      .select('id,name,status,type,contract_value,currency,clients(id,name)')
-      .eq('workspace_id', session.workspaceId)
-      .is('deleted_at', null)
-      .order('name')
-
+    let restrictedIds: string[] | null = null
     if (!canViewAll) {
       // project_members links to workspace_members via member_id (which links
       // to users via user_id) — it has no user_id / workspace_id columns of
@@ -262,14 +269,29 @@ export async function GET() {
         .from('project_members')
         .select('project_id, workspace_members!inner(user_id)')
         .eq('workspace_members.user_id', session.id)
-      query = query.in('id', (ids || []).map((r: any) => r.project_id))
+      restrictedIds = (ids || []).map((r: any) => r.project_id)
     }
 
-    const { data: projects, error } = await query
-    if (error) throw new Error(error.message)
+    // FIX (Projects & Dashboard independent pass): fetchPaged so this can
+    // never silently truncate at PostgREST's 1000-row cap — see the
+    // PROJECTS_MAX_ROWS comment above.
+    const page = await fetchPaged<any>((from, to) => {
+      let q = (service as any)
+        .from('projects')
+        .select('id,name,status,type,contract_value,currency,clients(id,name)', { count: 'exact' })
+        .eq('workspace_id', session.workspaceId)
+        .is('deleted_at', null)
+        .order('name')
+        .range(from, to)
+      if (restrictedIds !== null) q = q.in('id', restrictedIds)
+      return q
+    }, { maxRows: PROJECTS_MAX_ROWS })
+    if (page.truncated)
+      throw new Error(`Project list truncated: workspace exceeded ${PROJECTS_MAX_ROWS} projects`)
+
     // Contract values are withheld from members without VIEW_FINANCIALS (the
     // dashboard and project pages already do this — the API didn't).
-    const safe = (projects || []).map((p: any) => canViewFinancials ? p : { ...p, contract_value: null })
+    const safe = page.rows.map((p: any) => canViewFinancials ? p : { ...p, contract_value: null })
     return NextResponse.json({ projects: safe })
   } catch (err) {
     console.error('Project list error:', err)

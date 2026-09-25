@@ -1,0 +1,119 @@
+ScopeGov — Projects & Dashboard (section 7) + Portfolio (section 8)
+independent pass: fix round
+================================================================================
+
+Extract to: C:\Users\jackk\Desktop\MyWebApps\scopegov\scopegov
+
+  tar -xzf ~/Downloads/scopegov-projects-portfolio-independent-pass.tar.gz --strip-components=1 -C .
+  git add -A
+  git commit -m "Projects/Dashboard + Portfolio: independent-pass fixes (soft-delete leak, 1000-row cap, expired-CO exposure, uncapped PDF list)"
+  git push
+
+Deploy order: run migration 083 BEFORE deploying this code. It narrows the
+project_members_active view (migration 070) to exclude soft-deleted
+projects — see B7-11 below. Nothing in this round depends on it being
+deployed first in the sense of breaking if it lags a few minutes behind,
+but there is no reason to leave the window open.
+
+This was a from-scratch independent audit pass over sections 7 and 8 (i.e.
+performed as if the prior CHANGES-projects-portfolio-fixes.txt round had
+never happened, per standing instruction) — not a response to a bug report.
+No feature gaps were found this round; everything below is a bug.
+
+Starting point for this round: a fresh clone of the live repo. One
+unrelated change had landed in lib/reports/scope-health.ts since the audit
+pass was done a few messages ago (StuckDocument.total for a SOW-kind entry
+now carries the project's effective value instead of a hardcoded null —
+apparently from another session's work on a different section). Left
+untouched; none of this round's fixes touch that code path.
+
+
+Bugs fixed
+----------
+
+B7-11 — canReadProject() never excluded a soft-deleted project.
+  Every sibling route in this section (messages GET/POST, message edit/
+  delete, members add/remove/available, the project PATCH/DELETE/GET
+  itself) separately re-fetches the project scoped to `deleted_at is null`
+  before trusting canReadProject() — but GET /api/projects/[id]/activity,
+  GET .../messages/unread-count and POST .../messages/read call it alone,
+  with no such re-fetch. Net effect: after a Draft/Intake project is
+  deleted (DELETE /api/projects/[id] only soft-deletes; it does not touch
+  project_members), its full audit/activity history stayed readable and its
+  discussion read-cursor stayed writable via direct API call — by a
+  VIEW_ALL_PROJECTS admin, or by a restricted member whose project_members
+  row a delete never cleans up — even though the project 404s everywhere
+  else, including its own detail page.
+  lib/utils/project-access.ts: the VIEW_ALL_PROJECTS branch's own `projects`
+  query now adds `.is('deleted_at', null)`. The restricted branch reads
+  project_members_active (migration 070), which had no way to exclude a
+  deleted project at all (it joins to `projects` only for workspace_id) —
+  migration 083 adds `AND p.deleted_at IS NULL` to the view itself, which
+  also correctly narrows every OTHER reader of "which projects can this
+  restricted user reach" that already depended on this view (approvals
+  list, SOW list, @mention resolution) — none of those should have surfaced
+  a deleted project either, and none of them were excluding one before this.
+
+B7-12 — no pagination guard on the core `projects` reads.
+  The Dashboard's project query, the Projects list's project query, and
+  GET /api/projects all did a plain, unbounded .select() against `projects`.
+  PostgREST silently caps a plain select at 1000 rows (Supabase default) —
+  this exact failure mode is why lib/utils/paginate.ts's fetchPaged() exists
+  and is already used for the equivalent read in lib/reports/scope-health.ts
+  and lib/reports/portfolio-data.ts, each throwing rather than let a
+  truncated read pass as complete. It was never applied to these three.
+  Since Complete/Archived projects never count against any plan's project
+  limit (lib/utils/project-limit.ts), a workspace's total non-deleted
+  project count is genuinely unbounded and can plausibly cross 1000 for a
+  mature agency — at which point the Dashboard, the Projects list and
+  GET /api/projects would each silently start losing projects with no
+  error and no visible sign anything was wrong.
+  All three now use fetchPaged with a 20,000-row cap (matching the Portfolio
+  history cap) and throw with a clear message if that's ever exceeded,
+  rather than truncate silently.
+
+B7-13 — "At risk (pending COs)" undercounted: excluded 'expired' change
+  orders.
+  components/projects/ProjectDetail.tsx's `openCos` (the project header's
+  at-risk tile) filtered to
+  ['awaiting_response','countered','stalled','awaiting_countersignature'] —
+  missing 'expired', even though the same file's own handleMarkComplete,
+  the complete route's BLOCKING_CO_STATUSES, and lib/utils/attention.ts's
+  actionableCoStatuses all already treat an expired CO (its signing link
+  died with no answer given) as exactly as unresolved as a stalled one.
+  Added 'expired' to the filter so this tile agrees with the rest of the
+  product about what counts as still-pending exposure.
+
+B8-7 — Portfolio PDF's "Documents needing action" had no row cap.
+  lib/pdf/portfolio-report.tsx explicitly caps "Projects by risk" at 20 and
+  "Exceptions" at 15, specifically to keep the PDF a short, readable
+  summary (per that file's own comments) — but stuckDocs had no equivalent
+  cap, and lib/reports/scope-health.ts returns every stalled / declined /
+  expired / changes-requested / countered document workspace-wide with no
+  limit parameter to cap it with in the first place. A workspace with a lot
+  of history could render an unbounded number of rows here, against the
+  export route's own 60-second timeout. Added a STALL_ROWS = 40 cap,
+  matching the existing pattern (a "oldest N of total — the CSV export
+  lists every one" header, same wording style as the flags/exceptions
+  sections above it). stuckDocs already arrives oldest-first from
+  scope-health.ts, so the cap keeps the most overdue items, same ordering
+  intent as the CSV export (which stays uncapped — it's meant to be the
+  complete record).
+
+
+Not changed this round
+-----------------------
+The Projects list still has no CSV/PDF export of its own (Portfolio and the
+Audit Log both have one). Flagged during the audit pass as worth a decision,
+not treated as a bug — no fix included here; happy to build it if wanted.
+
+
+Files in this tarball
+======================
+app/(app)/dashboard/page.tsx
+app/(app)/projects/page.tsx
+app/api/projects/route.ts
+components/projects/ProjectDetail.tsx
+lib/pdf/portfolio-report.tsx
+lib/utils/project-access.ts
+supabase/migrations/083_projects_portfolio_fixes.sql              (new)

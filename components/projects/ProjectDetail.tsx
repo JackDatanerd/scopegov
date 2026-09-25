@@ -154,7 +154,13 @@ export default function ProjectDetail({
   // FIX (doc-completeness audit, migration 014)
   // 'stalled' = sent, unanswered: still exposure. contract-position (reconciliation) and the Portfolio
   // both count it; this header didn't, so the three disagreed about the same change orders.
-  const openCos       = (project.change_orders || []).filter((co: any) => ['awaiting_response','countered','stalled','awaiting_countersignature'].includes(co.status))
+  // FIX (Projects & Dashboard independent pass): 'expired' was still missing here even though this
+  // same file's handleMarkComplete (below), the complete route's BLOCKING_CO_STATUSES, and
+  // lib/utils/attention.ts's actionableCoStatuses all already treat an expired CO — its signing link
+  // died with no answer given — as exactly as unresolved as a stalled one. Left out, this tile silently
+  // undercounted "at risk" the moment a CO's link expired, and disagreed with every other screen that
+  // already got this right.
+  const openCos       = (project.change_orders || []).filter((co: any) => ['awaiting_response','countered','stalled','awaiting_countersignature','expired'].includes(co.status))
   const atRiskAmt     = openCos.reduce((s: number, co: any) => s + (co.total || 0), 0)
   const baseValue     = baseContractValueProp ?? 0
   // FIX (re-audit, Guardian ghost-feature finding): this badge only ever

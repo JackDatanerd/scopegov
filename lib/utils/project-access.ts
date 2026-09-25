@@ -37,10 +37,21 @@ export async function canReadProject(service: any, session: SessionUser, project
   // this with no scoped project fetch of their own, so an owner/admin of workspace A could pass a
   // workspace-B project UUID and (a) read that project's unread-message count and (b) write a
   // read-marker row against it. VIEW_ALL now means "every project IN THIS WORKSPACE".
+  //
+  // FIX (Projects & Dashboard independent pass, round 2): neither branch ever excluded a SOFT-DELETED
+  // project. Every sibling route in this section (messages GET/POST, message edit/delete, members
+  // add/remove/available, the project PATCH/DELETE/GET itself) separately re-fetches the project scoped
+  // to deleted_at is null before trusting this function — but GET /api/projects/[id]/activity, GET
+  // .../messages/unread-count and POST .../messages/read call this alone, with no such re-fetch. Net
+  // effect: after a Draft/Intake project is deleted, its full audit/activity history stayed readable
+  // (and its discussion read-cursor stayed writable) by anyone who could see it before deletion — a
+  // VIEW_ALL_PROJECTS admin here, or (below) a restricted member whose project_members row a delete
+  // never cleans up — even though the project 404s everywhere else, including its own detail page.
   if (hasPermission(session, 'VIEW_ALL_PROJECTS')) {
     if (typeof projectId !== 'string' || !projectId) return false
     const { data } = await service
-      .from('projects').select('id').eq('id', projectId).eq('workspace_id', session.workspaceId).limit(1)
+      .from('projects').select('id').eq('id', projectId).eq('workspace_id', session.workspaceId)
+      .is('deleted_at', null).limit(1)
     return !!(data && data.length)
   }
   // FIX (deep audit, RLS+permissions re-pass round 3): this queried
@@ -56,6 +67,11 @@ export async function canReadProject(service: any, session: SessionUser, project
   // tables' foreign keys for embedding to resolve through) — belt-and-braces
   // against exactly that failure mode, not just the procedural fix on the
   // write side.
+  // FIX (Projects & Dashboard independent pass, round 2): migration 083 adds
+  // `AND p.deleted_at IS NULL` to this view for the same soft-delete reason
+  // as the branch above — project_members rows are never removed when a
+  // project is deleted, so a restricted member who was on the team before
+  // deletion kept a permanent grant through this view otherwise.
   const { data } = await service
     .from('project_members_active')
     .select('project_id')
