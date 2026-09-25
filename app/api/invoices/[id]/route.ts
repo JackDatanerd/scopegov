@@ -37,6 +37,14 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       .eq('invoice_id', id)
       .order('paid_at', { ascending: false })
 
+    // FIX (independent pass 3): `select('*')` above ships the raw, unauthenticated
+    // client-portal `token` to anyone who merely holds VIEW_FINANCIALS — a much
+    // broader grant than the ability to actually send/manage invoices, and often a
+    // read-only reporting role. Same over-exposure the SOW detail route (and now the
+    // project page's own invoices fetch) was already fixed for; redact it here too
+    // unless the caller can actually act as the sender.
+    if (!hasPermission(session, 'SEND_INVOICES')) invoice.token = null
+
     return NextResponse.json({ invoice, payments: payments || [] })
   } catch (err) {
     console.error('Invoice detail fetch error:', err)

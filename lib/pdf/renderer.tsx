@@ -978,10 +978,25 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
               <Text style={{ fontFamily: 'Courier', color: '#1A5C3A' }}>-{data.currency} {fmtInv(data.amountPaid)}</Text>
             </View>
           )}
-          <View style={s.grandRow}>
-            <Text>{balanceDue > 0 ? 'Balance due' : 'Paid in full'}</Text>
-            <Text style={{ color: c }}>{data.currency} {fmtInv(balanceDue)}</Text>
-          </View>
+          {/* FIX (independent pass 3): a voided invoice with an outstanding balance
+              (voiding now keeps its payment records rather than forcing them to be
+              deleted — see CHANGES-approvals-invoicing-fixes.txt) used to print
+              "Balance due: X" here with nothing to say the invoice itself is void —
+              the status pill top-right is the only signal, and it's easy to miss on
+              a document that otherwise reads exactly like a normal open invoice
+              asking to be paid. This invoice no longer requests payment once voided,
+              whatever the arithmetic says, so say that instead of a dollar figure. */}
+          {data.status === 'void' ? (
+            <View style={s.grandRow}>
+              <Text>This invoice has been voided</Text>
+              <Text style={{ color: '#909090' }}>Not payable</Text>
+            </View>
+          ) : (
+            <View style={s.grandRow}>
+              <Text>{balanceDue > 0 ? 'Balance due' : 'Paid in full'}</Text>
+              <Text style={{ color: c }}>{data.currency} {fmtInv(balanceDue)}</Text>
+            </View>
+          )}
         </View>
 
         {/* FIX (doc-quality audit round 3): anti-double-billing line,

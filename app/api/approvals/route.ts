@@ -3,6 +3,7 @@ export const runtime = 'nodejs'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
+import { healStuckSends } from '@/lib/approvals/engine'
 
 const REQUEST_FIELDS = `
   id, document_type, document_id, project_id, status, current_step, total_steps,
@@ -24,15 +25,26 @@ const STATUS_FILTERS = new Set(['pending', 'approved', 'rejected', 'cancelled'])
 const TYPE_FILTERS   = new Set(['sow', 'co', 'co_counter', 'invoice'])
 
 // Projects the viewer can see when they don't hold VIEW_ALL_PROJECTS. Mirrors
-// canReadProject's join (project_members → workspace_members, scoped to THIS
-// workspace).
+// canReadProject's join.
+// FIX (independent pass 3): this queried the raw project_members table
+// directly instead of project_members_active (migration 070), the
+// status-defensive view canReadProject() and filterToProjectAccess() both
+// already switched to specifically so a project-membership row can't grant
+// a read once the member has been deactivated. In practice this route's own
+// session check already requires an active session, so a deactivated user
+// can't reach it — but that's exactly the "trusting the invariant blindly"
+// migration 070 says not to rely on: a raw project_members row surviving
+// deactivation (e.g. a future code path that misses the cleanup) would
+// silently widen this one endpoint's project scope again without anything
+// here catching it. Switched to the same view for the same defense-in-depth
+// reason, with no behavior change for any currently-active session.
 async function allowedProjectIdsFor(service: any, session: any): Promise<Set<string> | null> {
   if (hasPermission(session, 'VIEW_ALL_PROJECTS')) return null
   const { data: ids } = await service
-    .from('project_members')
-    .select('project_id, projects!inner(workspace_id), workspace_members!inner(user_id)')
-    .eq('projects.workspace_id', session.workspaceId)
-    .eq('workspace_members.user_id', session.id)
+    .from('project_members_active')
+    .select('project_id')
+    .eq('project_workspace_id', session.workspaceId)
+    .eq('member_user_id', session.id)
   return new Set((ids || []).map((r: any) => r.project_id))
 }
 
@@ -99,6 +111,13 @@ export async function GET(request: NextRequest) {
       .eq('status', 'active')
       .maybeSingle()
     const roleId: string | null = member?.role_id ?? null
+
+    // FIX (independent pass 3): lazy self-heal — see healStuckSends' own
+    // comment in lib/approvals/engine.ts. Scoped to this session's workspace
+    // only, so a busy Approvals page doesn't turn into a cross-workspace
+    // table scan on every load. Best-effort: a failure here must never break
+    // the list itself.
+    try { await healStuckSends(service, 10, session.workspaceId) } catch (e) { console.error('lazy healStuckSends failed:', e) }
 
     // Workspace-wide view — everything, any status, for oversight. Gated
     // behind VIEW_ALL_PROJECTS, or MANAGE_WORKSPACE_SETTINGS since that's who

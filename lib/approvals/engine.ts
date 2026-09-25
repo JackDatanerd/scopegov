@@ -102,6 +102,10 @@ interface GateParams {
   currency: string
   documentTitle: string
   requestedBy: { id: string; name: string; email: string }
+  // FIX (independent pass 3): the requester's chosen link-expiry, threaded through to the
+  // auto-send once the chain clears (see dispatchSend / context.expires_in_days below).
+  // Only sow/co honour it; harmless to pass for other document types.
+  expiresInDays?: number
 }
 
 // FIX (section-11 audit, pass 2): the gate used to have exactly two answers
@@ -215,6 +219,11 @@ export async function evaluateApprovalGate(service: any, params: GateParams): Pr
         amount:       params.amount,
         currency:     params.currency,
         project_name: params.projectName,
+        // FIX (independent pass 3): previously dropped entirely — the auto-send after
+        // approval always fell back to sendSowDocument/sendCoDocument's 30-day default,
+        // silently overriding whatever expiry the requester actually chose before the
+        // chain even started. Read back by dispatchSend below.
+        expires_in_days: Number.isFinite(params.expiresInDays) ? params.expiresInDays : null,
       },
     })
     .select('id')
@@ -288,22 +297,65 @@ type SendOutcome =
   | { ok: true; emailSent: boolean; emailError?: string }
   | { ok: false; error: string }
 
+// FIX (independent pass 3): the permission that actually has to be current for each
+// document type's auto-send to be legitimate — mirrors the direct-send routes'
+// own hasPermission(session, ...) checks (sow/[id]/send, co/[id]/send,
+// co/[id]/accept-counter, invoices/[id]/send).
+const SEND_PERMISSION_FOR: Record<ApprovalDocumentType, string> = {
+  sow: 'SEND_SOW', co: 'SEND_CHANGE_ORDERS', co_counter: 'SEND_CHANGE_ORDERS', invoice: 'SEND_INVOICES',
+}
+
+// FIX (independent pass 3): dispatchSend previously only confirmed the requester's
+// `users` row still exists (see the "no longer has an account" callers below) — it
+// never checked they're still an ACTIVE workspace member, or still hold the send
+// permission for this document type. A chain can sit open for days (multi-step,
+// reminders, escalation); the person who clicked Send may be deactivated or have had
+// that permission revoked by the time the last approval lands. Without this, the
+// auto-send still goes out under their name/reply-to, and they still receive the
+// decision email, using authority they no longer have. Fails the same way the
+// "no account" case already does: block the send with a clear, actionable message
+// rather than silently sending on their behalf.
+async function requesterCanStillSend(
+  service: any, workspaceId: string, requesterId: string, documentType: ApprovalDocumentType,
+): Promise<boolean> {
+  const { data: member } = await service
+    .from('workspace_members')
+    .select('effective_permissions')
+    .eq('workspace_id', workspaceId).eq('user_id', requesterId).eq('status', 'active')
+    .maybeSingle()
+  if (!member) return false
+  return member.effective_permissions?.[SEND_PERMISSION_FOR[documentType]] === true
+}
+
 async function dispatchSend(
   service: any,
-  request: { document_type: ApprovalDocumentType; document_id: string },
+  request: { document_type: ApprovalDocumentType; document_id: string; context?: any },
   sendParams: { workspaceId: string; actorId: string; actorEmail: string; actorName: string; approvalRequestId: string },
 ): Promise<SendOutcome> {
   try {
+    const stillEligible = await requesterCanStillSend(
+      service, sendParams.workspaceId, sendParams.actorId, request.document_type,
+    )
+    if (!stillEligible) {
+      return {
+        ok: false,
+        error: 'The person who requested this is no longer an active member with permission to send it. Cancel this request and have an eligible member send the document again.',
+      }
+    }
+    // FIX (independent pass 3): thread the requester's originally-chosen link expiry
+    // through to the auto-send — see the context.expires_in_days comment in
+    // evaluateApprovalGate. Only sow/co read it; harmless to pass for the others.
+    const expiresInDays = request.context?.expires_in_days ?? undefined
     // 'co_counter' needs its own auto-finalize — it's not a fresh send, it's
     // accepting an already-negotiated counter-offer (routing it through
     // sendCoDocument, which CASes on status:'draft', would silently no-op).
     const result: any = request.document_type === 'sow'
-      ? await sendSowDocument(service, { sowId: request.document_id, ...sendParams })
+      ? await sendSowDocument(service, { sowId: request.document_id, ...sendParams, expiresInDays })
       : request.document_type === 'co_counter'
       ? await acceptCoCounter(service, { coId: request.document_id, ...sendParams })
       : request.document_type === 'invoice'
       ? await sendInvoiceDocument(service, { invoiceId: request.document_id, ...sendParams })
-      : await sendCoDocument(service, { coId: request.document_id, ...sendParams })
+      : await sendCoDocument(service, { coId: request.document_id, ...sendParams, expiresInDays })
     if (!result.ok) return { ok: false, error: result.error || 'The send failed.' }
     return { ok: true, emailSent: result.emailSent !== false, emailError: result.emailError }
   } catch (e) {
@@ -876,12 +928,26 @@ export async function retryFailedSend(service: any, params: {
 // no approver has anything to act on either. The stall cron calls this to turn
 // such a request into the normal, visible, retryable "approved — not sent"
 // state.
-export async function healStuckSends(service: any, olderThanMinutes = 10): Promise<Array<{ id: string; workspace_id: string }>> {
+// FIX (independent pass 3): this used to be reachable ONLY through the daily
+// approval-stall cron — a crash mid-send could leave a request (and the
+// document behind it) locked for up to ~24h before anyone could even retry.
+// Now also called, scoped to just the viewer's own workspace via
+// workspaceId, from GET /api/approvals right before it reads the list, so a
+// stuck request self-heals the moment someone actually looks at the
+// Approvals page instead of waiting on the cron. olderThanMinutes stays at
+// its default (10) either way — that's the "an auto-send takes a few
+// seconds, not minutes" threshold from the comment above, not a cron-only
+// concern.
+export async function healStuckSends(
+  service: any, olderThanMinutes = 10, workspaceId?: string,
+): Promise<Array<{ id: string; workspace_id: string }>> {
   const cutoff = new Date(Date.now() - olderThanMinutes * 60 * 1000).toISOString()
-  const { data: stuck } = await service
+  let q = service
     .from('approval_requests')
     .select('id, workspace_id, requested_by, project_id, document_type, context')
     .eq('status', 'pending').not('sending_started_at', 'is', null).lt('sending_started_at', cutoff)
+  if (workspaceId) q = q.eq('workspace_id', workspaceId)
+  const { data: stuck } = await q
     .order('sending_started_at', { ascending: true }).limit(50)
 
   const healed: Array<{ id: string; workspace_id: string }> = []

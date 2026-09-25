@@ -98,6 +98,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // inside sendCoDocument, so a gated-but-not-yet-approved CO stays
     // un-numbered — consistent with numbers only ever being burned by a
     // real send.
+    // FIX (independent pass 3): moved up from just before sendCoDocument so the gate
+    // (and, through it, the auto-send after approval — see dispatchSend in
+    // lib/approvals/engine.ts) can see the requester's chosen expiry too, instead of it
+    // silently reverting to the 30-day default whenever this send goes through approval.
+    const reqBody = await request.json().catch(() => ({} as any))
+
     const gate = await evaluateApprovalGate(service, {
       workspaceId:  session.workspaceId,
       documentType: 'co',
@@ -108,6 +114,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       currency:     project.currency || 'USD',
       documentTitle: co.title,
       requestedBy:  { id: session.id, name: session.name, email: session.email },
+      expiresInDays: reqBody?.expiresInDays,
     })
 
     // FIX (section-11 audit, pass 2): the gate can now REFUSE (nobody able to
@@ -126,7 +133,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       })
     }
 
-    const reqBody = await request.json().catch(() => ({} as any))
     const result = await sendCoDocument(service, {
       coId: id,
       workspaceId: session.workspaceId,

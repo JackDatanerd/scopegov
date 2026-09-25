@@ -75,6 +75,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       currency:     project.currency || 'USD',
       documentTitle: `SOW v${sow.version} — ${project.name}`,
       requestedBy:  { id: session.id, name: session.name, email: session.email },
+      // FIX (independent pass 3): so the requester's chosen expiry survives an approval
+      // gate instead of silently reverting to the 30-day default on auto-send.
+      expiresInDays: body?.expiresInDays,
     })
 
     // FIX (section-11 audit, pass 2): the gate can now REFUSE (nobody able to

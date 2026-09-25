@@ -181,6 +181,23 @@ export default async function ProjectPage({ params, searchParams }: Props) {
         .order('created_at', { ascending: false })
     : { data: [] }
 
+  // FIX (independent pass 3): `token` above is the raw, unauthenticated client-portal
+  // link for each invoice — same shape as the SOW `token` the section-9 re-audit already
+  // dropped from its own select for exactly this reason ("no frontend consumer ever read
+  // sow.token from this response... pure over-exposure"). Nothing in BillingTab reads
+  // inv.token except the "Copy link" button, which should only be offered to someone who
+  // can actually act as the sender (SEND_INVOICES) — VIEW_FINANCIALS is a much broader,
+  // often read-only grant (reporting/oversight roles). Without this, any such viewer could
+  // copy the link straight out of the page source and act on the portal as the client:
+  // file a dispute, or — now that /api/portal/invoice/[token]/paid exists — file a false
+  // "I've paid this" claim that pings finance and pauses the real client's overdue
+  // reminders. Redacted per-row rather than dropped from the query so BillingTab's other
+  // consumers of `invoices` (which don't need SEND_INVOICES) keep working unchanged.
+  const canSendInvoices = hasPermission(session, 'SEND_INVOICES')
+  const invoicesForClient = canSendInvoices
+    ? invoices
+    : (invoices || []).map((inv: any) => ({ ...inv, token: null }))
+
   // ── Fetch reconciliation snapshot history (Phase 4) ──────────────────
   const { data: reconciliation = [] } = viewFinancials
     ? await (service as any)
@@ -268,7 +285,7 @@ export default async function ProjectPage({ params, searchParams }: Props) {
       amendments={amendments || []}
       team={team || []}
       activity={activity || []}
-      invoices={invoices || []}
+      invoices={invoicesForClient}
       reconciliation={reconciliation || []}
       defaultPaymentInstructions={workspaceBilling?.default_payment_instructions || ''}
       billingDefaults={billingDefaults}

@@ -1,0 +1,152 @@
+Approval workflows engine (section 11) + Invoicing (section 12) — independent re-audit, fix round 3
+====================================================================================================
+
+Full independent re-pass over both sections again, ignoring every existing audit comment
+(consulted only afterward, to check whether one was itself wrong or misleading — none were
+this round; two of my OWN prior-round findings were retracted after being checked directly
+against this codebase — see RETRACTED below). Read every file under api/approval-workflows,
+api/approvals, components/approvals, app/(app)/approvals, lib/approvals, api/invoices/*,
+components/invoices, app/(app)/invoices, api/pdf/invoice, plus everywhere else those pull
+data from or hand data to (the project detail page's own invoices fetch, the SOW/CO send
+routes, the invoice PDF renderer, the payment trigger in SQL). Found and fixed 6 real bugs —
+1 in the DB (a genuine data-correctness bug), 5 in application code. No new feature gaps.
+No new environment variables; no npm changes.
+
+RUN THIS MIGRATION (Supabase SQL editor):
+  supabase/migrations/079_approvals_invoicing_independent_pass_3.sql
+It redefines recalc_invoice_paid_status() (safe to re-run) and includes a one-time UPDATE
+correcting invoices this bug already mis-flagged. No new columns, no new tables.
+
+================================================================================
+BUGS FIXED
+================================================================================
+
+1. supabase/migrations/079... — recalc_invoice_paid_status() (was 004_invoicing.sql)
+   An 'overdue' invoice that receives ANY partial payment — even $1 against a $10,000
+   balance — silently flipped back to 'partially_paid', because the trigger checked
+   "has any payment landed" BEFORE checking "is this past due". Nothing re-applies
+   'overdue' except the payment-overdue cron, which only scans status IN ('sent',
+   'partially_paid') — so its very next run picks the invoice right back up, flips it to
+   'overdue' again, and re-fires the "invoice overdue" audit row / in-app notification /
+   email to every VIEW_FINANCIALS holder, for money that's already, partly, in hand. That
+   repeats every cron run for as long as the invoice stays short of paid in full and past
+   due — which is exactly what a partial payment on a stale invoice creates.
+   Fix: the trigger now checks the due date FIRST. Still short of paid in full AND past due
+   → 'overdue', whether or not a partial payment has landed; amount_paid still updates
+   either way, so the UI/PDF still reflect the partial payment correctly. 'partially_paid'
+   now specifically means "owes money, not yet due (or no due date set)". Migration includes
+   a one-time UPDATE re-bucketing any invoice this already put in the wrong status.
+
+2. lib/approvals/engine.ts — dispatchSend() (new requesterCanStillSend())
+   The auto-send after a chain clears only ever confirmed the requester's `users` row still
+   exists — never that they're still an ACTIVE workspace member, or still hold the actual
+   send permission for this document type (SEND_SOW / SEND_CHANGE_ORDERS / SEND_INVOICES —
+   the same ones the direct-send routes themselves check). A chain can sit open for days
+   (multi-step, reminders, escalation); by the time the last approval lands, the requester
+   may have been deactivated or had that permission revoked. Without this check the document
+   still auto-sent under their name and reply-to, using authority they no longer had, and
+   they still received the decision email regardless.
+   Fix: dispatchSend now re-checks active membership + the relevant SEND_* permission right
+   before sending. Fails the same way the existing "no account" case already does — blocks
+   with a clear, actionable message — rather than sending on their behalf.
+
+3. lib/approvals/engine.ts (evaluateApprovalGate/dispatchSend) + sow/[id]/send,
+   co/[id]/send route.ts
+   The requester's chosen link-expiry (expiresInDays) was accepted by the direct-send routes
+   but never passed into the approval gate, so ANY SOW/CO that went through an approval chain
+   always reverted to the 30-day default once auto-sent — silently overriding whatever the
+   requester actually picked before the chain even started.
+   Fix: GateParams now carries expiresInDays, stored on the request's own context (alongside
+   title/amount/currency — the same snapshot pattern already used there) so a later workflow
+   edit can't retroactively change what an in-flight request was actually granted; dispatchSend
+   reads it back and passes it through to sendSowDocument/sendCoDocument. co/[id]/send's body
+   parse was moved earlier (was read only after the gate call) so the gate can see it too.
+
+4. Stuck "sending" approval requests were only reachable through the daily approval-stall
+   cron (healStuckSends had exactly one caller). A crashed process mid-send (a deploy, a
+   platform timeout) could leave a request — and the document behind it — locked for up to
+   ~24h with nothing to retry, before the cron next ran.
+   Fix: healStuckSends now also runs, scoped to just the caller's own workspace (new optional
+   workspaceId param — the cron's global scan is unchanged), from GET /api/approvals right
+   before it reads the list — best-effort, wrapped so a failure here can never break the list
+   itself. A stuck request now self-heals the moment anyone actually opens Approvals, instead
+   of waiting on the cron.
+
+5. app/(app)/projects/[id]/page.tsx, app/api/invoices/[id]/route.ts,
+   components/invoices/BillingTab.tsx — invoice portal-token over-exposure
+   The project page's own invoices fetch (feeding BillingTab) and the invoice detail route
+   (`select('*')`) both shipped the raw, unauthenticated client-portal `token` to ANYONE
+   holding VIEW_FINANCIALS — a much broader grant than the ability to actually send/manage
+   invoices, and often a read-only reporting role. This is the identical shape of bug the SOW
+   detail route was already fixed for (its own comment: "no frontend consumer ever read
+   sow.token from this response... pure over-exposure") — invoices just never got the same
+   treatment. BillingTab's "Copy link" button also wasn't gated behind SEND_INVOICES the way
+   Record payment/Remind/Void already are, so it rendered for the same over-broad audience.
+   Sharpest case: with the new /api/portal/invoice/[token]/paid route (this cycle's own
+   feature addition), holding the token now also lets someone falsely claim "I've paid this"
+   as the client — pinging finance and pausing the real client's overdue reminders — not just
+   file a dispute.
+   Fix: token is redacted (set to null) server-side in both places unless the caller holds
+   SEND_INVOICES; the Copy Link button is now also gated on permissions.sendInvoices directly,
+   belt-and-suspenders with the server-side redaction.
+
+6. lib/pdf/renderer.tsx — invoice PDF, voided invoices
+   A voided invoice with an outstanding balance (voiding keeps its payment records rather
+   than forcing their deletion, per the prior fix round) still printed "Balance due: $X" at
+   the bottom of the PDF. The only signal that it's void at all is a small status pill in the
+   top-right corner — easy to miss on a document that otherwise reads exactly like a normal
+   invoice asking to be paid.
+   Fix: the grand-total row now reads "This invoice has been voided — Not payable" instead of
+   a balance figure whenever status is 'void'.
+
+================================================================================
+RETRACTED FROM EARLIER ROUNDS (checked directly against this codebase, found not to hold)
+================================================================================
+  * "Send-failure escalation repeats every 2 days forever, uncapped" — re-read the cron: this
+    is intentional, not a bug. An approved-but-unsent document SHOULD keep being escalated
+    every `threshold` days for as long as it stays unsent — unlike the separate "no reachable
+    approver" alert (which throttles to once/week because that case can never resolve itself
+    without a workflow edit), a stale send failure resolves itself the moment anyone clicks
+    Retry, so repeating the nudge until then is the correct behavior, not a bug.
+  * "Cron paging can skip rows mid-scan" — fetchAll() collects every page of a query BEFORE
+    the loop starts mutating any row, so a filtered set shrinking as rows are processed cannot
+    cause a page to be skipped. Retracted; no fix needed.
+
+================================================================================
+NOT DONE / KNOWN LIMITS
+================================================================================
+  * No database in this environment — 079's SQL has NOT been executed by me. Replay it via
+    tests/pg-replay (PG_REPLAY_URL) before applying to production, same as every prior round.
+  * No node_modules / no network here — could not run `next build`, tsc, or vitest. Every
+    changed file was reviewed by hand and checked for brace/paren balance; call sites of every
+    changed function signature (dispatchSend, healStuckSends, evaluateApprovalGate's
+    GateParams) were grepped and cross-checked. tests/approvals-invoicing.test.ts and
+    tests/cron-approval-billing-flags.test.ts were read but not executed — the new
+    requesterCanStillSend() check inside dispatchSend is NOT covered by either; if either
+    test's mocked service client doesn't stub a workspace_members lookup for the requester,
+    it will need that added. Flagging this explicitly rather than claiming it's covered.
+  * requesterCanStillSend() checks the exact SEND_SOW / SEND_CHANGE_ORDERS / SEND_INVOICES
+    permission per document type; 'co_counter' auto-finalize (acceptCoCounter) is gated on
+    the same SEND_CHANGE_ORDERS as 'co' — worth confirming that's actually the right
+    permission for accepting a counter-offer specifically, since it's a different action from
+    sending a fresh CO. Left as-is (matches the direct-accept route's own check) but flagging
+    the judgment call.
+  * Still open from before, not reached this round: registry/export URL length with a very
+    large project list, line-item edge-case validation (a zero-sum itemized invoice, PATCH
+    changing lineItems without amount), and cap atomicity between concurrent invoice creates
+    (POST) vs. PATCH skipping the project-level over-contract confirmation POST has.
+  * A second, fully independent pass with NOTHING found is still the bar for closing either
+    section per your criteria — this round found real bugs, so it isn't that pass yet.
+
+CHANGED FILES
+  supabase/migrations/079_approvals_invoicing_independent_pass_3.sql   (NEW)
+  lib/approvals/engine.ts                 (requesterCanStillSend, expiresInDays threading,
+                                            healStuckSends workspace scoping)
+  app/api/approvals/route.ts              (lazy healStuckSends call; allowedProjectIdsFor
+                                            switched to project_members_active)
+  app/api/sow/[id]/send/route.ts          (expiresInDays passed to the gate)
+  app/api/co/[id]/send/route.ts           (body parsed before the gate; expiresInDays passed)
+  app/api/invoices/[id]/route.ts          (token redacted without SEND_INVOICES)
+  app/(app)/projects/[id]/page.tsx        (token redacted without SEND_INVOICES)
+  components/invoices/BillingTab.tsx      (Copy Link gated on permissions.sendInvoices)
+  lib/pdf/renderer.tsx                    (void invoices no longer print "Balance due")

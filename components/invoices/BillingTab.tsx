@@ -411,7 +411,15 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
                       <a href={`/api/pdf/invoice/${inv.id}`} className="btn btn-ghost btn-sm" target="_blank" rel="noreferrer">
                         <i className="ti ti-download" style={{ fontSize: 11 }} /> PDF
                       </a>
-                      {inv.token && (
+                      {/* FIX (independent pass 3): gated behind sendInvoices, same as Record
+                          payment/Remind/Void above — inv.token is the raw client-portal link;
+                          copying it lets the holder act as the client (dispute, "I've paid
+                          this"). It's now redacted server-side for anyone without this
+                          permission too (see app/(app)/projects/[id]/page.tsx and
+                          api/invoices/[id] GET), so inv.token is already falsy for them —
+                          this check is belt-and-suspenders so the button doesn't render at
+                          all rather than rendering and silently copying "undefined". */}
+                      {inv.token && permissions.sendInvoices && (
                         <button className="btn btn-ghost btn-sm" onClick={() => {
                           navigator.clipboard.writeText(`${process.env.NEXT_PUBLIC_PORTAL_URL || window.location.origin}/portal/invoice/${inv.token}`)
                           alert('Client link copied.')
