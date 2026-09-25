@@ -25,9 +25,11 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { EMAIL_RE, CLIENT_LIMITS, CONTACT_ROLE_TYPES, type ContactRoleType } from '@/lib/utils/client-input'
+// FIX (independent pass round 2, section 14): this route's own local escapeLike() was broken
+// (see lib/utils/escape-like.ts for the full story) — imported instead of re-typed.
+import { escapeLike } from '@/lib/utils/escape-like'
 
 const MAX_CONTACTS_PER_CLIENT = 25
-const escapeLike = (v: string) => v.replace(/[\\%_]/g, m => `\${m}`)
 const CONTACT_COLS = 'id,name,email,role,role_type,is_primary,created_at'
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {

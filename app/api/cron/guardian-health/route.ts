@@ -118,7 +118,12 @@ async function sweepUnclassified(service: any) {
   const candidates = [...(failedRows || []), ...(backlogRows || [])].filter(due).slice(0, SWEEP_BATCH)
 
   const started = Date.now()
-  const stats = { candidates: candidates.length, classified: 0, flagged: 0, failed: 0, skipped: 0 }
+  // FIX (independent pass round 2, section 13): `duplicates` is a new bucket — reclassifyCheck
+  // did not used to dedup at all on this path, so there was never a status here to distinguish
+  // from a plain skip. Counted separately so a run that resolves a pile of backlog duplicates
+  // (e.g. the same forwarded email arriving several times before a SOW was signed) is visible as
+  // exactly that, not indistinguishable from checks that were simply ineligible this round.
+  const stats = { candidates: candidates.length, classified: 0, flagged: 0, failed: 0, duplicates: 0, skipped: 0 }
   for (const c of candidates) {
     if (Date.now() - started > SWEEP_BUDGET_MS) break
     try {
@@ -129,6 +134,7 @@ async function sweepUnclassified(service: any) {
       })
       if (res.status === 'classified') { stats.classified++; if (res.flagId) stats.flagged++ }
       else if (res.status === 'failed') stats.failed++
+      else if (res.status === 'duplicate') stats.duplicates++
       else stats.skipped++
     } catch (e) {
       stats.failed++
@@ -175,7 +181,7 @@ export async function POST(request: NextRequest) {
     }
 
     // ── Sweep: retry failed + classify the backlog ────────────
-    let sweep: Awaited<ReturnType<typeof sweepUnclassified>> | { error: string } = { candidates: 0, classified: 0, flagged: 0, failed: 0, skipped: 0 }
+    let sweep: Awaited<ReturnType<typeof sweepUnclassified>> | { error: string } = { candidates: 0, classified: 0, flagged: 0, failed: 0, duplicates: 0, skipped: 0 }
     try { sweep = await sweepUnclassified(service) }
     catch (e) { console.error('Guardian sweep error:', e); sweep = { error: e instanceof Error ? e.message : 'sweep failed' } }
 

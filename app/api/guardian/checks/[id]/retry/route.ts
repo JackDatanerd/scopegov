@@ -67,6 +67,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       // Stays classification_failed:true — exactly as retryable as before.
       return NextResponse.json({ error: 'Classification failed again — try again shortly' }, { status: 502 })
     }
+    // FIX (independent pass round 2, section 13): reclassifyCheck now runs the same dedup lookup
+    // the live submission paths always have — see that function's own comment. A retried check
+    // that turns out to be a duplicate of something already classified is resolved as one, not
+    // sent through classification a second time.
+    if (res.status === 'duplicate') {
+      return NextResponse.json({ checkId, outcome: 'duplicate', isDuplicate: true, duplicateOfId: res.duplicateOfId })
+    }
 
     const { classification, flagId } = res
     return NextResponse.json({

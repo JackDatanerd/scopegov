@@ -7,46 +7,16 @@ import { getSession } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { resolveEntity, canReadProject, canWriteGovernance, isValidEntityType } from '@/lib/utils/flag-governance'
+// FIX (independent pass round 2, section 13): the allowlist + magic-byte check used to live only
+// here, hand-typed; guardian/inbound's saved email attachments now need the exact same validation,
+// so it's factored out into one shared implementation (see lib/utils/file-signature.ts for why).
+import { ALLOWED_ATTACHMENT_TYPES as ALLOWED_TYPES, matchesDeclaredType } from '@/lib/utils/file-signature'
 
 // Private bucket, created manually in the Supabase dashboard (same as the
 // existing `pdfs` bucket) — see README §1.2 for setup. Never public: this
 // is client-submitted evidence and signed addenda, not brand assets.
 const BUCKET = 'flag-evidence'
 const MAX_FILE_BYTES = 10 * 1024 * 1024 // 10 MB
-const ALLOWED_TYPES = new Set([
-  'application/pdf', 'image/png', 'image/jpeg', 'image/webp',
-  'message/rfc822', 'text/plain',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-])
-
-// FIX (audit round 3): `file.type` on a browser File/FormData object is
-// whatever the client claims — trivially spoofable (rename evil.html to
-// evil.png, or just construct the multipart part by hand). It was being
-// used as BOTH the allowlist check and the stored object's Content-Type,
-// so a spoofed type could get real HTML/SVG content stored with a
-// mismatched Content-Type header. Exploitability was already limited here
-// (private bucket, signed-URL download, nothing inlines these), but it's
-// a free check to add: verify the file's actual leading bytes match a
-// magic number for the type it claims to be before trusting it. Only the
-// binary types below have a reliable signature — text/plain and
-// message/rfc822 have none, so those still rely on the declared type,
-// same as before.
-const MAGIC_BYTES: Record<string, (buf: Buffer) => boolean> = {
-  'application/pdf':  buf => buf.subarray(0, 4).toString('latin1') === '%PDF',
-  'image/png':        buf => buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
-  'image/jpeg':       buf => buf.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff])),
-  'image/webp':       buf => buf.subarray(0, 4).toString('latin1') === 'RIFF' && buf.subarray(8, 12).toString('latin1') === 'WEBP',
-  // .docx is a zip container (PK\x03\x04) — this only confirms "is a zip",
-  // not "is specifically a valid docx", which is enough to rule out
-  // someone mislabeling an arbitrary non-zip file as this type.
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
-    buf => buf.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04])),
-}
-
-function matchesDeclaredType(mimeType: string, buf: Buffer): boolean {
-  const check = MAGIC_BYTES[mimeType]
-  return check ? check(buf) : true // text/plain, message/rfc822 — no reliable signature to check
-}
 
 export async function GET(
   request: NextRequest,

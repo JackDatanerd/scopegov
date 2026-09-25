@@ -9,8 +9,9 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { EMAIL_RE, CLIENT_LIMITS, CONTACT_ROLE_TYPES } from '@/lib/utils/client-input'
-
-const escapeLike = (v: string) => v.replace(/[\\%_]/g, m => `\${m}`)
+// FIX (independent pass round 2, section 14): this route's own local escapeLike() was broken
+// (see lib/utils/escape-like.ts for the full story) — imported instead of re-typed.
+import { escapeLike } from '@/lib/utils/escape-like'
 
 async function loadContact(service: any, workspaceId: string, clientId: string, contactId: string) {
   const { data: client } = await service

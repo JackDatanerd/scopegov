@@ -53,6 +53,14 @@ export async function collectAttachmentPaths(service: any, scope: PurgeScope): P
       .select('id, storage_path', { count: 'exact' })
       .eq(col, id)
       .order('id', { ascending: true }).range(from, to), { maxRows: MAX_ROWS }),
+    // FIX (independent pass round 2, section 13): guardian_check_attachments (migration 085) is a
+    // new flag-evidence-bucket table this function didn't know about — same omission this file's
+    // own header describes for the other three tables, just for one added later. Same column
+    // shape (project_id/workspace_id directly on the row, no parent-document indirection needed).
+    fetchPaged<any>((from, to) => service.from('guardian_check_attachments')
+      .select('id, storage_path', { count: 'exact' })
+      .eq(col, id)
+      .order('id', { ascending: true }).range(from, to), { maxRows: MAX_ROWS }),
   ]
   for (const res of await Promise.all(runs)) {
     for (const r of res.rows) if (r.storage_path) paths.add(r.storage_path)

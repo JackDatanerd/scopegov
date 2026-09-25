@@ -10,6 +10,8 @@ import {
 } from '@/lib/ai/guardian-email'
 import { logAudit } from '@/lib/utils/audit'
 import { checkAiRateLimitByProject, recordAiUsageByProject } from '@/lib/utils/rate-limit'
+import { EVIDENCE_BUCKET } from '@/lib/utils/storage-cleanup'
+import { ALLOWED_ATTACHMENT_TYPES, matchesDeclaredType } from '@/lib/utils/file-signature'
 
 // BUG-016: verify the Postmark inbound webhook before processing.
 //
@@ -154,8 +156,8 @@ export async function POST(request: NextRequest) {
 
     // ── Sender recognition (informational — never blocks) ─────
     const senderKnown = await isKnownSender(service, project.workspace_id, project.client_id, fromAddr)
-    const attachments = Array.isArray(payload.Attachments)
-      ? payload.Attachments.slice(0, 10).map((a: any) => String(a?.Name || '').slice(0, 120)).filter(Boolean) : []
+    const rawAttachments: any[] = Array.isArray(payload.Attachments) ? payload.Attachments.slice(0, 10) : []
+    const attachments = rawAttachments.map((a: any) => String(a?.Name || '').slice(0, 120)).filter(Boolean)
     const sourceMetadata: Record<string, unknown> = {
       from: fromEmail, from_address: fromAddr, subject, to: toEmail,
       ...(messageId ? { message_id: messageId } : {}),
@@ -178,10 +180,51 @@ export async function POST(request: NextRequest) {
       return { id: data.id as string, raced: false }
     }
 
+    // FEATURE (independent pass round 2, section 13 — feature gap): Postmark's payload carries
+    // each attachment's base64 Content alongside its Name, but only the Name was ever kept
+    // (`attachments` above, in source_metadata) — the file itself was discarded. Best-effort: a
+    // bad/oversized/unrecognised attachment is skipped and logged, never turns a stored,
+    // otherwise-successful check into a 500 (which would make Postmark redeliver the whole email).
+    // Same private bucket + magic-byte validation the manual flag/exception evidence upload uses
+    // (lib/utils/file-signature.ts) — this is the same kind of file, just arriving by a different
+    // door. Saved regardless of which branch below stores the row (queued-pending / rate-limited /
+    // classified) — the client's evidence matters even for a check that isn't classified yet.
+    const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024 // 10 MB — matches the manual-upload cap
+    const saveCheckAttachments = async (checkId: string) => {
+      for (const a of rawAttachments) {
+        try {
+          const name = String(a?.Name || '').slice(0, 200) || 'attachment'
+          const contentType = String(a?.ContentType || '').split(';')[0].trim().toLowerCase()
+          const b64 = typeof a?.Content === 'string' ? a.Content : null
+          if (!b64 || !ALLOWED_ATTACHMENT_TYPES.has(contentType)) continue
+          const buffer = Buffer.from(b64, 'base64')
+          if (buffer.length === 0 || buffer.length > MAX_ATTACHMENT_BYTES) continue
+          if (!matchesDeclaredType(contentType, buffer)) continue
+          const rawExt = name.includes('.') ? (name.split('.').pop() || '') : ''
+          const ext = rawExt.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 10) || 'bin'
+          const storagePath = `${project.workspace_id}/guardian_check/${checkId}/${crypto.randomUUID()}.${ext}`
+          const { error: upErr } = await service.storage.from(EVIDENCE_BUCKET)
+            .upload(storagePath, buffer, { contentType, upsert: false })
+          if (upErr) { console.error('Guardian inbound: attachment upload failed:', upErr.message); continue }
+          const { error: insErr } = await (service as any).from('guardian_check_attachments').insert({
+            workspace_id: project.workspace_id, project_id: project.id, check_id: checkId,
+            file_name: name, file_size: buffer.length, mime_type: contentType, storage_path: storagePath,
+          })
+          if (insErr) {
+            console.error('Guardian inbound: attachment row insert failed:', insErr.message)
+            await service.storage.from(EVIDENCE_BUCKET).remove([storagePath])
+          }
+        } catch (e) {
+          console.error('Guardian inbound: attachment save failed:', e)
+        }
+      }
+    }
+
     // ── No signed SOW yet: keep the mail, spend nothing ───────
     // Re-classified automatically by the guardian-health sweep after the SOW is signed.
     if (!snapshot) {
       const r = await insertCheck({ source_metadata: sourceMetadata, is_duplicate: false, outcome: 'pending' })
+      if (r.id) await saveCheckAttachments(r.id)
       return NextResponse.json({ ok: true, outcome: 'pending', checkId: r.id })
     }
 
@@ -190,6 +233,7 @@ export async function POST(request: NextRequest) {
     if (!limited.allowed) {
       console.warn(`Guardian inbound rate limit hit for project ${project.id} — queued for sweep`)
       const r = await insertCheck({ source_metadata: { ...sourceMetadata, rate_limited: true }, is_duplicate: false, outcome: 'pending' })
+      if (r.id) await saveCheckAttachments(r.id)
       return NextResponse.json({ ok: true, outcome: 'pending', queued: true, checkId: r.id })
     }
 
@@ -204,6 +248,7 @@ export async function POST(request: NextRequest) {
       embedding: isDuplicate ? null : embedding, outcome: 'pending',
     })
     if (row.raced || !row.id) return NextResponse.json({ ok: true, message: 'Already processed' })
+    await saveCheckAttachments(row.id)
 
     if (isDuplicate) {
       await logAudit(service, {

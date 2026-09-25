@@ -250,6 +250,7 @@ export type ReclassifyResult =
   | { status: 'classified'; classification: ClassificationResult; flagId: string | null; project: PipelineProject }
   | { status: 'failed'; reason: 'classification' | 'flag' }
   | { status: 'skipped'; reason: 'not_found' | 'not_eligible' | 'no_snapshot' | 'max_attempts' | 'claimed' }
+  | { status: 'duplicate'; duplicateOfId: string }
 
 export async function reclassifyCheck(service: any, checkId: string, opts: {
   actor: GuardianActor
@@ -290,9 +291,45 @@ export async function reclassifyCheck(service: any, checkId: string, opts: {
   if (!claimed || claimed.length === 0) return { status: 'skipped', reason: 'claimed' }
 
   // Backlog rows (rate-limited inbound / no-snapshot at submission) may have no embedding.
-  if (!parseVector(check.embedding)) {
+  let embedding = parseVector(check.embedding)
+  if (!embedding) {
     const emb = await tryEmbedding(check.content)
-    if (emb) await service.from('guardian_checks').update({ embedding: emb }).eq('id', check.id)
+    if (emb) {
+      embedding = emb
+      await service.from('guardian_checks').update({ embedding: emb }).eq('id', check.id)
+    }
+  }
+
+  // FIX (independent pass round 2, section 13 — flagship finding): this backlog path (the cron
+  // sweep AND manual retry both go through here) never ran duplicate detection at all — only the
+  // two LIVE submission paths (guardian/check, guardian/inbound) ever called findDuplicateCheck,
+  // before the row was first inserted. A project with no signed SOW yet, or one that's hit the
+  // inbound rate limit, can perfectly well receive the same client request more than once (a
+  // forwarded thread, a client re-sending because they got no reply) — each arrives as its own
+  // `pending` row with is_duplicate:false, since dedup only ever ran on submission and these were
+  // never eligible for it there. Once the SOW is signed (or the limit clears) and this function
+  // finally classifies them, every one of those was getting classified — and flagged — completely
+  // independently, exactly the multi-flag/multi-email noise the live-path dedup exists to prevent.
+  // Run the same pgvector lookup the live paths use, now that this row has an embedding to check,
+  // and resolve it the same way check/route.ts does for a live duplicate: is_duplicate:true,
+  // duplicate_of_id set, embedding cleared, outcome left at 'pending' (that combination is what
+  // both the history view and sweepUnclassified's own `.eq('is_duplicate', false)` filter already
+  // treat as "this is a duplicate, not backlog" — so a match here also retires it from future
+  // sweeps without adding a new outcome value anywhere those are read).
+  if (embedding) {
+    const duplicateOfId = await findDuplicateCheck(service, check.project_id, embedding)
+    if (duplicateOfId) {
+      const { error: dupErr } = await service.from('guardian_checks')
+        .update({ is_duplicate: true, duplicate_of_id: duplicateOfId, embedding: null })
+        .eq('id', check.id)
+      if (dupErr) console.error('Could not mark backlog check as duplicate:', dupErr.message)
+      await logAudit(service, {
+        workspaceId: project.workspace_id, actorId: opts.actor.id, actorEmail: opts.actor.email,
+        actorName: opts.actor.name, eventType: 'check.duplicate_skipped', entityType: 'guardian_check',
+        entityId: check.id, entityName: project.name, metadata: { duplicate_of: duplicateOfId, stage: 'backlog' },
+      })
+      return { status: 'duplicate', duplicateOfId }
+    }
   }
 
   const from = check.source_metadata?.from

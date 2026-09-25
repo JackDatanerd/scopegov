@@ -1546,6 +1546,45 @@ function ExceptionCard({ exception, permissions, currency }: any) {
   )
 }
 
+// FEATURE (independent pass round 2, section 13 — feature gap): pairs with guardian/inbound now
+// saving the actual bytes of an email attachment (guardian_check_attachments / migration 085)
+// instead of only its filename. Fetches the real, downloadable copy on demand — shared by the
+// check-history panel below and by FlagSource's "original request" view. Falls back to the old
+// filename-only "not analysed" text for rows saved before this shipped, or for an attachment type
+// this app doesn't keep (an unlisted MIME type, or one that failed the magic-byte check).
+function CheckAttachments({ checkId, fallbackNames }: { checkId: string | null | undefined; fallbackNames?: string[] }) {
+  const [state, setState] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
+  const [files, setFiles] = useState<Array<{ id: string; fileName: string; downloadUrl: string | null }>>([])
+
+  useEffect(() => {
+    if (!checkId || state !== 'idle') return
+    setState('loading')
+    fetch(`/api/guardian/checks/${checkId}/attachments`)
+      .then(res => res.json())
+      .then(json => { setFiles(json.attachments || []); setState('done') })
+      .catch(() => setState('error'))
+  }, [checkId, state])
+
+  const fallback = fallbackNames?.length ? (
+    <div style={{ color: 'var(--text-4)' }}>
+      <i className="ti ti-paperclip" style={{ fontSize: 11 }} /> {fallbackNames.length} attachment{fallbackNames.length !== 1 ? 's' : ''} not analysed: {fallbackNames.join(', ')}
+    </div>
+  ) : null
+
+  if (!checkId) return fallback
+  if (state === 'done' && files.some(f => f.downloadUrl)) {
+    return (
+      <div style={{ color: 'var(--text-4)', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <i className="ti ti-paperclip" style={{ fontSize: 11 }} />
+        {files.map(f => f.downloadUrl
+          ? <a key={f.id} href={f.downloadUrl} target="_blank" rel="noreferrer" style={{ color: 'var(--green)' }}>{f.fileName}</a>
+          : <span key={f.id}>{f.fileName}</span>)}
+      </div>
+    )
+  }
+  return (state === 'done' || state === 'error') ? fallback : null
+}
+
 // FEATURE (deep audit, section 13 — flagship finding): the missing read
 // surface for guardian_checks — see app/api/guardian/checks/route.ts and
 // the ACCESS_GUARDIAN_HISTORY note on GuardianTab above. Every check that
@@ -1676,8 +1715,8 @@ function GuardianHistoryPanel({ projectId, canRetry }: { projectId: string; canR
                     <div style={{ fontSize: 11, color: 'var(--text-4)', marginTop: 2 }}>Matched: {c.matchedReference}</div>
                   )}
                   {Array.isArray(c.attachmentNames) && c.attachmentNames.length > 0 && (
-                    <div style={{ fontSize: 11, color: 'var(--text-4)', marginTop: 2 }}>
-                      <i className="ti ti-paperclip" style={{ fontSize: 11 }} /> {c.attachmentNames.length} attachment{c.attachmentNames.length !== 1 ? 's' : ''} not analysed: {c.attachmentNames.join(', ')}
+                    <div style={{ fontSize: 11, marginTop: 2 }}>
+                      <CheckAttachments checkId={c.id} fallbackNames={c.attachmentNames} />
                     </div>
                   )}
                   {c.isDuplicate && (
@@ -1915,8 +1954,8 @@ function FlagSource({ flagId, open, onToggle }: { flagId: string; open: boolean;
               {source.subject && <div style={{ color: 'var(--text-3)', marginBottom: 4 }}>Subject: {source.subject}</div>}
               <div style={{ whiteSpace: 'pre-wrap', color: 'var(--text-1)', lineHeight: 1.5, maxHeight: 260, overflowY: 'auto' }}>{source.content}</div>
               {source.attachmentNames?.length > 0 && (
-                <div style={{ color: 'var(--text-4)', marginTop: 6 }}>
-                  <i className="ti ti-paperclip" style={{ fontSize: 11 }} /> Attachments (not analysed): {source.attachmentNames.join(', ')}
+                <div style={{ marginTop: 6 }}>
+                  <CheckAttachments checkId={source.checkId} fallbackNames={source.attachmentNames} />
                 </div>
               )}
             </>

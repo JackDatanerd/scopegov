@@ -18,9 +18,9 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { parseClientInput } from '@/lib/utils/client-input'
-
-// ilike treats % and _ as wildcards — an email like jo_hn@x.com must match literally.
-const escapeLike = (v: string) => v.replace(/[\\%_]/g, m => `\${m}`)
+// FIX (independent pass round 2, section 14): this route's own local escapeLike() was broken
+// (see lib/utils/escape-like.ts for the full story) — imported instead of re-typed.
+import { escapeLike } from '@/lib/utils/escape-like'
 
 // Free-text fields whose VALUE is not copied into the audit trail (only "changed").
 const AUDIT_REDACT = new Set(['notes'])
