@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { healStuckSends } from '@/lib/approvals/engine'
+import { fetchAll } from '@/lib/utils/fetch-all'
 
 const REQUEST_FIELDS = `
   id, document_type, document_id, project_id, status, current_step, total_steps,
@@ -126,13 +127,24 @@ export async function GET(request: NextRequest) {
       if (!hasPermission(session, 'VIEW_ALL_PROJECTS') && !hasPermission(session, 'MANAGE_WORKSPACE_SETTINGS'))
         return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
 
-      let q = (service as any)
-        .from('approval_requests')
-        .select(REQUEST_FIELDS)
-        .eq('workspace_id', session.workspaceId)
-      if (statusFilter) q = q.eq('status', statusFilter)
-      if (typeFilter) q = q.eq('document_type', typeFilter)
-      const { data } = await q.order('created_at', { ascending: false }).limit(500)
+      // FIX (section-11 audit, independent pass 4): this used a bare
+      // .limit(500) with no truncation detection — the exact class of bug
+      // already fixed everywhere else "big reads" happen in this codebase
+      // (portfolio-data.ts, scope-health.ts, the invoice registry/export).
+      // A workspace with more than 500 approval_requests (across every
+      // status/type, since this is the oversight view with no default
+      // status filter) silently dropped the oldest ones past the cap with
+      // no signal to the viewer. fetchAll pages through all of them (up to
+      // its safety ceiling), same as the invoice registry's own ledger read.
+      const rows = await fetchAll<any>('approvals list (all)', (from, to) => {
+        let q = (service as any)
+          .from('approval_requests')
+          .select(REQUEST_FIELDS)
+          .eq('workspace_id', session.workspaceId)
+        if (statusFilter) q = q.eq('status', statusFilter)
+        if (typeFilter) q = q.eq('document_type', typeFilter)
+        return q.order('created_at', { ascending: false }).order('id').range(from, to)
+      })
 
       // FIX (section-11 audit, pass 2): MANAGE_WORKSPACE_SETTINGS alone (no
       // VIEW_ALL_PROJECTS) used to return every project's requests — titles,
@@ -140,7 +152,7 @@ export async function GET(request: NextRequest) {
       // other route treats canReadProject as the visibility boundary; the
       // oversight list now does too.
       const allowed = await allowedProjectIdsFor(service, session)
-      const visible = (data || []).filter((r: any) => !allowed || allowed.has(r.project_id))
+      const visible = rows.filter((r: any) => !allowed || allowed.has(r.project_id))
       return NextResponse.json({ requests: decorate(visible, session, roleId), scope: 'all' })
     }
 
@@ -149,36 +161,55 @@ export async function GET(request: NextRequest) {
     // is inherently "yours to see". The Approvals page now shows this as a tab
     // ("My requests") for everyone, not only as the retry banner.
     if (scope === 'submitted') {
-      let q = (service as any)
-        .from('approval_requests')
-        .select(REQUEST_FIELDS)
-        .eq('workspace_id', session.workspaceId)
-        .eq('requested_by', session.id)
-      if (statusFilter) q = q.eq('status', statusFilter)
-      if (typeFilter) q = q.eq('document_type', typeFilter)
-      const { data } = await q.order('created_at', { ascending: false }).limit(200)
-      return NextResponse.json({ requests: decorate(data || [], session, roleId), scope: 'submitted' })
+      // FIX (section-11 audit, independent pass 4): same bare-.limit(200)-with-
+      // no-truncation-signal gap as the 'all' scope above — a heavy submitter
+      // (or one with a lot of decided/rejected history, since this scope has
+      // no default status filter) could have their oldest own requests drop
+      // off "My requests" with nothing to indicate anything was cut.
+      const rows = await fetchAll<any>('approvals list (submitted)', (from, to) => {
+        let q = (service as any)
+          .from('approval_requests')
+          .select(REQUEST_FIELDS)
+          .eq('workspace_id', session.workspaceId)
+          .eq('requested_by', session.id)
+        if (statusFilter) q = q.eq('status', statusFilter)
+        if (typeFilter) q = q.eq('document_type', typeFilter)
+        return q.order('created_at', { ascending: false }).order('id').range(from, to)
+      })
+      return NextResponse.json({ requests: decorate(rows, session, roleId), scope: 'submitted' })
     }
 
     // "Mine" — pending requests whose CURRENT step this viewer can decide.
     // Filtered in JS because "the pending step" is the one whose step_order
     // matches the request's current_step, which isn't expressible as a single
-    // PostgREST filter across the join. 500 matches the cap used elsewhere
-    // (a tighter one silently undercounts the badge in a busy workspace).
-    const { data: pending } = await (service as any)
-      .from('approval_requests')
-      .select(REQUEST_FIELDS)
-      .eq('workspace_id', session.workspaceId)
-      .eq('status', 'pending')
-      .order('created_at', { ascending: true })
-      .limit(500)
+    // PostgREST filter across the join.
+    // FIX (section-11 audit, independent pass 4): this used a bare .limit(500)
+    // ordered created_at ASCENDING — the worst version of the truncation bug
+    // above, since ascending order means it's the OLDEST 500 pending requests
+    // that get kept and every NEWER one silently dropped once a workspace
+    // passes 500 pending requests workspace-wide (this query has no status
+    // filter beyond 'pending', so it's every pending request of every type,
+    // not just what a given viewer can act on). A brand-new approval assigned
+    // to someone could never appear in "My queue" or the sidebar badge at all
+    // until 500 older ones clear — exactly backwards from what a live alert
+    // queue needs. fetchAll removes the cap (up to its own safety ceiling).
+    const pending = await fetchAll<any>('approvals list (mine, pending)', (from, to) =>
+      (service as any)
+        .from('approval_requests')
+        .select(REQUEST_FIELDS)
+        .eq('workspace_id', session.workspaceId)
+        .eq('status', 'pending')
+        .order('created_at', { ascending: true })
+        .order('id')
+        .range(from, to)
+    )
 
     // A project-restricted VIEW_OWN_PROJECTS member isn't exempt just because
     // they hold the assigned role, or are the named approver, on a document
     // outside their project access (same rule as notifyStepApprovers and the
     // decision route).
     const allowed = await allowedProjectIdsFor(service, session)
-    const mine = (pending || []).filter((r: any) => {
+    const mine = pending.filter((r: any) => {
       if (allowed && !allowed.has(r.project_id)) return false
       return canDecideRequest(r, session, roleId)
     })

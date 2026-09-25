@@ -1181,7 +1181,8 @@ function EditInvoiceModal({ invoiceId, projectCurrency, onClose, onSaved }: {
     setLineItems(prev => prev.filter(l => l.id !== id))
   }
 
-  async function submit() {
+  async function submit() { await submitWith(false) }
+  async function submitWith(acknowledgeOverContract: boolean) {
     setError('')
     if (!title.trim()) { setError('Title is required.'); return }
     if (!amount || Number(amount) <= 0) { setError('Enter a valid amount.'); return }
@@ -1197,9 +1198,18 @@ function EditInvoiceModal({ invoiceId, projectCurrency, onClose, onSaved }: {
           dueDate: dueDate || null, poNumber: poNumber.trim() || null, paymentInstructions,
           taxRate: Number(taxRate) || 0, taxInclusive,
           lineItems: itemized ? cleanItems.map(({ id, ...rest }) => rest) : [],
+          ...(acknowledgeOverContract ? { acknowledgeOverContract: true } : {}),
         }),
       })
       const json = await res.json()
+      // FIX (section-12 audit, independent pass 4 — feature gap): PATCH now runs the
+      // same project-level over-contract confirmation POST already has (see the
+      // route's comment) — handle it here the same way CreateInvoiceModal does.
+      if (res.status === 409 && json.code === 'over_contract') {
+        setSubmitting(false)
+        if (confirm(`${json.error}\n\nSave this change anyway?`)) { await submitWith(true) }
+        return
+      }
       if (!res.ok) throw new Error(json.error || 'Failed to save changes')
       onSaved()
     } catch (err: unknown) {

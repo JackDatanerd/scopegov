@@ -7,7 +7,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
 import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
 import { computeInvoiceTotals, enteredAmountOf, parseDateOnly } from '@/lib/documents/invoice-totals'
-import { baseContractValue } from '@/lib/reports/contract-position'
+import { baseContractValue, computeContractPosition } from '@/lib/reports/contract-position'
 import { getPendingApprovalForDocument, cancelApprovalRequest } from '@/lib/approvals/engine'
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -192,6 +192,36 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           return NextResponse.json({
             error: `${othersTotal.toFixed(2)} is already invoiced elsewhere against ${sourceLabel.replace('this ', '')} — only ${remaining.toFixed(2)} remains billable (before tax).`,
           }, { status: 400 })
+        }
+      }
+
+      // FIX (section-12 audit, independent pass 4 — feature gap): POST /api/invoices
+      // has a project-level check against contracted value (base + amendments) on top
+      // of every per-source cap above, specifically because the per-source caps alone
+      // let an agency double-bill the same contract value across DIFFERENT sources
+      // (every milestone invoiced, then a SOW invoice for the full value too — see
+      // that route's own comment). PATCH re-checks every per-source cap on an edit but
+      // never re-ran this one — a draft created for a small amount (well under
+      // contract, so no warning fired at creation) could be edited upward past the
+      // project's contracted value with the acknowledgeOverContract confirmation never
+      // triggering at all. Same confirmation-not-hard-block shape as POST: the
+      // draftTotal sum excludes THIS invoice's own (pre-edit) row, since finalSubtotal
+      // is the new amount actually being tested.
+      if (body.acknowledgeOverContract !== true) {
+        const position = await computeContractPosition(service, invoice.project_id)
+        if (position && position.contractedValue > 0) {
+          const { data: drafts } = await (service as any)
+            .from('invoices').select('subtotal, amount').eq('project_id', invoice.project_id).eq('status', 'draft').neq('id', id)
+          const draftTotal = (drafts || []).reduce((s: number, i: any) => s + Number(i.subtotal ?? i.amount ?? 0), 0)
+          const projected = position.invoicedToDate + draftTotal + finalSubtotal
+          if (projected > position.contractedValue + 0.01) {
+            return NextResponse.json({
+              error: `This would bring the total invoiced on this project to ${projected.toFixed(2)} (before tax, drafts included) — more than its contracted value of ${position.contractedValue.toFixed(2)}.`,
+              code: 'over_contract',
+              contractedValue: position.contractedValue,
+              projectedInvoiced: projected,
+            }, { status: 409 })
+          }
         }
       }
     }
