@@ -1,0 +1,96 @@
+ScopeGov — SOW lifecycle + Onboarding sections, fix round
+===========================================================
+
+Fixed following the independent deep-audit pass on:
+  9. SOW lifecycle — app/(app)/sow, api/sow/*, lib/sow, lib/pdf (sow portion), api/pdf/sow
+  4. Onboarding — app/onboarding, its tie-in to workspace/complete-onboarding
+
+--------------------------------------------------------------------
+1) HEADLINE BUG (Onboarding) — app/api/workspace/onboarding-status/route.ts
+--------------------------------------------------------------------
+This route's fallback path (used whenever the raw users.active_workspace_id
+column doesn't resolve to a live active membership) checked "first owned
+INCOMPLETE workspace, else first member-incomplete one, else any active
+membership" — i.e. it looked for something to resume BEFORE ever asking
+whether the user already has a perfectly good COMPLETED workspace.
+
+This is the exact "oldest active membership, no regard for completion" bug
+lib/auth/session.ts's pickFallbackMembership() was created to fix — see
+migration 074's own header comment, which enumerates every call site that
+needed the identical fix: getSession(), leave_workspace_atomic,
+audit_active_workspace(), middleware_gate_state(), and auth/callback's
+resolveOnboardingMember(). onboarding-status/route.ts does the exact same
+"what's this user's real active workspace" resolution as all five of those,
+and was the one place missed from that sweep.
+
+Concretely reachable: deactivate_member_atomic (migration 070) never
+reassigns the deactivated member's own active_workspace_id — only leave and
+delete do. getSession() silently recovers every request (it recomputes its
+own fallback in memory but never persists it back to the users row), so a
+user deactivated from a workspace that happened to be their active one goes
+on working normally, day to day, in whatever workspace getSession()'s
+fallback resolves to. But the raw active_workspace_id column itself stays
+stale. If that same user separately owns an old, abandoned, incomplete
+workspace, landing on /onboarding for any reason (a bookmark, browser back —
+middleware deliberately never gates this page) used to resolve
+activeWorkspaceId to nothing, fall straight to "first owned incomplete," and
+switch the user's REAL active workspace out from under them into resuming
+that abandoned one — even though they have a perfectly good, completed
+workspace they were just using a moment before.
+
+Fix: the fallback branch now calls the shared pickFallbackMembership()
+(imported from lib/auth/session) over the same `active` list, exactly like
+every other call site — prefer a completed workspace (oldest first), else
+the oldest active membership regardless of completion — then classify that
+pick into 'complete' / 'resume' (creator) / 'waiting' (member), instead of
+reinventing a divergent, incomplete-first order.
+
+--------------------------------------------------------------------
+2) app/(app)/clients/[id]/page.tsx — dead status check
+--------------------------------------------------------------------
+projectBadges()'s awaitingSow check included 'sent' in its status list —
+'sent' has never been a real sow_documents.status value (see
+lib/documents/send-sow.ts's own comment: draft goes straight to
+'awaiting_signature', spec §1.3). Harmless (could never match), but
+confusing dead code implying a status the app doesn't have. Removed; the
+check is now just `status === 'awaiting_signature'`.
+
+--------------------------------------------------------------------
+3) app/(app)/sow/page.tsx — project-membership query hardening
+--------------------------------------------------------------------
+allowedProjectIds was built by joining project_members straight to
+workspace_members filtered only on user_id — the same "naive join" shape
+lib/utils/project-access.ts's own BUG-058 comment already flags as unsafe —
+and, unlike every other membership check in the app, it never scoped by
+workspace_id or workspace_members.status either. Not an exploitable leak
+today (the sow_documents/count queries are always separately scoped to
+`workspace_id = session.workspaceId`, so a stray project id from another
+workspace or a deactivated membership can never match a row) — but it was
+the one place in the codebase still bypassing project_members_active
+(migration 070), the belt-and-braces view every other membership check
+uses so a failed/partial deactivation sweep doesn't have to be trusted
+blindly. Switched to project_members_active, scoped by project_workspace_id
++ member_user_id, matching lib/utils/project-access.ts's canReadProject().
+
+--------------------------------------------------------------------
+4) app/api/sow/parse-brief/route.ts — AI usage accounting gap
+--------------------------------------------------------------------
+recordAiUsage() (which feeds checkAiRateLimit) was only called AFTER
+stripAndParse succeeded. A call that reached the model — the actual cost,
+and the thing the rate limit exists to bound — but then failed to parse as
+JSON never counted against the limit at all, letting a string of malformed
+replies be retried past it for free. Moved the recordAiUsage() call to
+immediately after the model response comes back, before the parse attempt
+that can throw on its behalf.
+
+--------------------------------------------------------------------
+Independent re-audit status
+--------------------------------------------------------------------
+Both sections were audited end-to-end (all files under the listed paths,
+plus tightly-coupled lib/ai/sow-content.ts, lib/documents/send-sow.ts,
+lib/documents/sow-version.ts, components/sow/SowEditor.tsx, and — for the
+onboarding-status bug specifically — lib/auth/session.ts, migration 070,
+migration 074, and app/api/team/[id]/route.ts). No unbuilt/half-built
+features were found in either section. All four items above are now fixed.
+Recommend one more fresh independent pass over both sections before
+considering them fully closed out.

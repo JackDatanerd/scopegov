@@ -128,7 +128,13 @@ export default async function ClientDetailPage({ params }: Props) {
   function projectBadges(p: any) {
     const openFlags = (p.guardian_flags || []).filter((f: any) => f.status === 'open' || f.status === 'borderline_review').length
     const pendingCos = (p.change_orders || []).filter((co: any) => PENDING_CO_STATUSES.includes(co.status)).length
-    const awaitingSow = (p.sow_documents || []).some((s: any) => ['sent', 'awaiting_signature'].includes(s.status))
+    // FIX (SOW lifecycle re-audit): 'sent' has never been a real
+    // sow_documents.status value — lib/documents/send-sow.ts's own comment
+    // spells out why (draft goes straight to 'awaiting_signature', spec
+    // §1.3) — so this half of the check could never match anything. Dead,
+    // harmless code masquerading as a second real condition; removed
+    // rather than left implying a status this app doesn't have.
+    const awaitingSow = (p.sow_documents || []).some((s: any) => s.status === 'awaiting_signature')
     return { openFlags, pendingCos, awaitingSow }
   }
 

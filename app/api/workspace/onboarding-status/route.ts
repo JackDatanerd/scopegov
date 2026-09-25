@@ -35,6 +35,7 @@
 //                 nav to /onboarding after the fact): send them onward.
 
 import { createServiceClient, createServerSupabaseClient } from '@/lib/supabase/server'
+import { pickFallbackMembership } from '@/lib/auth/session'
 import { NextResponse } from 'next/server'
 
 async function buildResumePayload(service: any, w: any) {
@@ -110,9 +111,6 @@ export async function GET() {
     const active = (memberships || []).filter((m: any) => m.workspaces && !m.workspaces.deleted_at)
     const activeWorkspaceId = userRow?.active_workspace_id
 
-    const ownedIncomplete   = active.filter((m: any) => m.workspaces.created_by === user.id && !m.workspaces.onboarding_completed_at)
-    const memberIncomplete  = active.filter((m: any) => m.workspaces.created_by !== user.id && !m.workspaces.onboarding_completed_at)
-
     // FIX (round 3, Workspace lifecycle Finding 6): this used to check
     // ownedIncomplete unconditionally before ever looking at
     // memberIncomplete, then only used `activeWorkspaceId` to pick WITHIN
@@ -123,9 +121,9 @@ export async function GET() {
     // created, got forced into 'resume' mode for the wrong (irrelevant,
     // not-currently-active) workspace instead of 'waiting' for the one
     // they're actually trying to use. Check the active workspace's own
-    // incompleteness FIRST, across both lists, before falling back to
-    // "first owned, else first member" for the case where the active
-    // workspace itself is fully onboarded (or there is no active pick).
+    // incompleteness FIRST, before falling back to the shared fallback
+    // pick below for the case where the active workspace itself is fully
+    // onboarded (or there is no active pick).
     const activeIncomplete = active.find((m: any) => m.workspace_id === activeWorkspaceId && !m.workspaces.onboarding_completed_at)
 
     if (activeIncomplete) {
@@ -172,13 +170,41 @@ export async function GET() {
     const activeComplete = active.find((m: any) => m.workspace_id === activeWorkspaceId && !!m.workspaces.onboarding_completed_at)
     if (activeComplete) return NextResponse.json({ status: 'complete' })
 
-    if (ownedIncomplete.length > 0) {
-      const w = ownedIncomplete[0].workspaces
-      return NextResponse.json(await buildResumePayload(service, w))
-    }
-
-    if (memberIncomplete.length > 0) {
-      const w = memberIncomplete[0].workspaces
+    // FIX (fresh independent audit, Onboarding section — headline
+    // finding): this used to check "first owned incomplete workspace,
+    // else first member-incomplete one, else any active membership at
+    // all" — i.e. it looked for something INCOMPLETE to resume before
+    // ever asking whether the user has a perfectly good COMPLETED
+    // workspace to just use. That's the exact "oldest active membership,
+    // no regard for completion" bug pickFallbackMembership() (lib/auth/
+    // session.ts) exists specifically to prevent — see migration 074's
+    // own header comment enumerating every call site that needed this
+    // fix (getSession(), leave_workspace_atomic, audit_active_workspace(),
+    // middleware_gate_state(), auth/callback's resolveOnboardingMember()).
+    // This route does the exact same "what's this user's real active
+    // workspace" resolution as all of those, and was the one place missed.
+    //
+    // Concretely reachable: deactivate_member_atomic (migration 070) never
+    // reassigns the deactivated member's own active_workspace_id — only
+    // leave/delete do. getSession() silently recovers every request (it
+    // recomputes its own fallback but never persists it back to the users
+    // row), so a user deactivated from a workspace that happened to be
+    // their active one keeps working fine, day to day, in whatever
+    // workspace getSession()'s fallback resolves to. But the raw
+    // active_workspace_id column itself stays stale. If that same user
+    // separately owns an old, abandoned, incomplete workspace, landing on
+    // /onboarding for any reason (a bookmark, browser back — middleware
+    // deliberately never gates this page) used to resolve activeWorkspaceId
+    // to nothing, fall straight to "first owned incomplete," and switch the
+    // user's real active workspace out from under them into resuming that
+    // abandoned one — even though they have a perfectly good, completed
+    // workspace they were just using a moment before. Resolve the same way
+    // getSession() would instead of reinventing a divergent order.
+    const fallback = pickFallbackMembership(active)
+    if (fallback) {
+      const w = fallback.workspaces
+      if (w.onboarding_completed_at) return NextResponse.json({ status: 'complete' })
+      if (w.created_by === user.id) return NextResponse.json(await buildResumePayload(service, w))
       return NextResponse.json({
         status: 'waiting',
         workspaceId: w.id,
@@ -186,8 +212,6 @@ export async function GET() {
         creatorName: w.creator?.name || w.creator?.email || 'the person who created it',
       })
     }
-
-    if (active.length > 0) return NextResponse.json({ status: 'complete' })
 
     return NextResponse.json({ status: 'create' })
   } catch (err) {

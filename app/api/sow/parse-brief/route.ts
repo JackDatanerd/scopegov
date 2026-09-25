@@ -69,10 +69,17 @@ Rules:
       messages:   [{ role: 'user', content: prompt }],
     })
 
-    const raw   = msg.content.filter(b => b.type === 'text').map((b: any) => b.text).join('')
-    const brief = stripAndParse<Record<string, unknown>>(raw)
-
+    // FIX (SOW lifecycle re-audit): this used to record usage AFTER
+    // stripAndParse — so a call that reached the model (the actual cost,
+    // and the thing checkAiRateLimit exists to bound) but then failed to
+    // parse as JSON never counted against the rate limit at all. Record
+    // the instant a real response comes back, before anything that can
+    // throw on this call's behalf, so a string of malformed replies can't
+    // be retried past the limit for free.
+    const raw = msg.content.filter(b => b.type === 'text').map((b: any) => b.text).join('')
     await recordAiUsage(service, session.workspaceId, session.id, 'sow.parseBrief')
+
+    const brief = stripAndParse<Record<string, unknown>>(raw)
     return NextResponse.json({ brief })
   } catch (err) {
     console.error('Brief parse error:', err)

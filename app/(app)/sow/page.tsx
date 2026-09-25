@@ -39,10 +39,27 @@ export default async function SowPage() {
   const canViewAll = hasPermission(session, 'VIEW_ALL_PROJECTS')
   let allowedProjectIds: string[] | null = null
   if (!canViewAll) {
+    // FIX (SOW lifecycle re-audit): this joined project_members straight to
+    // workspace_members filtered only on user_id — the same shape
+    // project-access.ts's own comment (BUG-058) already flags as unsafe,
+    // and the version here additionally never scoped to
+    // workspace_members.status or workspace_id at all, so it pulled in
+    // project ids from EVERY workspace this user has ever belonged to
+    // (active or not) and from deactivated memberships within this one.
+    // Not an actual leak today — the sow_documents query below is always
+    // separately scoped to `workspace_id = session.workspaceId`, so a
+    // stray project id from elsewhere can never match a row — but it's
+    // the one place in this codebase still bypassing
+    // project_members_active (migration 070), the belt-and-braces view
+    // every other membership check uses specifically so a failed/partial
+    // deactivation sweep doesn't have to be trusted blindly. Match that
+    // pattern instead of quietly relying on canReadProject's own
+    // defense-in-depth living somewhere else.
     const { data: ids } = await (service as any)
-      .from('project_members')
-      .select('project_id, workspace_members!inner(user_id)')
-      .eq('workspace_members.user_id', session.id)
+      .from('project_members_active')
+      .select('project_id')
+      .eq('project_workspace_id', session.workspaceId)
+      .eq('member_user_id', session.id)
     allowedProjectIds = (ids || []).map((r: any) => r.project_id)
   }
 
