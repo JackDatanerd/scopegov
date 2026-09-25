@@ -2160,7 +2160,17 @@ function DangerTab({ workspace, permissions, session }: any) {
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error)
-      await supabase.auth.signOut()
+      // FIX (deep audit, Auth+MFA re-pass — signOut scope): this used to
+      // call the bare, unscoped supabase.auth.signOut(), which defaults to
+      // scope: 'global' — revoking every session on every device the
+      // account is signed into, not just this one. The account itself
+      // isn't gone (only this one workspace is), and /api/workspace/delete
+      // has already reassigned this user's own active_workspace_id to a
+      // valid fallback workspace if they have one — there's no security
+      // reason tied to THIS action to sign out anywhere but here. Same bug
+      // class already found and fixed for the ordinary "Sign out" button
+      // and the old /api/auth/signout route; this call site was missed.
+      await supabase.auth.signOut({ scope: 'local' })
       router.push('/login?message=Workspace+deleted.')
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : 'Could not delete workspace')

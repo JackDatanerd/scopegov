@@ -1,12 +1,10 @@
 'use client'
 import { useState, useEffect } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { TERMS_VERSION } from '@/lib/auth/terms'
 
 export default function SignupPage() {
-  const router = useRouter()
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -43,62 +41,35 @@ export default function SignupPage() {
     if (password.length < 8) { setError('Password must be at least 8 characters.'); return }
     setLoading(true); setError('')
     try {
-      // FIX (deep audit, Auth+MFA section — signup password-policy bypass):
-      // this used to go straight to supabase.auth.signUp() below with no
-      // check beyond the client's bare length>=8 above, so the common-
-      // password blocklist, the email-match check, and the 72-byte bcrypt
-      // cap that every OTHER password-setting route in this app enforces
-      // (change-password, reset-password, invite-signup) never applied to
-      // the actual biggest source of new passwords. validatePassword()
-      // itself can't run in the browser (it needs Node's Buffer for the
-      // byte-length check), so it's run here via a small server endpoint
-      // before the account is created.
-      const policyCheck = await fetch('/api/auth/validate-password', {
+      // FIX (deep audit, Auth+MFA re-pass — signup password-policy
+      // bypass): this used to call supabase.auth.signUp() directly from
+      // the browser, with only this page's own bare length>=8 check (and,
+      // briefly, an advisory /api/auth/validate-password pre-check)
+      // standing between a request and account creation — neither stopped
+      // a direct supabase.auth.signUp() call (trivial with the public
+      // anon key) from skipping the common-password blocklist, the
+      // email-match check, and the 72-byte bcrypt cap that every OTHER
+      // password-setting route in this app enforces (change-password,
+      // reset-password, invite-signup). Account creation itself now runs
+      // server-side via /api/auth/signup, which calls validatePassword()
+      // authoritatively before touching supabase.auth.signUp() — the same
+      // pattern those other routes already use. See that route for the
+      // terms_version/emailRedirectTo/enumeration-safety details, all
+      // unchanged from before.
+      const res = await fetch('/api/auth/signup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password, email }),
-      }).then(r => r.json()).catch(() => ({ error: null }))
-      if (policyCheck?.error) { setError(policyCheck.error); setLoading(false); return }
-      // FIX (deep audit, Auth+MFA section, standalone pass): `name` was
-      // forwarded as-is with no length cap — unlike every structurally
-      // comparable field in this codebase (agency_name, workspace name),
-      // capped at 120 chars via sanitizeDisplayName(). This route has no
-      // server-side step of its own (signUp() talks to Supabase directly),
-      // so handle_new_user() (migration 042) is the actual enforcement
-      // boundary; this trim+cap is client-side UX so the name a user sees
-      // reflected back matches what's actually stored, not silently
-      // truncated server-side with no explanation.
-      const trimmedName = name.trim().slice(0, 120)
-      const { data, error: err } = await supabase.auth.signUp({
-        email, password,
-        options: {
-          // terms_version: which Terms/Privacy text was on screen. handle_new_user()
-          // (migration 064) stores it with a SERVER timestamp — the client never
-          // supplies the time of acceptance.
-          data: { name: trimmedName, terms_version: TERMS_VERSION },
-          emailRedirectTo: `${window.location.origin}/api/auth/callback?next=/onboarding`,
-        },
+        body: JSON.stringify({ name, email, password }),
       })
-      if (err) {
-        // FIX (deep audit, Auth+MFA re-pass): this used to surface a
-        // distinct "An account with this email already exists" message —
-        // account-enumeration via signup, while forgot-password ("Spec
-        // §16.2") deliberately returns the identical response regardless
-        // of whether the email exists, specifically to prevent this. Same
-        // principle now applied here: an "already registered" error is
-        // treated exactly like a successful signup from the outside (the
-        // real account holder isn't sent a spurious confirmation email —
-        // Supabase itself doesn't re-send one to an already-confirmed
-        // address — they just see nothing happen), so probing an email
-        // address via signup no longer confirms whether it's in use.
-        if (err.message.toLowerCase().includes('already registered')) {
-          setEmailSent(true)
-          return
-        }
-        setError(err.message)
-        return
-      }
-      if (data.session) { router.push('/onboarding') }
+      const json = await res.json().catch(() => ({ error: 'Something went wrong. Please try again.' }))
+      if (!res.ok || json.error) { setError(json.error || 'Something went wrong. Please try again.'); return }
+      // Full navigation (not router.push) on the rare path where email
+      // confirmation is disabled and a session already exists: the session
+      // was just established server-side via Set-Cookie on this response,
+      // and a hard navigation is what gets this page's own in-browser
+      // supabase client to pick it up, the same way it would after any
+      // other server-set session.
+      if (!json.emailSent) { window.location.href = '/onboarding' }
       else { setEmailSent(true) }
     } catch { setError('Something went wrong. Please try again.') } finally { setLoading(false) }
   }
