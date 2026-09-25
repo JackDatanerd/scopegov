@@ -45,10 +45,16 @@ export default function EditProjectModal({
   const hasAnySow = sows.length > 0
   // Same rules as the API: a signed SOW binds the value (use a change order),
   // and a SOW out for signature quotes the current value.
+  // FIX (Projects & Dashboard deep audit, flagship finding): for a retainer,
+  // the duration is as much a value field as the monthly amount — total =
+  // amount × months (see the label just below) — so it must be locked by the
+  // exact same rule, not left freely editable once a SOW exists. Reused
+  // (rather than a second, parallel variable) so the two fields can never
+  // drift out of sync with each other or with the API's own guard.
   const valueLocked = sows.some(s => ['signed', 'awaiting_signature', 'changes_requested'].includes(s.status))
   const valueLockReason = sows.some(s => s.status === 'signed')
-    ? 'This project has a signed SOW — use a change order to adjust the value.'
-    : 'A SOW is out for signature at this value — withdraw it before changing the value.'
+    ? 'This project has a signed SOW — use a change order to adjust the value or retainer duration.'
+    : 'A SOW is out for signature at this value — withdraw it before changing the value or retainer duration.'
 
   const [name, setName] = useState<string>(project.name || '')
   const [type, setType] = useState<ProjectType>(project.type)
@@ -116,7 +122,15 @@ export default function EditProjectModal({
     // switch away from retainer clears it server-side automatically
     // (see PATCH's own retainer_duration_months reset), and a switch INTO
     // retainer needs the field to actually be sendable.
-    if (type === 'retainer' && retainerMonths !== (project.type === 'retainer' && project.retainer_duration_months ? String(project.retainer_duration_months) : '')) {
+    // FIX (Projects & Dashboard deep audit, flagship finding): gated on
+    // !valueLocked, same as contractValue above — this used to send whatever
+    // was typed regardless of SOW state, silently re-pricing a signed
+    // retainer with no change order, no approval, and no client
+    // re-acceptance. A type switch INTO retainer can't itself be locked (a
+    // structural edit like that is only reachable pre-SOW in the first
+    // place — see !hasAnySow above), so this only ever actually blocks an
+    // existing retainer's own duration.
+    if (type === 'retainer' && !valueLocked && retainerMonths !== (project.type === 'retainer' && project.retainer_duration_months ? String(project.retainer_duration_months) : '')) {
       body.retainerDurationMonths = retainerMonths
     }
     if (Object.keys(body).length === 0) { onClose(); return }
@@ -249,11 +263,19 @@ export default function EditProjectModal({
         {type === 'retainer' && (
           <div style={{ marginBottom: 12 }}>
             <label className="form-label">Retainer duration (months)</label>
-            <input className="form-input" inputMode="numeric" value={retainerMonths} style={{ maxWidth: 140 }}
+            {/* FIX (Projects & Dashboard deep audit, flagship finding): disabled
+                by the same valueLocked rule as the monthly amount above — total
+                value = amount × months, so this field must be locked exactly
+                when the amount is, not left freely editable once a SOW exists. */}
+            <input className="form-input" inputMode="numeric" value={retainerMonths} style={{ maxWidth: 140 }} disabled={valueLocked}
               onChange={e => setRetainerMonths(e.target.value.replace(/[^0-9]/g, ''))} placeholder="e.g. 12" />
-            <p style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 4 }}>
-              Monthly billing milestones are generated for this many months.
-            </p>
+            {/* The lock reason itself is already shown once, above, right under the amount field
+                (line ~243) — repeating the same sentence here would just be noise. */}
+            {!valueLocked && (
+              <p style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 4 }}>
+                Monthly billing milestones are generated for this many months.
+              </p>
+            )}
           </div>
         )}
 

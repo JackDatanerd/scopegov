@@ -186,10 +186,46 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     }
 
     // ── Retainer duration (retainer projects only) ────────────
+    // FIX (Projects & Dashboard deep audit, flagship finding): for a fixed-term
+    // retainer, effective contract value = contract_value (monthly rate) ×
+    // retainer_duration_months (see lib/utils/contract-value.ts's
+    // baseContractValue) — so changing the duration changes the project's
+    // total value exactly as directly as changing contractValue does. The
+    // block above gates contractValue behind three checks (blocked outright
+    // once a SOW is signed; blocked while a SOW is out for signature; blocked
+    // while a draft SOW has a pending approval request) specifically because
+    // a signed/quoted/approval-pending SOW binds the client to a number that
+    // must only move through a governed change order. This field had none of
+    // those three checks, so — as long as the project wasn't Complete/
+    // Archived — anyone with plain CREATE_PROJECTS could silently re-price a
+    // retainer with a signed SOW by editing only its duration (bounded 1-60
+    // months by parseRetainerMonths, so up to a 60x multiple of the monthly
+    // rate), with no CO, no approval chain, no client re-acceptance, and no
+    // audit trail beyond an ordinary project.updated row. There is already a
+    // fully governed path for this exact change: a change order with
+    // isRetainerRenewal true + renewalTermMonths (approval-gated, client-
+    // accepted) — only once THAT clears does lib/documents/finalize-co.ts
+    // write the new retainer_duration_months onto the project. Mirror the
+    // contractValue block's three guards here so this field can't bypass them.
     if (body.retainerDurationMonths !== undefined && effectiveType === 'retainer') {
       const p = parseRetainerMonths(body.retainerDurationMonths)
       if (!p.ok) return NextResponse.json({ error: p.error }, { status: 400 })
       if (p.value !== project.retainer_duration_months) {
+        if (sows.some(s => s.status === 'signed'))
+          return NextResponse.json({
+            error: 'This project has a signed SOW — use a change order to adjust the retainer duration.',
+          }, { status: 409 })
+        if (sows.some(s => ['awaiting_signature', 'changes_requested'].includes(s.status)))
+          return NextResponse.json({
+            error: 'A SOW is currently out for signature at the existing retainer term — withdraw it before changing the duration, then send the client the revised SOW.',
+          }, { status: 409 })
+        for (const sow of sows) {
+          if (sow.status !== 'draft') continue
+          if (await getPendingApprovalForDocument(service, 'sow', sow.id))
+            return NextResponse.json({
+              error: 'A SOW on this project has a pending approval request — cancel it before changing the retainer duration, then resend.',
+            }, { status: 409 })
+        }
         changes.retainerDurationMonths = { from: project.retainer_duration_months, to: p.value }
         updates.retainer_duration_months = p.value
       }

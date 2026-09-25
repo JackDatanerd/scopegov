@@ -190,20 +190,24 @@ export default function ProjectsClient({ projects, canCreate, canViewFinancials,
       </div>
 
       {/* Tabs */}
+      {/* FIX (Projects & Dashboard deep audit): the plain count used to only
+          render when a tab had ZERO attention items — the moment a tab had
+          any, its total project count disappeared entirely, leaving no way
+          to tell "3 need attention out of 4" from "3 need attention out of
+          40" without switching to that tab. Both now render together. */}
       <div className="tabbar" style={{ marginBottom: 18 }}>
-        {TABS.map(t => (
-          <button key={t.key} className={`tabi${tab === t.key ? ' act' : ''}`} onClick={() => setTab(t.key)}>
-            {t.label}
-            {t.key !== 'all' && attentionByTab[t.key] > 0 && (
-              <span className="tabi-badge">{attentionByTab[t.key]}</span>
-            )}
-            {!attentionByTab[t.key] && (
-              <span style={{ marginLeft: 5, fontSize: 11, color: 'var(--text-4)' }}>
-                {t.key === 'all' ? projects.length : projects.filter((p: ProjectRow) => tabFor(p) === t.key).length}
-              </span>
-            )}
-          </button>
-        ))}
+        {TABS.map(t => {
+          const tabCount = t.key === 'all' ? projects.length : projects.filter((p: ProjectRow) => tabFor(p) === t.key).length
+          return (
+            <button key={t.key} className={`tabi${tab === t.key ? ' act' : ''}`} onClick={() => setTab(t.key)}>
+              {t.label}
+              <span style={{ marginLeft: 5, fontSize: 11, color: 'var(--text-4)' }}>{tabCount}</span>
+              {t.key !== 'all' && attentionByTab[t.key] > 0 && (
+                <span className="tabi-badge">{attentionByTab[t.key]}</span>
+              )}
+            </button>
+          )
+        })}
       </div>
 
       {/* Content */}
