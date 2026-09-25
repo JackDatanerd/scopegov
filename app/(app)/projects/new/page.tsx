@@ -11,6 +11,14 @@ import type { ProjectType, Client } from '@/lib/supabase/types'
 // this form even though the workspace itself can be set to either.
 import { CURRENCIES } from '@/lib/constants/workspace-options'
 
+// FIX (SOW-lifecycle fix round): the closed set this page's own Payment
+// structure <select> below offers — kept as a real list so the
+// AI-brief-parse result (handleBriefParse) can be checked against it
+// before ever reaching setPaymentStructure. Must match
+// api/sow/generate/route.ts's PAYMENT_STRUCTURE_LABELS keys and this
+// file's own <option> values.
+const SOW_PAYMENT_STRUCTURES = ['50_50', '100_upfront', 'milestones', 'monthly', 'on_delivery']
+
 const STEPS = ['Basics', 'Brief', 'Review & Send']
 const PROJECT_TYPES: Array<{ key: ProjectType; label: string; sub: string }> = [
   { key: 'web',       label: 'Web Design',   sub: 'Websites & landing pages' },
@@ -265,8 +273,21 @@ function NewProjectPageInner() {
       setDeliverables(brief.deliverables || '')
       setOutOfScope(brief.outOfScope || '')
       setTimeline(brief.timeline || '')
-      setPaymentStructure(brief.paymentStructure || '50_50')
-      setRevisionRounds(String(brief.revisionRounds || 2))
+      // FIX (SOW-lifecycle fix round): these came straight from the
+      // AI-parsed brief with no check against the closed set / range this
+      // page's own <select>s below actually offer (5 payment structures,
+      // '1'-'5' for rounds) — see the matching fix and comment in
+      // components/projects/ProjectDetail.tsx's GenerateSowModal for the
+      // full write-up of the failure mode this closes. Fall back to the
+      // existing manual default on anything the model returned off-spec,
+      // same as this page already does for a merely-absent value.
+      setPaymentStructure(SOW_PAYMENT_STRUCTURES.includes(brief.paymentStructure) ? brief.paymentStructure : '50_50')
+      const parsedBriefRounds = Number(brief.revisionRounds)
+      setRevisionRounds(
+        Number.isInteger(parsedBriefRounds) && parsedBriefRounds >= 1 && parsedBriefRounds <= 5
+          ? String(parsedBriefRounds)
+          : '2'
+      )
       // Mark touched: these came from the AI-parsed brief, a more
       // specific source than the workspace/type default this component
       // pre-fills from. If the person goes back and changes project type

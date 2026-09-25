@@ -1020,6 +1020,13 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
   )
 }
 
+// FIX (SOW-lifecycle fix round): the closed set this modal's own Payment
+// structure <select> below offers — kept as a real list (not just inline
+// JSX) so the AI-brief-parse result can be checked against it before ever
+// reaching setPaymentStructure. Must match generate/route.ts's
+// PAYMENT_STRUCTURE_LABELS keys and this file's own <option> values.
+const SOW_PAYMENT_STRUCTURES = ['50_50', '100_upfront', 'milestones', 'monthly', 'on_delivery']
+
 function GenerateSowModal({ project, onClose, onDone }: any) {
   const [briefText,        setBriefText]        = useState('')
   const [parsing,          setParsing]           = useState(false)
@@ -1056,8 +1063,26 @@ function GenerateSowModal({ project, onClose, onDone }: any) {
       setDeliverables(brief.deliverables || '')
       setOutOfScope(brief.outOfScope || '')
       setTimeline(brief.timeline || '')
-      if (brief.paymentStructure) setPaymentStructure(brief.paymentStructure)
-      if (brief.revisionRounds)   setRevisionRounds(String(brief.revisionRounds))
+      // FIX (SOW-lifecycle fix round): paymentStructure/revisionRounds came
+      // straight from the AI-parsed brief with no check against the same
+      // closed set / range api/sow/generate enforces server-side (the
+      // prompt asks the model to pick one of 5 values and an integer 1-10,
+      // but nothing enforced that on the response). paymentStructure feeds
+      // a controlled <select> with exactly those 5 <option>s below — an
+      // off-spec value (a capitalization slip, a hallucinated string)
+      // desynced the select from its options with no visible error, and
+      // the user hit a confusing "Invalid payment structure" 400 at
+      // Generate for a field they never touched. An out-of-range
+      // revisionRounds was silently clamped to 2 server-side while this
+      // number input kept showing the original (unused) value, so the
+      // generated document's revision terms could silently disagree with
+      // the screen. Validate here the same way generate/route.ts does, so
+      // an off-spec AI answer falls back to the existing manual default
+      // instead of being trusted as-is.
+      if (SOW_PAYMENT_STRUCTURES.includes(brief.paymentStructure)) setPaymentStructure(brief.paymentStructure)
+      const parsedBriefRounds = Number(brief.revisionRounds)
+      if (Number.isInteger(parsedBriefRounds) && parsedBriefRounds >= 1 && parsedBriefRounds <= 10)
+        setRevisionRounds(String(parsedBriefRounds))
       setReviewing(true)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Could not read that brief — you can still fill the fields in manually below.')

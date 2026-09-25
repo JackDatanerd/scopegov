@@ -179,7 +179,7 @@ export default async function ClientDetailPage({ params }: Props) {
       }
     } catch (e) { console.error('Client financial summary failed:', e) }
   }
-  const showMoney = [...moneyByCurrency.values()].some(m => m.invoiced > 0 || m.outstanding > 0 || m.contracted > 0)
+  const showMoney = Array.from(moneyByCurrency.values()).some(m => m.invoiced > 0 || m.outstanding > 0 || m.contracted > 0)
 
   // ── Recent activity on the client record itself (needs VIEW_AUDIT_LOG) ──────────────────────
   const canViewAudit = hasPermission(session, 'VIEW_AUDIT_LOG')
@@ -248,7 +248,7 @@ export default async function ClientDetailPage({ params }: Props) {
           {showMoney && (
             <div style={{ marginBottom: 20 }}>
               <div className="sec-hd" style={{ marginBottom: 12 }}><div className="sec-title">Money</div></div>
-              {[...moneyByCurrency.entries()].map(([currency, m]) => (
+              {Array.from(moneyByCurrency.entries()).map(([currency, m]) => (
                 <div key={currency} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10, marginBottom: 10 }}>
                   {([
                     ['Contracted', m.contracted, false], ['Invoiced', m.invoiced, false], ['Paid', m.paid, false],

@@ -78,7 +78,7 @@ export function normalizeCcEmails(v: unknown, primaryEmail?: string | null): { o
     seen.add(t)
   }
   if (seen.size > MAX_CC_EMAILS) return { ok: false, error: `At most ${MAX_CC_EMAILS} CC addresses are allowed` }
-  return { ok: true, value: [...seen] }
+  return { ok: true, value: Array.from(seen) }
 }
 
 export function parseClientInput(

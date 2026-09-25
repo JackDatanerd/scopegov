@@ -82,7 +82,7 @@ const BACKOFF_BASE_MS = 15 * 60000   // 15m, 30m, 60m, … per failed attempt
 function groupByWorkspace(rows: Array<{ workspace_id: string }>): string {
   const counts = new Map<string, number>()
   for (const r of rows) counts.set(r.workspace_id, (counts.get(r.workspace_id) || 0) + 1)
-  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10)
+  return Array.from(counts.entries()).sort((a, b) => b[1] - a[1]).slice(0, 10)
     .map(([ws, n]) => `  workspace ${ws}: ${n}`).join('\n')
 }
 
