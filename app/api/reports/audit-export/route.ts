@@ -107,13 +107,19 @@ export async function GET(request: Request) {
     // shifted every later row down by however many arrived and produced
     // duplicated rows across pages. The first response returns `asOf`; the
     // client sends it back on every later page.
-    let upper = toDate
+    // The pin must start at min(toDate, now), not toDate alone: `to` is
+    // almost always "today" (end of local day), which is in the future of
+    // the actual instant for most of the day. Starting the first page at
+    // toDate left it effectively unbounded — defeating the pin it was
+    // meant to establish, for JSON's page 1 and for the whole of a CSV/PDF
+    // export, which never sends asOf at all.
+    let upper = toDate.getTime() < now.getTime() ? toDate : now
     const asOfRaw = sp.get('asOf')
     if (format === 'json' && asOfRaw) {
       const asOf = new Date(asOfRaw)
       if (!isNaN(asOf.getTime()) && asOf.getTime() < upper.getTime()) upper = asOf
     }
-    const asOfOut = format === 'json' ? (asOfRaw && !isNaN(new Date(asOfRaw).getTime()) ? new Date(asOfRaw) : now).toISOString() : undefined
+    const asOfOut = format === 'json' ? upper.toISOString() : undefined
 
     const service = createServiceClient()
 
@@ -144,7 +150,7 @@ export async function GET(request: Request) {
       // Scoped through workspace_members so a foreign user's name can never
       // be pulled into this workspace's export header.
       const { data: member, error: memberErr } = await (service as any)
-        .from('workspace_members').select('users(name)')
+        .from('workspace_members').select('users!workspace_members_user_id_fkey(name)')
         .eq('workspace_id', session.workspaceId).eq('user_id', actorParam).maybeSingle()
       if (memberErr) throw new Error(`actor lookup: ${memberErr.message}`)
       // FIX (re-audit, Reports & Audit section): a well-formed but unknown

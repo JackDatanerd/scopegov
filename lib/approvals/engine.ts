@@ -940,7 +940,7 @@ export async function retryFailedSend(service: any, params: {
 // concern.
 export async function healStuckSends(
   service: any, olderThanMinutes = 10, workspaceId?: string,
-): Promise<Array<{ id: string; workspace_id: string }>> {
+): Promise<Array<{ id: string; workspace_id: string; project_id: string | null }>> {
   const cutoff = new Date(Date.now() - olderThanMinutes * 60 * 1000).toISOString()
   let q = service
     .from('approval_requests')
@@ -950,14 +950,14 @@ export async function healStuckSends(
   const { data: stuck } = await q
     .order('sending_started_at', { ascending: true }).limit(50)
 
-  const healed: Array<{ id: string; workspace_id: string }> = []
+  const healed: Array<{ id: string; workspace_id: string; project_id: string | null }> = []
   for (const r of stuck || []) {
     const reason = 'The send did not finish (the server may have restarted mid-send). Check whether the document already shows as sent: if it does, cancel this request; otherwise retry the send.'
     const { data: ok } = await service.rpc('finalize_approval_send', {
       p_request_id: r.id, p_send_ok: false, p_error: reason, p_delivery_warning: null,
     })
     if (ok !== true) continue
-    healed.push({ id: r.id, workspace_id: r.workspace_id })
+    healed.push({ id: r.id, workspace_id: r.workspace_id, project_id: r.project_id ?? null })
     try {
       const [inAppOn] = await filterByNotificationPreference(
         service, r.workspace_id, 'approval_decision', [{ id: r.requested_by }], 'in_app'

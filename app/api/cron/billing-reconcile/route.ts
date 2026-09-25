@@ -29,6 +29,7 @@ import { verifyCronSecret } from '@/lib/utils/verify-cron'
 import { alertCronFailure } from '@/lib/utils/cron-alert'
 import { CronRun } from '@/lib/utils/cron-run'
 import { fetchPaystackSubscription } from '@/lib/integrations/paystack'
+import { planCodeToTier } from '@/lib/billing/plans'
 import { alertBillingOps } from '@/lib/billing/ops-alert'
 import { insertAuditRow } from '@/lib/utils/audit'
 
@@ -59,7 +60,7 @@ export async function POST(request: NextRequest) {
     // (migration 072) is bumped on every check regardless of outcome, so this rotates through the whole
     // table; nullsFirst picks up rows that have never been checked before anything already-checked.
     const { data: rows, error } = await (service as any).from('billing')
-      .select('workspace_id, paystack_subscription_code, current_period_end, cancels_at_period_end, grace_period_started_at, workspaces!inner(id, agency_name, deleted_at)')
+      .select('workspace_id, paystack_subscription_code, current_period_end, cancels_at_period_end, grace_period_started_at, workspaces!inner(id, agency_name, deleted_at, plan_tier)')
       .not('paystack_subscription_code', 'is', null)
       .is('workspaces.deleted_at', null)
       .order('last_reconciled_at', { ascending: true, nullsFirst: true })
@@ -91,7 +92,7 @@ export async function POST(request: NextRequest) {
           continue
         }
         checked++
-        const { status, nextPaymentDate } = res.sub
+        const { status, nextPaymentDate, planCode } = res.sub
 
         const updates: Record<string, unknown> = {}
         const changes: Record<string, unknown> = {}
@@ -112,6 +113,20 @@ export async function POST(request: NextRequest) {
           anomalies.push(`workspace ${b.workspace_id}: Paystack shows ACTIVE but a cancellation is pending locally (${b.paystack_subscription_code})`)
         if (status === 'attention' && !b.grace_period_started_at)
           anomalies.push(`workspace ${b.workspace_id}: Paystack shows ATTENTION (charge failing) but no grace period is running (${b.paystack_subscription_code})`)
+        // FIX (Billing re-pass #4): planCode came back from every read and was
+        // discarded — the one job built to catch billing drift never checked
+        // the single most consequential kind of it (a customer being served
+        // the wrong plan's limits/features). Reported, not auto-repaired,
+        // same as the other two anomalies above: we can't tell from here
+        // whether this is a genuine mismatch or a plan switch already paid
+        // for whose subscription.create webhook just hasn't landed yet, and
+        // silently changing plan_tier out from under an in-flight webhook
+        // could fight it. An unrecognized planCode (env var not configured
+        // for a plan Paystack has on file) is skipped rather than reported —
+        // that is a config question, not a drift the cron can characterize.
+        const paystackTier = planCodeToTier(planCode)
+        if (paystackTier && b.workspaces?.plan_tier && paystackTier !== b.workspaces.plan_tier)
+          anomalies.push(`workspace ${b.workspace_id}: Paystack subscription is on plan "${paystackTier}" but the workspace is set to "${b.workspaces.plan_tier}" (${b.paystack_subscription_code})`)
 
         // `updated_at` stays reserved for an actual repair (its existing meaning elsewhere in the app);
         // `last_reconciled_at` is a separate cursor stamped on every successful check, repaired or not.

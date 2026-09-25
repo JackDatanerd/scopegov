@@ -73,10 +73,18 @@ function shortTypeLabel(documentType: ApprovalRequest['document_type']): string 
 // Cancelling one of those doesn't make anything editable again — the CO just stays
 // 'countered', still awaiting the agency's decision on the counter. Matches the same
 // document_type branch now applied server-side in POST /api/approvals/[id]/cancel.
-function cancelConfirmMessage(documentType: ApprovalRequest['document_type']): string {
+//
+// FIX (re-audit, section-11 finding): `sendFailed` now shapes the opening clause too.
+// This used to always say "Cancel this approved request?" — accurate for the
+// approved-but-unsent case, but wrong (and the reason the modal's own cancel button
+// skipped confirm() entirely for a still-pending chain — see that call site) when
+// nothing has been approved yet. A still-pending, possibly multi-step chain with
+// earlier steps already signed off is exactly the case a confirmation exists to catch.
+function cancelConfirmMessage(documentType: ApprovalRequest['document_type'], sendFailed: boolean): string {
+  const subject = sendFailed ? 'this approved request' : 'this pending approval request'
   return documentType === 'co_counter'
-    ? 'Cancel this approved request? The change order stays as-is, still awaiting a decision on the counter-offer — accepting it again will need a fresh approval.'
-    : 'Cancel this approved request? The document goes back to being an editable draft, and sending it again will need a fresh approval.'
+    ? `Cancel ${subject}? The change order stays as-is, still awaiting a decision on the counter-offer — accepting it again will need a fresh approval.`
+    : `Cancel ${subject}? The document goes back to being an editable draft, and sending it again will need a fresh approval.`
 }
 
 // Which project tab shows the document being decided, so an approver can open
@@ -276,7 +284,7 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
                   {/* FIX (section-11 audit, pass 2): a send-failed request could be retried
                       but never abandoned — and the document stayed edit-locked meanwhile. */}
                   <button className="btn btn-ghost btn-sm" onClick={() => {
-                    if (confirm(cancelConfirmMessage(r.document_type))) post(r.id, 'cancel')
+                    if (confirm(cancelConfirmMessage(r.document_type, true))) post(r.id, 'cancel')
                   }} disabled={busyId === r.id}>
                     Cancel request
                   </button>
@@ -612,10 +620,17 @@ function ApprovalDetailModal({ request, session, canManageWorkflows, onClose, on
         <div className="modal-footer" style={{ justifyContent: 'space-between' }}>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {canCancel && (
+              // FIX (re-audit, section-11 finding): this only confirmed when sendFailed was
+              // true — `!sendFailed || confirm(...)` short-circuits to true for an ordinary
+              // pending request, so clicking Cancel on a still-in-flight (possibly multi-step,
+              // partially-approved) chain cancelled it immediately with no confirmation at
+              // all. Every other cancel entry point in the app (the send-failed banner above,
+              // BillingTab's void/delete) confirms first. Confirm unconditionally now, with
+              // wording that matches whichever state this actually is.
               <button className="btn btn-ghost" onClick={() => {
-                if (!sendFailed || confirm(cancelConfirmMessage(request.document_type))) act('cancel')
+                if (confirm(cancelConfirmMessage(request.document_type, sendFailed))) act('cancel')
               }} disabled={!!acting}>
-                {acting === 'cancel' ? <span className="spin" /> : sendFailed ? 'Cancel request' : 'Cancel request'}
+                {acting === 'cancel' ? <span className="spin" /> : 'Cancel request'}
               </button>
             )}
             {canReassign && !showReassign && (

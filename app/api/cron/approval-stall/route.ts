@@ -38,7 +38,7 @@ export async function POST(request: NextRequest) {
     const fixed = await healStuckSends(service)
     for (const r of fixed) {
       await insertAuditRow(service, {
-        workspace_id: r.workspace_id, actor_id: null,
+        workspace_id: r.workspace_id, actor_id: null, project_id: r.project_id,
         actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
         event_type: 'approval.send_failed_stale', entity_type: 'approval_request', entity_id: r.id,
         metadata: { reason: 'send did not finish; request moved to the retryable approved-not-sent state' },
@@ -75,7 +75,7 @@ export async function POST(request: NextRequest) {
             .update({ updated_at: now.toISOString(), reminder_count: reminderCount }).eq('id', r.id)
           if (bumpErr) throw new Error(`reminder bookkeeping failed (the approver WAS reminded): ${bumpErr.message}`)
           await insertAuditRow(service, {
-            workspace_id: r.workspace_id, actor_id: null,
+            workspace_id: r.workspace_id, actor_id: null, project_id: r.project_id,
             actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
             event_type: 'approval.reminder_sent', entity_type: 'approval_request', entity_id: r.id,
             metadata: { days_pending: threshold, reminder_count: reminderCount },
@@ -104,7 +104,7 @@ export async function POST(request: NextRequest) {
                 entityType: 'approval_request', entityId: r.id, projectId: r.project_id,
               })
               await insertAuditRow(service, {
-                workspace_id: r.workspace_id, actor_id: null,
+                workspace_id: r.workspace_id, actor_id: null, project_id: r.project_id,
                 actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
                 event_type: 'approval.escalated', entity_type: 'approval_request', entity_id: r.id,
                 metadata: { reminder_count: reminderCount },
@@ -124,7 +124,7 @@ export async function POST(request: NextRequest) {
           // A broken approver assignment (role with no active holder, or a user no longer active)
           // needs a human to fix the assignment, not another silent retry.
           await insertAuditRow(service, {
-            workspace_id: r.workspace_id, actor_id: null,
+            workspace_id: r.workspace_id, actor_id: null, project_id: r.project_id,
             actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
             event_type: 'approval.no_reachable_approver', entity_type: 'approval_request', entity_id: r.id,
             metadata: { days_pending: threshold },
@@ -175,7 +175,7 @@ export async function POST(request: NextRequest) {
           .update({ updated_at: now.toISOString() }).eq('id', r.id)
         if (bumpErr) throw new Error(`send-failure bookkeeping failed (admins WERE notified): ${bumpErr.message}`)
         await insertAuditRow(service, {
-          workspace_id: r.workspace_id, actor_id: null,
+          workspace_id: r.workspace_id, actor_id: null, project_id: r.project_id,
           actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
           event_type: 'approval.send_failure_escalated', entity_type: 'approval_request', entity_id: r.id,
           metadata: { days_stale: threshold },

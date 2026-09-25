@@ -8,7 +8,7 @@ export interface AuditCategory { id: string; label: string; patterns: string[] }
 export const AUDIT_CATEGORIES: AuditCategory[] = [
   { id: 'sow',        label: 'Statements of work',   patterns: ['sow.%'] },
   { id: 'co',         label: 'Change orders',        patterns: ['co.%'] },
-  { id: 'guardian',   label: 'Scope flags & checks', patterns: ['flag.%', 'flag_comment.%', 'flag_attachment.%', 'check.%'] },
+  { id: 'guardian',   label: 'Scope flags & checks', patterns: ['flag.%', 'flag_comment.%', 'flag_attachment.%', 'check.%', 'exception.%'] },
   { id: 'invoices',   label: 'Invoices & payments',  patterns: ['invoice.%', 'payment.%', 'reminder.%'] },
   { id: 'projects',   label: 'Projects',             patterns: ['project.%', 'project_member.%', 'project_message.%', 'retainer.%'] },
   { id: 'clients',    label: 'Clients',              patterns: ['client.%', 'client_contact.%'] },

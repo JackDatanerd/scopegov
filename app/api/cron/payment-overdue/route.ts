@@ -391,6 +391,35 @@ export async function POST(request: NextRequest) {
     }
   })
 
+  // ── 4c. Retry Paystack cancellations that failed after a plan switch ─────────────────────
+  // Independent of 4b: this retries a specific OLD subscription recorded in pending_cancel_*
+  // (081) when subscription.create couldn't disable it, without touching paystack_subscription_
+  // code, which by then already holds the workspace's current, paying subscription.
+  await run.step('4c paystack plan-switch cancel retry', async () => {
+    const pendingSwitchCancels = await fetchAll<any>('pending plan-switch cancels select', (from, to) =>
+      (service as any).from('billing')
+        .select('workspace_id, pending_cancel_subscription_code, pending_cancel_email_token')
+        .not('pending_cancel_subscription_code', 'is', null)
+        .order('workspace_id')
+        .range(from, to))
+
+    for (const b of pendingSwitchCancels) {
+      try {
+        const r = await cancelPaystackSubscription({
+          paystack_subscription_code: b.pending_cancel_subscription_code, paystack_email_token: b.pending_cancel_email_token,
+        })
+        if (r.ok) {
+          await (service as any).from('billing')
+            .update({ pending_cancel_subscription_code: null, pending_cancel_email_token: null }).eq('workspace_id', b.workspace_id)
+        } else {
+          await alertBillingOps(service, `billing:double-billing:${b.workspace_id}`, 'Previous subscription still not disabled after a plan switch', [
+            `workspace: ${b.workspace_id}`, `old subscription: ${b.pending_cancel_subscription_code}`, `error: ${r.error}`,
+          ], 24 * 3600_000)
+        }
+      } catch (e) { run.rowError(`plan-switch cancel retry ${b.workspace_id}`, e) }
+    }
+  })
+
   // ── 5. Cancelled subscriptions past their paid period end ────────────────────────────────
   await run.step('5 cancelled subscriptions', async () => {
     const cancelledExpired = await fetchAll<any>('cancelled subscriptions select', (from, to) =>

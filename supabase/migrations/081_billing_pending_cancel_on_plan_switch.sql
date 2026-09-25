@@ -1,0 +1,23 @@
+-- FIX (Billing re-pass #4): a plan switch (api/billing/upgrade -> a new
+-- checkout -> subscription.create) disables the customer's PREVIOUS Paystack
+-- subscription so they are not double-billed. When that disable call fails,
+-- the only signal used to be a single best-effort ops-alert email (silently
+-- skipped entirely if OPS_ALERT_EMAIL is unset, and rate-limited to once an
+-- hour per workspace) with nothing durable left behind — unlike the
+-- functionally identical failure mode in the grace-period downgrade path
+-- (needs_paystack_cancel, added in 056), which IS retried automatically
+-- every day by payment-overdue's step 4b.
+--
+-- needs_paystack_cancel can't simply be reused here: that retry cancels
+-- whatever code currently sits in billing.paystack_subscription_code, and a
+-- plan switch overwrites that column with the BRAND NEW subscription's code
+-- in the very same write that would have set the flag — reusing it would
+-- have the daily retry cancel the customer's new, paying subscription.
+--
+-- These two columns are independent of paystack_subscription_code, so they
+-- can safely name a *different*, specific, old subscription (and its own
+-- email_token, required by Paystack's disable call, which also differs from
+-- the new subscription's token) to retry cancelling — see payment-overdue's
+-- new step 4c.
+ALTER TABLE public.billing ADD COLUMN IF NOT EXISTS pending_cancel_subscription_code text;
+ALTER TABLE public.billing ADD COLUMN IF NOT EXISTS pending_cancel_email_token text;

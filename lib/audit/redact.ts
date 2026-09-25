@@ -22,6 +22,20 @@ const LEGACY_KEYS = new Set([
   'threshold_amount', 'new_monthly_amount',
 ])
 
+// FIX (Reports & Audit re-pass #4): the generic "value" word match caught
+// scope_adjustment_made's old_value/new_value, which across this codebase
+// (scope_adjustments table, scope-financial-data.ts, activity-format.ts)
+// are always the deliverable's TITLE text, never a dollar figure — the
+// adjustment's actual estimated_value is a separate, correctly-redacted
+// field. Redacting them blanked out the one thing a VIEW_AUDIT_LOG-without-
+// VIEW_FINANCIALS viewer needed to see: what the change actually was. A
+// small explicit exemption, mirroring LEGACY_KEYS in shape, is safer here
+// than loosening the generic "value" word match itself, which still needs
+// to catch real money-shaped keys like contract_value or schedule_sum.
+const NON_MONEY_KEYS = new Set([
+  'old_value', 'new_value',
+])
+
 const MONEY_WORDS = new Set([
   'amount', 'amounts', 'balance', 'total', 'subtotal', 'value', 'values',
   'price', 'cost', 'costs', 'fee', 'fees', 'budget', 'revenue', 'sum', 'payment', 'payments',
@@ -37,6 +51,7 @@ function words(key: string): string[] {
 
 export function isMoneyKey(key: string): boolean {
   if (LEGACY_KEYS.has(key)) return true
+  if (NON_MONEY_KEYS.has(key)) return false
   return words(key).some(w => MONEY_WORDS.has(w))
 }
 

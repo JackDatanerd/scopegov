@@ -1,0 +1,74 @@
+Reports & Audit log (section 15) + Billing (section 16) — independent audit, fix round 1
+==========================================================================================
+
+DEPLOY ORDER: run supabase/migrations/081_billing_pending_cancel_on_plan_switch.sql FIRST,
+then deploy the code. The webhook route writes to two new billing columns
+(pending_cancel_subscription_code, pending_cancel_email_token) and payment-overdue's cron
+reads them. No new env vars, no npm changes.
+
+VERIFY AFTER DEPLOY (one-off, needs the live PostgREST):
+  GET /rest/v1/workspace_members?select=id,users(name)&limit=1   -> expect HTTP 300 / PGRST201
+  (that is bug 1 below; with the hint users!workspace_members_user_id_fkey(name) it returns 200)
+
+SECTION 15 — BUGS FIXED
+ 1. audit-export/route.ts: un-hinted embed workspace_members -> users(name) is ambiguous
+    (workspace_members has both user_id and invited_by FKs to users) -> every actor-filtered
+    export (json/csv/pdf) 500'd. Hinted users!workspace_members_user_id_fkey(name), matching
+    every other call site in the codebase.
+ 2. audit-export/route.ts: the "pinned snapshot" paging guard initialised `upper` to `toDate`
+    instead of min(toDate, now). Since `to` defaults to "today" (end of local day), which is
+    in the future of the real instant for most of the day, page 1 of a JSON export was
+    effectively unbounded — rows written after the `asOf` handed back to the client could
+    land on page 1 and then be excluded by page 2's stricter bound, producing exactly the
+    skipped/duplicated rows the pin was built to prevent. CSV/PDF never send `asOf` at all,
+    so the same unbounded `upper` stood for the whole multi-page export, letting concurrent
+    inserts skip/duplicate rows within a single export file. Fixed: `upper` now starts at
+    min(toDate, now) unconditionally, and `asOfOut` reflects the bound actually used.
+ 3. approval-stall cron: five audit events (approval.send_failed_stale, reminder_sent,
+    escalated, no_reachable_approver, send_failure_escalated) were logged with
+    entity_type: 'approval_request', which audit_resolve_project_id (migration 056) has no
+    case for, and none of the insertAuditRow calls passed project_id even though it was
+    already in scope at every call site (and, for the heal-stuck-sends path, selected from
+    the DB but dropped before reaching the caller). These rows permanently got
+    project_id = NULL and never showed up when filtering the audit log by project. Fixed:
+    lib/approvals/engine.ts's healStuckSends() now returns project_id, and all five
+    insertAuditRow calls in approval-stall/route.ts now pass it (the BEFORE INSERT trigger
+    only fills project_id when NULL, so this is never clobbered).
+ 4. lib/audit/categories.ts: exception.edited (the only exception.* event type) matched no
+    category pattern, so it was invisible under every filter except "All events" despite
+    belonging to the same scope-governance workflow as flags/checks. Added 'exception.%' to
+    the guardian category.
+ 5. lib/audit/redact.ts: the generic "does any word in this key look money-shaped" check
+    caught old_value/new_value on project.scope_adjustment_made events. Those fields are the
+    deliverable's TITLE text everywhere in this codebase (scope_adjustments table,
+    scope-financial-data.ts, activity-format.ts) — never a dollar figure; the adjustment's
+    actual estimated_value is a separate, correctly-redacted field. A viewer with
+    VIEW_AUDIT_LOG but not VIEW_FINANCIALS (a realistic, independent permission combination
+    per this file's own prior comments) saw [redacted] for both, hiding the one thing that
+    audit entry exists to show: what actually changed. Fixed with a small explicit
+    NON_MONEY_KEYS exemption, mirroring the shape of the existing LEGACY_KEYS list, rather
+    than loosening the "value" word match itself (which still needs to catch contract_value,
+    schedule_sum, etc).
+
+SECTION 16 — BUGS FIXED
+ 6. billing-reconcile cron: fetchPaystackSubscription() already returns planCode on every
+    read, but the cron only destructured {status, nextPaymentDate} and discarded it — the one
+    job that exists specifically to catch local/Paystack billing drift never checked plan-tier
+    drift at all, arguably the most consequential kind (a customer served the wrong plan's
+    limits). Fixed: the cron now also selects workspaces.plan_tier and reports (not
+    auto-repairs, matching this cron's existing "unambiguous only" philosophy) a mismatch
+    between Paystack's plan and the workspace's plan_tier as an anomaly.
+ 7. webhook route, subscription.create (plan switch): when disabling the customer's PREVIOUS
+    Paystack subscription failed, the code hardcoded needs_paystack_cancel: false in the same
+    upsert regardless of whether the disable actually succeeded — the only surviving signal
+    was a single best-effort ops-alert email (silently skipped if OPS_ALERT_EMAIL is unset;
+    rate-limited to once/hour/workspace), with no durable retry, unlike the functionally
+    identical failure mode in the grace-period downgrade path, which IS retried daily via this
+    same flag. Reusing that flag directly here would have been actively dangerous: its retry
+    (payment-overdue step 4b) cancels whatever code currently sits in
+    billing.paystack_subscription_code, which this same write has just overwritten with the
+    NEW, paying subscription's code — so a naive fix would have the daily cron cancel the
+    customer's brand-new subscription. Fixed: new billing.pending_cancel_subscription_code /
+    pending_cancel_email_token columns (migration 081) record the specific OLD subscription
+    when its disable fails, independent of paystack_subscription_code, and a new step 4c in
+    payment-overdue retries it without touching the current subscription.

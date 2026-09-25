@@ -183,6 +183,16 @@ async function handleEvent(service: any, event: any): Promise<void> {
       }).eq('id', workspaceId), 'update workspace plan')
 
       const paymentMethod = extractPaymentMethod(data)
+      // FIX (Billing re-pass #4): needs_paystack_cancel was hardcoded false
+      // here regardless of `previousDisabled` — a failed disable above got a
+      // one-shot ops alert and nothing durable. pending_cancel_subscription_
+      // code/email_token (081) record the OLD subscription specifically, so
+      // payment-overdue's step 4c can retry it without touching the NEW
+      // subscription this same write installs below.
+      const pendingCancel = previousDisabled === false
+        ? { pending_cancel_subscription_code: prevBilling?.paystack_subscription_code ?? null,
+            pending_cancel_email_token:       prevBilling?.paystack_email_token ?? null }
+        : { pending_cancel_subscription_code: null, pending_cancel_email_token: null }
       must(await service.from('billing').upsert({
         workspace_id:               workspaceId,
         paystack_customer_code:     data.customer?.customer_code,
@@ -192,6 +202,7 @@ async function handleEvent(service: any, event: any): Promise<void> {
         cancels_at_period_end:      false,
         grace_period_started_at:    null,
         needs_paystack_cancel:      false,
+        ...pendingCancel,
         plan_interval:              newInterval,
         payment_method_last4:       paymentMethod.last4,
         payment_method_type:        paymentMethod.type,
@@ -209,6 +220,7 @@ async function handleEvent(service: any, event: any): Promise<void> {
         // credit them by hand, since Paystack does not prorate a switch.
         previous_period_end: prevBilling?.current_period_end ?? undefined,
         previous_subscription_disabled: previousDisabled,
+        previous_subscription_cancel_pending_retry: previousDisabled === false,
       })
       return
     }
