@@ -4,7 +4,7 @@ import { useParams, useRouter } from 'next/navigation'
 import SignaturePad, { type SignaturePadHandle } from '@/components/ui/SignaturePad'
 import PortalShell from '@/components/portal/PortalShell'
 
-type CoState = 'loading' | 'invalid' | 'revoked' | 'expired' | 'accepted' | 'declined' | 'withdrawn' | 'closed' | 'stalled' | 'countered' | 'ready' | 'done' | 'redirect'
+type CoState = 'loading' | 'invalid' | 'revoked' | 'expired' | 'accepted' | 'declined' | 'withdrawn' | 'closed' | 'stalled' | 'countered' | 'exception_granted' | 'ready' | 'done' | 'redirect'
 type CoMode  = 'view' | 'accept' | 'decline' | 'counter'
 
 interface CoData {
@@ -121,6 +121,13 @@ export default function CoPortalPage() {
     closed:    { icon: 'ti-lock', iconBg: '#F5F5F0', iconColor: '#666', title: 'No longer available', body: 'This change order has been closed by the agency and is no longer open for a response.' },
     stalled:   { icon: 'ti-clock-off', iconBg: '#FFF7ED', iconColor: '#B45309', title: 'Link inactive', body: 'This change order received no response in time and is now inactive. Please contact the agency for an updated request.' },
     countered: { icon: 'ti-check', iconBg: '#EDFAF2', iconColor: '#1A5C3A', title: 'Counter already sent', body: 'You have already sent a counter-offer for this change order. The agency has been notified and will respond soon.' },
+    // FIX (cron/portal audit, sections 17+18 — feature gap, closing pass): without this, a client
+    // hitting a change order the agency granted as an exception (api/co/[id]/exception) got a blank
+    // page — 'exception_granted' fell out of every branch above, co is null for a state-only response,
+    // and the component's final fallback is `if (!co) return null`. Framed as good news (green, a
+    // check icon), not as a rejection like 'closed' — this state means the client doesn't have to do
+    // anything and isn't being charged, the opposite of what 'closed' communicates.
+    exception_granted: { icon: 'ti-check', iconBg: '#EDFAF2', iconColor: '#1A5C3A', title: 'No charge for this one', body: 'The agency has decided to cover this change order at no extra cost — there is nothing for you to review or sign.' },
   }
 
   if (state === 'accepted') {

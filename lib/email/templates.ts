@@ -1266,6 +1266,51 @@ export async function sendDocumentCancelledEmail(params: {
   }, params.log)
 }
 
+// FEATURE (cron/portal audit, sections 17+18 — feature gap, closing pass): the client-side
+// counterpart to api/co/[id]/exception/route.ts. Deliberately NOT sendDocumentCancelledEmail's
+// 'closed'/'withdrawn'/'voided' wording — an exception means the agency is giving the client the
+// extra work at no charge, not walking away from it, and the client should hear that framing rather
+// than a generic cancellation notice.
+export async function sendCoExceptionGrantedEmail(params: {
+  replyTo?: string | null; log?: EmailLogContext
+  to: string; cc?: string[]; clientName: string; agencyName: string
+  projectName: string; coTitle: string; note?: string | null; brandColour?: string
+}) {
+  const { to, cc, clientName: clientNameRaw, agencyName: agencyNameRaw, projectName: projectNameRaw,
+    coTitle: coTitleRaw, note: noteRaw, brandColour } = params
+  const clientName  = escapeHtml(clientNameRaw)
+  const agencyName  = escapeHtml(agencyNameRaw)
+  const projectName = escapeHtml(projectNameRaw)
+  const coTitle     = escapeHtml(coTitleRaw)
+  const note        = noteRaw ? escapeHtml(noteRaw) : null
+
+  const html = baseTemplate({
+    agencyName,
+    headerColour: C.green,
+    label: 'Change order — no charge',
+    headline: `${coTitle} will be done at no extra charge`,
+    body: `
+      <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${clientName},</p>
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        <strong>${agencyName}</strong> has decided to cover <strong>${coTitle}</strong> on
+        <strong>${projectName}</strong> as part of the existing agreement — there's nothing for
+        you to review, sign, or pay for this one. Any earlier link you have for it is no longer active.
+      </p>
+      ${note ? `<p style="font-size:13px;color:${C.text2};"><strong>Note from ${agencyName}:</strong> ${note}</p>` : ''}
+      <p style="font-size:13px;color:${C.text2};">If you have questions, please reach out to ${agencyName} directly.</p>
+    `,
+  })
+
+  return deliver({
+    from:    formatFrom(agencyNameRaw),
+    replyTo: params.replyTo,
+    to,
+    cc:      cc?.filter(Boolean) || [],
+    subject: `No charge: ${coTitleRaw} — ${projectNameRaw}`,
+    html,
+  }, params.log)
+}
+
 /**
  * Confirmation to the CLIENT that their response to a document (decline, change request, counter)
  * was received. Until now the client got nothing back after pressing those buttons.

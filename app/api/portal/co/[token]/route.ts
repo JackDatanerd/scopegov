@@ -123,7 +123,17 @@ async function getCoByToken(token: string, service: any, userAgent: string | nul
   }
   // 'stalled' deliberately falls through: it is an agency-side attention flag (no reply for 5 days), the
   // offer is still live until it expires, and the client must still be able to answer it.
-  if (['declined','withdrawn','closed','countered'].includes(co.status)) return { state: co.status }
+  // FIX (cron/portal audit, sections 17+18 — feature gap, closing pass): 'exception_granted' added.
+  // Same class of bug as the 'closed'/'stalled'/'countered' one this line's own comment already
+  // documents — it's been a valid, terminal change_orders.status value since migration 044 (see the
+  // TypeScript status union, the badge label/colour map, the PDF renderer, scope-financial-data.ts's
+  // "closed" classification), but was missing from this list. Nothing could actually reach it until
+  // api/co/[id]/exception/route.ts (added the same pass as this fix) started writing it, so this was
+  // previously unreachable rather than a live bug — but it would have re-served the full accept/
+  // decline/counter form for a change order the agency had already granted the client for free, the
+  // instant that route existed. Token deliberately left resolvable (not nulled) by that route for
+  // exactly this reason, same as 'closed' already is.
+  if (['declined','withdrawn','closed','countered','exception_granted'].includes(co.status)) return { state: co.status }
 
   // FEATURE (portal audit, section 18): first time this document is
   // actually opened while still awaiting a client response — mirrors the
