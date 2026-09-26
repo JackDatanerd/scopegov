@@ -49,6 +49,17 @@ describe('subjects', () => {
     expect(isForwardSubject('Re: quote')).toBe(false)
     expect(cleanSubject('Re: Fwd: RE: Add a blog')).toBe('Add a blog')
   })
+
+  // FIX (independent pass round 4, section 13): isForwardSubject used to test only the single prefix
+  // at the very start — a reply prefix layered in front of a forward marker was missed entirely, which
+  // meant a forwarded client request could be treated as a plain reply and have its whole body cut.
+  it('recognises a forward marker layered behind a reply prefix', () => {
+    expect(isForwardSubject('Re: Fwd: New feature idea')).toBe(true)
+    expect(isForwardSubject('Fwd: Re: New feature idea')).toBe(true)
+    expect(isForwardSubject('Re: Re: Fwd: New feature idea')).toBe(true)
+    expect(isForwardSubject('Re: Re: New feature idea')).toBe(false)
+    expect(isForwardSubject('')).toBe(false)
+  })
 })
 
 describe('isAutomatedMessage', () => {

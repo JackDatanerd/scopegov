@@ -1859,7 +1859,13 @@ function FlagCard({ flag, permissions, router, projectId, team }: any) {
               {flag.resolution === 'closed' && !flag.change_order_id && (
                 <button className="btn btn-ghost btn-xs" onClick={() => handleAction('reopen')} disabled={acting}>Reopen</button>
               )}
-              <button className="btn btn-ghost btn-xs" onClick={() => setShowClose(true)} disabled={acting}>Close</button>
+              {/* FIX (independent pass round 4, section 13): the route now refuses 'close' on a
+                  resolved-by-exception or resolved-by-change-order flag (see that route's comment
+                  for why) — don't offer a button that will now 409. Those two are terminal from
+                  here; only a plain resolve (resolution:'closed') can still be closed. */}
+              {flag.resolution === 'closed' && (
+                <button className="btn btn-ghost btn-xs" onClick={() => setShowClose(true)} disabled={acting}>Close</button>
+              )}
             </div>
           )}
           {/* FEATURE (independent pass, section 13): closed / dismissed flags were terminal. */}

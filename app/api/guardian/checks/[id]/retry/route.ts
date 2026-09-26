@@ -46,15 +46,19 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const limited = await checkAiRateLimit(service, session.id, 'guardian.check')
     if (!limited.allowed) return NextResponse.json({ error: limited.message }, { status: 429 })
-    await recordAiUsage(service, session.workspaceId, session.id, 'guardian.check')
 
-    // reclassifyCheck claims the row with a compare-and-swap, so two concurrent retries
-    // (double click, two tabs) can no longer both classify and both raise a flag.
+    // FIX (independent pass round 4, section 13): recordAiUsage used to be called here,
+    // unconditionally, before reclassifyCheck had even looked at the check — so a retry that
+    // reclassifyCheck went on to skip (already resolved by another tab, no snapshot, or lost the
+    // CAS race to a concurrent retry) still counted as a spent AI attempt. It's now passed in and
+    // only actually invoked by reclassifyCheck once its own CAS claim succeeds — see that
+    // function's comment.
     const res = await reclassifyCheck(service, checkId, {
       workspaceId: session.workspaceId,
       actor: { id: session.id, email: session.email, name: session.name, ip: getClientIp(request) },
       auditEvent: 'check.retried', emailPath: 'retry',
       requireFailed: true, excludeUserId: session.id,
+      recordUsage: () => recordAiUsage(service, session.workspaceId, session.id, 'guardian.check'),
     })
 
     if (res.status === 'skipped') {

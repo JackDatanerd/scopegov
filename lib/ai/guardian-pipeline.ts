@@ -261,6 +261,20 @@ export async function reclassifyCheck(service: any, checkId: string, opts: {
   /** true = only classification_failed checks (manual retry); false = also unclassified backlog */
   requireFailed?: boolean
   maxAttempts?: number
+  // FIX (independent pass round 4, section 13): both callers of this function (the manual retry
+  // route and the guardian-health cron sweep) used to call recordAiUsage/recordAiUsageByProject
+  // themselves BEFORE calling this — meaning a call that turned out to be 'not_eligible',
+  // 'no_snapshot', 'max_attempts', or lost the CAS race ('claimed') still recorded a paid AI
+  // attempt despite this function never reaching the embedding or classification call. That
+  // burned the caller's rate-limit budget and inflated the workspace's AI usage totals for
+  // attempts that made zero provider calls — most visible as a double-click or two-tab race
+  // silently costing two credits for one real classification. Usage is now recorded here,
+  // exactly once, right after the CAS claim succeeds — the one point past which this function is
+  // guaranteed to actually do embedding/dedup/classification work, matching how check/route.ts
+  // and inbound/route.ts already record usage immediately after their own first paid call rather
+  // than before knowing whether one will happen. Optional so a caller that doesn't meter usage
+  // (there is none today, but this stays a library function) isn't forced to supply one.
+  recordUsage?: () => Promise<void>
 }): Promise<ReclassifyResult> {
   let q = service.from('guardian_checks')
     .select('id, project_id, workspace_id, content, is_duplicate, outcome, classification_failed, classification_attempts, source, source_metadata, embedding')
@@ -289,6 +303,13 @@ export async function reclassifyCheck(service: any, checkId: string, opts: {
     .eq('id', check.id).eq('classification_attempts', attempts).eq('outcome', 'pending')
     .select('id')
   if (!claimed || claimed.length === 0) return { status: 'skipped', reason: 'claimed' }
+
+  // Past this point a real attempt is genuinely underway (embedding-if-needed, dedup, and/or
+  // classification all happen below) — see this function's opts comment for why usage recording
+  // belongs exactly here and not in the caller.
+  if (opts.recordUsage) {
+    try { await opts.recordUsage() } catch (e) { console.error('Could not record AI usage:', e) }
+  }
 
   // Backlog rows (rate-limited inbound / no-snapshot at submission) may have no embedding.
   let embedding = parseVector(check.embedding)

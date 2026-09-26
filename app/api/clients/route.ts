@@ -5,9 +5,6 @@ import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { parseClientInput } from '@/lib/utils/client-input'
 import { fetchPaged } from '@/lib/utils/paginate'
-// FIX (independent pass round 2, section 14): this route's own local escapeLike() was broken
-// (see lib/utils/escape-like.ts for the full story) — imported instead of re-typed.
-import { escapeLike } from '@/lib/utils/escape-like'
 const MAX_CLIENTS_LISTED = 5000
 
 export async function GET() {
@@ -83,44 +80,46 @@ export async function POST(request: NextRequest) {
 
     const service = createServiceClient()
 
-    // Duplicate email check (case-insensitive — legacy rows may not be lower-cased)
-    const { data: existing } = await (service as any)
-      .from('clients').select('id,name').eq('workspace_id', session.workspaceId)
-      .ilike('email', escapeLike(u.email)).limit(1).maybeSingle()
-    if (existing)
-      return NextResponse.json({ error: 'A client with this email already exists', existingClientId: existing.id, existingClientName: existing.name }, { status: 409 })
-
-    const { data: client, error } = await (service as any)
-      .from('clients').insert({
-        workspace_id: session.workspaceId,
-        name:         u.name,
-        company_name: u.company_name ?? null,
-        email:        u.email,
-        cc_emails:    u.cc_emails ?? [],
-        phone:        u.phone ?? null,
-        notes:        u.notes ?? null,
-        timezone:     u.timezone ?? null,
-        billing_address: u.billing_address ?? null,
-        vat_number:      u.vat_number ?? null,
-        payment_terms_note: u.payment_terms_note ?? null,
-      }).select('id').single()
-
-    // FIX (audit round 6): the manual dupe-check above has a TOCTOU window
-    // that's actually closed by the DB's own UNIQUE(workspace_id, email)
-    // constraint — good — but a race that slips through it surfaced as a
-    // raw Postgres constraint-violation message via the generic catch
-    // below instead of the same clean 409 the pre-check was written to
-    // produce. Catch that one specific case explicitly.
+    // FIX (independent pass round 4, section 14 — minor finding): the previous version did a
+    // separate select-then-insert. The DB's exact-string UNIQUE(workspace_id, email) constraint
+    // (001_initial_schema) always closes the exact-match race, but clients_workspace_email_lower
+    // (077) — the case-INSENSITIVE guard — is only created when a workspace has no pre-existing
+    // case-variant duplicates; for a workspace where it wasn't, two concurrent creates for the same
+    // address differing only by case could both slip through this route's own ilike pre-check and
+    // both insert. create_client (088) does the duplicate check AND the insert inside one
+    // transaction under an advisory lock on (workspace_id, lower(email)), closing that race
+    // regardless of whether the lower() index exists for this workspace.
+    const { data: result, error } = await (service as any).rpc('create_client', {
+      p_workspace_id: session.workspaceId,
+      p_name:         u.name,
+      p_email:        u.email,
+      p_company_name: u.company_name ?? null,
+      p_cc_emails:    u.cc_emails ?? [],
+      p_phone:        u.phone ?? null,
+      p_notes:        u.notes ?? null,
+      p_timezone:     u.timezone ?? null,
+      p_billing_address: u.billing_address ?? null,
+      p_vat_number:      u.vat_number ?? null,
+      p_payment_terms_note: u.payment_terms_note ?? null,
+    })
+    // Belt-and-braces: the DB's own UNIQUE constraint still exists as a last resort (e.g. a schema
+    // rollback that predates 088) — surface it the same clean way as the RPC's own dup result.
     if (error?.code === '23505')
       return NextResponse.json({ error: 'A client with this email already exists' }, { status: 409 })
     if (error) throw new Error(error.message)
+    if (!result?.ok)
+      return NextResponse.json({
+        error: 'A client with this email already exists',
+        existingClientId: result?.existing_id, existingClientName: result?.existing_name,
+      }, { status: 409 })
+
     await logAudit(service, {
       workspaceId: session.workspaceId, actorId: session.id,
       actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
       eventType: 'client.created', entityType: 'client',
-      entityId: client.id, entityName: u.name, metadata: {},
+      entityId: result.client_id, entityName: u.name, metadata: {},
     })
-    return NextResponse.json({ clientId: client.id })
+    return NextResponse.json({ clientId: result.client_id })
   } catch (err) {
     console.error('Client create error:', err)
     return NextResponse.json({ error: 'Could not create the client' }, { status: 500 })

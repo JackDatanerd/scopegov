@@ -48,4 +48,18 @@ describe('withPrimaryContactCc', () => {
     const service = { from: () => { throw new Error('db down') } }
     expect(await withPrimaryContactCc(service, 'c1', 'a@b.co', ['x@y.co'], 'invoice')).toEqual(['x@y.co'])
   })
+
+  // FIX (independent pass round 4, section 14): this used to have no cap at all — unlike
+  // normalizeCcEmails()'s MAX_CC_EMAILS=10, which every other cc_emails write path enforces.
+  it('caps the routed total at MAX_CC_EMAILS without trimming the caller-supplied CC list', async () => {
+    const manyContacts = Array.from({ length: 12 }, (_, i) => ({
+      email: `contact${i}@acme.com`, is_primary: i === 0, role_type: i === 0 ? 'other' : 'scope',
+    }))
+    const { service } = fakeService(manyContacts)
+    const existingCc = ['a@acme.com', 'b@acme.com', 'c@acme.com']
+    const result = await withPrimaryContactCc(service, 'c1', 'jane@acme.com', existingCc, 'co')
+    expect(result.length).toBe(10)
+    // The caller's own list survives intact — only how many contacts got appended is capped.
+    expect(result.slice(0, 3)).toEqual(existingCc)
+  })
 })

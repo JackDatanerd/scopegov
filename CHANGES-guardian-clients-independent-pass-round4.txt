@@ -1,0 +1,69 @@
+Guardian / Scope governance (section 13) + Clients (section 14) — independent audit round 4
+=============================================================================================
+
+DEPLOY ORDER: run supabase/migrations/087_merge_clients_cc_case_insensitive.sql and
+088_create_client_email_lock.sql FIRST (in that order, or either order — they touch different
+functions), then deploy the code. No new env vars, no npm changes.
+
+VERIFY AFTER DEPLOY:
+  - Grant an exception on an open Guardian flag, then try to Close it — should now be refused
+    (409) and the Close button should no longer render for it. A plain resolved (no exception, no
+    CO) flag should still show Close and work as before.
+  - Forward a client email through a "Re: Fwd:" or similarly double-prefixed subject with no
+    "Forwarded message" banner in the body (Outlook-style) — the forwarded content should reach
+    the classifier, not be silently discarded.
+
+SECTION 13 — BUGS FIXED
+ 1. guardian/flags/[id]/route.ts 'close' action only ever checked flag.status, so a flag resolved
+    via an exception grant or an accepted change order (both land on status:'resolved', just with
+    a different `resolution`) was closeable exactly like a plain resolve — overwriting resolution
+    to 'closed', which then made 'reopen' think it was safe to reopen a flag with a live
+    exceptions_log row or an accepted CO behind it. Now gated on resolution too (only
+    resolution:'closed' may be closed from 'resolved'); the CAS update matches on both columns.
+    ProjectDetail.tsx no longer renders a Close button for a resolved-by-exception/CO flag.
+ 2. lib/ai/guardian-email.ts isForwardSubject() only matched a forward marker at the very start of
+    the subject, unlike cleanSubject() which strips a whole chain of reply/forward prefixes. A
+    subject like "Re: Fwd: New feature idea" wasn't recognised as a forward, and — with no
+    "Forwarded message" banner in the body (Outlook's classic forward has none) — the entire
+    forwarded client request got cut as a "quoted reply" before ever reaching the classifier, with
+    no flag, no error, nothing. isForwardSubject now walks the same prefix chain cleanSubject()
+    strips and returns true the moment any layer is a forward marker.
+ 3. guardian/checks/[id]/retry/route.ts and cron/guardian-health's sweep both called
+    recordAiUsage(ByProject) BEFORE calling reclassifyCheck, which can return `skipped`
+    (not_eligible / no_snapshot / max_attempts / lost the CAS race) having made zero actual
+    embedding/classification calls — so a no-op retry still burned rate-limit budget and inflated
+    recorded AI usage. reclassifyCheck now takes an optional `recordUsage` callback and invokes it
+    itself, exactly once, right after its own CAS claim succeeds — the one point past which real
+    work is guaranteed to happen. Both callers pass their usage recorder through instead of calling
+    it upfront.
+
+SECTION 14 — BUGS FIXED
+ 4. merge_clients() (077, capped in 086) deduplicated the merged cc_emails array with a plain
+    `SELECT DISTINCT e` — exact-string, not case-insensitive — unlike normalizeCcEmails()
+    (lib/utils/client-input.ts), the function every OTHER cc_emails write path in the app goes
+    through. Merging a target and source that had the same address in different casing left BOTH
+    in the result, so that person got every future invoice/SOW/CO email twice. 087 redefines the
+    function to dedupe on lower(e), keeping first-seen casing (same target-first/source-second/
+    primary-last precedence as before), then caps at 10 exactly as 086 already intended.
+ 5. lib/utils/client-contacts.ts's withPrimaryContactCc() had no cap at all, unlike
+    normalizeCcEmails()'s MAX_CC_EMAILS=10 — the one invariant every explicit CC-list edit is held
+    to. A client with several role_type-matching contacts (co/sow route to BOTH 'scope' and
+    'approver') plus a primary could push the CC list handed to ~20 send call sites well past 10.
+    Now caps how many contact rows get appended (the caller's own explicit cc list is never
+    trimmed) to whatever room is left under MAX_CC_EMAILS.
+ 6. (minor) clients_workspace_email_lower (077) — the case-insensitive unique index — is only
+    created for a workspace with no pre-existing case-variant duplicate emails; for any workspace
+    where it wasn't, POST /api/clients's ilike pre-check had a TOCTOU window with nothing at the DB
+    level to close it for a case-variant race (the base UNIQUE(workspace_id, email) constraint is
+    exact-string and doesn't consider "Jane@x.com" / "jane@x.com" the same value). New RPC
+    create_client (088) does the duplicate check and the insert in one transaction under an
+    advisory lock on (workspace_id, lower(email)), closing the race regardless of whether the
+    lower() index exists. POST /api/clients now calls it instead of a separate select-then-insert.
+
+TESTS: extended tests/guardian-email.test.ts (chained-prefix forward subjects) and
+tests/client-contacts-routing.test.ts (the new MAX_CC_EMAILS cap). Same offline-harness caveat as
+every prior round — no node_modules/network here to actually run vitest or tsc; reviewed by hand
+(brace/paren balance, structural re-read) instead.
+
+NOT INCLUDED: nothing new found this round beyond the six above (findings #1–6 of the prior
+independent-pass writeup) — this round was fixes only, no further audit pass performed.

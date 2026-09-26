@@ -34,6 +34,8 @@
 //   invoice → billing contacts;   sow / co → scope + approver contacts.
 // The primary contact is always included, exactly as before, and every address is de-duplicated
 // against clients.email and cc_emails.
+import { MAX_CC_EMAILS } from '@/lib/utils/client-input'
+
 export type ContactDocType = 'invoice' | 'sow' | 'co'
 const ROLE_TYPES_FOR: Record<ContactDocType, string[]> = {
   invoice: ['billing'],
@@ -66,6 +68,12 @@ export async function withPrimaryContactCc(
       if (!email || seen.has(key)) continue
       seen.add(key)
       extra.push(email)
+      // FIX (independent pass round 4, section 14): normalizeCcEmails() rejects an explicit CC
+      // list past MAX_CC_EMAILS, but this function had no equivalent limit — a client with several
+      // matching scope/approver/billing contacts plus a primary could push the routed total well
+      // past 10. `cc` (what the person actually entered) is never trimmed; only how many contact
+      // rows get added on top is capped, to the room left under the same invariant.
+      if (cc.length + extra.length >= MAX_CC_EMAILS) break
     }
     return extra.length ? [...cc, ...extra] : cc
   } catch (e) {

@@ -141,12 +141,32 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       case 'close': {
         if (!hasPermission(session, 'APPROVE_FLAGS'))
           return NextResponse.json({ error: 'Missing permission: APPROVE_FLAGS' }, { status: 403 })
-        if (!['open', 'resolved'].includes(flag.status))
-          return NextResponse.json({ error: `Cannot close a flag with status "${flag.status}"` }, { status: 409 })
-        const { data: closedRows, error: closeErr } = await (service as any).from('guardian_flags').update({
+        // FIX (independent pass round 4, section 13 — flagship finding): this only ever checked
+        // flag.status, so a flag with status:'resolved' was closeable regardless of WHY it was
+        // resolved — but 'resolved' is reached three ways: a plain 'resolve' (resolution:'closed'),
+        // an 'exception' grant (resolution:'exception'), and a CO acceptance (finalize-co.ts sets
+        // resolution:'change_order'). The UI renders one unconditional "Close" button for any
+        // status==='resolved' flag, so clicking it on an exception- or CO-resolved flag silently
+        // overwrote resolution to 'closed' — which then made 'reopen' (gated on
+        // resolution !== 'exception'/'change_order') think it was safe to reopen a flag that
+        // already has a live exceptions_log row or an accepted change order behind it. Only a
+        // plain-resolved flag (resolution:'closed') may be closed from 'resolved'; 'open' still
+        // closes directly as before.
+        if (flag.status === 'open') {
+          // ok — open closes directly
+        } else if (flag.status === 'resolved' && flag.resolution === 'closed') {
+          // ok — a previously-resolved (not excepted/converted) flag can still be closed
+        } else {
+          return NextResponse.json({ error: `Cannot close a flag with status "${flag.status}"${flag.resolution ? ` (${String(flag.resolution).replace(/_/g, ' ')})` : ''}` }, { status: 409 })
+        }
+        // Compare-and-swap on BOTH status and resolution (not just status) — supabase-js needs
+        // .is() rather than .eq() for a NULL comparison (open flags have no resolution yet).
+        let closeQuery = (service as any).from('guardian_flags').update({
           status: 'closed', resolution: 'closed', close_reason: reason || null,
           resolved_by: session.id, resolved_at: now, updated_at: now,
-        }).eq('id', id).eq('status', flag.status).select('id')
+        }).eq('id', id).eq('status', flag.status)
+        closeQuery = flag.resolution == null ? closeQuery.is('resolution', null) : closeQuery.eq('resolution', flag.resolution)
+        const { data: closedRows, error: closeErr } = await closeQuery.select('id')
         if (closeErr) throw new Error(closeErr.message)
         if (!closedRows?.length)
           return NextResponse.json({ error: 'This flag was just changed by someone else — refresh and try again.' }, { status: 409 })

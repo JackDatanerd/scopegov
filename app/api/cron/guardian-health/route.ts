@@ -127,10 +127,16 @@ async function sweepUnclassified(service: any) {
   for (const c of candidates) {
     if (Date.now() - started > SWEEP_BUDGET_MS) break
     try {
-      await recordAiUsageByProject(service, c.workspace_id, c.project_id, 'guardian.sweep')
+      // FIX (independent pass round 4, section 13): recordAiUsageByProject used to be called here
+      // unconditionally, before reclassifyCheck even looked at the row — so a candidate that
+      // reclassifyCheck went on to skip (e.g. a manual retry from the product won the CAS race for
+      // this same check in between the sweep's own query and this call) still recorded a spent AI
+      // attempt with zero provider calls made. Passed in instead; reclassifyCheck only invokes it
+      // once its own claim succeeds — see that function's comment.
       const res = await reclassifyCheck(service, c.id, {
         actor: GUARDIAN_SYSTEM_ACTOR, auditEvent: 'check.swept', emailPath: 'automatic re-check',
         requireFailed: false, maxAttempts: MAX_AUTO_CLASSIFICATION_ATTEMPTS,
+        recordUsage: () => recordAiUsageByProject(service, c.workspace_id, c.project_id, 'guardian.sweep'),
       })
       if (res.status === 'classified') { stats.classified++; if (res.flagId) stats.flagged++ }
       else if (res.status === 'failed') stats.failed++

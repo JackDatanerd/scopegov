@@ -16,7 +16,17 @@
 // A forward is recognised from the subject (Fwd:/FW:) or a forwarded-message banner, and
 // in that case the forwarded body is kept (only its header block is dropped).
 
-const FORWARD_SUBJECT = /^\s*(fwd?|fw|wg|tr|rv)\s*:/i
+// FIX (independent pass round 4, section 13): this used to test only the single prefix at the very
+// start of the subject, while cleanSubject() below strips a whole CHAIN of them in a loop. A subject
+// with a reply prefix layered in front of a forward marker — "Re: Fwd: New feature idea" (reply-all
+// on a forward, or a client replying into a thread that was itself forwarded in) — never matched here,
+// even though it plainly IS a forward. Downstream, extractUnquotedContent only keeps a forward's body
+// when isForward is true or a "Forwarded message" banner is seen in the text; Outlook's classic forward
+// format has neither (no banner, just a bare header block) if the subject check misses it — so the
+// entire forwarded client request was silently cut as "quoted reply" with nothing left to classify.
+// Walk the same chain cleanSubject() strips, and call it a forward the moment ANY layer is one.
+const PREFIX_CHAIN    = /^\s*(re|fwd?|fw|wg|tr|rv|aw)\s*:\s*/i
+const FORWARD_TOKENS  = new Set(['fwd', 'fw', 'wg', 'tr', 'rv'])
 const FORWARD_BANNER  = /^[-–—_\s]*(begin forwarded message|forwarded message)[-–—_:\s]*$/i
 const ORIGINAL_MSG    = /^[-–—_\s]*original message[-–—_\s]*$/i
 const OUTLOOK_RULE    = /^_{20,}\s*$/
@@ -27,7 +37,16 @@ const WROTE_ONLY      = /^wrote:\s*$/i
 const SIGNATURE_DELIM = /^--\s?$/
 
 export function isForwardSubject(subject: string): boolean {
-  return FORWARD_SUBJECT.test(subject || '')
+  let s = String(subject || '')
+  // Bounded iteration count — a real subject has at most a handful of chained prefixes; this just
+  // guards against a pathological input, not normal mail.
+  for (let i = 0; i < 12; i++) {
+    const m = s.match(PREFIX_CHAIN)
+    if (!m) return false
+    if (FORWARD_TOKENS.has(m[1].toLowerCase())) return true
+    s = s.slice(m[0].length)
+  }
+  return false
 }
 
 /** Strip a leading Re:/Fwd: chain from a subject for display/classification. */
