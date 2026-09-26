@@ -152,10 +152,23 @@ export default async function ProjectPage({ params, searchParams }: Props) {
     : (amendmentsRaw || []).map((a: any) => ({ ...a, financial_impact: null }))
 
   // ── Fetch team members ────────────────────────────────────────────────
+  // FIX (Projects & Dashboard independent pass, round 2): this was the one place in the
+  // codebase that joined workspace_members without `!inner` + `.eq('workspace_members.status',
+  // 'active')` — every other embed of this table (GET /api/projects, the Dashboard, the Projects
+  // list, /api/invoices, /api/search, /api/clients) filters to active members this same way.
+  // project_members rows are never cleaned up when a member is deactivated (see
+  // lib/utils/project-access.ts's own comment on this), so a departed team member stayed
+  // permanently visible here — full name, email, avatar, a working Remove button — indistinguishable
+  // from someone still active. The same unfiltered `team` array is also what feeds the Escalate-flag
+  // and Escalate-CO modals' "Escalate to" dropdowns (see ProjectDetail.tsx), so a deactivated
+  // colleague could be picked as an escalation target; the API already rejects that server-side
+  // ("not an active member of this workspace"), but the dropdown shouldn't offer them in the first
+  // place. Filtering here fixes both surfaces from their one shared source.
   const { data: team = [] } = await (service as any)
     .from('project_members')
-    .select('id, added_at, workspace_members(id, users!workspace_members_user_id_fkey(id, name, email, avatar_url))')
+    .select('id, added_at, workspace_members!inner(id, users!workspace_members_user_id_fkey(id, name, email, avatar_url))')
     .eq('project_id', id)
+    .eq('workspace_members.status', 'active')
 
   // ── Fetch activity ────────────────────────────────────────────────────
   // audit_log.project_id (migration 056) attaches SOW / CO / flag / Guardian-check / invoice events to

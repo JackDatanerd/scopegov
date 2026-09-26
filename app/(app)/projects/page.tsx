@@ -35,7 +35,7 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
       .from('project_members')
       .select('project_id, workspace_members!inner(user_id)')
       .eq('workspace_members.user_id', session.id)
-    restrictedIds = (ids || []).map((r: { project_id: string }) => r.project_id)
+    restrictedIds = ((ids || []) as { project_id: string }[]).map(r => r.project_id)
     if (restrictedIds.length === 0) return <EmptyProjects canCreate={canCreate} />
   }
 

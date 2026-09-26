@@ -32,6 +32,30 @@ import {
 //  * Every changed field lands in the audit metadata (subtitle, dates and
 //    reference used to produce an empty `changes`).
 
+// Shared by the contractValue and retainerDurationMonths gates below (they mirror each other
+// exactly — a signed/quoted/approval-pending SOW must block both the same way, since a fixed-term
+// retainer's effective value is contractValue x retainerDurationMonths, so either field can
+// silently re-price a project the other one is locked against). Also re-run once more, against a
+// FRESH read, immediately before the write — see the FIX note at that call site.
+async function checkSowLock(
+  service: any, sows: Array<{ id: string; status: string }>, label: string, termNoun: string, shortNoun: string,
+): Promise<string | null> {
+  // A signed SOW binds the client to the value: it changes through a CO.
+  if (sows.some(s => s.status === 'signed'))
+    return `This project has a signed SOW — use a change order to adjust the ${label}.`
+  // A SOW out for signature quotes the current value: changing it would leave
+  // the client signing a number that no longer matches the project.
+  if (sows.some(s => ['awaiting_signature', 'changes_requested'].includes(s.status)))
+    return `A SOW is currently out for signature at the existing ${termNoun} — withdraw it before changing the ${shortNoun}, then send the client the revised SOW.`
+  // A draft SOW sitting in an approval chain would be approved at the old value.
+  for (const sow of sows) {
+    if (sow.status !== 'draft') continue
+    if (await getPendingApprovalForDocument(service, 'sow', sow.id))
+      return `A SOW on this project has a pending approval request — cancel it before changing the ${label}, then resend.`
+  }
+  return null
+}
+
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id }   = await params
@@ -161,25 +185,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       if (!p.ok) return NextResponse.json({ error: p.error }, { status: 400 })
       const newValue = p.value
       if (newValue !== Number(project.contract_value)) {
-        // A signed SOW binds the client to the value: it changes through a CO.
-        if (sows.some(s => s.status === 'signed'))
-          return NextResponse.json({
-            error: 'This project has a signed SOW — use a change order to adjust the contract value.',
-          }, { status: 409 })
-        // A SOW out for signature quotes the current value: changing it would
-        // leave the client signing a number that no longer matches the project.
-        if (sows.some(s => ['awaiting_signature', 'changes_requested'].includes(s.status)))
-          return NextResponse.json({
-            error: 'A SOW is currently out for signature at the existing contract value — withdraw it before changing the value, then send the client the revised SOW.',
-          }, { status: 409 })
-        // A draft SOW sitting in an approval chain would be approved at the old value.
-        for (const sow of sows) {
-          if (sow.status !== 'draft') continue
-          if (await getPendingApprovalForDocument(service, 'sow', sow.id))
-            return NextResponse.json({
-              error: 'A SOW on this project has a pending approval request — cancel it before changing the contract value, then resend.',
-            }, { status: 409 })
-        }
+        const lockError = await checkSowLock(service, sows, 'contract value', 'contract value', 'value')
+        if (lockError) return NextResponse.json({ error: lockError }, { status: 409 })
         changes.contractValue = { from: Number(project.contract_value), to: newValue }
         updates.contract_value = newValue
       }
@@ -211,21 +218,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       const p = parseRetainerMonths(body.retainerDurationMonths)
       if (!p.ok) return NextResponse.json({ error: p.error }, { status: 400 })
       if (p.value !== project.retainer_duration_months) {
-        if (sows.some(s => s.status === 'signed'))
-          return NextResponse.json({
-            error: 'This project has a signed SOW — use a change order to adjust the retainer duration.',
-          }, { status: 409 })
-        if (sows.some(s => ['awaiting_signature', 'changes_requested'].includes(s.status)))
-          return NextResponse.json({
-            error: 'A SOW is currently out for signature at the existing retainer term — withdraw it before changing the duration, then send the client the revised SOW.',
-          }, { status: 409 })
-        for (const sow of sows) {
-          if (sow.status !== 'draft') continue
-          if (await getPendingApprovalForDocument(service, 'sow', sow.id))
-            return NextResponse.json({
-              error: 'A SOW on this project has a pending approval request — cancel it before changing the retainer duration, then resend.',
-            }, { status: 409 })
-        }
+        const lockError = await checkSowLock(service, sows, 'retainer duration', 'retainer term', 'duration')
+        if (lockError) return NextResponse.json({ error: lockError }, { status: 409 })
         changes.retainerDurationMonths = { from: project.retainer_duration_months, to: p.value }
         updates.retainer_duration_months = p.value
       }
@@ -233,6 +227,29 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     if (Object.keys(updates).length === 0)
       return NextResponse.json({ ok: true, unchanged: true })
+
+    // FIX (Projects & Dashboard independent pass, round 2): checkSowLock() above runs against
+    // `sows`, read once at the top of this handler — so a SOW sent, signed, or dropped into an
+    // approval chain in the gap between that read and the write below could let a contractValue/
+    // retainerDurationMonths change slip through a lock this same file treats as a "flagship
+    // finding" elsewhere (see the retainerDurationMonths block's own comment). Narrow the window
+    // by re-running the same check against a fresh read immediately before the write — the same
+    // "re-check right before committing" shape already used for the plan-limit race in
+    // POST/reopen (wouldExceedLimit / isOverLimit), just applied to this lock instead of a count.
+    if (updates.contract_value !== undefined || updates.retainer_duration_months !== undefined) {
+      const { data: freshProject } = await (service as any)
+        .from('projects').select('sow_documents(id,status)')
+        .eq('id', id).eq('workspace_id', session.workspaceId).is('deleted_at', null).maybeSingle()
+      const freshSows: Array<{ id: string; status: string }> = freshProject?.sow_documents || []
+      if (updates.contract_value !== undefined) {
+        const lockError = await checkSowLock(service, freshSows, 'contract value', 'contract value', 'value')
+        if (lockError) return NextResponse.json({ error: lockError }, { status: 409 })
+      }
+      if (updates.retainer_duration_months !== undefined) {
+        const lockError = await checkSowLock(service, freshSows, 'retainer duration', 'retainer term', 'duration')
+        if (lockError) return NextResponse.json({ error: lockError }, { status: 409 })
+      }
+    }
 
     updates.updated_at = new Date().toISOString()
 

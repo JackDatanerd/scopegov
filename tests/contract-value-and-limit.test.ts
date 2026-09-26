@@ -52,7 +52,10 @@ describe('contract value — one definition', () => {
         b.select = () => b
         b.in = (_c: string, ids: string[]) => { calls.push(ids); return b }
         b.eq = () => b
-        b.limit = () => Promise.resolve({ data: [{ id: '1', project_id: 'open' }, { id: '2', project_id: 'open' }, { id: '3', project_id: 'open' }], error: null })
+        // FIX (Projects & Dashboard / Portfolio independent pass, round 2): loadRetainerMonthsBilled
+        // now pages via .range() instead of a single .limit(5000) (see that function's own comment —
+        // the old single limit() silently truncated with no signal). Mock terminates on .range() now.
+        b.range = () => Promise.resolve({ data: [{ id: '1', project_id: 'open' }, { id: '2', project_id: 'open' }, { id: '3', project_id: 'open' }], error: null })
         return b
       },
     }
@@ -65,8 +68,29 @@ describe('contract value — one definition', () => {
     expect(months.get('open')).toBe(3)
   })
 
+  it('pages past 1,000 rows instead of silently truncating (regression for the old .limit(5000))', async () => {
+    // Two pages: 1000 rows, then a final 1 row — proves the loop keeps paging until a
+    // short page tells it to stop, rather than trusting a single capped read.
+    let call = 0
+    const service = {
+      from: () => {
+        const b: any = {}
+        b.select = () => b; b.in = () => b; b.eq = () => b
+        b.range = () => {
+          call++
+          if (call === 1) return Promise.resolve({ data: Array.from({ length: 1000 }, (_, i) => ({ id: String(i), project_id: 'open' })), error: null })
+          return Promise.resolve({ data: [{ id: '1000', project_id: 'open' }], error: null })
+        }
+        return b
+      },
+    }
+    const months = await loadRetainerMonthsBilled(service, [{ id: 'open', contract_value: 1, type: 'retainer', retainer_duration_months: null }])
+    expect(call).toBe(2)
+    expect(months.get('open')).toBe(1001)
+  })
+
   it('a failed lookup degrades to "no months known" instead of throwing', async () => {
-    const service = { from: () => { const b: any = {}; b.select = () => b; b.in = () => b; b.eq = () => b; b.limit = () => Promise.resolve({ data: null, error: { message: 'boom' } }); return b } }
+    const service = { from: () => { const b: any = {}; b.select = () => b; b.in = () => b; b.eq = () => b; b.range = () => Promise.resolve({ data: null, error: { message: 'boom' } }); return b } }
     const months = await loadRetainerMonthsBilled(service, [{ id: 'x', contract_value: 1, type: 'retainer', retainer_duration_months: null }])
     expect(months.size).toBe(0)
   })

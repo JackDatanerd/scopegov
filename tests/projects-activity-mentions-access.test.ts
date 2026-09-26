@@ -151,6 +151,12 @@ describe('canReadProject — VIEW_ALL is per WORKSPACE, not global', () => {
       const b: any = {}
       b.select = () => b
       b.eq = (col: string, val: string) => { filters[col] = val; return b }
+      // FIX (Projects & Dashboard independent pass, round 2): this mock was stale — canReadProject
+      // has queried `.eq(...).eq(...).is('deleted_at', null).limit(1)` since migration 083 (soft-
+      // deleted projects excluded from reads), but the mock only chained through .limit(), so calling
+      // canReadProject at all threw "`.is` is not a function" rather than testing anything. The real
+      // function was never broken — only this test's fixture never got updated to match its shape.
+      b.is = () => b
       b.limit = () => Promise.resolve({ data: filters.workspace_id === projectWorkspace && filters.id === 'proj' ? [{ id: 'proj' }] : [], error: null })
       return b
     },

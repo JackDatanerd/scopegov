@@ -12,7 +12,11 @@
 export const PERIOD_KEYS = ['30d', '90d', '6m', '12m', 'all'] as const
 export type PeriodKey = (typeof PERIOD_KEYS)[number]
 
-const PERIOD_DAYS: Record<PeriodKey, number | null> = {
+// FIX (Portfolio independent pass, round 2): exported — this was duplicated verbatim in
+// lib/reports/portfolio-data.ts (in sync today, but a drift risk of exactly the kind this
+// codebase has otherwise consolidated, e.g. project-status.ts / contract-value.ts). One
+// definition now; portfolio-data.ts imports it instead of re-declaring it.
+export const PERIOD_DAYS: Record<PeriodKey, number | null> = {
   '30d': 30, '90d': 90, '6m': 180, '12m': 365, 'all': null,
 }
 

@@ -18,7 +18,7 @@
 //  - Client names are withheld from members without VIEW_CLIENT_DATA, the same
 //    rule the project page applies.
 
-import { PERIOD_LABELS as ALL_PERIOD_LABELS, type PeriodKey } from './period'
+import { PERIOD_LABELS as ALL_PERIOD_LABELS, PERIOD_DAYS, type PeriodKey } from './period'
 import {
   computeScopeHealth, SEVERITY_RANK, SEVERITY_MULTIPLIER, OPEN_FLAG_RISK_RATE, type CurrencyRollup,
 } from './scope-health'
@@ -110,7 +110,6 @@ export interface PortfolioData {
   hasSnapshots: boolean
 }
 
-const PERIOD_DAYS: Record<PeriodKey, number | null> = { '30d': 30, '90d': 90, '6m': 180, '12m': 365, 'all': null }
 const DEFAULT_FLAGS_PER_SEVERITY = 100
 const EXCEPTIONS_LIST_LIMIT = 25
 // One row per workspace per day (daily rollup cron) — 20,000 is ~54 years of

@@ -262,6 +262,7 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName, canO
                 points={data.history}
                 mode={canViewFinancials ? 'risk' : 'flags'}
                 currency={data.currency}
+                hasSnapshots={data.hasSnapshots}
               />
               {/* FIX (fix round, Portfolio section 8): a history point's own
                   currency (see getPortfolioData) can differ from today's
@@ -456,7 +457,7 @@ function sampleForChart<T>(rows: T[], max: number): T[] {
   return out
 }
 
-function TrendChart({ points: allPoints, mode, currency }: { points: HistoryPoint[]; mode: 'risk' | 'flags'; currency: string }) {
+function TrendChart({ points: allPoints, mode, currency, hasSnapshots }: { points: HistoryPoint[]; mode: 'risk' | 'flags'; currency: string; hasSnapshots: boolean }) {
   const [hover, setHover] = useState<number | null>(null)
   const W = 640, H = 180, PAD = 8, PADL = 46 // left gutter for the y-axis labels
 
@@ -477,8 +478,20 @@ function TrendChart({ points: allPoints, mode, currency }: { points: HistoryPoin
   const range = max - min || 1
 
   if (points.length < 2) {
+    // FIX (Portfolio independent pass, round 2): `hasSnapshots` was computed by getPortfolioData
+    // and typed all the way into this component's own props, but nothing ever read it — the message
+    // below was shown unconditionally for any <2-point chart. That's the right message for a
+    // genuinely new workspace (no daily rollup has ever run), but wrong and actively misleading for
+    // a workspace that DOES have snapshot history where every point still got filtered out here
+    // because its own dominant currency didn't match today's (see the filter above) — "check back
+    // after a few daily rollups" implies waiting will fix it, when the actual cause is a currency
+    // mix that may keep shifting. Distinguish the two cases using the field that already exists for
+    // exactly this.
+    const currencyFiltered = mode === 'risk' && hasSnapshots && allPoints.length >= 2
     return <div style={{ fontSize: 12.5, color: 'var(--text-3)', padding: '40px 0', textAlign: 'center' }}>
-      Not enough history yet — check back after a few daily rollups.
+      {currencyFiltered
+        ? "This period's history exists, but each day's dominant currency didn't match today's — money can't be mixed across currencies on one line."
+        : 'Not enough history yet — check back after a few daily rollups.'}
     </div>
   }
 

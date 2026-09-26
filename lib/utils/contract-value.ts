@@ -56,16 +56,45 @@ export function isOpenEndedRetainer(p: ValueProject): boolean {
  * retainer_monthly milestone counts for the OPEN-ENDED retainers among `projects` (project id -> months).
  * Fixed-term retainers and every other type need no query. Failures degrade to "no months known" (1 month)
  * rather than breaking the page that asked.
+ *
+ * FIX (Projects & Dashboard / Portfolio independent pass, round 2): this used a single
+ * `.limit(5000)` per 100-project chunk with no truncation check at all — unlike every other
+ * "big read" in this exact neighbourhood (lib/utils/paginate.ts's fetchPaged, used specifically
+ * because PostgREST silently truncates, and which THROWS on overflow rather than let a cut-off
+ * read pass as complete). A chunk of long-running open-ended retainers averaging more than 50
+ * billed months each (e.g. 100 projects x 50+ months) would silently undercount past that point,
+ * understating "effective contract value" for those projects on both the Dashboard/Projects list
+ * and the Portfolio's scope-health numbers, with no signal anything was cut off. Paged in full per
+ * chunk instead; a SAFETY_CAP still exists (this function's own design explicitly degrades rather
+ * than throws — it must never break the page that asked), but hitting it is logged loudly rather
+ * than silently swallowed the way the old `.limit(5000)` was.
  */
+const RETAINER_MONTHS_PAGE_SIZE = 1000
+// Per 100-project chunk. A chunk would only hit this with an average of 500+ billed months per
+// open-ended retainer in it — pathological, not a real workspace — but it's a real, logged cap
+// rather than no cap at all.
+const RETAINER_MONTHS_SAFETY_CAP = 50000
+
 export async function loadRetainerMonthsBilled(service: any, projects: ValueProject[]): Promise<Map<string, number>> {
   const out = new Map<string, number>()
   const ids = projects.filter(p => p.id && isOpenEndedRetainer(p)).map(p => p.id as string)
   for (let i = 0; i < ids.length; i += 100) {
     const chunk = ids.slice(i, i + 100)
-    const { data, error } = await service.from('payment_milestones').select('id, project_id')
-      .in('project_id', chunk).eq('type', 'retainer_monthly').limit(5000)
-    if (error) { console.error('[contract-value] retainer months lookup failed:', error.message); continue }
-    for (const r of data || []) out.set(r.project_id, (out.get(r.project_id) || 0) + 1)
+    let offset = 0
+    for (;;) {
+      const { data, error } = await service.from('payment_milestones').select('id, project_id')
+        .in('project_id', chunk).eq('type', 'retainer_monthly')
+        .range(offset, offset + RETAINER_MONTHS_PAGE_SIZE - 1)
+      if (error) { console.error('[contract-value] retainer months lookup failed:', error.message); break }
+      const batch = data || []
+      for (const r of batch) out.set(r.project_id, (out.get(r.project_id) || 0) + 1)
+      if (batch.length < RETAINER_MONTHS_PAGE_SIZE) break
+      offset += RETAINER_MONTHS_PAGE_SIZE
+      if (offset >= RETAINER_MONTHS_SAFETY_CAP) {
+        console.error(`[contract-value] retainer months lookup hit its safety cap (${RETAINER_MONTHS_SAFETY_CAP}) for a project chunk — counts for these projects may be undercounted`)
+        break
+      }
+    }
   }
   return out
 }
