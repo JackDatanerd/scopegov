@@ -43,6 +43,24 @@ describe('computeContractPositions', () => {
     const out = await computeContractPositions(svc, [{ id: 'p1', contract_value: 4000, type: 'fixed' }])
     expect(out.get('p1')).toEqual({ contractedValue: 4500, invoicedToDate: 1500, paidToDate: 1100, atRiskValue: 300 })
   })
+  it('keeps a voided invoice out of invoiced-to-date but still counts money it actually collected', async () => {
+    // FIX (section-12 audit): void/route.ts requires acknowledging any payments
+    // already on an invoice before letting it be voided, specifically so that
+    // cash isn't forgotten. A voided invoice with $400 already paid on a $999
+    // invoice should drop out of "invoiced" (it's not live billing any more)
+    // but its $400 must still show up as money collected.
+    const svc = fakeService({
+      amendments: [],
+      invoices: [
+        { id: 'i1', project_id: 'p1', amount: 1100, subtotal: 1000, amount_paid: 1100, status: 'paid' },
+        { id: 'i2', project_id: 'p1', amount: 999,  subtotal: 999,  amount_paid: 400,  status: 'void' },
+        { id: 'i3', project_id: 'p1', amount: 999,  subtotal: 999,  amount_paid: 0,    status: 'draft' },
+      ],
+      change_orders: [],
+    })
+    const out = await computeContractPositions(svc, [{ id: 'p1', contract_value: 4000, type: 'fixed' }])
+    expect(out.get('p1')).toEqual({ contractedValue: 4000, invoicedToDate: 1000, paidToDate: 1500, atRiskValue: 0 })
+  })
   it("does not add a retainer-renewal amendment on top of the rate it replaced", async () => {
     const svc = fakeService({
       amendments: [

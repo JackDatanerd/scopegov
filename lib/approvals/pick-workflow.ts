@@ -29,8 +29,32 @@ export function pickWorkflow<T extends {
   // ungated, however large. A workflow can now opt in to gating every other
   // currency too (no conversion — every such document is gated); the most
   // senior chain (highest threshold) wins.
-  return ordered.find(w =>
+  const fallback = ordered.filter(w =>
     w.threshold_amount != null && w.threshold_currency !== currency && w.apply_to_other_currencies === true
-  ) || null
+  )
+  if (fallback.length === 0) return null
+
+  // FIX (section-11 audit, re-audit — bug): "the most senior chain (highest
+  // threshold) wins" was implemented by sorting every fallback candidate by
+  // raw threshold_amount regardless of ITS OWN currency — comparing, say, a
+  // 500,000 JPY threshold against a 5,000 USD one as if 500,000 > 5,000 meant
+  // JPY was the more senior chain. It isn't; there's no conversion here (by
+  // design, per the comment above) and raw numbers across two different
+  // currencies aren't comparable at all. Magnitude only means something
+  // between workflows that share a currency, so rank within each currency
+  // group first — that's the one comparison this data can actually support —
+  // then, only if more than one currency's workflow is still standing, fall
+  // back to a deterministic (id-order) pick rather than pretend one
+  // currency's number outranks another's.
+  const bestPerCurrency = new Map<string, T>()
+  for (const w of fallback) {
+    const cur = w.threshold_currency as string
+    const existing = bestPerCurrency.get(cur)
+    if (!existing || rank(w) > rank(existing) || (rank(w) === rank(existing) && w.id < existing.id)) {
+      bestPerCurrency.set(cur, w)
+    }
+  }
+  const finalists = [...bestPerCurrency.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+  return finalists[0]
 }
 

@@ -109,6 +109,19 @@ export async function POST(request: NextRequest) {
     if (typeof notes === 'string' && notes.length > 5000) return NextResponse.json({ error: 'Notes must be under 5,000 characters' }, { status: 400 })
     if (!milestoneId && !sowId && !coId)
       return NextResponse.json({ error: 'An invoice must bill against a milestone, SOW, or change order' }, { status: 400 })
+    // FIX (section-12 re-audit — bug): only "at least one" was ever checked.
+    // The three blocks below (milestone/SOW/CO) each run independently as
+    // separate `if`s, not an if/else-if chain — PATCH's own edit path assumes
+    // exactly one of milestone_id/sow_id/co_id is ever set on a stored invoice
+    // (its cap-recheck is an if/else-if for exactly that reason). The UI only
+    // ever sends one, so this was never reachable through it, but a direct API
+    // call passing more than one would silently: (a) stamp every matching
+    // source's foreign key onto one invoice, and (b) only ever run the
+    // CUMULATIVE per-source cap check for whichever one happens to win the
+    // if-chain below (CO beats SOW beats milestone) — the others' cumulative
+    // caps would never be checked at all, letting that source be over-billed.
+    if ((milestoneId ? 1 : 0) + (sowId ? 1 : 0) + (coId ? 1 : 0) !== 1)
+      return NextResponse.json({ error: 'An invoice must bill against exactly one of a milestone, SOW, or change order' }, { status: 400 })
 
     // An unparseable due date used to reach the database and come back as a 500.
     let due: string | null = null

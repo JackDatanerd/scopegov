@@ -316,7 +316,7 @@ const SEND_PERMISSION_FOR: Record<ApprovalDocumentType, string> = {
 // "no account" case already does: block the send with a clear, actionable message
 // rather than silently sending on their behalf.
 async function requesterCanStillSend(
-  service: any, workspaceId: string, requesterId: string, documentType: ApprovalDocumentType,
+  service: any, workspaceId: string, requesterId: string, documentType: ApprovalDocumentType, projectId: string | null,
 ): Promise<boolean> {
   const { data: member } = await service
     .from('workspace_members')
@@ -324,22 +324,47 @@ async function requesterCanStillSend(
     .eq('workspace_id', workspaceId).eq('user_id', requesterId).eq('status', 'active')
     .maybeSingle()
   if (!member) return false
-  return member.effective_permissions?.[SEND_PERMISSION_FOR[documentType]] === true
+  if (member.effective_permissions?.[SEND_PERMISSION_FOR[documentType]] !== true) return false
+
+  // FIX (section-11 re-audit — bug): the permission check above was the only
+  // thing gating auto-send, but permission alone isn't the actual authorization
+  // boundary — it never re-verified PROJECT ACCESS the way every direct send
+  // route (sow/[id]/send, co/[id]/send, invoices/[id]/send) does with its own
+  // canReadProject check, and the way this same file gates the APPROVER's own
+  // decision (recordApprovalDecision's canReadProject check below). A requester
+  // can keep their workspace-level SEND_* permission and stay an active member
+  // while losing access to THIS ONE project specifically — removed from
+  // project_members while scoped to VIEW_OWN_PROJECTS — while a multi-step
+  // chain is still open. Without this, the eventual auto-send still fires
+  // under their identity for a project they can no longer even open.
+  // Mirrors lib/utils/project-access.ts's canReadProject rather than calling
+  // it directly — canReadProject takes a full SessionUser (an array of
+  // Permission), and all we have here is the effective_permissions map
+  // already fetched above; re-deriving a SessionUser just to satisfy that
+  // shape isn't worth it for two straightforward branches.
+  if (!projectId) return true
+  if (member.effective_permissions?.['VIEW_ALL_PROJECTS'] === true) return true
+  const { data: membership } = await service
+    .from('project_members_active')
+    .select('project_id')
+    .eq('project_id', projectId).eq('project_workspace_id', workspaceId).eq('member_user_id', requesterId)
+    .limit(1)
+  return !!(membership && membership.length)
 }
 
 async function dispatchSend(
   service: any,
-  request: { document_type: ApprovalDocumentType; document_id: string; context?: any },
+  request: { document_type: ApprovalDocumentType; document_id: string; project_id: string | null; context?: any },
   sendParams: { workspaceId: string; actorId: string; actorEmail: string; actorName: string; approvalRequestId: string },
 ): Promise<SendOutcome> {
   try {
     const stillEligible = await requesterCanStillSend(
-      service, sendParams.workspaceId, sendParams.actorId, request.document_type,
+      service, sendParams.workspaceId, sendParams.actorId, request.document_type, request.project_id,
     )
     if (!stillEligible) {
       return {
         ok: false,
-        error: 'The person who requested this is no longer an active member with permission to send it. Cancel this request and have an eligible member send the document again.',
+        error: 'The person who requested this is no longer an active member with permission to send it for this project. Cancel this request and have an eligible member send the document again.',
       }
     }
     // FIX (independent pass 3): thread the requester's originally-chosen link expiry
@@ -1046,6 +1071,59 @@ export async function reassignApprovalStep(service: any, params: {
       reason: params.reason || null,
     },
   })
+
+  // FIX (section-11 re-audit — feature gap): cancelApprovalRequest tells
+  // whoever held the pending step "this died, no action needed" when a chain
+  // is cancelled out from under them (see the notification block in that
+  // function). Reassignment does the exact same thing to a step's occupant —
+  // pulls the step out from under them — but never told them either; their
+  // bell/email still says "awaiting your approval" for a step they no longer
+  // hold. `step` above still holds the PRE-update assignment (the update
+  // that overwrites it happens right above), so resolve recipients from
+  // that, same recipient-resolution and 'approval_requested' preference
+  // gating as the cancel case. In-app only — informational, no action
+  // needed, not worth a new email template of its own.
+  try {
+    let outgoingRecipients: Array<{ id: string; name: string; email: string }> = []
+    if (step.approver_user_id) {
+      const { data: m } = await service
+        .from('workspace_members')
+        .select('user_id, effective_permissions, users!workspace_members_user_id_fkey(id, name, email)')
+        .eq('workspace_id', params.workspaceId)
+        .eq('user_id', step.approver_user_id)
+        .eq('status', 'active')
+        .maybeSingle()
+      if (m?.users) {
+        outgoingRecipients = await filterToProjectAccess(
+          service, request.project_id, [{ id: m.users.id, name: m.users.name, email: m.users.email }],
+          new Map([[m.user_id, m.effective_permissions || {}]])
+        )
+      }
+    } else if (step.approver_role_id) {
+      outgoingRecipients = await getMembersWithRole(
+        service, params.workspaceId, step.approver_role_id, 25, request.project_id,
+        'approval_requested', 'in_app'
+      )
+    }
+    if (step.approver_user_id && outgoingRecipients.length) {
+      outgoingRecipients = await filterByNotificationPreference(
+        service, params.workspaceId, 'approval_requested', outgoingRecipients, 'in_app'
+      )
+    }
+    if (outgoingRecipients.length) {
+      const docTitle    = request.context?.title || documentLabelFor(request.document_type)
+      const projectName = request.context?.project_name || ''
+      await insertNotificationRows(service, outgoingRecipients.map(r => ({
+        workspace_id: params.workspaceId,
+        recipient_id: r.id,
+        type:         'approval_reassigned',
+        title:        'Approval step reassigned',
+        body:         `${params.actor.name} reassigned step ${step.step_order} of the request for ${docTitle}${projectName ? ` on ${projectName}` : ''} to someone else — no action needed.`,
+        entity_type:  'project',
+        entity_id:    request.project_id,
+      })))
+    }
+  } catch { /* never let a notification failure break reassignment */ }
 
   const { data: requester } = await service
     .from('users').select('id, name, email').eq('id', request.requested_by).maybeSingle()

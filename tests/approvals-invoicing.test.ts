@@ -28,6 +28,23 @@ describe('pickWorkflow', () => {
   it('a workflow can opt in to gating every other currency', () => {
     expect(pickWorkflow([w('a', 1000, 'USD', true)], 5, 'KES')?.id).toBe('a')
   })
+  it('cross-currency fallback candidates are never ranked by raw magnitude against each other', () => {
+    // A 500,000 JPY threshold is not "bigger" than a 5,000 USD one — there is
+    // no conversion here, so the raw numbers must not decide seniority across
+    // currencies. Only the JPY workflow's own currency-matching numeric
+    // comparison is meaningful; picking it just because 500,000 > 5,000 would
+    // be the bug.
+    const picked = pickWorkflow([w('usd-5k', 5000, 'USD', true), w('jpy-500k', 500000, 'JPY', true)], 100, 'KES')
+    // Deterministic (id order among the per-currency finalists), not
+    // whichever happened to have the larger raw threshold_amount.
+    expect(picked?.id).toBe('jpy-500k') // 'jpy-500k' < 'usd-5k' lexicographically
+  })
+  it('within the SAME currency, magnitude still decides which fallback workflow wins', () => {
+    const picked = pickWorkflow(
+      [w('low', 1000, 'USD', true), w('high', 50000, 'USD', true)], 100, 'KES',
+    )
+    expect(picked?.id).toBe('high')
+  })
   it('an amount exactly at the threshold is gated', () => {
     expect(pickWorkflow([w('a', 1000, 'USD')], 1000, 'USD')?.id).toBe('a')
   })

@@ -1,0 +1,158 @@
+CHANGES — Approvals (section 11) + Invoicing (section 12), independent pass 5
+==============================================================================
+Fresh independent audit of both sections, done separately (each treated as if the
+other section — and all 4 prior independent-pass rounds baked into the existing
+code comments — didn't exist). Feature gaps first, then bugs, per the usual
+workflow. Everything below was found on THIS pass; nothing here was carried over
+from an earlier round's notes.
+
+SECTION 11 — Approval workflows engine
+---------------------------------------
+
+1. FEATURE GAP — reassignment never told the outgoing approver.
+   lib/approvals/engine.ts (reassignApprovalStep)
+   cancelApprovalRequest already notifies whoever was holding the pending step
+   "request cancelled — no action needed" when a chain dies under them.
+   Reassignment does the exact same thing to a step's occupant (pulls the step
+   out from under them) but only ever notified the NEW assignee — the outgoing
+   one kept a stale "awaiting your approval" in their bell/email. Added the same
+   recipient-resolution and 'approval_requested' preference-gated notification
+   cancel already uses, sourced from the step's PRE-update assignment (captured
+   before the reassignment write). In-app only, new notification type
+   'approval_reassigned' — no new email template.
+
+2. FEATURE GAP — the step timeline couldn't show which step is actually current.
+   components/approvals/ApprovalsClient.tsx (step list in the detail modal)
+   Every undecided step is inserted as status:'pending' up front, not just the
+   one being waited on — so the step actually blocking right now and steps
+   nobody's reached yet rendered identically (same amber dot, "Awaiting
+   decision"). Confirmed a rejection skips every other pending step in one RPC
+   call (migration 069), so status:'pending' only ever coexists with
+   request.status:'pending' — meaning the current step is always exactly the
+   one at request.current_step, and anything else still 'pending' genuinely
+   hasn't been reached. Now shows "Not yet reached" (muted, same treatment as
+   skipped) for those, "Awaiting decision" only for the actual current step.
+
+3. BUG — cross-currency comparison in the "apply to other currencies" fallback.
+   lib/approvals/pick-workflow.ts (pickWorkflow)
+   When no workflow's own currency matches the document, the code falls back
+   to workflows opted into apply_to_other_currencies, picking "the most senior
+   (highest threshold)". It ranked ALL fallback candidates by raw
+   threshold_amount regardless of their own currency — e.g. treating a
+   500,000 JPY threshold as senior to a 5,000 USD one purely because
+   500,000 > 5,000, with no conversion (none is done here by design) making
+   that comparison meaningless. Nothing prevented two such workflows existing
+   in different currencies for the same document_type. Fixed: magnitude now
+   only ranks candidates within the SAME currency (the one comparison the
+   data actually supports); if more than one currency's workflow is still
+   standing after that, it's picked deterministically by id rather than by a
+   meaningless cross-currency number. Added two tests: cross-currency
+   candidates are never ranked against each other by magnitude, and
+   same-currency magnitude ranking still works.
+
+4. BUG — auto-send after final approval never re-checked project access.
+   lib/approvals/engine.ts (requesterCanStillSend / dispatchSend)
+   This already re-checked the requester is still an active workspace member
+   with the right SEND_* permission before auto-sending post-approval — but
+   never re-checked they can still READ THIS PROJECT, unlike every direct
+   send route (sow/[id]/send, co/[id]/send, invoices/[id]/send, each of which
+   pairs hasPermission with its own canReadProject check) and unlike this same
+   file's own approver-decision path (recordApprovalDecision's canReadProject
+   check). A requester can keep their workspace-level SEND_* permission and
+   stay active while being removed from one specific project's membership
+   (VIEW_OWN_PROJECTS scope) while a multi-step chain is still open — the
+   eventual auto-send would still fire under their identity for a project
+   they can no longer open. dispatchSend/requesterCanStillSend now take the
+   request's project_id (already selected at both call sites) and mirror
+   canReadProject's own two branches (VIEW_ALL_PROJECTS bypass, else an
+   active project_members_active row) off the effective_permissions map
+   already fetched — canReadProject itself isn't called directly since it
+   wants a full SessionUser and all we have here is that map.
+
+SECTION 12 — Invoicing
+-----------------------
+
+5. BUG (flagship) — "money collected" silently drops real cash once its
+   invoice is voided.
+   lib/reports/contract-position.ts (computeContractPositions) — the ONE
+   shared function behind every "paid to date" figure in this section:
+   BillingTab's "Paid to date" metric, the invoices registry's "Collected"
+   stat, every invoice PDF's contract-position block, and the daily
+   reconciliation-rollup snapshot.
+   It computed both invoicedToDate and paidToDate off the same filtered set:
+   invoices that are NOT draft and NOT void. Excluding void from INVOICED is
+   correct — a voided invoice isn't live billing any more. But the same
+   exclusion also dropped a voided invoice's amount_paid out of PAID —
+   even though app/api/invoices/[id]/void/route.ts deliberately keeps a
+   voided invoice's payment rows on file specifically because it's "the
+   record that money was received" (it won't even let you void a part-paid
+   invoice without explicitly acknowledging that money already came in).
+   So real, already-collected cash on any invoice later voided for any
+   reason (re-issued at a corrected amount, scope change, a dispute settled
+   by re-billing) silently vanished from every "money collected" number in
+   the app. The per-row data (the invoice's own amount_paid, the CSV export)
+   was never wrong — only every aggregate built on top of it. Fixed: paid-
+   to-date is now summed off its own set that only excludes draft (a draft
+   can't carry a payment in the first place); invoiced-to-date keeps
+   excluding both draft and void, unchanged. Added a new test:
+   'keeps a voided invoice out of invoiced-to-date but still counts money
+   it actually collected'; the existing test's void-invoice fixture already
+   had $0 paid, so it was unaffected and needed no change.
+
+   Traced to two more places that independently duplicated the exact same
+   filter (both fixed the same way, both outside this session's literal
+   section-12 file list but feeding numbers section 12 displays):
+     - components/invoices/BillingTab.tsx's `livePaid` — the client-side
+       fallback used for any project with no reconciliation snapshot yet
+       (i.e. every brand-new project, before the first nightly cron run).
+     - app/(app)/invoices/page.tsx's `ledgerRows` query — filtered out both
+       draft and void at the query level to feed BOTH "Collected"
+       (paidByCurrency) and the receivables/aging view. The receivables loop
+       already independently re-scopes itself to
+       sent/partially_paid/overdue, so excluding void at the query level was
+       never doing anything for receivables — it only ever hurt "Collected".
+       Query now only excludes draft.
+   Traced further and ruled out: app/api/cron/reconciliation-rollup (reads
+   straight off computeContractPositions, fixed for free),
+   app/(app)/clients/[id]/page.tsx's per-client money summary (same, reads
+   off computeContractPositions directly), and app/api/cron/payment-overdue
+   (scoped to status IN (sent, partially_paid) at the query level — void
+   never enters that query, no bug there).
+
+6. GAP (defense-in-depth, not reachable via the UI) — POST /api/invoices
+   never enforced "exactly one of milestoneId/sowId/coId".
+   app/api/invoices/route.ts
+   Only "at least one" was checked; the three source blocks below each run
+   as independent `if`s (not an if/else-if chain), unlike PATCH's own edit
+   path, which assumes exactly one of milestone_id/sow_id/co_id is ever set
+   on a stored invoice. The UI (components/invoices/BillingTab.tsx) only
+   ever sends one, chosen by radio-button-style source type, so this was
+   never reachable through it — but a direct API call passing more than one
+   would silently stamp every matching source's foreign key onto one invoice
+   and only ever run the CUMULATIVE per-source cap check for whichever one
+   happens to win the if-chain (CO beats SOW beats milestone), letting the
+   others be over-billed with no cap enforcement at all. Added the missing
+   "exactly one" check, same pattern already used elsewhere in this codebase
+   (e.g. approval workflow steps requiring exactly one of approver_user_id /
+   approver_role_id).
+
+Files touched
+-------------
+lib/approvals/pick-workflow.ts
+lib/approvals/engine.ts
+components/approvals/ApprovalsClient.tsx
+lib/reports/contract-position.ts
+components/invoices/BillingTab.tsx
+app/(app)/invoices/page.tsx
+app/api/invoices/route.ts
+tests/approvals-invoicing.test.ts       (2 new pickWorkflow tests)
+tests/contract-position.test.ts         (1 new test)
+
+No migration needed — every fix here is application-code only, no schema change.
+
+Not fixed / not in scope this round
+------------------------------------
+Nothing outstanding from this pass — every feature gap and bug found above is
+fixed in this delivery. The next independent pass on these two sections should
+still start fresh from a re-clone, per the usual workflow, rather than assume
+this round caught everything.

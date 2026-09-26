@@ -13,7 +13,9 @@
 // Definitions (kept identical to the rollup's original ones):
 //   contracted = base contract value + amendments   (pre-tax — tax is never part of what was scoped)
 //   invoiced   = Σ subtotal of non-draft, non-void invoices (falls back to `amount` for pre-014 rows)
-//   paid       = Σ amount_paid of the same invoices    (post-tax cash actually received)
+//   paid       = Σ amount_paid of every non-draft invoice, VOID INCLUDED (post-tax cash actually
+//                received — see the FIX note in computeContractPositions below for why void isn't
+//                excluded here the way it is from `invoiced`)
 //   atRisk     = Σ total of change orders sent but not yet accepted
 // Retainers: base = monthly rate × term (months); a retainer-RENEWAL change order replaces the rate
 // (projects.contract_value is overwritten and migration 061 records previous_contract_value), so its
@@ -63,10 +65,27 @@ export async function computeContractPositions(
       const project = byId.get(id)!
       const amendmentTotal = amendmentImpact(amendments.filter((a: any) => a.project_id === id), project.type)
       const billed = invoices.filter((inv: any) => inv.project_id === id && !['draft', 'void'].includes(inv.status))
+      // FIX (section-12 audit — bug): paid-to-date was summed off the same
+      // `billed` set as invoiced-to-date (draft AND void excluded), reusing one
+      // filter for two quantities that don't share the same correctness
+      // requirement. Excluding void from INVOICED is right — a voided invoice
+      // isn't live billing. But app/api/invoices/[id]/void/route.ts deliberately
+      // keeps a voided invoice's payment rows on file — it won't even let you
+      // void a part-paid invoice without acknowledging money was already
+      // received — specifically so that fact isn't lost. Reusing `billed` for
+      // PAID meant that acknowledged, already-collected cash silently vanished
+      // from every "money collected" number the moment its invoice was voided
+      // (this cron's own snapshot, the invoices registry's "Collected" stat,
+      // BillingTab's "Paid to date", every PDF's contract-position block — all
+      // of them read off this one function). Paid-to-date only needs to
+      // exclude DRAFT (a draft can't carry a payment in the first place —
+      // payments only ever land on a sent/partially_paid/overdue/paid invoice);
+      // void doesn't erase cash that already came in.
+      const paidEligible = invoices.filter((inv: any) => inv.project_id === id && inv.status !== 'draft')
       out.set(id, {
         contractedValue: baseContractValue(project, monthsBilled.get(id)) + amendmentTotal,
         invoicedToDate:  billed.reduce((s: number, inv: any) => s + (Number(inv.subtotal ?? inv.amount) || 0), 0),
-        paidToDate:      billed.reduce((s: number, inv: any) => s + (Number(inv.amount_paid) || 0), 0),
+        paidToDate:      paidEligible.reduce((s: number, inv: any) => s + (Number(inv.amount_paid) || 0), 0),
         atRiskValue:     openCos.filter((c: any) => c.project_id === id).reduce((s: number, c: any) => s + (Number(c.total) || 0), 0),
       })
     }

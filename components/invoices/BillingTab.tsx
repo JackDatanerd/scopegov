@@ -101,7 +101,18 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
   // fix to the cron alone wouldn't have closed this — this formula runs
   // independently and is what every new project actually shows first.
   const liveInvoiced = invoices.filter((i: any) => !['draft', 'void'].includes(i.status)).reduce((s: number, i: any) => s + Number(i.subtotal ?? i.amount ?? 0), 0)
-  const livePaid      = invoices.filter((i: any) => !['draft', 'void'].includes(i.status)).reduce((s: number, i: any) => s + Number(i.amount_paid || 0), 0)
+  // FIX (section-12 re-audit — bug): this reused the same `!['draft','void']`
+  // filter as liveInvoiced above — right for "invoiced" (a voided invoice
+  // isn't live billing), wrong for "paid". api/invoices/[id]/void/route.ts
+  // deliberately keeps a voided invoice's payment rows on file — it won't
+  // void a part-paid invoice without acknowledging the money already came
+  // in — so excluding void here silently dropped already-collected cash out
+  // of "Paid to date" for any brand-new project still on this live fallback
+  // (the same bug, fixed the same way, as lib/reports/contract-position.ts's
+  // computeContractPositions, which is what the snapshot side of this same
+  // metric reads from). Only draft needs excluding — a draft can't carry a
+  // payment in the first place.
+  const livePaid      = invoices.filter((i: any) => i.status !== 'draft').reduce((s: number, i: any) => s + Number(i.amount_paid || 0), 0)
   const invoicedToDate = latestSnapshot ? latestSnapshot.invoiced_to_date : liveInvoiced
   const paidToDate      = latestSnapshot ? latestSnapshot.paid_to_date : livePaid
   // FIX (doc-completeness audit, migration 014): a CO awaiting

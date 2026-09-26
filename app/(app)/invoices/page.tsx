@@ -116,11 +116,23 @@ export default async function InvoicesPage({ searchParams }: {
   //
   // Grouped by currency, never blended: this app supports per-project currency, so
   // adding unlike units together would be wrong, not a rounding error.
+  //
+  // FIX (section-12 re-audit — bug): this used to exclude both draft AND void here.
+  // Void is correct to exclude from RECEIVABLES (nothing is still owed on a voided
+  // invoice — the loop below already scopes that to sent/partially_paid/overdue
+  // anyway, so excluding void at the query level was never doing anything for
+  // receivables) but wrong for "Collected": api/invoices/[id]/void/route.ts
+  // deliberately keeps a voided invoice's payment rows on file — it won't void a
+  // part-paid invoice without acknowledging money was already received — precisely
+  // so that fact isn't lost. Filtering void out of this query meant that
+  // already-collected cash silently vanished from "Collected" the moment its
+  // invoice was voided. Only draft needs excluding here — a draft can't carry a
+  // payment in the first place.
   const ledgerRows = await fetchAll<any>('invoice registry ledger', (fromRow, toRow) => {
     let q = (service as any)
       .from('invoices').select('id, currency, amount, amount_paid, status, due_date, projects!inner(deleted_at)')
       .eq('workspace_id', workspaceId).is('projects.deleted_at', null)
-      .not('status', 'in', '(draft,void)')
+      .neq('status', 'draft')
       .order('id').range(fromRow, toRow)
     if (allowedProjectIds !== null) q = q.in('project_id', allowedProjectIds)
     return q

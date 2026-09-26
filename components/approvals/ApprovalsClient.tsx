@@ -521,7 +521,21 @@ function ApprovalDetailModal({ request, session, canManageWorkflows, onClose, on
           {request.approval_steps
             .slice()
             .sort((a, b) => a.step_order - b.step_order)
-            .map(step => (
+            .map(step => {
+              // FIX (section-11 re-audit — feature gap): every undecided step is
+              // inserted as status:'pending' up front (not just the one actually
+              // being waited on — see evaluateApprovalGate), so the step actually
+              // blocking right now and steps nobody's gotten to yet rendered
+              // identically: same amber dot, same "Awaiting decision" text. A
+              // rejection skips every other pending step in one shot (migration
+              // 069's decide_approval_step), so status:'pending' only ever
+              // coexists with request.status:'pending' — meaning the CURRENT
+              // step is always exactly the one whose step_order matches
+              // request.current_step; anything else still 'pending' genuinely
+              // hasn't been reached (and hasn't been notified) yet.
+              const isCurrent = step.status === 'pending' && step.step_order === request.current_step
+              const notYetReached = step.status === 'pending' && !isCurrent
+              return (
               <div key={step.id} style={{
                 display: 'flex', alignItems: 'flex-start', gap: 12, padding: '10px 0',
                 borderBottom: '1px solid var(--surface-2)',
@@ -532,10 +546,10 @@ function ApprovalDetailModal({ request, session, canManageWorkflows, onClose, on
                   fontSize: 11, fontWeight: 600,
                   background: step.status === 'approved' ? 'var(--green-lt)'
                     : step.status === 'rejected' ? 'var(--red-lt)'
-                    : step.status === 'skipped' ? 'var(--surface-2)' : 'var(--amber-lt)',
+                    : step.status === 'skipped' || notYetReached ? 'var(--surface-2)' : 'var(--amber-lt)',
                   color: step.status === 'approved' ? 'var(--green)'
                     : step.status === 'rejected' ? 'var(--red)'
-                    : step.status === 'skipped' ? 'var(--text-4)' : 'var(--amber)',
+                    : step.status === 'skipped' || notYetReached ? 'var(--text-4)' : 'var(--amber)',
                 }}>
                   {step.status === 'approved' ? <i className="ti ti-check" /> :
                    step.status === 'rejected' ? <i className="ti ti-x" /> : step.step_order}
@@ -546,7 +560,8 @@ function ApprovalDetailModal({ request, session, canManageWorkflows, onClose, on
                     {step.roles?.name && <span style={{ color: 'var(--text-3)', fontWeight: 400 }}> (any {step.roles.name})</span>}
                   </div>
                   <div style={{ fontSize: 12, color: 'var(--text-3)' }}>
-                    {step.status === 'pending' && 'Awaiting decision'}
+                    {isCurrent && 'Awaiting decision'}
+                    {notYetReached && 'Not yet reached'}
                     {step.status === 'skipped' && 'Skipped — request closed'}
                     {(step.status === 'approved' || step.status === 'rejected') && (
                       <>{step.status === 'approved' ? 'Approved' : 'Rejected'} by {step.decider?.name || '—'}
@@ -560,7 +575,8 @@ function ApprovalDetailModal({ request, session, canManageWorkflows, onClose, on
                   )}
                 </div>
               </div>
-            ))}
+              )
+            })}
         </div>
 
         {showReassign && (
