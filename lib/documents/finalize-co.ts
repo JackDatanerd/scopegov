@@ -235,9 +235,20 @@ export async function finalizeCoAcceptance(service: any, params: {
         .setJti(nanoid())
         .sign(secret)
 
-      await (service as any).from('change_orders').update({
+      // FIX (re-audit, section 18): mirrors the SOW sign route's identical fix (cron/portal audit
+      // round 3) — the result of this write was never read. On a failure the row kept the OLD token
+      // while `coToken` (the link emailed to the client, and the value both accept/route.ts and
+      // countersign/route.ts return as `result.token`) pointed at the NEW one — a confirmation email
+      // AND the browser's own post-accept redirect both landing on a token that was never persisted.
+      // Both callers also unconditionally mark the OLD token 'superseded' right after this returns,
+      // so a failed reissue would leave the CO resolvable by neither the (unswitched) old token nor
+      // the (never-saved) new one. Only switch over once the write has actually landed; otherwise the
+      // original link stays in effect (it still resolves the accepted/countersigned document, and the
+      // callers below now skip the supersede-insert when the token didn't actually change).
+      const { error: reissueErr } = await (service as any).from('change_orders').update({
         token: newToken, expires_at: newExpiresAt.toISOString(),
       }).eq('id', co.id)
+      if (reissueErr) throw new Error(`token reissue write failed: ${reissueErr.message}`)
       coToken = newToken
     }
   } catch (e) { console.error('CO post-acceptance token reissue failed (original link stays in effect):', e) }

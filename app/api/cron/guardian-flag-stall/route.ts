@@ -28,6 +28,7 @@ import { alertCronFailure } from '@/lib/utils/cron-alert'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { sendGuardianFlagStalledEmail } from '@/lib/email/templates'
+import { checkedSend } from '@/lib/email/delivery'
 
 import { insertAuditRow } from '@/lib/utils/audit'
 import { fetchAll, CronRun } from '@/lib/utils/cron-run'
@@ -107,7 +108,13 @@ export async function POST(request: NextRequest) {
           try {
             const emails = await getMemberEmailsWithPermission(service, flag.workspace_id, 'APPROVE_FLAGS', 25, 'guardian_flag_stalled', project.id)
             if (emails.length) {
-              await sendGuardianFlagStalledEmail({
+              // FIX (re-audit, section 17): raw try/catch, not checkedSend — a Resend-level rejection
+              // resolves normally instead of throwing, so this silently "succeeded" while nobody
+              // actually got the email (the in-app notification above is a redundant channel, so this
+              // was never a total silent failure, but it's the same missing-check class of bug the
+              // rest of this cron section already had fixed — see co-stall, sow-stall,
+              // retainer-milestones, payment-overdue).
+              await checkedSend(() => sendGuardianFlagStalledEmail({
                 to: emails,
                 projectName: project.name,
                 clientName: project.clients?.name || 'Client',
@@ -116,7 +123,7 @@ export async function POST(request: NextRequest) {
                 daysOpen: threshold,
                 projectUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects/${project.id}?tab=guardian`,
                 isBorderline,
-              })
+              }), 'Guardian flag stalled email')
             }
           } catch (e) { run.rowError(`flag ${flag.id} reminder email`, e) }
 

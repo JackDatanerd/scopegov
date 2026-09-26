@@ -7,6 +7,7 @@ import { alertCronFailure } from '@/lib/utils/cron-alert'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { sendCoExpiredEmail } from '@/lib/email/templates'
+import { checkedSend } from '@/lib/email/delivery'
 
 import { insertAuditRow } from '@/lib/utils/audit'
 import { fetchAll, CronRun } from '@/lib/utils/cron-run'
@@ -125,12 +126,18 @@ export async function POST(request: NextRequest) {
           try {
             const emails = await getMemberEmailsWithPermission(service, co.workspace_id, 'SEND_CHANGE_ORDERS', 25, 'co_expired', co.project_id)
             if (emails.length) {
-              await sendCoExpiredEmail({
+              // FIX (re-audit, section 17): raw try/catch, not checkedSend — a Resend-level rejection
+              // resolves normally instead of throwing, so this silently "succeeded" while nobody
+              // actually got the email (the in-app notification above is a redundant channel, so this
+              // was never a total silent failure, but it's the same missing-check class of bug the
+              // rest of this cron section already had fixed — see co-stall, sow-stall,
+              // retainer-milestones, payment-overdue).
+              await checkedSend(() => sendCoExpiredEmail({
                 to: emails,
                 clientName: co.projects?.clients?.name || 'Client',
                 projectName,
                 projectUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects/${co.project_id}?tab=co`,
-              })
+              }), 'CO expired email')
             }
           } catch (e) { run.rowError(`co ${co.id} expired email`, e) }
 

@@ -1,0 +1,69 @@
+CRON (section 17) + PORTAL (section 18) — independent audit, round 4
+=====================================================================
+Fresh, independent re-pass of both sections (in-code FIX comments from rounds 1-3 were
+ignored while auditing, then cross-checked afterward). No schema changes this round —
+code-only, safe to deploy without a migration step.
+
+BUGS FIXED
+  1  co-expiry, sow-expiry, and guardian-flag-stall each sent their agency-facing alert
+     email via a raw `await sendXEmail(...)` inside a try/catch, not `checkedSend()`.
+     Resend reports an API-level rejection (bad domain, quota, invalid recipient) by
+     RESOLVING with {data:null, error} — it doesn't throw — so a rejected send never hit
+     the catch block and the run finished green as if the email had gone out. This is the
+     exact class of bug round 3 fixed in co-stall, sow-stall, retainer-milestones, and
+     payment-overdue, but it was never applied to these three (round 3 moved them onto
+     CronRun for row/read-error handling, which is a different check — it didn't touch the
+     email-send itself). Now wrapped in checkedSend, same as the rest of the section.
+     Purely additive — the in-app notification in each of these three crons is a separate,
+     unaffected channel, so this was never a total silent failure, just a missing signal.
+
+  2  lib/documents/finalize-co.ts (shared by both co/accept and co/countersign) reissues a
+     long-lived post-acceptance token and never checked whether the write actually landed —
+     `coToken` switched to the new value unconditionally. Round 3 fixed this identical
+     pattern in the SOW sign route ("token-reissue write unchecked → client got a link to
+     nothing") but it was never carried over to the CO path both accept and countersign
+     share. On a failed write: the row keeps the OLD token, but the confirmation email AND
+     the browser's own post-accept redirect (app/portal/co/[token]/page.tsx) both point at
+     the NEW, never-saved token — and both callers were ALSO unconditionally marking the
+     OLD token 'superseded' right after, which would have revoked the one token that was
+     still actually live. A client could accept or countersign a change order and be left
+     with zero working links to it, in either channel.
+
+     Fix, in three parts:
+       - finalize-co.ts: check the update's error; only switch `coToken` over once the
+         write has landed (mirrors the SOW sign route's fix exactly).
+       - co/accept/route.ts and co/countersign/route.ts: only insert the 'superseded'
+         revoked_tokens row when result.token actually differs from the incoming token —
+         i.e. only when a reissue genuinely happened. On a reissue failure the original
+         token now simply keeps working, the same fallback the SOW flow already relies on.
+
+     Both callers' existing supersede-insert error handling (non-fatal, logged) is
+     unchanged; this only gates *whether* that insert runs, not its error handling.
+
+NOT IN SCOPE THIS ROUND (flagged, not fixed — see chat)
+  - scope-health-rollup's "deferred workspaces rotate to the front tomorrow" comment
+    overstates what the rotation actually does (a global 1-per-day pointer shift, not
+    prioritization of yesterday's specific deferred set) — cosmetic today, worth revisiting
+    if workspace count ever outgrows the per-run time budget.
+  - client-reminders carries its own comment noting nobody has confirmed the external
+    Cloudflare cron worker actually has this job registered — repo can't verify this
+    itself; an ops-side check, not a code fix.
+  - checkRevokedToken (SOW _shared.ts) and the inline revoked-token lookups in CO's
+    _actions.ts/accept/countersign use .single() and discard the query error, so a genuine
+    DB error on that lookup reads identically to "not revoked." Low severity (the real gate
+    is the subsequent token match against the live row), but worth aligning with
+    invoice-token.ts's .maybeSingle() + explicit error handling for consistency.
+  - A repo-wide grep turned up the same "unwrapped send*Email" shape in several routes
+    outside these two sections (auth, billing webhook/cancel/resume, workspace
+    create/delete/restore, invoice payments, lib/approvals/engine.ts). Not verified line by
+    line — some already check the result under a different variable name — and explicitly
+    left out of this round since it belongs to sections that have already had their own
+    dedicated audits.
+
+FILES CHANGED
+  app/api/cron/co-expiry/route.ts
+  app/api/cron/sow-expiry/route.ts
+  app/api/cron/guardian-flag-stall/route.ts
+  lib/documents/finalize-co.ts
+  app/api/portal/co/[token]/accept/route.ts
+  app/api/portal/co/[token]/countersign/route.ts

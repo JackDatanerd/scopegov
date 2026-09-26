@@ -80,10 +80,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // FIX (portal audit, section 18): document_id added so a client who
     // revisits the ORIGINAL (pre-countersignature) email link can still be
     // routed to their now-confirmed CO — see migration 029.
-    const { error: supersedeErr } = await (service as any).from('revoked_tokens').insert({
-      token, token_type: 'co', reason: 'superseded', document_id: co.id,
-    })
-    if (supersedeErr) console.error('CO countersign: token supersede insert failed (non-fatal):', supersedeErr.message)
+    //
+    // FIX (re-audit, section 18): only supersede the old token once finalizeCoAcceptance actually
+    // reissued a new one — see accept/route.ts's identical fix for the full reasoning.
+    if (result.token !== token) {
+      const { error: supersedeErr } = await (service as any).from('revoked_tokens').insert({
+        token, token_type: 'co', reason: 'superseded', document_id: co.id,
+      })
+      if (supersedeErr) console.error('CO countersign: token supersede insert failed (non-fatal):', supersedeErr.message)
+    }
 
     return NextResponse.json({
       ok: true,
