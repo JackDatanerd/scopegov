@@ -38,6 +38,15 @@ const SignaturePad = forwardRef<SignaturePadHandle, Props>(function SignaturePad
   // Last CSS-pixel size the buffer was sized for — lets resize() below tell a real box change
   // from a no-op re-observe, and lets it redraw a snapshot back at its original proportions.
   const sizeRef    = useRef<{ w: number; h: number }>({ w: 0, h: 0 })
+  // FIX (re-audit, client-facing/signing section): resize() below lives in a mount-only effect
+  // (deps []) and used to read `strokeColour` directly from that single closure — correct at
+  // mount, but stale forever after. If the colour ever changed later, a resize firing afterward
+  // (the exact scenario this component's resize fix exists for) would silently reapply the
+  // ORIGINAL mount-time colour, undoing whatever the colour-change effect below had just set. No
+  // caller in this codebase changes strokeColour after mount today, so this was latent — but it's
+  // a real bug in the one component whose whole job is capturing a signature correctly, and it's
+  // trivial to close: a ref that's always current, read by resize() instead of the closed-over prop.
+  const strokeColourRef = useRef(strokeColour)
   const [empty, setEmpty] = useState(true)
 
   // FIX (deep audit, client-facing/signing section): the canvas's internal pixel buffer used to be
@@ -59,7 +68,7 @@ const SignaturePad = forwardRef<SignaturePadHandle, Props>(function SignaturePad
       ctx.lineCap   = 'round'
       ctx.lineJoin  = 'round'
       ctx.lineWidth = 2.2
-      ctx.strokeStyle = strokeColour
+      ctx.strokeStyle = strokeColourRef.current
     }
 
     function resize() {
@@ -101,8 +110,11 @@ const SignaturePad = forwardRef<SignaturePadHandle, Props>(function SignaturePad
   }, [])
 
   // A stroke-colour change alone (no size change) just needs the context's strokeStyle updated in
-  // place — no reason to touch the buffer or existing ink for that.
+  // place — no reason to touch the buffer or existing ink for that. Also keeps strokeColourRef
+  // current so a resize firing later (see the mount-only effect above) never reapplies a stale
+  // value — see that ref's own comment.
   useEffect(() => {
+    strokeColourRef.current = strokeColour
     const ctx = canvasRef.current?.getContext('2d')
     if (ctx) ctx.strokeStyle = strokeColour
   }, [strokeColour])
