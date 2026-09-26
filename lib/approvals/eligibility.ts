@@ -90,8 +90,28 @@ export function hasDistinctAssignment(stepCandidates: string[][]): boolean {
 export type FeasibilityResult = { ok: true } | { ok: false; error: string }
 
 /**
- * Pre-flight for a request that is about to be created. Fails closed with a
- * message the requester can act on.
+ * Pre-flight for a request that is about to be created — or, with `excludeIds`,
+ * for a reassignment against a request already in flight (see
+ * reassignApprovalStep in engine.ts). Fails closed with a message the
+ * requester/admin can act on.
+ *
+ * FIX (section-11 re-audit — flagship finding): `excludeIds` is new. Every
+ * caller of this function used to run it ONLY at request creation, when
+ * nobody has decided anything yet. reassignApprovalStep — added later,
+ * specifically to rescue a stuck request — never re-ran ANY version of this
+ * bipartite-matching feasibility check against the steps still to come; it
+ * only confirmed the one step being reassigned had a live candidate right
+ * now. Under require_distinct_approvers, that's not enough: reassigning step
+ * N to someone who is also the only (or the last remaining) eligible
+ * candidate for a LATER step quietly strands that later step the moment
+ * someone approves step N — the distinct-approver rule then refuses the one
+ * person assigned to it, with nobody else to turn to, and nothing detects
+ * it (it's not a "no reachable approver" case — the person IS reachable,
+ * just permanently disqualified). `excludeIds` lets a caller bar people who
+ * have ALREADY used up their one-step quota (approved an earlier step) from
+ * EVERY remaining step's candidate pool, not just the one being reassigned —
+ * the same exclusion recordApprovalDecision itself enforces at decision
+ * time, just applied up front instead of discovered too late.
  */
 export async function checkChainFeasibility(service: any, params: {
   workspaceId: string
@@ -100,20 +120,23 @@ export async function checkChainFeasibility(service: any, params: {
   requesterId: string
   allowSelfApproval: boolean
   requireDistinctApprovers: boolean
+  excludeIds?: Iterable<string>
 }): Promise<FeasibilityResult> {
+  const excluded = new Set(params.excludeIds || [])
   const perStep: string[][] = []
   for (const step of params.steps) {
     const people = await eligibleApprovers(service, params.workspaceId, params.projectId, step)
     const ids = people
       .map(p => p.id)
       .filter(id => params.allowSelfApproval || id !== params.requesterId)
+      .filter(id => !excluded.has(id))
     if (ids.length === 0) {
-      const onlyRequester = people.some(p => p.id === params.requesterId)
+      const onlyRequester = people.some(p => p.id === params.requesterId) && !excluded.has(params.requesterId)
       return {
         ok: false,
         error: onlyRequester
           ? `Approval step ${step.step_order} can only be approved by you, and you can't approve your own request. Ask an admin to add another approver in Settings → Approvals, or to allow requesters to approve their own requests.`
-          : `Approval step ${step.step_order} has no one who can approve it right now (the approver may have left the workspace, lost the approve permission, or can't access this project). Ask an admin to fix the workflow in Settings → Approvals.`,
+          : `Approval step ${step.step_order} has no one who can approve it right now (the approver may have left the workspace, lost the approve permission, already approved an earlier step in this chain, or can't access this project). Ask an admin to fix the workflow in Settings → Approvals.`,
       }
     }
     perStep.push(ids)

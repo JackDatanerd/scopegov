@@ -1039,14 +1039,48 @@ export async function reassignApprovalStep(service: any, params: {
     approver_user_id: targetUser, approver_role_id: targetRole,
   })
   if (request.allow_self_approval !== true) candidates = candidates.filter(c => c.id !== request.requested_by)
+  let alreadyApproved: Set<string> | null = null
   if (request.require_distinct_approvers === true) {
     const { data: earlier } = await service
       .from('approval_steps').select('decided_by').eq('request_id', request.id).eq('status', 'approved')
-    const already = new Set((earlier || []).map((e: any) => e.decided_by))
-    candidates = candidates.filter(c => !already.has(c.id))
+    alreadyApproved = new Set((earlier || []).map((e: any) => e.decided_by))
+    candidates = candidates.filter(c => !alreadyApproved!.has(c.id))
   }
   if (candidates.length === 0)
     return { ok: false, error: 'Nobody in that assignment can decide this request — they need the Approve documents permission, access to this project, and (unless this workflow allows it) must not be the person who requested it.', status: 400 }
+
+  // FIX (section-11 re-audit — flagship finding): the check above only confirms the
+  // step being reassigned still has a live candidate RIGHT NOW. Under
+  // require_distinct_approvers that's not enough — reassigning this step to someone
+  // who is also the only (or last remaining) eligible candidate for a LATER,
+  // not-yet-decided step quietly strands that step the moment someone approves this
+  // one: recordApprovalDecision correctly refuses a repeat approver, but there's
+  // nobody else assigned, and it never trips the "no reachable approver" alert (the
+  // person IS reachable, just disqualified). Re-run the same bipartite-matching
+  // feasibility check creation-time gating uses (checkChainFeasibility /
+  // hasDistinctAssignment), against the proposed new assignment for this step plus
+  // every step still to come, excluding whoever has already used up their one-step
+  // quota. This is a fail-closed pre-flight, same as at creation — it must not
+  // commit the reassignment write below if it fails.
+  if (request.require_distinct_approvers === true) {
+    const { data: remainingRows } = await service
+      .from('approval_steps')
+      .select('step_order, approver_role_id, approver_user_id')
+      .eq('request_id', request.id).gte('step_order', request.current_step)
+      .order('step_order', { ascending: true })
+    const remainingSteps = (remainingRows || []).map((s: any) =>
+      s.step_order === request.current_step
+        ? { step_order: s.step_order, approver_role_id: targetRole, approver_user_id: targetUser }
+        : { step_order: s.step_order, approver_role_id: s.approver_role_id, approver_user_id: s.approver_user_id }
+    )
+    const feasibility = await checkChainFeasibility(service, {
+      workspaceId: params.workspaceId, projectId: request.project_id, steps: remainingSteps,
+      requesterId: request.requested_by, allowSelfApproval: request.allow_self_approval === true,
+      requireDistinctApprovers: true, excludeIds: alreadyApproved!,
+    })
+    if (!feasibility.ok)
+      return { ok: false, error: `That reassignment would strand a later step: ${feasibility.error}`, status: 409 }
+  }
 
   const { data: updated } = await service.from('approval_steps')
     .update({ approver_user_id: targetUser, approver_role_id: targetRole })

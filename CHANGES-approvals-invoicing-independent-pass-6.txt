@@ -1,0 +1,89 @@
+CHANGES — Approvals (section 11) + Invoicing (section 12), independent pass 6
+==============================================================================
+Fresh independent audit of both sections, done separately (each treated as if
+the other section — and all 5 prior independent-pass rounds baked into the
+existing code comments — didn't exist). Feature gaps first, then bugs, per the
+usual workflow.
+
+SECTION 11 — Approval workflows engine
+---------------------------------------
+
+1. BUG (flagship finding) — reassigning a step can silently deadlock a later
+   one under "a different approver for every step".
+   lib/approvals/eligibility.ts (checkChainFeasibility), lib/approvals/engine.ts
+   (reassignApprovalStep)
+
+   reassignApprovalStep only ever confirmed the proposed new assignee could
+   decide the ONE step being reassigned, right now. It never re-ran the
+   bipartite-matching feasibility check (checkChainFeasibility /
+   hasDistinctAssignment) that request CREATION already runs against every
+   step up front — so reassignment could hand a step to someone who is also
+   the only (or the last remaining) eligible candidate for a LATER,
+   not-yet-decided step in the same require_distinct_approvers chain.
+
+   Concrete repro: a 2-step chain, distinct approvers required. Step 1 is
+   Role X (only active holder: Alice); step 2 is named-person Bob. Alice
+   goes on leave, so an admin reassigns step 1 to Bob — a reasonable rescue,
+   and the existing candidate check waves it through (Bob is eligible,
+   nobody's approved yet). Bob approves step 1. Step 2 — assigned exclusively
+   to Bob — comes up next, and recordApprovalDecision correctly refuses him
+   ("you already approved an earlier step"). There is nobody else assigned.
+   The request is now permanently stuck, and nothing detects it: it's not a
+   "no reachable approver" case (Bob IS reachable), so the stall cron just
+   reminds a chain that can never clear, forever. The only way out was
+   cancel + resubmit from scratch, defeating the point of reassignment.
+
+   Fixed by extending checkChainFeasibility with an `excludeIds` parameter
+   (people who've already used their one-step quota, barred from EVERY
+   remaining step's candidate pool — not just the one being reassigned), and
+   having reassignApprovalStep re-run it, fail-closed, against the proposed
+   new assignment for the current step plus every step still to come, before
+   committing the reassignment write. `excludeIds` is optional and unused by
+   the creation-time caller (evaluateApprovalGate), so gate behavior is
+   unchanged. A reassignment that would strand a later step is now refused
+   with a clear error ("That reassignment would strand a later step: ...")
+   and nothing is written. A reassignment to a third person who doesn't
+   collide with any later step still goes through exactly as before.
+
+   Added tests/reassign-feasibility.test.ts, driving reassignApprovalStep
+   end-to-end against an in-memory fake Supabase (no real DB needed):
+     - refuses the deadlocking reassignment above, with nothing written
+     - still allows reassigning to a person who doesn't collide with a later step
+     - the new check doesn't fire (and doesn't block) when
+       require_distinct_approvers is off
+     - a person who already approved an earlier step is still excluded by the
+       ordinary candidate check (confirms no regression there)
+
+2. NOTE (not fixed — dead plumbing, no user-facing effect) — expiresInDays,
+   the requester's chosen client-link expiry, is threaded carefully all the
+   way through evaluateApprovalGate → context → the auto-send dispatch (see
+   the "independent pass 3" comments in lib/approvals/engine.ts and
+   lib/documents/send-sow.ts / send-co.ts) — but no UI anywhere actually sets
+   it. Grepped every .tsx in the app: zero references. So today, gated or
+   not, every SOW/CO send just gets the routes' 30-day default regardless of
+   what a requester might want. Not a bug (nothing breaks), and it touches
+   the SOW/CO send UI rather than this section specifically — flagging it
+   rather than building the missing picker without a decision from you on
+   whether it's wanted.
+
+SECTION 12 — Invoicing
+-----------------------
+
+No functional bugs or feature gaps found on this independent pass — this is
+the tightest section of the two by a clear margin (money rounding, the
+overpayment-guard race, void/payment interplay, per-source AND cumulative
+contract-value caps, the dispute lifecycle, portal-token renewal timing all
+held up under a fresh read).
+
+3. NOTE (not fixed — currently unreachable, so no live bug) — GET
+   /api/invoices (the workspace-wide list route) still uses a bare
+   .limit(500) with no truncation signal, the exact class of bug already
+   fixed on the approvals list, the invoice REGISTRY page, and the export
+   route. Checked: no UI anywhere calls this GET endpoint today — the
+   invoices page and BillingTab both get their data server-side via the
+   already-fixed fetchAll path — so it's dead code from the app's own
+   perspective. Left alone rather than paginating an endpoint nothing calls;
+   worth revisiting if it's ever wired up for an integration.
+
+Not fixed/decided: item 2 and item 3 above are notes, not bugs — flagging
+for a decision rather than building/changing anything without one.
