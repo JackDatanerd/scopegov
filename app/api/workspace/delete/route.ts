@@ -86,6 +86,30 @@ export async function DELETE(request: Request) {
       }, { status: 409 })
     }
 
+    // FIX (independent pass, Workspace lifecycle + CO logic round): 'changes_requested' was missing
+    // from this file's own guards — it is the exact SOW-side counterpart of the CO's 'countered'
+    // state, which pendingCoCount below already treats as blocking: the client has acted (requested
+    // changes) and it is the AGENCY's turn to revise/resend, exactly as live and unresolved as a SOW
+    // sitting 'awaiting_signature'. See app/api/portal/sow/[token]/request-changes/route.ts (what sets
+    // it) and cron/sow-expiry (which auto-expires it the same way it does 'awaiting_signature' — proof
+    // it's treated as a genuine open state elsewhere in this codebase, just never guarded here). This
+    // file's own "NOTE for future re-audits" below claimed the existing guards made a deleted workspace
+    // unable to hold a SOW at anything but signed/awaiting_signature — that was never true; a
+    // changes_requested SOW slipped through and got permanently stranded (portal shows a generic
+    // "revoked" state via isWorkspaceDeleted(), with no way for the agency to ever act on it again,
+    // since every member is deactivated by this same delete).
+    const { count: pendingSowChangesCount } = await (service as any)
+      .from('sow_documents')
+      .select('id', { count: 'exact', head: true })
+      .eq('workspace_id', session.workspaceId)
+      .eq('status', 'changes_requested')
+
+    if ((pendingSowChangesCount || 0) > 0) {
+      return NextResponse.json({
+        error: 'Workspaces with a SOW awaiting a revised version cannot be deleted — resolve or withdraw it first. Contact support@scopegov.app if you need help.',
+      }, { status: 409 })
+    }
+
     // FIX (deep audit, section 5): this guard only ever looked at
     // sow_documents. An accepted change order is just as binding as a
     // signed SOW (change_orders.status can reach 'accepted'), and
@@ -176,11 +200,17 @@ export async function DELETE(request: Request) {
       }, { status: 409 })
     }
 
-    // NOTE for future re-audits: combined, the four guards above mean a
-    // deleted workspace can never have a SOW at 'signed'/'awaiting_signature',
-    // a CO at 'accepted'/'awaiting_response'/'awaiting_countersignature', or
-    // an invoice at anything but 'draft'/'void'. The portal's *mutating*
-    // routes (SOW sign/decline/request-changes, CO accept/counter/
+    // NOTE for future re-audits: combined, the guards above mean a
+    // deleted workspace can never have a SOW at 'signed'/'awaiting_signature'/
+    // 'changes_requested', a CO at 'accepted'/'awaiting_response'/
+    // 'awaiting_countersignature'/'countered'/'stalled', or an invoice at
+    // anything but 'draft'/'void'. (An earlier version of this note claimed
+    // this already held with only 'signed'/'awaiting_signature' listed for
+    // SOW — it didn't: 'changes_requested' slipped through unguarded until
+    // the independent pass that added pendingSowChangesCount above. If you're
+    // re-auditing this file, verify this list against the guards actually
+    // present above rather than trusting this comment on faith.) The portal's
+    // *mutating* routes (SOW sign/decline/request-changes, CO accept/counter/
     // countersign/decline) each still carry their own explicit
     // isWorkspaceDeleted() check (belt-and-suspenders — see that
     // function's comment in lib/utils/workspace-secret.ts), since those

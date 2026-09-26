@@ -1,0 +1,80 @@
+Independent pass 2 — Workspace lifecycle (section 3) + CO logic (section 10)
+==============================================================================
+
+Scope: api/workspace/{create,complete-onboarding,delete,leave,list,switch,profile}
+       api/co/* (incl. co/draft), components/co, api/pdf/co
+
+Method: full re-audit treating every prior FIX comment as unverified until
+independently re-derived. Prior comments consulted only to check whether they
+held up, not as a starting assumption.
+
+Result: 15 files reviewed line-by-line (8 workspace-lifecycle route files +
+migrations/session helpers they depend on; 11 CO-logic route/lib/component
+files). Two genuine, previously-unfixed issues found. Everything else already
+correct (CAS patterns, flag-reversion, approval-gate re-checks on counter
+acceptance, tax/rescale math, contract-value rollup on the CO PDF, cross-tenant
+scoping, permission checks on every mutating route, and the CO
+version/revision lineage logic).
+
+--------------------------------------------------------------------------
+FIX 1 — app/api/workspace/delete/route.ts
+--------------------------------------------------------------------------
+Missing guard: SOW status 'changes_requested' did not block workspace
+deletion.
+
+The route already blocked on:
+  - SOW 'signed'
+  - SOW 'awaiting_signature'
+  - CO 'accepted'
+  - CO 'awaiting_response' / 'awaiting_countersignature' / 'countered' / 'stalled'
+  - outstanding invoices ('sent'/'overdue') and any payment history
+
+'changes_requested' is the SOW-side equivalent of the CO's 'countered' state
+(client has acted — requested changes — and it's the agency's turn to
+revise/resend). It is a genuine, live, unresolved state, not a passive one:
+cron/sow-expiry auto-expires it on the same clock as 'awaiting_signature',
+and app/api/portal/sow/[token]/request-changes/route.ts is what sets it.
+
+Deleting a workspace while a SOW sat in this status permanently stranded the
+client: the portal's isWorkspaceDeleted() check shows a generic "revoked"
+state for any status once deleted_at is set, and every workspace member gets
+deactivated by the same delete — so there was no way for the agency to ever
+revise/resend, and no way for the client to get an explanation.
+
+The file's own "NOTE for future re-audits" comment claimed the existing
+guards already made this impossible ("a deleted workspace can never have a
+SOW at signed/awaiting_signature..."). That claim was incomplete — it never
+accounted for changes_requested. The note has been corrected to name the
+actual current guard set and to warn future auditors to verify the list
+against the code rather than trust the comment.
+
+Fix: added a `pendingSowChangesCount` guard identical in shape to the
+existing `pendingSowCount` one, blocking deletion with a 409 and pointing
+the agency at resolving/withdrawing the SOW first.
+
+--------------------------------------------------------------------------
+FIX 2 — components/co/CoEditor.tsx
+--------------------------------------------------------------------------
+Missing wiring: autosave failures never populated `saveError`.
+
+The component has a `saveError` state and render logic clearly built to
+show it (a tooltip via `title={saveError}` and a " — {saveError}" suffix
+next to the "Save failed" badge). But the autosave effect's catch block was
+a bare `catch { setSaveStatus('error') }` — it discarded the thrown error
+entirely and never called `setSaveError`. Every autosave failure therefore
+rendered as an unadorned "Save failed" with zero detail, regardless of
+whether the underlying cause was something the user could immediately fix
+(a validation error) or a transient server issue — indistinguishable to the
+user, even though the UI was already built to tell them apart.
+
+Fix: capture the thrown error in the catch block and call
+`setSaveError(err instanceof Error ? err.message : 'Save failed')`, matching
+the pattern doSave()'s own explicit-save path already uses for `error`.
+Also clears `saveError` on a subsequent successful save so a stale message
+doesn't linger under the tooltip.
+
+--------------------------------------------------------------------------
+Files changed
+--------------------------------------------------------------------------
+app/api/workspace/delete/route.ts
+components/co/CoEditor.tsx

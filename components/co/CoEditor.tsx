@@ -201,11 +201,23 @@ export default function CoEditor({ projId, coId }: Props) {
       try {
         await doSave(false)
         setSaveStatus('saved')
+        setSaveError('')
         setTimeout(() => setSaveStatus('idle'), 2000)
-      } catch {
+      } catch (err: unknown) {
         // FIX (section-10 audit, 10-G6): a failed autosave reset the
         // indicator to 'idle', which reads as "nothing to save" — the
         // same silent-failure shape as 9-B10. Surface it.
+        //
+        // FIX (independent pass, CO logic round): this bare `catch` discarded the
+        // thrown error entirely, so saveError — the state the banner below was
+        // already built to display (`title={saveError}` and the " — {saveError}"
+        // suffix on "Save failed") — stayed permanently '', the empty string it
+        // was initialized to. Every autosave failure rendered as an unadorned
+        // "Save failed" with no way to tell why (a validation error the user could
+        // fix immediately vs. a server outage), even though the UI right below
+        // was already wired to show exactly that. Capture and surface it, same as
+        // doSave()'s own explicit-save path already does with `error`.
+        setSaveError(err instanceof Error ? err.message : 'Save failed')
         setSaveStatus('error')
       } finally {
         pendingSave.current = false
