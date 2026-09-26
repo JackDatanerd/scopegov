@@ -8,7 +8,7 @@
 'use client'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { formatRelative } from '@/lib/utils/format'
-import { splitBodySegments, tokensToDisplay, displayToTokens } from '@/lib/utils/project-messages'
+import { splitBodySegments, tokensToDisplay, displayToTokens, uniqueMentionLabel } from '@/lib/utils/project-messages'
 
 interface Message {
   id: string
@@ -242,8 +242,13 @@ export default function ProjectDiscussion({
     const caret = textareaRef.current?.selectionStart ?? draft.length
     const upToCaret = draft.slice(0, caret)
     const rest = draft.slice(caret)
-    pickedRef.current[member.name] = member.id
-    const replaced = upToCaret.replace(/@([^\s@]*)$/, `@${member.name} `)
+    // FIX (Projects & Dashboard deep audit): two mentionable people can share
+    // the same name — keying pickedRef by the raw name would let the second
+    // one picked silently steal every earlier occurrence of that name. See
+    // uniqueMentionLabel's own comment in lib/utils/project-messages.ts.
+    const label = uniqueMentionLabel(member.name, member.id, pickedRef.current)
+    pickedRef.current[label] = member.id
+    const replaced = upToCaret.replace(/@([^\s@]*)$/, `@${label} `)
     const next = replaced + rest
     setDraft(next)
     setMentionActive(false)

@@ -115,11 +115,42 @@ export async function resolveMentions(
 // picked name refers to. On send, picked names are turned back into tokens; on edit, tokens are turned
 // into names and the map is rebuilt from the body.
 
+// FIX (Projects & Dashboard deep audit): `picked` is keyed by the plain display
+// name because displayToTokens has nothing else to match against in the
+// composer's plain-text textarea — but two different mentionable people can
+// share the exact same name (two "Alex Kim"s isn't rare in a larger agency).
+// Without this, insertMention/tokensToDisplay would blindly do
+// `picked[name] = id`, so mentioning both — or editing a message that already
+// mentions both — collapsed every occurrence of that name onto whichever id
+// was (re)assigned last: the earlier person's mention silently pointed at the
+// wrong user on send, misattributing the mention and misdirecting the
+// notification. This disambiguates by suffixing a short, stable fragment of
+// the id onto the label the SECOND time a name is claimed by a different id,
+// so each distinct person always gets a distinct key. The suffix is purely a
+// client-side/composer artifact: resolveMentions() rewrites every token's
+// bracket text back to the sender's authoritative DB name before the message
+// is ever stored, so nobody else — and no other view of the same message —
+// ever sees it.
+export function uniqueMentionLabel(name: string, id: string, picked: Record<string, string>): string {
+  const lowerId = id.toLowerCase()
+  if (!(name in picked) || picked[name] === lowerId) return name
+  let extra = 4
+  let suffix = lowerId.replace(/-/g, '').slice(0, extra)
+  let label = `${name} (${suffix})`
+  while (label in picked && picked[label] !== lowerId) {
+    extra += 2
+    suffix = lowerId.replace(/-/g, '').slice(0, extra)
+    label = `${name} (${suffix})`
+  }
+  return label
+}
+
 export function tokensToDisplay(body: string): { text: string; picked: Record<string, string> } {
   const picked: Record<string, string> = {}
   const text = body.replace(MENTION_TOKEN, (_m, name: string, id: string) => {
-    picked[name] = id.toLowerCase()
-    return `@${name}`
+    const label = uniqueMentionLabel(name, id, picked)
+    picked[label] = id.toLowerCase()
+    return `@${label}`
   })
   return { text, picked }
 }

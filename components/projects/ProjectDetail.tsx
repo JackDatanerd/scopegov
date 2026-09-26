@@ -497,7 +497,12 @@ function OverviewTab({ project, milestones, amendments, permissions, currency, r
   const overdueAmount= milestones.filter((m: any) => m.status === 'overdue').reduce((s: number, m: any) => s + (m.amount || 0), 0)
 
   const SOW_STATUS_LABEL: Record<string, string> = {
-    draft: 'Draft — not yet sent', sent: 'Sent to client', awaiting_signature: 'Awaiting signature',
+    // FIX (Projects & Dashboard deep audit, cleanup): 'sent' removed — it has
+    // never been a real sow_documents status (confirmed against the DB check
+    // constraint and already called out in lib/documents/send-sow.ts and
+    // app/(app)/clients/[id]/page.tsx). Dead entry that could never match;
+    // 'awaiting_signature' below is the real "sent to client" state.
+    draft: 'Draft — not yet sent', awaiting_signature: 'Awaiting signature',
     signed: 'Signed', changes_requested: 'Client requested changes', declined: 'Declined by client', withdrawn: 'Withdrawn',
     // FIX (section-9 audit, 9-G3): 'expired' is a real status now that
     // cron/sow-expiry actually writes it; this map had no entry, so the

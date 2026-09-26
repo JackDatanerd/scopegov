@@ -85,6 +85,16 @@ const EXC_ROWS = 15
 // so a workspace with a lot of history could render an unbounded number of
 // rows here, against the export route's own 60-second timeout.
 const STALL_ROWS = 40
+// FIX (Projects & Dashboard / Portfolio deep audit): "Open scope flags" was
+// the one list on this page that STALL_ROWS/EXC_ROWS's own reasoning was
+// never applied to, and it's the biggest of the three by default — the PDF
+// path calls getPortfolioData with no flagsPerSeverity override, so
+// data.openFlags can already be up to 300 rows (100 per severity × 3) before
+// this render even sees it. It was mapped with no slice() at all, directly
+// contradicting this file's own stated purpose ("a short, readable summary")
+// and reintroducing the same unbounded-render / 60s-timeout risk this
+// module's other two lists were deliberately capped to avoid.
+const FLAG_ROWS = 40
 
 function PortfolioReportDocument({ report }: { report: PortfolioReportData }) {
   const { data, canViewFinancials } = report
@@ -198,8 +208,8 @@ function PortfolioReportDocument({ report }: { report: PortfolioReportData }) {
         )}
 
         <Text style={s.h2}>
-          Open scope flags ({data.openFlagsTotal > data.openFlags.length
-            ? `highest severity first: ${data.openFlags.length} of ${data.openFlagsTotal} — the CSV export lists every one`
+          Open scope flags ({data.openFlagsTotal > Math.min(data.openFlags.length, FLAG_ROWS)
+            ? `highest severity first: ${Math.min(data.openFlags.length, FLAG_ROWS)} of ${data.openFlagsTotal} — the CSV export lists every one`
             : data.openFlags.length})
         </Text>
         {data.openFlags.length === 0 ? (
@@ -212,7 +222,12 @@ function PortfolioReportDocument({ report }: { report: PortfolioReportData }) {
               <Text style={[s.th, { width: FLAG_COL.severity }]}>Severity</Text>
               <Text style={[s.th, { flex: 1 }]}>Raised</Text>
             </View>
-            {data.openFlags.map((f, i) => (
+            {/* FIX (Projects & Dashboard / Portfolio deep audit): capped like every
+                other long list in this report — see FLAG_ROWS above. data.openFlags
+                already arrives highest-severity-then-newest first (portfolio-data.ts),
+                so the cap keeps the flags that matter most, matching the header text
+                and the CSV export's own ordering intent. */}
+            {data.openFlags.slice(0, FLAG_ROWS).map((f, i) => (
               <View key={i} style={s.row} wrap={false}>
                 <View style={{ width: FLAG_COL.project }}>
                   <Text style={s.td}>{f.projectName}</Text>
