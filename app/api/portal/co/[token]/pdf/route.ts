@@ -9,6 +9,7 @@ import { renderCoPdf } from '@/lib/pdf/renderer'
 import { getWorkspaceJwtSecret, isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
 import { getContractValueBefore } from '@/lib/documents/co-contract-value'
 import { fetchExecutedPdf } from '@/lib/documents/executed-pdf'
+import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
 
 // FIX (doc-completeness audit, finding #9): no portal-scoped PDF route
 // existed for change orders at all — a client who accepted a CO had no
@@ -156,7 +157,13 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       clientVatNumber:      client?.vat_number || null,
       projectName:   project?.name || '',
       coTitle:       co.title,
-      note:          co.note || null,
+      // FIX (re-audit, section 18): the JSON-serving GET route re-sanitizes this exact field on
+      // every read (sanitizeRichTextOrNull, defense-in-depth against a write that bypassed the
+      // app's own edit path); this PDF route passed it straight through. Lower severity than the
+      // dangerouslySetInnerHTML sinks — RichText is a tag-scanning renderer, not a raw-HTML sink —
+      // but an unsanitized <a href> still reaches a PDF <Link src=...> otherwise, and the
+      // inconsistency itself was the actual gap.
+      note:          sanitizeRichTextOrNull(co.note),
       lineItems,
       subtotal:      co.subtotal,
       taxRate:       co.tax_rate,

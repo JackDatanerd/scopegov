@@ -302,7 +302,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     let pdfAttachment: { filename: string; content: string } | undefined
     try {
       let logoUrl: string | null = null
-      if (ws.logo_storage_path) {
+      // FIX (re-audit, section 18): unguarded, unlike the identical lookup on the GET and PDF
+      // routes for this same document type (`ws?.logo_storage_path`) — see that fix's comment.
+      if (ws?.logo_storage_path) {
         const { data: u } = await (service as any).storage.from('logos').getPublicUrl(ws.logo_storage_path)
         logoUrl = u?.publicUrl || null
       }

@@ -165,18 +165,22 @@ export async function POST_DECLINE(request: NextRequest, token: string) {
   // FIX (deep audit, notifications section): this was a hand-rolled Resend
   // call with no shared branding/footer, unlike every comparable
   // agency-notify email — see sendCoDeclinedEmail in lib/email/templates.ts.
+  const client = co.projects?.clients
   try {
     const emails = await getMemberEmailsWithPermission(service, co.workspace_id, 'SEND_CHANGE_ORDERS', 25, 'co_declined', co.project_id)
     if (emails.length) {
-      const client = co.projects?.clients
-      await sendCoDeclinedEmail({
+      // FIX (re-audit, section 18): raw try/catch, not checkedSend — a Resend-level rejection
+      // resolved normally instead of throwing, so this silently "succeeded" while the agency
+      // never actually heard the CO was declined. The counter flow just below already gets this
+      // right (checkedSend, imported at the top of this file); decline was the outlier.
+      await checkedSend(() => sendCoDeclinedEmail({
         to: emails,
         clientName: client?.name || 'Client',
         projectName: co.projects?.name || '',
         coTitle: co.title,
         reason,
         projectUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects/${co.project_id}?tab=co`,
-      })
+      }), 'CO declined (agency) email')
     }
   } catch (e) { console.error('CO declined email failed:', e) }
   await notifyMembersWithPermission(service, {
@@ -185,6 +189,20 @@ export async function POST_DECLINE(request: NextRequest, token: string) {
     body: reason ? `${co.projects?.clients?.name}: ${reason.slice(0, 200)}` : `${co.projects?.clients?.name} declined this change order.`,
     entityType: 'project', entityId: co.project_id, projectId: co.project_id,
   })
+  // FIX (re-audit, section 18 — feature gap): every other client-initiated portal response (SOW
+  // decline/request-changes, CO *counter*, invoice dispute) sends the client a "we received your
+  // response" receipt — CO decline was the one exception, confirmed by grep across the whole
+  // portal section. The client had only the JSON success message, gone the moment they navigate away.
+  if (client?.email) {
+    const cc = await withPrimaryContactCc(service, co.projects?.client_id, client.email, client.cc_emails, 'co')
+    const replyTo = await resolveReplyTo(service, co.workspace_id, null)
+    await checkedSend(() => sendClientResponseReceivedEmail({
+      replyTo,
+      to: client.email, cc, clientName: client.name, agencyName: co.projects?.workspaces?.agency_name || '',
+      projectName: co.projects?.name || '', documentLabel: 'Change Order', response: 'declined',
+      note: reason ? reason.slice(0, 500) : null, brandColour: co.projects?.workspaces?.brand_colour,
+    }), 'CO declined (client receipt)')
+  }
 
   return NextResponse.json({
     ok: true,

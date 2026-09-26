@@ -1319,7 +1319,11 @@ export async function sendClientResponseReceivedEmail(params: {
   replyTo?: string | null; log?: EmailLogContext
   to: string; cc?: string[]; clientName: string; agencyName: string; projectName: string
   documentLabel: string
-  response: 'declined' | 'requested changes to' | 'countered' | 'disputed'
+  // FIX (fixes round, section 18 — feature gap): "told us you've paid" added so the invoice
+  // portal's "I've already paid" claim can send the same confirmation receipt every other
+  // client-initiated response (SOW decline/request-changes, CO decline/counter, invoice
+  // dispute) already does — see app/api/portal/invoice/[token]/paid/route.ts.
+  response: 'declined' | 'requested changes to' | 'countered' | 'disputed' | "told us you've paid"
   note?: string | null; brandColour?: string
 }) {
   const { to, cc, clientName: clientNameRaw, agencyName: agencyNameRaw, projectName: projectNameRaw,

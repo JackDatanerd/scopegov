@@ -70,6 +70,19 @@ export function hydrateSections(stored: any[], metadata: any): any[] {
       const hydrated: any = { ...existing, title: sectionTitle(def.id, lang), order: def.order }
       // `visible` is stored JSON — coerce anything that isn't a real boolean.
       if (typeof hydrated.visible !== 'boolean') hydrated.visible = true
+      // FIX (re-audit, section 18 — flagship finding): re-sanitize on every read, the same
+      // defense-in-depth the CO `note` and invoice `payment_instructions` fields already got in an
+      // earlier round (see sanitizeRichTextOrNull at their portal GET routes) — "sanitize what
+      // leaves the server, not just what enters it." This field never actually had that: the write
+      // path (sanitizeSectionList, below) does sanitize, but nothing re-checked it on read, and this
+      // is the one field of the three that reaches a public, unauthenticated page via
+      // dangerouslySetInnerHTML (app/portal/sow/[token]/page.tsx, three times) with no second layer
+      // of protection against a stray write that bypassed the app's own edit path (a direct
+      // low-privilege API/PostgREST write, a future import, a pre-sanitization row). A comment on the
+      // CO portal route and on the SOW portal page itself both asserted this protection already
+      // existed here via hydrateSections — it didn't; this closes that gap for real.
+      // Idempotent on already-sanitized content, so this is a no-op for the normal edit path.
+      if (typeof hydrated.content === 'string') hydrated.content = sanitizeRichText(hydrated.content)
       // Table cells are plain text. Rows saved before sanitizePlainText stopped
       // HTML-escaping hold literal "&amp;" / "&lt;" — decode them on read so
       // old documents display (and print) correctly without a data migration.

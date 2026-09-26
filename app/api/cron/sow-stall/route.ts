@@ -11,6 +11,7 @@ import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { insertAuditRow } from '@/lib/utils/audit'
 import { CronRun, fetchAll } from '@/lib/utils/cron-run'
 import { viewedNote } from '@/lib/utils/viewed'
+import { checkedSend } from '@/lib/email/delivery'
 
 // Hourly. Marks a project 'Stalled' when its SOW has sat unsigned for 7 days and tells the team.
 export async function POST(request: NextRequest) {
@@ -75,10 +76,12 @@ export async function POST(request: NextRequest) {
         try {
           const emails = await getMemberEmailsWithPermission(service, sow.workspace_id, 'SEND_SOW', 25, 'sow_stalled', sow.project_id)
           if (emails.length) {
-            await sendSowStalledEmail({
+            // FIX (re-audit, section 17): raw try/catch, not checkedSend — same missing-check class
+            // of bug as the rest of this cron section; see co-stall's identical fix for the writeup.
+            await checkedSend(() => sendSowStalledEmail({
               to: emails, clientName, projectName,
               daysSinceSent: threshold, projectUrl, viewedNote: seen,
-            })
+            }), 'SOW stalled email')
           }
         } catch (e) { console.error('SOW stalled email failed:', e) }
 

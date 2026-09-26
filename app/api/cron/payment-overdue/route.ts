@@ -15,6 +15,7 @@ import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { verifyCronSecret } from '@/lib/utils/verify-cron'
 import { insertAuditRow } from '@/lib/utils/audit'
 import { CronRun, fetchAll } from '@/lib/utils/cron-run'
+import { checkedSend } from '@/lib/email/delivery'
 
 // A monthly-retainer milestone is generated on the 1st and is the agency's own billing reminder —
 // the agency still has to raise the invoice. Flagging it "overdue" the next morning (and, for a
@@ -92,7 +93,12 @@ export async function POST(request: NextRequest) {
         try {
           const emails = await getMemberEmailsWithPermission(service, project.workspace_id, 'VIEW_FINANCIALS', 10, 'payment_milestone_overdue', project.id)
           if (emails.length) {
-            await sendPaymentMilestoneOverdueEmail({
+            // FIX (re-audit, section 17): raw try/catch, not checkedSend — a Resend-level rejection
+            // resolved normally instead of throwing, so this silently "succeeded." Same fix applied
+            // to every send in this file; see the step-3 grace-reminder fix below for the one
+            // instance where this actually mattered beyond a missed FYI (the in-app bell above is a
+            // redundant channel for this particular email).
+            await checkedSend(() => sendPaymentMilestoneOverdueEmail({
               to: emails,
               clientName: project.clients?.name || 'Client',
               projectName: project.name,
@@ -100,7 +106,7 @@ export async function POST(request: NextRequest) {
               amount: m.amount,
               currency: project.currency || 'USD',
               projectUrl: `${appUrl}/projects/${project.id}?tab=billing`,
-            })
+            }), 'Milestone overdue email')
           }
         } catch (e) { console.error('Milestone overdue email failed:', e) }
 
@@ -156,14 +162,16 @@ export async function POST(request: NextRequest) {
         try {
           const emails = await getMemberEmailsWithPermission(service, inv.workspace_id, 'VIEW_FINANCIALS', 10, 'invoice_overdue', inv.projects?.id)
           if (emails.length) {
-            await sendInvoiceOverdueInternalEmail({
+            // FIX (re-audit, section 17): raw try/catch, not checkedSend — same missing-check class
+            // of bug as the rest of this file.
+            await checkedSend(() => sendInvoiceOverdueInternalEmail({
               to: emails,
               clientName: inv.projects?.clients?.name || 'Client',
               projectName: inv.projects?.name,
               invoiceNumber: inv.invoice_number,
               balanceDue, currency: inv.currency,
               projectUrl: `${appUrl}/projects/${inv.projects?.id}?tab=billing`,
-            })
+            }), 'Invoice overdue email')
           }
         } catch (e) { console.error('Invoice overdue email failed:', e) }
       } catch (e) { run.rowError(`invoice ${inv.id}`, e) }
@@ -211,11 +219,15 @@ export async function POST(request: NextRequest) {
         const recipients = await getBillingRecipients(service, ws.id, ws.creator)
         for (const r of recipients) {
           try {
-            await sendTrialWarningEmail({
+            // FIX (re-audit, section 17): raw try/catch, not checkedSend — same missing-check class
+            // of bug as the rest of this file. sibling trial-warning/route.ts already gets this
+            // right (`const delivery = await sendTrialWarningEmail(...); if (!delivery.ok) ...`).
+            const delivery = await checkedSend(() => sendTrialWarningEmail({
               to: r.email, name: r.name, agencyName: ws.agency_name,
               daysLeft: 0,
               upgradeUrl: `${appUrl}/settings?tab=billing`,
-            })
+            }), 'Trial expiry email')
+            if (!delivery.ok) console.error('Trial expiry email rejected for', r.email, delivery.error)
           } catch (e) { console.error('Trial expiry email failed for', r.email, e) }
         }
       } catch (e) { run.rowError(`trial ${ws.id}`, e) }
@@ -263,14 +275,31 @@ export async function POST(request: NextRequest) {
         if (alreadySent) continue
 
         const recipients = await getBillingRecipients(service, ws.id, ws.creator)
+        // FIX (re-audit, section 17 — the critical finding): track actual delivery instead of
+        // assuming success. The audit row below is the dedupe marker every future run checks
+        // (see the lookup a few lines above) — writing it regardless of whether the send
+        // actually went out meant a Resend-level rejection (rejected recipient, quota, bad
+        // domain — none of which throw) silently marked this workspace "already reminded,"
+        // with no successful delivery ever having happened, right before step 4/5 downgrade
+        // and cancel it days later having never been warned.
+        let anySent = false
+        const sendErrors: string[] = []
         for (const r of recipients) {
           try {
-            await sendPaymentFailedEmail({
+            const delivery = await checkedSend(() => sendPaymentFailedEmail({
               to: r.email, name: r.name, agencyName: ws.agency_name,
               upgradeUrl: `${appUrl}/settings?tab=billing`,
               graceDaysLeft: GRACE_REMINDER_DAYS_LEFT,
-            })
-          } catch (e) { console.error('Grace reminder email failed for', r.email, e) }
+            }), 'Grace reminder email')
+            if (delivery.ok) anySent = true
+            else sendErrors.push(`${r.email}: ${delivery.error}`)
+          } catch (e) { sendErrors.push(`${r.email}: ${e instanceof Error ? e.message : String(e)}`) }
+        }
+        if (recipients.length > 0 && !anySent) {
+          run.rowError(`grace reminder ${b.workspace_id}`, new Error(
+            `reminder email failed for every recipient — dedupe marker withheld so it retries next run: ${sendErrors.join('; ')}`
+          ))
+          continue
         }
         const logged = await insertAuditRow(service, {
           workspace_id: ws.id, actor_id: null,
@@ -354,10 +383,15 @@ export async function POST(request: NextRequest) {
         const recipients = await getBillingRecipients(service, ws.id, ws.creator)
         for (const r of recipients) {
           try {
-            await sendSubscriptionEndedEmail({
+            // FIX (re-audit, section 17): raw try/catch, not checkedSend — same missing-check
+            // class of bug as the rest of this file. No dedupe-marker risk here (the downgrade
+            // itself, and its audit row above, already happened regardless of this email), but
+            // a rejected send was still silently treated as delivered.
+            const delivery = await checkedSend(() => sendSubscriptionEndedEmail({
               to: r.email, name: r.name, agencyName: ws.agency_name,
               upgradeUrl: `${appUrl}/settings?tab=billing`,
-            })
+            }), 'Grace enforcement email')
+            if (!delivery.ok) console.error('Grace enforcement email rejected for', r.email, delivery.error)
           } catch (e) { console.error('Grace enforcement email failed for', r.email, e) }
         }
       } catch (e) { run.rowError(`grace enforcement ${b.workspace_id}`, e) }
@@ -474,10 +508,14 @@ export async function POST(request: NextRequest) {
         const recipients = await getBillingRecipients(service, ws.id, ws.creator)
         for (const r of recipients) {
           try {
-            await sendSubscriptionEndedEmail({
+            // FIX (re-audit, section 17): raw try/catch, not checkedSend — same missing-check
+            // class of bug as the rest of this file. No dedupe-marker risk here (the cancellation
+            // itself, and its audit row above, already happened regardless of this email).
+            const delivery = await checkedSend(() => sendSubscriptionEndedEmail({
               to: r.email, name: r.name, agencyName: ws.agency_name,
               upgradeUrl: `${appUrl}/settings?tab=billing`,
-            })
+            }), 'Cancelled-subscription email')
+            if (!delivery.ok) console.error('Cancelled-subscription email rejected for', r.email, delivery.error)
           } catch (e) { console.error('Cancelled-subscription email failed for', r.email, e) }
         }
       } catch (e) { run.rowError(`cancelled subscription ${b.workspace_id}`, e) }

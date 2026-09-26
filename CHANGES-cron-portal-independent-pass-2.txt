@@ -1,0 +1,144 @@
+SECTIONS 17 & 18 — INDEPENDENT RE-AUDIT AND FIXES
+(cron jobs, cross-cutting) + (public token / portal routes, cross-cutting)
+
+This pass treated every prior "FIX" comment in these files as an unverified
+claim and re-checked it from scratch rather than trusting it. Two of those
+comments turned out to be wrong (see #4 below) — both pointed at the same
+missing protection.
+
+=== SECTION 18 — Portal routes ===
+
+1. Silent email-delivery failures (bug, 3 instances)
+   Resend resolves (doesn't throw) on API-level rejection, so a bare
+   `try { await sendXEmail(...) } catch` never catches it — the code
+   believes the send succeeded when it didn't. Fixed to use checkedSend
+   (already the established pattern elsewhere in these same files):
+     - app/api/portal/invoice/[token]/dispute/route.ts — sendInvoiceDisputedEmail
+     - app/api/portal/invoice/[token]/paid/route.ts     — sendInvoicePaymentClaimedEmail
+     - app/api/portal/co/[token]/_actions.ts (POST_DECLINE) — sendCoDeclinedEmail
+       (the very same file already imports and correctly uses checkedSend
+       for its counter flow two functions later — decline was the outlier)
+
+2. Missing client confirmation receipts (feature gap, 2 instances)
+   Every other client-initiated portal response (SOW decline, SOW
+   request-changes, CO counter, invoice dispute) sends the client a
+   sendClientResponseReceivedEmail "we received your response" receipt.
+   Two flows didn't:
+     - CO decline (_actions.ts POST_DECLINE) — client got only the JSON
+       success message, nothing if they closed the tab. Added the receipt.
+     - Invoice "I've already paid" claim (paid/route.ts) — had in-page UI
+       confirmation but no email. Added the receipt; extended
+       sendClientResponseReceivedEmail's `response` union with
+       "told us you've paid" (lib/email/templates.ts) since no suitable
+       value existed. Widened resolveInvoiceToken's select in paid/route.ts
+       to include client_id/cc_emails/workspaces needed for the new email.
+
+3. SOW section content had no read-time re-sanitization (bug — flagship
+   finding, defense-in-depth / stored-XSS gap)
+   The SOW portal page renders sections[].content via dangerouslySetInnerHTML
+   in three places. CO's `note` and invoice's `payment_instructions` fields
+   are explicitly re-sanitized with sanitizeRichTextOrNull() on every GET as
+   defense-in-depth (an earlier round's fix, reasoning: "sanitize what
+   leaves the server, not just what enters it"). SOW's hydrateSections()
+   did NOT re-sanitize `content` — verified by reading it line by line; it
+   only fixed table-cell entities and section metadata. Fixed:
+   hydrateSections now runs sanitizeRichText() on `content` on every read.
+   Write-time sanitization (sanitizeSectionList) still covers the normal
+   editor path, so this specifically closes the gap for a write that
+   bypassed it (a stray low-privilege API/PostgREST write, an old row, a
+   future import) — the exact threat model the CO/invoice fix was written
+   to close, which SOW never actually got despite comments claiming it had.
+
+4. Three comments falsely claiming SOW already had the #3 protection
+   Found while chasing #3: a comment on app/api/portal/co/[token]/route.ts,
+   one on app/portal/co/[token]/page.tsx, and one on
+   app/portal/sow/[token]/page.tsx itself all asserted "the SOW portal
+   already re-sanitizes on READ (hydrateSections)" / "same guarantee SOW
+   section content already has" / "content is sanitised server-side." None
+   of it was true before this pass. Fixing #3 makes all three comments
+   accurate now, so no further changes were needed to them.
+
+5. CO/invoice PDF routes skipped the same re-sanitization (bug, lower
+   severity)
+   app/api/portal/co/[token]/pdf/route.ts and
+   app/api/portal/invoice/[token]/pdf/route.ts passed `note` /
+   `payment_instructions` straight into the PDF's RichText renderer without
+   the sanitizeRichTextOrNull() their JSON-serving GET siblings apply.
+   Lower severity — RichText is a tag-scanning-to-react-pdf renderer, not a
+   raw-HTML sink, so it can't execute script — but an unsanitized <a href>
+   still reached a PDF <Link src=...> unsanitized, and the inconsistency
+   itself was the actual gap. Fixed both.
+
+6. Unguarded workspace/project lookups in the SOW GET and sign routes (bug)
+   app/api/portal/sow/[token]/route.ts did `if (workspace.logo_storage_path)`
+   with no `?.`, then a few lines later `project.name`, `workspace.agency_name`
+   etc, also unguarded — while the CO GET route, invoice GET route, and even
+   this SOW route's own PDF route all defensively `?.` the identical fields.
+   If sow.projects / sow.projects.workspaces were ever null (a data-integrity
+   edge case), this threw, was swallowed by the outer catch, and told a
+   client with a perfectly valid link "Link not found" instead of degrading
+   gracefully like every sibling route. Fixed the whole response-building
+   block to match the CO/invoice routes' defensive style. Applied the same
+   one-line fix to sign/route.ts's logo lookup for consistency (lower risk
+   there — already inside a local try/catch that already treats a throw a
+   few lines later the same way).
+
+7. Dead/misleading frontend state (cosmetic)
+   app/portal/co/[token]/page.tsx's staticMsg['stalled'] ("Link inactive —
+   contact the agency") was unreachable: the backend deliberately never
+   sends state:'stalled' — a stalled CO is an agency-side attention flag,
+   not a client-facing dead end, and is designed to fall through to the
+   normal accept/decline/counter form. Removed the entry so a future
+   regression that DID send 'stalled' would fall through to `if (!co)
+   return null` (loud, obviously broken) rather than confidently lying to
+   the client that their still-live CO is dead.
+
+=== SECTION 17 — Cron jobs ===
+
+No feature gaps found in this section this pass — it's already heavily
+hardened by prior rounds (CAS guards, fetchAll pagination, CronRun
+per-step isolation, dedupe markers, heartbeat/alerting infra).
+
+8. Same silent-email-failure bug as #1, four more instances
+     - app/api/cron/co-stall/route.ts          — sendCoStalledEmail
+     - app/api/cron/sow-stall/route.ts         — sendSowStalledEmail
+     - app/api/cron/retainer-milestones/route.ts — sendRetainerEndingEmail
+     - app/api/cron/payment-overdue/route.ts   — all 6 of its email sends
+       (sendPaymentMilestoneOverdueEmail, sendInvoiceOverdueInternalEmail,
+       sendTrialWarningEmail step 2, sendPaymentFailedEmail step 3,
+       sendSubscriptionEndedEmail steps 4 & 5)
+   Confirmed not an unknown pattern in this codebase: trial-warning/route.ts
+   and lib/utils/cron-alert.ts both already check the delivery result
+   correctly — this was just missing everywhere else. All fixed to check
+   via checkedSend (or an inline `.ok` check where a per-recipient loop
+   needed the delivery object directly, matching trial-warning's own style).
+
+9. payment-overdue step 3 (grace reminder) wrote its dedupe marker
+   unconditionally (bug — the most severe instance of #8)
+   The audit row `billing.payment_failed_grace_reminder` is what every
+   future run checks to decide "have we already warned this workspace this
+   grace period" — and it was written once per workspace after the
+   recipient loop, regardless of whether any send actually succeeded. A
+   silently-failed send (see #8) permanently marked the workspace
+   "reminded," so it would proceed straight to step 4's downgrade and
+   Paystack cancellation days later having never successfully warned the
+   customer — and the audit trail would say the reminder went out, so
+   nothing would flag it for a human to catch.
+   Fixed: the loop now tracks whether at least one recipient's send
+   actually succeeded (checkedSend's .ok). If there were recipients and
+   none succeeded, the dedupe marker is withheld (so it retries next run)
+   and a run.rowError is raised with the underlying send errors, so this
+   is now visible instead of invisible. Steps 4 and 5 (subscription
+   downgrade/cancellation notices) didn't have this dedupe-marker risk —
+   their audit rows are written before the email loop and aren't gated on
+   send success — so those only needed the #8 checkedSend fix, not this
+   restructuring.
+
+Everything above was verified against a fresh, independently-extracted
+clone of the checked-out repo before packaging; unrelated changes made
+by other sessions in the interim (money-formatting fixes and a new
+watermarked pre-acceptance CO PDF review feature, both in
+app/api/portal/co/[token]/pdf/route.ts and app/portal/co/[token]/page.tsx,
+plus brand-colour fixes in lib/email/templates.ts) were diffed out first
+and are untouched by this pass — the fixes above were re-applied on top
+of those files' current state rather than overwriting them.

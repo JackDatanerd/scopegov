@@ -11,6 +11,7 @@ import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { insertAuditRow } from '@/lib/utils/audit'
 import { CronRun, fetchAll } from '@/lib/utils/cron-run'
 import { viewedNote } from '@/lib/utils/viewed'
+import { checkedSend } from '@/lib/email/delivery'
 
 // Hourly. Marks an unanswered change order 'stalled' after 5 days and tells the team.
 // (A stalled CO stays respondable by the client — 'stalled' is an agency-side attention flag.)
@@ -75,10 +76,15 @@ export async function POST(request: NextRequest) {
         try {
           const emails = await getMemberEmailsWithPermission(service, co.workspace_id, 'SEND_CHANGE_ORDERS', 25, 'co_stalled', co.project_id)
           if (emails.length) {
-            await sendCoStalledEmail({
+            // FIX (re-audit, section 17): raw try/catch, not checkedSend — a Resend-level rejection
+            // resolves normally instead of throwing, so this silently "succeeded" while nobody
+            // actually got the email (the in-app bell above is a redundant channel, so this was
+            // never a total silent failure, but it's the same missing-check class of bug the rest
+            // of this cron section had).
+            await checkedSend(() => sendCoStalledEmail({
               to: emails, clientName, projectName, coTitle: co.title,
               daysSinceSent: threshold, projectUrl, viewedNote: seen,
-            })
+            }), 'CO stalled email')
           }
         } catch (e) { console.error('CO stalled email failed:', e) }
 

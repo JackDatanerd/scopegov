@@ -127,7 +127,12 @@ async function buildSowResponse(sow: any, service: any, userAgent: string | null
   // Build logo URL if exists
   const workspace = sow.projects?.workspaces
   let logoUrl: string | null = null
-  if (workspace.logo_storage_path) {
+  // FIX (re-audit, section 18): unguarded — the CO GET route, invoice GET route, and this SOW
+  // route's own PDF route all defensively use `?.` for the identical lookup. If sow.projects or
+  // sow.projects.workspaces were ever null (a project/workspace data-integrity edge case), this
+  // threw, got swallowed by the outer catch, and told a client with a perfectly valid link "Link
+  // not found" instead of degrading gracefully like every sibling route does.
+  if (workspace?.logo_storage_path) {
     const { data: urlData } = await (service as any).storage
       .from('logos')
       .getPublicUrl(workspace.logo_storage_path)
@@ -150,9 +155,14 @@ async function buildSowResponse(sow: any, service: any, userAgent: string | null
   return {
     sow: {
       id:            sow.id,
-      projectName:   project.name + (project.disc ? ` — ${project.disc}` : ''),
-      agencyName:    workspace.agency_name,
-      brandColour:   workspace.brand_colour || '#1A5C3A',
+      // FIX (re-audit, section 18): project/workspace accessed unguarded throughout this block —
+      // the same inconsistency as the logo lookup above (see that fix's comment). Guarded the same
+      // way the CO and invoice GET routes already guard the identical fields (`?.` with a sane
+      // fallback), so a project/workspace data-integrity edge case degrades to a thinner response
+      // instead of throwing and telling a client with a valid link "Link not found."
+      projectName:   (project?.name || '') + (project?.disc ? ` — ${project.disc}` : ''),
+      agencyName:    workspace?.agency_name,
+      brandColour:   workspace?.brand_colour || '#1A5C3A',
       logoUrl,
       // FIX (bug — React error #31): legal_address/billing_address are
       // jsonb objects ({line1, line2, city, region, postalCode,
@@ -163,13 +173,13 @@ async function buildSowResponse(sow: any, service: any, userAgent: string | null
       // Format to a display string here, matching what the PDF's
       // formatAddress does, so the API contract for this field actually
       // matches the `string | null` the page's interface always claimed.
-      agencyAddress: formatAddress(workspace.legal_address) || null,
-      agencyTaxId:   workspace.tax_id || null,
-      agencyPhone:   workspace.phone || null,
-      agencyWebsite: workspace.website || null,
-      agencySignatureData: workspace.agency_signature_data || null,
-      contractValue: project.contract_value || 0,
-      currency:      project.currency || 'USD',
+      agencyAddress: formatAddress(workspace?.legal_address) || null,
+      agencyTaxId:   workspace?.tax_id || null,
+      agencyPhone:   workspace?.phone || null,
+      agencyWebsite: workspace?.website || null,
+      agencySignatureData: workspace?.agency_signature_data || null,
+      contractValue: project?.contract_value || 0,
+      currency:      project?.currency || 'USD',
       // FIX (section-9 audit, 9-G7): the portal renders the same
       // schema-driven tables the PDF does, so it needs the drafting
       // language to localize their column headers.

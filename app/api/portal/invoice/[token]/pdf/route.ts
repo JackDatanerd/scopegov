@@ -7,6 +7,7 @@ import { renderInvoicePdf } from '@/lib/pdf/renderer'
 import { checkPortalRateLimit, recordPortalAction } from '@/lib/utils/portal-rate-limit'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { resolveInvoiceToken } from '@/lib/documents/invoice-token'
+import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
 
 // GET /api/portal/invoice/[token]/pdf — same document as /api/pdf/invoice/[id],
 // but gated by the client's portal token instead of an internal session, since
@@ -88,7 +89,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       status:       invoice.status,
       dueDate:      invoice.due_date,
       sentAt:       invoice.sent_at,
-      paymentInstructions: invoice.payment_instructions,
+      // FIX (re-audit, section 18): same defense-in-depth gap as the CO pdf route — the JSON-serving
+      // GET route already re-sanitizes this field on every read; this PDF route didn't.
+      paymentInstructions: sanitizeRichTextOrNull(invoice.payment_instructions),
       sowNumber:  invoice.sow_documents?.document_number || null,
       coNumber:   invoice.change_orders?.document_number || null,
       coTitle:    invoice.change_orders?.title || null,

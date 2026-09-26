@@ -111,14 +111,18 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     try {
       const emails = await getMemberEmailsWithPermission(service, invoice.workspace_id, 'VIEW_FINANCIALS', 25, 'invoice_disputed', project?.id)
       if (emails.length) {
-        await sendInvoiceDisputedEmail({
+        // FIX (re-audit, section 18): raw try/catch, not checkedSend — a Resend-level rejection (bad
+        // domain, quota, invalid recipient) resolves normally instead of throwing, so this silently
+        // "succeeded" while the agency never actually heard about the dispute. Every other email send
+        // in this exact file already uses checkedSend; this was the one outlier.
+        await checkedSend(() => sendInvoiceDisputedEmail({
           to: emails,
           clientName: client?.name || 'Client',
           projectName: project?.name || invoice.title,
           invoiceNumber: invoice.invoice_number,
           note: note,
           projectUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects/${project?.id}?tab=billing`,
-        })
+        }), 'Invoice disputed (agency) email')
       }
     } catch (e) { console.error('Invoice disputed email failed:', e) }
 

@@ -11,6 +11,7 @@ import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { sendRetainerEndingEmail } from '@/lib/email/templates'
 import { insertAuditRow } from '@/lib/utils/audit'
 import { CronRun, fetchAll } from '@/lib/utils/cron-run'
+import { checkedSend } from '@/lib/email/delivery'
 
 // Daily. Generates one 'retainer_monthly' payment milestone per month for every Active retainer,
 // and tells the team once when a retainer's term has run out.
@@ -166,13 +167,18 @@ export async function POST(request: NextRequest) {
           try {
             const emails = await getMemberEmailsWithPermission(service, p.workspace_id, 'VIEW_FINANCIALS', 10, 'retainer_ending', p.id)
             if (emails.length) {
-              await sendRetainerEndingEmail({
+              // FIX (re-audit, section 17): raw try/catch, not checkedSend — same missing-check
+              // class of bug as the rest of this cron section; see co-stall's identical fix for the
+              // writeup. Mitigated here by the in-app notification above, but the audit row above it
+              // is still the permanent, one-shot "term ended" record — a silently failed email is
+              // otherwise indistinguishable from a delivered one.
+              await checkedSend(() => sendRetainerEndingEmail({
                 to: emails,
                 clientName: p.clients?.name || 'Client',
                 projectName: p.name,
                 durationMonths: termMonths,
                 projectUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects/${p.id}?tab=billing`,
-              })
+              }), 'Retainer ending email')
             }
           } catch (e) { console.error('Retainer ending email failed:', e) }
 

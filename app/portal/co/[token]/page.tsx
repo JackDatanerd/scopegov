@@ -122,7 +122,13 @@ export default function CoPortalPage() {
     withdrawn: { icon: 'ti-file-off', iconBg: '#FEF2F2', iconColor: '#B91C1C', title: 'CO withdrawn', body: 'The agency has withdrawn this change order.' },
     declined:  { icon: 'ti-x', iconBg: '#FEF2F2', iconColor: '#B91C1C', title: 'Already declined', body: 'This change order has been declined.' },
     closed:    { icon: 'ti-lock', iconBg: '#F5F5F0', iconColor: '#666', title: 'No longer available', body: 'This change order has been closed by the agency and is no longer open for a response.' },
-    stalled:   { icon: 'ti-clock-off', iconBg: '#FFF7ED', iconColor: '#B45309', title: 'Link inactive', body: 'This change order received no response in time and is now inactive. Please contact the agency for an updated request.' },
+    // FIX (re-audit, section 18): removed a `stalled` entry that claimed the link was "inactive —
+    // contact the agency." The backend (api/portal/co/[token]/route.ts) deliberately never sends
+    // state: 'stalled' — a stalled CO is an agency-side attention flag, not a client-facing dead
+    // end, and is designed to fall through to the normal accept/decline/counter form. This entry
+    // was leftover from before that behavior was fixed and was unreachable, but actively wrong if
+    // a future regression ever did send it: better to fall through to `if (!co) return null` (loud,
+    // obviously broken) than to confidently tell a client their still-live change order is dead.
     countered: { icon: 'ti-check', iconBg: '#EDFAF2', iconColor: '#1A5C3A', title: 'Counter already sent', body: 'You have already sent a counter-offer for this change order. The agency has been notified and will respond soon.' },
     // FIX (cron/portal audit, sections 17+18 — feature gap, closing pass): without this, a client
     // hitting a change order the agency granted as an exception (api/co/[id]/exception) got a blank
