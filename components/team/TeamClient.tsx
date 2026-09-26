@@ -698,7 +698,19 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
                                   Change role
                                 </button>
                               )}
-                              <button className="btn btn-ghost btn-xs" disabled={busyId === m.id} onClick={() => handleReactivate(m.id, name)}>
+                              {/* FIX (deep audit, Team & Invites re-pass —
+                                  UX gap): the Invite button above disables
+                                  itself and explains why at seat capacity;
+                                  this one didn't, even though reactivating
+                                  a member takes a seat exactly like an
+                                  invite does and the server (checkSeatLimit
+                                  in api/team/[id]/route.ts) already refuses
+                                  it with a 409. Without this, clicking did
+                                  nothing but surface an error the button
+                                  gave no warning of. */}
+                              <button className="btn btn-ghost btn-xs" disabled={busyId === m.id || atSeatCapacity}
+                                title={atSeatCapacity ? 'Every seat on your plan is in use — free one up or upgrade first' : undefined}
+                                onClick={() => handleReactivate(m.id, name)}>
                                 {busyId === m.id ? <span className="spin spin-dark" /> : 'Reactivate'}
                               </button>
                             </div>

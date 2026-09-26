@@ -134,9 +134,24 @@ export async function POST(request: NextRequest) {
     // at the new one. The client's subsequent branding PATCH (which also
     // carries brandColour) still sends logoStoragePath along and simply
     // re-writes the same value; that's a harmless no-op, not a race.
+    // FIX (deep audit, Settings re-pass round 2 — false-conflict bug): this
+    // route's own comment above already explains why it writes updated_at
+    // itself (to keep the Storage object and the DB row from desyncing).
+    // But that means the workspace's updated_at moves WITHOUT the client's
+    // cached copy (SettingsClient's `workspace` prop, only refreshed by
+    // router.refresh() after the *next* branding PATCH resolves) ever
+    // learning about it. saveBranding() immediately follows this upload
+    // with a PATCH /api/workspace/branding carrying the stale
+    // expectedUpdatedAt it loaded the page with — that PATCH's own
+    // optimistic-concurrency check (see its comment) then refuses its own
+    // request as "changed elsewhere," every time a logo and any other
+    // branding field are saved together. Returning the fresh timestamp
+    // here lets the client use it for that immediate next call instead of
+    // waiting on a round trip that hasn't happened yet.
+    const logoUpdatedAt = new Date().toISOString()
     const { error: linkErr } = await (service as any)
       .from('workspaces')
-      .update({ logo_storage_path: path, updated_at: new Date().toISOString() })
+      .update({ logo_storage_path: path, updated_at: logoUpdatedAt })
       .eq('id', session.workspaceId)
 
     if (linkErr) {
@@ -160,7 +175,7 @@ export async function POST(request: NextRequest) {
       metadata: { path },
     })
 
-    return NextResponse.json({ logoStoragePath: path })
+    return NextResponse.json({ logoStoragePath: path, updatedAt: logoUpdatedAt })
   } catch (err) {
     // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): outer
     // catch-all returned a raw exception message — same info-disclosure
@@ -199,9 +214,13 @@ export async function DELETE() {
       return NextResponse.json({ ok: true })
     }
 
+    // FIX (deep audit, Settings re-pass round 2 — same false-conflict bug
+    // as POST above): return the fresh updated_at so a subsequent branding
+    // save in the same session doesn't race its own stale cached copy.
+    const removeUpdatedAt = new Date().toISOString()
     const { error: clearErr } = await (service as any)
       .from('workspaces')
-      .update({ logo_storage_path: null, updated_at: new Date().toISOString() })
+      .update({ logo_storage_path: null, updated_at: removeUpdatedAt })
       .eq('id', session.workspaceId)
 
     if (clearErr) {
@@ -224,7 +243,7 @@ export async function DELETE() {
       metadata: { path: currentPath },
     })
 
-    return NextResponse.json({ ok: true })
+    return NextResponse.json({ ok: true, updatedAt: removeUpdatedAt })
   } catch (err) {
     console.error('Logo removal route error:', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

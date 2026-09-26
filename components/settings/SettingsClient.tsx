@@ -480,6 +480,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
             preview={logoPreview} setPreview={setLogoPreview}
             savedSignature={workspace?.agency_signature_data || null}
             expectedUpdatedAt={workspace?.updated_at || null}
+            lastPatchJson={lastPatchJson}
             permissions={permissions} onSave={patch} saving={saving}
           />
         )}
@@ -1009,7 +1010,7 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedA
 }
 
 // ── BRANDING ──────────────────────────────────────────────────
-function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, savedSignature, expectedUpdatedAt, permissions, onSave, saving }: any) {
+function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, savedSignature, expectedUpdatedAt, lastPatchJson, permissions, onSave, saving }: any) {
   const [logoFile,  setLogoFile]  = useState<File | null>(null)
   const [uploading, setUploading] = useState(false)
   const [fileError, setFileError] = useState('')
@@ -1018,6 +1019,25 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, save
   const [savingSig,  setSavingSig]  = useState(false)
   const [sigError,   setSigError]   = useState('')
   const sigPadRef = useRef<SignaturePadHandle>(null)
+
+  // FIX (deep audit, Settings re-pass round 2 — false-conflict bug): the
+  // `expectedUpdatedAt` prop only ever moves forward when the PARENT
+  // re-renders with a fresh `workspace` prop, which only happens after
+  // router.refresh() completes — a full round trip back to the server
+  // component. Three write paths in this component change
+  // workspaces.updated_at without going through that: the logo upload
+  // (POST .../logo), the logo removal (DELETE .../logo), and the
+  // signature save/clear (raw PATCH below, not routed through `onSave`).
+  // Each of those used to leave the prop's stale value in place, so the
+  // very next branding save in the same session sent an expectedUpdatedAt
+  // that no longer matched the DB row — a conflict against the user's own
+  // prior action, not a real one. This local copy is the actual source of
+  // truth for what THIS component should send next; it starts from the
+  // prop and is advanced immediately by every one of those write paths as
+  // soon as each one's response reports the new value, rather than waiting
+  // for the slower prop-refresh round trip.
+  const [freshUpdatedAt, setFreshUpdatedAt] = useState<string | null>(expectedUpdatedAt)
+  useEffect(() => { setFreshUpdatedAt(expectedUpdatedAt) }, [expectedUpdatedAt])
 
   if (!permissions.manageWorkspace) return <Restricted />
 
@@ -1065,6 +1085,12 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, save
         if (res.ok) {
           const json = await res.json()
           logoStoragePath = json.logoStoragePath
+          // FIX (deep audit, Settings re-pass round 2 — false-conflict
+          // bug): this upload just moved workspaces.updated_at forward on
+          // the server. Advance our own baseline to match before the
+          // branding PATCH below fires, or that PATCH's concurrency check
+          // sees a mismatch against its own preceding request every time.
+          if (json.updatedAt) setFreshUpdatedAt(json.updatedAt)
         } else {
           // FIX (deep audit, Settings section): this fell through to the
           // branding PATCH below with no early return, so a failed logo
@@ -1081,8 +1107,12 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, save
       const ok = await onSave('/api/workspace/branding', {
         brandColour: colour,
         ...(logoStoragePath ? { logoStoragePath } : {}),
-        ...(expectedUpdatedAt ? { expectedUpdatedAt } : {}),
+        ...(freshUpdatedAt ? { expectedUpdatedAt: freshUpdatedAt } : {}),
       })
+      // FIX (deep audit, Settings re-pass round 2): keep our local baseline
+      // in step with what this save actually landed, same reasoning as the
+      // logo-upload branch above.
+      if (ok && lastPatchJson?.current?.updatedAt) setFreshUpdatedAt(lastPatchJson.current.updatedAt)
       if (ok) setLogoFile(null)
     } finally { setUploading(false) }
   }
@@ -1100,6 +1130,10 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, save
       const res = await fetch('/api/workspace/branding/logo', { method: 'DELETE' })
       const json = await res.json().catch(() => ({}))
       if (!res.ok) { setFileError(json.error || 'Could not remove logo — try again.'); return }
+      // FIX (deep audit, Settings re-pass round 2 — false-conflict bug):
+      // same reasoning as the upload path above — this removal moves
+      // updated_at forward on the server too.
+      if (json.updatedAt) setFreshUpdatedAt(json.updatedAt)
       setPreview(null)
       setLogoFile(null)
     } catch {
@@ -1114,12 +1148,26 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, save
     try {
       const res = await fetch('/api/workspace/branding', {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agencySignatureData: dataUrl }),
+        body: JSON.stringify({
+          agencySignatureData: dataUrl,
+          // FIX (deep audit, Settings re-pass round 2): this call never
+          // sent expectedUpdatedAt at all, so two people saving branding
+          // fields at once could silently clobber each other here even
+          // though the sibling colour/logo save is protected. Bringing it
+          // in line also means this write's own effect on updated_at is
+          // now visible to it — see freshUpdatedAt's own comment above.
+          ...(freshUpdatedAt ? { expectedUpdatedAt: freshUpdatedAt } : {}),
+        }),
       })
-      if (!res.ok) throw new Error()
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        if (Array.isArray(json.conflicts)) setSigError('Branding was changed elsewhere since you loaded this page. Reload and try again.')
+        throw new Error()
+      }
+      if (json.updatedAt) setFreshUpdatedAt(json.updatedAt)
       setSigSaved(dataUrl)
       sigPadRef.current?.clear()
-    } catch { setSigError('Could not save signature — try again.') }
+    } catch { setSigError(prev => prev || 'Could not save signature — try again.') }
     finally { setSavingSig(false) }
   }
 
@@ -1128,10 +1176,20 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, save
     try {
       const res = await fetch('/api/workspace/branding', {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agencySignatureData: null }),
+        body: JSON.stringify({
+          agencySignatureData: null,
+          ...(freshUpdatedAt ? { expectedUpdatedAt: freshUpdatedAt } : {}),
+        }),
       })
-      if (res.ok) setSigSaved(null)
-      else setSigError('Could not remove the signature — try again.')
+      const json = await res.json().catch(() => ({}))
+      if (res.ok) {
+        if (json.updatedAt) setFreshUpdatedAt(json.updatedAt)
+        setSigSaved(null)
+      } else if (Array.isArray(json.conflicts)) {
+        setSigError('Branding was changed elsewhere since you loaded this page. Reload and try again.')
+      } else {
+        setSigError('Could not remove the signature — try again.')
+      }
     } catch { setSigError('Could not remove the signature — try again.') }
     finally { setSavingSig(false) }
   }

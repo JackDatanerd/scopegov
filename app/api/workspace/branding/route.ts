@@ -123,7 +123,11 @@ export async function PATCH(request: NextRequest) {
     const REDACT = ['agency_signature_data']
     const comparable = { ...current, brand_colour: typeof current.brand_colour === 'string' ? current.brand_colour.toLowerCase() : current.brand_colour }
     const { changedKeys, changes } = diffFields(comparable, proposed, REDACT)
-    if (changedKeys.length === 0) return NextResponse.json({ ok: true, unchanged: true })
+    // FIX (deep audit, Settings re-pass round 2): include updatedAt on the
+    // unchanged path too — a caller (e.g. BrandingTab's local
+    // concurrency-tracking state) that's only learning the current value
+    // rather than reacting to a real change still needs it to stay in sync.
+    if (changedKeys.length === 0) return NextResponse.json({ ok: true, unchanged: true, updatedAt: current.updated_at })
 
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
     for (const key of changedKeys) updates[key] = proposed[key]
@@ -154,7 +158,13 @@ export async function PATCH(request: NextRequest) {
       ? 'This brand colour may be hard to read as white text — it\u2019s used on "Sign"/"Pay" buttons in the client portal and on the button in every client-facing email. Consider a darker or more saturated shade.'
       : undefined
 
-    return NextResponse.json({ ok: true, changed: changedKeys, ...(warning ? { warning } : {}) })
+    // FIX (deep audit, Settings re-pass round 2 — false-conflict bug):
+    // returning the new updated_at lets the caller update its own cached
+    // baseline immediately, without waiting on router.refresh() to bring a
+    // fresh `workspace` prop back down — see BrandingTab's freshUpdatedAt
+    // state, and this route's own expectedUpdatedAt comment above for the
+    // conflict this closes the loop on.
+    return NextResponse.json({ ok: true, changed: changedKeys, updatedAt: updates.updated_at, ...(warning ? { warning } : {}) })
   } catch (err) {
     console.error('Workspace branding error:', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
