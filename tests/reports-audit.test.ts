@@ -77,7 +77,7 @@ describe('audit search filter', () => {
 
 describe('category filter', () => {
   it('builds a quoted LIKE or-list, null for unknown', () => {
-    expect(categoryFilter('sow')).toBe('event_type.like."sow.%"')
+    expect(categoryFilter('sow')).toContain('event_type.like."sow.%"')
     expect(categoryFilter('invoices')).toContain('event_type.like."payment.%"')
     expect(categoryFilter('nope')).toBeNull()
     expect(categoryFilter(undefined)).toBeNull()
@@ -89,6 +89,29 @@ describe('category filter', () => {
   // what it should match so it can't quietly grow another one.
   it('team category matches only member.* and role.*', () => {
     expect(categoryFilter('team')).toBe('event_type.like."member.%",event_type.like."role.%"')
+  })
+  // FIX (deep audit, Reports & Audit log re-pass — independent redo):
+  // 'reminder.sent'/'reminder.failed' is one event_type shared by SOW, CO
+  // and invoice reminders, disambiguated only by entity_type. It used to be
+  // a plain pattern under 'invoices' alone — filtering to "Statements of
+  // work"/"Change orders" never showed that document's own reminders, and
+  // "Invoices & payments" showed SOW/CO reminders it shouldn't. Each of the
+  // three categories must now carry its OWN entity-scoped reminder clause,
+  // and none of the three may pick up the other two's.
+  it('scopes the shared reminder.% event to each category by entity_type', () => {
+    const sow = categoryFilter('sow')!
+    const co = categoryFilter('co')!
+    const invoices = categoryFilter('invoices')!
+    expect(sow).toContain('and(event_type.like."reminder.%",entity_type.eq."sow")')
+    expect(co).toContain('and(event_type.like."reminder.%",entity_type.eq."change_order")')
+    expect(invoices).toContain('and(event_type.like."reminder.%",entity_type.eq."invoice")')
+    // No cross-contamination: sow's clause never mentions change_order/invoice, etc.
+    expect(sow).not.toContain('entity_type.eq."change_order"')
+    expect(sow).not.toContain('entity_type.eq."invoice"')
+    expect(co).not.toContain('entity_type.eq."sow"')
+    expect(co).not.toContain('entity_type.eq."invoice"')
+    expect(invoices).not.toContain('entity_type.eq."sow"')
+    expect(invoices).not.toContain('entity_type.eq."change_order"')
   })
 })
 

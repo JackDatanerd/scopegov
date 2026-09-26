@@ -157,7 +157,18 @@ describe('webhook claims', () => {
 
 describe('pending checkouts', () => {
   const now = Date.parse('2026-09-19T12:00:00Z')
-  const rows = () => ({
+  // Exactly one live candidate for this (email, plan_code) — expired and
+  // consumed rows present too, to prove they're excluded either way.
+  const singleRow = () => ({
+    billing_checkouts: [
+      { id: 'c1', workspace_id: 'wsA', email: 'owner@x.com', plan_code: 'PLN_1', consumed_at: null, created_at: new Date(now - 60_000).toISOString() },
+      { id: 'old', workspace_id: 'wsC', email: 'owner@x.com', plan_code: 'PLN_1', consumed_at: null, created_at: new Date(now - CHECKOUT_TTL_MS - 1000).toISOString() },
+      { id: 'used', workspace_id: 'wsD', email: 'owner@x.com', plan_code: 'PLN_1', consumed_at: 'x', created_at: new Date(now - 1000).toISOString() },
+    ],
+  })
+  // Two workspaces both mid-checkout for the exact same (email, plan_code) —
+  // the real, supported multi-workspace-per-login scenario.
+  const twoRows = () => ({
     billing_checkouts: [
       { id: 'c1', workspace_id: 'wsA', email: 'owner@x.com', plan_code: 'PLN_1', consumed_at: null, created_at: new Date(now - 60_000).toISOString() },
       { id: 'c2', workspace_id: 'wsB', email: 'owner@x.com', plan_code: 'PLN_1', consumed_at: null, created_at: new Date(now - 120_000).toISOString() },
@@ -165,21 +176,35 @@ describe('pending checkouts', () => {
       { id: 'used', workspace_id: 'wsD', email: 'owner@x.com', plan_code: 'PLN_1', consumed_at: 'x', created_at: new Date(now - 1000).toISOString() },
     ],
   })
-  it('matches case-insensitively and prefers the newest', async () => {
-    const c = await findPendingCheckout(fakeService(rows()), 'OWNER@X.com', 'PLN_1', undefined, now)
-    expect(c?.id).toBe('c1')
+  it('matches case-insensitively when exactly one candidate is pending', async () => {
+    const r = await findPendingCheckout(fakeService(singleRow()), 'OWNER@X.com', 'PLN_1', undefined, now)
+    expect(r.checkout?.id).toBe('c1')
+    expect(r.ambiguous).toBe(false)
   })
-  it('uses the browser hint only to choose among server-recorded candidates', async () => {
-    expect((await findPendingCheckout(fakeService(rows()), 'owner@x.com', 'PLN_1', 'wsB', now))?.workspace_id).toBe('wsB')
+  it('uses the browser hint to choose among several server-recorded candidates', async () => {
+    const r = await findPendingCheckout(fakeService(twoRows()), 'owner@x.com', 'PLN_1', 'wsB', now)
+    expect(r.checkout?.workspace_id).toBe('wsB')
+    expect(r.ambiguous).toBe(false)
   })
-  it('CANNOT be pointed at a workspace that has no server-recorded checkout', async () => {
-    const c = await findPendingCheckout(fakeService(rows()), 'owner@x.com', 'PLN_1', 'victimWorkspace', now)
-    expect(c?.workspace_id).toBe('wsA')
-    expect(c?.workspace_id).not.toBe('victimWorkspace')
+  // FIX (deep audit, Billing re-pass — independent redo): this used to
+  // assert the OLD, buggy behavior — a hint matching neither candidate fell
+  // back to "whichever checkout was created most recently" (wsA), which is
+  // exactly how a real, paid subscription could get bound to the wrong
+  // workspace when two are mid-checkout for the same plan+interval. It must
+  // report ambiguous now instead of guessing — see checkouts.ts.
+  it('reports ambiguous rather than guessing when the hint matches neither candidate', async () => {
+    const r = await findPendingCheckout(fakeService(twoRows()), 'owner@x.com', 'PLN_1', 'victimWorkspace', now)
+    expect(r.checkout).toBeNull()
+    expect(r.ambiguous).toBe(true)
+  })
+  it('reports ambiguous with no hint at all when more than one candidate is pending', async () => {
+    const r = await findPendingCheckout(fakeService(twoRows()), 'owner@x.com', 'PLN_1', undefined, now)
+    expect(r.checkout).toBeNull()
+    expect(r.ambiguous).toBe(true)
   })
   it('ignores expired and consumed checkouts and other plans/emails', async () => {
-    expect(await findPendingCheckout(fakeService(rows()), 'owner@x.com', 'PLN_other', undefined, now)).toBeNull()
-    expect(await findPendingCheckout(fakeService(rows()), 'someone@else.com', 'PLN_1', undefined, now)).toBeNull()
+    expect((await findPendingCheckout(fakeService(twoRows()), 'owner@x.com', 'PLN_other', undefined, now)).checkout).toBeNull()
+    expect((await findPendingCheckout(fakeService(twoRows()), 'someone@else.com', 'PLN_1', undefined, now)).checkout).toBeNull()
   })
 })
 
@@ -221,5 +246,43 @@ describe('resolveWorkspace', () => {
       metadata: { workspaceId: 'wsOther' },
     }, { checkout: 'strict', planCode: 'PLN_1' })
     expect(r.workspaceId).toBeNull()
+  })
+  // FIX (deep audit, Billing re-pass — independent redo): two workspaces
+  // both mid-checkout for the same email+plan, and nothing (no metadata hint,
+  // or a hint that matches neither) to tell them apart. 'strict' is the mode
+  // subscription.create uses — the exact event that would otherwise bind a
+  // real, paid subscription to the wrong workspace by guessing.
+  it('subscription.create reports ambiguous instead of guessing between two pending checkouts', async () => {
+    // resolveWorkspace doesn't accept an injectable clock (it calls
+    // findPendingCheckout with the real Date.now()), so these rows are
+    // relative to actual wall-clock time rather than a fixed fake `now`.
+    const nowReal = Date.now()
+    const svc = fakeService({
+      billing: [],
+      billing_checkouts: [
+        { id: 'c1', workspace_id: 'wsA', email: 'a@b.com', plan_code: 'PLN_1', consumed_at: null, created_at: new Date(nowReal - 60_000).toISOString() },
+        { id: 'c2', workspace_id: 'wsB', email: 'a@b.com', plan_code: 'PLN_1', consumed_at: null, created_at: new Date(nowReal - 120_000).toISOString() },
+      ],
+    })
+    const r = await resolveWorkspace(svc, {
+      subscription_code: 'S_NEW', customer: { email: 'a@b.com' }, plan: { plan_code: 'PLN_1' },
+    }, { checkout: 'strict', planCode: 'PLN_1' })
+    expect(r.workspaceId).toBeNull()
+    expect(r.ambiguous).toBe(true)
+  })
+  it('charge.success (prefer) reports ambiguous instead of guessing when no billing row exists yet', async () => {
+    const nowReal = Date.now()
+    const svc = fakeService({
+      billing: [],
+      billing_checkouts: [
+        { id: 'c1', workspace_id: 'wsA', email: 'a@b.com', plan_code: 'PLN_1', consumed_at: null, created_at: new Date(nowReal - 60_000).toISOString() },
+        { id: 'c2', workspace_id: 'wsB', email: 'a@b.com', plan_code: 'PLN_1', consumed_at: null, created_at: new Date(nowReal - 120_000).toISOString() },
+      ],
+    })
+    const r = await resolveWorkspace(svc, {
+      customer: { email: 'a@b.com' }, plan: { plan_code: 'PLN_1' },
+    }, { checkout: 'prefer', planCode: 'PLN_1' })
+    expect(r.workspaceId).toBeNull()
+    expect(r.ambiguous).toBe(true)
   })
 })

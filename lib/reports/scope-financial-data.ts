@@ -65,6 +65,27 @@
 //         is `still_open_flags`. The three now partition `total_flags`
 //         exactly: converted_to_co + closed_without_co_flags +
 //         still_open_flags === total_flags.
+// 11. FIX (deep audit, Reports & Audit log re-pass — independent redo,
+//     Financial overview): `projects` was fetched with
+//     `.neq('status','Draft').neq('status','Archived')` — correct for the
+//     POINT-IN-TIME figures (base_value / effective_value / byClient /
+//     byType — "what's currently in the book"), since Complete→Archived is
+//     a deliberate "take this off the books" action. But `projectById`
+//     built from that same excluded set was then reused as the join key for
+//     `amendments`/`cos` before they were split into PERIOD-scoped metrics
+//     (`co_impact`, `cos_raised`, `cos_accepted` — all rendered as
+//     "in period" in the UI). A change order genuinely sent and accepted
+//     while a project was live would silently disappear from an
+//     already-elapsed period's report the moment that project was later
+//     archived — a past, closed reporting period getting quieter every time
+//     you re-ran it, which is exactly the class of drift this file's own
+//     history (points 6, 7, 9 above) has otherwise gone out of its way to
+//     rule out. `projects`/`projectById` (current, Draft/Archived excluded)
+//     now feed ONLY the point-in-time figures, unchanged; a separate
+//     `allProjectsInCurrency`/`allProjectById` (every non-deleted project of
+//     the selected currency, any status) feeds the period-scoped ones, so a
+//     project's CURRENT status can no longer rewrite what already happened
+//     in a past period.
 
 import { PROJECT_TYPE_LABELS } from '@/lib/utils/format'
 import { fetchPaged } from '@/lib/utils/paginate'
@@ -232,9 +253,15 @@ export async function getFinancialReportData(
   // See file header, point 9: pins every time-ordered read to one instant.
   const asOf = new Date().toISOString()
   const [projectsQ, amendmentsQ, cosQ] = await Promise.all([
+    // FIX (deep audit, Reports & Audit re-pass — independent redo): see file
+    // header point 11. Fetches every non-deleted project regardless of
+    // status now (added `status` to the select) — the Draft/Archived
+    // exclusion is applied client-side below, ONLY where it's meant to
+    // apply (the point-in-time portfolio figures), not to the period-scoped
+    // CO metrics that also used to join through this same query.
     loadAll('projects', (f, t) => service.from('projects')
-      .select('id,name,type,contract_value,currency,client_id,clients(id,name)', { count: 'exact' })
-      .eq('workspace_id', wsId).is('deleted_at', null).neq('status', 'Draft').neq('status', 'Archived')
+      .select('id,name,type,contract_value,currency,client_id,status,clients(id,name)', { count: 'exact' })
+      .eq('workspace_id', wsId).is('deleted_at', null)
       .order('id').range(f, t)),
     // ALL amendments up to `asOf` (not just the period's): the portfolio's
     // effective value is base + every accepted amendment; the period only
@@ -251,9 +278,13 @@ export async function getFinancialReportData(
   ])
 
   const truncated = [projectsQ, amendmentsQ, cosQ].some(q => q.truncated)
-  const allProjects = projectsQ.rows as any[]
+  const allProjectsAnyStatus = projectsQ.rows as any[]
   const allAmendments = amendmentsQ.rows as any[]
   const allCos = cosQ.rows as any[]
+
+  // Current portfolio (point-in-time figures): unchanged semantics —
+  // Draft/Archived excluded, since those are deliberately "not in the book".
+  const allProjects = allProjectsAnyStatus.filter(p => p.status !== 'Draft' && p.status !== 'Archived')
 
   const currencyCounts: Record<string, number> = {}
   for (const p of allProjects) currencyCounts[p.currency || 'USD'] = (currencyCounts[p.currency || 'USD'] || 0) + 1
@@ -261,9 +292,20 @@ export async function getFinancialReportData(
 
   const projects = allProjects.filter(p => (p.currency || 'USD') === currency)
   const projectById = new Map(projects.map(p => [p.id, p]))
+
+  // FIX (deep audit, Reports & Audit re-pass — independent redo): see file
+  // header point 11. Period-scoped activity (amendments/COs bucketed into
+  // `co_impact`/`cos_raised`/`cos_accepted`) joins against every non-deleted
+  // project of this currency, ANY status — not just the current portfolio
+  // above — so a project being archived after the fact can't erase what
+  // already happened inside an already-elapsed reporting period.
+  const anyStatusInCurrency = allProjectsAnyStatus.filter(p => (p.currency || 'USD') === currency)
+  const anyStatusById = new Map(anyStatusInCurrency.map(p => [p.id, p]))
+
   const additive = allAmendments.filter(a => projectById.has(a.project_id) && !isNonAdditiveAmendment(a, projectById.get(a.project_id)?.type))
-  const periodAmendments = additive.filter(a => a.created_at >= since)
-  const cos = allCos.filter(c => projectById.has(c.project_id))
+  const additiveAnyStatus = allAmendments.filter(a => anyStatusById.has(a.project_id) && !isNonAdditiveAmendment(a, anyStatusById.get(a.project_id)?.type))
+  const periodAmendments = additiveAnyStatus.filter(a => a.created_at >= since)
+  const cos = allCos.filter(c => anyStatusById.has(c.project_id))
 
   const lifetimeByProject: Record<string, number> = {}
   for (const a of additive) lifetimeByProject[a.project_id] = (lifetimeByProject[a.project_id] || 0) + (Number(a.financial_impact) || 0)

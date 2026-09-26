@@ -160,7 +160,16 @@ async function handleEvent(service: any, event: any): Promise<void> {
       // Bound to the server-recorded checkout, never to browser metadata.
       const res: Resolution = await resolveWorkspace(service, data, { checkout: 'strict', planCode })
       if (!res.workspaceId) {
-        await unresolved(service, event, 'No pending checkout matches this subscription (email + plan). Created outside the app, or the checkout record expired.')
+        // FIX (deep audit, Billing re-pass — independent redo): see
+        // lib/billing/resolve.ts / checkouts.ts. Ambiguous means we found
+        // MORE THAN ONE workspace mid-checkout for this exact email+plan —
+        // a real paid subscription that a human must attribute by hand,
+        // not the generic "nothing matches" case below.
+        if (res.ambiguous) {
+          await unresolved(service, event, `A subscription was created, but more than one workspace has a pending checkout for this email + plan within the last 24h — could not tell which one actually paid. Attribute it by hand.`)
+        } else {
+          await unresolved(service, event, 'No pending checkout matches this subscription (email + plan). Created outside the app, or the checkout record expired.')
+        }
         return
       }
       const workspaceId = res.workspaceId
@@ -243,10 +252,19 @@ async function handleEvent(service: any, event: any): Promise<void> {
       const planCode: string | undefined = data?.plan?.plan_code
       const res = await resolveWorkspace(service, data, { checkout: 'prefer', planCode })
       if (!res.workspaceId) {
-        // One-off charges with no plan are not ours; a subscription charge we
-        // cannot attribute is a customer who paid for something.
-        if (planCode || data?.metadata?.workspaceId) await unresolved(service, event, 'A subscription payment succeeded but no workspace could be identified.')
-        else console.log('Ignoring charge.success with no plan and no matching workspace')
+        // FIX (deep audit, Billing re-pass — independent redo): see
+        // lib/billing/resolve.ts / checkouts.ts — more than one workspace
+        // mid-checkout for this email+plan is a real payment that needs a
+        // human to attribute, distinct from "genuinely not ours" below.
+        if (res.ambiguous) {
+          await unresolved(service, event, 'A subscription payment succeeded, but more than one workspace has a pending checkout for this email + plan within the last 24h — could not tell which one actually paid. Attribute it by hand.')
+        } else if (planCode || data?.metadata?.workspaceId) {
+          // One-off charges with no plan are not ours; a subscription charge
+          // we cannot attribute is a customer who paid for something.
+          await unresolved(service, event, 'A subscription payment succeeded but no workspace could be identified.')
+        } else {
+          console.log('Ignoring charge.success with no plan and no matching workspace')
+        }
         return
       }
       if (res.superseded) { console.log('charge.success for a superseded subscription — ignoring'); return }

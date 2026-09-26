@@ -23,6 +23,17 @@
 // There is no active-workspace fallback. If nothing matches, the caller
 // alerts a human instead of guessing.
 //
+// FIX (deep audit, Billing re-pass — independent redo): findPendingCheckout
+// itself used to silently guess (`rows[0]`, the most-recently-CREATED
+// checkout) whenever more than one candidate existed for the same
+// (email, plan_code) and the browser-metadata hint didn't identify one —
+// exactly the two-workspaces-on-the-same-plan scenario this file's own
+// comments already call out as explicitly supported. It now reports that
+// case as ambiguous instead of guessing; both 'strict' and 'prefer' below
+// propagate it the same way the existing customer-code-ambiguous case
+// already does, so the caller alerts a human rather than binding a real,
+// paid Paystack subscription to the wrong workspace. See checkouts.ts.
+//
 // FIX (Billing re-pass #4 — HIGH): 'prefer' mode (charge.success) used to
 // consult the checkout BEFORE subscription/customer code, unconditionally,
 // for every charge — not only a first one. The header comment above already
@@ -96,8 +107,16 @@ export async function resolveWorkspace(
   // file header for why).
   if (mode === 'strict') {
     if (email && opts.planCode) {
-      const checkout = await findPendingCheckout(service, email, opts.planCode, data?.metadata?.workspaceId)
-      if (checkout) return { ...none, workspaceId: checkout.workspace_id, via: 'checkout', checkout }
+      const result = await findPendingCheckout(service, email, opts.planCode, data?.metadata?.workspaceId)
+      if (result.checkout) return { ...none, workspaceId: result.checkout.workspace_id, via: 'checkout', checkout: result.checkout }
+      // FIX (deep audit, Billing re-pass — independent redo): see
+      // checkouts.ts's findPendingCheckout header. More than one candidate
+      // and no way to tell them apart must not fall through to `return none`
+      // silently — that's indistinguishable from "nothing pending at all"
+      // to the caller, when in fact we know EXACTLY the risk: two workspaces
+      // both mid-checkout for the same plan, and guessing wrong means
+      // binding a paid subscription to the wrong one.
+      if (result.ambiguous) return { ...none, ambiguous: true }
     }
     return none
   }
@@ -127,8 +146,9 @@ export async function resolveWorkspace(
   // there is no billing row yet — a first-ever charge for a brand-new
   // customer is the only realistic way to land here for 'prefer'.
   if (mode === 'prefer' && email && opts.planCode) {
-    const checkout = await findPendingCheckout(service, email, opts.planCode, data?.metadata?.workspaceId)
-    if (checkout) return { ...none, workspaceId: checkout.workspace_id, via: 'checkout', checkout }
+    const result = await findPendingCheckout(service, email, opts.planCode, data?.metadata?.workspaceId)
+    if (result.checkout) return { ...none, workspaceId: result.checkout.workspace_id, via: 'checkout', checkout: result.checkout }
+    if (result.ambiguous) return { ...none, ambiguous: true }
   }
 
   return none
