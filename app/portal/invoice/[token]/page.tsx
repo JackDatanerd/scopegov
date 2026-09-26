@@ -2,6 +2,10 @@
 import { useState, useEffect } from 'react'
 import { useParams } from 'next/navigation'
 import PortalShell from '@/components/portal/PortalShell'
+// FIX (deep audit, client-facing/signing section): see the identical fix and comment on the SOW
+// portal page — this page had the same raw .toLocaleString() money formatting bug, and had by far
+// the most instances of it (every line-item, the running balance, and the contract-position box).
+import { formatAmount } from '@/lib/utils/money'
 
 type PortalState = 'loading' | 'error' | 'ready'
 
@@ -204,7 +208,7 @@ export default function InvoicePortalPage() {
               </div>
               <div style={{ textAlign: 'right', flexShrink: 0 }}>
                 <div style={{ fontSize: 24, fontFamily: 'Georgia,serif', color: accent, fontWeight: 400 }}>
-                  {invoice.currency} {invoice.amount.toLocaleString()}
+                  {invoice.currency} {formatAmount(invoice.amount, invoice.currency)}
                 </div>
                 {invoice.dueDate && <div style={{ fontSize: 11, color: '#909090', marginTop: 2 }}>Due {fmtDate(invoice.dueDate)}</div>}
               </div>
@@ -269,8 +273,8 @@ export default function InvoicePortalPage() {
                   <div key={i} style={{ display: 'flex', padding: '10px 14px', fontSize: 13, borderTop: i > 0 ? '1px solid #F0F0EA' : 'none' }}>
                     <span style={{ flex: 1, color: '#333' }}>{item.description}</span>
                     <span style={{ width: 50, textAlign: 'center', fontFamily: 'IBM Plex Mono, monospace', color: '#555' }}>{item.quantity}</span>
-                    <span style={{ width: 100, textAlign: 'right', fontFamily: 'IBM Plex Mono, monospace', color: '#555' }}>{item.rate ? `${invoice.currency} ${item.rate.toLocaleString()}` : '—'}</span>
-                    <span style={{ width: 100, textAlign: 'right', fontFamily: 'IBM Plex Mono, monospace', fontWeight: 600 }}>{invoice.currency} {item.total.toLocaleString()}</span>
+                    <span style={{ width: 100, textAlign: 'right', fontFamily: 'IBM Plex Mono, monospace', color: '#555' }}>{item.rate ? `${invoice.currency} ${formatAmount(item.rate, invoice.currency)}` : '—'}</span>
+                    <span style={{ width: 100, textAlign: 'right', fontFamily: 'IBM Plex Mono, monospace', fontWeight: 600 }}>{invoice.currency} {formatAmount(item.total, invoice.currency)}</span>
                   </div>
                 ))}
               </div>
@@ -282,29 +286,29 @@ export default function InvoicePortalPage() {
                 <>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#555', marginBottom: 6 }}>
                     <span>Subtotal</span>
-                    <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{invoice.currency} {invoice.subtotal.toLocaleString()}</span>
+                    <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{invoice.currency} {formatAmount(invoice.subtotal, invoice.currency)}</span>
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#555', marginBottom: 6 }}>
                     <span>Tax ({invoice.taxRate}%){invoice.taxInclusive ? ' — included' : ''}</span>
                     <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>
-                      {invoice.taxInclusive ? '—' : `${invoice.currency} ${(invoice.amount - invoice.subtotal).toLocaleString()}`}
+                      {invoice.taxInclusive ? '—' : `${invoice.currency} ${formatAmount(invoice.amount - invoice.subtotal, invoice.currency)}`}
                     </span>
                   </div>
                 </>
               )}
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#555', marginBottom: invoice.amountPaid > 0 ? 6 : 0 }}>
                 <span>Invoice amount</span>
-                <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{invoice.currency} {invoice.amount.toLocaleString()}</span>
+                <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{invoice.currency} {formatAmount(invoice.amount, invoice.currency)}</span>
               </div>
               {invoice.amountPaid > 0 && (
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#1A5C3A', marginBottom: 8 }}>
                   <span>Paid to date</span>
-                  <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>-{invoice.currency} {invoice.amountPaid.toLocaleString()}</span>
+                  <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>-{invoice.currency} {formatAmount(invoice.amountPaid, invoice.currency)}</span>
                 </div>
               )}
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 16, fontWeight: 600, paddingTop: invoice.amountPaid > 0 ? 8 : 0, borderTop: invoice.amountPaid > 0 ? '1px solid #E5E1D8' : 'none' }}>
                 <span>{balanceDue > 0 ? 'Balance due' : 'Paid in full'}</span>
-                <span style={{ fontFamily: 'IBM Plex Mono, monospace', color: accent }}>{invoice.currency} {balanceDue.toLocaleString()}</span>
+                <span style={{ fontFamily: 'IBM Plex Mono, monospace', color: accent }}>{invoice.currency} {formatAmount(balanceDue, invoice.currency)}</span>
               </div>
             </div>
 
@@ -327,7 +331,7 @@ export default function InvoicePortalPage() {
                 {payments.map((p, i) => (
                   <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, color: '#555', padding: '7px 0', borderBottom: '1px solid #F2F0EA' }}>
                     <span>{fmtDate(p.paid_at)} · {METHOD_LABEL[p.method] || p.method}{p.reference_note ? ` · ${p.reference_note}` : ''}</span>
-                    <span style={{ fontFamily: 'IBM Plex Mono, monospace', color: '#333' }}>{invoice.currency} {p.amount.toLocaleString()}</span>
+                    <span style={{ fontFamily: 'IBM Plex Mono, monospace', color: '#333' }}>{invoice.currency} {formatAmount(p.amount, invoice.currency)}</span>
                   </div>
                 ))}
               </div>
@@ -342,20 +346,20 @@ export default function InvoicePortalPage() {
                 <div className="portal-section-title">Contract position</div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, color: '#555', padding: '5px 0' }}>
                   <span>Contracted value</span>
-                  <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{invoice.currency} {invoice.contractPosition.contractedValue.toLocaleString()}</span>
+                  <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{invoice.currency} {formatAmount(invoice.contractPosition.contractedValue, invoice.currency)}</span>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, color: '#555', padding: '5px 0' }}>
                   <span>Invoiced to date (incl. this invoice)</span>
-                  <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{invoice.currency} {invoice.contractPosition.invoicedToDate.toLocaleString()}</span>
+                  <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{invoice.currency} {formatAmount(invoice.contractPosition.invoicedToDate, invoice.currency)}</span>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, color: '#555', padding: '5px 0' }}>
                   <span>Paid to date</span>
-                  <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{invoice.currency} {invoice.contractPosition.paidToDate.toLocaleString()}</span>
+                  <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{invoice.currency} {formatAmount(invoice.contractPosition.paidToDate, invoice.currency)}</span>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, fontWeight: 600, padding: '8px 0 0', marginTop: 2, borderTop: '1px solid #E5E1D8' }}>
                   <span>Remaining contract value</span>
                   <span style={{ fontFamily: 'IBM Plex Mono, monospace', color: accent }}>
-                    {invoice.currency} {Math.max(0, invoice.contractPosition.contractedValue - invoice.contractPosition.invoicedToDate).toLocaleString()}
+                    {invoice.currency} {formatAmount(Math.max(0, invoice.contractPosition.contractedValue - invoice.contractPosition.invoicedToDate), invoice.currency)}
                   </span>
                 </div>
               </div>

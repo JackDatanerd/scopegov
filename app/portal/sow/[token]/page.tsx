@@ -3,6 +3,14 @@ import { useState, useEffect, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import SignaturePad, { type SignaturePadHandle } from '@/components/ui/SignaturePad'
 import { isTableSection, SOW_TABLE_SCHEMAS, columnLabel, type SowTableSectionId, type SowTableRow } from '@/lib/sow/table-schema'
+// FIX (deep audit, client-facing/signing section): this page formatted money with raw
+// .toLocaleString() — no minimumFractionDigits, so a figure with cents (1234.50) could print as
+// "1,234.5", and one without (1500.00) as "1,500" — inconsistent, and on a contract figure reads
+// as a typo. formatAmount already exists for exactly this (see its own comment) and is already
+// used by every email and the PDF renderer; this page — the actual document the client signs —
+// never adopted it, so the amount they see here could visibly disagree with the amount on the PDF
+// of the same document.
+import { formatAmount } from '@/lib/utils/money'
 
 type PortalState =
   | 'loading' | 'invalid' | 'revoked' | 'expired' | 'declined'
@@ -266,7 +274,7 @@ export default function SowPortalPage() {
               </div>
               <div style={{ textAlign: 'right', flexShrink: 0 }}>
                 <div style={{ fontSize: 22, fontFamily: 'Georgia,serif', color: accent, fontWeight: 400 }}>
-                  {sow.currency} {sow.contractValue.toLocaleString()}
+                  {sow.currency} {formatAmount(sow.contractValue, sow.currency)}
                 </div>
                 <div style={{ fontSize: 11, color: '#909090', marginTop: 2 }}>Contract value</div>
                 {/* A watermarked, unsigned copy for the signer's own review (counsel, finance).
@@ -330,7 +338,7 @@ export default function SowPortalPage() {
                           {!m.dueDate && m.trigger && <span style={{ color: '#909090', fontSize: 11 }}> · {m.trigger}</span>}
                         </td>
                         <td style={{ padding: '8px 0', borderBottom: '1px solid #F2F0EA', textAlign: 'right', fontFamily: 'IBM Plex Mono, monospace', color: '#333' }}>
-                          {m.amount != null ? `${sow.currency} ${m.amount.toLocaleString()}` : m.percentage != null ? `${m.percentage}%` : ''}
+                          {m.amount != null ? `${sow.currency} ${formatAmount(m.amount, sow.currency)}` : m.percentage != null ? `${m.percentage}%` : ''}
                         </td>
                       </tr>
                     ))}

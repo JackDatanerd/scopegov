@@ -35,26 +35,76 @@ const SignaturePad = forwardRef<SignaturePadHandle, Props>(function SignaturePad
   const drawing    = useRef(false)
   const hasInk     = useRef(false)
   const lastPoint  = useRef<{ x: number; y: number } | null>(null)
+  // Last CSS-pixel size the buffer was sized for — lets resize() below tell a real box change
+  // from a no-op re-observe, and lets it redraw a snapshot back at its original proportions.
+  const sizeRef    = useRef<{ w: number; h: number }>({ w: 0, h: 0 })
   const [empty, setEmpty] = useState(true)
 
-  // Size the canvas's internal pixel buffer to match its displayed size at
-  // devicePixelRatio, so strokes aren't blurry on retina screens, while
-  // keeping the drawing API working in plain CSS-pixel coordinates.
+  // FIX (deep audit, client-facing/signing section): the canvas's internal pixel buffer used to be
+  // sized ONCE, on mount, from getBoundingClientRect() — but the canvas's CSS size (width:100%) is
+  // responsive. A client signing on their phone who rotates the device (or any window/container
+  // resize) after the pad has already mounted left the buffer's coordinate space stuck to the old
+  // size while getPoint() below keeps computing touch/mouse positions against the NEW, live rect —
+  // so a stroke drawn after a resize lands somewhere other than where the pointer actually is,
+  // silently corrupting the one thing this whole flow exists to capture correctly. A
+  // ResizeObserver keeps the buffer's pixel dimensions in sync with the element's actual box for
+  // its whole lifetime, not just at mount, and redraws whatever was already inked (resizing a
+  // canvas's width/height attributes clears it) so a mid-signing resize doesn't wipe out a
+  // signature the client already drew.
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
-    const ratio = window.devicePixelRatio || 1
-    const rect  = canvas.getBoundingClientRect()
-    canvas.width  = rect.width * ratio
-    canvas.height = rect.height * ratio
-    const ctx = canvas.getContext('2d')
-    if (ctx) {
-      ctx.scale(ratio, ratio)
-      ctx.lineCap  = 'round'
-      ctx.lineJoin = 'round'
+
+    function applyStrokeSettings(ctx: CanvasRenderingContext2D) {
+      ctx.lineCap   = 'round'
+      ctx.lineJoin  = 'round'
       ctx.lineWidth = 2.2
       ctx.strokeStyle = strokeColour
     }
+
+    function resize() {
+      if (!canvas) return
+      const ratio = window.devicePixelRatio || 1
+      const rect  = canvas.getBoundingClientRect()
+      // Hidden or mid-transition (e.g. display:none ancestor) — nothing to size yet.
+      if (rect.width === 0 || rect.height === 0) return
+      if (rect.width === sizeRef.current.w && rect.height === sizeRef.current.h) return
+
+      const prevW = sizeRef.current.w, prevH = sizeRef.current.h
+      const snapshot = hasInk.current ? canvas.toDataURL('image/png') : null
+
+      canvas.width  = rect.width * ratio
+      canvas.height = rect.height * ratio
+      sizeRef.current = { w: rect.width, h: rect.height }
+
+      const ctx = canvas.getContext('2d')
+      if (!ctx) return
+      ctx.scale(ratio, ratio)
+      applyStrokeSettings(ctx)
+
+      if (snapshot && prevW > 0 && prevH > 0) {
+        const img = new Image()
+        // Redraw at the ORIGINAL css-pixel size, top-left — keeps the client's actual signature
+        // proportions instead of stretching it to whatever width the resize left behind.
+        img.onload = () => ctx.drawImage(img, 0, 0, prevW, prevH)
+        img.src = snapshot
+      }
+    }
+
+    resize()
+    const observer = new ResizeObserver(resize)
+    observer.observe(canvas)
+    return () => observer.disconnect()
+    // Deliberately only re-runs on mount/unmount — a colour-only change is handled by the
+    // effect below without going through the resize/redraw dance.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // A stroke-colour change alone (no size change) just needs the context's strokeStyle updated in
+  // place — no reason to touch the buffer or existing ink for that.
+  useEffect(() => {
+    const ctx = canvasRef.current?.getContext('2d')
+    if (ctx) ctx.strokeStyle = strokeColour
   }, [strokeColour])
 
   function getPoint(e: React.MouseEvent | React.TouchEvent): { x: number; y: number } | null {

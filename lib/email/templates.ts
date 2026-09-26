@@ -120,7 +120,7 @@ function baseTemplate({
       ${body}
       ${cta && ctaUrl ? `
       <div style="margin:24px 0;">
-        <a href="${ctaUrl}" style="display:inline-block;background:${C.green};color:#FFF;padding:12px 24px;border-radius:5px;font-size:13px;font-weight:600;text-decoration:none;letter-spacing:.01em;">
+        <a href="${ctaUrl}" style="display:inline-block;background:${headerColour};color:#FFF;padding:12px 24px;border-radius:5px;font-size:13px;font-weight:600;text-decoration:none;letter-spacing:.01em;">
           ${cta}
         </a>
       </div>
@@ -187,7 +187,7 @@ export async function sendSowEmail(params: {
         </div>
         <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;">
           <span style="color:${C.text2};">Contract value</span>
-          <span style="font-weight:600;color:${C.green};">${money(contractValue, currency)}</span>
+          <span style="font-weight:600;color:${brandColour || C.green};">${money(contractValue, currency)}</span>
         </div>
       </div>
       <p style="font-size:12px;color:${C.text3};margin:0;">
@@ -827,7 +827,7 @@ export async function sendCoEmail(params: {
       <div style="background:${C.bg};border:1px solid ${C.border};border-radius:6px;padding:14px 16px;margin:16px 0;">
         <div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0;">
           <span style="color:${C.text2};">${coTitle}</span>
-          <span style="font-weight:600;color:${C.green};">${money(total, currency)}</span>
+          <span style="font-weight:600;color:${brandColour || C.green};">${money(total, currency)}</span>
         </div>
       </div>
     `,
@@ -1390,7 +1390,7 @@ export async function sendInvoiceEmail(params: {
       <div style="background:${C.bg};border:1px solid ${C.border};border-radius:6px;padding:14px 16px;margin:16px 0;">
         <div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0;">
           <span style="color:${C.text2};">${title}</span>
-          <span style="font-weight:600;color:${C.green};">${money(amount, currency)}</span>
+          <span style="font-weight:600;color:${brandColour || C.green};">${money(amount, currency)}</span>
         </div>
         ${dueDate ? `<div style="font-size:12px;color:${C.text3};margin-top:6px;">Due ${new Date(dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })}</div>` : ''}
       </div>

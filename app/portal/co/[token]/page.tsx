@@ -3,6 +3,9 @@ import { useState, useEffect, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import SignaturePad, { type SignaturePadHandle } from '@/components/ui/SignaturePad'
 import PortalShell from '@/components/portal/PortalShell'
+// FIX (deep audit, client-facing/signing section): see the identical fix and comment on the SOW
+// portal page — this page had the same raw .toLocaleString() money formatting bug.
+import { formatAmount } from '@/lib/utils/money'
 
 type CoState = 'loading' | 'invalid' | 'revoked' | 'expired' | 'accepted' | 'declined' | 'withdrawn' | 'closed' | 'stalled' | 'countered' | 'exception_granted' | 'ready' | 'done' | 'redirect'
 type CoMode  = 'view' | 'accept' | 'decline' | 'counter'
@@ -106,7 +109,7 @@ export default function CoPortalPage() {
     ? co.taxInclusive
       ? `Tax included in total (${co.taxRate}%)`
       : co.taxRate > 0
-        ? `Tax: ${co.currency} ${(co.subtotal * co.taxRate / 100).toLocaleString()}`
+        ? `Tax: ${co.currency} ${formatAmount(co.subtotal * co.taxRate / 100, co.currency)}`
         : null
     : null
 
@@ -207,9 +210,20 @@ export default function CoPortalPage() {
               </div>
               <div style={{ textAlign: 'right', flexShrink: 0 }}>
                 <div style={{ fontSize: 24, fontFamily: 'Georgia,serif', color: accent, fontWeight: 400 }}>
-                  {co.currency} {co.total.toLocaleString()}
+                  {co.currency} {formatAmount(co.total, co.currency)}
                 </div>
                 <div style={{ fontSize: 11, color: '#909090', marginTop: 2 }}>Additional scope cost</div>
+                {/* FIX (deep audit, client-facing/signing section): the CO portal never offered a
+                    review copy before acceptance — only the SOW portal did. Clients are routinely
+                    asked to get sign-off from finance/counsel on additional cost before agreeing to
+                    it, same as a SOW, and had no self-service way to get a file. Mirrors the SOW
+                    portal's identical link; /api/portal/co/[token]/pdf now serves a watermarked
+                    draft for any not-yet-accepted CO instead of 409ing. */}
+                {(state === 'ready') && (
+                  <a href={`/api/portal/co/${token}/pdf`} style={{ display: 'inline-block', marginTop: 10, fontSize: 12, color: accent }}>
+                    <i className="ti ti-download" style={{ fontSize: 13, marginRight: 4 }} />Download a copy to review (PDF)
+                  </a>
+                )}
               </div>
             </div>
           </div>
@@ -276,8 +290,8 @@ export default function CoPortalPage() {
                     <tr key={item.id}>
                       <td style={{ padding: '11px 0', borderBottom: '1px solid #F2F0EA', color: '#333', lineHeight: 1.5 }}>{item.description}</td>
                       <td style={{ padding: '11px 12px', borderBottom: '1px solid #F2F0EA', textAlign: 'center', color: '#555' }}>{item.quantity}</td>
-                      <td style={{ padding: '11px 0', borderBottom: '1px solid #F2F0EA', textAlign: 'right', fontFamily: 'IBM Plex Mono, monospace', color: '#555' }}>{co.currency} {item.rate.toLocaleString()}</td>
-                      <td style={{ padding: '11px 0', borderBottom: '1px solid #F2F0EA', textAlign: 'right', fontFamily: 'IBM Plex Mono, monospace', color: '#333', fontWeight: 500 }}>{co.currency} {item.total.toLocaleString()}</td>
+                      <td style={{ padding: '11px 0', borderBottom: '1px solid #F2F0EA', textAlign: 'right', fontFamily: 'IBM Plex Mono, monospace', color: '#555' }}>{co.currency} {formatAmount(item.rate, co.currency)}</td>
+                      <td style={{ padding: '11px 0', borderBottom: '1px solid #F2F0EA', textAlign: 'right', fontFamily: 'IBM Plex Mono, monospace', color: '#333', fontWeight: 500 }}>{co.currency} {formatAmount(item.total, co.currency)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -286,7 +300,7 @@ export default function CoPortalPage() {
                 {co.taxRate > 0 && !co.taxInclusive && (
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#555', marginBottom: 4 }}>
                     <span>Tax ({co.taxRate}%)</span>
-                    <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{co.currency} {(co.subtotal * co.taxRate / 100).toLocaleString()}</span>
+                    <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{co.currency} {formatAmount(co.subtotal * co.taxRate / 100, co.currency)}</span>
                   </div>
                 )}
                 {co.taxInclusive && co.taxRate > 0 && (
@@ -294,7 +308,7 @@ export default function CoPortalPage() {
                 )}
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 16, fontWeight: 600 }}>
                   <span>Total</span>
-                  <span style={{ fontFamily: 'IBM Plex Mono, monospace', color: accent }}>{co.currency} {co.total.toLocaleString()}</span>
+                  <span style={{ fontFamily: 'IBM Plex Mono, monospace', color: accent }}>{co.currency} {formatAmount(co.total, co.currency)}</span>
                 </div>
               </div>
             </div>
@@ -333,8 +347,8 @@ export default function CoPortalPage() {
             </h3>
             <p style={{ fontSize: 13, color: '#555', margin: '0 0 16px' }}>
               {co.mode === 'countersign'
-                ? <>{co.agencyName} has accepted your proposed amount. Type your name, draw your signature, and confirm the change order at <strong>{co.currency} {co.total.toLocaleString()}</strong>.</>
-                : <>Type your name, draw your signature, and accept the additional scope and cost of <strong>{co.currency} {co.total.toLocaleString()}</strong>.</>}
+                ? <>{co.agencyName} has accepted your proposed amount. Type your name, draw your signature, and confirm the change order at <strong>{co.currency} {formatAmount(co.total, co.currency)}</strong>.</>
+                : <>Type your name, draw your signature, and accept the additional scope and cost of <strong>{co.currency} {formatAmount(co.total, co.currency)}</strong>.</>}
             </p>
             {error && <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 5, padding: '9px 12px', fontSize: 12, color: '#B91C1C', marginBottom: 12 }}>{error}</div>}
             <div style={{ marginBottom: 14 }}>

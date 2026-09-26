@@ -23,6 +23,18 @@ import { fetchExecutedPdf } from '@/lib/documents/executed-pdf'
 // revocation. So: a 'superseded' token on a CO that is now 'accepted' is
 // still valid for GETting the PDF; anything else revoked (declined,
 // withdrawn) still 410s as normal.
+//
+// FIX (deep audit, client-facing/signing section): this route used to 409
+// on anything but 'accepted', so a client asked to sign off on real added
+// cost had no self-service way to get a file copy to route to finance or
+// counsel before agreeing — the SOW portal already solved exactly this
+// with a watermarked pre-signature review copy (see its /pdf route's own
+// comment). renderCoPdf already supports isWatermarked (a "DRAFT" stamp)
+// and an optional status badge for exactly this case; nothing ever wired
+// it up. Any status the portal page itself would still show the full
+// document for (see getCoByToken in ../route.ts) now gets a watermarked
+// review PDF instead of a 409.
+const PRE_ACCEPT_PDF_STATUSES = ['awaiting_response', 'stalled', 'awaiting_countersignature']
 export async function GET(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
     const { token } = await params
@@ -63,8 +75,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
     const readOnlyAllowed = revoked?.reason === 'superseded' && co.status === 'accepted'
     if (revoked && !readOnlyAllowed) return NextResponse.json({ error: 'Link no longer active' }, { status: 410 })
-    if (co.status !== 'accepted')
-      return NextResponse.json({ error: 'This change order has not been accepted yet' }, { status: 409 })
+    const isSigned = co.status === 'accepted'
+    if (!isSigned && !PRE_ACCEPT_PDF_STATUSES.includes(co.status))
+      return NextResponse.json({ error: 'This change order is not available as a PDF' }, { status: 409 })
 
     // FIX (portal audit, section 18 re-pass): every other CO portal route
     // (GET/route.ts, accept, countersign, decline/counter via _actions.ts)
@@ -87,8 +100,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       }
     }
 
-    // Frozen executed copy (lib/documents/executed-pdf.ts); older acceptances fall back to a live render.
-    {
+    // Frozen executed copy (lib/documents/executed-pdf.ts) — only exists once accepted; a
+    // pre-acceptance review copy is always rendered live below. Older acceptances predating stored
+    // executed copies also fall back to a live render.
+    if (isSigned) {
       const frozen = await fetchExecutedPdf(service, co.pdf_path)
       if (frozen) {
         return new NextResponse(new Uint8Array(frozen), {
@@ -160,9 +175,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       revisedContractValue: (!!co.is_retainer_renewal && project?.type === 'retainer') ? Number(co.total || 0) : null,
       timelineImpactDays: co.timeline_impact_days ?? null,
       scopeImpactNote:    co.scope_impact_note || null,
+      isWatermarked: !isSigned,
     })
 
-    const filename = `${co.document_number || 'CO'}.pdf`
+    const filename = `${co.document_number || 'CO'}${isSigned ? '' : '-for-review'}.pdf`
     return new NextResponse(new Uint8Array(pdfBuffer), {
       headers: {
         'Content-Type':        'application/pdf',
