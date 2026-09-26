@@ -430,3 +430,92 @@ describe('S-2 fix: POST /api/workspace/defaults stores NULL (inherit) instead of
     expect(inserted.out_of_scope_clauses).toEqual(['Print'])
   })
 })
+
+// ═════════════════════════════════════════════════════════════════════════
+// S-2b — a scoped save that resolves to nothing worth keeping no longer
+// leaves (or creates) a "ghost" override row that GET reports as isOverride:
+// true forever, even though every field just inherits from global.
+// ═════════════════════════════════════════════════════════════════════════
+describe('S-2b fix: a fully-inherited project-type save creates/leaves no override row', () => {
+  const globalRow = { id: 'g1', project_type: null, revision_rounds: 4, payment_structure: 'milestones', governing_law: null,
+    revision_policy: 'Two rounds within 5 days', payment_terms: 'Net 14', out_of_scope_clauses: ['Hosting'], assumptions: ['Client supplies content'],
+    updated_at: '2026-01-01T00:00:00Z' }
+
+  it('opening a project type and saving with nothing changed does not insert a row', async () => {
+    session = mkSession(['MANAGE_WORKSPACE_SETTINGS'])
+    let inserted = false
+    resolver = (t, ops) => {
+      if (t === 'workspace_defaults') {
+        if (has(ops, 'insert')) { inserted = true; return { error: null } }
+        if (has(ops, 'is')) return { data: [globalRow], error: null } // global-row lookup
+        return { data: [], error: null }                              // no existing override for 'web'
+      }
+      return { data: null, error: null }
+    }
+    const { POST } = await import('@/app/api/workspace/defaults/route')
+    // Exactly what DefaultsTab.saveCurrent() sends when the person opened
+    // "Web", changed nothing, and clicked Save: every field equal to what
+    // GET already resolved from global.
+    const res = await POST(req('/api/workspace/defaults', 'POST', {
+      projectType: 'web',
+      revisionRounds: 4, paymentStructure: 'milestones',
+      revisionPolicy: 'Two rounds within 5 days', paymentTerms: 'Net 14',
+      outOfScopeClauses: ['Hosting'], assumptions: ['Client supplies content'],
+    }))
+    expect(res.status).toBe(200)
+    expect(inserted).toBe(false)
+  })
+
+  it('an edit that brings an EXISTING override back to fully match global deletes the row instead of leaving it empty', async () => {
+    session = mkSession(['MANAGE_WORKSPACE_SETTINGS'])
+    const existingOverride = { id: 'ov1', project_type: 'web', revision_rounds: 6, payment_structure: null,
+      revision_policy: null, payment_terms: null, out_of_scope_clauses: null, assumptions: null, updated_at: '2026-01-02T00:00:00Z' }
+    let deletedId: string | null = null
+    let updated = false
+    resolver = (t, ops) => {
+      if (t === 'workspace_defaults') {
+        if (has(ops, 'delete')) { deletedId = arg(ops, 'eq')?.[1] ?? null; return { error: null } }
+        if (has(ops, 'update')) { updated = true; return { error: null } }
+        if (has(ops, 'is')) return { data: [globalRow], error: null }
+        return { data: [existingOverride], error: null }
+      }
+      return { data: null, error: null }
+    }
+    const { POST } = await import('@/app/api/workspace/defaults/route')
+    // The person dials revisionRounds back down to 4 (== global), leaving
+    // every field on this override matching the workspace default.
+    const res = await POST(req('/api/workspace/defaults', 'POST', {
+      projectType: 'web',
+      revisionRounds: 4, paymentStructure: 'milestones',
+      revisionPolicy: 'Two rounds within 5 days', paymentTerms: 'Net 14',
+      outOfScopeClauses: ['Hosting'], assumptions: ['Client supplies content'],
+    }))
+    expect(res.status).toBe(200)
+    expect(updated).toBe(false)
+    expect(deletedId).toBe('ov1')
+  })
+
+  it('a save that keeps ONE genuine difference is unaffected — still inserts, never deletes', async () => {
+    session = mkSession(['MANAGE_WORKSPACE_SETTINGS'])
+    let inserted: any = null
+    resolver = (t, ops) => {
+      if (t === 'workspace_defaults') {
+        if (has(ops, 'insert')) { inserted = arg(ops, 'insert')![0]; return { error: null } }
+        if (has(ops, 'is')) return { data: [globalRow], error: null }
+        return { data: [], error: null }
+      }
+      return { data: null, error: null }
+    }
+    const { POST } = await import('@/app/api/workspace/defaults/route')
+    const res = await POST(req('/api/workspace/defaults', 'POST', {
+      projectType: 'web',
+      revisionRounds: 6, // genuinely different from global's 4
+      paymentStructure: 'milestones',
+      revisionPolicy: 'Two rounds within 5 days', paymentTerms: 'Net 14',
+      outOfScopeClauses: ['Hosting'], assumptions: ['Client supplies content'],
+    }))
+    expect(res.status).toBe(200)
+    expect(inserted).not.toBeNull()
+    expect(inserted.revision_rounds).toBe(6)
+  })
+})

@@ -145,6 +145,54 @@ async function saveDefaults(workspaceId: string, body: any, actor: SessionUser) 
   }
   if (!scope && governingLawValue !== undefined) payload.governing_law = governingLawValue || null
 
+  // FIX (independent re-audit, Settings section): a project-type save whose
+  // every field collapses to "inherit from global" (via inheritsFromGlobal
+  // above, or the revision_rounds/payment_structure fallbacks) carries no
+  // actual override at all — every value the row would hold is identical to
+  // what GET already falls back to when the row doesn't exist. This route
+  // used to persist it as a brand-new row anyway on a first save (simply
+  // opening a project type and clicking "Save X override" with nothing
+  // touched was enough), and left an existing row sitting untouched-but-
+  // empty if an edit brought every field back to matching global. Because
+  // GET's `isOverride` is `!!typeDefaults` — a row exists, full stop — that
+  // row alone made the project type look permanently overridden ("Web
+  // projects use this override instead of the global default") even though
+  // every value was, and would remain, identical to the workspace default.
+  // The only way out was noticing and clicking "Remove override" by hand.
+  // Only applies to a scoped save where every relevant field was actually
+  // supplied (the common case — the Defaults tab always sends the full set);
+  // a partial direct-API PATCH that never touches some fields is left alone
+  // rather than guessed at.
+  const ALL_STANDARD_KEYS = ['revision_policy', 'payment_terms', 'out_of_scope_clauses', 'assumptions'] as const
+  const isFullyInherited = !!scope &&
+    ALL_STANDARD_KEYS.every(k => k in payload && payload[k] === null) &&
+    'revision_rounds' in payload && payload.revision_rounds === null &&
+    'payment_structure' in payload && payload.payment_structure === null
+
+  if (isFullyInherited) {
+    if (existing) {
+      const { error } = await service.from('workspace_defaults').delete().eq('id', existing.id)
+      if (error) {
+        console.error('workspace_defaults auto-cleanup delete failed:', error)
+        throw new Error('Could not save your defaults. Try again.')
+      }
+      // Same event DELETE /api/workspace/defaults already logs for a manual
+      // "Remove override" — this save just reached the identical end state
+      // (a fully-inherited project type) by a different door.
+      await logAudit(service, {
+        workspaceId, actorId: actor.id,
+        actorEmail: actor.email, actorName: actor.name,
+        eventType: 'workspace.defaults_override_removed', entityType: 'workspace_defaults',
+        entityId: workspaceId, entityName: scope,
+        metadata: { projectType: scope, auto: true },
+      })
+    }
+    // !existing: nothing to create and nothing to remove — a genuine no-op,
+    // exactly as if the person had opened this project type, changed
+    // nothing, and saved.
+    return
+  }
+
   // Persist. If two saves race to create the same row, the unique index makes
   // one insert fail; that one is retried as an update of the row that won.
   let saved = existing
