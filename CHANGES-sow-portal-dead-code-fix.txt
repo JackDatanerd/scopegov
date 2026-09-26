@@ -1,0 +1,36 @@
+SOW lifecycle (section 9) — independent re-audit fix, Sept 26 2026 (round 5)
+
+Bug (low severity, dead code — no user-visible breakage, no data/security impact):
+
+app/api/portal/sow/[token]/route.ts (buildSowResponse) had a payment_milestones
+fetch + `paymentSchedule` field added by an earlier "doc-completeness" fix,
+intended to show the client a payment schedule before signing. That table is
+only ever populated at signing time (lib/documents/post-signing.ts's
+createSowMilestones runs AFTER the CAS to 'signed'). Every sow.status other
+than 'awaiting_signature' already returns early above that fetch (signed,
+withdrawn, declined, expired, changes_requested), so the fetch was only ever
+reached for 'awaiting_signature' — the one status guaranteed to have zero
+rows in payment_milestones at that point. The query therefore always came
+back empty, and the matching frontend block (app/portal/sow/[token]/page.tsx,
+the `sow.paymentSchedule.length > 0` block) never actually rendered anything.
+
+Not a functional regression: the real pre-signature schedule (when the
+payment structure is 'milestones') was already being shown correctly the
+whole time via the payment_schedule table section in `sections`. This was
+purely a wasted DB query on every unsigned-SOW portal view plus dead
+frontend code with a comment claiming a fix it never delivered.
+
+Fix: removed the query and the `paymentSchedule` field from the API
+response, and removed the matching `PaymentScheduleItem` interface, the
+`paymentSchedule` field on `SowData`, and the dead render block from the
+portal page. Left an explanatory NOTE in place of the old FIX comment so a
+future pass doesn't re-add the same dead fetch under the same
+"doc-completeness" reasoning.
+
+Files touched:
+- app/api/portal/sow/[token]/route.ts
+- app/portal/sow/[token]/page.tsx
+
+No feature gaps found in SOW lifecycle or Onboarding in this round beyond
+this cleanup — both sections otherwise came back clean on independent
+re-audit.

@@ -142,16 +142,18 @@ async function buildSowResponse(sow: any, service: any, userAgent: string | null
   const project = sow.projects
   const client  = project?.clients
 
-  // FIX (doc-completeness audit): payment schedule was never fetched
-  // for this page either — the client reviewed and signed the SOW
-  // without ever seeing the milestone/payment schedule that the PDF
-  // (generated only after signing) already showed.
-  const { data: milestones } = await (service as any)
-    .from('payment_milestones')
-    .select('title, amount, percentage, trigger, due_date, status')
-    .eq('sow_id', sow.id)
-    .order('due_date', { ascending: true, nullsFirst: false })
-
+  // NOTE (section-9 re-audit): a prior "doc-completeness" fix added a
+  // payment_milestones fetch here, believing the client never saw a
+  // payment schedule before signing. That table is only ever populated
+  // at signing time (post-signing.ts's createSowMilestones runs after
+  // the CAS to 'signed'), and every other sow.status above already
+  // returns early — so this branch is only ever reached for
+  // 'awaiting_signature', the one status guaranteed to have zero rows
+  // in payment_milestones. The query always came back empty and the
+  // matching frontend block never rendered. Removed both sides; the
+  // actual pre-signature schedule (for the 'milestones' payment
+  // structure) is already shown correctly via the payment_schedule
+  // table section in `sections` below.
   return {
     sow: {
       id:            sow.id,
@@ -193,10 +195,6 @@ async function buildSowResponse(sow: any, service: any, userAgent: string | null
       // their content over the wire (it was returned with visible:false and only hidden by the
       // page). hydrateSections also repairs legacy HTML-escaped table cells.
       sections:      hydrateSections(sow.sections || [], sow.metadata).filter((sec: any) => sec.visible !== false),
-      paymentSchedule: (milestones || []).map((m: any) => ({
-        title: m.title, amount: m.amount, percentage: m.percentage,
-        trigger: m.trigger, dueDate: m.due_date, status: m.status,
-      })),
       version:       sow.version,
       expiresAt:     sow.expires_at,
     },
