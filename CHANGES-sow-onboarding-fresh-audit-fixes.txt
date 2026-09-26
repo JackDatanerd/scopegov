@@ -1,0 +1,96 @@
+CHANGES — SOW lifecycle (section 9) + Onboarding (section 4), fresh independent audit fixes
+==============================================================================================
+
+Closes out the 4 findings from this round's independent audit pass (2 in SOW lifecycle,
+2 in Onboarding). All four were confirmed still live on the current HEAD before fixing.
+
+SOW LIFECYCLE
+-------------
+
+1. FEATURE GAP — SOW generation allowed a $0 / unset contract value.
+   File: app/api/sow/generate/route.ts
+   governingLaw is hard-blocked at generation time ("a real, material legal term of the
+   contract"); contractValue had no equivalent floor check, despite being read straight
+   off project.contract_value, which defaults to 0 and isn't required in the new-project
+   wizard. Generating against $0 burned a real AI call and produced a Payment Terms
+   section stating "$0" (or nothing — ensureContractValueStated no-ops at <=0) that could
+   never be sent (validate-send.ts already hard-blocks Send on this). Now hard-blocks
+   generation itself with "Set a contract value greater than zero for this project before
+   generating a SOW." — same pattern, same status code, as the governingLaw block right
+   below it. No client-side changes needed: the new-project wizard and GenerateSowModal
+   both already surface a server error string inline, and the wizard's "Back to Brief" →
+   "Back" path already PATCHes the existing project's contractValue (a prior round fixed
+   that double-submit bug), so there's a real, working path back to fix it.
+
+2. BUG — a workspace's saved standard revision policy could contradict the SOW's own text.
+   File: lib/ai/sow-content.ts (applyAgencyStandards), app/api/sow/generate/route.ts (call site)
+   applyAgencyStandards() unconditionally appended the workspace's saved standard
+   revision-policy wording onto a Revision Policy section that generation had ALREADY
+   written to state this project's own, validated revisionRounds — with no reconciliation.
+   Agency standards phrased the same way this app's own AI prompt and deterministic
+   fallback phrase it ("N round(s) of revisions") would produce a document stating two
+   different round counts in the same section — a genuine self-contradiction on a signed
+   legal document, and nothing downstream (validate-send.ts included) ever cross-checks
+   the Revision Policy prose against metadata.revisionRounds to catch it.
+   Fix: applyAgencyStandards now takes revisionRounds as a third argument and skips
+   appending the standard revision-policy paragraph when it contains a "<number> round(s)"
+   phrase that doesn't match. Scoped tightly to that phrasing (not any bare digit) so
+   unrelated numbers in the standard text ("within 5 business days") are never mistaken
+   for a conflict and still get appended normally. Payment-terms standards are left
+   unchanged — that text is typically additive (late fees, invoicing cadence), not a
+   restatement of the contract value, so a blanket digit-conflict check there would have
+   broken the common case instead of fixing anything.
+
+ONBOARDING
+----------
+
+3. FEATURE GAP — SOW drafting language had no field anywhere in onboarding.
+   Files: app/onboarding/page.tsx, app/api/workspace/defaults/route.ts,
+          app/api/workspace/onboarding-status/route.ts, lib/constants/workspace-options.ts
+   workspaces.sow_language is a real, generation-affecting setting (lib/ai/sow-content.ts
+   uses it to pick which language a SOW is drafted in), and Step 2 ("Set your SOW
+   defaults") already covers every other field that shapes a generated SOW — revision
+   rounds, payment structure, governing law — but not this one. A workspace serving
+   non-English clients silently drafted every SOW in English until someone remembered to
+   find the setting in Settings afterward.
+   Fix: added a SOW-language select to Step 2, backed by a new SOW_LANGUAGES constant in
+   lib/constants/workspace-options.ts (alongside the existing INDUSTRIES/CURRENCIES/
+   TIMEZONES). Wired through the same places every other Step-2 field already goes:
+   localStorage persist/restore, the offline-fallback restore path, the explicitNew reset
+   block, submitDefaults()'s request body, and api/workspace/defaults/route.ts's
+   validation + write-through to workspaces.sow_language (mirrors the existing
+   governing_law write-through exactly, including the "gate on provided, not on truthy"
+   fix that pattern already needed once). onboarding-status's buildResumePayload and its
+   workspace SELECT now also return sow_language, so a resumed session rehydrates the
+   real saved value instead of silently reintroducing the 'en' default.
+
+4. BUG — "Start a new workspace" could silently edit an old workspace instead.
+   File: app/onboarding/page.tsx
+   The explicitNew mount-effect branch reset every wizard field except `workspaceId`
+   itself. Every caller reaching this branch today happens to already have it null (a
+   fresh mount starts at its useState default; discardWorkspace() explicitly nulls it
+   before its own router.replace('/onboarding?new=1') call) — but that replace is a
+   query-string-only navigation on the SAME route, which Next's App Router does not
+   remount for. Reached any other way a bookmarked or browser-history '/onboarding?new=1'
+   revisited while a different, still-in-progress workspace's wizard is already live in
+   that tab's state workspaceId would survive as the stale id, and submitIdentity()'s
+   existing-workspaceId branch only PATCHes rather than creates when workspaceId is
+   already set — so "start a new workspace" would silently overwrite the old workspace's
+   settings instead of creating the new one the user asked for.
+   Fix: the explicitNew branch now explicitly calls setWorkspaceId(null) so it's correct
+   standalone, not just correct because of what every current caller happens to do first.
+
+Files touched
+-------------
+app/api/sow/generate/route.ts
+lib/ai/sow-content.ts
+app/onboarding/page.tsx
+app/api/workspace/defaults/route.ts
+app/api/workspace/onboarding-status/route.ts
+lib/constants/workspace-options.ts
+
+Not fixed in this round (nothing found)
+----------------------------------------
+No other bugs or gaps turned up in this pass. Next step per the agreed workflow: re-clone
+fresh and run an independent audit pass on both sections again from scratch; keep going
+until a pass on both comes back clean.

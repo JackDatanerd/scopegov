@@ -68,6 +68,11 @@ async function buildResumePayload(service: any, w: any) {
     brandColour: w.brand_colour || null,
     logoStoragePath: w.logo_storage_path || null,
     governingLaw: w.governing_law || '',
+    // FIX (fresh independent audit, section 4): buildResumePayload returns every other
+    // Step-2 field (revisionRounds, paymentStructure, governingLaw) so a resumed session
+    // rehydrates instead of silently overwriting real saved values with step defaults —
+    // sow_language was missing from this same list once Step 2 gained a field for it.
+    sowLanguage: w.sow_language || 'en',
     revisionRounds: defaultsRow?.revision_rounds != null ? String(defaultsRow.revision_rounds) : '2',
     paymentStructure: defaultsRow?.payment_structure || '50_50',
   }
@@ -87,7 +92,7 @@ export async function GET() {
         .from('workspace_members')
         .select(`workspace_id, workspaces(
           id, created_by, onboarding_completed_at, name, agency_name, industry, currency, timezone,
-          brand_colour, logo_storage_path, governing_law, deleted_at,
+          brand_colour, logo_storage_path, governing_law, sow_language, deleted_at,
           creator:users!workspaces_created_by_fkey(name, email)
         )`)
         .eq('user_id', user.id).eq('status', 'active')

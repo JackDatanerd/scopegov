@@ -145,12 +145,41 @@ export function standardsPromptBlock(standards: AgencyStandards | null | undefin
   return lines.length ? `\n${lines.join('\n')}` : ''
 }
 
+// FIX (fresh independent audit, section 9): a revision-policy standard
+// almost always states its own round count in the same "N round(s)"
+// phrasing this app's own AI prompt and deterministic fallback both use
+// (see FALLBACK_STRINGS.revisions and the prompt rule "Revision policy
+// must reference exactly N revision round(s)" below) — so appending it
+// unconditionally onto a Revision Policy section that has ALREADY stated
+// the project's real, validated revisionRounds produces a document that
+// states two different round counts in the same section. Scoped tightly
+// to the "<number> round(s)" phrasing specifically (not a bare digit
+// anywhere in the text) so a standard that mentions an unrelated number —
+// "revisions must be requested within 5 business days" — is never
+// mistaken for a conflict and still gets appended normally.
+function conflictingRoundCount(text: string, revisionRounds: number): boolean {
+  const matches = text.matchAll(/(\d+)\s*rounds?\b/gi)
+  for (const m of matches) {
+    const n = Number(m[1])
+    if (Number.isFinite(n) && n !== revisionRounds) return true
+  }
+  return false
+}
+
 /**
  * Guarantees the agency's standard terms are present after generation, whether the text came
  * from the model or the deterministic fallback: any clause not already in the section is
  * appended. Pure and idempotent.
  */
-export function applyAgencyStandards(content: Record<string, string>, standards: AgencyStandards | null | undefined): Record<string, string> {
+export function applyAgencyStandards(
+  content: Record<string, string>,
+  standards: AgencyStandards | null | undefined,
+  // FIX (fresh independent audit, section 9): needed so the revisions paragraph below can
+  // detect — and skip appending on — a round-count conflict. Optional so any other caller
+  // (there are none today, but this is an exported helper) keeps working unchanged; the
+  // conflict check simply doesn't run without it.
+  revisionRounds?: number,
+): Record<string, string> {
   if (!standards) return content
   const out = { ...content }
   const addList = (id: string, clauses: string[]) => {
@@ -163,7 +192,15 @@ export function applyAgencyStandards(content: Record<string, string>, standards:
   }
   addList('oos', cleanClauses(standards.outOfScopeClauses))
   addList('assumptions', cleanClauses(standards.assumptions))
-  addParagraph('revisions', sanitizePlainText(standards.revisionPolicy || '').slice(0, 1500))
+  const revisionPolicy = sanitizePlainText(standards.revisionPolicy || '').slice(0, 1500)
+  // FIX (fresh independent audit, section 9): skip the append rather than let the document
+  // state two different revision-round counts in the same section — see
+  // conflictingRoundCount's own comment. Nothing else downstream (validate-send.ts included)
+  // ever cross-checks the Revision Policy section's prose against metadata.revisionRounds, so
+  // this is the only place that can catch it.
+  if (!(typeof revisionRounds === 'number' && conflictingRoundCount(revisionPolicy, revisionRounds))) {
+    addParagraph('revisions', revisionPolicy)
+  }
   addParagraph('payment', sanitizePlainText(standards.paymentTerms || '').slice(0, 1500))
   return out
 }

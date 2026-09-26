@@ -6,6 +6,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { diffFields, sameValue } from '@/lib/utils/audit-diff'
 import { parseStandardsInput } from '@/lib/utils/agency-standards'
+import { SOW_LANGUAGE_NAMES } from '@/lib/ai/sow-content'
 import type { SessionUser } from '@/lib/supabase/types'
 
 const PROJECT_TYPES = ['web', 'mobile', 'brand', 'ecomm', 'marketing', 'retainer', 'video', 'other'] as const
@@ -65,7 +66,7 @@ async function saveDefaults(workspaceId: string, body: any, actor: SessionUser) 
   }
   const scope: ProjectType | null = projectType ?? null
 
-  const { paymentStructure, governingLaw } = body
+  const { paymentStructure, governingLaw, sowLanguage } = body
   if (paymentStructure !== undefined && paymentStructure !== null && paymentStructure !== '' &&
       !PAYMENT_STRUCTURES.includes(paymentStructure)) {
     throw new DefaultsValidationError(`Invalid payment structure. Must be one of: ${PAYMENT_STRUCTURES.join(', ')}`)
@@ -79,6 +80,20 @@ async function saveDefaults(workspaceId: string, body: any, actor: SessionUser) 
     if (governingLawValue.length > GOVERNING_LAW_MAX) {
       throw new DefaultsValidationError(`Governing law must be under ${GOVERNING_LAW_MAX} characters`)
     }
+  }
+
+  // FIX (fresh independent audit, section 4): mirrors the governingLaw handling just
+  // above — sow_language is likewise a workspace-wide column (not per-project-type),
+  // read by lib/ai/sow-content.ts on every generation. Validated against the same
+  // closed set app/api/workspace/settings/route.ts already enforces (SOW_LANGUAGE_NAMES
+  // in lib/ai/sow-content.ts is the set that actually has a translation), so this route
+  // can't be used to write a code no generation path knows how to draft in.
+  let sowLanguageValue: string | undefined
+  if (sowLanguage !== undefined && sowLanguage !== null) {
+    if (typeof sowLanguage !== 'string' || !(sowLanguage in SOW_LANGUAGE_NAMES)) {
+      throw new DefaultsValidationError(`Unsupported SOW language. Must be one of: ${Object.keys(SOW_LANGUAGE_NAMES).join(', ')}`)
+    }
+    sowLanguageValue = sowLanguage
   }
 
   const standards = parseStandardsInput(body)
@@ -189,11 +204,33 @@ async function saveDefaults(workspaceId: string, body: any, actor: SessionUser) 
     }
   }
 
+  // FIX (fresh independent audit, section 4): same write-through as governing_law just
+  // above, and for the same reason — sow_language lives on workspaces, not
+  // workspace_defaults, and is what lib/ai/sow-content.ts actually reads at generation
+  // time. Gated on the field having been provided at all, not on it being non-default,
+  // so this can't repeat the governing-law bug where clearing a field was
+  // indistinguishable from never sending it.
+  let previousSowLanguage: string | null = null
+  let sowLanguageChanged = false
+  if (!scope && sowLanguageValue !== undefined) {
+    const { data: ws } = await service.from('workspaces').select('sow_language').eq('id', workspaceId).single()
+    previousSowLanguage = ws?.sow_language ?? null
+    if (previousSowLanguage !== sowLanguageValue) {
+      const { error: wsError } = await service
+        .from('workspaces').update({ sow_language: sowLanguageValue, updated_at: new Date().toISOString() }).eq('id', workspaceId)
+      if (wsError) {
+        console.error('workspaces.sow_language write-through failed:', wsError)
+        throw new Error('Your defaults were saved, but the SOW language could not be updated. Try again.')
+      }
+      sowLanguageChanged = true
+    }
+  }
+
   const before: Record<string, unknown> = {
     revisionRounds: existing?.revision_rounds, paymentStructure: existing?.payment_structure,
     revisionPolicy: existing?.revision_policy, paymentTerms: existing?.payment_terms,
     outOfScopeClauses: existing?.out_of_scope_clauses, assumptions: existing?.assumptions,
-    governingLaw: previousGoverningLaw,
+    governingLaw: previousGoverningLaw, sowLanguage: previousSowLanguage,
   }
   const after: Record<string, unknown> = {}
   if (payload.revision_rounds !== undefined)      after.revisionRounds = payload.revision_rounds
@@ -203,6 +240,7 @@ async function saveDefaults(workspaceId: string, body: any, actor: SessionUser) 
   if ('out_of_scope_clauses' in payload)          after.outOfScopeClauses = payload.out_of_scope_clauses
   if ('assumptions' in payload)                   after.assumptions = payload.assumptions
   if (governingLawChanged)                        after.governingLaw = governingLawValue || null
+  if (sowLanguageChanged)                         after.sowLanguage = sowLanguageValue
   const { changedKeys, changes } = diffFields(before, after)
 
   if (changedKeys.length > 0 || !existing) {
@@ -320,7 +358,7 @@ export async function GET(request: NextRequest) {
     const [globalDefaults, typeDefaults, { data: workspace }] = await Promise.all([
       findRow(service, session.workspaceId, null),
       requested ? findRow(service, session.workspaceId, requested) : Promise.resolve(null),
-      service.from('workspaces').select('currency, governing_law').eq('id', session.workspaceId).single(),
+      service.from('workspaces').select('currency, governing_law, sow_language').eq('id', session.workspaceId).single(),
     ])
 
     // Standards mirror how SOW generation resolves them (see
@@ -354,6 +392,7 @@ export async function GET(request: NextRequest) {
       outOfScopeClauses: own('out_of_scope_clauses') ?? [],
       assumptions:       own('assumptions') ?? [],
       governingLaw:      workspace?.governing_law ?? null,
+      sowLanguage:       workspace?.sow_language ?? 'en',
       currency:          workspace?.currency ?? 'USD',
       isOverride:        !!typeDefaults,
       projectType:       requested || null,

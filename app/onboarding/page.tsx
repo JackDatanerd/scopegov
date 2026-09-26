@@ -7,7 +7,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 // api/workspace/create and api/workspace/settings, which never validated
 // against them — importing the one shared list means the dropdown and
 // the server-side validation literally cannot drift apart again.
-import { INDUSTRIES, CURRENCIES, TIMEZONES } from '@/lib/constants/workspace-options'
+import { INDUSTRIES, CURRENCIES, TIMEZONES, SOW_LANGUAGES } from '@/lib/constants/workspace-options'
 
 const STEPS = [
   { label: 'Your agency',   sub: 'Identity & locale' },
@@ -73,6 +73,15 @@ function OnboardingWizard() {
   // guess on the agency's behalf — and SOW generation hard-blocks until
   // it's actually set (see app/api/sow/generate/route.ts).
   const [governingLaw,     setGoverningLaw]     = useState('')
+  // FIX (fresh independent audit, section 4): sow_language is a real,
+  // generation-affecting workspace setting — lib/ai/sow-content.ts uses it to pick
+  // which language a SOW is drafted in — and Step 2 already covers every other
+  // field that shapes a generated SOW (revision rounds, payment structure,
+  // governing law). It had no field here at all, so a workspace serving
+  // non-English clients silently drafted every SOW in English until someone
+  // remembered to go find this in Settings afterward. Defaults to 'en', the same
+  // default the workspaces column and lib/ai/sow-content.ts itself use.
+  const [sowLanguage,      setSowLanguage]       = useState('en')
 
   // Step 3
   const [inviteEmail, setInviteEmail] = useState('')
@@ -196,6 +205,23 @@ function OnboardingWizard() {
         // invite could be submitted with a roleId that doesn't exist in the new
         // workspace at all. "Start a new workspace" now actually starts blank,
         // whichever of the two paths got here.
+        //
+        // FIX (fresh independent audit, section 4 — this pass): the reset above still
+        // didn't clear `workspaceId` itself. Every caller reaching this branch today
+        // happens to already have it null — a fresh mount starts at useState(null), and
+        // discardWorkspace() (below) explicitly calls setWorkspaceId(null) of its own
+        // accord before its router.replace('/onboarding?new=1') — but this is still a
+        // query-string-only navigation on the SAME route, which App Router does not
+        // remount for. Reached any other way — a bookmarked or browser-history
+        // '/onboarding?new=1' revisited while a different, still-in-progress
+        // workspace's wizard is already live in this tab's state — workspaceId would
+        // survive as that stale id. submitIdentity()'s existing-workspaceId branch
+        // (a few hundred lines down) only PATCHes rather than creates when workspaceId
+        // is already set, so "start a new workspace" would silently overwrite that old
+        // workspace's settings instead of creating the new one the user asked for.
+        // Reset it explicitly here so this branch is correct standalone, not just
+        // correct because of what every current caller happens to do first.
+        setWorkspaceId(null)
         const userName = user.user_metadata?.name || ''
         setAgencyName(userName ? `${userName.split(' ')[0]}'s Agency` : '')
         setIndustry('')
@@ -207,6 +233,7 @@ function OnboardingWizard() {
         setRevisionRounds('2')
         setPaymentStructure('50_50')
         setGoverningLaw('')
+        setSowLanguage('en')
         setInviteEmail('')
         setInviteRoleId('')
         setInviteRoles([])
@@ -307,6 +334,7 @@ function OnboardingWizard() {
         if (status.revisionRounds)   setRevisionRounds(status.revisionRounds)
         if (status.paymentStructure) setPaymentStructure(status.paymentStructure)
         if (status.governingLaw)     setGoverningLaw(status.governingLaw)
+        if (status.sowLanguage)      setSowLanguage(status.sowLanguage)
 
         // Local progress only ever supplements the server's pick — and
         // only the in-progress `step` position, since every field above
@@ -357,6 +385,7 @@ function OnboardingWizard() {
               if (s.revisionRounds)   setRevisionRounds(s.revisionRounds)
               if (s.paymentStructure) setPaymentStructure(s.paymentStructure)
               if (s.governingLaw)     setGoverningLaw(s.governingLaw)
+              if (s.sowLanguage)      setSowLanguage(s.sowLanguage)
               setRestored(true)
               setGate('create')
               return
@@ -382,10 +411,10 @@ function OnboardingWizard() {
       if (!user) return
       localStorage.setItem(STORAGE_KEY_PREFIX + user.id, JSON.stringify({
         step, workspaceId, agencyName, industry, currency, timezone,
-        brandColour, revisionRounds, paymentStructure, governingLaw,
+        brandColour, revisionRounds, paymentStructure, governingLaw, sowLanguage,
       }))
     })
-  }, [restored, step, workspaceId, agencyName, industry, currency, timezone, brandColour, revisionRounds, paymentStructure, governingLaw])
+  }, [restored, step, workspaceId, agencyName, industry, currency, timezone, brandColour, revisionRounds, paymentStructure, governingLaw, sowLanguage])
 
   function clearSavedProgress() {
     supabase.auth.getUser().then(({ data: { user } }) => {
@@ -726,7 +755,7 @@ function OnboardingWizard() {
         const res  = await fetch('/api/workspace/defaults', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ workspaceId, revisionRounds: parseInt(revisionRounds), paymentStructure, governingLaw }),
+          body: JSON.stringify({ workspaceId, revisionRounds: parseInt(revisionRounds), paymentStructure, governingLaw, sowLanguage }),
         })
         const json = await res.json().catch(() => ({}))
         if (!res.ok) {
@@ -1213,6 +1242,13 @@ function OnboardingWizard() {
               <input className="finp" value={governingLaw}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setGoverningLaw(e.target.value)}
                 placeholder="e.g. Republic of Kenya" />
+            </div>
+            <div className="fgrp">
+              <label className="flbl">SOW language <span className="fhint">— the language every generated SOW is drafted in</span></label>
+              <select className="finp" value={sowLanguage}
+                onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setSowLanguage(e.target.value)}>
+                {SOW_LANGUAGES.map(l => <option key={l.code} value={l.code}>{l.label}</option>)}
+              </select>
             </div>
 
             <div className="ob-nav">

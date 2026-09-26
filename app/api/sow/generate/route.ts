@@ -167,6 +167,22 @@ export async function POST(request: NextRequest) {
     // the same document. Read both authoritatively off the project record
     // instead of trusting the request.
     const contractValue = roundCurrency(project.contract_value || 0)
+    // FIX (fresh independent audit, section 9): contractValue had no floor check here at
+    // all, unlike governingLaw right below — which is hard-blocked for the identical
+    // reason ("a real, material legal term of the contract"). Contract value is at least
+    // as material: it's the number the Payment Terms section states (or, at 0, silently
+    // doesn't — see ensureContractValueStated's own no-op-at-<=0 guard), the number the
+    // PDF header prints, and the number validate-send.ts already hard-blocks Send on
+    // ("Set a contract value greater than zero before sending this SOW"). Without this
+    // check, generation itself burns a real AI call and produces a document that states
+    // a nonsensical "$0" (or nothing) and can never be sent — the agency only discovers
+    // that at Send time, with no signal at the point where it was still free to catch.
+    // Same pattern and message class as the governingLaw block below.
+    if (!(contractValue > 0)) {
+      return NextResponse.json({
+        error: 'Set a contract value greater than zero for this project before generating a SOW.',
+      }, { status: 400 })
+    }
     // FIX (doc-completeness audit, finding #1): this used to silently
     // fall back to a hardcoded country ('Republic of Kenya') whenever
     // workspaces.governing_law was unset — which, before the write-through
@@ -289,7 +305,11 @@ export async function POST(request: NextRequest) {
     }
 
     const boilerplate = buildBoilerplateSections(contentInput)
-    const allContent: Record<string, string> = applyAgencyStandards({ ...boilerplate, ...aiSections }, standards)
+    // FIX (fresh independent audit, section 9): revisionRounds passed through so
+    // applyAgencyStandards can refuse to append a saved standard revision policy that
+    // states a conflicting round count onto a section that already states this project's
+    // real one — see that function's own comment.
+    const allContent: Record<string, string> = applyAgencyStandards({ ...boilerplate, ...aiSections }, standards, revisionRounds)
     // The contract value is data, the payment prose is model-written: never let them disagree.
     allContent.payment = ensureContractValueStated(allContent.payment || '', contractValue, curr)
 
