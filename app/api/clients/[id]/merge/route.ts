@@ -9,8 +9,14 @@ import { getClientIp } from '@/lib/utils/request-ip'
 // FEATURE (independent pass, section 14): duplicate clients (the same company entered under two
 // email addresses) had no fix — no delete, no merge. This moves every project, saved contact and
 // CC address from THIS client (the source) into `targetId`, then removes the source. Runs as one
-// database transaction (merge_clients, migration 073). It deletes a client record, so it needs the
-// same DELETE_PROJECTS permission the plain delete does, plus the usual client-edit permissions.
+// database transaction (merge_clients, migration 077, most recently touched by 089). It deletes a
+// client record, so it needs the same DELETE_PROJECTS permission the plain delete does, plus the
+// usual client-edit permissions.
+//
+// FIX (independent pass round 5, section 14): merge_clients() (089) now caps how many of the
+// source's contacts get moved at the target's remaining room under the 25-per-client limit, and
+// reports how many didn't fit as `contacts_dropped` — surfaced here (and in the audit row) instead
+// of the loss being silent, same as `contacts_moved` already was.
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id: sourceId } = await params
@@ -47,6 +53,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       metadata: {
         merged_from: { id: source.id, name: source.name, email: source.email },
         projects_moved: result?.projects_moved ?? null, contacts_moved: result?.contacts_moved ?? null,
+        contacts_dropped: result?.contacts_dropped ?? null,
       },
     })
     return NextResponse.json({ ok: true, targetId, ...result })

@@ -3,11 +3,18 @@
 // FEATURE (independent pass, section 14): a client created by mistake — a typo, or the same company
 // entered under two email addresses — could never be removed; the only control was Archive, so the
 // roster only ever grew. This adds the two missing offboarding actions:
-//   * Merge into another client — moves every project, contact and CC address across in one
-//     database transaction, then removes this record (POST /api/clients/[id]/merge).
+//   * Merge into another client — moves every project, and as many contacts/CC addresses as fit
+//     under the target's own limits, across in one database transaction, then removes this record
+//     (POST /api/clients/[id]/merge).
 //   * Delete — only offered when the client has no projects at all, including soft-deleted ones,
 //     matching DELETE /api/clients/[id]'s own check; a client blocked only by deleted project
 //     records gets an explanation instead of a button that would just 409.
+//
+// FIX (independent pass round 5, section 14): merge_clients() (089) caps how many of the source's
+// contacts survive a merge at the target's remaining room under the 25-per-client limit, and
+// re-promotes the source's primary contact on the target if the target had none of its own — see
+// that migration's comment for the full reasoning. doMerge() below surfaces `contacts_dropped`
+// (previously silent) so the loss, when it happens, is at least visible to whoever merged.
 
 'use client'
 import { useState } from 'react'
@@ -33,7 +40,7 @@ export default function ClientDangerZone({
     const target = others.find(o => o.id === targetId)
     if (!target) return
     if (!window.confirm(
-      `Merge “${clientName}” into “${target.name}”?\n\nAll of ${clientName}'s projects, contacts and CC addresses move to ${target.name}, and ${clientName} is removed. This can't be undone.`,
+      `Merge “${clientName}” into “${target.name}”?\n\nAll of ${clientName}'s projects, and as many of its contacts and CC addresses as fit under ${target.name}'s limits, move to ${target.name}; ${clientName} is then removed. This can't be undone.`,
     )) return
     setBusy('merge'); setError('')
     try {
@@ -42,6 +49,16 @@ export default function ClientDangerZone({
       })
       const json = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(json.error || 'Merge failed')
+      // FIX (independent pass round 5, section 14): merge_clients() (089) can now leave some of
+      // the source's contacts behind if the target is already near the 25-contact limit — silent
+      // otherwise, since this immediately navigates away from a page that could have shown them.
+      if (json.contacts_dropped > 0) {
+        window.alert(
+          `Merged. ${target.name} already had close to the maximum of 25 contacts, so ` +
+          `${json.contacts_dropped} contact${json.contacts_dropped === 1 ? '' : 's'} from ${clientName} ` +
+          `could not be carried over and ${json.contacts_dropped === 1 ? 'was' : 'were'} not kept.`
+        )
+      }
       router.push(`/clients/${targetId}`)
       router.refresh()
     } catch (e) {
