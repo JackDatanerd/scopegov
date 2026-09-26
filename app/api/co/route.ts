@@ -121,6 +121,10 @@ export async function POST(request: NextRequest) {
     // FIX (section-10 audit, 10-B3 + 10-B9): unvalidated arithmetic over
     // raw request JSON, with a tax-inclusive branch that stored the gross
     // as `subtotal`. See lib/documents/co-totals.ts.
+    //
+    // FIX (deep audit round 2, bug #2): deliberately no allowlist passed here —
+    // a brand-new CO has no pre-existing line items, so no line on a create
+    // request can ever legitimately claim kind: 'adjustment'. See co-totals.ts.
     const totals = computeCoTotals(lineItems || [], taxRate ?? 0, taxInclusive)
     if (!totals.ok) return NextResponse.json({ error: totals.error }, { status: 400 })
     const { lineItems: items, subtotal, total } = totals.totals

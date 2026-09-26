@@ -14,15 +14,40 @@ describe('computeCoTotals', () => {
     expect(computeCoTotals([{ description: 'x', quantity: -1, rate: 10 }], 0, false).ok).toBe(false)
     expect(computeCoTotals([{ description: 'x', quantity: 1, rate: -10 }], 0, false).ok).toBe(false)
   })
-  it('lets a system-written adjustment line be negative, so a revision cloned from a countered CO can be saved', () => {
+  it('lets a system-written adjustment line be negative, so a revision cloned from a countered CO can be saved — but only when its id is in the caller\'s allowlist of ids that already carry that kind on the CO being edited', () => {
     const r = computeCoTotals([
       { description: 'Build', quantity: 1, rate: 5000 },
-      { description: 'Negotiated discount (per counter-offer)', quantity: 7, rate: -1000, kind: 'adjustment' },
-    ], 0, false)
+      { id: 'li-2', description: 'Negotiated discount (per counter-offer)', quantity: 7, rate: -1000, kind: 'adjustment' },
+    ], 0, false, ['li-2'])
     if (!r.ok) throw new Error(r.error)
     expect(r.totals.total).toBe(4000)
     expect(r.totals.lineItems[1].kind).toBe('adjustment')
     expect(r.totals.lineItems[1].quantity).toBe(1) // forced to 1
+  })
+  // FIX (deep audit round 2, CO logic — bug #2): kind: 'adjustment' used to be
+  // trusted from the request body with no further check, letting anyone with
+  // CREATE_CHANGE_ORDERS attach a fabricated negative-rate line under any
+  // description they liked, bypassing the negative-quantity/rate guard above.
+  // The only legitimate writer of an adjustment line (accept-co-counter.ts)
+  // never calls this function at all — it writes straight to the database —
+  // so a claimed adjustment line with no id, or an id absent from the
+  // allowlist, must be treated as an ordinary line and validated as such.
+  it('refuses a fabricated adjustment line whose id is not in the allowlist (or has no id at all)', () => {
+    const noId = computeCoTotals([
+      { description: 'Extra dev hours', quantity: 1, rate: -50000, kind: 'adjustment' },
+    ], 0, false, ['li-2'])
+    expect(noId.ok).toBe(false)
+
+    const wrongId = computeCoTotals([
+      { id: 'li-9', description: 'Extra dev hours', quantity: 1, rate: -50000, kind: 'adjustment' },
+    ], 0, false, ['li-2'])
+    expect(wrongId.ok).toBe(false)
+
+    const noAllowlist = computeCoTotals([
+      { id: 'li-2', description: 'Build', quantity: 1, rate: 5000 },
+      { id: 'li-9', description: 'Extra dev hours', quantity: 1, rate: -50000, kind: 'adjustment' },
+    ], 0, false)
+    expect(noAllowlist.ok).toBe(false)
   })
   it('back-solves the net subtotal for tax-inclusive lines', () => {
     const r = computeCoTotals([{ description: 'Build', quantity: 1, rate: 1160 }], 16, true)

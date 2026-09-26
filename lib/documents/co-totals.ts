@@ -53,9 +53,35 @@ const MAX_DESCRIPTION_LEN  = 500
 const MAX_QUANTITY         = 1_000_000
 const MAX_RATE             = 1_000_000_000
 
+// FIX (deep audit round 2, CO logic — bug #2): the `kind === 'adjustment'`
+// escape hatch above was trusted verbatim from client-supplied JSON on the
+// public POST /api/co and PATCH /api/co/[id] endpoints. The ONLY legitimate
+// writer of an adjustment line is rescale-line-items.ts, called from
+// lib/documents/accept-co-counter.ts — and that path writes straight to the
+// database, never through this function. So the sole reason `kind` needs to
+// be honored here at all is the round-trip case described above (a
+// revision cloned from an already-negotiated CO gets re-saved through
+// PATCH with its existing adjustment line intact). Trusting the flag with
+// no further check meant any caller with CREATE_CHANGE_ORDERS could attach
+// a brand-new, arbitrarily-described, arbitrarily-negative line by simply
+// tagging it `kind: "adjustment"` — completely defeating the negative-value
+// guard directly above, under whatever description they liked. Not reachable
+// through CoEditor's UI (it only lets a user edit the rate of a line that
+// ALREADY carries kind === 'adjustment'), but trivially reachable via a
+// direct API call with a valid session.
+//
+// Fix: only honor `kind: 'adjustment'` for a line whose id is in the
+// caller-supplied allowlist of ids that already carry that kind on the CO
+// being edited. A brand-new line — no id, or an id not on that list — can
+// never claim the escape hatch, however it's tagged, and falls through to
+// the ordinary non-negative validation like any other line.
 export function computeCoTotals(
-  rawItems: unknown, rawTaxRate: unknown, rawTaxInclusive: unknown
+  rawItems: unknown, rawTaxRate: unknown, rawTaxInclusive: unknown,
+  allowedAdjustmentIds?: ReadonlySet<string> | readonly string[]
 ): CoTotalsResult {
+  const allowedIds = allowedAdjustmentIds instanceof Set
+    ? allowedAdjustmentIds
+    : new Set(allowedAdjustmentIds ?? [])
   if (!Array.isArray(rawItems)) return { ok: false, error: 'Line items must be a list' }
   if (rawItems.length > MAX_LINE_ITEMS)
     return { ok: false, error: `A change order can have at most ${MAX_LINE_ITEMS} line items` }
@@ -74,8 +100,11 @@ export function computeCoTotals(
 
     // A counter-offer that lands below the original price is reconciled by a system-written
     // negative "Negotiated discount" line (rescale-line-items.ts). It must round-trip through
-    // here — otherwise a revision cloned from such a CO could never be saved again.
-    const isAdjustment = raw?.kind === 'adjustment'
+    // here — otherwise a revision cloned from such a CO could never be saved again. Only a line
+    // that already carried this kind on the CO being edited (allowedIds) gets to keep it; see the
+    // comment above the function signature.
+    const claimsAdjustment = raw?.kind === 'adjustment'
+    const isAdjustment = claimsAdjustment && typeof raw?.id === 'string' && allowedIds.has(raw.id)
     const quantity = isAdjustment ? 1 : Number(raw?.quantity)
     const rate     = Number(raw?.rate)
 

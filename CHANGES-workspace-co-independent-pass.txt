@@ -1,0 +1,165 @@
+scopegov — Sections 3 (Workspace lifecycle) + 10 (CO logic) independent
+re-pass — 3 confirmed bugs (1 critical, 1 privilege-bypass, 1 data-integrity)
+=====================================================================
+
+Both sections were audited fresh and independently — Section 3
+(api/workspace/create, complete-onboarding, delete, leave, list, switch,
+profile) with no reference to Section 10, and vice versa — treating every
+prior "FIX" comment already in the codebase as if it didn't exist, only
+consulting one if something looked off. No feature gaps of substance were
+found in either section (both are already extensively built out); every
+finding below is a bug. No migration required — code-only.
+
+MODIFIED FILES (6)
+-------------------
+
+  app/api/workspace/delete/route.ts
+
+    Section 3. CRITICAL — the pending-change-order guard blocking
+    workspace deletion only checked for status IN ('awaiting_response',
+    'awaiting_countersignature'), missing 'countered' and 'stalled' —
+    both just as live and unresolved as 'awaiting_response':
+
+      'countered' means the CLIENT made a counter-offer and the AGENCY
+      hasn't accepted or declined it yet (accept-counter/route.ts
+      requires exactly this status to act on it at all). 'stalled' is an
+      unanswered 'awaiting_response' CO the co-stall cron flagged after 5
+      days of silence — still explicitly client-respondable per
+      CLIENT_RESPONDABLE_STATUSES in app/api/portal/co/[token]/_actions.ts,
+      and close/route.ts's own TERMINAL_FROM handling treats both as
+      live documents requiring a client notification to close out.
+
+      Since isWorkspaceDeleted() on the portal side returns 'revoked' for
+      ANY status once a workspace is soft-deleted, a workspace could be
+      deleted while a CO sat in either state — permanently stranding an
+      open negotiation: the client's link goes dead with no resolution,
+      and the agency can never act on it again since every member is
+      deactivated by the same delete.
+
+      Fix: widened the .in('status', [...]) list to include 'countered'
+      and 'stalled', and reworded the 409 error message (it previously
+      said "awaiting the client's response," which is backwards for
+      'countered' — that status is awaiting the AGENCY's response).
+
+  components/co/CoEditor.tsx
+
+    Section 10. CRITICAL / DATA LOSS — the autosave useEffect that saves
+    an existing draft CO had no `financialsHidden` guard.
+
+      GET /api/co/[id] correctly redacts line_items/subtotal/tax_rate/
+      tax_inclusive/total to null for a viewer who has CREATE_CHANGE_ORDERS
+      but not VIEW_FINANCIALS — a real, constructible custom-role
+      combination (that redaction logic, and the `financialsHidden` state
+      it drives, already exist in this exact file for that reason). When
+      such a viewer loaded an existing draft CO, the null line_items made
+      the component fall back to its "new CO" default: one blank $0 stub
+      line. Every value in the autosave effect's dependency array gets set
+      by that very load (title, note, lineItems, taxRate, ...), so simply
+      OPENING the page rescheduled the 1.5s debounce and then fired an
+      unconditional PATCH — overwriting the CO's REAL line items/subtotal/
+      total with the blank stub, permanently, before the user touched
+      anything. `isLocked` disables the visible inputs but never gated
+      this effect, and PATCH /api/co/[id] had no server-side check either
+      (see below) — nothing stood between "opened the page" and "pricing
+      destroyed."
+
+      Fix: the effect now returns immediately when `financialsHidden` is
+      true (added to both the early-return condition and the dependency
+      array, so it re-evaluates correctly once the fetch resolves and
+      sets it). There's no correct autosave behavior for a view whose data
+      the user isn't even allowed to see, so it's skipped entirely rather
+      than patched to be "less wrong."
+
+  app/api/co/[id]/route.ts
+
+    Section 10. Same bug as above, server-side belt: PATCH required only
+    CREATE_CHANGE_ORDERS, with no check that the caller could actually
+    see the money before letting them overwrite it — so even with the
+    client fixed, nothing on the server would have refused the same
+    request if a future client bug (or a direct API call) sent it again.
+
+      Fix: PATCH now refuses (403, "Missing permission: VIEW_FINANCIALS")
+      any request that touches lineItems/taxRate/taxInclusive from a
+      caller who lacks VIEW_FINANCIALS. A viewer without that permission
+      has no legitimate reason to touch these fields at all — the editor
+      already renders them as a locked, hidden state for exactly this
+      person.
+
+    Section 10, second and unrelated bug (see co-totals.ts below) — this
+    route also now computes the set of line-item ids that already carry
+    kind === 'adjustment' on the CO being edited and passes it to
+    computeCoTotals as an allowlist, instead of trusting the request
+    body's `kind` field outright. Added the isAdjustmentLine import from
+    lib/utils/rescale-line-items.ts to identify them robustly (kind flag
+    OR the legacy description pattern).
+
+  lib/documents/co-totals.ts
+
+    Section 10 — PRIVILEGE BYPASS. The `kind === 'adjustment'` escape
+    hatch (which lets a line be negative, bypassing the "negatives are
+    refused, not clamped" rule a few lines above it) was trusted verbatim
+    from client-supplied JSON, with no check on WHERE that flag came from.
+
+      The only legitimate writer of an adjustment line is
+      rescale-line-items.ts, called from accept-co-counter.ts — and that
+      path writes straight to the database, never through this function.
+      computeCoTotals only needs to honor the flag at all so that a
+      revision cloned from an already-negotiated CO can round-trip its
+      existing adjustment line back through PATCH. Trusting the flag with
+      no further check meant ANY caller with CREATE_CHANGE_ORDERS could
+      attach a brand-new, arbitrarily-described, arbitrarily-negative line
+      to any CO by simply tagging it `kind: "adjustment"` in the request
+      body — completely defeating the documented rule that "a reduction
+      belongs in its own explicitly-worded change order, not a negative
+      line hidden in one," under whatever innocuous description they
+      chose. Not reachable through CoEditor's own UI (it only lets a user
+      edit the RATE of a line that ALREADY carries kind === 'adjustment';
+      there's no UI path to newly tag one), but trivially reachable via a
+      direct, authenticated API call.
+
+      Fix: computeCoTotals now takes an optional 4th parameter,
+      allowedAdjustmentIds. A line only keeps kind: 'adjustment' (and
+      the negative-value exemption that comes with it) when it has a
+      string `id` AND that id is present in the caller-supplied allowlist.
+      Any other line claiming the kind — no id, or an id not on the list
+      — is validated as an ordinary line, so a fabricated negative rate
+      is rejected exactly like it would be without the kind tag at all.
+
+        - POST /api/co passes no allowlist (a brand-new CO can never
+          legitimately have a pre-existing adjustment line).
+        - PATCH /api/co/[id] passes the ids already tagged adjustment on
+          the CO's current line_items, so the legitimate round-trip case
+          keeps working exactly as before.
+
+  app/api/co/route.ts
+
+    Section 10 — one-line comment only, documenting why no allowlist is
+    passed to computeCoTotals on create (see co-totals.ts above). No
+    behavior change: it already called computeCoTotals with 3 arguments,
+    which is unaffected by the new optional 4th parameter.
+
+  tests/co-totals-and-input.test.ts
+
+    Updated for the co-totals.ts contract change: the existing "lets a
+    system-written adjustment line be negative" test now supplies an id
+    and a matching allowlist (still proves the legitimate round-trip
+    works). Added a new test proving the bypass is now closed: a claimed
+    adjustment line with no id, with an id absent from the allowlist, or
+    submitted with no allowlist at all, is rejected the same way an
+    ordinary negative line would be.
+
+NOT CHANGED / verified clean on this pass
+-------------------------------------------
+
+  Section 3: create, complete-onboarding, leave, list, switch, and
+  profile (+ avatar) all came back clean against a fresh, independent
+  read — including the create_workspace_atomic / leave_workspace_atomic
+  RPCs, the trial-abuse lifetime cap, and the fallback-workspace
+  completion-preference logic.
+
+  Section 10: close, exception, revise, link, remind, withdraw, send,
+  escalate, accept-counter, co/draft, and api/pdf/co/[id] all came back
+  clean — including the CAS-guarded status transitions, the token-
+  revocation/no-revocation split between withdraw and close, the
+  orphaned-approval and guardian-flag cleanup on revise, and the PDF's
+  watermark/redaction logic.

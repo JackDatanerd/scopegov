@@ -167,8 +167,25 @@ export default function CoEditor({ projId, coId }: Props) {
   }, [])
 
   // Autosave triggered by field changes when editing an existing draft
+  //
+  // FIX (deep audit round 2, CO logic — flagship finding): this had no
+  // `financialsHidden` guard. GET /api/co/[id] redacts line_items/
+  // subtotal/tax_rate/tax_inclusive/total to null for a viewer who has
+  // CREATE_CHANGE_ORDERS but not VIEW_FINANCIALS (a real, constructible
+  // custom-role combination — see that route's own comment). The load
+  // effect above then falls back to the "new CO" default: a single blank
+  // $0 stub line, since co.line_items came back null. Every dependency in
+  // this effect's array gets set by that very load, so simply OPENING a
+  // draft CO you can't see the pricing of scheduled this debounce and
+  // fired an unconditional PATCH ~1.5s later — overwriting the CO's real
+  // line items/subtotal/total with the blank stub, permanently, before
+  // the user ever touched a field. `isLocked` disables the inputs but
+  // never gated this effect. There is no sensible autosave for a view the
+  // user isn't even allowed to see the true values of, so skip it
+  // entirely while financials are hidden — matches PATCH being pointless
+  // (and, until this fix, actively destructive) in that state.
   useEffect(() => {
-    if (pendingApproval) return
+    if (pendingApproval || financialsHidden) return
     // A brand-new CO has no server copy (and no autosave) until "Save draft"/"Send" — but leaving the
     // tab used to discard everything typed with no warning, because pendingSave was only ever set on the
     // autosave path below.
@@ -194,7 +211,7 @@ export default function CoEditor({ projId, coId }: Props) {
         pendingSave.current = false
       }
     }, 1500)
-  }, [title, note, lineItems, taxRate, taxInclusive, isRetainerRenewal, renewalTermMonths, timelineImpactDays, scopeImpactNote])
+  }, [title, note, lineItems, taxRate, taxInclusive, isRetainerRenewal, renewalTermMonths, timelineImpactDays, scopeImpactNote, financialsHidden])
 
   // FIX (CO send "not found" on a brand-new CO): doSave() used to always
   // call router.replace() to the new CO's own URL immediately after

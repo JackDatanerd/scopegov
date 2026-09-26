@@ -4,6 +4,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
+import { isAdjustmentLine } from '@/lib/utils/rescale-line-items'
 import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
 import { computeCoTotals } from '@/lib/documents/co-totals'
 import { parseCoFields } from '@/lib/documents/co-input'
@@ -149,11 +150,35 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (isRetainerRenewal === false)      update.renewal_term_months = null
     else if (renewalTermMonths !== undefined) update.renewal_term_months = renewalTerm.value
 
+    // FIX (deep audit round 2, CO logic — flagship finding, server-side belt to
+    // CoEditor.tsx's own fix): this route required only CREATE_CHANGE_ORDERS, with
+    // no check that the caller could actually see the money before letting them
+    // overwrite it. That's what let a financials-hidden viewer's client bug (a stale
+    // autosave firing on redacted/defaulted state) silently zero out a CO's real
+    // pricing — the server had nothing that would have refused it even if the client
+    // had never sent this at all. A viewer without VIEW_FINANCIALS has no legitimate
+    // reason to touch these fields (the editor already renders them as a locked
+    // "hidden" state for exactly this person), so refuse rather than trust the client
+    // not to send them.
+    if ((lineItems !== undefined || taxRate !== undefined || taxInclusive !== undefined)
+        && !hasPermission(session, 'VIEW_FINANCIALS')) {
+      return NextResponse.json({ error: 'Missing permission: VIEW_FINANCIALS' }, { status: 403 })
+    }
+
     if (lineItems !== undefined || taxRate !== undefined || taxInclusive !== undefined) {
+      // FIX (deep audit round 2, CO logic — bug #2): only ids that already carry
+      // kind === 'adjustment' on THIS CO may keep claiming it — see co-totals.ts
+      // for why the flag can no longer be trusted from the request body alone.
+      const existingAdjustmentIds = new Set(
+        (Array.isArray(co.line_items) ? co.line_items : [])
+          .filter((l: any) => isAdjustmentLine(l) && typeof l?.id === 'string')
+          .map((l: any) => l.id as string)
+      )
       const totals = computeCoTotals(
         lineItems ?? co.line_items ?? [],
         taxRate ?? co.tax_rate ?? 0,
         taxInclusive ?? co.tax_inclusive,
+        existingAdjustmentIds,
       )
       if (!totals.ok) return NextResponse.json({ error: totals.error }, { status: 400 })
       update.line_items    = totals.totals.lineItems

@@ -111,15 +111,35 @@ export async function DELETE(request: Request) {
     // final countersign is outstanding) didn't block deletion, and the
     // client's accept/counter/countersign links had no deleted_at check
     // on the portal side either (also fixed now).
+    //
+    // FIX (deep audit round 2, Workspace lifecycle + CO logic — flagship
+    // finding): 'countered' and 'stalled' were missing from this list.
+    // Both are just as live/unresolved as 'awaiting_response':
+    // 'countered' means the CLIENT made a counter-offer and the AGENCY
+    // hasn't accepted or declined it yet (see accept-counter/route.ts,
+    // which requires co.status === 'countered' to act on it at all), and
+    // 'stalled' is an unanswered 'awaiting_response' CO that co-stall's
+    // cron flagged after 5 days — still explicitly client-respondable
+    // (see CLIENT_RESPONDABLE_STATUSES in
+    // app/api/portal/co/[token]/_actions.ts, and close/route.ts's own
+    // TERMINAL_FROM/notification handling for exactly these two states).
+    // Since isWorkspaceDeleted() on the portal side returns 'revoked' for
+    // ANY status once the workspace is soft-deleted, a workspace could be
+    // deleted while a CO sat in either state — permanently stranding an
+    // open negotiation with no way for the client to hear back and no way
+    // for the agency to ever act on it again (every member gets
+    // deactivated by this same delete).
     const { count: pendingCoCount } = await (service as any)
       .from('change_orders')
       .select('id', { count: 'exact', head: true })
       .eq('workspace_id', session.workspaceId)
-      .in('status', ['awaiting_response', 'awaiting_countersignature'])
+      .in('status', ['awaiting_response', 'awaiting_countersignature', 'countered', 'stalled'])
 
     if ((pendingCoCount || 0) > 0) {
       return NextResponse.json({
-        error: 'Workspaces with a change order still awaiting the client\u2019s response cannot be deleted — withdraw it first. Contact support@scopegov.app if you need help.',
+        // FIX (deep audit round 2): message widened to cover 'countered' (awaiting the AGENCY's
+        // decision, not the client's) alongside the client-awaited states, now that both block deletion.
+        error: 'Workspaces with a change order still in an open negotiation cannot be deleted — close or withdraw it first. Contact support@scopegov.app if you need help.',
       }, { status: 409 })
     }
 
