@@ -12,6 +12,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { checkAiRateLimitByProject, recordAiUsageByProject } from '@/lib/utils/rate-limit'
 import { EVIDENCE_BUCKET } from '@/lib/utils/storage-cleanup'
 import { ALLOWED_ATTACHMENT_TYPES, matchesDeclaredType } from '@/lib/utils/file-signature'
+import { escapeLike } from '@/lib/utils/escape-like'
 
 // BUG-016: verify the Postmark inbound webhook before processing.
 //
@@ -287,8 +288,16 @@ async function isKnownSender(service: any, workspaceId: string, clientId: string
     if (!client) return false
     const known = new Set<string>([String(client.email || '').toLowerCase(), ...((client.cc_emails || []) as string[]).map(e => String(e).toLowerCase())])
     if (known.has(addr)) return true
+    // FIX (independent pass round 3, section 13): `addr` is always lowercased (senderEmail()
+    // lowercases it), but client_contacts.email isn't guaranteed to be — POST/PATCH .../contacts
+    // lowercase on write going forward, but rows created before that, or written some other way,
+    // may not be, and Postgres `=` is case-sensitive regardless. A saved contact like
+    // "Jane@Acme.com" could never match here even though the clients.email/cc_emails check just
+    // above it is already case-insensitive via a lowercased Set. ilike matches case-insensitively;
+    // escapeLike guards against `addr` containing a literal '%' or '_' (rare but legal in an
+    // email local-part) being read as a wildcard instead of a literal character.
     const { data: contact } = await service.from('client_contacts')
-      .select('id').eq('client_id', clientId).eq('email', addr).limit(1)
+      .select('id').eq('client_id', clientId).ilike('email', escapeLike(addr)).limit(1)
     return !!contact?.length
   } catch { return false }
 }
