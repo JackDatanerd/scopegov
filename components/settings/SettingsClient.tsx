@@ -17,6 +17,9 @@ import { createClient } from '@/lib/supabase/client'
 import type { SessionUser } from '@/lib/supabase/types'
 import { PLAN_LABELS, PLAN_LIMITS, PROJECT_TYPE_LABELS, formatDate, formatCurrency, initials, avatarColour } from '@/lib/utils/format'
 import SignaturePad, { type SignaturePadHandle } from '@/components/ui/SignaturePad'
+// FIX (deep audit, client-facing/signing section — feature gap): drives the live button preview
+// in BrandingTab below — see colour-contrast.ts's own comment for why this exists.
+import { isLowContrastForWhiteText } from '@/lib/utils/colour-contrast'
 import MfaSection from '@/components/settings/MfaSection'
 import SessionsSection from '@/components/settings/SessionsSection'
 import ChangeEmailSection from '@/components/settings/ChangeEmailSection'
@@ -1170,6 +1173,30 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, save
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setColour(e.target.value)} placeholder="#1A5C3A" />
             <div style={{ width: 38, height: 38, background: colour, borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)' }} />
           </div>
+          {/* FIX (deep audit, client-facing/signing section — feature gap): this colour becomes
+              white button text throughout the client portal (Sign/Accept/Pay buttons) and the
+              button in every client-facing email — but the only feedback here was a small static
+              swatch, which says nothing about whether white text stays readable on it. This
+              renders the actual button, live, as the colour is picked — no save round-trip
+              needed to find out it's illegible. */}
+          {/^#[0-9a-fA-F]{6}$/.test(colour) && (
+            <div style={{ marginTop: 12 }}>
+              <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 6 }}>How this looks to a client</div>
+              <button type="button" tabIndex={-1} style={{
+                background: colour, color: '#FFF', border: 'none', borderRadius: 5,
+                padding: '10px 20px', fontSize: 13, fontWeight: 600, cursor: 'default',
+              }}>
+                Review &amp; Sign
+              </button>
+              {isLowContrastForWhiteText(colour) && (
+                <p style={{ fontSize: 12, color: '#92400E', marginTop: 8, lineHeight: 1.5 }}>
+                  <i className="ti ti-alert-triangle" style={{ fontSize: 12, marginRight: 4 }} />
+                  This may be hard to read as white text — it&apos;s used on buttons like the one above
+                  throughout the client portal and in every client-facing email.
+                </p>
+              )}
+            </div>
+          )}
         </div>
         <button className="btn btn-primary btn-sm" onClick={saveBranding} disabled={saving || uploading}>
           {saving || uploading ? <span className="spin" /> : 'Save branding'}

@@ -5,6 +5,9 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { diffFields } from '@/lib/utils/audit-diff'
+// FIX (deep audit, client-facing/signing section — feature gap): see this module's own comment —
+// nothing ever checked a saved brand colour for legibility as white button text before this.
+import { isLowContrastForWhiteText } from '@/lib/utils/colour-contrast'
 
 const SIGNATURE_MAX_CHARS = 2_000_000
 
@@ -142,7 +145,16 @@ export async function PATCH(request: NextRequest) {
       metadata: { fields: changedKeys, changes },
     })
 
-    return NextResponse.json({ ok: true, changed: changedKeys })
+    // FIX (deep audit, client-facing/signing section — feature gap): only fires the moment the
+    // colour actually changes to a problematic one (not on every subsequent unrelated save while
+    // it's set) — see colour-contrast.ts's own comment for why this check exists at all. The
+    // Settings UI already surfaces any `warning` field from this route (see SettingsClient.tsx's
+    // shared `patch()` helper), so no client-side plumbing was needed for this half of the fix.
+    const warning = changedKeys.includes('brand_colour') && isLowContrastForWhiteText(proposed.brand_colour as string)
+      ? 'This brand colour may be hard to read as white text — it\u2019s used on "Sign"/"Pay" buttons in the client portal and on the button in every client-facing email. Consider a darker or more saturated shade.'
+      : undefined
+
+    return NextResponse.json({ ok: true, changed: changedKeys, ...(warning ? { warning } : {}) })
   } catch (err) {
     console.error('Workspace branding error:', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
