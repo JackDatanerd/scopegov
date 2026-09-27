@@ -433,11 +433,17 @@ export default async function ClientDetailPage({ params }: Props) {
             </div>
           )}
 
+          {/* FIX (independent pass, section 14): canDelete used to also require canEditClientData
+              (CREATE_PROJECTS), but DELETE /api/clients/[id] only ever checks DELETE_PROJECTS —
+              same as the sibling DELETE /api/projects/[id] route. A role with DELETE_PROJECTS but
+              not CREATE_PROJECTS was fully authorized to delete a client and had no button to do
+              it with. canMerge is unaffected — the merge route really does require all three
+              permissions. */}
           <ClientDangerZone
             clientId={client.id} clientName={client.name} visibleProjectCount={(projectsRaw || []).length}
             totalProjectCount={totalProjectCount || 0}
             others={(mergeTargets || []).map((c: any) => ({ id: c.id, name: c.name, email: c.email, status: c.status }))}
-            canMerge={canMergeClients} canDelete={canEditClientData && canDeleteClients}
+            canMerge={canMergeClients} canDelete={canDeleteClients}
           />
         </div>
       </div>

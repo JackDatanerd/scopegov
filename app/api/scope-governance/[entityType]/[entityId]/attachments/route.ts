@@ -142,6 +142,15 @@ export async function POST(
       entityId, metadata: { attachment_id: attachment.id, file_name: displayName },
     })
 
+    // FIX (independent pass, section 13): same class of bug already fixed on the comments route —
+    // uploading evidence didn't touch the flag's updated_at, so cron/guardian-flag-stall (which
+    // measures inactivity by updated_at) kept nagging about flags someone had just acted on.
+    if (entityType === 'flag') {
+      const { error: touchErr } = await (service as any).from('guardian_flags')
+        .update({ updated_at: new Date().toISOString() }).eq('id', entityId)
+      if (touchErr) console.error('Could not bump flag activity timestamp:', touchErr.message)
+    }
+
     const { data: signed } = await service.storage.from(BUCKET).createSignedUrl(storagePath, 3600)
 
     return NextResponse.json({
