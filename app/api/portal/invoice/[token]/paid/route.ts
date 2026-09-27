@@ -69,16 +69,34 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const project = invoice.projects
     const client  = project?.clients
 
-    const { error: claimErr } = await (service as any).from('invoices')
+    // FIX (fix round, section-18 re-audit): the `open` check above reads a snapshot taken BEFORE this
+    // write — a read-then-write gap identical to the one every other client-initiated state change in
+    // the portal already CAS-guards (decline/counter/accept/countersign/sign/request-changes all do this
+    // via `.eq('status', expected).select('id')` + a rows-affected check). Two requests close enough
+    // together — a genuine double-click, or exactly the "browser silently retries a timed-out fetch"
+    // scenario those routes' own comments name — could both pass the `open` check before either write
+    // landed, then both run the full notify-finance + email flow below for what is really one claim,
+    // directly contradicting this route's own stated goal ("must not notify finance twice"). CAS the
+    // write itself on the exact payment_claimed_at this request observed (including null, for a first
+    // claim) so only the request that actually flips the row from that observed value continues past
+    // this point; the loser gets the same "duplicate" response the pre-check above already returns for a
+    // genuinely stale request, rather than silently re-running the whole notify/email flow.
+    let claimQuery = (service as any).from('invoices')
       .update({
         payment_claimed_at: now, payment_claim_reference: reference.trim() || null,
         payment_claim_note: note.trim() || null, payment_claim_cleared_at: null,
       })
       .eq('id', invoice.id).in('status', OPEN_STATUSES)
+    claimQuery = invoice.payment_claimed_at
+      ? claimQuery.eq('payment_claimed_at', invoice.payment_claimed_at)
+      : claimQuery.is('payment_claimed_at', null)
+    const { data: claimed, error: claimErr } = await claimQuery.select('id')
     if (claimErr) {
       console.error('Invoice payment claim: update failed:', claimErr)
       return NextResponse.json({ error: 'Could not record your message — please try again.' }, { status: 500 })
     }
+    if (!claimed || claimed.length === 0)
+      return NextResponse.json({ ok: true, duplicate: true, claimedAt: invoice.payment_claimed_at })
 
     const balanceDue = Math.max(0, Number(invoice.amount) - Number(invoice.amount_paid))
 
