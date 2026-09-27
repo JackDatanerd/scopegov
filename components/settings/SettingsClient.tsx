@@ -1696,7 +1696,13 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
   // api/billing/history/route.ts's own header comment for the full story.
   const [history,        setHistory]        = useState<any[] | null>(null)
   const [historyError,   setHistoryError]   = useState('')
-  const [historyMore,    setHistoryMore]    = useState<{ hasMore: boolean; nextOffset: number }>({ hasMore: false, nextOffset: 0 })
+  // FIX (deep audit, Billing re-pass — independent redo #2): `truncated`
+  // mirrors what /api/billing/history now reports (see that route's own
+  // comment) — true only once "Load older" has genuinely run out of pages
+  // BECAUSE of the route's 500-row cap, not because there is no older data.
+  // Every other paginated view in this app (reports, audit log) already
+  // tells the reader this; billing history just let "Load older" vanish.
+  const [historyMore,    setHistoryMore]    = useState<{ hasMore: boolean; truncated: boolean; nextOffset: number }>({ hasMore: false, truncated: false, nextOffset: 0 })
   const [historyLoadingMore, setHistoryLoadingMore] = useState(false)
   // After Paystack's popup reports success the plan only changes once the
   // webhook lands; this tracks that wait (see confirmPayment below).
@@ -1713,7 +1719,7 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
         if (cancelled) return
         if (!res.ok) { setHistoryError(json.error || 'Could not load billing history.'); return }
         setHistory(json.rows || [])
-        setHistoryMore({ hasMore: !!json.hasMore, nextOffset: json.nextOffset || 0 })
+        setHistoryMore({ hasMore: !!json.hasMore, truncated: !!json.truncated, nextOffset: json.nextOffset || 0 })
       })
       .catch(() => { if (!cancelled) setHistoryError('Could not load billing history.') })
     return () => { cancelled = true }
@@ -1726,7 +1732,7 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
       const json = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(json.error)
       setHistory(prev => [...(prev || []), ...(json.rows || [])])
-      setHistoryMore({ hasMore: !!json.hasMore, nextOffset: json.nextOffset || 0 })
+      setHistoryMore({ hasMore: !!json.hasMore, truncated: !!json.truncated, nextOffset: json.nextOffset || 0 })
     } catch { setHistoryError('Could not load more billing history.') }
     finally { setHistoryLoadingMore(false) }
   }
@@ -1763,7 +1769,21 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
   // The webhook, not the popup, changes the plan (BUG-054), so after a
   // successful payment poll until the workspace actually reflects it instead
   // of reloading into the old plan behind an alert.
-  async function confirmPayment(before: { planTier: string | null; planInterval: string | null }) {
+  //
+  // FIX (deep audit, Billing re-pass — independent redo #2): the grace-period
+  // banner's "Retry with a new card" button (isRetrySamePlan below) starts a
+  // new subscription on the customer's EXISTING plan tier and interval —
+  // that's the whole point, it isn't a plan switch — so planTier/planInterval
+  // never change and this poll could never observe that path succeeding. It
+  // ran for the full 90s deadline regardless of how quickly the webhook
+  // actually cleared the failure, leaving "Payment received — confirming
+  // your plan" on screen for a minute and a half after what's usually a
+  // few-second round trip. `graceStartedAt` (also returned by
+  // /api/billing/status) is set going in for that path and is exactly what
+  // subscription.create clears on success, so a transition from "was set" to
+  // "now null" is an equally valid, additional success signal alongside the
+  // existing plan/interval check.
+  async function confirmPayment(before: { planTier: string | null; planInterval: string | null; graceStartedAt: string | null }) {
     setConfirming(true)
     const deadline = Date.now() + 90_000
     while (Date.now() < deadline) {
@@ -1772,7 +1792,11 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
         const res = await fetch('/api/billing/status')
         if (res.ok) {
           const st = await res.json()
-          if (st.planTier !== before.planTier || st.planInterval !== before.planInterval) break
+          if (
+            st.planTier !== before.planTier ||
+            st.planInterval !== before.planInterval ||
+            (before.graceStartedAt !== null && st.graceStartedAt === null)
+          ) break
         }
       } catch { /* keep polling */ }
     }
@@ -1819,7 +1843,11 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
       })
       const json = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(json.error || 'Could not start checkout')
-      const before = { planTier: planTier as string | null, planInterval: (billing?.plan_interval ?? null) as string | null }
+      const before = {
+        planTier: planTier as string | null,
+        planInterval: (billing?.plan_interval ?? null) as string | null,
+        graceStartedAt: (billing?.grace_period_started_at ?? null) as string | null,
+      }
       const handler = (window as any).PaystackPop.setup({
         key:      json.publicKey,
         email:    json.email,
@@ -1961,6 +1989,11 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
               {historyLoadingMore ? <span className="spin spin-dark" /> : 'Load older'}
             </button>
           </div>
+        )}
+        {historyMore.truncated && !historyMore.hasMore && (
+          <p style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 12, textAlign: 'center' }}>
+            Showing the {(history || []).length.toLocaleString()} most recent billing events. Older events exist but aren&apos;t shown here — contact support@scopegov.app if you need them.
+          </p>
         )}
       </div>
 

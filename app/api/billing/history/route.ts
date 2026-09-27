@@ -60,8 +60,21 @@ export async function GET(request: Request) {
     if (error) throw new Error(error.message)
 
     const page = (rows || []).slice(0, PAGE_SIZE)
+    // FIX (deep audit, Billing re-pass — independent redo #2): every other
+    // paginated/exportable view in this app (reports, audit log) explicitly
+    // tells the reader when its cap was hit and data is being left out.
+    // This route only ever signalled "no more pages" the same way whether
+    // it ran out of real data OR simply hit MAX_OFFSET — "Load older" just
+    // silently disappeared past 500 events with nothing to indicate older
+    // ones still exist. `moreExists` is the same "was there another row
+    // beyond this page" check `hasMore` already did; `truncated` is true
+    // only in the specific case where more exists but the MAX_OFFSET cap
+    // (not the actual data) is what's stopping us from reaching it.
+    const moreExists = (rows || []).length > PAGE_SIZE
+    const cappedOut = moreExists && offset + PAGE_SIZE >= MAX_OFFSET
     return NextResponse.json({
-      hasMore: (rows || []).length > PAGE_SIZE && offset + PAGE_SIZE < MAX_OFFSET,
+      hasMore: moreExists && !cappedOut,
+      truncated: cappedOut,
       nextOffset: offset + page.length,
       rows: page.map((r: any) => ({
         id: r.id,

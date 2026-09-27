@@ -426,28 +426,43 @@ export async function POST(request: NextRequest) {
   })
 
   // ── 4c. Retry Paystack cancellations that failed after a plan switch ─────────────────────
-  // Independent of 4b: this retries a specific OLD subscription recorded in pending_cancel_*
-  // (081) when subscription.create couldn't disable it, without touching paystack_subscription_
-  // code, which by then already holds the workspace's current, paying subscription.
+  // Independent of 4b: this retries specific OLD subscriptions recorded in
+  // billing_pending_subscription_cancels (094) when subscription.create couldn't disable them,
+  // without touching billing.paystack_subscription_code, which by then already holds the
+  // workspace's current, paying subscription.
+  //
+  // FIX (deep audit, Billing re-pass — independent redo #2): this used to read/clear a single
+  // pending_cancel_subscription_code slot on the `billing` row (081) — one workspace could only
+  // ever have ONE such retry remembered at a time, so a second plan switch's outcome (even a
+  // successful one, for a different old subscription) could silently erase the retry record for
+  // an earlier, still-undisabled subscription before this step ever saw it. One row per
+  // still-unresolved old subscription (rather than per workspace) means an arbitrary number of
+  // them are tracked and retried independently; a row is deleted only once ITS specific
+  // subscription is confirmed disabled.
   await run.step('4c paystack plan-switch cancel retry', async () => {
     const pendingSwitchCancels = await fetchAll<any>('pending plan-switch cancels select', (from, to) =>
-      (service as any).from('billing')
-        .select('workspace_id, pending_cancel_subscription_code, pending_cancel_email_token')
-        .not('pending_cancel_subscription_code', 'is', null)
-        .order('workspace_id')
+      (service as any).from('billing_pending_subscription_cancels')
+        .select('id, workspace_id, subscription_code, email_token')
+        // Unlike the single-row-per-workspace `billing` table this replaces,
+        // a workspace can now have more than one row here — a deterministic
+        // secondary order keeps offset paging from skipping/duplicating a
+        // row across pages the same way every other multi-row scan in this
+        // codebase already orders by id after its primary column.
+        .order('workspace_id').order('id')
         .range(from, to))
 
     for (const b of pendingSwitchCancels) {
       try {
         const r = await cancelPaystackSubscription({
-          paystack_subscription_code: b.pending_cancel_subscription_code, paystack_email_token: b.pending_cancel_email_token,
+          paystack_subscription_code: b.subscription_code, paystack_email_token: b.email_token,
         })
         if (r.ok) {
-          await (service as any).from('billing')
-            .update({ pending_cancel_subscription_code: null, pending_cancel_email_token: null }).eq('workspace_id', b.workspace_id)
+          await (service as any).from('billing_pending_subscription_cancels').delete().eq('id', b.id)
         } else {
-          await alertBillingOps(service, `billing:double-billing:${b.workspace_id}`, 'Previous subscription still not disabled after a plan switch', [
-            `workspace: ${b.workspace_id}`, `old subscription: ${b.pending_cancel_subscription_code}`, `error: ${r.error}`,
+          await (service as any).from('billing_pending_subscription_cancels')
+            .update({ last_attempt_at: now.toISOString(), last_error: r.error ?? null }).eq('id', b.id)
+          await alertBillingOps(service, `billing:double-billing:${b.workspace_id}:${b.subscription_code}`, 'Previous subscription still not disabled after a plan switch', [
+            `workspace: ${b.workspace_id}`, `old subscription: ${b.subscription_code}`, `error: ${r.error}`,
           ], 24 * 3600_000)
         }
       } catch (e) { run.rowError(`plan-switch cancel retry ${b.workspace_id}`, e) }

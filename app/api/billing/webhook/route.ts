@@ -231,16 +231,6 @@ async function handleEvent(service: any, event: any): Promise<void> {
       }).eq('id', workspaceId), 'update workspace plan')
 
       const paymentMethod = extractPaymentMethod(data)
-      // FIX (Billing re-pass #4): needs_paystack_cancel was hardcoded false
-      // here regardless of `previousDisabled` — a failed disable above got a
-      // one-shot ops alert and nothing durable. pending_cancel_subscription_
-      // code/email_token (081) record the OLD subscription specifically, so
-      // payment-overdue's step 4c can retry it without touching the NEW
-      // subscription this same write installs below.
-      const pendingCancel = previousDisabled === false
-        ? { pending_cancel_subscription_code: prevBilling?.paystack_subscription_code ?? null,
-            pending_cancel_email_token:       prevBilling?.paystack_email_token ?? null }
-        : { pending_cancel_subscription_code: null, pending_cancel_email_token: null }
       must(await service.from('billing').upsert({
         workspace_id:               workspaceId,
         paystack_customer_code:     data.customer?.customer_code,
@@ -250,12 +240,33 @@ async function handleEvent(service: any, event: any): Promise<void> {
         cancels_at_period_end:      false,
         grace_period_started_at:    null,
         needs_paystack_cancel:      false,
-        ...pendingCancel,
         plan_interval:              newInterval,
         payment_method_last4:       paymentMethod.last4,
         payment_method_type:        paymentMethod.type,
         updated_at:                 new Date().toISOString(),
       }, { onConflict: 'workspace_id' }), 'upsert billing')
+
+      // FIX (deep audit, Billing re-pass — independent redo #2): this used
+      // to be a single pending_cancel_subscription_code/email_token SLOT on
+      // the billing row (081), overwritten on every plan switch — so a
+      // second switch's outcome (even a SUCCESSFUL one, for a different old
+      // subscription) could silently erase the retry record for an earlier,
+      // still-undisabled subscription, permanently defeating the exact
+      // safety net (payment-overdue step 4c) built for this failure mode.
+      // A dedicated table with one row per still-unresolved old
+      // subscription (migration 094) means this workspace's earlier
+      // failures — if any are still sitting unresolved from a previous
+      // switch — are untouched by this one; only the subscription THIS
+      // event just failed to disable is recorded, keyed with the new
+      // subscription so a retry can never target it by mistake.
+      if (previousDisabled === false && prevBilling?.paystack_subscription_code) {
+        const { error: pendingErr } = await service.from('billing_pending_subscription_cancels').upsert({
+          workspace_id:       workspaceId,
+          subscription_code:  prevBilling.paystack_subscription_code,
+          email_token:        prevBilling.paystack_email_token ?? null,
+        }, { onConflict: 'workspace_id,subscription_code' })
+        if (pendingErr) console.error('[BILLING] could not record pending cancel retry:', pendingErr.message)
+      }
 
       if (res.checkout) await consumeCheckout(service, res.checkout.id)
 

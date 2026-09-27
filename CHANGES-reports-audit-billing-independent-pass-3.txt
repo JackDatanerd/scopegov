@@ -1,0 +1,104 @@
+CHANGES — Reports & Audit log / Billing — independent pass #3
+================================================================
+
+Scope: fresh, independent audit of two sections, done as if no prior pass
+existed. Section 15 (Reports & Audit log: api/reports route + audit-export,
+settings/audit) turned up no new feature gaps or bugs — see notes below.
+Section 16 (Billing: api/billing/cancel, upgrade, webhook) turned up three
+real issues, all fixed in this pass.
+
+----------------------------------------------------------------------------
+1. HIGH — plan-switch cancellation retry could silently lose track of a
+   still-charging subscription
+----------------------------------------------------------------------------
+Files:
+  supabase/migrations/094_billing_pending_subscription_cancels_table.sql (new)
+  app/api/billing/webhook/route.ts
+  app/api/cron/payment-overdue/route.ts
+
+billing.pending_cancel_subscription_code / pending_cancel_email_token (081)
+were a single nullable SLOT per workspace, used by payment-overdue's step 4c
+to retry disabling an old Paystack subscription when subscription.create's
+inline disable attempt failed. The webhook's write UNCONDITIONALLY
+overwrote that slot on every plan switch — with either the current
+failure's old subscription code, or null when the current disable
+succeeded.
+
+Break sequence: workspace switches A -> B, disabling A fails -> slot holds
+A. Before the cron retries, the workspace switches B -> C, and THIS TIME
+disabling B succeeds -> the write sets the slot to null (because B's
+disable worked). A's code is now nowhere: not in
+billing.paystack_subscription_code (holds C), not in the pending-cancel
+slot (null). The automated retry net built specifically for this failure
+mode never sees A again — it keeps renewing and charging the customer
+indefinitely, discoverable only by manually combing old audit_log rows.
+This is exactly the double-billing scenario 081 was written to prevent,
+one additional switch removed from the case it already handles.
+
+Fix: replaced the single-slot columns with
+billing_pending_subscription_cancels, one row per still-unresolved old
+subscription (unique on workspace_id + subscription_code) instead of one
+slot per workspace. The webhook now INSERTs/UPSERTs a row on a failed
+disable instead of overwriting a shared column; a later switch's outcome —
+success or failure, same workspace or not — can no longer touch an earlier,
+unrelated row. payment-overdue's step 4c now scans this table and deletes
+each row independently once ITS subscription is confirmed disabled
+(recording last_attempt_at/last_error on failure instead of silently
+retrying forever with no trace). Existing single-slot data is carried
+forward by the migration before the old columns are dropped.
+
+----------------------------------------------------------------------------
+2. MEDIUM (functional/UX gap) — "Retry with a new card" could not be
+   detected as complete by the post-checkout confirmation poll
+----------------------------------------------------------------------------
+File: components/settings/SettingsClient.tsx
+
+confirmPayment() polls /api/billing/status and declares success once
+planTier or planInterval changes. The grace-period banner's "Retry with a
+new card" button (isRetrySamePlan) deliberately starts a new subscription
+on the SAME tier and interval — that's the point, it isn't a plan switch —
+so neither value ever changes. The poll ran for the full 90-second deadline
+regardless of how quickly the webhook actually cleared the failure, leaving
+"Payment received — confirming your plan" on screen for a minute and a
+half after what's usually a few-second round trip. Every other plan-change
+path was detected correctly; this was the one path structurally invisible
+to the existing check.
+
+Fix: confirmPayment() now also accepts the pre-checkout
+billing.grace_period_started_at and treats a transition from "was set" to
+"now null" (exactly what subscription.create clears on success) as an
+equally valid success signal, alongside the existing plan/interval check.
+
+----------------------------------------------------------------------------
+3. LOW — /api/billing/history truncated past 500 rows with no indication
+----------------------------------------------------------------------------
+Files: app/api/billing/history/route.ts, components/settings/SettingsClient.tsx
+
+Every other paginated/exportable view in this app (reports, audit log)
+explicitly tells the reader when its cap was hit and data is being left
+out. Billing history's MAX_OFFSET = 500 had no equivalent signal — "Load
+older" just silently stopped appearing, indistinguishable from "that's
+genuinely everything." A long-lived workspace with 500+ billing events
+(years of renewals, retries, disputes) would lose access to its own older
+history with no explanation.
+
+Fix: the route now distinguishes "ran out of real data" from "hit the
+MAX_OFFSET cap while more still exists" and returns a `truncated` flag for
+the latter. The Billing tab shows a short note once paging is exhausted
+specifically because of that cap: "Showing the N most recent billing
+events. Older events exist but aren't shown here — contact
+support@scopegov.app if you need them."
+
+----------------------------------------------------------------------------
+Section 15 (Reports & Audit log) — independent re-verification, no changes
+----------------------------------------------------------------------------
+Re-checked from scratch: currency-mixing/rollup logic, asOf pagination
+pinning across all five scope/financial queries, the free-text search's
+two-layer PostgREST escaping, actor/project "unknown id" 404 handling,
+flag/CO classification's exhaustive partitioning (verified against every
+status/resolution combination actually written by
+app/api/guardian/flags/[id]/route.ts), CSV formula-injection handling
+(including the negative-number carve-out), redaction fail-closed behaviour
+and nested-object walking, and the audit category pattern list against
+every real event_type string logged in the app. No feature gaps, no bugs
+found — this section is clean on this pass.
