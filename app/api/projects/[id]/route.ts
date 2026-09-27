@@ -236,11 +236,24 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // by re-running the same check against a fresh read immediately before the write — the same
     // "re-check right before committing" shape already used for the plan-limit race in
     // POST/reopen (wouldExceedLimit / isOverLimit), just applied to this lock instead of a count.
-    if (updates.contract_value !== undefined || updates.retainer_duration_months !== undefined) {
+    //
+    // FIX (Projects & Dashboard re-audit): the structural-edit gate just above (clientId/type/
+    // currency, blocked once any SOW exists) was validated only against that same top-of-handler
+    // `sows` read and had no equivalent re-check — the one race this file's own comment explicitly
+    // set out to close, left open one field over. A SOW created in the gap between the initial read
+    // and this write could let a client/type/currency change land on a project that, by the time it
+    // actually commits, already has one. Folded into the same fresh-read block rather than a second
+    // query, since any of these five fields now needs the same re-check.
+    if (updates.contract_value !== undefined || updates.retainer_duration_months !== undefined
+      || updates.client_id !== undefined || updates.type !== undefined || updates.currency !== undefined) {
       const { data: freshProject } = await (service as any)
         .from('projects').select('sow_documents(id,status)')
         .eq('id', id).eq('workspace_id', session.workspaceId).is('deleted_at', null).maybeSingle()
       const freshSows: Array<{ id: string; status: string }> = freshProject?.sow_documents || []
+      if ((updates.client_id !== undefined || updates.type !== undefined || updates.currency !== undefined) && freshSows.length > 0)
+        return NextResponse.json({
+          error: 'The client, project type and currency can no longer be changed because a SOW already exists for this project.',
+        }, { status: 409 })
       if (updates.contract_value !== undefined) {
         const lockError = await checkSowLock(service, freshSows, 'contract value', 'contract value', 'value')
         if (lockError) return NextResponse.json({ error: lockError }, { status: 409 })
