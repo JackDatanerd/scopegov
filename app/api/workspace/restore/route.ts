@@ -35,10 +35,18 @@ export async function GET() {
     // created_by, not membership — a deleted workspace's own memberships
     // are all deactivated, so there is nothing else to check this against.
     // Matches restore_workspace_atomic's own authority check exactly.
+    //
+    // FIX (deep audit, Workspace lifecycle re-pass round 3 — flagship
+    // finding, see migration 091): a workspace a platform admin suspended
+    // sets the exact same deleted_at column a self-service delete does —
+    // excluding suspended_by_admin here keeps it out of the creator's own
+    // "restorable workspaces" list, so the self-service undo isn't even
+    // offered for something only an admin can lift.
     const { data: workspaces } = await (service as any)
       .from('workspaces')
       .select('id, agency_name, name, deleted_at')
       .eq('created_by', user.id)
+      .eq('suspended_by_admin', false)
       .not('deleted_at', 'is', null)
       .gt('deleted_at', cutoff)
       .order('deleted_at', { ascending: false })
@@ -84,6 +92,17 @@ export async function POST(request: NextRequest) {
       }
       if (msg.includes('not_deleted')) {
         return NextResponse.json({ error: 'This workspace isn\u2019t deleted.' }, { status: 409 })
+      }
+      // FIX (deep audit, Workspace lifecycle re-pass round 3 — flagship
+      // finding, see migration 091): a workspace suspended by a platform
+      // admin sets the same deleted_at column self-service delete does, but
+      // must not be undoable through this self-service path — that's the
+      // entire bug this migration closes. Checked before not_owner in the
+      // RPC itself so this fires regardless of who's asking.
+      if (msg.includes('admin_suspended')) {
+        return NextResponse.json({
+          error: 'This workspace has been suspended and can\u2019t be restored here. Contact support@scopegov.app.',
+        }, { status: 403 })
       }
       if (msg.includes('not_owner')) {
         return NextResponse.json({ error: 'Only the person who deleted this workspace can restore it.' }, { status: 403 })

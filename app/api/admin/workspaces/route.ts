@@ -27,7 +27,11 @@ export async function GET(request: NextRequest) {
 
   let query = (service as any)
     .from('workspaces')
-    .select('id, name, slug, agency_name, plan_tier, trial_ends_at, onboarding_completed_at, created_at, deleted_at', { count: 'exact' })
+    // suspended_by_admin (migration 091) added so the panel can tell an
+    // admin suspension apart from the workspace's own self-service delete —
+    // both share deleted_at, but only one of them is this admin surface's
+    // own doing.
+    .select('id, name, slug, agency_name, plan_tier, trial_ends_at, onboarding_completed_at, created_at, deleted_at, suspended_by_admin', { count: 'exact' })
     .order('created_at', { ascending: false })
 
   if (status === 'active') query = query.is('deleted_at', null)

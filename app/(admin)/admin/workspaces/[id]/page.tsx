@@ -9,6 +9,9 @@ interface Detail {
     id: string; name: string; agency_name: string; slug: string; plan_tier: string
     trial_ends_at: string | null; onboarding_completed_at: string | null
     first_sow_signed_at: string | null; created_at: string; deleted_at: string | null
+    // suspended_by_admin (migration 091) distinguishes an admin suspension
+    // from the workspace's own self-service delete — both share deleted_at.
+    suspended_by_admin: boolean
     currency: string; timezone: string; industry: string
   }
   members: Array<{ id: string; status: string; created_at: string; users: { email: string; name: string } | null; roles: { name: string } | null }>
@@ -75,7 +78,7 @@ export default function AdminWorkspaceDetailPage() {
         </div>
         <div>
           {workspace.deleted_at
-            ? <span className={`${styles.badge} ${styles.badgeRed}`}>Suspended</span>
+            ? <span className={`${styles.badge} ${styles.badgeRed}`}>{workspace.suspended_by_admin ? 'Suspended' : 'Deleted'}</span>
             : <span className={`${styles.badge} ${styles.badgeGreen}`}>Active</span>}
         </div>
       </div>

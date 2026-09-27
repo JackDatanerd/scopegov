@@ -14,6 +14,9 @@ interface WorkspaceRow {
   onboarding_completed_at: string | null
   created_at: string
   deleted_at: string | null
+  // suspended_by_admin (migration 091) distinguishes an admin suspension
+  // from the workspace's own self-service delete — both share deleted_at.
+  suspended_by_admin: boolean
 }
 
 function planBadgeClass(plan: string): string {
@@ -119,7 +122,7 @@ export default function AdminWorkspacesPage() {
                   <td className={styles.mono}>{new Date(w.created_at).toLocaleDateString()}</td>
                   <td>
                     {w.deleted_at
-                      ? <span className={`${styles.badge} ${styles.badgeRed}`}>Suspended</span>
+                      ? <span className={`${styles.badge} ${styles.badgeRed}`}>{w.suspended_by_admin ? 'Suspended' : 'Deleted'}</span>
                       : <span className={`${styles.badge} ${styles.badgeGreen}`}>Active</span>}
                   </td>
                 </tr>
