@@ -1,0 +1,60 @@
+CHANGES — Approvals (section 11) + Invoicing (section 12), independent pass 7
+==============================================================================
+Fresh independent audit of both sections, done separately (each treated as if
+the other section — and all 6 prior independent-pass rounds baked into the
+existing code comments, including pass 6's reassignment-feasibility fix which
+was already present in the tarball this round started from — didn't exist).
+Feature gaps first, then bugs, per the usual workflow.
+
+SECTION 11 — Approval workflows engine
+---------------------------------------
+
+No feature gaps found.
+
+1. BUG — a co_counter approval stuck in the send-failed state had no inline
+   recovery on the CO card; only the generic 'draft' gate got one.
+   components/projects/ProjectDetail.tsx (CoCard)
+
+   Every analogous "approved but the auto-send failed" case in the app splits
+   its button row on `pendingApproval.sendFailed`: SowTab's currentSow.status
+   === 'draft' branch, CoCard's OWN co.status === 'draft' branch, and
+   BillingTab's invoice rows all swap in inline Cancel request / Retry send
+   buttons once sendFailed is true, and only show a plain "Awaiting approval"
+   link otherwise. CoCard's co.status === 'countered' branch — the one that
+   covers accepting a client's counter-offer (document_type 'co_counter',
+   see lib/approvals/engine.ts) — never got this split. It rendered the same
+   "Awaiting approval" link regardless of sendFailed, so a co_counter chain
+   that fully cleared but whose auto-send (acceptCoCounter) failed left the
+   card showing the "Approved — not sent" pill up top with no matching
+   recovery action underneath — only reachable by navigating to /approvals
+   (which does handle it correctly).
+
+   Fixed by splitting the countered branch the same way the draft branch
+   already is: Cancel request / Retry send when sendFailed, the existing
+   plain link otherwise.
+
+   Second half of the same bug: cancelApproval()'s confirm() text was
+   hardcoded to say "the document goes back to being an editable draft" —
+   true for the draft-status case (a plain send gate keeps the CO at
+   'draft' the whole time it's pending), but WRONG for a co_counter gate,
+   which leaves the CO at 'countered' the entire time (see
+   accept-co-counter.ts) — cancelling one doesn't make anything editable,
+   the CO just stays 'countered', still awaiting a decision on the
+   counter-offer. Reusing the same function for the new countered+sendFailed
+   branch would have shipped that wrong claim the moment a real user hit it.
+   cancelApproval now takes an `isCounterOffer` flag (the caller already
+   knows which status branch it's rendering from — co.status === 'countered'
+   can only mean a co_counter gate) and picks the accurate wording. Mirrors
+   cancelConfirmMessage() in components/approvals/ApprovalsClient.tsx, which
+   already draws this exact distinction for the dedicated Approvals page —
+   this was the one place in the app that still had the old, undifferentiated
+   message.
+
+SECTION 12 — Invoicing
+-----------------------
+
+No feature gaps or bugs found on this pass.
+
+Carried forward, not re-decided: GET /api/invoices' bare .limit(500) (flagged
+in pass 6's notes) is still dead code from the app's own perspective — no UI
+caller found on this pass either. Left alone, per pass 6's reasoning.
