@@ -173,7 +173,18 @@ export async function GET() {
     // the fact): send them onward." The active workspace's own
     // completeness is authoritative and short-circuits everything else.
     const activeComplete = active.find((m: any) => m.workspace_id === activeWorkspaceId && !!m.workspaces.onboarding_completed_at)
-    if (activeComplete) return NextResponse.json({ status: 'complete' })
+    // FIX (fresh independent audit, Onboarding section): 'complete' never carried a
+    // workspaceId — harmless for the mount effect and the 'waiting' screen's poll
+    // (neither reads it, both just navigate to /dashboard), but it silently broke
+    // app/onboarding/page.tsx's discardWorkspace(), whose own fallback explicitly
+    // checks `json.workspaceId && (json.status === 'resume' || 'waiting' || 'complete')`
+    // to catch a completed workspace membership that appeared (another tab, an invite
+    // accepted) after its pre-fetched `otherWorkspaces` list went stale. With no
+    // workspaceId on 'complete', that check could never be true for this status, so the
+    // branch was dead code and a user hitting that exact race got silently routed into
+    // creating a third workspace instead of landing on the one that had just become
+    // available. Include it — every other status here already does.
+    if (activeComplete) return NextResponse.json({ status: 'complete', workspaceId: activeComplete.workspaces.id })
 
     // FIX (fresh independent audit, Onboarding section — headline
     // finding): this used to check "first owned incomplete workspace,
@@ -208,7 +219,8 @@ export async function GET() {
     const fallback = pickFallbackMembership(active)
     if (fallback) {
       const w = fallback.workspaces
-      if (w.onboarding_completed_at) return NextResponse.json({ status: 'complete' })
+      // Same fix as activeComplete above — see that comment.
+      if (w.onboarding_completed_at) return NextResponse.json({ status: 'complete', workspaceId: w.id })
       if (w.created_by === user.id) return NextResponse.json(await buildResumePayload(service, w))
       return NextResponse.json({
         status: 'waiting',

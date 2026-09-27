@@ -209,7 +209,16 @@ export default async function SowPage() {
                   <td style={{ color: 'var(--text-3)', fontSize: 12 }}>{s.signed_at ? formatDate(s.signed_at) : '—'}</td>
                   {canViewFinancials && (
                     <td className="td-mono" style={{ textAlign: 'right', fontSize: 12 }}>
-                      {s.projects?.contract_value
+                      {/* FIX (SOW lifecycle re-audit — fresh independent pass): this was a
+                          truthy check (`? :`), the same $0-vs-null display bug already found
+                          and fixed on three separate Portfolio surfaces. contract_value can
+                          legitimately be 0 (parseContractValue allows it, and checkSowLock only
+                          blocks lowering it while a SOW is signed/awaiting_signature/pending-
+                          approval — not once terminal, i.e. withdrawn/declined/expired), so a
+                          $0 project showed a blank "—" instead of "$0" to a viewer who can see
+                          financials. Null-check instead, so only a genuinely missing value (no
+                          project, or a null contract_value) falls back to the dash. */}
+                      {s.projects?.contract_value != null
                         ? formatCurrency(s.projects.contract_value, s.projects.currency)
                         : '—'}
                     </td>
