@@ -10,6 +10,7 @@ import Link from 'next/link'
 import { PLAN_LIMITS } from '@/lib/utils/format'
 import { permissionsRequireMfa } from '@/lib/auth/mfa-policy'
 import { roleWithinCeiling } from '@/lib/utils/permission-ceiling'
+import { roleHolderCounts } from '@/lib/utils/role-holders'
 
 export const metadata = { title: 'Team' }
 
@@ -114,6 +115,41 @@ export default async function TeamPage() {
   const expired = canInvite ? allMembers.filter((m: any) => m.status === 'expired' || isLapsed(m)).map(stripPermissions).map(redactStrangerProfile) : []
   const deactivated = canInvite ? (deactivatedRes.data || []).map(stripPermissions).map(redactStrangerProfile) : []
 
+  // FIX (deep audit, Team & Invites — bug): the Roles tab (gated on
+  // canManageRoles) gets its "N Members hold this role" count and its
+  // Delete-button safety check from roleHolderCounts(), fed by
+  // pending/expired/deactivated above — but those three are only ever
+  // populated when canInvite is ALSO true, a completely independent
+  // permission (both INVITE_MEMBERS and MANAGE_ROLES are protected floors
+  // in their own right — see admin-floor.ts's PROTECTED_PERMISSIONS). A
+  // custom role with MANAGE_ROLES but not INVITE_MEMBERS (a plausible,
+  // realistic combination — e.g. a permissions administrator who
+  // shouldn't be sending invites) saw pending/deactivated holders read as
+  // zero for every role, regardless of the truth: a role held only by
+  // pending invites or deactivated members showed "0 Members" with
+  // Delete enabled, and clicking it hit DELETE /api/team/roles/[id]'s own
+  // authoritative check (which looks at the DB directly, independent of
+  // the actor's permissions) for a 409 the UI never warned about.
+  // roleHolderCounts()'s own fix (see its file/test) corrected the
+  // COUNTING LOGIC once given the right lists; it never touched what
+  // lists a MANAGE_ROLES-only viewer actually receives, because the gap
+  // was here, not there. A count carries none of the PII invited_email/
+  // users.name/email that canInvite exists to gate — only how many rows
+  // in each status hold a given role_id — so compute it unconditionally
+  // for every role whenever the Roles tab can even be reached
+  // (canManageRoles), independent of canInvite.
+  const roleHolderCountsByRole: Record<string, ReturnType<typeof roleHolderCounts>> | undefined = canManageRoles
+    ? Object.fromEntries((rolesRes.data || []).map((r: any) => [
+        r.id,
+        roleHolderCounts(r.id, {
+          members: active,
+          pendingInvites: allMembers.filter((m: any) => m.status === 'invited' && !isLapsed(m)),
+          expiredInvites: allMembers.filter((m: any) => m.status === 'expired' || isLapsed(m)),
+          deactivatedMembers: deactivatedRes.data || [],
+        }),
+      ]))
+    : undefined
+
   // FIX (deep audit, Team & Invites re-pass — feature gap): this used to be
   // an unconditional `session.planTier === 'solo' && active.length <= 1`
   // early return, discarding pending/expired/deactivated before TeamClient
@@ -163,6 +199,7 @@ export default async function TeamPage() {
       overSeatLimit={overSeatLimit}
       seatLimit={seatLimit ?? null}
       assignableRoleIds={(rolesRes.data || []).filter((r: any) => roleWithinCeiling(session, r)).map((r: any) => r.id)}
+      roleHolderCounts={roleHolderCountsByRole}
     />
   )
 }

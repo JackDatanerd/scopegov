@@ -47,9 +47,20 @@ interface Props {
   // Roles the viewer is allowed to hand out (their own permissions cover every permission in the role).
   // The server enforces this regardless; this only stops the pickers offering choices that will be refused.
   assignableRoleIds?: string[]
+  // FIX (deep audit, Team & Invites — bug): server-computed, PII-free
+  // holder counts per role id (active/pending/deactivated/total), built
+  // from every workspace_members row regardless of the viewer's
+  // INVITE_MEMBERS permission — see app/(app)/team/page.tsx's own comment.
+  // pendingInvites/expiredInvites/deactivatedMembers above are gated on
+  // canInvite and empty for a MANAGE_ROLES-only viewer, which used to
+  // silently zero out this exact count on the Roles tab (a different,
+  // independent permission) below. Falls back to computing locally from
+  // whatever lists this component did receive, so nothing breaks if a
+  // caller doesn't pass it.
+  roleHolderCounts?: Record<string, ReturnType<typeof roleHolderCounts>>
 }
 
-export default function TeamClient({ members, pendingInvites, expiredInvites = [], deactivatedMembers = [], roles, session, canInvite, canManageRoles, workspaceId, overSeatLimit, seatLimit, assignableRoleIds }: Props) {
+export default function TeamClient({ members, pendingInvites, expiredInvites = [], deactivatedMembers = [], roles, session, canInvite, canManageRoles, workspaceId, overSeatLimit, seatLimit, assignableRoleIds, roleHolderCounts: roleHolderCountsByRole }: Props) {
   const router  = useRouter()
   const searchParams = useSearchParams()
   // FIX (deep audit, section 5 re-pass): Settings computed a `manageRoles`
@@ -772,8 +783,11 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
                   // button's own gating agree with what the server will
                   // actually do, instead of only ever describing the active
                   // slice of the truth.
+                  // Prefer the server-computed, permission-independent counts (see the
+                  // roleHolderCounts prop's own comment) — falls back to computing from
+                  // whatever lists this component received, for a caller that doesn't pass it.
                   const { active: activeCount, pending: pendingCount, deactivated: deactivatedCount, total: totalHolders } =
-                    roleHolderCounts(r.id, { members, pendingInvites, expiredInvites, deactivatedMembers })
+                    roleHolderCountsByRole?.[r.id] ?? roleHolderCounts(r.id, { members, pendingInvites, expiredInvites, deactivatedMembers })
                   const deleteBlockedReason = activeCount > 0
                     ? `${activeCount} active member${activeCount === 1 ? '' : 's'} currently hold this role. Reassign them first.`
                     : pendingCount > 0

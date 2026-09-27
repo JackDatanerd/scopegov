@@ -350,9 +350,21 @@ describe('POST /api/team/[id]/link', () => {
   })
   it('re-issues an expired invite (new token, this person becomes the inviter)', async () => {
     session = mkSession(['INVITE_MEMBERS'])
-    resolver = (t, ops) => (t === 'workspace_members' && first(ops) === 'select')
-      ? { data: { ...live, status: 'expired', invite_token_expires_at: '2020-01-01T00:00:00Z' }, error: null }
-      : { data: null, error: null }
+    // FIX (deep audit, Settings & Team — stale mock): this resolver predates
+    // the compare-and-swap 01ef7f0 added to the route (.update(...).select('id'),
+    // checked for a matched row before treating the re-issue as real — see that
+    // commit's own note on link/route.ts). Without an 'update' branch here the
+    // route's CAS check reads back `data: null` from the shared fallback below,
+    // treats it as "no row matched" and 409s before ever reaching the assertions
+    // this test is actually about. A real Postgrest update+select against a row
+    // that still matches its own WHERE clause (no concurrent write here) returns
+    // the row; mock that instead of the no-op fallback.
+    resolver = (t, ops) => {
+      if (t === 'workspace_members' && first(ops) === 'select')
+        return { data: { ...live, status: 'expired', invite_token_expires_at: '2020-01-01T00:00:00Z' }, error: null }
+      if (t === 'workspace_members' && first(ops) === 'update') return { data: [{ id: 'm1' }], error: null }
+      return { data: null, error: null }
+    }
     const { POST } = await import('@/app/api/team/[id]/link/route')
     const res = await POST(req('/api/team/m1/link', 'POST'), P('m1'))
     const json = await res.json()
@@ -365,9 +377,13 @@ describe('POST /api/team/[id]/link', () => {
   })
   it('treats an invite past its expiry as expired even if the cron has not flipped the status yet', async () => {
     session = mkSession(['INVITE_MEMBERS'])
-    resolver = (t, ops) => (t === 'workspace_members' && first(ops) === 'select')
-      ? { data: { ...live, invite_token_expires_at: '2020-01-01T00:00:00Z' }, error: null }
-      : { data: null, error: null }
+    // Same CAS mock gap as the test above — see its comment.
+    resolver = (t, ops) => {
+      if (t === 'workspace_members' && first(ops) === 'select')
+        return { data: { ...live, invite_token_expires_at: '2020-01-01T00:00:00Z' }, error: null }
+      if (t === 'workspace_members' && first(ops) === 'update') return { data: [{ id: 'm1' }], error: null }
+      return { data: null, error: null }
+    }
     const { POST } = await import('@/app/api/team/[id]/link/route')
     const json = await (await POST(req('/api/team/m1/link', 'POST'), P('m1'))).json()
     expect(json.reissued).toBe(true)
@@ -384,9 +400,16 @@ describe('POST /api/team/[id]/resend — failed send on an expired invite', () =
     globalThis.fetch = (async () => new Response(JSON.stringify({ message: 'nope' }), { status: 422 })) as any
     try {
       session = mkSession(['INVITE_MEMBERS'])
+      // FIX (deep audit, Settings & Team — stale mock): same CAS gap as
+      // settings-team-round.test.ts's link-route tests — 01ef7f0 added an
+      // .update(...).select('id') compare-and-swap to resend/route.ts too,
+      // and this resolver (written before that commit) had no 'update'
+      // branch, so the route 409'd on "changed by someone else" before ever
+      // reaching checkedSend/sendInviteEmail — the actual thing under test.
       resolver = (t, ops) => {
         if (t === 'workspace_members' && first(ops) === 'select')
           return { data: { id: 'm1', status: 'expired', invited_email: 'new@x.com', user_id: null, invited_by: 'u9', invite_token: 'OLD', invite_token_expires_at: '2020-01-01T00:00:00Z', roles: null, users: null }, error: null }
+        if (t === 'workspace_members' && first(ops) === 'update') return { data: [{ id: 'm1' }], error: null }
         if (t === 'workspaces') return { data: { name: 'Acme', agency_name: 'Acme' }, error: null }
         return { data: null, error: null }
       }

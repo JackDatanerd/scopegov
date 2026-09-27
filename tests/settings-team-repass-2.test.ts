@@ -147,7 +147,17 @@ describe('T-1 fix: checkedSend surfaces a provider rejection', () => {
     resolver = (t, ops) => {
       if (t === 'workspace_members' && first(ops) === 'select')
         return { data: { id: 'm1', status: 'invited', invited_email: 'new@x.com', user_id: null, invited_by: 'u9', invite_token: 'OLD-TOKEN', invite_token_expires_at: '2030-01-01T00:00:00Z', roles: null, users: null }, error: null }
-      if (t === 'workspace_members' && first(ops) === 'update') { updates.push(arg(ops, 'update')![0]); return { error: null } }
+      // FIX (deep audit, Settings & Team — stale mock): 01ef7f0 added a
+      // compare-and-swap to the resend route's token-rotation write
+      // (.update(...).select('id'), gated on updatedRows.length > 0 — see
+      // that route's own comment) after this test was written. With no
+      // `data` here the route read that back as "someone else already
+      // changed this row" and 409'd before ever calling checkedSend, so
+      // `sent.length` stayed 0 instead of the 1 this test actually checks.
+      // The rollback update just below in the route doesn't chain
+      // .select() at all, so returning the same shape for both writes is
+      // harmless — only the first one's `data` is ever read.
+      if (t === 'workspace_members' && first(ops) === 'update') { updates.push(arg(ops, 'update')![0]); return { data: [{ id: 'm1' }], error: null } }
       if (t === 'workspaces') return { data: { name: 'Acme', agency_name: 'Acme' }, error: null }
       return { data: null, error: null }
     }
