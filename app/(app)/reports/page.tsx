@@ -365,7 +365,7 @@ function ScopeReport({ data }: { data: any }) {
             ))}
           </div>
           <p style={{ fontSize: 12, color: 'var(--text-3)', margin: '10px 2px 0' }}>
-            Dismissed flags ({metrics.dismissed_flags ?? 0}) are excluded from "Raised" entirely — they were never confirmed out of scope.
+            Dismissed flags ({metrics.dismissed_flags ?? 0}) are excluded from &ldquo;Raised&rdquo; entirely — they were never confirmed out of scope.
           </p>
         </div>
       )}

@@ -124,6 +124,17 @@ export async function middleware(request: NextRequest) {
     pathname === '/'
 
   const isOnboarding = pathname === '/onboarding'
+
+  // Platform admin panel (app/(admin)/admin/*, app/api/admin/*): a signed-in,
+  // MFA-satisfied user, but NOT gated on having/completing a workspace —
+  // is_platform_admin is a cross-tenant flag on public.users with no
+  // workspace relationship at all, and a support account may hold it with
+  // zero workspace memberships of its own. Actual admin authorization
+  // happens per-request in lib/auth/admin.ts (requireAdmin/getAdminActor),
+  // which 404s a non-admin exactly like any other "you don't have access to
+  // this" case elsewhere in the app.
+  const isAdminRoute = pathname.startsWith('/admin') || pathname.startsWith('/api/admin')
+
   // FIX (Auth+MFA audit round 2 — HIGH): the moment /api/workspace/create returns,
   // the creator is an Owner — an MFA-mandatory role — and the enrolment gate below
   // starts refusing every API call that isn't an MFA route. The onboarding wizard
@@ -273,7 +284,7 @@ export async function middleware(request: NextRequest) {
     const deleted = await rejectIfDeleted()
     if (deleted) return deleted
 
-    if (!isOnboarding && !isMfaFlowRoute) {
+    if (!isOnboarding && !isMfaFlowRoute && !isAdminRoute) {
       const gate = await loadGate()
       // Fail closed on a lookup error: a redirect to /onboarding here would send
       // already-onboarded users into a loop, and letting the request through
