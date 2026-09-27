@@ -93,6 +93,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!CONTACT_ROLE_TYPES.includes(roleType))
       return NextResponse.json({ error: `roleType must be one of: ${CONTACT_ROLE_TYPES.join(', ')}` }, { status: 400 })
 
+    // Fast-path only — not the enforcement. Two concurrent requests can both pass this unlocked
+    // count, so the cap is actually enforced inside client_contact_add (093), under the same row
+    // lock that already serializes concurrent adds for this client. This just avoids the RPC round
+    // trip (and gives an immediate error) in the common, non-concurrent case.
     const { count } = await (service as any).from('client_contacts')
       .select('id', { count: 'exact', head: true }).eq('client_id', id)
     if ((count || 0) >= MAX_CONTACTS_PER_CLIENT)
@@ -112,6 +116,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({
         error: /email/i.test(error.message) ? 'A contact with this email already exists for this client.' : 'Only one primary contact is allowed per client',
       }, { status: 409 })
+    }
+    // The route's own count check above is a fast-path, not the enforcer — a concurrent request
+    // can still slip past it, in which case client_contact_add (093) catches it under its row lock.
+    if (error?.message?.includes('contact_limit_exceeded')) {
+      return NextResponse.json({ error: `A client can have at most ${MAX_CONTACTS_PER_CLIENT} contacts.` }, { status: 409 })
     }
     if (error) throw new Error(error.message)
 

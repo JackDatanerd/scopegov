@@ -1,0 +1,46 @@
+Section 13 (Guardian/scope governance) + Section 14 (Clients) — round 6
+
+Fresh independent audit of both sections (every file in api/guardian/*, api/scope-governance/
+[entityType], cron/guardian-health, cron/guardian-flag-stall, cron/scope-health-rollup,
+api/clients, components/clients, app/(app)/clients read end-to-end, ignoring prior audit
+comments except to check whether they held up):
+
+- Section 13 (Guardian): no new bugs, no feature gaps. Consistent CAS patterns on every state
+  transition, checkedSend used everywhere an email goes out, every write's error checked. This
+  section came back completely clean.
+
+- Section 14 (Clients): no feature gaps. One bug found and fixed below.
+
+Bug fixed:
+
+1. app/api/clients/[id]/contacts/route.ts (POST) + supabase/migrations/093 (new)
+
+   MAX_CONTACTS_PER_CLIENT (25) was only ever enforced by a plain SELECT count() in the route,
+   run BEFORE calling the client_contact_add() RPC (migration 077). That function takes a
+   FOR UPDATE lock on the parent clients row (added for primary-contact-swap atomicity) but
+   never re-checked the contact count under that lock. Two near-simultaneous add requests for
+   the same client, both arriving while the count is one under the cap, could each pass the
+   route's pre-check, then serialize through the lock one after another and both insert —
+   leaving the client with 26+ contacts despite the cap.
+
+   Notably, migration 089 (merge_clients contact-cap fix) explicitly treats this route's
+   app-level cap as the trusted enforcement point ("an equivalent app-level cap ... that this
+   function has always bypassed entirely") without noticing that trusted point itself wasn't
+   race-safe — the same check-then-act pattern this codebase has otherwise closed everywhere
+   else with a lock (scope_adjustments version, guardian_flags status CAS, this same function's
+   own primary-swap).
+
+   Fix: migration 093 recomputes the count inside client_contact_add(), under the same row lock
+   that already serializes concurrent adds for one client, and RAISEs 'contact_limit_exceeded'
+   if the insert would cross the cap. The route now catches that specific error and returns the
+   same 409 message as its existing pre-check. The route's own count check is kept as a cheap
+   fast-path for the common non-concurrent case (avoids an RPC round trip just to get a friendly
+   error), but is no longer the only thing enforcing the limit.
+
+Files changed:
+  - supabase/migrations/093_client_contact_add_enforce_cap_under_lock.sql  (new)
+  - app/api/clients/[id]/contacts/route.ts
+
+Status: both sections have one bug fixed this round; per the audit-passes-don't-stop-until-
+clean rule, they need one more fresh independent pass after this lands before being called
+closed.
