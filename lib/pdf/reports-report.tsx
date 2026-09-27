@@ -147,6 +147,32 @@ function ScopeReportDocument({ meta, data }: { meta: ReportPdfMeta; data: any })
           </View>
         </View>
 
+        {/* FIX (deep audit, Reports & Audit / Billing re-pass — independent
+            redo): scope-financial-data.ts partitions total_flags exactly
+            into converted_to_co + closed_without_co_flags + still_open_flags,
+            and the on-screen "Flag outcome grid" (app/(app)/reports/page.tsx)
+            shows all five buckets — this PDF only ever rendered two of them.
+            Same three-box-plus-footnote shape as that grid: dismissed flags
+            are excluded from "Raised" entirely, so they get a footnote here
+            too rather than a fourth box implying they're part of the total. */}
+        <View style={s.metricRow}>
+          <View style={s.metricBox}>
+            <Text style={s.metricLbl}>Closed without change order</Text>
+            <Text style={s.metricVal}>{metrics.closed_without_co_flags ?? 0}</Text>
+          </View>
+          <View style={s.metricBox}>
+            <Text style={s.metricLbl}>Still open</Text>
+            <Text style={s.metricVal}>{metrics.still_open_flags ?? 0}</Text>
+          </View>
+          <View style={s.metricBox}>
+            <Text style={s.metricLbl}>Awaiting borderline review</Text>
+            <Text style={s.metricVal}>{metrics.pending_review_flags ?? 0}</Text>
+          </View>
+        </View>
+        <Text style={s.tdSub}>
+          Dismissed flags ({metrics.dismissed_flags ?? 0}) are excluded from &quot;Flags raised&quot; entirely — they were never confirmed out of scope.
+        </Text>
+
         <Text style={s.h2}>Flags by project ({(flagsByProject || []).length})</Text>
         {!(flagsByProject || []).length ? (
           <Text style={s.emptyNote}>No scope flags in this period.</Text>

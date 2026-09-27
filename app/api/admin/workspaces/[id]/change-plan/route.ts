@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireAdmin, isAdminGuardFailure, logAdminAction } from '@/lib/auth/admin'
+import { logAudit } from '@/lib/utils/audit'
 
 // Matches lib/supabase/types.ts's Plan union / the plan_tier enum
 // (001_initial_schema.sql). Kept as a local literal list rather than
@@ -51,6 +52,29 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     targetId: workspace.id,
     targetLabel: workspace.agency_name || workspace.name,
     metadata: { previousPlan: workspace.plan_tier, newPlan: plan, reason: reason || null },
+  })
+
+  // FIX (deep audit, Reports & Audit / Billing re-pass — independent redo):
+  // this only ever wrote to platform_admin_audit_log — a table the affected
+  // workspace has no access to at all. Its own Settings -> Audit log
+  // (VIEW_AUDIT_LOG) and its own Billing -> Payment history
+  // (api/billing/history, which reads billing.plan_changed rows from this
+  // same audit_log) both showed nothing, so a workspace's plan could be
+  // changed by platform staff with zero record visible to the workspace
+  // itself. Written as the same 'billing.plan_changed' event type every
+  // other plan change already uses (cancel/upgrade/webhook), with a
+  // distinct `action` so the Billing tab labels it for what it is rather
+  // than implying the customer did it themselves.
+  await logAudit(service, {
+    workspaceId: workspace.id, actorId: null,
+    actorEmail: 'admin@scopegov.app', actorName: 'ScopeGov staff',
+    eventType: 'billing.plan_changed', entityType: 'workspace',
+    entityId: workspace.id, entityName: workspace.agency_name || workspace.name,
+    metadata: {
+      action: 'admin_override',
+      from: workspace.plan_tier, to: plan,
+      reason: reason || undefined,
+    },
   })
 
   return NextResponse.json({ ok: true, plan })

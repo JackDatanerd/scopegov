@@ -1625,6 +1625,12 @@ const PLAN_ACTION_LABELS: Record<string, string> = {
   subscription_not_renewing:   'Subscription set to end',
   subscription_disabled:       'Subscription disabled',
   subscription_created:        'Subscription started',
+  // FIX (deep audit, Reports & Audit / Billing re-pass — independent redo):
+  // an admin-side plan override (app/api/admin/workspaces/[id]/change-plan)
+  // now writes a billing.plan_changed row to this same workspace's own
+  // audit_log — see that route's own comment. Label it distinctly so it
+  // doesn't look like the customer changed their own plan.
+  admin_override:              'Plan changed by ScopeGov staff',
 }
 
 function billingHistoryLabel(h: any): string {
@@ -1741,7 +1747,13 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
   async function handleResume() {
     setResuming(true); setResumeError('')
     try {
-      const res  = await fetch('/api/billing/resume', { method: 'POST' })
+      // FIX (deep audit, Billing re-pass — independent redo): plain fetch(),
+      // so the new requireStepUpForCurrentUser() guard on
+      // /api/billing/resume would have surfaced as an opaque "Could not
+      // resume" error for anyone without a fresh-enough session, with no
+      // way to actually get past it — same reasoning as handleUpgrade just
+      // below and handleCancel just above.
+      const res  = await fetchWithStepUp('/api/billing/resume', { method: 'POST' })
       const json = await res.json().catch(() => ({}))
       if (res.ok) window.location.reload()
       else setResumeError(json.error || 'Could not resume — try again or contact support.')
@@ -1773,9 +1785,19 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
     // charged immediately and the old one ends now, so any time already paid
     // for on it is forfeited. Say so before money moves.
     const hasPaidSubscription = !!billing?.paystack_subscription_code && !billing?.cancels_at_period_end && planTier !== 'trial'
+    // FIX (deep audit, Billing re-pass — independent redo, minor): the grace
+    // banner's "Retry with a new card" button calls this same function with
+    // the workspace's OWN current plan+interval — it isn't a plan switch at
+    // all, just fixing a failed card on the plan already owned. The dialog
+    // below still fired and told the customer they were "switching plans",
+    // which is confusing (if technically accurate that a fresh subscription
+    // gets created either way). Word it for what's actually happening.
+    const isRetrySamePlan = planKey === planTier && targetInterval === (billing?.plan_interval || 'monthly') && !!billing?.grace_period_started_at
     if (hasPaidSubscription && billing?.current_period_end && new Date(billing.current_period_end) > new Date()) {
       const ok = confirm(
-        `Switching plans starts a new subscription and charges you now. Your current subscription ends immediately, and the time you've already paid for on it (until ${formatDate(billing.current_period_end)}) is not credited or refunded.\n\nContinue?`
+        isRetrySamePlan
+          ? `Retrying payment starts a new subscription on your ${PLAN_LABELS[planKey] || planKey} plan and charges your new card now.\n\nContinue?`
+          : `Switching plans starts a new subscription and charges you now. Your current subscription ends immediately, and the time you've already paid for on it (until ${formatDate(billing.current_period_end)}) is not credited or refunded.\n\nContinue?`
       )
       if (!ok) return
     }

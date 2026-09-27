@@ -47,8 +47,18 @@ const SELECT_COLUMNS =
 // bare dates remain supported for direct API callers.
 function parseBound(raw: string | null, kind: 'from' | 'to'): Date | null | undefined {
   if (!raw) return undefined
+  // FIX (deep audit, Reports & Audit / Billing re-pass — independent redo):
+  // the isNaN check below only ever ran on the free-form ISO-string branch.
+  // BARE_DATE_RE matches digit-shape only, not calendar validity, so a
+  // malformed bare date (from=9999-99-99, or any out-of-range month/day)
+  // built an Invalid Date here and returned it directly — not `null`, so
+  // the caller's `=== null` validation never caught it. It then reached
+  // `.toISOString()` further down, which throws on an Invalid Date and
+  // surfaced as a generic 500 instead of the clean 400 this same malformed
+  // input gets on the other branch right below.
   if (BARE_DATE_RE.test(raw)) {
-    return new Date(`${raw}T${kind === 'from' ? '00:00:00.000' : '23:59:59.999'}Z`)
+    const d = new Date(`${raw}T${kind === 'from' ? '00:00:00.000' : '23:59:59.999'}Z`)
+    return isNaN(d.getTime()) ? null : d
   }
   const d = new Date(raw)
   return isNaN(d.getTime()) ? null : d

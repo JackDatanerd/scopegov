@@ -115,9 +115,35 @@ function must<T extends { error: any }>(res: T, label: string): T {
 
 const RESEND_NOTE = 'Paystack will not retry this — it needs a manual look.'
 
+// FIX (deep audit, Billing re-pass — independent redo): alertBillingOps's
+// cooldown key was just `billing:unresolved:${event.event}` (and, further
+// down, `billing:incident:${event.event}`) — the EVENT TYPE alone, with no
+// reference to which customer or transaction it's about. Two different
+// customers each triggering an unresolved subscription.create, or two
+// unrelated disputes, within the cooldown window (60 min / 5 min) collapse
+// onto the same key: only the first gets an ops email, the second is
+// reduced to a console.error nobody watches — the exact failure mode this
+// whole alerting system exists to fix. Fold in whatever identifies the
+// specific incident (subscription code, else customer code, else the
+// transaction reference, else the email) so distinct incidents of the same
+// event type get their own cooldown, while genuine redeliveries of the
+// SAME incident still collapse onto one alert as intended.
+function incidentKey(data: any): string {
+  return (
+    data?.subscription_code ||
+    data?.subscription?.subscription_code ||
+    data?.customer?.customer_code ||
+    data?.transaction_reference ||
+    data?.transaction?.reference ||
+    data?.reference ||
+    data?.customer?.email ||
+    'unknown'
+  )
+}
+
 async function unresolved(service: any, event: any, why: string) {
   const d = event?.data
-  await alertBillingOps(service, `billing:unresolved:${event?.event}`, `Paystack ${event?.event} could not be applied`, [
+  await alertBillingOps(service, `billing:unresolved:${event?.event}:${incidentKey(d)}`, `Paystack ${event?.event} could not be applied`, [
     why,
     `event: ${event?.event}`,
     `customer email: ${d?.customer?.email ?? '-'}`,
@@ -446,7 +472,10 @@ async function handleEvent(service: any, event: any): Promise<void> {
           status: data?.status, resolution: data?.resolution,
         })
       }
-      await alertBillingOps(service, `billing:incident:${event.event}`, `Paystack ${event.event}`, [
+      // See incidentKey's comment above `unresolved()` — same fix, same
+      // reason: without it, two different customers' disputes/refunds
+      // within 5 minutes of each other silently collapsed onto one alert.
+      await alertBillingOps(service, `billing:incident:${event.event}:${incidentKey(data)}`, `Paystack ${event.event}`, [
         `event: ${event.event}`,
         `workspace: ${res.workspaceId ?? 'unresolved'}`,
         `customer: ${data?.customer?.email ?? '-'}`,

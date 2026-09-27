@@ -141,6 +141,16 @@ function scopeToCsv(data: any): string {
   lines.push(['Metric', 'Value'].map(csvCell).join(','))
   lines.push(['Flags raised (confirmed)', m.total_flags ?? 0].map(csvCell).join(','))
   lines.push(['Converted to change order (incl. accepted)', m.converted_to_co ?? 0].map(csvCell).join(','))
+  // FIX (deep audit, Reports & Audit / Billing re-pass — independent redo):
+  // scope-financial-data.ts partitions total_flags exactly into
+  // converted_to_co + closed_without_co_flags + still_open_flags, and the
+  // on-screen "Flag outcome grid" (app/(app)/reports/page.tsx) shows all
+  // five buckets — but this CSV only ever got total/converted/dismissed/
+  // pending, never the two newer ones. The two exports drifted out of sync
+  // with the dashboard and with each other (the financial CSV/PDF already
+  // had every field the financial dashboard shows).
+  lines.push(['Closed without change order', m.closed_without_co_flags ?? 0].map(csvCell).join(','))
+  lines.push(['Still open', m.still_open_flags ?? 0].map(csvCell).join(','))
   lines.push(['Dismissed as in scope', m.dismissed_flags ?? 0].map(csvCell).join(','))
   lines.push(['Awaiting borderline review', m.pending_review_flags ?? 0].map(csvCell).join(','))
   lines.push(['Recovered value', m.recovered_value ?? 'redacted'].map(csvCell).join(','))

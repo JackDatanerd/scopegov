@@ -1,0 +1,118 @@
+Reports & Audit log + Billing — independent re-pass 2
+======================================================
+
+Audited both sections fresh (comments from prior passes ignored except to
+verify they still hold — they did). Findings and fixes below.
+
+SECTION 15 — Reports & Audit log (api/reports route + audit-export,
+settings/audit)
+--------------------------------------------------------------------------
+
+1. FEATURE GAP (bug of omission) — scope report CSV/PDF exports were missing
+   two metrics fields.
+   lib/reports/scope-financial-data.ts partitions total_flags exactly into
+   converted_to_co + closed_without_co_flags + still_open_flags, and the
+   on-screen "Flag outcome grid" (app/(app)/reports/page.tsx) renders all
+   five buckets. scopeToCsv() (app/api/reports/export/route.ts) and
+   ScopeReportDocument (lib/pdf/reports-report.tsx) never got updated when
+   those two fields were added — CSV only had total/converted/dismissed/
+   pending, and the PDF only ever showed two boxes (total, converted) plus
+   recovery rate and recovered value, never dismissed or pending-review
+   either. The financial CSV/PDF exports were already fully in sync with
+   their dashboard; only scope drifted.
+   Fix: added "Closed without change order" and "Still open" rows to the
+   CSV, and a second metric-box row (closed-without-CO / still-open /
+   pending-review) plus a footnote for dismissed flags to the PDF, mirroring
+   the on-screen grid's own treatment (dismissed excluded from "Raised",
+   shown as a footnote rather than a box).
+
+2. BUG — malformed bare date in audit-export crashed to a 500 instead of a
+   clean 400.
+   parseBound() in app/api/reports/audit-export/route.ts checked
+   isNaN(d.getTime()) on the free-form ISO-string branch, but not on the
+   bare-date (YYYY-MM-DD) branch. BARE_DATE_RE matches digit shape only, not
+   calendar validity, so from=9999-99-99 (or any out-of-range month/day)
+   produced an Invalid Date that was returned directly — not null — so the
+   caller's `=== null` validation never caught it, and it later crashed on
+   .toISOString(). Verified with a direct Node repro before and after.
+   Fix: added the same isNaN check to the bare-date branch.
+
+SECTION 16 — Billing (api/billing/cancel, upgrade, webhook, resume, history,
+status; lib/billing/*; lib/integrations/paystack.ts)
+--------------------------------------------------------------------------
+
+3. FEATURE GAP — no way to update a payment method without forfeiting the
+   current billing period.
+   Noted but NOT fixed in this round — this needs a real design/Paystack-API
+   decision (subscription management link vs. a custom card-update flow)
+   rather than a quick patch. Flagging again here so it isn't lost.
+
+4. BUG — ops-alert cooldown keys were scoped to event type only, not to the
+   specific incident.
+   `unresolved()`'s alertBillingOps key (`billing:unresolved:${event.event}`)
+   and the dispute/refund handler's key (`billing:incident:${event.event}`)
+   contained no customer/subscription/transaction identifier. Two different,
+   unrelated incidents of the same event type (e.g. two different
+   customers' unattributable payments, or two different customers'
+   disputes) within the cooldown window (60 min / 5 min) collapsed onto one
+   alert — the second incident got nothing but a console.error, exactly the
+   failure mode this alerting system exists to prevent.
+   Fix: added incidentKey() (subscription code, else customer code, else
+   transaction reference, else email) folded into both cooldown keys, so
+   distinct incidents get their own alert while genuine redeliveries of the
+   same incident still collapse onto one as intended.
+
+5. BUG — api/billing/resume was missing the step-up (re-authentication)
+   guard its siblings have.
+   api/billing/cancel and api/billing/upgrade both require a fresh step-up
+   check (requireStepUpForCurrentUser server-side, fetchWithStepUp client-
+   side) because they change real subscription/billing state on a session
+   that can be long-idle at aal2. api/billing/resume's own header comment
+   claimed it "mirrors billing/cancel exactly, same permission gate" but had
+   neither — no server-side step-up check, and handleResume in
+   SettingsClient.tsx used a plain fetch(). Reversing a cancellation
+   recommits a workspace to being charged again, the same real-world stakes
+   as cancel's decision.
+   Fix: added requireStepUpForCurrentUser() + maxDuration=30 (matching
+   cancel's own already-documented Paystack-timeout reasoning) to the route,
+   and switched handleResume to fetchWithStepUp.
+
+6. BUG — admin-driven plan changes were invisible to the affected
+   workspace, on both fronts.
+   app/api/admin/workspaces/[id]/change-plan wrote only to
+   platform_admin_audit_log via logAdminAction — a table the workspace has
+   no access to. Result: the workspace's own Settings -> Audit log
+   (VIEW_AUDIT_LOG) showed nothing, and Billing -> Payment history
+   (api/billing/history, which reads billing.plan_changed rows from
+   audit_log) showed nothing either. A workspace's paid plan could be
+   changed by platform staff with zero trace visible to the workspace
+   itself — the one finding that ran through both of this round's sections.
+   Fix: the route now also writes a billing.plan_changed row to the
+   workspace's own audit_log (actor recorded generically as "ScopeGov
+   staff" rather than the individual admin's personal email, matching the
+   webhook's existing system-actor convention), with a new `admin_override`
+   action so the Billing tab labels it distinctly ("Plan changed by
+   ScopeGov staff") rather than implying the customer did it themselves.
+   Added the matching label to PLAN_ACTION_LABELS in SettingsClient.tsx.
+
+7. MINOR (fixed in passing) — misleading confirm-dialog wording on the
+   grace-period "Retry with a new card" button.
+   That button calls handleUpgrade with the workspace's own current
+   plan+interval — not a plan switch — but still showed the "Switching
+   plans starts a new subscription… forfeited" dialog, which is confusing
+   framing for what's actually just a failed-card retry (even though a
+   fresh subscription is technically created either way).
+   Fix: added an isRetrySamePlan check and a distinct, accurate confirm
+   message for that specific case.
+
+Files touched:
+  app/api/reports/export/route.ts
+  lib/pdf/reports-report.tsx
+  app/api/reports/audit-export/route.ts
+  app/api/billing/webhook/route.ts
+  app/api/billing/resume/route.ts
+  app/api/admin/workspaces/[id]/change-plan/route.ts
+  components/settings/SettingsClient.tsx
+
+Open item carried forward: item 3 above (payment-method update without a
+new subscription) — a real feature gap, not fixed this round.
