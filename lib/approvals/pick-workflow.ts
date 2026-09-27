@@ -54,7 +54,9 @@ export function pickWorkflow<T extends {
       bestPerCurrency.set(cur, w)
     }
   }
-  const finalists = [...bestPerCurrency.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+  // FIX (build-blocking regression, traced outside sections 7/8): same TS2802
+  // downlevelIteration issue as sow-content.ts above — Array.from over spread.
+  const finalists = Array.from(bestPerCurrency.values()).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
   return finalists[0]
 }
 

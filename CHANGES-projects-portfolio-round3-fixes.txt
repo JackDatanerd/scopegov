@@ -1,0 +1,75 @@
+Projects & Dashboard (section 7) + Portfolio (section 8) — independent re-audit, round 3
+Base commit at fix time: 24e69a4c1f75a8139c9745cc5bda05b3494a1011
+
+SECTION 7 — Projects & Dashboard
+---------------------------------
+1. components/projects/ProjectDetail.tsx — TeamTab's openAddModal()
+   Was the only action in the file that never checked res.ok. A failed fetch of
+   GET /api/projects/[id]/members/available (permission race, transient 500, network
+   error) still opened the "Add member" modal and, with json.members undefined, showed
+   "All workspace members are already on this project" instead of an error. A non-JSON
+   error body also threw with no catch (unhandled rejection).
+   Fix: now checks res.ok, surfaces a real error via addError (rendered both inside and
+   outside the modal, since a failed load never opens it), and no longer opens the modal
+   on failure. Mirrors the addMember/removeMember pattern already in this file.
+
+2. components/projects/ProjectDetail.tsx — GenerateSowModal's revision-rounds input
+   Had min={1} max={5}, but the AI-brief-parse acceptance logic right above it, and
+   api/sow/generate's own server-side validation, both treat 1-10 as valid — a leftover
+   from the round-17 SOW-lifecycle fix, whose own comment claimed this input "actually
+   supports" 1-10 without the max attribute ever being updated to match.
+   Fix: max raised to 10 to match what the field (and server) actually accept.
+
+Feature gaps: none found in this section on this pass.
+
+SECTION 8 — Portfolio
+----------------------
+No new bugs or feature gaps found on this independent pass. scope-health.ts,
+portfolio-data.ts, both API routes, and the dashboard component all held up —
+truncation guards, per-currency bucketing, the flag/exception risk model, trend-chart
+currency-mismatch filtering, and CSV/PDF redaction parity all checked out.
+
+BUILD-BLOCKING REGRESSION TRACED OUTSIDE BOTH SECTIONS (fixed per standing instruction
+to trace and close bugs that run through/outside the two sections being audited, since
+other sessions may miss them — confirmed pre-existing on unmodified HEAD, unrelated to
+this round's own changes, via git stash before/after):
+
+3. app/api/co/[id]/route.ts — existingAdjustmentIds Set<unknown> vs Set<string>
+   `co` comes through a query cast to `as any`, so `new Set(...)` built from its
+   line_items inferred as Set<unknown> instead of Set<string> — computeCoTotals's typed
+   signature (ReadonlySet<string> | readonly string[]) then correctly rejected it,
+   failing `next build` (and `tsc --noEmit`) entirely. The values themselves were always
+   real strings; only the inference was wrong.
+   Fix: `new Set<string>(...)` — explicit generic, no behavior change.
+
+4. lib/ai/sow-content.ts — conflictingRoundCount()
+   `for (const m of text.matchAll(...))` — TS2802, needs --downlevelIteration at this
+   tsconfig's target. Same pattern already fixed elsewhere in round 17.
+   Fix: wrapped in Array.from(...).
+
+5. lib/approvals/pick-workflow.ts — same TS2802 pattern via `[...bestPerCurrency.values()]`.
+   Fix: Array.from(bestPerCurrency.values()) instead of spread.
+
+Without 3-5, `next build` fails outright — nothing in the app ships until they're in,
+regardless of section 7/8 status. All three are typecheck-only fixes; no runtime
+behavior changes.
+
+VERIFICATION (after all 5 fixes, on the true-latest clone):
+- tsc --noEmit: clean, aside from 3 pre-existing failures in
+  tests/reassign-feasibility.test.ts (unrelated, in-flight elsewhere) — confirmed present
+  on unmodified HEAD too.
+- vitest: 756/761 passing (excluding skipped). The 5 failures (reassign-feasibility.test.ts,
+  settings-team-repass-2.test.ts, settings-team-round.test.ts x3, rls-contract.test.ts) are
+  all pre-existing — confirmed identical on unmodified HEAD via git stash, all from other
+  in-flight work (team invite-link/resend, RLS allowlist not yet updated for the new admin
+  panel migration). None touch sections 7 or 8.
+- next build: compiles clean, all 129 static pages generated. The only remaining failures
+  are the same 3 auth-page static-export errors (forgot-password, reset-password, signup)
+  documented as pre-existing sandbox env-var noise since round 12 — confirmed identical on
+  unmodified HEAD, not a real deploy issue (Vercel has real env vars).
+
+Repo moved three times between audit and this fix pass (c15697d -> ebdfc84 -> 24e69a4,
+final base 24e69a4). Diffed every time; confirmed each intervening commit's touches to
+ProjectDetail.tsx (CoCard's cancelApproval/close-button changes, entirely in CO territory)
+had zero overlap with the two spots fixed here (TeamTab, GenerateSowModal) before reapplying
+against true-latest.

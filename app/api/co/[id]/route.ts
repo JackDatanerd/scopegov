@@ -169,7 +169,12 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       // FIX (deep audit round 2, CO logic — bug #2): only ids that already carry
       // kind === 'adjustment' on THIS CO may keep claiming it — see co-totals.ts
       // for why the flag can no longer be trusted from the request body alone.
-      const existingAdjustmentIds = new Set(
+      // FIX (build-blocking regression, traced outside sections 7/8 while verifying their
+      // fix pass — `co` comes through an `as any`-cast query above, so `new Set(...)` here
+      // infers as Set<unknown> rather than Set<string>, which computeCoTotals's own typed
+      // signature (ReadonlySet<string> | readonly string[]) then correctly rejects. The
+      // .map callback itself always returns a real string; only the inference was wrong.
+      const existingAdjustmentIds = new Set<string>(
         (Array.isArray(co.line_items) ? co.line_items : [])
           .filter((l: any) => isAdjustmentLine(l) && typeof l?.id === 'string')
           .map((l: any) => l.id as string)

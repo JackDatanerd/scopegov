@@ -1170,7 +1170,14 @@ function GenerateSowModal({ project, onClose, onDone }: any) {
               </div>
               <div className="fgrp">
                 <label className="flbl">Revision rounds</label>
-                <input type="number" className="finp" min={1} max={5} value={revisionRounds}
+                {/* FIX (re-audit, Projects & Dashboard section 7): this said max={5}, but the
+                    AI-brief-parse acceptance just above (and api/sow/generate's own server-side
+                    validation) both treat 1-10 as valid — a leftover from the SOW-lifecycle fix,
+                    whose own comment claims this field "actually supports" 1-10 without the max
+                    attribute ever having been updated to match. A parsed brief legitimately landing
+                    on 6-10 rendered a value outside the input's declared range, and there was no way
+                    to manually reach 6-10 through the spinner even though the server accepts it. */}
+                <input type="number" className="finp" min={1} max={10} value={revisionRounds}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRevisionRounds(e.target.value)} />
               </div>
             </div>
@@ -2581,13 +2588,21 @@ function TeamTab({ project, team, permissions }: any) {
   const [loadingModal, setLoadingModal] = useState(false)
   const [addingId,     setAddingId]     = useState<string | null>(null)
 
+  // FIX (re-audit, Projects & Dashboard section 7): this was the one action in the whole file that
+  // never checked res.ok — a failed fetch (permission race, transient 500, network error) still called
+  // setAdding(true), and with json.members undefined the modal opened showing "All workspace members
+  // are already on this project" instead of an error. A non-JSON error body also threw inside this
+  // async function with no catch, becoming an unhandled rejection. Mirrors addMember/removeMember below.
   async function openAddModal() {
-    setLoadingModal(true)
+    setLoadingModal(true); setAddError('')
     try {
       const res  = await fetch(`/api/projects/${project.id}/members/available`)
-      const json = await res.json()
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json.error || 'Could not load available members — try again.')
       setAvailable(json.members || [])
       setAdding(true)
+    } catch (err: unknown) {
+      setAddError(err instanceof Error ? err.message : 'Could not load available members — try again.')
     } finally { setLoadingModal(false) }
   }
 
@@ -2644,6 +2659,9 @@ function TeamTab({ project, team, permissions }: any) {
       </div>
 
       {removeError && <p className="ferr" style={{ marginBottom: 10 }}>{removeError}</p>}
+      {/* Surfaced here too (not just inside the modal below) — a failed load of available members
+          means the modal never opens at all, so this is the only place the error can be seen. */}
+      {addError && !adding && <p className="ferr" style={{ marginBottom: 10 }}>{addError}</p>}
 
       {team.length === 0 ? (
         <p style={{ fontSize: 13, color: 'var(--text-3)' }}>No members assigned to this project yet.</p>

@@ -158,7 +158,10 @@ export function standardsPromptBlock(standards: AgencyStandards | null | undefin
 // "revisions must be requested within 5 business days" — is never
 // mistaken for a conflict and still gets appended normally.
 function conflictingRoundCount(text: string, revisionRounds: number): boolean {
-  const matches = text.matchAll(/(\d+)\s*rounds?\b/gi)
+  // FIX (build-blocking regression, traced outside sections 7/8): for-of over a
+  // matchAll() iterator needs --downlevelIteration at this tsconfig's target,
+  // same TS2802 pattern fixed elsewhere via Array.from (round 17's CO/clients fix).
+  const matches = Array.from(text.matchAll(/(\d+)\s*rounds?\b/gi))
   for (const m of matches) {
     const n = Number(m[1])
     if (Number.isFinite(n) && n !== revisionRounds) return true
