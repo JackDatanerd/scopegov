@@ -40,12 +40,16 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .from('revoked_tokens').select('id').eq('token', token).single()
     if (revoked) return NextResponse.json({ error: 'Link no longer active' }, { status: 410 })
 
+    // FIX (section 3+10 independent audit): projects.status added to the
+    // select — finalizeCoAcceptance() now needs it to enforce the same
+    // terminal-project guard every other CO action already has. See that
+    // function's own comment for the bug this closes.
     const { data: co } = await (service as any)
       .from('change_orders')
       .select(`id,title,note,status,version,line_items,subtotal,tax_rate,tax_inclusive,total,flag_id,
         timeline_impact_days,scope_impact_note,is_retainer_renewal,renewal_term_months,
         token,document_number,project_id,workspace_id,
-        projects(id,name,type,currency,contract_value,client_id,clients(name,email,cc_emails,company_name,billing_address,vat_number),
+        projects(id,name,type,status,currency,contract_value,client_id,clients(name,email,cc_emails,company_name,billing_address,vat_number),
           workspaces(id,agency_name,brand_colour,logo_storage_path,agency_signature_data,
             legal_address,tax_id,phone,website))`)
       .eq('token', token).single()

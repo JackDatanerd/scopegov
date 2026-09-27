@@ -25,6 +25,7 @@ import { computeContentHash, storeExecutedPdf } from '@/lib/documents/executed-p
 import { isAdjustmentLine } from '@/lib/utils/rescale-line-items'
 import { getContractValueBefore } from '@/lib/documents/co-contract-value'
 import { createHash } from 'node:crypto'
+import { isTerminalStatus } from '@/lib/utils/project-status'
 
 export async function finalizeCoAcceptance(service: any, params: {
   co: any                 // change_orders row joined with projects/clients/workspaces, plus resolved `total`
@@ -60,6 +61,26 @@ export async function finalizeCoAcceptance(service: any, params: {
   const client  = project.clients
   const ws      = project.workspaces
   const now     = new Date().toISOString()
+
+  // FIX (section 3+10 independent audit): same terminal-status check as
+  // send-co.ts / accept-co-counter.ts. This shared finalizer covers both
+  // client-acceptance paths (direct accept and countersignature after an
+  // agency-accepted counter) and was, until now, the one CO-finalizing
+  // action with no terminal-project guard at all — every route that
+  // *creates or sends* a CO, and the agency-side acceptance of a client's
+  // counter, all check this, but a client's own Accept/Countersign click
+  // did not. A project marked Complete/Archived while a CO was still out
+  // for signature could still have that CO signed here, creating a
+  // binding amendment (and, for a retainer renewal, silently rewriting
+  // contract_value) on a project the rest of the app treats as closed to
+  // scope changes.
+  if (project && isTerminalStatus(project.status)) {
+    return {
+      ok: false as const,
+      error: `This project is ${String(project.status).toLowerCase()} — a change order can no longer be accepted. Reopen the project first.`,
+      status: 409,
+    }
+  }
 
   const { data: signedSow } = await (service as any)
     .from('sow_documents')

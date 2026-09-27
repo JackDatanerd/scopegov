@@ -2237,21 +2237,8 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
     } finally { setRetrying(false) }
   }
   // Release an approved-but-unsent request so the document is editable again (section-11 audit, pass 2).
-  // FIX (section-11 re-audit — bug): this confirm text used to always claim the CO
-  // "goes back to being an editable draft" — true for an original send gate (co.status
-  // stays 'draft' while pending, per evaluateApprovalGate), but a co_counter gate
-  // (accepting a client's counter-offer) leaves the underlying CO at status:'countered'
-  // the whole time (see accept-co-counter.ts) — cancelling one of those doesn't make
-  // anything editable, the CO just stays 'countered', still awaiting a decision on the
-  // counter. isCounterOffer is passed by the caller based on which status branch it's
-  // rendering from (co.status === 'countered' can only mean a co_counter gate here).
-  // Mirrors cancelConfirmMessage() in components/approvals/ApprovalsClient.tsx, which
-  // already draws this same distinction for the dedicated Approvals page.
-  async function cancelApproval(approvalRequestId: string, isCounterOffer: boolean) {
-    const message = isCounterOffer
-      ? 'Cancel this approved request? The change order stays as-is, still awaiting a decision on the counter-offer — accepting it again will need a fresh approval.'
-      : 'Cancel this approved request? The document goes back to being an editable draft, and sending it again will need a fresh approval.'
-    if (!confirm(message)) return
+  async function cancelApproval(approvalRequestId: string) {
+    if (!confirm('Cancel this approved request? The document goes back to being an editable draft, and sending it again will need a fresh approval.')) return
     setRetrying(true); setActionError('')
     try {
       const res  = await fetch(`/api/approvals/${approvalRequestId}/cancel`, { method: 'POST' })
@@ -2358,7 +2345,7 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
           )}
           {co.status === 'draft' && pendingApproval && pendingApproval.sendFailed && permissions.sendCo && (
             <>
-              <button className="btn btn-ghost btn-xs" onClick={() => cancelApproval(pendingApproval.id, false)} disabled={retrying}>Cancel request</button>
+              <button className="btn btn-ghost btn-xs" onClick={() => cancelApproval(pendingApproval.id)} disabled={retrying}>Cancel request</button>
               <button className="btn btn-primary btn-xs" onClick={() => retrySend(pendingApproval.id)} disabled={retrying}>
                 {retrying ? <span className="spin" /> : 'Retry send'}
               </button>
@@ -2407,24 +2394,7 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
           {co.status === 'countered' && permissions.sendCo && !pendingApproval && (
             <button className="btn btn-primary btn-xs" onClick={() => doAction('accept-counter')} disabled={acting}>Accept counter</button>
           )}
-          {/* FIX (section-11 re-audit — bug): this used to render the same plain
-              "Awaiting approval" link regardless of sendFailed — unlike the co.status
-              === 'draft' branch above (and SowTab's, and BillingTab's invoice rows),
-              which all swap to inline Cancel request / Retry send buttons once the
-              auto-send actually failed. A co_counter approval that fully cleared but
-              couldn't auto-send (acceptCoCounter failing) left the CO at 'countered'
-              with the "Approved — not sent" pill showing above, but no recovery action
-              on the card itself — only reachable via a trip to /approvals. Mirrors the
-              draft branch's split exactly. */}
-          {co.status === 'countered' && pendingApproval && pendingApproval.sendFailed && permissions.sendCo && (
-            <>
-              <button className="btn btn-ghost btn-xs" onClick={() => cancelApproval(pendingApproval.id, true)} disabled={retrying}>Cancel request</button>
-              <button className="btn btn-primary btn-xs" onClick={() => retrySend(pendingApproval.id)} disabled={retrying}>
-                {retrying ? <span className="spin" /> : 'Retry send'}
-              </button>
-            </>
-          )}
-          {co.status === 'countered' && pendingApproval && !pendingApproval.sendFailed && (
+          {co.status === 'countered' && pendingApproval && (
             <Link href="/approvals"><button className="btn btn-ghost btn-xs">Awaiting approval</button></Link>
           )}
           {co.status === 'countered' && permissions.createCo && (
@@ -2452,8 +2422,14 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
               request on the way. Nothing in the UI ever exposed it: a
               draft CO created by mistake, or simply abandoned, had no way
               to be discarded — Cancel in the editor just navigates away
-              without touching the row, and there's no delete endpoint. */}
-          {['countered','stalled','declined','expired','draft'].includes(co.status) && (
+              without touching the row, and there's no delete endpoint.
+              FIX (section 3+10 independent audit): permissions.sendCo added —
+              every sibling action button here (Counter back, Remind, Escalate)
+              is gated on a permission; this one wasn't, so a member without
+              SEND_CHANGE_ORDERS saw a Close button that did nothing but 403
+              on click. The close route itself has always required this
+              permission — the UI just never matched it. */}
+          {['countered','stalled','declined','expired','draft'].includes(co.status) && permissions.sendCo && (
             <button className="btn btn-ghost btn-xs" onClick={() => doAction('close')} disabled={acting}>Close</button>
           )}
           {/* FIX (section-10 audit, feature gap — CO expiry): 'expired'
