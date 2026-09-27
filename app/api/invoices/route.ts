@@ -245,25 +245,21 @@ export async function POST(request: NextRequest) {
     }
 
     // CUMULATIVE cap for a SOW/CO (a milestone is a singleton — see above).
-    if (sourceKind === 'sow' || sourceKind === 'co') {
-      const cap = sourceKind === 'sow' ? sowCap : coSubtotalCap
-      if (cap != null) {
-        const sourceColumn = sourceKind === 'sow' ? 'sow_id' : 'co_id'
-        const { data: priorInvoices } = await (service as any)
-          .from('invoices')
-          .select('subtotal, amount')
-          .eq(sourceColumn, sourceId)
-          .neq('status', 'void')
-        const alreadyInvoiced = (priorInvoices || [])
-          .reduce((s: number, i: any) => s + Number(i.subtotal ?? i.amount ?? 0), 0)
-        if (alreadyInvoiced + finalSubtotal > cap + 0.01) {
-          const remaining = Math.max(0, cap - alreadyInvoiced)
-          return NextResponse.json({
-            error: `This ${sourceKind === 'sow' ? 'SOW' : 'change order'} has ${alreadyInvoiced.toFixed(2)} already invoiced against it — only ${remaining.toFixed(2)} remains billable (before tax).`,
-          }, { status: 400 })
-        }
-      }
-    }
+    // FIX (independent audit — read-then-write race): this used to read every
+    // prior invoice, sum it, and compare here — then insert as a completely
+    // separate later step, with nothing holding a lock across the gap. Two
+    // requests against the SAME sow_id/co_id close enough together could each
+    // read the same "already invoiced" figure, each pass, and both write —
+    // together billing past the cap with no error anywhere. The actual
+    // check-then-insert now happens inside create_invoice_capped (migration
+    // 096), which locks the sow/co row first so a second concurrent call's own
+    // sum can't even start until this one has committed or rolled back. The
+    // cap value itself is still computed here in TypeScript (baseContractValue,
+    // open-ended-retainer handling included) — the function only makes the
+    // check-then-write atomic, it doesn't reimplement that logic in SQL.
+    const cumulativeSourceColumn: 'sow_id' | 'co_id' | null =
+      sourceKind === 'sow' ? 'sow_id' : sourceKind === 'co' ? 'co_id' : null
+    const cumulativeCap = sourceKind === 'sow' ? sowCap : sourceKind === 'co' ? coSubtotalCap : null
 
     // FIX (section-12 audit, pass 2 — feature gap): every cap above is PER SOURCE.
     // Nothing looked at the project as a whole, so invoicing every milestone (which
@@ -291,39 +287,54 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const { data: invoice, error } = await (service as any)
-      .from('invoices')
-      .insert({
-        workspace_id:  session.workspaceId,
-        project_id:    projectId,
-        milestone_id:  milestoneId || null,
-        sow_id:        sowId || null,
-        co_id:         coId || null,
-        title:         title.trim(),
-        amount:        finalAmount,
-        subtotal:      finalSubtotal,
-        tax_rate:      finalTaxRate,
-        tax_inclusive: finalTaxInclusive,
-        // line_items is jsonb (migration 017) — write the array directly, never a
-        // JSON string. Totals are quantity × rate, computed server-side.
-        line_items:    cleanLineItems,
-        currency:      project.currency || 'USD',
-        due_date:      due,
-        // po_number (migration 011): a short client-issued reference.
-        po_number:     poNumber?.trim().slice(0, 100) || null,
-        payment_instructions: sanitizeRichTextOrNull(paymentInstructions),
-        notes:         notes?.trim() || null,
-        created_by:    session.id,
-      })
-      .select('id, title, amount, currency, status')
-      .single()
+    const { data: created, error: rpcErr } = await (service as any).rpc('create_invoice_capped', {
+      p_workspace_id: session.workspaceId,
+      p_project_id:   projectId,
+      p_source_column: cumulativeSourceColumn,
+      p_source_id:     cumulativeSourceColumn ? sourceId : null,
+      p_cap:           cumulativeCap,
+      p_milestone_id:  milestoneId || null,
+      p_sow_id:        sowId || null,
+      p_co_id:         coId || null,
+      p_title:         title.trim(),
+      p_amount:        finalAmount,
+      p_subtotal:      finalSubtotal,
+      p_tax_rate:      finalTaxRate,
+      p_tax_inclusive: finalTaxInclusive,
+      // line_items is jsonb (migration 017) — the array goes straight in, never a
+      // JSON string. Totals are quantity × rate, computed server-side.
+      p_line_items:    cleanLineItems,
+      p_currency:      project.currency || 'USD',
+      p_due_date:      due,
+      // po_number (migration 011): a short client-issued reference.
+      p_po_number:     poNumber?.trim().slice(0, 100) || null,
+      p_payment_instructions: sanitizeRichTextOrNull(paymentInstructions),
+      p_notes:         notes?.trim() || null,
+      p_created_by:    session.id,
+    })
 
-    if (error) {
-      // The one-live-invoice-per-milestone index (migration 069) backstops the
-      // check above against two simultaneous creates.
-      if ((error as any).code === '23505')
+    if (rpcErr) {
+      console.error('Invoice create error:', rpcErr)
+      return NextResponse.json({ error: 'Failed to create invoice' }, { status: 500 })
+    }
+    if (!created?.ok) {
+      if (created?.code === 'duplicate_milestone')
         return NextResponse.json({ error: 'This milestone already has an invoice — refresh and check its billing tab.' }, { status: 409 })
-      console.error('Invoice create error:', error)
+      if (created?.code === 'over_cap') {
+        const already = Number(created.already_invoiced) || 0
+        const remaining = Math.max(0, (cumulativeCap ?? 0) - already)
+        return NextResponse.json({
+          error: `This ${sourceKind === 'sow' ? 'SOW' : 'change order'} has ${already.toFixed(2)} already invoiced against it — only ${remaining.toFixed(2)} remains billable (before tax).`,
+        }, { status: 400 })
+      }
+      console.error('Invoice create error: unexpected RPC result', created)
+      return NextResponse.json({ error: 'Failed to create invoice' }, { status: 500 })
+    }
+
+    const { data: invoice, error } = await (service as any)
+      .from('invoices').select('id, title, amount, currency, status').eq('id', created.id).single()
+    if (error || !invoice) {
+      console.error('Invoice create error: could not re-read created row', error)
       return NextResponse.json({ error: 'Failed to create invoice' }, { status: 500 })
     }
 

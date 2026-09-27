@@ -127,6 +127,12 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const touchesMoney = body.amount !== undefined || body.taxRate !== undefined
       || body.taxInclusive !== undefined || body.lineItems !== undefined
     let finalSubtotal = invoice.subtotal != null ? Number(invoice.subtotal) : Number(invoice.amount)
+    // Populated inside the touchesMoney block below when the source is a SOW/CO;
+    // stay null otherwise so update_invoice_capped (migration 096) skips its
+    // cumulative-cap check entirely and just does the plain CAS'd update.
+    let cumulativeCap: number | null = null
+    let cumulativeSourceColumn: 'co_id' | 'sow_id' | null = null
+    let cumulativeSourceId: string | null = null
 
     if (touchesMoney) {
       const lineItemsInput = body.lineItems !== undefined ? body.lineItems : existingLineItems
@@ -153,10 +159,18 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       // Re-check the caps: an edit must not let the amount drift past what the
       // linked milestone/CO/SOW was scoped for, counting everything ELSE already
       // billed against the same source (this invoice's own row excluded).
-      let cap: number | null = null
-      let sourceColumn: 'co_id' | 'sow_id' | null = null
-      let sourceId: string | null = null
-      let sourceLabel = ''
+      //
+      // FIX (independent audit — read-then-write race): the cumulative SOW/CO
+      // check used to read every OTHER invoice, sum it, and compare right here —
+      // then write in a completely separate later step. Two edits (or a create
+      // and an edit) against the SAME sow_id/co_id close enough together could
+      // each read the same "othersTotal" and both pass, together landing past
+      // the cap. The actual check-then-write for the SOW/CO case now happens
+      // inside update_invoice_capped (migration 096), which locks the sow/co row
+      // before recomputing the sum, so a second concurrent caller can't start
+      // its own sum until this one has committed or rolled back. Only the
+      // milestone case (a fixed, non-cumulative comparison — no race to close)
+      // still checks and errors out directly here.
       if (invoice.milestone_id) {
         const { data: milestone } = await (service as any)
           .from('payment_milestones').select('amount').eq('id', invoice.milestone_id).maybeSingle()
@@ -168,7 +182,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       } else if (invoice.co_id) {
         const { data: co } = await (service as any)
           .from('change_orders').select('subtotal').eq('id', invoice.co_id).maybeSingle()
-        if (co) { cap = Number(co.subtotal); sourceColumn = 'co_id'; sourceId = invoice.co_id; sourceLabel = "this change order's accepted amount" }
+        if (co) { cumulativeCap = Number(co.subtotal); cumulativeSourceColumn = 'co_id'; cumulativeSourceId = invoice.co_id }
       } else if (invoice.sow_id) {
         const { data: proj } = await (service as any)
           .from('projects').select('contract_value, type, retainer_duration_months').eq('id', invoice.project_id).maybeSingle()
@@ -179,19 +193,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         // same note in POST /api/invoices.)
         if (proj) {
           const openEndedRetainer = proj.type === 'retainer' && !((proj.retainer_duration_months || 0) > 0)
-          cap = openEndedRetainer ? null : baseContractValue(proj); sourceColumn = 'sow_id'; sourceId = invoice.sow_id; sourceLabel = "this SOW's contract value"
-        }
-      }
-      if (cap != null && sourceColumn && sourceId) {
-        const { data: others } = await (service as any)
-          .from('invoices').select('id, subtotal, amount')
-          .eq(sourceColumn, sourceId).neq('status', 'void').neq('id', id)
-        const othersTotal = (others || []).reduce((s: number, i: any) => s + Number(i.subtotal ?? i.amount ?? 0), 0)
-        if (othersTotal + finalSubtotal > cap + 0.01) {
-          const remaining = Math.max(0, cap - othersTotal)
-          return NextResponse.json({
-            error: `${othersTotal.toFixed(2)} is already invoiced elsewhere against ${sourceLabel.replace('this ', '')} — only ${remaining.toFixed(2)} remains billable (before tax).`,
-          }, { status: 400 })
+          cumulativeCap = openEndedRetainer ? null : baseContractValue(proj)
+          cumulativeSourceColumn = 'sow_id'; cumulativeSourceId = invoice.sow_id
         }
       }
 
@@ -228,12 +231,34 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     // FIX (section-12 audit, pass 2): the write was `.eq('id', id)` with no status
     // guard — a send (including the approval chain's auto-send) landing between the
-    // read above and this write let an edit change a SENT, numbered invoice.
-    const { data: updated, error } = await (service as any)
-      .from('invoices').update(update).eq('id', id).eq('status', 'draft').select('id')
-    if (error) return NextResponse.json({ error: 'Failed to update invoice' }, { status: 500 })
-    if (!updated || updated.length === 0)
+    // read above and this write let an edit change a SENT, numbered invoice. Now
+    // done inside update_invoice_capped (migration 096), still CAS'd on
+    // status='draft', with the SOW/CO cumulative-cap check (when applicable)
+    // taken under the same lock rather than as a separate, racy earlier step.
+    const { data: patched, error: rpcErr } = await (service as any).rpc('update_invoice_capped', {
+      p_invoice_id:   id,
+      p_workspace_id: session.workspaceId,
+      p_source_column: cumulativeSourceColumn,
+      p_source_id:     cumulativeSourceColumn ? cumulativeSourceId : null,
+      p_cap:           cumulativeCap,
+      p_new_subtotal:  finalSubtotal,
+      p_update:        update,
+    })
+    if (rpcErr) {
+      console.error('Invoice update error:', rpcErr)
+      return NextResponse.json({ error: 'Failed to update invoice' }, { status: 500 })
+    }
+    if (!patched?.ok) {
+      if (patched?.code === 'over_cap') {
+        const already = Number(patched.already_invoiced) || 0
+        const remaining = Math.max(0, (cumulativeCap ?? 0) - already)
+        const label = cumulativeSourceColumn === 'co_id' ? "this change order's accepted amount" : "this SOW's contract value"
+        return NextResponse.json({
+          error: `${already.toFixed(2)} is already invoiced elsewhere against ${label.replace('this ', '')} — only ${remaining.toFixed(2)} remains billable (before tax).`,
+        }, { status: 400 })
+      }
       return NextResponse.json({ error: 'This invoice was just sent or changed — refresh and try again.' }, { status: 409 })
+    }
 
     return NextResponse.json({ ok: true })
   } catch (err) {

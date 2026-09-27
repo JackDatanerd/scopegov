@@ -501,15 +501,30 @@ export async function recordApprovalDecision(service: any, params: DecisionParam
   // row locked (migration 069), which also serialises two approvers racing
   // on the same step and closes the window where a cancel could be
   // overwritten back to 'approved'.
+  //
+  // FIX (independent re-audit — reassign-vs-decide race, migration 095):
+  // the eligibility check above (`eligible`) runs against a plain, unlocked
+  // read taken before this call — reassignApprovalStep() can commit its own
+  // update to approver_user_id/approver_role_id in the gap between that
+  // read and this RPC, since reassignment never touches status/step_order
+  // (all this function used to re-check). That let a decision from the
+  // JUST-REASSIGNED-AWAY approver still land, undermining the one thing
+  // reassignment exists to guarantee. Pass the exact identity `eligible`
+  // was computed against so the function can re-verify it against the row
+  // it actually holds locked, not the stale one read in JS.
   const { data: outcome, error: decideErr } = await service.rpc('decide_approval_step', {
     p_request_id: request.id, p_step_id: step.id, p_decision: params.decision,
     p_actor_id: params.actor.id, p_note: params.note || null,
+    p_expected_approver_user_id: step.approver_user_id || null,
+    p_expected_approver_role_id: step.approver_role_id || null,
   })
   if (decideErr) {
     console.error('decide_approval_step failed:', decideErr)
     return { ok: false, error: 'Could not record your decision — please try again.', status: 500 }
   }
   if (outcome === 'conflict') return { ok: false, error: 'This step has already been decided', status: 409 }
+  if (outcome === 'reassigned')
+    return { ok: false, error: 'This step was reassigned to someone else just now — refresh and check the current approver.', status: 409 }
   if (outcome !== 'rejected' && outcome !== 'advanced' && outcome !== 'final') {
     console.error('decide_approval_step returned an unexpected outcome:', outcome)
     return { ok: false, error: 'Could not record your decision — please try again.', status: 500 }

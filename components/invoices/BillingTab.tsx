@@ -10,6 +10,7 @@ import { nanoid } from 'nanoid'
 import { formatCurrency, formatCurrencyExact, roundCurrency, formatDate, invoiceStatusLabel, invoicePill } from '@/lib/utils/format'
 import RichTextField from '@/components/ui/RichTextField'
 import { baseContractValue } from '@/lib/reports/contract-position'
+import { isOpenEndedRetainer } from '@/lib/utils/contract-value'
 
 const METHOD_LABELS: Record<string, string> = {
   bank_transfer: 'Bank transfer', stripe: 'Stripe', check: 'Check', cash: 'Cash', other: 'Other',
@@ -75,6 +76,20 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
     invoices
       .filter((i: any) => i[column] === id && i.status !== 'void')
       .reduce((s: number, i: any) => s + Number(i.subtotal ?? i.amount ?? 0), 0)
+  // FIX (independent audit — flagship finding): an OPEN-ENDED retainer (no
+  // fixed term — see isOpenEndedRetainer) has no fixed contract total, which
+  // is exactly why both POST and PATCH /api/invoices treat it as UNCAPPED
+  // server-side (sowCap = null) rather than calling baseContractValue()
+  // without a billed-months count, which silently falls back to just ONE
+  // month's rate. This picker called baseContractValue(project) the same
+  // unqualified way — so for an open-ended retainer, `remaining` dropped to
+  // ~0 the moment the FIRST month was invoiced against the signed SOW, and
+  // the SOW silently vanished from "Bill against" for month two onward, even
+  // though the server would still accept an invoice against it. Reproduces,
+  // client-side, the exact "month two" bug already found and fixed
+  // server-side (see the note on baseContractValue itself) — just never
+  // ported to this picker. `remaining: null` means "no cap to show or check"
+  // — mirrored below in the filter and in SourceRow's label.
   const billableSows = signedSows
     // FIX (re-audit, section-12 finding): remaining used the raw
     // project.contract_value column directly, which for a retainer
@@ -83,8 +98,11 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
     // matter how many months the term actually covers. baseContractValue()
     // is the same helper the reconciliation/dashboard numbers already use
     // for this exact reason.
-    .map((s: any) => ({ ...s, remaining: baseContractValue(project) - alreadyInvoicedAgainst('sow_id', s.id) }))
-    .filter((s: any) => s.remaining > 0.01)
+    .map((s: any) => ({
+      ...s,
+      remaining: isOpenEndedRetainer(project) ? null : baseContractValue(project) - alreadyInvoicedAgainst('sow_id', s.id),
+    }))
+    .filter((s: any) => s.remaining === null || s.remaining > 0.01)
   const billableCos = acceptedCos
     .map((c: any) => ({ ...c, remaining: Number(c.subtotal || 0) - alreadyInvoicedAgainst('co_id', c.id) }))
     .filter((c: any) => c.remaining > 0.01)
@@ -910,7 +928,14 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
                 {sows.map((s: any) => (
                   <SourceRow key={s.id} active={source.type === 'sow' && source.id === s.id}
                     label={`SOW v${s.version}`}
-                    sub={`${s.document_number || 'Signed SOW'} · ${formatCurrencyExact(s.remaining, projectCurrency)} remaining`}
+                    // FIX (independent audit): `remaining: null` is this open-ended
+                    // retainer's "no fixed cap to show" case (see billableSows above) —
+                    // formatCurrencyExact(null, ...) has no sensible output, so say
+                    // plainly that it's open-ended rather than printing a dollar figure
+                    // this SOW was never actually capped at.
+                    sub={s.remaining === null
+                      ? `${s.document_number || 'Signed SOW'} · open-ended retainer, no cap`
+                      : `${s.document_number || 'Signed SOW'} · ${formatCurrencyExact(s.remaining, projectCurrency)} remaining`}
                     onClick={() => pickSource('sow', s.id)} />
                 ))}
                 {cos.map((c: any) => (
