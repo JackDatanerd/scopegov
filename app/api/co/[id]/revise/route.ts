@@ -186,6 +186,40 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           reason: `Superseded by revision v${revision.version}`,
         })
 
+        // FIX (deep audit, CO logic re-pass round 4 — flagship finding):
+        // the comment on the flag re-claim below this block ("released
+        // back to 'open' when the earlier version was declined/withdrawn/
+        // closed") is true for every OTHER member of REVISABLE — but
+        // 'countered' is closed out right here, inline, by this very
+        // block, and this block only ever touched change_orders, never
+        // guardian_flags. Every other path that closes a CO
+        // (close/route.ts, withdraw/route.ts, the portal's decline
+        // action, cron/co-expiry) reverts the linked flag to 'open' as
+        // part of closing it — this was the one exception. Left
+        // unfixed, the re-claim below (`.eq('status', 'open')`) silently
+        // matched zero rows for a superseded 'countered' CO: the flag
+        // stayed stuck at 'converted_to_co' pointing at the now-closed
+        // original CO forever, and the new revision — the CO actually
+        // live now — never got linked to it at all. Revert it here, same
+        // shape as close()'s own reversion, so the generic re-claim below
+        // picks it up like it does for every other status.
+        if (co.flag_id) {
+          const { data: flag } = await (service as any)
+            .from('guardian_flags').select('id,status').eq('id', co.flag_id).single()
+          if (flag && flag.status === 'converted_to_co') {
+            await (service as any).from('guardian_flags').update({
+              status: 'open', change_order_id: null, updated_at: new Date().toISOString(),
+            }).eq('id', co.flag_id).eq('status', 'converted_to_co')
+            await logAudit(service, {
+              workspaceId: session.workspaceId, actorId: session.id,
+              actorEmail: session.email, actorName: session.name,
+              eventType: 'flag.reverted_to_open', entityType: 'guardian_flag',
+              entityId: co.flag_id, entityName: co.projects?.name,
+              metadata: { co_id: co.id, co_status: 'closed', reason: `Superseded by revision v${revision.version}` },
+            })
+          }
+        }
+
         // FIX (independent pass round 2, traced from section 14 via client-contacts): a
         // 'countered' CO is one the client has actually seen and responded to — every other
         // route that closes out a CO the client has seen (close, withdraw) emails them so they
@@ -220,8 +254,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       }
     }
 
-    // The flag was released back to 'open' when the earlier version was declined/withdrawn/closed;
-    // re-claim it for this revision, otherwise the same flag can be converted into a second CO.
+    // The flag was released back to 'open' when the earlier version was declined/withdrawn/closed/expired,
+    // or (for 'countered') by the supersede block just above; re-claim it for this revision, otherwise the
+    // same flag can be converted into a second CO.
     if (co.flag_id) {
       await (service as any).from('guardian_flags')
         .update({ status: 'converted_to_co', change_order_id: revision.id, updated_at: new Date().toISOString() })
