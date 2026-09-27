@@ -32,6 +32,9 @@ interface SowData {
   currency:    string
   // Drafting language, for localized table headers (9-G7).
   language?:   string
+  // FIX (portal audit, section 18 — feature gap): see the identical comment on
+  // api/portal/sow/[token]/route.ts. Plain text (200-char cap, markup stripped on write).
+  msaReference: string | null
   clientName:  string
   clientEmail: string
   clientCompany: string | null
@@ -261,6 +264,11 @@ export default function SowPortalPage() {
                 <div style={{ fontSize: 13, color: '#555' }}>
                   Prepared by <strong>{sow.agencyName}</strong> for <strong>{sow.clientName}</strong>
                 </div>
+                {/* FIX (portal audit, section 18 — feature gap): mirrors the PDF's masthead
+                    placement (renderer.tsx renders this directly under the same meta line). */}
+                {sow.msaReference && (
+                  <div style={{ fontSize: 11.5, color: '#909090', marginTop: 2 }}>{sow.msaReference}</div>
+                )}
               </div>
               <div style={{ textAlign: 'right', flexShrink: 0 }}>
                 <div style={{ fontSize: 22, fontFamily: 'Georgia,serif', color: accent, fontWeight: 400 }}>

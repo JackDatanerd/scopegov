@@ -186,6 +186,14 @@ async function buildSowResponse(sow: any, service: any, userAgent: string | null
       // schema-driven tables the PDF does, so it needs the drafting
       // language to localize their column headers.
       language:      sow.metadata?.language || 'en',
+      // FIX (portal audit, section 18 — feature gap): msaReference has been wired into every SOW
+      // PDF path (internal PDF, portal PDF, and the sign route's executed-copy render) since the
+      // section-9 audit, documented on SowPdfData as "sourced from sow_documents.metadata.msaReference"
+      // — but this route, which is what the live pre-signature review page is actually built from,
+      // never passed it through. A client reviewing and signing the SOW never saw it. cleanTextField
+      // already caps it at 200 chars and strips markup on write (app/api/sow/[id]/route.ts); plain
+      // text here too.
+      msaReference:  sow.metadata?.msaReference || null,
       clientName:    client?.name || '',
       clientEmail:   client?.email || '',
       clientCompany: client?.company_name || null,

@@ -36,6 +36,10 @@ interface CoData {
   clientVatNumber:      string | null
   version:     number
   expiresAt:   string
+  // FIX (portal audit, section 18 — feature gap): see the identical comment on
+  // api/portal/co/[token]/route.ts. Plain text, never dangerouslySetInnerHTML.
+  scopeImpactNote:    string | null
+  timelineImpactDays: number | null
 }
 
 export default function CoPortalPage() {
@@ -318,6 +322,30 @@ export default function CoPortalPage() {
                 </div>
               </div>
             </div>
+
+            {/* FIX (portal audit, section 18 — feature gap): scope/timeline impact were
+                already on the PDF (Impact Analysis) but never reached this live page —
+                the page the client is actually deciding on. Plain text only, rendered as
+                normal JSX (never dangerouslySetInnerHTML): CoEditor collects this via a
+                <textarea>, not a rich-text field. */}
+            {(co.scopeImpactNote || co.timelineImpactDays !== null) && (
+              <div style={{ marginTop: 24 }}>
+                <div className="portal-section-title">Impact analysis</div>
+                {co.scopeImpactNote && (
+                  <div style={{ fontSize: 13, color: '#333', lineHeight: 1.6, marginBottom: co.timelineImpactDays !== null ? 8 : 0, whiteSpace: 'pre-wrap' }}>
+                    <strong>Scope: </strong>{co.scopeImpactNote}
+                  </div>
+                )}
+                {co.timelineImpactDays !== null && (
+                  <div style={{ fontSize: 13, color: '#333', lineHeight: 1.6 }}>
+                    <strong>Timeline: </strong>
+                    {co.timelineImpactDays === 0
+                      ? 'No change to the project timeline'
+                      : `${co.timelineImpactDays > 0 ? '+' : ''}${co.timelineImpactDays} day${Math.abs(co.timelineImpactDays) === 1 ? '' : 's'}`}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
 

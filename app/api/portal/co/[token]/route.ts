@@ -10,6 +10,7 @@ import { getWorkspaceJwtSecret, isWorkspaceDeleted } from '@/lib/utils/workspace
 
 const CO_COLUMNS = `id,title,note,status,version,line_items,subtotal,tax_rate,tax_inclusive,
   total,expires_at,flag_id,workspace_id,accepted_by,accepted_at,client_signature_data,first_viewed_at,
+  timeline_impact_days,scope_impact_note,
   projects(id,name,currency,clients(name,email,cc_emails,company_name,billing_address,vat_number),
     workspaces(id,agency_name,brand_colour,logo_storage_path,agency_signature_data,
       legal_address,tax_id,phone,website))`
@@ -214,6 +215,15 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         clientVatNumber:      co.projects?.clients?.vat_number || null,
         version:     co.version,
         expiresAt:   co.expires_at,
+        // FIX (portal audit, section 18 — feature gap): scope_impact_note / timeline_impact_days
+        // were rendered on the PDF (renderCoPdf) and explicitly labeled in CoEditor.tsx as "shown to
+        // client as its own line in Impact Analysis", but this route — which is what the live
+        // accept/decline/counter page is actually built from — never selected or returned them. A
+        // client deciding on the CO only ever saw them if they separately opened the PDF. Plain text
+        // (CoEditor uses a <textarea>, not a rich-text editor), so no sanitization needed here — the
+        // page renders it as normal JSX text, never dangerouslySetInnerHTML.
+        scopeImpactNote:    co.scope_impact_note || null,
+        timelineImpactDays: co.timeline_impact_days ?? null,
       },
     })
   } catch (err) {
