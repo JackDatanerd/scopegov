@@ -349,6 +349,7 @@ export default function ProjectDetail({
           <EditProjectModal
             project={project}
             canViewFinancials={permissions.viewFinancials}
+            pendingApprovals={pendingApprovals}
             onClose={() => setEditing(false)}
             onSaved={() => { setEditing(false); router.refresh() }}
           />

@@ -34,27 +34,38 @@ import { PROJECT_TYPES } from '@/lib/utils/project-input'
 import type { Client, ProjectType } from '@/lib/supabase/types'
 
 export default function EditProjectModal({
-  project, canViewFinancials, onClose, onSaved,
+  project, canViewFinancials, pendingApprovals, onClose, onSaved,
 }: {
   project: any
   canViewFinancials: boolean
+  // FIX (Projects & Dashboard independent audit): the third leg of the API's
+  // own checkSowLock() — a draft SOW sitting in an approval chain — has no
+  // client-side signal without this. ProjectDetail already fetches it (see
+  // SowTab's identical pendingApprovals?.[`sow:<id>`] lookup) but never
+  // passed it down here, so this modal only ever mirrored 2 of the API's 3
+  // lock conditions.
+  pendingApprovals?: Record<string, { id: string }>
   onClose: () => void
   onSaved: () => void
 }) {
-  const sows: Array<{ status: string }> = project.sow_documents || []
+  const sows: Array<{ id: string; status: string }> = project.sow_documents || []
   const hasAnySow = sows.length > 0
   // Same rules as the API: a signed SOW binds the value (use a change order),
-  // and a SOW out for signature quotes the current value.
+  // a SOW out for signature quotes the current value, and a draft SOW already
+  // sitting in an approval chain would be approved at the old value.
   // FIX (Projects & Dashboard deep audit, flagship finding): for a retainer,
   // the duration is as much a value field as the monthly amount — total =
   // amount × months (see the label just below) — so it must be locked by the
   // exact same rule, not left freely editable once a SOW exists. Reused
   // (rather than a second, parallel variable) so the two fields can never
   // drift out of sync with each other or with the API's own guard.
-  const valueLocked = sows.some(s => ['signed', 'awaiting_signature', 'changes_requested'].includes(s.status))
+  const pendingSow = sows.some(s => s.status === 'draft' && pendingApprovals?.[`sow:${s.id}`])
+  const valueLocked = sows.some(s => ['signed', 'awaiting_signature', 'changes_requested'].includes(s.status)) || pendingSow
   const valueLockReason = sows.some(s => s.status === 'signed')
     ? 'This project has a signed SOW — use a change order to adjust the value or retainer duration.'
-    : 'A SOW is out for signature at this value — withdraw it before changing the value or retainer duration.'
+    : sows.some(s => ['awaiting_signature', 'changes_requested'].includes(s.status))
+    ? 'A SOW is out for signature at this value — withdraw it before changing the value or retainer duration.'
+    : 'A SOW on this project has a pending approval request — cancel it before changing the value or retainer duration, then resend.'
 
   const [name, setName] = useState<string>(project.name || '')
   const [type, setType] = useState<ProjectType>(project.type)
