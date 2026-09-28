@@ -11,7 +11,10 @@ import { NextRequest } from 'next/server'
 function builder(result: any) {
   const b: any = new Proxy(function () {}, {
     get(_t, prop) {
-      if (prop === 'then') return (res: any) => Promise.resolve(result).then(res)
+      if (prop === 'then') {
+        return (res: any, rej: any) =>
+          result instanceof Error ? Promise.reject(result).then(res, rej) : Promise.resolve(result).then(res, rej)
+      }
       return (..._a: any[]) => b
     },
   })
@@ -38,7 +41,7 @@ vi.mock('@/lib/email/templates', async () => {
 const req = (body: any) => new NextRequest('http://localhost/api/workspace/create', {
   method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json' },
 })
-const validBody = { agencyName: 'Acme Agency', industry: 'web' }
+const validBody = { agencyName: 'Acme Agency', industry: 'Web & App Development' }
 
 beforeEach(() => {
   tables = {
@@ -71,9 +74,9 @@ describe('POST /api/workspace/create — trial-conflict workspace id', () => {
     expect(json.conflictWorkspaceId).toBeUndefined()
   })
 
-  it('omits conflictWorkspaceId (rather than failing the request) when the lookup itself errors', async () => {
+  it('omits conflictWorkspaceId (rather than failing the request) when the lookup itself throws', async () => {
     rpcError = { code: '23505', message: 'duplicate key value violates unique constraint "one_active_trial_per_creator"' }
-    tables.workspaces = { data: null, error: new Error('db unavailable') }
+    tables.workspaces = new Error('db unavailable') // simulates a network-level failure, not just a query error field
     const { POST } = await import('@/app/api/workspace/create/route')
     const res = await POST(req(validBody))
     const json = await res.json()
