@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { parsePlanRequest, planCodeFor, planCodeToTier, planCodeToInterval, fromSubunit, effectivePlanTier, PAID_PLAN_KEYS } from '@/lib/billing/plans'
 import { claimWebhookEvent, completeWebhookEvent, releaseWebhookEvent, STALE_CLAIM_MS } from '@/lib/billing/webhook-claims'
-import { findPendingCheckout, createPendingCheckout, consumeCheckoutGroup, CHECKOUT_TTL_MS } from '@/lib/billing/checkouts'
+import { findPendingCheckout, findHintedCheckout, createPendingCheckout, consumeCheckoutGroup, CHECKOUT_TTL_MS } from '@/lib/billing/checkouts'
 import { resolveWorkspace } from '@/lib/billing/resolve'
 
 // ── a tiny in-memory PostgREST-shaped fake ───────────────────────────────
@@ -394,5 +394,63 @@ describe('effectivePlanTier', () => {
     expect(effectivePlanTier('trial', 'not-a-date', now)).toBe('trial')
     expect(effectivePlanTier('pro', '2020-01-01T00:00:00Z', now)).toBe('pro')
     expect(effectivePlanTier(null, null, now)).toBe('trial')
+  })
+})
+
+// ── Billing re-pass, independent redo #3 ─────────────────────────────────
+describe('B1: a sibling workspace\'s first charge must not be credited to a workspace that shares its customer code', () => {
+  const nowReal = Date.now()
+  const brow = (o: Row) => ({
+    paystack_email_token: null, current_period_end: null, cancels_at_period_end: false, grace_period_started_at: null, ...o,
+  })
+  const checkout = (id: string, ws: string) =>
+    ({ id, workspace_id: ws, email: 'a@b.com', plan_code: 'PLN_pm', consumed_at: null, created_at: new Date(nowReal - 60_000).toISOString() })
+  // Workspace A already pays (and is in grace); workspace B is buying its FIRST plan.
+  const firstCharge = { customer: { email: 'a@b.com', customer_code: 'CUS_1' }, plan: { plan_code: 'PLN_pm' }, metadata: { workspaceId: 'wsB' } }
+
+  it('binds to the recorded checkout named by the popup hint, not to the only row carrying the customer code', async () => {
+    const svc = fakeService({
+      billing: [brow({ workspace_id: 'wsA', paystack_subscription_code: 'SUB_A', paystack_customer_code: 'CUS_1', grace_period_started_at: 'x' })],
+      billing_checkouts: [checkout('cB', 'wsB')],
+    })
+    const r = await resolveWorkspace(svc, firstCharge, { checkout: 'prefer', planCode: 'PLN_pm' })
+    expect(r).toMatchObject({ workspaceId: 'wsB', via: 'checkout' })
+  })
+  it('a RENEWAL (no metadata) still resolves to the renewing workspace even with an unrelated checkout pending', async () => {
+    const svc = fakeService({
+      billing: [brow({ workspace_id: 'wsA', paystack_subscription_code: 'SUB_A', paystack_customer_code: 'CUS_1' })],
+      billing_checkouts: [checkout('cB', 'wsB')],
+    })
+    const r = await resolveWorkspace(svc, { customer: { email: 'a@b.com', customer_code: 'CUS_1' }, plan: { plan_code: 'PLN_pm' } }, { checkout: 'prefer', planCode: 'PLN_pm' })
+    expect(r).toMatchObject({ workspaceId: 'wsA', via: 'customer_code' })
+  })
+  it('a hint naming a workspace with NO recorded checkout cannot redirect the payment', async () => {
+    const svc = fakeService({
+      billing: [brow({ workspace_id: 'wsA', paystack_subscription_code: 'SUB_A', paystack_customer_code: 'CUS_1' })],
+      billing_checkouts: [],
+    })
+    const r = await resolveWorkspace(svc, firstCharge, { checkout: 'prefer', planCode: 'PLN_pm' })
+    expect(r.workspaceId).toBe('wsA')
+  })
+  it('after subscription.create consumed the checkout, the hint breaks the tie only among rows sharing the customer code', async () => {
+    const svc = fakeService({
+      billing: [
+        brow({ workspace_id: 'wsA', paystack_subscription_code: 'SUB_A', paystack_customer_code: 'CUS_1' }),
+        brow({ workspace_id: 'wsB', paystack_subscription_code: 'SUB_B', paystack_customer_code: 'CUS_1' }),
+      ],
+      billing_checkouts: [],
+    })
+    expect((await resolveWorkspace(svc, firstCharge, { checkout: 'prefer', planCode: 'PLN_pm' })).workspaceId).toBe('wsB')
+    // ...and a hint for a workspace that does NOT share the customer code is ignored (still ambiguous).
+    const bad = { ...firstCharge, metadata: { workspaceId: 'wsElsewhere' } }
+    const r = await resolveWorkspace(svc, bad, { checkout: 'prefer', planCode: 'PLN_pm' })
+    expect(r.workspaceId).toBeNull()
+    expect(r.ambiguous).toBe(true)
+  })
+  it('findHintedCheckout returns only the hinted workspace\'s live checkout', async () => {
+    const svc = fakeService({ billing_checkouts: [checkout('cA', 'wsA'), checkout('cB', 'wsB')] })
+    expect((await findHintedCheckout(svc, 'A@B.com', 'PLN_pm', 'wsB'))?.id).toBe('cB')
+    expect(await findHintedCheckout(svc, 'a@b.com', 'PLN_pm', 'wsZ')).toBeNull()
+    expect(await findHintedCheckout(svc, 'a@b.com', 'PLN_pm', undefined)).toBeNull()
   })
 })

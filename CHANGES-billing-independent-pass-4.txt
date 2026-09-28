@@ -1,0 +1,26 @@
+BILLING — independent pass (cancel / upgrade / webhook), fixes
+================================================================
+B1  resolve.ts / checkouts.ts  A workspace's FIRST charge.success was credited to a sibling workspace that
+    already shared the Paystack customer code (customer = per email): wrong payment history, sibling's card
+    overwritten, sibling's grace period cleared. Now: (a) charge.success binds first to a server-recorded
+    checkout named by the popup hint (new findHintedCheckout; renewals carry no hint so are unaffected);
+    (b) after subscription.create already consumed the checkout, the hint breaks a customer-code tie only
+    among rows that already share that customer code.
+B2  cron/billing-reconcile     Write was keyed by workspace_id only; a plan switch landing mid-check let the
+    OLD (cancelled) subscription's status flag the NEW paid one as cancelling. Write is now conditional on the
+    subscription code that was read; a no-op write is skipped (no repair count, no audit row).
+B3  webhook / delete / suspend Deleted or suspended workspaces (both stamp deleted_at) could still receive a
+    live subscription via a checkout left open (24h TTL). subscription.create now refuses: disables the new
+    subscription, consumes the checkout, pages ops for a refund. charge.success for such a workspace pages ops.
+    workspace/delete and admin suspend now purge the workspace's unconsumed checkouts.
+B4  webhook subscription.create  Not idempotent by subscription code: redelivery after a crash between
+    "checkout consumed" and "claim done" raised a false "no pending checkout" ops alert. Now recognises an
+    already-applied subscription code and returns (sweeping leftover checkouts).
+B5  paystack.ts / SettingsClient  (a) resume treated "already active" as failure -> 502 and a stuck
+    cancels_at_period_end; it now asks Paystack for the real status. (b) Switching plans after cancelling
+    skipped the "remaining paid time is forfeited" warning; it now shows a cancellation-specific one.
+GAP paystack.ts               Cancel/resume/plan-switch-disable failed forever when billing.paystack_email_token
+    was null. The token is now read from Fetch Subscription when not on file (404 on cancel = already gone).
+
+Tests: tests/billing.test.ts (+B1, 5 cases), tests/paystack-integration.test.ts (new, 7 cases),
+tests/cron-approval-billing-flags.test.ts (+B2, 1 case).

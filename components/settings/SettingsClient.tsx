@@ -1814,7 +1814,12 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
     // Paystack does not prorate: switching starts a NEW subscription that is
     // charged immediately and the old one ends now, so any time already paid
     // for on it is forfeited. Say so before money moves.
-    const hasPaidSubscription = !!billing?.paystack_subscription_code && !billing?.cancels_at_period_end && planTier !== 'trial'
+    // FIX (Billing re-pass, independent redo #3 — B5): a subscription that is
+    // already cancelled-but-not-yet-lapsed ALSO has paid-for time left, and
+    // starting a new one forfeits it exactly the same — this used to exclude
+    // it, so the "not credited or refunded" warning was skipped for the very
+    // customer with the most time left to lose.
+    const hasPaidSubscription = !!billing?.paystack_subscription_code && planTier !== 'trial'
     // FIX (deep audit, Billing re-pass — independent redo, minor): the grace
     // banner's "Retry with a new card" button calls this same function with
     // the workspace's OWN current plan+interval — it isn't a plan switch at
@@ -1827,7 +1832,9 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
       const ok = confirm(
         isRetrySamePlan
           ? `Retrying payment starts a new subscription on your ${PLAN_LABELS[planKey] || planKey} plan and charges your new card now.\n\nContinue?`
-          : `Switching plans starts a new subscription and charges you now. Your current subscription ends immediately, and the time you've already paid for on it (until ${formatDate(billing.current_period_end)}) is not credited or refunded.\n\nContinue?`
+          : billing.cancels_at_period_end
+            ? `Your subscription is set to end on ${formatDate(billing.current_period_end)}. Starting a new plan charges you now and the time you've already paid for until then is not credited or refunded. To keep your current plan instead, cancel this and use Resume subscription.\n\nContinue?`
+            : `Switching plans starts a new subscription and charges you now. Your current subscription ends immediately, and the time you've already paid for on it (until ${formatDate(billing.current_period_end)}) is not credited or refunded.\n\nContinue?`
       )
       if (!ok) return
     }

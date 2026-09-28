@@ -52,7 +52,7 @@
 // 'prefer' once neither authoritative source matched anything — the actual
 // "no billing row yet" case the header comment always meant.
 
-import { findPendingCheckout, type PendingCheckout } from './checkouts'
+import { findPendingCheckout, findHintedCheckout, type PendingCheckout } from './checkouts'
 import { planCodeToTier, planCodeToInterval } from './plans'
 
 export type ResolvedVia = 'subscription_code' | 'customer_code' | 'checkout'
@@ -131,6 +131,21 @@ export async function resolveWorkspace(
     return none
   }
 
+  // FIX (Billing re-pass, independent redo #3 — B1, HIGH): a Paystack customer
+  // is per EMAIL, so one login's workspaces all share one customer code. A
+  // workspace buying its FIRST plan has no billing row yet, so its first
+  // charge.success (no subscription code on a Transaction) matched the
+  // customer code of a SIBLING workspace that already had one — and was
+  // attributed to it: the sibling's grace period cleared, its card on file
+  // overwritten, the payment logged on the wrong history. The popup's
+  // metadata.workspaceId is present on that first charge (and absent on
+  // renewals); when it names a checkout THIS server recorded for the same
+  // email + plan, that is the authoritative answer and jumps the queue.
+  if (mode === 'prefer' && email && opts.planCode && !subCode) {
+    const hinted = await findHintedCheckout(service, email, opts.planCode, data?.metadata?.workspaceId)
+    if (hinted) return { ...none, workspaceId: hinted.workspace_id, via: 'checkout', checkout: hinted }
+  }
+
   if (subCode) {
     const { data: row, error } = await service.from('billing').select(BILLING_COLS)
       .eq('paystack_subscription_code', subCode).maybeSingle()
@@ -162,6 +177,18 @@ export async function resolveWorkspace(
       // remain, the event's plan code (tier + interval) usually singles one
       // out. Only what is STILL ambiguous after that goes to a human.
       let cands: BillingRowLite[] = rows.filter((r: BillingRowLite) => !!r.paystack_subscription_code)
+      // (B1) The first charge of a checkout whose subscription.create already
+      // landed (its checkout is consumed, its row now shares this customer
+      // code with the siblings): the popup's hint may break the tie, but only
+      // among rows that ALREADY belong to this same Paystack customer.
+      if (mode === 'prefer' && cands.length > 1) {
+        const hintId = data?.metadata?.workspaceId
+        const hinted = typeof hintId === 'string' ? cands.find(r => r.workspace_id === hintId) : undefined
+        if (hinted) {
+          const superseded = !!(subCode && hinted.paystack_subscription_code && hinted.paystack_subscription_code !== subCode)
+          return { ...none, workspaceId: hinted.workspace_id, via: 'customer_code', billing: hinted, superseded }
+        }
+      }
       const eventPlan: string | null = opts.planCode ?? data?.plan?.plan_code ?? data?.subscription?.plan?.plan_code ?? null
       if (cands.length > 1 && eventPlan) {
         const wantTier = planCodeToTier(eventPlan)

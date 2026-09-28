@@ -46,6 +46,7 @@ export interface PaystackSubscriptionInfo {
   nextPaymentDate: string | null
   planCode: string | null
   customerCode: string | null
+  emailToken: string | null
 }
 
 /** null = could not be read (network/5xx); { notFound: true } = Paystack says it doesn't exist. */
@@ -70,6 +71,7 @@ export async function fetchPaystackSubscription(
         nextPaymentDate: d.next_payment_date ?? null,
         planCode: d.plan?.plan_code ?? null,
         customerCode: d.customer?.customer_code ?? null,
+        emailToken: d.email_token ?? null,
       },
     }
   } catch (e) {
@@ -101,6 +103,23 @@ export async function fetchPaystackNextPaymentDate(subscriptionCode: string): Pr
   return res.sub.nextPaymentDate
 }
 
+// FEATURE (Billing re-pass, independent redo #3): disable/enable both REQUIRE
+// the subscription's email token. billing.paystack_email_token is copied from
+// the subscription.create payload (`data.email_token || null`) — if that
+// payload ever lacked it, every cancel/resume/plan-switch disable for that
+// workspace failed forever with no way out short of the Paystack dashboard.
+// The Fetch Subscription resource carries the same token, so read it from
+// there when we don't have it on file.
+async function withEmailToken(billing: {
+  paystack_subscription_code: string
+  paystack_email_token?: string | null
+}): Promise<{ token: string | null; error?: string; notFound?: boolean }> {
+  if (billing.paystack_email_token) return { token: billing.paystack_email_token }
+  const res = await fetchPaystackSubscription(billing.paystack_subscription_code)
+  if (!res.ok) return { token: null, error: res.error, notFound: res.notFound }
+  return { token: res.sub.emailToken }
+}
+
 // FEATURE (build, Billing re-pass): cancels_at_period_end exists precisely
 // so a customer keeps access (and the option to change their mind) until
 // the period they already paid for runs out — but nothing anywhere let
@@ -119,6 +138,8 @@ export async function resumePaystackSubscription(billing: {
   if (!billing?.paystack_subscription_code) return { ok: false, error: 'No subscription on file to resume' }
 
   try {
+    const tok = await withEmailToken({ paystack_subscription_code: billing.paystack_subscription_code, paystack_email_token: billing.paystack_email_token })
+    if (!tok.token) return { ok: false, error: tok.error || 'No email token on file for this subscription' }
     const resp = await paystackFetch('https://api.paystack.co/subscription/enable', {
       method:  'POST',
       headers: {
@@ -127,11 +148,21 @@ export async function resumePaystackSubscription(billing: {
       },
       body: JSON.stringify({
         code:  billing.paystack_subscription_code,
-        token: billing.paystack_email_token,
+        token: tok.token,
       }),
     })
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}))
+      // FIX (Billing re-pass, independent redo #3 — B5): a refusal because the
+      // subscription is ALREADY active (a double click, or a resume that
+      // reached Paystack but whose response we lost) is the outcome the caller
+      // wants, not a failure. Reported as one, the customer got a 502 while
+      // billing.cancels_at_period_end stayed stuck at true on a subscription
+      // that is renewing — the period-end sweep would then downgrade a paying
+      // customer. Ask Paystack what state it is really in rather than
+      // pattern-matching its error text (cancel's regex approach is brittle).
+      const check = await fetchPaystackSubscription(billing.paystack_subscription_code)
+      if (check.ok && check.sub.status === 'active') return { ok: true }
       console.error('Paystack enable error:', err)
       return { ok: false, error: err.message || 'Paystack declined the resume request' }
     }
@@ -149,6 +180,14 @@ export async function cancelPaystackSubscription(billing: {
   if (!billing?.paystack_subscription_code) return { ok: true, alreadyCancelled: true } // nothing to cancel
 
   try {
+    const tok = await withEmailToken({ paystack_subscription_code: billing.paystack_subscription_code, paystack_email_token: billing.paystack_email_token })
+    if (!tok.token) {
+      // Distinguish "Paystack no longer has it" (nothing can charge anyone —
+      // the same outcome the "not found" branch below already accepts) from
+      // "we simply could not obtain the token".
+      if (tok.notFound) return { ok: true, alreadyCancelled: true }
+      return { ok: false, alreadyCancelled: false, error: tok.error || 'No email token on file for this subscription' }
+    }
     const resp = await paystackFetch('https://api.paystack.co/subscription/disable', {
       method:  'POST',
       headers: {
@@ -157,7 +196,7 @@ export async function cancelPaystackSubscription(billing: {
       },
       body: JSON.stringify({
         code:  billing.paystack_subscription_code,
-        token: billing.paystack_email_token,
+        token: tok.token,
       }),
     })
     if (!resp.ok) {

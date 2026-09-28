@@ -280,6 +280,15 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ error: 'Failed to delete workspace. Nothing was changed — try again.' }, { status: 500 })
     }
 
+    // FIX (Billing re-pass, independent redo #3 — B3): drop this workspace's
+    // unconsumed checkouts. They live 24h and used to survive deletion, so a
+    // popup left open and paid afterwards bound a live subscription to a
+    // workspace nobody can reach. Best-effort — the webhook also refuses to
+    // apply a subscription to a deleted workspace.
+    const { error: purgeErr } = await (service as any).from('billing_checkouts').delete()
+      .eq('workspace_id', session.workspaceId).is('consumed_at', null)
+    if (purgeErr) console.error('Could not purge pending checkouts on workspace delete:', purgeErr.message)
+
     // FIX 6: Deactivate all memberships so getSession() finds no active row
     // on next login — prevents the deleted workspace from being accessible.
     // FIX (round 3, Workspace lifecycle Finding 3): same unchecked-write gap

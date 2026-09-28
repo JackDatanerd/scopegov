@@ -134,9 +134,20 @@ export async function POST(request: NextRequest) {
         const writeFields: Record<string, unknown> = { ...updates, last_reconciled_at: new Date().toISOString() }
         if (hasRepair) writeFields.updated_at = new Date().toISOString()
 
-        const { error: upErr } = await (service as any).from('billing')
+        // FIX (Billing re-pass, independent redo #3 — B2): conditional on the
+        // subscription code we just read and asked Paystack about. Between
+        // that read and this write a plan switch (subscription.create) can
+        // replace the code; Paystack reports the OLD subscription as
+        // cancelled after a switch, so an unconditional write flagged the
+        // NEW, paid subscription as cancelling and the period-end sweep then
+        // downgraded a paying customer. Same guard the webhook's
+        // subscription.disable handler already has.
+        const { data: written, error: upErr } = await (service as any).from('billing')
           .update(writeFields).eq('workspace_id', b.workspace_id)
+          .eq('paystack_subscription_code', b.paystack_subscription_code)
+          .select('workspace_id')
         if (upErr) { run.rowError(`billing update for ${b.workspace_id}`, upErr); continue }
+        if (!written || written.length === 0) continue // subscription changed mid-check — next run re-reads it
         if (hasRepair) {
           repaired++
           await insertAuditRow(service, {

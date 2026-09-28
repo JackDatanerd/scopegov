@@ -102,6 +102,31 @@ export async function findPendingCheckout(
   return { checkout: null, ambiguous: true }
 }
 
+/**
+ * FIX (Billing re-pass, independent redo #3 — B1): the checkout row for THIS
+ * exact workspace, and only that — unlike findPendingCheckout, a hint that
+ * matches no row returns null instead of falling through to "the only
+ * candidate" / "ambiguous". charge.success uses it to recognise the first
+ * charge of a checkout this server recorded BEFORE consulting customer code
+ * (which is per email, so shared by every workspace one login owns).
+ * The hint (browser metadata) can only select a row this server already
+ * created for the same email + plan; it can never add a candidate.
+ */
+export async function findHintedCheckout(
+  service: any, email: string, planCode: string, hintWorkspaceId: string | null | undefined, now: number = Date.now(),
+): Promise<PendingCheckout | null> {
+  if (!email || !planCode || !hintWorkspaceId || typeof hintWorkspaceId !== 'string') return null
+  const since = new Date(now - CHECKOUT_TTL_MS).toISOString()
+  const { data, error } = await service.from('billing_checkouts')
+    .select('id, workspace_id, user_id, email, plan_key, plan_interval, plan_code, created_at')
+    .eq('email', email.trim().toLowerCase()).eq('plan_code', planCode)
+    .eq('workspace_id', hintWorkspaceId)
+    .is('consumed_at', null).gte('created_at', since)
+    .order('created_at', { ascending: false }).limit(1)
+  if (error) throw new Error(`checkout lookup failed: ${error.message}`)
+  return (data && data[0]) || null
+}
+
 export async function consumeCheckout(service: any, id: string): Promise<void> {
   const { error } = await service.from('billing_checkouts')
     .update({ consumed_at: new Date().toISOString() }).eq('id', id).is('consumed_at', null)

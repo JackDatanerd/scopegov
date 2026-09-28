@@ -138,6 +138,26 @@ describe('cron/billing-reconcile', () => {
     expect(h.audits.map(a => a.event_type)).toContain('billing.reconciled')
   })
 
+  // Billing re-pass, independent redo #3 — B2. Paystack reports the OLD subscription as cancelled after a
+  // plan switch; if subscription.create replaces the code between the cron's read and its write, the
+  // (unconditional) write used to flag the NEW, paid subscription as cancelling.
+  it('does not flag a NEW subscription as cancelling when a plan switch lands mid-check', async () => {
+    h.db = createFakeSupabase({ billing: [bill('w1')] })
+    h.paystack = {}
+    Object.defineProperty(h.paystack, 'SUB_w1', {
+      configurable: true, enumerable: true,
+      get() {
+        // the switch lands while the cron is waiting on Paystack
+        h.db.tables.billing[0].paystack_subscription_code = 'SUB_NEW'
+        return { ok: true, sub: { status: 'cancelled', nextPaymentDate: null } }
+      },
+    })
+    const { body } = await call(billingReconcile)
+    expect(body.repaired).toBe(0)
+    expect(h.db.tables.billing[0]).toMatchObject({ paystack_subscription_code: 'SUB_NEW', cancels_at_period_end: false })
+    expect(h.audits.map(a => a.event_type)).not.toContain('billing.reconciled')
+  })
+
   it('a NOT FOUND subscription is an anomaly, still counts as a completed check, and is not a read failure', async () => {
     h.db = createFakeSupabase({ billing: [bill('w1')] })
     h.paystack = { SUB_w1: { ok: false, notFound: true, error: '404' } }

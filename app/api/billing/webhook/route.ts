@@ -183,6 +183,29 @@ async function handleEvent(service: any, event: any): Promise<void> {
       if (!newTier) { await unresolved(service, event, `Unknown plan code ${planCode} — is the PAYSTACK_PLAN_* env var set for it? A customer has subscribed and nothing was applied.`); return }
       const newInterval = planCodeToInterval(planCode)
 
+      // FIX (Billing re-pass, independent redo #3 — B4): idempotent by
+      // subscription code. A previous attempt that applied everything below
+      // but died before its claim was marked done (a timeout, a failed
+      // completeWebhookEvent) is redelivered after the claim goes stale — by
+      // then the checkout is already consumed, so the strict lookup found
+      // nothing and raised a false "no pending checkout matches" page for a
+      // subscription that was applied correctly. If a billing row already
+      // holds this exact subscription code the work is done: sweep any
+      // leftover checkout rows for that workspace + plan and stop.
+      {
+        const applied = must(await service.from('billing').select('workspace_id')
+          .eq('paystack_subscription_code', subCode).maybeSingle(), 'read billing by subscription').data
+        if (applied?.workspace_id) {
+          const { error: sweepErr } = await service.from('billing_checkouts')
+            .update({ consumed_at: new Date().toISOString() })
+            .eq('workspace_id', applied.workspace_id).eq('email', customerEmail.trim().toLowerCase())
+            .eq('plan_code', planCode).is('consumed_at', null)
+          if (sweepErr) console.error('[BILLING] could not sweep checkouts for an already-applied subscription:', sweepErr.message)
+          console.log('subscription.create for a subscription already on file — already applied, ignoring')
+          return
+        }
+      }
+
       // Bound to the server-recorded checkout, never to browser metadata.
       const res: Resolution = await resolveWorkspace(service, data, { checkout: 'strict', planCode })
       if (!res.workspaceId) {
@@ -200,7 +223,29 @@ async function handleEvent(service: any, event: any): Promise<void> {
       }
       const workspaceId = res.workspaceId
 
-      const prevWs = must(await service.from('workspaces').select('plan_tier').eq('id', workspaceId).maybeSingle(), 'read workspace').data
+      // FIX (Billing re-pass, independent redo #3 — B3): a workspace that was
+      // deleted or suspended (both stamp deleted_at) after its checkout was
+      // recorded — a popup left open, paid later — must not receive a live
+      // subscription: workspace/delete and admin suspend cancel billing
+      // exactly so nothing keeps charging a workspace nobody can reach. Pending
+      // checkouts live 24h and used to survive both, and nothing here looked.
+      // Disable the just-created subscription, consume the checkout, and page
+      // ops — the first charge already went through and needs a manual refund.
+      const wsState = must(await service.from('workspaces').select('plan_tier, deleted_at').eq('id', workspaceId).maybeSingle(), 'read workspace').data
+      if (!wsState || wsState.deleted_at) {
+        const off = await cancelPaystackSubscription({ paystack_subscription_code: subCode, paystack_email_token: data.email_token || null })
+        if (res.checkout) await consumeCheckoutGroup(service, res.checkout)
+        await alertBillingOps(service, `billing:dead-workspace:${workspaceId}:${subCode}`, 'Subscription created for a deleted/suspended workspace', [
+          `workspace: ${workspaceId}`,
+          `subscription: ${subCode}`,
+          `customer email: ${customerEmail}`,
+          `new subscription disabled: ${off.ok ? 'yes' : `NO — ${off.error}`}`,
+          'The customer\'s first charge already succeeded — refund it in the Paystack dashboard' + (off.ok ? '.' : ' and disable the subscription by hand, or it will keep renewing.'),
+        ])
+        return
+      }
+
+      const prevWs = { plan_tier: wsState.plan_tier }
       const prevBilling = must(await service.from('billing')
         .select('paystack_subscription_code, paystack_email_token, plan_interval, current_period_end')
         .eq('workspace_id', workspaceId).maybeSingle(), 'read billing').data
@@ -307,6 +352,20 @@ async function handleEvent(service: any, event: any): Promise<void> {
       if (res.superseded) { console.log('charge.success for a superseded subscription — ignoring'); return }
       const workspaceId = res.workspaceId
       const customerEmail: string | undefined = data?.customer?.email
+
+      // (B3) A checkout-bound first charge for a workspace that has since been
+      // deleted/suspended: the money is taken but nothing will ever be applied
+      // (subscription.create disables the subscription) — make sure a human
+      // sees it rather than only the audit row.
+      if (res.via === 'checkout') {
+        const ws = must(await service.from('workspaces').select('deleted_at').eq('id', workspaceId).maybeSingle(), 'read workspace').data
+        if (ws?.deleted_at) {
+          await alertBillingOps(service, `billing:dead-workspace-charge:${workspaceId}:${data?.reference ?? 'x'}`, 'Payment received for a deleted/suspended workspace', [
+            `workspace: ${workspaceId}`, `customer email: ${customerEmail ?? '-'}`, `reference: ${data?.reference ?? '-'}`,
+            `amount (subunit): ${data?.amount ?? '-'} ${data?.currency ?? ''}`, 'Refund it in the Paystack dashboard.',
+          ])
+        }
+      }
 
       const billingRow = res.billing ?? must(await service.from('billing')
         .select('paystack_subscription_code').eq('workspace_id', workspaceId).maybeSingle(), 'read billing').data

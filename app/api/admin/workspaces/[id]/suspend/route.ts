@@ -43,6 +43,13 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     console.error('[admin] Paystack cancel on suspend failed:', cancelResult.error)
   }
 
+  // (Billing re-pass, independent redo #3 — B3) Same reason as workspace/delete:
+  // a pending checkout must not outlive the suspension and bind a fresh
+  // subscription to an unreachable workspace. Best-effort.
+  const { error: purgeErr } = await (service as any).from('billing_checkouts').delete()
+    .eq('workspace_id', params.id).is('consumed_at', null)
+  if (purgeErr) console.error('[admin] Could not purge pending checkouts on suspend:', purgeErr.message)
+
   // Best-effort, like the Paystack cancel above: the suspension has
   // already taken effect, so a mail failure must never surface as one.
   const agencyLabel = workspace.agency_name || workspace.name
