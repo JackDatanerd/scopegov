@@ -125,6 +125,19 @@ describe('forced-MFA enrolment gate vs. onboarding', () => {
     expect(passes(await call('/legal/terms'))).toBe(true)
   })
 
+  // REGRESSION (Auth+MFA independent re-pass): commit ef0d015 moved account
+  // creation server-side into POST /api/auth/signup but never exempted it here
+  // — '/api/auth/signup'.startsWith('/signup') is false, so the page-level
+  // isAuthRoute check never covered the API route the page actually calls, and
+  // every unauthenticated sign-up attempt got the blanket 401 below instead of
+  // reaching the route handler. tests/signup.test.ts calls the handler directly
+  // and never exercises middleware.ts, so it stayed green through this — this
+  // is the one place that would have caught it, driving the real middleware.
+  it('unauthenticated POST /api/auth/signup reaches the route handler', async () => {
+    state.user = null
+    expect(passes(await call('/api/auth/signup', 'POST'))).toBe(true)
+  })
+
   it('fails CLOSED (503) when getAuthenticatorAssuranceLevel() errors on a gated route — regardless of which gate it would have fed', async () => {
     state.gate = { ...state.gate, onboarding_complete: true }
     state.aalError = { message: 'boom' }

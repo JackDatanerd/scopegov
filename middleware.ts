@@ -116,6 +116,21 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith('/api/portal/') ||
     pathname.startsWith('/api/team/invite/') ||
     pathname.startsWith('/api/auth/callback') ||
+    // FIX (Auth+MFA independent re-pass): commit ef0d015 moved email/password
+    // account creation server-side into this route (closing a password-policy
+    // bypass — validatePassword() needed to be an authoritative gate, not an
+    // advisory client-side check a direct supabase.auth.signUp() call could
+    // skip). But an unauthenticated POST here was never added to this list, so
+    // the gate immediately below ("Unauthenticated: API callers get a JSON
+    // 401") caught every single sign-up attempt before the route handler ever
+    // ran — '/api/auth/signup'.startsWith('/signup') is false (it starts with
+    // '/api', not '/signup'), so the isAuthRoute check for the PAGE never
+    // covered the API route the page actually calls. Net effect: email/
+    // password sign-up was completely broken (Google/OAuth sign-up never
+    // touches this route, so it was unaffected). tests/signup.test.ts calls
+    // the route handler directly and never exercises middleware.ts, so
+    // vitest/tsc/next build all stayed green through this.
+    pathname === '/api/auth/signup' ||
     pathname.startsWith('/api/guardian/inbound') ||
     pathname.startsWith('/api/billing/webhook') ||
     // Resend delivery webhook — authenticated by its Svix signature, not a session.

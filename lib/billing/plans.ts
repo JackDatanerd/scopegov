@@ -12,6 +12,8 @@
 // into the 500 response. Everything is now parsed once, against an
 // allowlist, and normalised before any lookup.
 
+import type { Plan } from '@/lib/supabase/types'
+
 export const PAID_PLAN_KEYS = ['solo', 'starter', 'pro', 'agency'] as const
 export type PaidPlanKey = (typeof PAID_PLAN_KEYS)[number]
 export const BILLING_INTERVALS = ['monthly', 'annual'] as const
@@ -88,10 +90,10 @@ export function fromSubunit(amount: unknown): number | undefined {
  * at all is left alone (never silently downgrade on missing data).
  */
 export function effectivePlanTier(
-  planTier: string | null | undefined,
+  planTier: Plan | null | undefined,
   trialEndsAt: string | null | undefined,
   now: number = Date.now(),
-): string {
+): Plan {
   const tier = planTier || 'trial'
   if (tier !== 'trial' || !trialEndsAt) return tier
   const ends = Date.parse(trialEndsAt)
