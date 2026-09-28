@@ -1,0 +1,24 @@
+Section 12 (Invoicing) — fresh independent pass, fixes
+
+1. SECURITY — supabase/migrations/099_invoice_capped_functions_revoke.sql
+   Migration 096's create_invoice_capped / update_invoice_capped are SECURITY DEFINER, take
+   workspace/invoice ids as raw parameters, and were never REVOKEd from PUBLIC/anon/authenticated,
+   so /rest/v1/rpc/<name> with the public anon key could insert invoices into any workspace or
+   rewrite any draft invoice (bypassing SEND_INVOICES, project membership and the approval gate).
+   Now REVOKE ALL ... FROM PUBLIC, anon, authenticated; GRANT EXECUTE ... TO service_role.
+   tests/rls-contract.test.ts: allowlist now also names is_current_user_platform_admin
+   (caller-bound, migration 090) which the test had not been updated for.
+
+2. components/invoices/BillingTab.tsx + api/invoices/[id]/dispute-resolve
+   "Resolve dispute" only rendered for sent/partially_paid/overdue, so a dispute on an invoice that
+   was then paid could never be closed. Shown for any non-draft, non-void invoice with an open
+   dispute; the route no longer emails a dead portal link when the invoice is void.
+
+3. components/invoices/BillingTab.tsx — Record payment defaulted "Date received" to the UTC day;
+   now the local calendar day.
+
+4. lib/documents/invoice-totals.ts — an itemized invoice whose lines total 0 reached the
+   invoices.amount > 0 CHECK and surfaced as a 500; now a 400 "Line items must total more than 0".
+   New test: tests/invoice-totals-zero-lines.test.ts.
+
+Deploy: run migration 099 in Supabase.

@@ -158,7 +158,8 @@ describe('RLS contract — RPC surface reachable with the public anon key', () =
       .sort()
     // is_active_workspace_member: caller-bound (compares against auth.uid()), used by the workspaces RLS policy.
     // middleware_gate_state:      caller-bound (auth.uid()), used by middleware.ts.
-    expect(exposed).toEqual(['is_active_workspace_member', 'middleware_gate_state'])
+    // is_current_user_platform_admin: caller-bound (auth.uid()), returns only the caller's own flag (migration 090).
+    expect(exposed).toEqual(['is_active_workspace_member', 'is_current_user_platform_admin', 'middleware_gate_state'])
   })
 
   it('no SECURITY DEFINER function without a pinned search_path is exposed to anon/authenticated', () => {

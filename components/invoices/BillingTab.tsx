@@ -427,11 +427,6 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
                           <i className="ti ti-cash" style={{ fontSize: 11 }} /> Record payment
                         </button>
                       )}
-                      {permissions.sendInvoices && inv.disputed_at && !inv.dispute_resolved_at && (
-                        <button className="btn btn-ghost btn-sm" disabled={busyId === inv.id} onClick={() => resolveDispute(inv.id)}>
-                          {busyId === inv.id ? <span className="spin spin-dark" /> : <><i className="ti ti-circle-check" style={{ fontSize: 11 }} /> Resolve dispute</>}
-                        </button>
-                      )}
                       {permissions.sendInvoices && (
                         <button className="btn btn-ghost btn-sm" disabled={busyId === inv.id} onClick={() => remindInvoice(inv.id)}>
                           {busyId === inv.id ? <span className="spin spin-dark" /> : <><i className="ti ti-bell" style={{ fontSize: 11 }} /> Remind</>}
@@ -462,6 +457,14 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
                         </button>
                       )}
                     </>
+                  )}
+                  {/* A client can dispute an invoice in any live or paid state, and the usual path is
+                      dispute -> payment recorded -> paid. The button used to live only in the
+                      sent/partially_paid/overdue block, so a paid invoice's dispute could never be closed. */}
+                  {inv.status !== 'draft' && inv.status !== 'void' && permissions.sendInvoices && inv.disputed_at && !inv.dispute_resolved_at && (
+                    <button className="btn btn-ghost btn-sm" disabled={busyId === inv.id} onClick={() => resolveDispute(inv.id)}>
+                      {busyId === inv.id ? <span className="spin spin-dark" /> : <><i className="ti ti-circle-check" style={{ fontSize: 11 }} /> Resolve dispute</>}
+                    </button>
                   )}
                   {inv.status === 'paid' && (
                     <a href={`/api/pdf/invoice/${inv.id}`} className="btn btn-ghost btn-sm" target="_blank" rel="noreferrer">
@@ -1405,7 +1408,12 @@ function SourceRow({ active, label, sub, onClick }: { active: boolean; label: st
 function RecordPaymentModal({ invoice, onClose, onRecorded }: any) {
   const balance = Math.max(0, Number(invoice.amount) - Number(invoice.amount_paid))
   const [amount, setAmount] = useState(roundCurrency(balance).toFixed(2))
-  const [paidAt, setPaidAt] = useState(new Date().toISOString().split('T')[0])
+  // Local calendar day, not the UTC one — `toISOString()` gave yesterday/tomorrow around midnight
+  // for anyone away from UTC (same convention dueDateFromTerms uses).
+  const [paidAt, setPaidAt] = useState(() => {
+    const d = new Date()
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  })
   const [method, setMethod] = useState('bank_transfer')
   const [referenceNote, setReferenceNote] = useState('')
   const [submitting, setSubmitting] = useState(false)

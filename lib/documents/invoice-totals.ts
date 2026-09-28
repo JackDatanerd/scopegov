@@ -116,6 +116,9 @@ export function computeInvoiceTotals(input: {
       if (!Number.isFinite(typed) || Math.abs(typed - lineSum) > 0.01)
         return { ok: false, error: `Line items total ${lineSum.toFixed(2)} does not match the invoice amount ${Number.isFinite(typed) ? typed.toFixed(2) : String(input.entered)}` }
     }
+    // All-zero lines (e.g. an AI-drafted invoice whose rates were never filled in) used to slip through
+    // here and die on the invoices.amount > 0 CHECK as an opaque 500.
+    if (lineSum <= 0) return { ok: false, error: 'Line items must total more than 0' }
     entered = lineSum
   } else {
     entered = Number(input.entered)

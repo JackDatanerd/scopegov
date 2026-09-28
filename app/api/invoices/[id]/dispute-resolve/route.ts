@@ -70,7 +70,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     let emailed = false
     const project = invoice.projects
     const client = project?.clients
-    if (client?.email && invoice.token) {
+    // A void invoice's portal link is dead (409), so don't email the client a link to nowhere.
+    if (client?.email && invoice.token && invoice.status !== 'void') {
       const cc = await withPrimaryContactCc(service, project?.client_id, client.email, client.cc_emails, 'invoice')
       const delivery = await checkedSend(() => sendInvoiceDisputeResolvedEmail({
         to: client.email, cc, clientName: client.name || 'there',
