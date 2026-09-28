@@ -1,0 +1,50 @@
+CHANGES — Billing (cancel / upgrade / webhook / expiry) — independent pass fixes
+================================================================================
+
+Bug 1 (HIGH) — paid subscription silently not applied after re-opening checkout
+  lib/billing/checkouts.ts
+  - findPendingCheckout: several unconsumed rows that all belong to ONE workspace are no longer
+    "ambiguous" (newest wins). Only candidates spanning different workspaces are.
+  - createPendingCheckout: replaces earlier unconsumed rows for the same workspace+email+plan.
+  - consumeCheckoutGroup (new): consumes the resolved checkout and its same-workspace leftovers.
+  app/api/billing/webhook/route.ts: subscription.create uses consumeCheckoutGroup.
+
+Bug 2 (HIGH) — renewals "ambiguous" for a login that owns several workspaces
+  lib/billing/resolve.ts: customer-code branch ignores rows with no live subscription, then narrows
+  by the event's plan code (tier via workspaces.plan_tier, interval via billing.plan_interval).
+  Only what is still ambiguous goes to ops.
+
+Bug 3 (MEDIUM) — duplicate "subscription ended" email after a non-payment downgrade
+  app/api/billing/webhook/route.ts: subscription.disable / not_renew is ignored when the workspace
+  has no live subscription code on file.
+  app/api/cron/payment-overdue/route.ts: steps 4, 4b and 5 clear the whole subscription footprint
+  (ENDED_SUBSCRIPTION_FIELDS: code, token, cancels_at_period_end, current_period_end, plan_interval,
+  card). Customer code is kept in step 4 (late events resolve as superseded). Step 5's rollback
+  restores every field it cleared.
+
+Bug 4 (MEDIUM) — Billing tab wrong after trial expiry / downgrade
+  components/settings/SettingsClient.tsx: Renews/Cancel/Current plan/card keyed off a real
+  subscription (hasSubscription). A tier with no subscription shows "Subscribe". A cancelled
+  subscription reads "Ends <date>".
+
+Bug 5 (MEDIUM) — admin change-plan / extend-trial and trials
+  app/api/admin/workspaces/[id]/change-plan/route.ts: moving to 'trial' sets trial_ends_at
+  (default 14 days, optional trialDays 1-365); moving off trial clears it.
+  extend-trial: the 409 now points to Change plan -> trial for an expired (Solo) workspace.
+
+Bug 6 (LOW/MEDIUM) — disable webhook vs plan switch race
+  app/api/billing/webhook/route.ts: the cancellation write is conditional on the subscription
+  code that was read; if a plan switch replaced it, the event is ignored.
+
+Bug 7 (LOW/MEDIUM) — expired trial kept trial entitlements until the daily cron
+  lib/billing/plans.ts: effectivePlanTier(). lib/auth/session.ts uses it for session.planTier;
+  the two invite-accept routes use it for the seat check.
+
+Minor — grace reminder email always said "3 days left"
+  app/api/cron/payment-overdue/route.ts: actual whole days remaining (1..3).
+
+Tests: tests/billing.test.ts (+7). No migration required.
+
+Not changed (decisions for the owner): over-limit seats/projects/custom roles after a downgrade
+are still grandfathered; TRIAL_ALREADY_USED for a user whose only workspace lapsed (workspace
+lifecycle section).

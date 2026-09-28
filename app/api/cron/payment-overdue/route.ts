@@ -23,6 +23,23 @@ import { checkedSend } from '@/lib/email/delivery'
 // agency has had this long to bill it.
 const RETAINER_INVOICE_GRACE_DAYS = 7
 
+// FIX (Billing fix round — MEDIUM): when a subscription ends (non-payment downgrade, period-end sweep) the
+// code was cleared but the rest of the subscription's footprint was left behind: a past current_period_end
+// (Billing tab: "Renews <past date>"), the old interval and card, and — after a non-payment downgrade — no
+// reset of cancels_at_period_end, so the subscription.disable webhook that the downgrade itself provokes
+// could flag the dead row as cancelling and step 5 would "end" it a second time. The customer code stays on
+// purpose: late events for the old subscription resolve through it and are recognised as superseded.
+const ENDED_SUBSCRIPTION_FIELDS = {
+  paystack_subscription_code: null,
+  paystack_email_token: null,
+  needs_paystack_cancel: false,
+  cancels_at_period_end: false,
+  current_period_end: null,
+  plan_interval: null,
+  payment_method_last4: null,
+  payment_method_type: null,
+}
+
 const WS_EMBED = 'workspaces(id,agency_name,plan_tier,deleted_at,created_by,creator:users!workspaces_created_by_fkey(name,email))'
 
 async function getBillingRecipients(
@@ -275,6 +292,11 @@ export async function POST(request: NextRequest) {
         if (alreadySent) continue
 
         const recipients = await getBillingRecipients(service, ws.id, ws.creator)
+        // FIX (Billing fix round — minor): the email always said GRACE_REMINDER_DAYS_LEFT (3) even when a
+        // catch-up run (missed/late cron tick) sent it later. Whole days actually remaining before enforcement,
+        // rounded up, never below 1 (this row is only selected while its grace period has not yet expired).
+        const actualDaysLeft = Math.max(1, Math.min(GRACE_REMINDER_DAYS_LEFT, Math.ceil(
+          (new Date(b.grace_period_started_at).getTime() + GRACE_DAYS * 86400000 - now.getTime()) / 86400000)))
         // FIX (re-audit, section 17 — the critical finding): track actual delivery instead of
         // assuming success. The audit row below is the dedupe marker every future run checks
         // (see the lookup a few lines above) — writing it regardless of whether the send
@@ -289,7 +311,7 @@ export async function POST(request: NextRequest) {
             const delivery = await checkedSend(() => sendPaymentFailedEmail({
               to: r.email, name: r.name, agencyName: ws.agency_name,
               upgradeUrl: `${appUrl}/settings?tab=billing`,
-              graceDaysLeft: GRACE_REMINDER_DAYS_LEFT,
+              graceDaysLeft: actualDaysLeft,
             }), 'Grace reminder email')
             if (delivery.ok) anySent = true
             else sendErrors.push(`${r.email}: ${delivery.error}`)
@@ -354,6 +376,10 @@ export async function POST(request: NextRequest) {
         }
 
         let paystackCancelled = true
+        if (!b.paystack_subscription_code) {
+          await (service as any).from('billing')
+            .update({ ...ENDED_SUBSCRIPTION_FIELDS, updated_at: now.toISOString() }).eq('workspace_id', b.workspace_id)
+        }
         if (b.paystack_subscription_code) {
           const r = await cancelPaystackSubscription({
             paystack_subscription_code: b.paystack_subscription_code, paystack_email_token: b.paystack_email_token,
@@ -361,7 +387,7 @@ export async function POST(request: NextRequest) {
           paystackCancelled = r.ok
           if (r.ok) {
             await (service as any).from('billing')
-              .update({ paystack_subscription_code: null, needs_paystack_cancel: false }).eq('workspace_id', b.workspace_id)
+              .update({ ...ENDED_SUBSCRIPTION_FIELDS, updated_at: now.toISOString() }).eq('workspace_id', b.workspace_id)
           } else {
             // Leave the code in place and flag it so step 4b retries — the customer must not keep being charged.
             await (service as any).from('billing')
@@ -415,7 +441,7 @@ export async function POST(request: NextRequest) {
         })
         if (r.ok) {
           await (service as any).from('billing')
-            .update({ paystack_subscription_code: null, needs_paystack_cancel: false }).eq('workspace_id', b.workspace_id)
+            .update({ ...ENDED_SUBSCRIPTION_FIELDS, updated_at: now.toISOString() }).eq('workspace_id', b.workspace_id)
         } else {
           await alertBillingOps(service, `billing:orphan-sub:${b.workspace_id}`, 'Downgraded workspace still has a live Paystack subscription', [
             `workspace: ${b.workspace_id}`, `subscription: ${b.paystack_subscription_code}`, `error: ${r.error}`,
@@ -473,7 +499,8 @@ export async function POST(request: NextRequest) {
   await run.step('5 cancelled subscriptions', async () => {
     const cancelledExpired = await fetchAll<any>('cancelled subscriptions select', (from, to) =>
       (service as any).from('billing')
-        .select(`workspace_id, current_period_end, paystack_subscription_code, paystack_customer_code, ${WS_EMBED}`)
+        .select(`workspace_id, current_period_end, paystack_subscription_code, paystack_customer_code,
+          paystack_email_token, plan_interval, payment_method_last4, payment_method_type, ${WS_EMBED}`)
         .eq('cancels_at_period_end', true)
         .not('current_period_end', 'is', null)
         .lt('current_period_end', now.toISOString())
@@ -487,7 +514,7 @@ export async function POST(request: NextRequest) {
 
         // Claim first (only one run/webhook proceeds; also guards a reactivation landing in between)...
         const { data: guardedBilling, error: claimErr } = await (service as any).from('billing')
-          .update({ cancels_at_period_end: false, paystack_subscription_code: null, paystack_customer_code: null })
+          .update({ ...ENDED_SUBSCRIPTION_FIELDS, paystack_customer_code: null, updated_at: now.toISOString() })
           .eq('workspace_id', b.workspace_id)
           .eq('cancels_at_period_end', true)
           .lt('current_period_end', now.toISOString())
@@ -507,6 +534,11 @@ export async function POST(request: NextRequest) {
             cancels_at_period_end: true,
             paystack_subscription_code: b.paystack_subscription_code ?? null,
             paystack_customer_code: b.paystack_customer_code ?? null,
+            paystack_email_token: b.paystack_email_token ?? null,
+            current_period_end: b.current_period_end ?? null,
+            plan_interval: b.plan_interval ?? null,
+            payment_method_last4: b.payment_method_last4 ?? null,
+            payment_method_type: b.payment_method_type ?? null,
           }).eq('workspace_id', b.workspace_id)
           cancelledSubscriptionsEndedCount--
           throw new Error(`downgrade failed for ${ws.id}: ${downgradeErr.message}`)

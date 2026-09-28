@@ -53,6 +53,7 @@
 // "no billing row yet" case the header comment always meant.
 
 import { findPendingCheckout, type PendingCheckout } from './checkouts'
+import { planCodeToTier, planCodeToInterval } from './plans'
 
 export type ResolvedVia = 'subscription_code' | 'customer_code' | 'checkout'
 
@@ -64,6 +65,10 @@ export interface BillingRowLite {
   current_period_end: string | null
   cancels_at_period_end: boolean | null
   grace_period_started_at: string | null
+  plan_interval?: string | null
+  // Embedded only to tell apart several workspaces that share one Paystack
+  // customer (see the customer-code branch in resolveWorkspace).
+  workspaces?: { plan_tier?: string | null } | Array<{ plan_tier?: string | null }> | null
 }
 
 export interface Resolution {
@@ -77,7 +82,12 @@ export interface Resolution {
 }
 
 const BILLING_COLS =
-  'workspace_id, paystack_subscription_code, paystack_email_token, paystack_customer_code, current_period_end, cancels_at_period_end, grace_period_started_at'
+  'workspace_id, paystack_subscription_code, paystack_email_token, paystack_customer_code, current_period_end, cancels_at_period_end, grace_period_started_at, plan_interval, workspaces(plan_tier)'
+
+function embeddedTier(row: BillingRowLite): string | null {
+  const w = Array.isArray(row.workspaces) ? row.workspaces[0] : row.workspaces
+  return w?.plan_tier ?? null
+}
 
 export function eventSubscriptionCode(data: any): string | null {
   return data?.subscription_code || data?.subscription?.subscription_code || null
@@ -139,7 +149,35 @@ export async function resolveWorkspace(
       const superseded = !!(subCode && row.paystack_subscription_code && row.paystack_subscription_code !== subCode)
       return { ...none, workspaceId: row.workspace_id, via: 'customer_code', billing: row, superseded }
     }
-    if (rows && rows.length > 1) return { ...none, ambiguous: true }
+    if (rows && rows.length > 1) {
+      // FIX (Billing fix round — HIGH): renewal charge.success events carry
+      // the plan and the customer but no subscription code, and a Paystack
+      // customer is per EMAIL — so one login owning several workspaces
+      // shares one customer code across all of them. Non-payment downgrades
+      // deliberately keep paystack_customer_code, so a single lapsed
+      // workspace plus one paying workspace was enough to make EVERY renewal
+      // of the paying one "ambiguous": ops alert, no payment history, no
+      // card/period refresh, and no clearing of grace. Rows with no live
+      // subscription can't be the target of a renewal; if several live rows
+      // remain, the event's plan code (tier + interval) usually singles one
+      // out. Only what is STILL ambiguous after that goes to a human.
+      let cands: BillingRowLite[] = rows.filter((r: BillingRowLite) => !!r.paystack_subscription_code)
+      const eventPlan: string | null = opts.planCode ?? data?.plan?.plan_code ?? data?.subscription?.plan?.plan_code ?? null
+      if (cands.length > 1 && eventPlan) {
+        const wantTier = planCodeToTier(eventPlan)
+        const wantInterval = planCodeToInterval(eventPlan)
+        const narrowed = cands.filter(r =>
+          (!wantInterval || !r.plan_interval || r.plan_interval === wantInterval) &&
+          (!wantTier || !embeddedTier(r) || embeddedTier(r) === wantTier))
+        if (narrowed.length >= 1) cands = narrowed
+      }
+      if (cands.length === 1) {
+        const row = cands[0]
+        const superseded = !!(subCode && row.paystack_subscription_code && row.paystack_subscription_code !== subCode)
+        return { ...none, workspaceId: row.workspace_id, via: 'customer_code', billing: row, superseded }
+      }
+      return { ...none, ambiguous: true }
+    }
   }
 
   // Genuine fallback: neither authoritative source matched anything, so

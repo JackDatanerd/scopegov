@@ -5,6 +5,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { checkSeatLimit } from '@/lib/utils/seat-limit'
 import { inviterMayStillGrant } from '@/lib/utils/invite-authority'
 import { sanitizeDisplayName } from '@/lib/utils/sanitize'
+import { effectivePlanTier } from '@/lib/billing/plans'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
@@ -17,7 +18,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const { data: member } = await (service as any)
       .from('workspace_members')
-      .select('id,status,workspace_id,invite_token_expires_at,invited_email,invited_by,role_id,workspaces(name,deleted_at,plan_tier)')
+      .select('id,status,workspace_id,invite_token_expires_at,invited_email,invited_by,role_id,workspaces(name,deleted_at,plan_tier,trial_ends_at)')
       .eq('invite_token', token)
       .single()
 
@@ -89,7 +90,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // Only count 'active' here: this row is still 'invited', not part of
     // the active headcount yet, and it's the count of members who would
     // actually be active immediately after this that has to fit the plan.
-    const seatCheck = await checkSeatLimit(service, member.workspace_id, member.workspaces?.plan_tier, ['active'])
+    const seatCheck = await checkSeatLimit(service, member.workspace_id, effectivePlanTier(member.workspaces?.plan_tier, member.workspaces?.trial_ends_at), ['active'])
     if (!seatCheck.ok) {
       // Reworded for the invitee (who has no workspace access yet, so
       // "deactivate a member" / "upgrade in Settings" — checkSeatLimit's

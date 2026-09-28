@@ -75,3 +75,25 @@ export function planCodeToInterval(planCode: string | null | undefined, env: Env
 export function fromSubunit(amount: unknown): number | undefined {
   return typeof amount === 'number' ? Math.round(amount) / 100 : undefined
 }
+
+/**
+ * The plan a workspace is actually entitled to RIGHT NOW.
+ *
+ * FIX (Billing fix round — LOW/MEDIUM): trial expiry was enforced only by the
+ * daily payment-overdue cron flipping plan_tier to 'solo'. Until it ran (or
+ * if it failed for a day), an expired trial kept unlimited projects, 10 seats
+ * and custom roles. Anything that gates on a plan should use this instead of
+ * the raw plan_tier column so a trial past trial_ends_at is Solo immediately;
+ * the cron then makes the stored value match. A trial with no trial_ends_at
+ * at all is left alone (never silently downgrade on missing data).
+ */
+export function effectivePlanTier(
+  planTier: string | null | undefined,
+  trialEndsAt: string | null | undefined,
+  now: number = Date.now(),
+): string {
+  const tier = planTier || 'trial'
+  if (tier !== 'trial' || !trialEndsAt) return tier
+  const ends = Date.parse(trialEndsAt)
+  return !isNaN(ends) && ends < now ? 'solo' : tier
+}

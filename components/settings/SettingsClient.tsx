@@ -1669,6 +1669,12 @@ function loadPaystackScript(): Promise<void> {
 function BillingTab({ workspace, billing, session, permissions }: any) {
   const planTier  = workspace?.plan_tier || 'trial'
   const planLabel = PLAN_LABELS[planTier] || planTier
+  // FIX (Billing fix round — MEDIUM): everything below that speaks about "the subscription" (Renews, Cancel,
+  // Current plan on a tier card, the card on file) used to key off plan_tier alone. After a trial expires, a
+  // non-payment downgrade or a period-end lapse the workspace is on Solo with NO subscription — yet the Solo
+  // card showed a dead "Current plan" with no way to buy it, "Cancel subscription" led to a contact-support
+  // dead end and a past renewal date was shown. Only a stored subscription code means there is one.
+  const hasSubscription = !!billing?.paystack_subscription_code
   const daysLeft  = workspace?.trial_ends_at
     ? Math.max(0, Math.ceil((new Date(workspace.trial_ends_at).getTime() - Date.now()) / 86400000))
     : null
@@ -1916,21 +1922,23 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
             {planTier === 'trial' && daysLeft !== null && (
               <div style={{ fontSize: 13, color: 'var(--amber)' }}>{daysLeft} trial days remaining</div>
             )}
-            {billing?.current_period_end && (
-              <div style={{ fontSize: 12, color: 'var(--text-3)' }}>Renews {formatDate(billing.current_period_end)}</div>
+            {hasSubscription && billing?.current_period_end && (
+              <div style={{ fontSize: 12, color: 'var(--text-3)' }}>
+                {billing.cancels_at_period_end ? 'Ends' : 'Renews'} {formatDate(billing.current_period_end)}
+              </div>
             )}
             {/* FEATURE (deep audit, Billing re-pass): payment_method_last4/
                 type existed as columns, were fetched by settings/page.tsx,
                 and were never once rendered anywhere — a fully scaffolded
                 "card on file" feature with no display. Now populated by
                 the webhook (see extractPaymentMethod) and shown here. */}
-            {billing?.payment_method_last4 && (
+            {hasSubscription && billing?.payment_method_last4 && (
               <div style={{ fontSize: 12, color: 'var(--text-3)' }}>
                 {billing.payment_method_type ? `${billing.payment_method_type} ` : ''}···· {billing.payment_method_last4}
               </div>
             )}
           </div>
-          {planTier !== 'trial' && !billing?.cancels_at_period_end && (
+          {planTier !== 'trial' && hasSubscription && !billing?.cancels_at_period_end && (
             <button className="btn btn-ghost btn-sm" style={{ color: 'var(--red)' }}
               disabled={cancelling || justCancelled} onClick={handleCancel}>
               {cancelling ? <span className="spin spin-dark" /> : 'Cancel subscription'}
@@ -2024,9 +2032,11 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
             // billing.plan_interval (migration 045) is what finally makes
             // "same tier, different interval" a distinguishable, buildable
             // state.
-            const isExactCurrentPlan = isCurrentTier && planTier !== 'trial' && billing?.plan_interval
-              ? billing.plan_interval === planInterval
-              : isCurrentTier
+            // No subscription (expired trial, lapsed, comped by staff) => the tier is where the workspace
+            // sits, not something it is paying for, so its card must stay buyable.
+            const isExactCurrentPlan = isCurrentTier && hasSubscription
+              ? (billing?.plan_interval ? billing.plan_interval === planInterval : true)
+              : false
             const isLoading = upgrading === plan.key
             return (
               <div key={plan.key} className={`tier-card${isExactCurrentPlan ? ' current' : ''}`}>
@@ -2043,7 +2053,10 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
                     disabled={!!upgrading}
                     onClick={() => handleUpgrade(plan.key)}>
                     {isLoading ? <span className="spin spin-dark" /> : (
-                      isCurrentTier
+                      isCurrentTier && !hasSubscription
+                        // On this tier without paying for it — this is a first purchase.
+                        ? 'Subscribe'
+                        : isCurrentTier
                         // Same tier, different interval — this is a switch,
                         // not an upgrade or downgrade.
                         ? (planInterval === 'annual' ? 'Switch to annual' : 'Switch to monthly')

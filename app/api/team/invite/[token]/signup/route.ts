@@ -8,6 +8,7 @@ import { checkSeatLimit } from '@/lib/utils/seat-limit'
 import { validatePassword } from '@/lib/auth/password-policy'
 import { TERMS_VERSION } from '@/lib/auth/terms'
 import { inviterMayStillGrant } from '@/lib/utils/invite-authority'
+import { effectivePlanTier } from '@/lib/billing/plans'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
@@ -33,7 +34,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // that check's own comment for why it was missing entirely on this path.
     const { data: member } = await (service as any)
       .from('workspace_members')
-      .select('id, status, invite_token_expires_at, invited_email, invited_by, workspace_id, role_id, workspaces(name,deleted_at,plan_tier)')
+      .select('id, status, invite_token_expires_at, invited_email, invited_by, workspace_id, role_id, workspaces(name,deleted_at,plan_tier,trial_ends_at)')
       .eq('invite_token', token)
       .single()
 
@@ -92,7 +93,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // 'active', only at invite-creation time. Checked before creating the
     // Supabase auth account below, not after, so a rejected signup here
     // never leaves behind an orphaned auth user with no workspace to join.
-    const seatCheck = await checkSeatLimit(service, member.workspace_id, member.workspaces?.plan_tier, ['active'])
+    const seatCheck = await checkSeatLimit(service, member.workspace_id, effectivePlanTier(member.workspaces?.plan_tier, member.workspaces?.trial_ends_at), ['active'])
     if (!seatCheck.ok) {
       return NextResponse.json({
         error: 'This workspace is currently full for its plan. Ask a workspace admin to free up a seat or upgrade the plan, then try this invite link again.',

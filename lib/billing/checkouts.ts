@@ -20,6 +20,21 @@ export interface PendingCheckout {
 export async function createPendingCheckout(service: any, c: {
   workspaceId: string; userId: string; email: string; planKey: string; interval: string; planCode: string
 }): Promise<void> {
+  // FIX (Billing fix round — HIGH): every /upgrade call used to add a row and
+  // leave every earlier unconsumed row for the SAME workspace + email + plan
+  // sitting there. Opening the popup, closing it and trying again (or "Retry
+  // with a new card" twice) is completely ordinary, and it left two live
+  // candidates that findPendingCheckout could not tell apart — so a real,
+  // paid subscription was reported as "ambiguous" and never applied. A
+  // fresh checkout for the same workspace/email/plan replaces the earlier
+  // ones: they can only ever attribute to this same workspace anyway.
+  // Best-effort — findPendingCheckout also tolerates same-workspace
+  // duplicates, so a failure here must not block starting a checkout.
+  const stale = await service.from('billing_checkouts').delete()
+    .eq('workspace_id', c.workspaceId).eq('email', c.email.trim().toLowerCase())
+    .eq('plan_code', c.planCode).is('consumed_at', null)
+  if (stale?.error) console.error('[BILLING] could not clear superseded checkouts:', stale.error.message)
+
   const { error } = await service.from('billing_checkouts').insert({
     workspace_id: c.workspaceId, user_id: c.userId, email: c.email.trim().toLowerCase(),
     plan_key: c.planKey, plan_interval: c.interval, plan_code: c.planCode,
@@ -79,6 +94,11 @@ export async function findPendingCheckout(
   const hinted = hintWorkspaceId ? rows.find(r => r.workspace_id === hintWorkspaceId) : undefined
   if (hinted) return { checkout: hinted, ambiguous: false }
   if (rows.length === 1) return { checkout: rows[0], ambiguous: false }
+  // FIX (Billing fix round — HIGH): several rows that ALL belong to the same
+  // workspace are not ambiguous — there is only one workspace they can be
+  // for (the same person re-opening checkout). Only candidates spanning
+  // DIFFERENT workspaces are a genuine "can't tell". `rows` is newest-first.
+  if (rows.every(r => r.workspace_id === rows[0].workspace_id)) return { checkout: rows[0], ambiguous: false }
   return { checkout: null, ambiguous: true }
 }
 
@@ -86,4 +106,19 @@ export async function consumeCheckout(service: any, id: string): Promise<void> {
   const { error } = await service.from('billing_checkouts')
     .update({ consumed_at: new Date().toISOString() }).eq('id', id).is('consumed_at', null)
   if (error) console.error('[BILLING] could not mark checkout consumed:', id, error.message)
+}
+
+/**
+ * Consumes the resolved checkout AND any other unconsumed rows for the same
+ * workspace + email + plan (leftovers from re-opened popups — see
+ * createPendingCheckout). Left behind, they would keep matching later events
+ * for that email/plan.
+ */
+export async function consumeCheckoutGroup(service: any, checkout: PendingCheckout): Promise<void> {
+  await consumeCheckout(service, checkout.id)
+  const { error } = await service.from('billing_checkouts')
+    .update({ consumed_at: new Date().toISOString() })
+    .eq('workspace_id', checkout.workspace_id).eq('email', checkout.email)
+    .eq('plan_code', checkout.plan_code).is('consumed_at', null)
+  if (error) console.error('[BILLING] could not consume sibling checkouts:', checkout.id, error.message)
 }

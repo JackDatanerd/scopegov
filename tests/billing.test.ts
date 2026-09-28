@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { parsePlanRequest, planCodeFor, planCodeToTier, planCodeToInterval, fromSubunit, PAID_PLAN_KEYS } from '@/lib/billing/plans'
+import { parsePlanRequest, planCodeFor, planCodeToTier, planCodeToInterval, fromSubunit, effectivePlanTier, PAID_PLAN_KEYS } from '@/lib/billing/plans'
 import { claimWebhookEvent, completeWebhookEvent, releaseWebhookEvent, STALE_CLAIM_MS } from '@/lib/billing/webhook-claims'
-import { findPendingCheckout, CHECKOUT_TTL_MS } from '@/lib/billing/checkouts'
+import { findPendingCheckout, createPendingCheckout, consumeCheckoutGroup, CHECKOUT_TTL_MS } from '@/lib/billing/checkouts'
 import { resolveWorkspace } from '@/lib/billing/resolve'
 
 // ── a tiny in-memory PostgREST-shaped fake ───────────────────────────────
@@ -284,5 +284,115 @@ describe('resolveWorkspace', () => {
     }, { checkout: 'prefer', planCode: 'PLN_1' })
     expect(r.workspaceId).toBeNull()
     expect(r.ambiguous).toBe(true)
+  })
+})
+
+// ── Billing fix round ────────────────────────────────────────────────────
+describe('checkouts: the same workspace re-opening checkout is not ambiguous', () => {
+  const now = Date.now()
+  const mk = (id: string, ws: string, ageMs: number) =>
+    ({ id, workspace_id: ws, email: 'owner@x.com', plan_code: 'PLN_1', consumed_at: null, created_at: new Date(now - ageMs).toISOString() })
+
+  it('resolves several unconsumed rows that all belong to ONE workspace (newest wins)', async () => {
+    const svc = fakeService({ billing_checkouts: [mk('new', 'wsA', 1_000), mk('older', 'wsA', 90_000)] })
+    const r = await findPendingCheckout(svc, 'owner@x.com', 'PLN_1', undefined, now)
+    expect(r.ambiguous).toBe(false)
+    expect(r.checkout?.id).toBe('new')
+  })
+  it('still reports ambiguous when the rows span different workspaces', async () => {
+    const svc = fakeService({ billing_checkouts: [mk('a1', 'wsA', 1_000), mk('a2', 'wsA', 2_000), mk('b1', 'wsB', 3_000)] })
+    const r = await findPendingCheckout(svc, 'owner@x.com', 'PLN_1', undefined, now)
+    expect(r.checkout).toBeNull()
+    expect(r.ambiguous).toBe(true)
+  })
+  it('createPendingCheckout replaces earlier unconsumed rows for the same workspace/email/plan only', async () => {
+    const tables: Record<string, Row[]> = { billing_checkouts: [
+      mk('old', 'wsA', 60_000), mk('other-ws', 'wsB', 60_000),
+      { ...mk('done', 'wsA', 60_000), consumed_at: 'x' },
+    ] }
+    await createPendingCheckout(fakeService(tables), {
+      workspaceId: 'wsA', userId: 'u1', email: 'Owner@X.com', planKey: 'pro', interval: 'monthly', planCode: 'PLN_1',
+    })
+    const ids = tables.billing_checkouts.map(r => r.id).filter(Boolean)
+    expect(ids).not.toContain('old')
+    expect(ids).toContain('other-ws')
+    expect(ids).toContain('done')
+    expect(tables.billing_checkouts.filter(r => r.workspace_id === 'wsA' && r.consumed_at == null)).toHaveLength(1)
+  })
+  it('consumeCheckoutGroup also consumes same-workspace leftovers, not other workspaces', async () => {
+    const tables: Record<string, Row[]> = { billing_checkouts: [mk('c1', 'wsA', 1_000), mk('c2', 'wsA', 2_000), mk('c3', 'wsB', 3_000)] }
+    await consumeCheckoutGroup(fakeService(tables), tables.billing_checkouts[0] as any)
+    const by = Object.fromEntries(tables.billing_checkouts.map(r => [r.id, r.consumed_at]))
+    expect(by.c1).toBeTruthy(); expect(by.c2).toBeTruthy(); expect(by.c3).toBeNull()
+  })
+})
+
+describe('resolveWorkspace: several workspaces sharing one Paystack customer', () => {
+  const row = (o: Row) => ({
+    paystack_email_token: null, current_period_end: null, cancels_at_period_end: false,
+    grace_period_started_at: null, plan_interval: 'monthly', workspaces: { plan_tier: 'pro' }, ...o,
+  })
+  const withEnv = async (fn: () => Promise<void>) => {
+    const saved = { pm: process.env.PAYSTACK_PLAN_PRO_MONTHLY, sm: process.env.PAYSTACK_PLAN_SOLO_MONTHLY }
+    process.env.PAYSTACK_PLAN_PRO_MONTHLY = 'PLN_pm'; process.env.PAYSTACK_PLAN_SOLO_MONTHLY = 'PLN_sm'
+    try { await fn() } finally {
+      if (saved.pm === undefined) delete process.env.PAYSTACK_PLAN_PRO_MONTHLY; else process.env.PAYSTACK_PLAN_PRO_MONTHLY = saved.pm
+      if (saved.sm === undefined) delete process.env.PAYSTACK_PLAN_SOLO_MONTHLY; else process.env.PAYSTACK_PLAN_SOLO_MONTHLY = saved.sm
+    }
+  }
+  const renewal = { customer: { email: 'a@b.com', customer_code: 'CUS_1' }, plan: { plan_code: 'PLN_pm' } }
+
+  it('ignores a lapsed workspace (no live subscription) that kept the customer code', async () => {
+    const svc = fakeService({ billing: [
+      row({ workspace_id: 'wsLapsed', paystack_subscription_code: null, paystack_customer_code: 'CUS_1', workspaces: { plan_tier: 'solo' } }),
+      row({ workspace_id: 'wsPaying', paystack_subscription_code: 'SUB_1', paystack_customer_code: 'CUS_1' }),
+    ] })
+    const r = await resolveWorkspace(svc, renewal, { checkout: 'prefer', planCode: 'PLN_pm' })
+    expect(r).toMatchObject({ workspaceId: 'wsPaying', via: 'customer_code', ambiguous: false, superseded: false })
+  })
+  it('narrows two live workspaces by the event\'s plan code (tier)', async () => {
+    await withEnv(async () => {
+      const svc = fakeService({ billing: [
+        row({ workspace_id: 'wsSolo', paystack_subscription_code: 'S1', paystack_customer_code: 'CUS_1', workspaces: { plan_tier: 'solo' } }),
+        row({ workspace_id: 'wsPro', paystack_subscription_code: 'S2', paystack_customer_code: 'CUS_1' }),
+      ] })
+      const r = await resolveWorkspace(svc, renewal, { checkout: 'prefer', planCode: 'PLN_pm' })
+      expect(r.workspaceId).toBe('wsPro')
+    })
+  })
+  it('narrows by interval when tiers match', async () => {
+    await withEnv(async () => {
+      const svc = fakeService({ billing: [
+        row({ workspace_id: 'wsAnnual', paystack_subscription_code: 'S1', paystack_customer_code: 'CUS_1', plan_interval: 'annual' }),
+        row({ workspace_id: 'wsMonthly', paystack_subscription_code: 'S2', paystack_customer_code: 'CUS_1', plan_interval: 'monthly' }),
+      ] })
+      const r = await resolveWorkspace(svc, renewal, { checkout: 'prefer', planCode: 'PLN_pm' })
+      expect(r.workspaceId).toBe('wsMonthly')
+    })
+  })
+  it('is still ambiguous when two live workspaces are on the identical plan + interval', async () => {
+    await withEnv(async () => {
+      const svc = fakeService({ billing: [
+        row({ workspace_id: 'w1', paystack_subscription_code: 'S1', paystack_customer_code: 'CUS_1' }),
+        row({ workspace_id: 'w2', paystack_subscription_code: 'S2', paystack_customer_code: 'CUS_1' }),
+      ] })
+      const r = await resolveWorkspace(svc, renewal, { checkout: 'prefer', planCode: 'PLN_pm' })
+      expect(r.workspaceId).toBeNull()
+      expect(r.ambiguous).toBe(true)
+    })
+  })
+})
+
+describe('effectivePlanTier', () => {
+  const now = Date.parse('2026-09-28T12:00:00Z')
+  it('treats an expired trial as solo immediately', () => {
+    expect(effectivePlanTier('trial', '2026-09-27T00:00:00Z', now)).toBe('solo')
+  })
+  it('leaves a running trial, a missing end date and every paid tier alone', () => {
+    expect(effectivePlanTier('trial', '2026-09-30T00:00:00Z', now)).toBe('trial')
+    expect(effectivePlanTier('trial', null, now)).toBe('trial')
+    expect(effectivePlanTier('trial', 'not-a-date', now)).toBe('trial')
+    expect(effectivePlanTier('pro', '2020-01-01T00:00:00Z', now)).toBe('pro')
+    expect(effectivePlanTier(null, null, now)).toBe('trial')
   })
 })

@@ -5,6 +5,7 @@ import type { SessionUser, Permission } from '@/lib/supabase/types'
 import { permissionsRequireMfa } from '@/lib/auth/mfa-policy'
 import { registerSessionSeen } from '@/lib/auth/session-seen'
 import { headers as nextHeaders } from 'next/headers'
+import { effectivePlanTier } from '@/lib/billing/plans'
 
 // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — flagship
 // finding): every place in this codebase that has to pick a FALLBACK
@@ -145,7 +146,9 @@ export async function getSession(): Promise<SessionUser | null> {
       workspaceName:        ws?.name || '',
       workspaceSlug:        ws?.slug || '',
       agencyName:           ws?.agency_name || '',
-      planTier:             ws?.plan_tier || 'trial',
+      // An expired trial is Solo from the moment it expires, not from the next
+      // cron run — see effectivePlanTier.
+      planTier:             effectivePlanTier(ws?.plan_tier, ws?.trial_ends_at),
       trialEndsAt:          ws?.trial_ends_at || null,
       onboardingCompletedAt: ws?.onboarding_completed_at || null,
       // FIX (build — RLS + permissions independent audit, HIGH): was a plain

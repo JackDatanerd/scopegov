@@ -18,7 +18,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     .from('workspaces').select('id, name, agency_name, plan_tier, trial_ends_at').eq('id', params.id).maybeSingle()
   if (!workspace) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })
   if (workspace.plan_tier !== 'trial') {
-    return NextResponse.json({ error: 'Workspace is not on the trial plan' }, { status: 409 })
+    return NextResponse.json({ error: 'Workspace is not on the trial plan. To start a fresh trial (e.g. after it expired and the workspace moved to Solo), use Change plan → trial.' }, { status: 409 })
   }
 
   // Extend from whichever is later: the current trial_ends_at (still-active

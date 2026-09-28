@@ -20,7 +20,7 @@ import { sendPaymentFailedEmail, sendCardExpiringEmail } from '@/lib/email/templ
 import { cancelPaystackSubscription, fetchPaystackNextPaymentDate } from '@/lib/integrations/paystack'
 import { planCodeToTier, planCodeToInterval, fromSubunit, GRACE_DAYS } from '@/lib/billing/plans'
 import { resolveWorkspace, type Resolution } from '@/lib/billing/resolve'
-import { consumeCheckout } from '@/lib/billing/checkouts'
+import { consumeCheckoutGroup } from '@/lib/billing/checkouts'
 import { claimWebhookEvent, completeWebhookEvent, releaseWebhookEvent } from '@/lib/billing/webhook-claims'
 import { getBillingRecipients } from '@/lib/billing/recipients'
 import { alertBillingOps } from '@/lib/billing/ops-alert'
@@ -268,7 +268,7 @@ async function handleEvent(service: any, event: any): Promise<void> {
         if (pendingErr) console.error('[BILLING] could not record pending cancel retry:', pendingErr.message)
       }
 
-      if (res.checkout) await consumeCheckout(service, res.checkout.id)
+      if (res.checkout) await consumeCheckoutGroup(service, res.checkout)
 
       await audit(service, workspaceId, 'billing.plan_changed', customerEmail, {
         action: 'subscription_created',
@@ -429,9 +429,34 @@ async function handleEvent(service: any, event: any): Promise<void> {
       // The cancel route already recorded it and logged it; don't duplicate.
       if (res.billing?.cancels_at_period_end) return
 
-      must(await service.from('billing').update({
+      // FIX (Billing fix round — MEDIUM): a workspace with NO live
+      // subscription on file has nothing to mark as cancelling. Reaching
+      // here means the subscription was already cleared on our side — most
+      // commonly cron/payment-overdue's non-payment downgrade, which
+      // disables the subscription on Paystack and so triggers THIS event a
+      // moment later. Flagging cancels_at_period_end on the already-Solo
+      // workspace made step 5 "end" it again the next day: a second
+      // "subscription ended" email, a second audit row and a bogus entry in
+      // Payment history.
+      if (!res.billing?.paystack_subscription_code) {
+        console.log(`Paystack ${event.event} for a workspace with no live subscription on file — ignoring`)
+        return
+      }
+
+      // FIX (Billing fix round — LOW/MEDIUM): conditional on the subscription
+      // code we just read. Between that read and this write a plan switch
+      // (subscription.create) can land and replace the code; an unconditional
+      // write would then flag the NEW, paid subscription as cancelling and
+      // the period-end sweep would downgrade a paying customer.
+      const marked = must(await service.from('billing').update({
         cancels_at_period_end: true, updated_at: new Date().toISOString(),
-      }).eq('workspace_id', res.workspaceId), 'mark cancellation')
+      }).eq('workspace_id', res.workspaceId)
+        .eq('paystack_subscription_code', res.billing.paystack_subscription_code)
+        .select('workspace_id'), 'mark cancellation').data
+      if (!marked || marked.length === 0) {
+        console.log(`Paystack ${event.event}: subscription changed while processing — ignoring`)
+        return
+      }
 
       await audit(service, res.workspaceId, 'billing.plan_changed', data?.customer?.email, {
         action: event.event === 'subscription.not_renew' ? 'subscription_not_renewing' : 'subscription_disabled',

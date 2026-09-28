@@ -14,12 +14,23 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   if (isAdminGuardFailure(guard)) return guard
   const { actor, service } = guard
 
-  const body = await request.json().catch(() => ({})) as { plan?: unknown; reason?: unknown }
+  const body = await request.json().catch(() => ({})) as { plan?: unknown; reason?: unknown; trialDays?: unknown }
   const plan = body.plan
   if (typeof plan !== 'string' || !VALID_PLANS.includes(plan as ValidPlan)) {
     return NextResponse.json({ error: `plan must be one of: ${VALID_PLANS.join(', ')}` }, { status: 400 })
   }
   const reason = typeof body.reason === 'string' ? body.reason.trim().slice(0, 500) : ''
+  // FIX (Billing fix round — MEDIUM): moving a workspace TO 'trial' never set trial_ends_at. A null date meant
+  // the trial never expired and never warned; a stale past date meant the next payment-overdue run flipped it
+  // straight back to Solo, silently undoing the admin's change. A trial now always gets a fresh end date
+  // (default 14 days, or `trialDays` 1-365).
+  let trialDays = 14
+  if (body.trialDays !== undefined) {
+    const n = Number(body.trialDays)
+    if (!Number.isInteger(n) || n < 1 || n > 365)
+      return NextResponse.json({ error: 'trialDays must be a whole number between 1 and 365' }, { status: 400 })
+    trialDays = n
+  }
 
   const { data: workspace } = await (service as any)
     .from('workspaces').select('id, name, agency_name, plan_tier').eq('id', params.id).maybeSingle()
@@ -37,7 +48,12 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   // separately via the Billing tab when that's the actual intent.
   const { error } = await (service as any)
     .from('workspaces')
-    .update({ plan_tier: plan, updated_at: new Date().toISOString() })
+    .update({
+      plan_tier: plan,
+      // Off the trial plan the end date is meaningless (the webhook nulls it the same way on a paid upgrade).
+      trial_ends_at: plan === 'trial' ? new Date(Date.now() + trialDays * 86400_000).toISOString() : null,
+      updated_at: new Date().toISOString(),
+    })
     .eq('id', params.id)
 
   if (error) {
@@ -51,7 +67,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     targetType: 'workspace',
     targetId: workspace.id,
     targetLabel: workspace.agency_name || workspace.name,
-    metadata: { previousPlan: workspace.plan_tier, newPlan: plan, reason: reason || null },
+    metadata: { previousPlan: workspace.plan_tier, newPlan: plan, reason: reason || null, ...(plan === 'trial' ? { trialDays } : {}) },
   })
 
   // FIX (deep audit, Reports & Audit / Billing re-pass — independent redo):
@@ -74,6 +90,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
       action: 'admin_override',
       from: workspace.plan_tier, to: plan,
       reason: reason || undefined,
+      ...(plan === 'trial' ? { trial_days: trialDays } : {}),
     },
   })
 
