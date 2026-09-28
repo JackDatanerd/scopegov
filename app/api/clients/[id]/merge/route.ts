@@ -17,6 +17,11 @@ import { getClientIp } from '@/lib/utils/request-ip'
 // source's contacts get moved at the target's remaining room under the 25-per-client limit, and
 // reports how many didn't fit as `contacts_dropped` — surfaced here (and in the audit row) instead
 // of the loss being silent, same as `contacts_moved` already was.
+//
+// FIX (independent pass round 6, section 14): merge_clients() (097) now reports the parallel loss on
+// the OTHER side of a merge — the source's cc_emails (and its own primary email) can be capped at
+// MAX_CC_EMAILS the same way contacts are capped at MAX_CONTACTS_PER_CLIENT, and that cap was silent
+// until now. `cc_dropped` is surfaced here the same way `contacts_dropped` already is.
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id: sourceId } = await params
@@ -53,7 +58,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       metadata: {
         merged_from: { id: source.id, name: source.name, email: source.email },
         projects_moved: result?.projects_moved ?? null, contacts_moved: result?.contacts_moved ?? null,
-        contacts_dropped: result?.contacts_dropped ?? null,
+        contacts_dropped: result?.contacts_dropped ?? null, cc_dropped: result?.cc_dropped ?? null,
       },
     })
     return NextResponse.json({ ok: true, targetId, ...result })

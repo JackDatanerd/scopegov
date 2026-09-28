@@ -15,6 +15,12 @@
 // re-promotes the source's primary contact on the target if the target had none of its own — see
 // that migration's comment for the full reasoning. doMerge() below surfaces `contacts_dropped`
 // (previously silent) so the loss, when it happens, is at least visible to whoever merged.
+//
+// FIX (independent pass round 6, section 14): merge_clients() (097) reports the parallel cc_emails
+// cap loss the same way — `cc_dropped` — since that cap silently dropped whatever didn't fit under
+// MAX_CC_EMAILS (10), most often the source client's own primary email, the one address the merge is
+// specifically meant to carry over. Combined into one alert with contacts_dropped rather than two
+// separate blocking popups when a merge happens to hit both caps at once.
 
 'use client'
 import { useState } from 'react'
@@ -52,13 +58,26 @@ export default function ClientDangerZone({
       // FIX (independent pass round 5, section 14): merge_clients() (089) can now leave some of
       // the source's contacts behind if the target is already near the 25-contact limit — silent
       // otherwise, since this immediately navigates away from a page that could have shown them.
+      // FIX (independent pass round 6, section 14): same idea for cc_emails — merge_clients() (097)
+      // can now leave some of the source's CC addresses (including its own primary email) behind if
+      // the target is already near the 10-address cap. Both warnings combine into one alert so a
+      // merge that hits both caps doesn't pop two dialogs in a row.
+      const warnings: string[] = []
       if (json.contacts_dropped > 0) {
-        window.alert(
-          `Merged. ${target.name} already had close to the maximum of 25 contacts, so ` +
+        warnings.push(
+          `${target.name} already had close to the maximum of 25 contacts, so ` +
           `${json.contacts_dropped} contact${json.contacts_dropped === 1 ? '' : 's'} from ${clientName} ` +
           `could not be carried over and ${json.contacts_dropped === 1 ? 'was' : 'were'} not kept.`
         )
       }
+      if (json.cc_dropped > 0) {
+        warnings.push(
+          `${target.name} already had close to the maximum of 10 CC addresses, so ` +
+          `${json.cc_dropped} CC address${json.cc_dropped === 1 ? '' : 'es'} from ${clientName} ` +
+          `(possibly including its own email) could not be carried over and ${json.cc_dropped === 1 ? 'was' : 'were'} not kept.`
+        )
+      }
+      if (warnings.length > 0) window.alert(`Merged. ${warnings.join(' ')}`)
       router.push(`/clients/${targetId}`)
       router.refresh()
     } catch (e) {
