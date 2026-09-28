@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto'
-import { notifyUsers } from '@/lib/utils/notify'
+import { notifyUsers, notifyMembersWithPermission } from '@/lib/utils/notify'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
@@ -9,9 +9,9 @@ import { sanitizePlainText } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
 import { isTerminalStatus } from '@/lib/utils/project-status'
 import { workspaceTaxDefaults } from '@/lib/documents/tax-defaults'
-import { sendEscalationEmail } from '@/lib/email/templates'
+import { sendEscalationEmail, sendGuardianFlagEmail } from '@/lib/email/templates'
 import { checkedSend } from '@/lib/email/delivery'
-import { filterByNotificationPreference, filterToProjectAccess } from '@/lib/utils/permissions-query'
+import { filterByNotificationPreference, filterToProjectAccess, getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { severityFor } from '@/lib/ai/guardian-pipeline'
 
 const MAX_VALUE = 1e12
@@ -96,7 +96,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // see that case for the full note.
     const { data: flag } = await (service as any)
       .from('guardian_flags')
-      .select('id,status,project_id,description,severity,sow_reference,change_order_id,check_id,escalated_to,escalation_note,resolution,projects(name,status),guardian_checks!fk_flag_check(creep_confidence)')
+      .select('id,status,project_id,description,severity,sow_reference,change_order_id,check_id,escalated_to,escalation_note,resolution,updated_at,projects(name,status),guardian_checks!fk_flag_check(creep_confidence)')
       .eq('id', id)
       .eq('workspace_id', session.workspaceId)
       .single()
@@ -325,6 +325,18 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         // escalation_note are a single overwritable slot, same as CO's —
         // record what it held before this overwrite in the audit metadata
         // so the chain is reconstructable.
+        //
+        // FIX (independent pass, section 13): the write below used to CAS only on `status`, which
+        // doesn't stop two concurrent escalations of the same flag — both read status='open', both
+        // pass the guard, and whichever commits second silently overwrites the first with no
+        // conflict reported. That's harmless for the live escalated_to/note (last write is a
+        // legitimate outcome either way), but `previousEscalation` above is captured from the flag
+        // as read at the START of this request — if another escalation landed in between, the
+        // "superseded" value recorded in this request's audit metadata is stale, not what the flag
+        // actually held the instant before this write. CAS on `updated_at` too (read in the same
+        // top-of-handler select as everything else this route already treats as the flag's known
+        // state) so a write that raced loses cleanly — same "refresh and try again" every other CAS
+        // in this file already returns — instead of landing on stale data.
         const previousEscalation = { to: flag.escalated_to ?? null, note: flag.escalation_note ?? null }
 
         // Spec §6.3: escalation NEVER changes status — it is an overlay
@@ -332,7 +344,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           escalated_to:    resolvedEscalateTo || session.id,
           escalation_note: safeNote,
           updated_at:      now,
-        }).eq('id', id).in('status', ['open', 'borderline_review']).select('id')
+        }).eq('id', id).in('status', ['open', 'borderline_review']).eq('updated_at', flag.updated_at).select('id')
         if (escErr) throw new Error(escErr.message)
         if (!escRows?.length)
           return NextResponse.json({ error: 'This flag was just changed by someone else — refresh and try again.' }, { status: 409 })
@@ -547,6 +559,39 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           eventType: 'flag.borderline_reviewed', entityType: 'guardian_flag', entityId: id,
           entityName: projectName, metadata: { confirmed_as: 'out_of_scope', severity },
         })
+
+        // FEATURE (independent pass, section 13): confirming a borderline flag makes it
+        // functionally identical to a flag Guardian raises directly as out_of_scope — same
+        // status ('open'), same real severity — but until now nothing told anyone except the
+        // person who clicked Confirm. A directly-raised flag gets both an in-app notification
+        // AND an email to every APPROVE_FLAGS holder (classifyAndRecord in guardian-pipeline.ts);
+        // a borderline flag deliberately gets only the in-app one when first raised, specifically
+        // to avoid emailing the team over a low-confidence guess (see that function's comment).
+        // This is the exact moment a human confirms it's real — the deferred email belongs here.
+        // dismiss_borderline correctly sends nothing (a dismissed false-positive needs no alert).
+        // A notification failure must not fail the confirm itself — same as the flag-raise path.
+        try {
+          await notifyMembersWithPermission(service, {
+            workspaceId: session.workspaceId, permission: 'APPROVE_FLAGS', eventType: 'guardian_flag',
+            type: 'guardian_flag', title: `Scope flag confirmed — ${projectName}`,
+            body: (flag.description || '').slice(0, 140) || 'A borderline item was confirmed as out of scope.',
+            entityType: 'project', entityId: flag.project_id, projectId: flag.project_id,
+            excludeUserId: session.id,
+          })
+          const emails = await getMemberEmailsWithPermission(
+            service, session.workspaceId, 'APPROVE_FLAGS', 25, 'guardian_flag', flag.project_id, session.id,
+          )
+          if (emails.length) {
+            await checkedSend(() => sendGuardianFlagEmail({
+              to: emails, projectName, severity,
+              description: flag.description, sowReference: flag.sow_reference,
+              projectUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects/${flag.project_id}?tab=guardian`,
+              path: 'borderline review, confirmed',
+            }), 'guardian flag confirmed email')
+          }
+        } catch (notifyErr) {
+          console.error('Guardian flag confirm notification failed:', notifyErr)
+        }
         break
       }
 

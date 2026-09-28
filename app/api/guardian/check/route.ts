@@ -48,7 +48,20 @@ export async function POST(request: NextRequest) {
       .eq('workspace_id', session.workspaceId)
       .single()
 
-    if (projectErr) console.error('Guardian check: project fetch failed', projectErr)
+    // FIX (independent pass, section 13): a real read failure (timeout, connection drop, RLS/grant
+    // issue) and an actually-missing project were both indistinguishable here — `.single()` reports
+    // "no rows" as an error too (code PGRST116, the same shape supabase-js uses for every other
+    // .single() in this codebase — see tests/fake-supabase.test.ts), so this route's own log line
+    // already fired for the completely normal 404 case, and a genuine outage silently fell through
+    // to the exact same "Project not found" response as a project that was never there. inbound/
+    // route.ts (which uses .limit(1), not .single()) already tells the two apart; check/route.ts is
+    // a second, independent read of the same table that never got the same treatment. PGRST116
+    // stays a 404; anything else is a real failure worth a distinct, retryable error and a log line
+    // that isn't drowned out by one firing on every ordinary bad project id.
+    if (projectErr && (projectErr as any).code !== 'PGRST116') {
+      console.error('Guardian check: project fetch failed', projectErr)
+      return NextResponse.json({ error: 'Could not load the project — please try again.' }, { status: 500 })
+    }
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
     if (!(await canReadProject(service, session, projectId)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
