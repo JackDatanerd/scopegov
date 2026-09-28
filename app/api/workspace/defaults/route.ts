@@ -121,13 +121,33 @@ async function saveDefaults(workspaceId: string, body: any, actor: SessionUser) 
   // and still take precedence, exactly as before.
   const globalDefaults = scope ? await findRow(service, workspaceId, null) : existing
 
+  // FIX (independent re-audit, Settings section — flagship finding): sameValue
+  // (imported above) deliberately treats null/''/[]/{} as all equal to each
+  // other — exactly right for diffing/conflict-checks elsewhere, but wrong
+  // here. parseText/parseClauses (agency-standards.ts) were fixed so a
+  // submitted '' or [] is a real, distinct "explicitly nothing" value, never
+  // the same as null ("inherit") — see that file's own comment. Reusing
+  // sameValue for the inheritsFromGlobal collapse below defeated that fix
+  // the moment the global value was ALSO blank/unset (the default state for
+  // any workspace that hasn't touched global Standard terms yet): sameValue
+  // ([], null) is true, so a deliberately-empty override collapsed right
+  // back to null — silently starting to inherit whatever gets added to
+  // global later, exactly the "frozen/silently-reverted" failure this whole
+  // subsystem exists to prevent. Only collapse when the submitted value is
+  // the SAME KIND of thing as global's resolved value (both null, or both a
+  // real value that happens to match) — never when one side is null and the
+  // other is a real, empty value.
+  const sameStandardsValue = (a: unknown, b: unknown): boolean => {
+    if (a === null || b === null) return a === b
+    return sameValue(a, b)
+  }
   const payload: Record<string, unknown> = {
     workspace_id: workspaceId,
     project_type: scope,
     updated_at:   new Date().toISOString(),
   }
   for (const [key, value] of Object.entries(standards.values)) {
-    const inheritsFromGlobal = !!scope && sameValue(value, (globalDefaults as Record<string, unknown> | null)?.[key] ?? null)
+    const inheritsFromGlobal = !!scope && sameStandardsValue(value, (globalDefaults as Record<string, unknown> | null)?.[key] ?? null)
     payload[key] = inheritsFromGlobal ? null : value
   }
   if (revisionRounds !== undefined) {

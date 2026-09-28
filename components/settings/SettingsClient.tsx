@@ -1354,7 +1354,15 @@ function StandardsFields({ value, onChange, disabled }: { value: StandardsForm; 
   )
 }
 
-const REVISION_ROUND_CHOICES = ['1', '2', '3', '4', '5']
+// FIX (independent re-audit, Settings section — minor): this used to stop at
+// '5', while the server (api/workspace/defaults's REVISION_ROUNDS_MAX) has
+// always accepted 0-20 — 0 meaning "no revisions included." A value outside
+// 1-5 only ever showed up here if it was set some other way (the dynamic
+// "splice the current value in" branch just below exists purely to cover
+// that). Match the server's real range so every value it accepts is
+// actually reachable from this dropdown, not just displayable once already
+// set by something else.
+const REVISION_ROUND_CHOICES = Array.from({ length: 21 }, (_, i) => String(i))
 
 function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab }: any) {
   function set(key: string, value: string) {
