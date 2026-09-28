@@ -758,6 +758,9 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
   // before generating a SOW was a permanent dead end. This rebuilds that
   // step as a standalone modal for an already-existing project.
   const [briefOpen, setBriefOpen] = useState(false)
+  // FIX (section-9 audit, fresh independent pass — feature gap): see the
+  // "Regenerate from brief" button's own comment below.
+  const [regenBriefOpen, setRegenBriefOpen] = useState(false)
 
   const [notice, setNotice] = useState('')
 
@@ -921,6 +924,26 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
                       <button className="btn btn-ghost btn-sm"><i className="ti ti-pencil" style={{ fontSize: 12 }} /> Edit</button>
                     </Link>
                   )}
+                  {/* FIX (section-9 audit, fresh independent pass — feature
+                      gap): api/sow/generate/route.ts has always had a fully
+                      built "existingSow" branch for regenerating a draft
+                      from a revised brief — it preserves visible flags,
+                      msaReference and changeRequest specifically so a
+                      re-run doesn't clobber agency edits to those fields —
+                      but GenerateSowModal below was only ever mounted from
+                      the "No SOW yet" empty state (sortedSows.length === 0),
+                      which can never be true once a draft exists. That left
+                      the only way to redraft a SOW after the requirements
+                      changed as hand-editing up to 16 sections and 4 tables
+                      one at a time. Not offered alongside a pending
+                      approval — the server 409s that anyway (same gate as
+                      Send above), and surfacing a disabled button with no
+                      way to explain why is worse than just not showing it. */}
+                  {currentSow.status === 'draft' && permissions.editSow && !pendingApproval && (
+                    <button className="btn btn-ghost btn-sm" onClick={() => setRegenBriefOpen(true)}>
+                      <i className="ti ti-sparkles" style={{ fontSize: 12 }} /> Regenerate from brief
+                    </button>
+                  )}
                   {currentSow.status === 'draft' && permissions.sendSow && !pendingApproval && (
                     <button className="btn btn-primary btn-sm" onClick={handleSendSow} disabled={sending}>
                       {sending ? <span className="spin" /> : <><i className="ti ti-send" style={{ fontSize: 12 }} /> Send to client</>}
@@ -1028,6 +1051,17 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
         <GenerateSowModal project={project} onClose={() => setBriefOpen(false)}
           onDone={() => { setBriefOpen(false); router.refresh() }} />
       )}
+      {/* FIX (section-9 audit, fresh independent pass — feature gap): see
+          the "Regenerate from brief" button's own comment above. Same
+          modal, same endpoint (api/sow/generate/route.ts already merges
+          into the existing draft when one exists) — the only difference is
+          starting from the current draft's saved brief instead of blank
+          fields, and clearer copy warning that this overwrites section
+          content. */}
+      {regenBriefOpen && currentSow && (
+        <GenerateSowModal project={project} existingSow={currentSow} onClose={() => setRegenBriefOpen(false)}
+          onDone={() => { setRegenBriefOpen(false); router.refresh() }} />
+      )}
     </div>
   )
 }
@@ -1039,16 +1073,32 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
 // PAYMENT_STRUCTURE_LABELS keys and this file's own <option> values.
 const SOW_PAYMENT_STRUCTURES = ['50_50', '100_upfront', 'milestones', 'monthly', 'on_delivery']
 
-function GenerateSowModal({ project, onClose, onDone }: any) {
+// FIX (section-9 audit, fresh independent pass — feature gap): `existingSow`
+// is optional and only passed by the new "Regenerate from brief" button — the
+// original "No SOW yet" empty-state caller is unchanged. Its presence is what
+// lets this same modal serve both first-generation and regenerate-a-draft,
+// prefilling from the brief api/sow/generate/route.ts now stores in
+// metadata.brief instead of asking the agency to retype everything they
+// already told it once, and warning them regeneration overwrites section
+// content (the same request the server has always accepted — see that
+// route's existingSow branch — this is purely a UI entry point + prefill).
+function GenerateSowModal({ project, existingSow, onClose, onDone }: any) {
+  const isRegenerate = !!existingSow
+  const existingBrief = existingSow?.metadata?.brief || {}
   const [briefText,        setBriefText]        = useState('')
   const [parsing,          setParsing]           = useState(false)
-  const [reviewing,        setReviewing]         = useState(false)
-  const [objective,        setObjective]         = useState('')
-  const [deliverables,     setDeliverables]      = useState('')
-  const [outOfScope,       setOutOfScope]        = useState('')
-  const [timeline,         setTimeline]          = useState('')
-  const [paymentStructure, setPaymentStructure]  = useState('50_50')
-  const [revisionRounds,   setRevisionRounds]    = useState('2')
+  const [reviewing,        setReviewing]         = useState(isRegenerate)
+  const [objective,        setObjective]         = useState(existingBrief.objective || '')
+  const [deliverables,     setDeliverables]      = useState(existingBrief.deliverables || '')
+  const [outOfScope,       setOutOfScope]        = useState(existingBrief.outOfScope || '')
+  const [timeline,         setTimeline]          = useState(existingBrief.timeline || '')
+  const [paymentStructure, setPaymentStructure]  = useState(
+    SOW_PAYMENT_STRUCTURES.includes(existingSow?.metadata?.paymentStructure) ? existingSow.metadata.paymentStructure : '50_50'
+  )
+  const [revisionRounds,   setRevisionRounds]    = useState(() => {
+    const n = Number(existingSow?.metadata?.revisionRounds)
+    return Number.isInteger(n) && n >= 1 && n <= 10 ? String(n) : '2'
+  })
   const [generating,       setGenerating]        = useState(false)
   const [error,            setError]             = useState('')
 
@@ -1130,7 +1180,7 @@ function GenerateSowModal({ project, onClose, onDone }: any) {
     <>
       <div className="modal-bg" onClick={onClose} />
       <div className="modal" style={{ maxWidth: 560 }}>
-        <h2 className="modal-title">Generate SOW</h2>
+        <h2 className="modal-title">{isRegenerate ? 'Regenerate SOW from brief' : 'Generate SOW'}</h2>
         {!reviewing ? (
           <>
             <p className="modal-sub">Paste your project brief and we&apos;ll extract the key fields — or skip straight to filling them in yourself.</p>
@@ -1147,6 +1197,17 @@ function GenerateSowModal({ project, onClose, onDone }: any) {
           </>
         ) : (
           <>
+            {isRegenerate && (
+              <div className="surface surface-p" style={{ marginBottom: 12, borderLeft: '3px solid var(--amber)', fontSize: 12, color: 'var(--text-2)' }}>
+                Regenerating rewrites every section&rsquo;s text and tables from these details, overwriting
+                any manual edits made to this draft since it was created. Section show/hide choices and
+                any client change-request note are kept.{' '}
+                <button type="button" className="btn btn-ghost btn-xs" style={{ marginLeft: 4 }}
+                  onClick={() => { setBriefText(''); setReviewing(false) }}>
+                  Paste a different brief instead
+                </button>
+              </div>
+            )}
             {error && <p className="ferr">{error}</p>}
             <div className="fgrp">
               <label className="flbl">Objective</label>
@@ -1195,7 +1256,7 @@ function GenerateSowModal({ project, onClose, onDone }: any) {
             <div className="modal-footer">
               <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
               <button className="btn btn-primary" onClick={generate} disabled={generating}>
-                {generating ? <span className="spin" /> : 'Generate SOW'}
+                {generating ? <span className="spin" /> : (isRegenerate ? 'Regenerate SOW' : 'Generate SOW')}
               </button>
             </div>
           </>

@@ -342,6 +342,23 @@ export async function POST(request: NextRequest) {
         // had no way to know and silently reverted headings to English.
         language: contentInput.language,
         aiGenerated: !usedFallback,
+        // FIX (section-9 audit, fresh independent pass — feature gap):
+        // the existingSow overwrite branch below has always known how to
+        // regenerate a draft from a revised brief — it preserves visible
+        // flags and msaReference/changeRequest specifically so a re-run
+        // doesn't clobber agency edits to THOSE fields — but the actual
+        // brief text (objective/deliverables/outOfScope/timeline) that
+        // produced this draft was never stored anywhere, only the
+        // request that created it, gone the moment the response was
+        // sent. There was also no UI path back to this route once a SOW
+        // existed at all (ProjectDetail's "Generate SOW" button only
+        // renders when the project has zero SOWs), so the gap was never
+        // reachable in practice. Now that ProjectDetail offers
+        // "Regenerate from brief" on a draft, that screen needs
+        // something to rehydrate its form with — store the brief
+        // verbatim (already length-capped above) so a later regenerate
+        // starts from what was actually typed instead of a blank form.
+        brief: { objective, deliverables, outOfScope, timeline },
       },
     }
 

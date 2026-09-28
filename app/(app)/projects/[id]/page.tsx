@@ -70,7 +70,13 @@ export default async function ProjectPage({ params, searchParams }: Props) {
       exceptions_log(id, deliverable, granted_what, granted_by, estimated_value, reason, flag_id, created_at, updated_at),
       change_orders(id, title, status, total, subtotal, sent_at, accepted_at, version, document_number,
         counter_amount, counter_note, declined_reason, close_reason, tax_rate, tax_inclusive, is_retainer_renewal),
-      sow_documents(id, version, status, sent_at, signed_at, created_at, document_number),
+      // FIX (section-9 audit, fresh independent pass — feature gap): metadata
+      // added so ProjectDetail's new "Regenerate from brief" action can
+      // prefill GenerateSowModal from metadata.brief/paymentStructure/
+      // revisionRounds instead of opening blank — see that modal's own
+      // comment. Small jsonb object (brief text + a few settings), already
+      // readable by anyone who can read the SOW itself.
+      sow_documents(id, version, status, sent_at, signed_at, created_at, document_number, metadata),
       project_scope_snapshot(id, deliverables, out_of_scope, last_updated_at)
     `)
     // FIX (re-audit, "current SOW" finding): the sow_documents/change_orders

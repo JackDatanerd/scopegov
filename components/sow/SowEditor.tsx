@@ -343,6 +343,22 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
   }
 
   const isTable = current ? isTableSection(current.id) : false
+  // FIX (section-9 audit, fresh independent pass — data-loss finding):
+  // handleRegen() below has no guard against the person continuing to type
+  // in this exact section while the AI call it kicked off is still in
+  // flight — nothing here ever disabled the editor for that. A multi-
+  // second round trip is easily enough time to add a sentence or two,
+  // and once the response lands, handleRegen unconditionally overwrites
+  // both `sections` state and (for the still-active section) the editor's
+  // own content with the AI's output and autosaves it — silently
+  // discarding whatever was typed in the meantime, even edits that had
+  // already reached the server via their own autosave. "Undo AI change"
+  // doesn't recover it either, since it only restores the pre-click
+  // content, not whatever was typed after the click. Reuse the exact
+  // same read-only-view swap already used for `isLocked`/`!canEdit`
+  // below, so the section is genuinely un-typeable (not just visually
+  // disabled) for the few seconds a rewrite is in flight.
+  const regeneratingActive = !isTable && !!current && regenLoading === current.id
 
   // Table sections (Deliverables/Timeline/Roles) don't get the rich-text
   // toolbar or the AI "Improve" wand — regenerate-section only knows how
@@ -434,8 +450,9 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
         </div>
       ) : null}
     <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
-      {/* Section nav */}
-      <div style={{ width: 200, minWidth: 200, borderRight: '1px solid var(--border)', padding: '12px 0', overflowY: 'auto' }}>
+      {/* Section nav + attachments */}
+      <div style={{ width: 200, minWidth: 200, borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+      <div style={{ flex: 1, padding: '12px 0', overflowY: 'auto', minHeight: 0 }}>
         {SECTION_ORDER
           .map(id => sections.find(s => s.id === id))
           .filter(Boolean)
@@ -461,6 +478,13 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
               </button>
             )
           })}
+      </div>
+      {/* FIX (section-9 audit, fresh independent pass — feature gap): see
+          the attachments route's header comment. Sits below the section
+          list as its own non-scrolling footer, same "masthead-level, not
+          tied to one section" placement reasoning as the MSA reference bar
+          above — an attachment belongs to the document, not a section. */}
+      <SowAttachmentsPanel sowId={sowId} canEdit={canEdit} isLocked={isLocked} />
       </div>
 
       {/* Editor */}
@@ -493,6 +517,15 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
           {isLocked && (
             <span className="pill pill-amber" style={{ fontSize: 10 }}>
               <i className="ti ti-lock" style={{ fontSize: 10 }} /> Locked after sending
+            </span>
+          )}
+          {/* FIX (section-9 audit, fresh independent pass — data-loss
+              finding): see regeneratingActive's own comment above — makes
+              the temporary lock visible instead of the section just
+              silently refusing input. */}
+          {!isLocked && regeneratingActive && (
+            <span className="pill pill-blue" style={{ fontSize: 10 }}>
+              <span className="spin spin-dark" style={{ width: 10, height: 10 }} /> Regenerating with AI…
             </span>
           )}
         </div>
@@ -532,7 +565,7 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
         )}
 
         <div className="editor-wrap" style={{ flex: 1, border: 'none', borderRadius: 0, display: 'flex', flexDirection: 'column', overflowY: isTable ? 'auto' : undefined }}>
-          {!isLocked && canEdit && toolbar}
+          {!isLocked && !regeneratingActive && canEdit && toolbar}
           {isTable && current && (
             <TableSectionEditor
               sectionId={current.id as SowTableSectionId}
@@ -544,16 +577,23 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
               language={language}
             />
           )}
-          {!isTable && editor && (
+          {!isTable && editor && !regeneratingActive && (
             <EditorContent
               editor={editor}
               className="editor-body"
               style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', minHeight: 300 }}
             />
           )}
-          {!isTable && (!editor || (isLocked || !canEdit)) && (
+          {/* FIX (section-9 audit, fresh independent pass — data-loss
+              finding): regeneratingActive added alongside the existing
+              isLocked/!canEdit cases this fallback already covers — same
+              read-only swap, same reasoning: a `contentEditable` DOM node
+              can only be made genuinely un-typeable by not rendering it,
+              disabling the tiptap instance's `editable` flag alone isn't
+              enough to guarantee ProseMirror drops every input event. */}
+          {!isTable && (!editor || (isLocked || !canEdit || regeneratingActive)) && (
             <div
-              style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', fontSize: 13, lineHeight: 1.75, color: 'var(--text-2)' }}
+              style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', fontSize: 13, lineHeight: 1.75, color: 'var(--text-2)', opacity: regeneratingActive ? 0.6 : 1 }}
               dangerouslySetInnerHTML={{ __html: current?.content || '<p style="color:var(--text-4)">No content</p>' }}
             />
           )}
@@ -579,6 +619,136 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
     </div>
   )
 }
+
+// ── Attachments panel ────────────────────────────────────────────────────
+// FIX (section-9 audit, fresh independent pass — feature gap): the UI side
+// of api/sow/[id]/attachments — see that route's header comment for the
+// full history of why this never existed. Self-contained (own fetch/upload/
+// delete state) rather than folded into SowEditor's already-large state
+// surface, same reasoning as TableSectionEditor below.
+function SowAttachmentsPanel({ sowId, canEdit, isLocked }: { sowId: string; canEdit: boolean; isLocked: boolean }) {
+  const [attachments, setAttachments] = useState<Array<{
+    id: string; fileName: string; fileSize: number; mimeType: string
+    uploadedAt: string; uploadedByName: string; downloadUrl: string | null
+  }>>([])
+  const [loading,  setLoading]  = useState(true)
+  const [uploading, setUploading] = useState(false)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [error, setError] = useState('')
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  // Guards the initial fetch against a fast unmount (switching projects,
+  // closing the editor) landing after the component is gone — same class
+  // of "setState after unmount" guard used for msaSaveTimer's cleanup above.
+  const mounted = useRef(true)
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
+
+  useEffect(() => {
+    setLoading(true)
+    fetch(`/api/sow/${sowId}/attachments`)
+      .then(res => res.json())
+      .then(json => { if (mounted.current) setAttachments(Array.isArray(json.attachments) ? json.attachments : []) })
+      .catch(() => {})
+      .finally(() => { if (mounted.current) setLoading(false) })
+  }, [sowId])
+
+  const canWrite = canEdit && !isLocked
+
+  async function handleFilePick(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    e.target.value = '' // allow re-selecting the same file after an error
+    if (!file) return
+    if (file.size > 10 * 1024 * 1024) { setError('File exceeds 10 MB limit'); return }
+    setError('')
+    setUploading(true)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const res = await fetch(`/api/sow/${sowId}/attachments`, { method: 'POST', body: formData })
+      const json = await res.json().catch(() => ({} as any))
+      if (!res.ok) { setError(json.error || 'Upload failed'); return }
+      setAttachments(prev => [json.attachment, ...prev])
+    } catch {
+      setError('Upload failed — check your connection and try again.')
+    } finally {
+      if (mounted.current) setUploading(false)
+    }
+  }
+
+  async function handleDelete(id: string) {
+    setError('')
+    setDeletingId(id)
+    const previous = attachments
+    setAttachments(prev => prev.filter(a => a.id !== id)) // optimistic
+    try {
+      const res = await fetch(`/api/sow/${sowId}/attachments/${id}`, { method: 'DELETE' })
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({} as any))
+        setAttachments(previous) // roll back
+        setError(json.error || 'Could not remove attachment')
+      }
+    } catch {
+      setAttachments(previous)
+      setError('Could not remove attachment — check your connection.')
+    } finally {
+      if (mounted.current) setDeletingId(null)
+    }
+  }
+
+  if (loading) return null // avoid a flash of "No attachments" before the first fetch resolves
+
+  return (
+    <div style={{ borderTop: '1px solid var(--border)', padding: '10px 14px', flexShrink: 0, maxHeight: 220, display: 'flex', flexDirection: 'column' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: attachments.length ? 6 : 0 }}>
+        <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: 0.3 }}>
+          Attachments{attachments.length > 0 ? ` (${attachments.length})` : ''}
+        </span>
+        {canWrite && (
+          <>
+            <input ref={fileInputRef} type="file" style={{ display: 'none' }} onChange={handleFilePick}
+              accept=".pdf,.png,.jpg,.jpeg,.webp,.txt,.eml,.docx" />
+            <button type="button" className="btn btn-ghost btn-xs" disabled={uploading}
+              onClick={() => fileInputRef.current?.click()} title="Attach a file">
+              {uploading ? <span className="spin spin-dark" style={{ width: 10, height: 10 }} /> : <i className="ti ti-paperclip" style={{ fontSize: 11 }} />}
+            </button>
+          </>
+        )}
+      </div>
+      {error && <div style={{ fontSize: 10, color: 'var(--red)', marginBottom: 4 }}>{error}</div>}
+      {attachments.length > 0 && (
+        <div style={{ overflowY: 'auto', minHeight: 0 }}>
+          {attachments.map(a => (
+            <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 0', fontSize: 11 }}>
+              <i className="ti ti-file" style={{ fontSize: 12, color: 'var(--text-4)', flexShrink: 0 }} />
+              <a href={a.downloadUrl || undefined} target="_blank" rel="noopener noreferrer"
+                title={`${a.fileName} — ${formatFileSize(a.fileSize)}`}
+                style={{
+                  flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  color: a.downloadUrl ? 'var(--text-2)' : 'var(--text-4)', textDecoration: 'none',
+                  pointerEvents: a.downloadUrl ? 'auto' : 'none',
+                }}>
+                {a.fileName}
+              </a>
+              {canWrite && (
+                <button type="button" className="btn-icon" disabled={deletingId === a.id}
+                  onClick={() => handleDelete(a.id)} title="Remove attachment"
+                  style={{ flexShrink: 0, width: 20, height: 20, color: 'var(--text-4)' }}>
+                  {deletingId === a.id ? <span className="spin spin-dark" style={{ width: 9, height: 9 }} /> : <i className="ti ti-x" style={{ fontSize: 10 }} />}
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
 // ── Table section editor (Deliverables / Timeline / Roles) ──────────────
 // Cell edits are debounced through the same autosave path as prose
 // (scheduleAutosave in the parent), so this only needs to report the full
