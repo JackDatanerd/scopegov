@@ -375,10 +375,33 @@ export async function POST(request: NextRequest) {
           throw new Error(`downgrade failed for ${ws.id}: ${downgradeErr.message}`)
         }
 
+        // FIX (deep audit, Billing re-pass — independent redo #4): every write below that
+        // assumes b.paystack_subscription_code is still the workspace's live subscription
+        // used to be conditioned on workspace_id alone — unlike the functionally identical
+        // situation in the webhook's subscription.disable handler and billing-reconcile's
+        // repair write, both of which guard with `.eq('paystack_subscription_code', ...)`
+        // for exactly this reason. The claim above only protects grace_period_started_at; it
+        // does nothing to stop a plan switch (subscription.create — reachable right now via
+        // the grace banner's own "Retry with a new card" button, which starts a brand-new
+        // subscription on this same workspace) from landing while this row's Paystack call is
+        // in flight. Unguarded, the writes below would either silently wipe a customer's
+        // brand-new, already-paid subscription out of the billing row (ENDED_SUBSCRIPTION_
+        // FIELDS clobbering paystack_subscription_code/current_period_end/card back to null),
+        // or — worse — flag that brand-new subscription needs_paystack_cancel: true, which
+        // step 4b would then actually go and cancel on a later run. Every write here now
+        // carries the same subscription-code guard, and a guard that matches zero rows means
+        // a newer subscription is already on file: nothing to do, so the downgrade this loop
+        // just applied is reverted (mirroring the downgradeErr rollback above) rather than
+        // left standing against a workspace that just paid.
         let paystackCancelled = true
+        let raced = false
         if (!b.paystack_subscription_code) {
-          await (service as any).from('billing')
-            .update({ ...ENDED_SUBSCRIPTION_FIELDS, updated_at: now.toISOString() }).eq('workspace_id', b.workspace_id)
+          const { data: cleared, error: clearErr } = await (service as any).from('billing')
+            .update({ ...ENDED_SUBSCRIPTION_FIELDS, updated_at: now.toISOString() })
+            .eq('workspace_id', b.workspace_id).is('paystack_subscription_code', null)
+            .select('workspace_id')
+          if (clearErr) throw new Error(clearErr.message)
+          raced = !cleared?.length
         }
         if (b.paystack_subscription_code) {
           const r = await cancelPaystackSubscription({
@@ -386,17 +409,39 @@ export async function POST(request: NextRequest) {
           })
           paystackCancelled = r.ok
           if (r.ok) {
-            await (service as any).from('billing')
-              .update({ ...ENDED_SUBSCRIPTION_FIELDS, updated_at: now.toISOString() }).eq('workspace_id', b.workspace_id)
+            const { data: cleared, error: clearErr } = await (service as any).from('billing')
+              .update({ ...ENDED_SUBSCRIPTION_FIELDS, updated_at: now.toISOString() })
+              .eq('workspace_id', b.workspace_id).eq('paystack_subscription_code', b.paystack_subscription_code)
+              .select('workspace_id')
+            if (clearErr) throw new Error(clearErr.message)
+            raced = !cleared?.length
           } else {
             // Leave the code in place and flag it so step 4b retries — the customer must not keep being charged.
-            await (service as any).from('billing')
-              .update({ needs_paystack_cancel: true }).eq('workspace_id', b.workspace_id)
-            await alertBillingOps(service, `billing:orphan-sub:${b.workspace_id}`, 'Downgraded workspace still has a live Paystack subscription', [
-              `workspace: ${b.workspace_id}`, `subscription: ${b.paystack_subscription_code}`, `error: ${r.error}`,
-              'Will be retried on every payment-overdue run (billing.needs_paystack_cancel).',
-            ])
+            const { data: flagged, error: flagErr } = await (service as any).from('billing')
+              .update({ needs_paystack_cancel: true })
+              .eq('workspace_id', b.workspace_id).eq('paystack_subscription_code', b.paystack_subscription_code)
+              .select('workspace_id')
+            if (flagErr) throw new Error(flagErr.message)
+            raced = !flagged?.length
+            if (!raced) {
+              await alertBillingOps(service, `billing:orphan-sub:${b.workspace_id}`, 'Downgraded workspace still has a live Paystack subscription', [
+                `workspace: ${b.workspace_id}`, `subscription: ${b.paystack_subscription_code}`, `error: ${r.error}`,
+                'Will be retried on every payment-overdue run (billing.needs_paystack_cancel).',
+              ])
+            }
+            // If raced, a plan switch already replaced this subscription on the billing row —
+            // its own subscription.create handler already tried (and, on its own failure,
+            // recorded a billing_pending_subscription_cancels retry for) this exact old
+            // subscription code, so there is nothing left for this failure branch to do.
           }
+        }
+
+        if (raced) {
+          console.log(`Grace enforcement: workspace ${ws.id} got a new subscription while this row was being processed — reverting the downgrade instead of acting on stale subscription data`)
+          const { error: revertErr } = await (service as any).from('workspaces')
+            .update({ plan_tier: ws.plan_tier, updated_at: now.toISOString() }).eq('id', ws.id)
+          if (revertErr) console.error(`Grace enforcement: could not revert downgrade for ${ws.id} after detecting a concurrent plan switch:`, revertErr.message)
+          continue
         }
 
         await insertAuditRow(service, {
@@ -440,8 +485,17 @@ export async function POST(request: NextRequest) {
           paystack_subscription_code: b.paystack_subscription_code, paystack_email_token: b.paystack_email_token,
         })
         if (r.ok) {
-          await (service as any).from('billing')
-            .update({ ...ENDED_SUBSCRIPTION_FIELDS, updated_at: now.toISOString() }).eq('workspace_id', b.workspace_id)
+          // FIX (deep audit, Billing re-pass — independent redo #4): same guard as step 4
+          // above and for the same reason — between the Paystack call and this write, a plan
+          // switch can replace b.paystack_subscription_code with a brand-new, already-paid
+          // subscription. Unguarded, this would wipe that new subscription's billing row.
+          // A guard that matches zero rows means exactly that happened; nothing to clear.
+          const { data: cleared, error: clearErr } = await (service as any).from('billing')
+            .update({ ...ENDED_SUBSCRIPTION_FIELDS, updated_at: now.toISOString() })
+            .eq('workspace_id', b.workspace_id).eq('paystack_subscription_code', b.paystack_subscription_code)
+            .select('workspace_id')
+          if (clearErr) throw new Error(clearErr.message)
+          if (!cleared?.length) console.log(`Paystack cancel retry: workspace ${b.workspace_id} got a new subscription before the ended-fields write landed — skipping`)
         } else {
           await alertBillingOps(service, `billing:orphan-sub:${b.workspace_id}`, 'Downgraded workspace still has a live Paystack subscription', [
             `workspace: ${b.workspace_id}`, `subscription: ${b.paystack_subscription_code}`, `error: ${r.error}`,

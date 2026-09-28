@@ -1,0 +1,57 @@
+CHANGES — Billing (section 16) — independent deep-pass, round 5
+================================================================================
+Fresh, independent re-audit of api/billing/{cancel,upgrade,webhook} and everything
+they touch (lib/billing/*, lib/integrations/paystack.ts, cron/billing-reconcile,
+cron/payment-overdue, admin suspend/restore). No new feature gaps found — cancel/
+resume/upgrade/webhook/history/reconcile already form a complete loop. Two bugs
+found and fixed.
+
+Bug A (HIGH, money-affecting) — cron/payment-overdue steps 4 and 4b wrote the
+`billing` row without checking the subscription code hadn't changed underneath them
+  app/api/cron/payment-overdue/route.ts
+  - Every write in this subsystem that mutates paystack_subscription_code (webhook's
+    subscription.disable handler, billing-reconcile's repair write, step 4c) guards
+    itself with `.eq('paystack_subscription_code', <value just read>)`. Steps 4 and
+    4b didn't: the claim only protects grace_period_started_at, not the subscription
+    code itself.
+  - Reachable through the app's own recovery flow: the grace banner's "Retry with a
+    new card" button starts a brand-new subscription (subscription.create) on the
+    same workspace. If that webhook lands while payment-overdue is mid-flight on the
+    same row (real network latency per Paystack call, no rate-limit pause in these
+    two steps), the customer's brand-new, already-paid subscription could be
+    silently wiped from the billing row (ENDED_SUBSCRIPTION_FIELDS nulling
+    paystack_subscription_code/current_period_end/card), or — worse — flagged
+    needs_paystack_cancel: true, which step 4b would then actually go and cancel on
+    a later run.
+  - Fix: every write that assumes b.paystack_subscription_code is still current now
+    carries that condition. A guard matching zero rows means a newer subscription is
+    already on file; the row's earlier plan_tier downgrade (to 'solo') is reverted
+    (mirroring the existing downgradeErr rollback pattern) rather than left standing
+    against a workspace that just paid, and no downgrade audit row / email fires for
+    a downgrade that got reverted. A genuine failure (no race) still flags
+    needs_paystack_cancel and pages ops exactly as before.
+  Tests: tests/payment-overdue-billing-race.test.ts (new, +4)
+
+Bug B (MEDIUM, money-affecting) — admin suspend's Paystack cancel failure had no
+retry flag, no ops alert, and was invisible to reconciliation forever
+  app/api/admin/workspaces/[id]/suspend/route.ts
+  - A failed cancel here used to end at console.error — unlike every other
+    Paystack-cancel failure in this codebase (grace enforcement flags + retries +
+    alerts; billing/cancel and workspace/delete block/alert). Compounding it,
+    admin_suspend_workspace stamps deleted_at, which billing-reconcile's query
+    explicitly excludes — so the drift could never be noticed by the one job built
+    to catch it. Restore's own resumePaystackSubscription call treats "already
+    active" as success, so the whole failure silently erased itself on restore too,
+    while the customer was charged for a subscription attached to a workspace no
+    one administering the account could reach.
+  - Fix: on failure, flags billing.needs_paystack_cancel (retried automatically by
+    payment-overdue's step 4b — that step's query is not joined to workspaces, so it
+    retries regardless of deleted_at) and pages ops via alertBillingOps, matching
+    the grace-enforcement failure path exactly. No change on success or when there
+    is no subscription to cancel.
+  Tests: tests/admin-suspend-billing.test.ts (new, +3)
+
+Note: I could not run `npm test` / vitest in this sandbox (no node_modules, no
+network). Both new test files follow the existing fake-supabase harness patterns
+used elsewhere in tests/ and were reviewed statically line-by-line against that
+harness's semantics — please run `npm test` before merging to confirm.
