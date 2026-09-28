@@ -5,7 +5,7 @@ import path from 'node:path'
 // Static "contract" checks between the migrations and the code that talks to
 // Postgres. Not a substitute for replaying the migrations against a real
 // Postgres and switching roles (do that too) — but these are the checks that
-// would have caught two shipped defects:
+// would have caught three shipped defects:
 //
 //  1. Migration 041 revoked ALL on workspace_members from `authenticated` on the
 //     stated basis that "no session-bound code path reads it" — but
@@ -15,6 +15,17 @@ import path from 'node:path'
 //     followed by a line break and `.from(`.)
 //  2. Any SECURITY DEFINER function left executable by anon/authenticated is
 //     callable straight through /rest/v1/rpc/<name> with the public anon key.
+//  3. (FIX — fresh independent audit, migration 103) Migration 095 changed
+//     decide_approval_step's argument list (5 args -> 7 args) without re-issuing
+//     its REVOKE/GRANT pair. Postgres identifies a function by (schema, name,
+//     ARGUMENT TYPES) — a changed signature is a brand-new catalog object that
+//     starts over with Supabase's default anon/authenticated EXECUTE grant. The
+//     scanner below used to key its exposure map by function NAME ALONE, so it
+//     wrongly carried the OLD signature's "revoked" state onto the NEW one and
+//     reported this as safe when the real function sat open to anon/authenticated
+//     for four migrations. It's now keyed by (name, normalized argument types) —
+//     the same identity Postgres itself uses — so a signature change starts a
+//     fresh (unrevoked-by-default) exposure record, exactly matching reality.
 
 // vitest runs from the repo root (vitest.config.ts include: tests/**).
 const ROOT = process.cwd()
@@ -81,19 +92,85 @@ const MIGRATIONS_DIR = path.join(ROOT, 'supabase', 'migrations')
 const migrationStatements = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort()
   .flatMap(f => stripCommentsAndSplit(fs.readFileSync(path.join(MIGRATIONS_DIR, f), 'utf8')).map(s => ({ file: f, s })))
 
-interface FnExposure { publicGrant: boolean; anonGrant: boolean; authGrant: boolean; trigger: boolean; secdef: boolean }
+interface FnExposure { name: string; publicGrant: boolean; anonGrant: boolean; authGrant: boolean; trigger: boolean; secdef: boolean }
+
+// Postgres identifies a function by (schema, name, argument TYPES) — not typmod
+// (vector(1536) and vector are the same argument type for this purpose), not
+// argument names, not defaults. Reduce a raw argument-list string to that
+// identity so a changed signature is correctly treated as a different catalog
+// object — exactly how Postgres treats it — instead of being conflated with an
+// old, differently-granted function that merely shares a name. See migration
+// 100's header for the exact defect (decide_approval_step, migration 095) this
+// distinction exists to catch: the old name-only key let a signature change
+// silently inherit a REVOKE that never applied to the new function.
+function normalizeArgTypes(rawArgs: string): string {
+  const parts: string[] = []
+  let depth = 0
+  let cur = ''
+  for (const ch of rawArgs) {
+    if (ch === '(') depth++
+    if (ch === ')') depth--
+    if (ch === ',' && depth === 0) { parts.push(cur); cur = '' } else cur += ch
+  }
+  if (cur.trim()) parts.push(cur)
+  return parts
+    .map(p => p.replace(/\bDEFAULT\s+.+$/i, '').trim())
+    .filter(Boolean)
+    .map(p => {
+      let t = p.replace(/^(IN|OUT|INOUT|VARIADIC)\s+/i, '')
+      const words = t.trim().split(/\s+/)
+      // Drop a leading argument NAME (present in CREATE FUNCTION, absent in
+      // REVOKE/GRANT's bare type list) — but not for multi-word type names
+      // like "double precision" or "timestamp with time zone".
+      if (words.length > 1 && /^[a-zA-Z_]\w*$/.test(words[0]) &&
+          !/^(double|character|bit|timestamp|time)$/i.test(words[0])) {
+        t = words.slice(1).join(' ')
+      }
+      return t
+        .replace(/\(\d+(?:,\s*\d+)?\)/g, '')  // strip typmod: vector(1536) -> vector
+        .replace(/\bpublic\./gi, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase()
+    })
+    .join(',')
+}
+
+// Extracts a CREATE FUNCTION statement's argument-list text by balanced-paren
+// matching from the opening paren right after the function name — NOT a
+// greedy regex up to "RETURNS"/"LANGUAGE", which breaks on RETURNS TABLE
+// (col1 type1, col2 type2), whose own parens introduce a second, later
+// ") LANGUAGE"/" ) RETURNS" for a greedy match to wrongly prefer.
+function matchCreateFunctionArgs(s: string): { name: string; args: string } | null {
+  const head = /^CREATE (?:OR REPLACE )?FUNCTION (?:public\.)?(\w+)\s*\(/i.exec(s)
+  if (!head) return null
+  const start = head[0].length
+  let depth = 1
+  let i = start
+  while (i < s.length && depth > 0) {
+    if (s[i] === '(') depth++
+    else if (s[i] === ')') depth--
+    i++
+  }
+  if (depth !== 0) return null
+  return { name: head[1], args: s.slice(start, i - 1) }
+}
 
 function functionExposure(): Map<string, FnExposure> {
   const fns = new Map<string, FnExposure>()
   for (const { s } of migrationStatements) {
-    let m = /^CREATE (?:OR REPLACE )?FUNCTION (?:public\.)?(\w+)\s*\(/i.exec(s)
-    if (m) {
-      const name = m[1].toLowerCase()
-      const prev = fns.get(name)
-      fns.set(name, {
+    const created = matchCreateFunctionArgs(s)
+    if (created) {
+      const name = created.name.toLowerCase()
+      const key = `${name}(${normalizeArgTypes(created.args)})`
+      const prev = fns.get(key)
+      fns.set(key, {
+        name,
         // Postgres grants EXECUTE to PUBLIC on creation, and Supabase's default
         // privileges also grant it directly to anon + authenticated. CREATE OR
-        // REPLACE keeps existing grants.
+        // REPLACE keeps existing grants ONLY when the signature (this map's
+        // key) is unchanged — a new signature is a new catalog object and
+        // starts over with the default grant.
         publicGrant: prev ? prev.publicGrant : true,
         anonGrant: prev ? prev.anonGrant : true,
         authGrant: prev ? prev.authGrant : true,
@@ -102,25 +179,37 @@ function functionExposure(): Map<string, FnExposure> {
       })
       continue
     }
-    m = /^REVOKE (?:ALL|EXECUTE)(?: PRIVILEGES)? ON FUNCTION (?:public\.)?(\w+)\s*\([^)]*\) FROM (.+)$/i.exec(s)
+    let m = /^REVOKE (?:ALL|EXECUTE)(?: PRIVILEGES)? ON FUNCTION (?:public\.)?(\w+)\s*\(([^)]*)\) FROM (.+)$/i.exec(s)
     if (m) {
-      const f = fns.get(m[1].toLowerCase()); if (!f) continue
-      const roles = m[2].toLowerCase()
+      const key = `${m[1].toLowerCase()}(${normalizeArgTypes(m[2])})`
+      const f = fns.get(key); if (!f) continue
+      const roles = m[3].toLowerCase()
       if (/\bpublic\b/.test(roles)) f.publicGrant = false
       if (/\banon\b/.test(roles)) f.anonGrant = false
       if (/\bauthenticated\b/.test(roles)) f.authGrant = false
       continue
     }
-    m = /^GRANT EXECUTE ON FUNCTION (?:public\.)?(\w+)\s*\([^)]*\) TO (.+)$/i.exec(s)
+    m = /^GRANT EXECUTE ON FUNCTION (?:public\.)?(\w+)\s*\(([^)]*)\) TO (.+)$/i.exec(s)
     if (m) {
-      const f = fns.get(m[1].toLowerCase()); if (!f) continue
-      const roles = m[2].toLowerCase()
+      const key = `${m[1].toLowerCase()}(${normalizeArgTypes(m[2])})`
+      const f = fns.get(key); if (!f) continue
+      const roles = m[3].toLowerCase()
       if (/\bpublic\b/.test(roles)) f.publicGrant = true
       if (/\banon\b/.test(roles)) f.anonGrant = true
       if (/\bauthenticated\b/.test(roles)) f.authGrant = true
     }
   }
   return fns
+}
+
+// The static scan above knows a call site's function NAME (from the source
+// text) but never its argument types — so "is this RPC name reachable" has to
+// check every overload of that name, not one signature. This mirrors what
+// actually matters in practice: PostgREST resolves /rest/v1/rpc/<name> by
+// name, disambiguating overloads only by the JSON body's keys, so a caller
+// reaches whichever overload accepts the args it sends.
+function overloadsNamed(exposure: Map<string, FnExposure>, name: string): FnExposure[] {
+  return Array.from(exposure.values()).filter(f => f.name === name.toLowerCase())
 }
 
 describe('RLS contract — session-bound database access', () => {
@@ -142,9 +231,9 @@ describe('RLS contract — session-bound database access', () => {
     const exposure = functionExposure()
     const rpcNames = Array.from(new Set(sessionBoundCalls().filter(c => c.kind === 'rpc').map(c => c.name.toLowerCase())))
     for (const name of rpcNames) {
-      const f = exposure.get(name)
-      expect(f).toBeDefined()
-      expect(f!.publicGrant || f!.authGrant).toBe(true)
+      const overloads = overloadsNamed(exposure, name)
+      expect(overloads.length).toBeGreaterThan(0)
+      expect(overloads.some(f => f.publicGrant || f.authGrant)).toBe(true)
     }
   })
 })
@@ -152,10 +241,13 @@ describe('RLS contract — session-bound database access', () => {
 describe('RLS contract — RPC surface reachable with the public anon key', () => {
   it('only the reviewed functions are executable by anon/authenticated', () => {
     const exposure = functionExposure()
-    const exposed = Array.from(exposure.entries())
-      .filter(([, f]) => !f.trigger && (f.publicGrant || f.anonGrant || f.authGrant))
-      .map(([name]) => name)
-      .sort()
+    const exposed = Array.from(
+      new Set(
+        Array.from(exposure.values())
+          .filter(f => !f.trigger && (f.publicGrant || f.anonGrant || f.authGrant))
+          .map(f => f.name)
+      )
+    ).sort()
     // is_active_workspace_member: caller-bound (compares against auth.uid()), used by the workspaces RLS policy.
     // middleware_gate_state:      caller-bound (auth.uid()), used by middleware.ts.
     // is_current_user_platform_admin: caller-bound (auth.uid()), returns only the caller's own flag (migration 090).
@@ -168,8 +260,7 @@ describe('RLS contract — RPC surface reachable with the public anon key', () =
     for (const { s } of migrationStatements) {
       const m = /^CREATE (?:OR REPLACE )?FUNCTION (?:public\.)?(\w+)\s*\(/i.exec(s)
       if (!m || !/SECURITY DEFINER/i.test(s) || /SET search_path/i.test(s)) continue
-      const f = exposure.get(m[1].toLowerCase())
-      if (f && !f.trigger && (f.publicGrant || f.anonGrant || f.authGrant)) bad.push(m[1])
+      if (overloadsNamed(exposure, m[1]).some(f => !f.trigger && (f.publicGrant || f.anonGrant || f.authGrant))) bad.push(m[1])
     }
     expect(bad).toEqual([])
   })
