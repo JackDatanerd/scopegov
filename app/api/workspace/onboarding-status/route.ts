@@ -33,6 +33,9 @@
 //                 ever creating a second workspace on their behalf.
 //   - 'complete' — every active membership is already onboarded (direct
 //                 nav to /onboarding after the fact): send them onward.
+//   - 'suspended' — no active membership, but the caller's only way in was
+//                 a workspace a platform admin suspended: show a notice
+//                 instead of the new-user wizard.
 
 import { createServiceClient, createServerSupabaseClient } from '@/lib/supabase/server'
 import { pickFallbackMembership } from '@/lib/auth/session'
@@ -227,6 +230,48 @@ export async function GET() {
         workspaceId: w.id,
         agencyName: w.agency_name || w.name || '',
         creatorName: w.creator?.name || w.creator?.email || 'the person who created it',
+      })
+    }
+
+    // FIX (deep audit, Workspace lifecycle independent re-pass — feature
+    // gap): everything above only ever sees NON-deleted workspaces, and a
+    // platform-admin suspension (migration 090/091) sets the same
+    // `deleted_at` a self-service delete does while deactivating every
+    // member. So a person whose ONLY workspace was just suspended reached
+    // this line with zero active memberships and got 'create' — the exact
+    // response a brand-new signup gets — and the wizard greeted them with
+    // a blank "set up your agency" form, never mentioning that their real
+    // workspace still exists, merely suspended. Anyone who had never used
+    // a trial themselves (an invited member) could go on to spin up a fresh
+    // trial workspace from that form as if nothing had happened.
+    //
+    // Distinguish it: look for a workspace that is currently admin-
+    // suspended AND whose suspension is what deactivated this person
+    // (deactivated_at equal to the workspace's deleted_at — the same exact-
+    // match discipline admin_restore_workspace uses, migration 092, so
+    // someone who left or was removed long before an unrelated suspension
+    // isn't told a workspace they no longer belong to was suspended).
+    // Self-service deletes are deliberately NOT matched here
+    // (suspended_by_admin = false) — those keep going through the existing
+    // restore panel flow.
+    const { data: suspendedRows } = await (service as any)
+      .from('workspace_members')
+      .select(`workspace_id, deactivated_at,
+        workspaces!inner(id, name, agency_name, deleted_at, suspended_by_admin)`)
+      .eq('user_id', user.id).eq('status', 'deactivated')
+      .eq('workspaces.suspended_by_admin', true)
+      .not('workspaces.deleted_at', 'is', null)
+    const suspended = (suspendedRows || [])
+      .filter((m: any) => m.workspaces && m.deactivated_at && m.workspaces.deleted_at
+        && new Date(m.deactivated_at).getTime() === new Date(m.workspaces.deleted_at).getTime())
+      .sort((a: any, b: any) =>
+        new Date(b.workspaces.deleted_at).getTime() - new Date(a.workspaces.deleted_at).getTime())
+    if (suspended.length > 0) {
+      const w = suspended[0].workspaces
+      return NextResponse.json({
+        status: 'suspended',
+        workspaceId: w.id,
+        agencyName: w.agency_name || w.name || '',
       })
     }
 

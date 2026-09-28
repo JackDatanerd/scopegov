@@ -2152,6 +2152,39 @@ export async function sendWorkspaceRestoredEmail(params: { to: string; name: str
   return deliver({ from: systemFrom(), to, subject: `${agencyNameRaw} has been restored`, html })
 }
 
+// ── Workspace suspended (platform admin) ─────────────────────
+// FIX (deep audit, Workspace lifecycle independent re-pass — feature
+// gap): admin_suspend_workspace (migration 090) ends every member's access
+// exactly like a self-service delete does, but — unlike sendWorkspaceDeletedEmail
+// — nothing told the affected members. Sent to every member who was active
+// at the moment of suspension. Deliberately does NOT include the
+// admin's internal `reason` (that is an operator note in the admin audit
+// trail, often fraud/billing detail, not customer-facing copy).
+export async function sendWorkspaceSuspendedEmail(params: { to: string; name: string; agencyName: string }) {
+  const { to, name: nameRaw, agencyName: agencyNameRaw } = params
+  const name = escapeHtml(nameRaw)
+  const agencyName = escapeHtml(agencyNameRaw)
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.red,
+    headerIcon: '⏸️',
+    label: 'Workspace',
+    headline: `${agencyName} has been suspended`,
+    body: `
+      <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${name},</p>
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        The <strong>${agencyName}</strong> workspace on ScopeGov has been suspended by the ScopeGov team.
+        Your access to its projects, documents, and data is paused. Nothing has been deleted.
+      </p>
+      <p style="font-size:13px;color:${C.text2};line-height:1.7;margin:0;">
+        To find out why or to have it reviewed, contact
+        <a href="mailto:support@scopegov.app" style="color:${C.green};">support@scopegov.app</a>.
+      </p>
+    `,
+  })
+  return deliver({ from: systemFrom(), to, subject: `${agencyNameRaw} has been suspended`, html })
+}
+
 // ══════════════════════════════════════════════════════════════
 // Notifications & email fix round — team lifecycle senders
 // ══════════════════════════════════════════════════════════════

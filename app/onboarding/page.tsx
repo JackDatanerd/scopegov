@@ -107,7 +107,14 @@ function OnboardingWizard() {
   // steps with the wrong workspace silently active is worse than not
   // reaching them at all, so a failed switch is now its own dead-end gate
   // rather than something the wizard quietly powers through.
-  const [gate, setGate] = useState<'loading' | 'create' | 'waiting' | 'switch_error'>('loading')
+  // FIX (deep audit, Workspace lifecycle independent re-pass — feature gap):
+  // 'suspended' added. See onboarding-status/route.ts's own comment — a
+  // person whose only workspace a platform admin suspended used to get the
+  // exact 'create' response a brand-new signup gets, and this page showed
+  // them a blank new-agency wizard with no mention of their real (suspended)
+  // workspace.
+  const [gate, setGate] = useState<'loading' | 'create' | 'waiting' | 'switch_error' | 'suspended'>('loading')
+  const [suspendedWorkspace, setSuspendedWorkspace] = useState<{ workspaceId: string; agencyName: string } | null>(null)
   // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): workspaceId
   // added so the 'waiting' screen can offer a self-service "Leave this
   // workspace" — see the button below and onboarding-status/route.ts's own
@@ -279,6 +286,17 @@ function OnboardingWizard() {
         try { localStorage.removeItem(STORAGE_KEY_PREFIX + user.id) } catch { /* ignore */ }
         setWaitingFor({ workspaceId: status.workspaceId, agencyName: status.agencyName, creatorName: status.creatorName })
         setGate('waiting')
+        setRestored(true)
+        return
+      }
+
+      if (status?.status === 'suspended') {
+        // Not a new-user situation: never fall through to the wizard, which
+        // would start a second, unrelated workspace. Any stale local wizard
+        // progress belongs to a different workspace, so clear it too.
+        try { localStorage.removeItem(STORAGE_KEY_PREFIX + user.id) } catch { /* ignore */ }
+        setSuspendedWorkspace({ workspaceId: status.workspaceId, agencyName: status.agencyName || '' })
+        setGate('suspended')
         setRestored(true)
         return
       }
@@ -933,12 +951,56 @@ function OnboardingWizard() {
     } finally { setLeavingWait(false) }
   }
 
+  // Once support lifts the suspension the person's access returns on its
+  // own — re-check periodically and reload (which re-runs this page's own
+  // routing) instead of leaving them on a notice that has gone stale.
+  useEffect(() => {
+    if (gate !== 'suspended') return
+    const interval = setInterval(async () => {
+      try {
+        const res  = await fetch('/api/workspace/onboarding-status')
+        const json = await res.json().catch(() => ({}))
+        if (!res.ok) return
+        if (json.status === 'complete') { router.push('/dashboard'); return }
+        if (json.status && json.status !== 'suspended') window.location.reload()
+      } catch { /* transient — try again next tick */ }
+    }, 30000)
+    return () => clearInterval(interval)
+  }, [gate])
+
   // FIX (deep audit, Workspace lifecycle + Onboarding sections): brief
   // blank beat while onboarding-status resolves, rather than flashing
   // Step 1 of the wizard (and its "Continue" button) for a split second
   // before possibly redirecting into 'waiting' or 'complete'.
   if (gate === 'loading') {
     return <div className="ob-root"><div className="ob-card" /></div>
+  }
+
+  if (gate === 'suspended') {
+    return (
+      <div className="ob-root">
+        <div className="ob-card" style={{ textAlign: 'center', padding: '8px 0' }}>
+          <div style={{ width: 64, height: 64, background: 'var(--red-lt, #fdecea)', border: '1px solid var(--red-mid, #f5c6c2)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px' }}>
+            <i className="ti ti-player-pause" style={{ fontSize: 28, color: 'var(--red, #c0392b)' }} />
+          </div>
+          <h2 className="ob-title" style={{ textAlign: 'center' }}>Workspace suspended</h2>
+          <p className="ob-sub" style={{ textAlign: 'center', marginBottom: 28 }}>
+            {suspendedWorkspace?.agencyName
+              ? <>The <strong style={{ color: 'var(--text)' }}>{suspendedWorkspace.agencyName}</strong> workspace</>
+              : 'Your workspace'} has been suspended by the ScopeGov team, so access is paused. Nothing has been deleted.
+            To find out why or to have it reviewed, contact{' '}
+            <a href="mailto:support@scopegov.app" style={{ color: 'var(--green, #1A5C3A)' }}>support@scopegov.app</a>.
+            This page will update automatically once access is restored.
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 280, margin: '0 auto' }}>
+            <button className="ob-skip" style={{ width: '100%', justifyContent: 'center', display: 'flex' }}
+              onClick={() => supabase.auth.signOut({ scope: 'local' }).then(() => router.push('/login'))}>
+              Sign out
+            </button>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   if (gate === 'waiting') {

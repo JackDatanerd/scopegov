@@ -308,10 +308,16 @@ export async function finalizeCoAcceptance(service: any, params: {
   } catch (e) { console.error('Snapshot update failed:', e) }
 
   if (co.flag_id) {
+    // FIX (deep audit, CO logic independent re-pass): this wrote by flag id alone, so a CO
+    // that shared a flag_id with a different live CO (see app/api/co/route.ts) resolved the
+    // OTHER CO's flag on acceptance. Only resolve a flag that is still in play (converted_to_co,
+    // or 'open' for older COs created through the create route, which never claimed it) and
+    // linked to THIS CO or to nothing. Anything else is another CO's, or already resolved.
     await (service as any).from('guardian_flags').update({
       status: 'resolved', resolution: 'change_order',
       resolved_at: now, updated_at: now,
-    }).eq('id', co.flag_id)
+    }).eq('id', co.flag_id).in('status', ['converted_to_co', 'open'])
+      .or(`change_order_id.eq.${co.id},change_order_id.is.null`)
   }
 
   const contentHash = computeContentHash({

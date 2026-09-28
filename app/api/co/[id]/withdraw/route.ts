@@ -93,10 +93,16 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       const { data: flag } = await (service as any)
         .from('guardian_flags').select('id,status').eq('id', co.flag_id).single()
       if (flag?.status === 'converted_to_co') {
-        await (service as any).from('guardian_flags').update({
+        // FIX (deep audit, CO logic independent re-pass): the write itself now re-checks that
+        // the flag is STILL converted_to_co AND still linked to THIS CO (or to nothing —
+        // an orphaned link from a failed back-reference write). The read above is a
+        // separate round trip, and status alone never proved which CO owns the flag.
+        const { data: reverted } = await (service as any).from('guardian_flags').update({
           status: 'open', change_order_id: null, updated_at: now,
-        }).eq('id', co.flag_id)
-        await logAudit(service, {
+        }).eq('id', co.flag_id).eq('status', 'converted_to_co')
+          .or(`change_order_id.eq.${id},change_order_id.is.null`)
+          .select('id')
+        if (reverted && reverted.length > 0) await logAudit(service, {
           workspaceId: session.workspaceId, actorId: session.id,
           actorEmail: session.email, actorName: session.name,
           eventType: 'flag.reverted_to_open', entityType: 'guardian_flag',

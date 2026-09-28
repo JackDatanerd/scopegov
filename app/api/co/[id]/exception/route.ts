@@ -138,6 +138,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           status: 'resolved', resolution: 'exception',
           resolved_by: session.id, resolved_at: now, updated_at: now,
         }).eq('id', co.flag_id).eq('status', 'converted_to_co')
+          // Only resolve a flag still linked to THIS CO (or to nothing) — see app/api/co/route.ts.
+          .or(`change_order_id.eq.${co.id},change_order_id.is.null`)
         if (flagErr) console.error('CO exception grant: linked flag resolution failed (non-fatal):', flagErr.message)
         else {
           await logAudit(service, {

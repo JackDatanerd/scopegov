@@ -111,10 +111,30 @@ export async function POST(request: NextRequest) {
     let validatedFlagId: string | null = null
     if (flagId) {
       const { data: flag } = await (service as any)
-        .from('guardian_flags').select('id')
+        .from('guardian_flags').select('id, status, change_order_id')
         .eq('id', flagId).eq('project_id', projectId).eq('workspace_id', session.workspaceId)
         .maybeSingle()
       if (!flag) return NextResponse.json({ error: 'Flag not found on this project' }, { status: 400 })
+      // FIX (deep audit, CO logic independent re-pass): the check above only
+      // proved the flag is OURS, never that it is still UNCLAIMED. The
+      // canonical flag -> CO path (guardian/flags/[id] convert_to_co) only
+      // ever proceeds after atomically claiming a flag that is still
+      // status='open' AND change_order_id IS NULL. This route skipped that
+      // entirely, so a direct API call could create a second CO carrying a
+      // flag_id already owned by a live CO. Every lifecycle writer that
+      // later reverts or resolves "its" flag (close, withdraw, portal
+      // decline, finalize-co accept, revise, exception) keys on the flag id
+      // alone, so acting on the second CO rewrote the FIRST CO's flag
+      // out from under it. Refuse anything that isn't a genuinely open,
+      // unlinked flag, and claim it atomically below.
+      if (flag.status !== 'open' || flag.change_order_id) {
+        return NextResponse.json({
+          error: flag.change_order_id
+            ? 'A change order has already been drafted from this flag'
+            : `Cannot draft a change order from a flag with status "${flag.status}"`,
+          coId: flag.change_order_id || undefined,
+        }, { status: 409 })
+      }
       validatedFlagId = flag.id
     }
 
@@ -128,6 +148,24 @@ export async function POST(request: NextRequest) {
     const totals = computeCoTotals(lineItems || [], taxRate ?? 0, taxInclusive)
     if (!totals.ok) return NextResponse.json({ error: totals.error }, { status: 400 })
     const { lineItems: items, subtotal, total } = totals.totals
+
+    // Atomic claim, same compare-and-swap the guardian convert path uses:
+    // the read above can race a concurrent request, so the flag only moves
+    // to converted_to_co if it is STILL open and unlinked at write time.
+    let flagClaimed = false
+    if (validatedFlagId) {
+      const { data: claimed } = await (service as any)
+        .from('guardian_flags')
+        .update({ status: 'converted_to_co', updated_at: new Date().toISOString() })
+        .eq('id', validatedFlagId).eq('status', 'open').is('change_order_id', null)
+        .select('id')
+      if (!claimed || claimed.length === 0) {
+        return NextResponse.json({
+          error: 'This flag was just claimed by another change order',
+        }, { status: 409 })
+      }
+      flagClaimed = true
+    }
 
     const { data: co, error: coErr } = await (service as any)
       .from('change_orders')
@@ -168,7 +206,31 @@ export async function POST(request: NextRequest) {
       })
       .select('id').single()
 
-    if (coErr) throw new Error(coErr.message)
+    if (coErr || !co) {
+      // Release the claim so the flag isn't stranded as 'converted_to_co'
+      // with no CO (mirrors the guardian convert path's own rollback).
+      if (flagClaimed && validatedFlagId) {
+        await (service as any).from('guardian_flags')
+          .update({ status: 'open', updated_at: new Date().toISOString() })
+          .eq('id', validatedFlagId).eq('status', 'converted_to_co').is('change_order_id', null)
+      }
+      throw new Error(coErr?.message || 'insert returned no row')
+    }
+
+    if (flagClaimed && validatedFlagId) {
+      // Record the back-reference; retry once, then log loudly — the flag
+      // is already claimed, so a silent miss would leave it pointing at
+      // nothing (same handling as the guardian convert path).
+      let linkErr: any = null
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const r = await (service as any).from('guardian_flags')
+          .update({ change_order_id: co.id, updated_at: new Date().toISOString() })
+          .eq('id', validatedFlagId)
+        linkErr = r.error
+        if (!linkErr) break
+      }
+      if (linkErr) console.error('Could not link flag -> change order:', validatedFlagId, co.id, linkErr.message)
+    }
 
     await logAudit(service, {
       workspaceId: session.workspaceId, actorId: session.id,

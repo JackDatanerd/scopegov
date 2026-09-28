@@ -63,9 +63,15 @@ async function revertFlagIfLinked(service: any, co: any, reason: string, session
     .from('guardian_flags').select('id,status').eq('id', co.flag_id).single()
   if (flag?.status === 'converted_to_co') {
     const now = new Date().toISOString()
-    await (service as any).from('guardian_flags').update({
+    // FIX (deep audit, CO logic independent re-pass): the write now re-checks the flag is
+    // still converted_to_co AND still linked to THIS CO (or to nothing) — see
+    // app/api/co/route.ts for why status alone never proved ownership.
+    const { data: reverted } = await (service as any).from('guardian_flags').update({
       status: 'open', change_order_id: null, updated_at: now,
-    }).eq('id', co.flag_id)
+    }).eq('id', co.flag_id).eq('status', 'converted_to_co')
+      .or(`change_order_id.eq.${co.id},change_order_id.is.null`)
+      .select('id')
+    if (!reverted || reverted.length === 0) return
     await logAudit(service, {
       workspaceId: co.workspace_id,
       // FIX (build, Reports & Audit re-pass): actor_id is `uuid REFERENCES

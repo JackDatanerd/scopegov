@@ -210,6 +210,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
             await (service as any).from('guardian_flags').update({
               status: 'open', change_order_id: null, updated_at: new Date().toISOString(),
             }).eq('id', co.flag_id).eq('status', 'converted_to_co')
+              // Only revert a flag still linked to THIS CO (or to nothing) — status alone never
+              // proved ownership (deep audit, CO logic independent re-pass).
+              .or(`change_order_id.eq.${co.id},change_order_id.is.null`)
             await logAudit(service, {
               workspaceId: session.workspaceId, actorId: session.id,
               actorEmail: session.email, actorName: session.name,
@@ -260,7 +263,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (co.flag_id) {
       await (service as any).from('guardian_flags')
         .update({ status: 'converted_to_co', change_order_id: revision.id, updated_at: new Date().toISOString() })
-        .eq('id', co.flag_id).eq('status', 'open')
+        .eq('id', co.flag_id).eq('status', 'open').is('change_order_id', null)
     }
 
     await logAudit(service, {
