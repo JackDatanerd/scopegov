@@ -4,15 +4,9 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { formatCurrencyGroups, formatDate } from '@/lib/utils/format'
 import { IN_PROGRESS_STATUSES } from '@/lib/utils/project-status'
+import { csvCell } from '@/lib/utils/client-csv'
 
 type SortKey = 'name' | 'projects' | 'since'
-
-// CSV cells that start with = + - @ are executed as formulas by Excel / Sheets — neutralise them.
-function csvCell(v: unknown): string {
-  let t = v == null ? '' : String(v)
-  if (/^[=+\-@\t\r]/.test(t)) t = `'${t}`
-  return `"${t.replace(/"/g, '""')}"`
-}
 
 export default function ClientsClient({ clients, canCreate, canViewFinancials, canViewClientData, truncated = false }: {
   clients: any[]; canCreate: boolean; canViewFinancials: boolean; canViewClientData: boolean; truncated?: boolean
@@ -74,13 +68,14 @@ export default function ClientsClient({ clients, canCreate, canViewFinancials, c
 
   function exportCsv() {
     const header = ['Name', 'Company', ...(canViewClientData ? ['Email', 'Phone'] : []), 'Status', 'Projects', 'Active projects', 'Client since']
-    const lines = [header.map(csvCell).join(',')]
+    const lines = [header.map(h => csvCell(h)).join(',')]
     for (const c of filtered) {
       const st = clientStats(c)
       lines.push([
-        c.name, c.company_name || '', ...(canViewClientData ? [c.email || '', c.phone || ''] : []),
-        c.status || 'active', st.total, st.active, String(c.created_at || '').slice(0, 10),
-      ].map(csvCell).join(','))
+        csvCell(c.name), csvCell(c.company_name || ''),
+        ...(canViewClientData ? [csvCell(c.email || ''), csvCell(c.phone || '', true)] : []),
+        csvCell(c.status || 'active'), csvCell(st.total), csvCell(st.active), csvCell(String(c.created_at || '').slice(0, 10)),
+      ].join(','))
     }
     const blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' })
     const url = URL.createObjectURL(blob)
@@ -114,6 +109,16 @@ export default function ClientsClient({ clients, canCreate, canViewFinancials, c
     return { active, total, hasValue, valueDisplay }
   }
 
+  // FIX (independent pass 2, section 14): Cancel and the backdrop only hid the modal — the previous attempt's error
+  // banner (and its "open <existing client>" link) were still there next time it opened, and a stray click on the
+  // backdrop threw away a half-typed form. Cancel now resets everything; the backdrop only dismisses a modal
+  // that has nothing typed into it.
+  function resetModal() {
+    setModal(false); setError(''); setExisting(null)
+    setName(''); setCompany(''); setEmail(''); setPhone(''); setCcEmails('')
+  }
+  const modalDirty = !!(name || company || email || phone || ccEmails)
+
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault()
     if (!name.trim() || !email.trim()) return
@@ -128,9 +133,7 @@ export default function ClientsClient({ clients, canCreate, canViewFinancials, c
         if (res.status === 409 && json.existingClientId) setExisting({ id: json.existingClientId, name: json.existingClientName || 'the existing client' })
         throw new Error(json.error)
       }
-      setModal(false)
-      setExisting(null)
-      setName(''); setCompany(''); setEmail(''); setPhone(''); setCcEmails('')
+      resetModal()
       router.refresh()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to create client')
@@ -195,7 +198,7 @@ export default function ClientsClient({ clients, canCreate, canViewFinancials, c
                 <button className="btn btn-ghost btn-xs" onClick={() => setShowArchived(true)}>show archived</button>
               </p>
             )}
-            <p className="empty-state-sub">Clients are created automatically when you create a project, or you can add them here.</p>
+            {!search && <p className="empty-state-sub">Clients are created automatically when you create a project, or you can add them here.</p>}
             {canCreate && !search && (
               <button className="btn btn-primary" onClick={() => setModal(true)}>
                 <i className="ti ti-plus" style={{ fontSize: 13 }} /> New client
@@ -267,7 +270,7 @@ export default function ClientsClient({ clients, canCreate, canViewFinancials, c
       {/* Create modal */}
       {modal && (
         <>
-          <div className="modal-bg" onClick={() => setModal(false)} />
+          <div className="modal-bg" onClick={() => { if (!modalDirty && !loading) resetModal() }} />
           <div className="modal">
             <h2 className="modal-title">New client</h2>
             <p className="modal-sub">Add a client to your workspace. You can also create clients during project creation.</p>
@@ -314,7 +317,7 @@ export default function ClientsClient({ clients, canCreate, canViewFinancials, c
                 <p className="fhint" style={{ marginTop: 4 }}>These addresses are CC&apos;d on every invoice, SOW, and change order sent to this client.</p>
               </div>
               <div className="modal-footer">
-                <button type="button" className="btn btn-ghost" onClick={() => setModal(false)}>Cancel</button>
+                <button type="button" className="btn btn-ghost" onClick={resetModal} disabled={loading}>Cancel</button>
                 <button type="submit" className="btn btn-primary" disabled={loading || !name.trim() || !email.trim()}>
                   {loading ? <span className="spin" /> : 'Create client'}
                 </button>

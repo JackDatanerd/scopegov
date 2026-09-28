@@ -159,9 +159,26 @@ function ContactForm({ clientId, initial, onDone, onCancel }: {
   const [isPrimary, setIsPrimary] = useState(initial?.is_primary || false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [baseline] = useState(initial)
 
   async function save() {
     if (!name.trim() || !email.trim()) return
+    // FIX (independent pass 2, section 14): an edit always sent all five fields, `isPrimary` included. If
+    // someone else promoted a different contact to primary after this form opened (this contact's stale
+    // `is_primary: true` still in the checkbox), saving just a corrected NAME re-asserted isPrimary:true and
+    // took the primary role back from them — and the CC routing with it; the email field likewise reverted a
+    // teammate's correction. An edit now sends only what this person actually changed, measured against the
+    // snapshot taken when the form opened.
+    let payload: Record<string, unknown> = { name, email, role, roleType, isPrimary }
+    if (initial) {
+      payload = {}
+      if (name.trim() !== baseline?.name.trim()) payload.name = name
+      if (email.trim().toLowerCase() !== baseline?.email.trim().toLowerCase()) payload.email = email
+      if (role.trim() !== (baseline?.role || '').trim()) payload.role = role
+      if (roleType !== (baseline?.role_type || 'other')) payload.roleType = roleType
+      if (isPrimary !== !!baseline?.is_primary) payload.isPrimary = isPrimary
+      if (Object.keys(payload).length === 0) { onCancel(); return }
+    }
     setSaving(true); setError('')
     try {
       const res  = await fetch(
@@ -169,7 +186,7 @@ function ContactForm({ clientId, initial, onDone, onCancel }: {
         {
           method: initial ? 'PATCH' : 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, email, role, roleType, isPrimary }),
+          body: JSON.stringify(payload),
         }
       )
       const json = await res.json()

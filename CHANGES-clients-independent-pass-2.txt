@@ -1,0 +1,52 @@
+CHANGES — Clients (section 14) — independent pass 2 fixes
+=========================================================
+Audited from scratch, as if no prior pass existed. Two feature gaps + thirteen findings.
+NOT executed: no node_modules / Postgres / network in the audit sandbox — run `tsc`, `vitest`,
+and apply migration 098 in a staging DB before shipping.
+
+FEATURE GAP 1 — merging clients silently discarded the source's billing data
+  supabase/migrations/098_merge_clients_carry_over_details.sql (NEW; replaces merge_clients from 097)
+  - billing_address, vat_number, phone, timezone, payment_terms_note, company_name are copied to the
+    target ONLY where the target has none (target's values always win); notes are appended under a marker
+    line (5,000-char cap). Returns fields_carried + notes_truncated. Everything else is 097 unchanged.
+  app/api/clients/[id]/merge/route.ts: records `fields` / `notes_truncated` in the audit row.
+  components/clients/ClientDangerZone.tsx: confirm text explains it; alert if notes were truncated.
+
+FEATURE GAP 2 — bounce / spam-complaint marker was display-only
+  app/api/cron/client-reminders/route.ts: skips a client whose email_bounced_at is set (before the claim
+  row, so nothing is recorded as sent); reports remindersSkippedBouncedAddress. Resumes automatically when
+  the marker clears (delivery clears a bounce; correcting the address clears either kind).
+  Manual Remind/Send buttons intentionally unchanged (a human's explicit action; banner is on the client page).
+
+BUG 1 (high)  clients/[id]/page.tsx: Outstanding/Overdue showed a false 0 on a failed or oversized invoice
+              read. Now chunked (100) + paged via fetchAll; any failure hides the whole summary and says so.
+BUG 2 (high)  ClientContactCard.tsx: save sent all 8 fields → overwrote teammates' edits and failed on
+              untouched legacy-invalid values. Now sends only changed fields (snapshot taken on Edit).
+BUG 3         ClientContactsCard.tsx (ContactForm): always sent isPrimary/email → could take the primary role
+              back or revert a teammate's edit. Edit now sends only changed fields.
+BUG 4         api/projects/route.ts (traced): inline "new client" was a weaker second create path (no caps,
+              exact-match dup check, race → 500). Now parseClientInput + create_client RPC; existing client reused.
+BUG 5         lib/utils/client-contacts.ts: contacts fetched in undefined order, so the 10-CC cap could drop the
+              primary contact. Now primary first, then oldest.
+BUG 6         ClientDangerZone.tsx / page.tsx: merge dropdown was a silent .limit(500) with no search. Now loaded
+              on demand from GET /api/clients (up to 5,000) with a search box and a truncation notice.
+BUG 7         clients/[id]/page.tsx: raw "client.reactivated" label; contact events never on the timeline.
+              Labels added; contact audit rows now carry metadata.client_id and are merged into the timeline.
+              (Contact rows written BEFORE this change have no client_id and stay off the timeline.)
+BUG 8         clients/[id]/page.tsx: "New project" / "Create first project" shown to users without
+              CREATE_PROJECTS. Now gated. (Archived clients keep it on purpose — api/projects reactivates them.)
+BUG 9         lib/utils/client-csv.ts (NEW, extracted from ClientsClient.tsx): +254… phone numbers got a literal
+              apostrophe prefix in the export. Phone column exempt for strict "+digits/space/()-." values only.
+BUG 10        ClientsClient.tsx: New-client modal kept stale error/"open existing" link; backdrop click discarded
+              typed input. Cancel resets everything; backdrop only closes a pristine modal.
+BUG 11        merge route + page: merge now also requires VIEW_ALL_PROJECTS (it moves ALL the source's projects).
+BUG 12        contact routes: over-long role now rejected (400) instead of silently truncated to 100 chars
+              (CLIENT_LIMITS.contactRole); empty-state boilerplate hidden while searching.
+BUG 13        api/webhooks/resend/route.ts: bounce marker matched clients.email exactly; now case-insensitive.
+
+TESTS ADDED/EXTENDED: client-csv (new), client-merge-route (new), client-contacts-routing (ordering),
+client-reminders-cron (bounced address skipped / resumes).
+
+KNOWN RESIDUAL (not changed): PATCH /api/clients/[id] email-change duplicate check is select-then-update
+(no advisory lock like create_client); a concurrent case-variant race is only stopped by the lower(email)
+unique index where a workspace has it.

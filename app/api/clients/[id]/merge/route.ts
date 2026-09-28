@@ -22,13 +22,24 @@ import { getClientIp } from '@/lib/utils/request-ip'
 // the OTHER side of a merge — the source's cc_emails (and its own primary email) can be capped at
 // MAX_CC_EMAILS the same way contacts are capped at MAX_CONTACTS_PER_CLIENT, and that cap was silent
 // until now. `cc_dropped` is surfaced here the same way `contacts_dropped` already is.
+//
+// FIX (independent pass 2, section 14): merge_clients() (098) also carries the source's billing address,
+// VAT number, phone, timezone, payment-terms note, company name and notes over to the target wherever the
+// target has none of its own (the target's values always win) — previously they were deleted with the
+// source row, so the moved projects' invoice/SOW/CO PDFs lost their Bill To block. The names of the fields
+// carried are recorded in the audit row (`fields`), which the client page's activity list displays.
+//
+// FIX (independent pass 2, section 14): a merge reassigns EVERY project of the source, including ones the
+// caller has no access to (VIEW_ALL_PROJECTS is what scopes project visibility everywhere else) — a
+// limited-access member could silently move projects they can't even open, while the confirm dialog told
+// them "all of X's projects" were moving. Merging is a workspace-wide operation, so it needs it too.
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id: sourceId } = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    if (!hasPermission(session, 'CREATE_PROJECTS') || !hasPermission(session, 'VIEW_CLIENT_DATA') || !hasPermission(session, 'DELETE_PROJECTS'))
-      return NextResponse.json({ error: 'Merging clients needs CREATE_PROJECTS, VIEW_CLIENT_DATA and DELETE_PROJECTS' }, { status: 403 })
+    if (!hasPermission(session, 'CREATE_PROJECTS') || !hasPermission(session, 'VIEW_CLIENT_DATA') || !hasPermission(session, 'DELETE_PROJECTS') || !hasPermission(session, 'VIEW_ALL_PROJECTS'))
+      return NextResponse.json({ error: 'Merging clients needs CREATE_PROJECTS, VIEW_CLIENT_DATA, DELETE_PROJECTS and VIEW_ALL_PROJECTS' }, { status: 403 })
 
     let body: any
     try { body = await request.json() } catch { return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 }) }
@@ -59,6 +70,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         merged_from: { id: source.id, name: source.name, email: source.email },
         projects_moved: result?.projects_moved ?? null, contacts_moved: result?.contacts_moved ?? null,
         contacts_dropped: result?.contacts_dropped ?? null, cc_dropped: result?.cc_dropped ?? null,
+        fields: Array.isArray(result?.fields_carried) ? result.fields_carried : [],
+        notes_truncated: result?.notes_truncated === true,
       },
     })
     return NextResponse.json({ ok: true, targetId, ...result })

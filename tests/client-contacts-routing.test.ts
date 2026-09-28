@@ -44,6 +44,16 @@ describe('withPrimaryContactCc', () => {
     expect(await withPrimaryContactCc(service, 'c1', 'jane@acme.com', ['fin@acme.com'], 'invoice')).toEqual(['fin@acme.com'])
   })
 
+  // FIX (independent pass 2, section 14): with no ORDER BY, which contacts survived the MAX_CC_EMAILS cap was
+  // arbitrary — the primary contact could be the one dropped.
+  it('asks for the primary contact first, then oldest first, so the cap never drops the primary', async () => {
+    const { service, calls } = fakeService([{ email: 'pm@acme.com', is_primary: true, role_type: 'other' }])
+    await withPrimaryContactCc(service, 'c1', 'jane@acme.com', [], 'co')
+    expect(calls).toContain('order(is_primary,[object Object])')
+    expect(calls.filter(c => c.startsWith('order(')).length).toBe(2)
+    expect(calls.indexOf('order(is_primary,[object Object])')).toBeLessThan(calls.lastIndexOf('order(created_at,[object Object])'))
+  })
+
   it('a lookup failure never blocks sending', async () => {
     const service = { from: () => { throw new Error('db down') } }
     expect(await withPrimaryContactCc(service, 'c1', 'a@b.co', ['x@y.co'], 'invoice')).toEqual(['x@y.co'])

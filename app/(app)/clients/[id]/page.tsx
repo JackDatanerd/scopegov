@@ -10,6 +10,7 @@ import ArchiveClientButton from '@/components/clients/ArchiveClientButton'
 import ClientDangerZone from '@/components/clients/ClientDangerZone'
 import { IN_PROGRESS_STATUSES } from '@/lib/utils/project-status'
 import { computeContractPositions } from '@/lib/reports/contract-position'
+import { fetchAll } from '@/lib/utils/fetch-all'
 
 interface Props { params: Promise<{ id: string }> }
 
@@ -159,13 +160,25 @@ export default async function ClientDetailPage({ params }: Props) {
   // unpaid balance of sent / partially-paid / overdue invoices (post-tax, what is actually owed).
   type Money = { contracted: number; invoiced: number; paid: number; outstanding: number; overdue: number; atRisk: number }
   const moneyByCurrency = new Map<string, Money>()
+  // FIX (independent pass 2, section 14): the open-invoices read below destructured `{ data }` and threw the
+  // error away, and passed EVERY project id in one `.in()` (computeContractPositions chunks at 100 "to stay
+  // under proxy limits"). On a failed read — or a client with a few hundred projects — Contracted / Invoiced /
+  // Paid rendered normally while Outstanding and Overdue quietly showed 0: a false "nothing owed" on the one
+  // screen meant to answer "what does this client owe me?". Now chunked, paged (PostgREST's 1,000-row cap) and
+  // any failure blanks the whole summary and says so, rather than showing part of it.
+  let moneyFailed = false
   if (canViewFinancials && (projectsRaw || []).length > 0) {
     try {
       const positions = await computeContractPositions(service, projectsRaw)
       const ids = (projectsRaw as any[]).map(p => p.id)
-      const { data: openInvoices } = await (service as any)
-        .from('invoices').select('project_id, amount, amount_paid, status')
-        .in('project_id', ids).in('status', ['sent', 'partially_paid', 'overdue'])
+      const openInvoices: any[] = []
+      for (let i = 0; i < ids.length; i += 100) {
+        const slice = ids.slice(i, i + 100)
+        openInvoices.push(...await fetchAll<any>('client open invoices', (from, to) =>
+          (service as any).from('invoices').select('id, project_id, amount, amount_paid, status')
+            .in('project_id', slice).in('status', ['sent', 'partially_paid', 'overdue'])
+            .order('id').range(from, to)))
+      }
       const cur = (pid: string) => (projectsRaw as any[]).find(p => p.id === pid)?.currency || 'USD'
       const bucket = (c: string): Money => {
         let m = moneyByCurrency.get(c)
@@ -183,30 +196,47 @@ export default async function ClientDetailPage({ params }: Props) {
         m.outstanding += owed
         if (inv.status === 'overdue') m.overdue += owed
       }
-    } catch (e) { console.error('Client financial summary failed:', e) }
+    } catch (e) {
+      console.error('Client financial summary failed:', e)
+      moneyFailed = true
+      moneyByCurrency.clear()
+    }
   }
   const showMoney = Array.from(moneyByCurrency.values()).some(m => m.invoiced > 0 || m.outstanding > 0 || m.contracted > 0)
 
   // ── Recent activity on the client record itself (needs VIEW_AUDIT_LOG) ──────────────────────
   const canViewAudit = hasPermission(session, 'VIEW_AUDIT_LOG')
-  const { data: activity = [] } = canViewAudit
-    ? await (service as any).from('audit_log')
-        .select('id, event_type, actor_name, created_at, metadata')
-        .eq('workspace_id', session.workspaceId).eq('entity_type', 'client').eq('entity_id', id)
-        .order('created_at', { ascending: false }).limit(8)
-    : { data: [] }
+  // FIX (independent pass 2, section 14): the label map lacked `client.reactivated` (written when a new project
+  // revives an archived client), so the raw event string showed; and the contact routes' own audit rows use
+  // entity_type 'client_contact' (entity_id = the contact), so adding / editing / removing a contact never
+  // appeared on the client's timeline at all. Those rows now carry metadata.client_id, and are merged in here.
+  // (Contact rows written before this change have no client_id and stay off the timeline.)
+  const auditCols = 'id, event_type, entity_name, actor_name, created_at, metadata'
+  const [clientActivity, contactActivity] = canViewAudit
+    ? await Promise.all([
+        (service as any).from('audit_log').select(auditCols)
+          .eq('workspace_id', session.workspaceId).eq('entity_type', 'client').eq('entity_id', id)
+          .order('created_at', { ascending: false }).limit(8),
+        (service as any).from('audit_log').select(auditCols)
+          .eq('workspace_id', session.workspaceId).eq('entity_type', 'client_contact').eq('metadata->>client_id', id)
+          .order('created_at', { ascending: false }).limit(8),
+      ])
+    : [{ data: [] }, { data: [] }]
+  const activity = [...(clientActivity.data || []), ...(contactActivity.data || [])]
+    .sort((a: any, b: any) => String(b.created_at).localeCompare(String(a.created_at)))
+    .slice(0, 8)
   const ACTIVITY_LABEL: Record<string, string> = {
     'client.created': 'Client created', 'client.updated': 'Details updated', 'client.merged': 'Merged another client into this one',
-    'client.deleted': 'Deleted',
+    'client.deleted': 'Deleted', 'client.reactivated': 'Reactivated (a new project was started)',
+    'client_contact.created': 'Contact added', 'client_contact.updated': 'Contact updated', 'client_contact.deleted': 'Contact removed',
   }
 
   // ── Merge / delete controls ─────────────────────────────────────────────────────────────────
   const canDeleteClients = hasPermission(session, 'DELETE_PROJECTS')
-  const canMergeClients = canEditClientData && canViewClientData && canDeleteClients
-  const { data: mergeTargets = [] } = canMergeClients
-    ? await (service as any).from('clients').select('id,name,email,status')
-        .eq('workspace_id', session.workspaceId).neq('id', id).order('name').limit(500)
-    : { data: [] }
+  // (independent pass 2) VIEW_ALL_PROJECTS too — a merge reassigns every project of this client, including
+  // ones a limited-access member can't see; the API enforces the same. The list of clients to merge into is now
+  // loaded on demand by the picker itself (see ClientDangerZone), not fetched here with a silent 500-row cap.
+  const canMergeClients = canEditClientData && canViewClientData && canDeleteClients && canViewAllProjects
 
   // FIX (independent pass round 2, section 14): DELETE /api/clients/[id] refuses when the client
   // has ANY project on record, explicitly including soft-deleted ones — but the Danger Zone below
@@ -251,17 +281,27 @@ export default async function ClientDetailPage({ params }: Props) {
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           {canEditClientData && <ArchiveClientButton clientId={id} status={client.status || 'active'} activeProjectCount={activeProjectCount} />}
-          <Link href={`/projects/new?clientId=${id}`}>
-            <button className="btn btn-primary">
-              <i className="ti ti-plus" style={{ fontSize: 13 }} /> New project
-            </button>
-          </Link>
+          {/* (independent pass 2) POST /api/projects requires CREATE_PROJECTS — the button used to show to every
+              viewer and dead-end them on the new-project form. Archived clients keep it on purpose: starting
+              a project for one reactivates it (api/projects). */}
+          {canEditClientData && (
+            <Link href={`/projects/new?clientId=${id}`}>
+              <button className="btn btn-primary">
+                <i className="ti ti-plus" style={{ fontSize: 13 }} /> New project
+              </button>
+            </Link>
+          )}
         </div>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 280px', gap: 24, alignItems: 'start' }}>
         {/* Projects */}
         <div>
+          {moneyFailed && (
+            <div className="auth-error" style={{ marginBottom: 20 }}>
+              The money summary (contracted, invoiced, paid, outstanding) couldn’t be loaded just now — refresh the page to try again. Nothing is shown rather than figures that might be incomplete.
+            </div>
+          )}
           {showMoney && (
             <div style={{ marginBottom: 20 }}>
               <div className="sec-hd" style={{ marginBottom: 12 }}><div className="sec-title">Money</div></div>
@@ -296,9 +336,11 @@ export default async function ClientDetailPage({ params }: Props) {
               <div className="empty-state" style={{ padding: '40px 24px' }}>
                 <i className="ti ti-folder-open empty-state-icon" style={{ fontSize: 28 }} />
                 <p className="empty-state-title">No projects yet</p>
-                <Link href={`/projects/new?clientId=${id}`}>
-                  <button className="btn btn-primary btn-sm">Create first project</button>
-                </Link>
+                {canEditClientData && (
+                  <Link href={`/projects/new?clientId=${id}`}>
+                    <button className="btn btn-primary btn-sm">Create first project</button>
+                  </Link>
+                )}
               </div>
             </div>
           ) : (
@@ -421,7 +463,7 @@ export default async function ClientDetailPage({ params }: Props) {
                 {(activity || []).map((a: any) => (
                   <div key={a.id} className="settings-row" style={{ alignItems: 'flex-start' }}>
                     <div>
-                      <div style={{ fontSize: 12.5 }}>{ACTIVITY_LABEL[a.event_type] || a.event_type}</div>
+                      <div style={{ fontSize: 12.5 }}>{ACTIVITY_LABEL[a.event_type] || a.event_type}{String(a.event_type).startsWith('client_contact.') && a.entity_name ? ` — ${String(a.entity_name).replace(/ \([^)]*\)$/, '')}` : ''}</div>
                       {Array.isArray(a.metadata?.fields) && a.metadata.fields.length > 0 && (
                         <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{a.metadata.fields.join(', ')}</div>
                       )}
@@ -437,12 +479,11 @@ export default async function ClientDetailPage({ params }: Props) {
               (CREATE_PROJECTS), but DELETE /api/clients/[id] only ever checks DELETE_PROJECTS —
               same as the sibling DELETE /api/projects/[id] route. A role with DELETE_PROJECTS but
               not CREATE_PROJECTS was fully authorized to delete a client and had no button to do
-              it with. canMerge is unaffected — the merge route really does require all three
-              permissions. */}
+              it with. canMerge is unaffected — the merge route really does require all of
+              them (CREATE_PROJECTS, VIEW_CLIENT_DATA, DELETE_PROJECTS, and now VIEW_ALL_PROJECTS). */}
           <ClientDangerZone
             clientId={client.id} clientName={client.name} visibleProjectCount={(projectsRaw || []).length}
             totalProjectCount={totalProjectCount || 0}
-            others={(mergeTargets || []).map((c: any) => ({ id: c.id, name: c.name, email: c.email, status: c.status }))}
             canMerge={canMergeClients} canDelete={canDeleteClients}
           />
         </div>

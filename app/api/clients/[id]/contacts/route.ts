@@ -88,7 +88,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Please enter a valid email address' }, { status: 400 })
     if (body.role !== undefined && body.role !== null && typeof body.role !== 'string')
       return NextResponse.json({ error: 'Role must be text' }, { status: 400 })
-    const role = typeof body.role === 'string' ? body.role.trim().slice(0, 100) || null : null
+    // FIX (independent pass 2, section 14): an over-long role used to be silently cut to 100 characters while
+    // every other over-long field (name, email, notes…) is rejected — the person saved "Head of Accounts
+    // Payable and Procurement, EMEA region — approves all…" and got a truncated label with no hint. Reject it.
+    if (typeof body.role === 'string' && body.role.trim().length > CLIENT_LIMITS.contactRole)
+      return NextResponse.json({ error: `Role is too long (${CLIENT_LIMITS.contactRole} characters max)` }, { status: 400 })
+    const role = typeof body.role === 'string' ? body.role.trim() || null : null
     const roleType: ContactRoleType = body.roleType === undefined ? 'other' : body.roleType
     if (!CONTACT_ROLE_TYPES.includes(roleType))
       return NextResponse.json({ error: `roleType must be one of: ${CONTACT_ROLE_TYPES.join(', ')}` }, { status: 400 })
@@ -131,7 +136,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
       eventType: 'client_contact.created', entityType: 'client_contact',
       entityId: newId, entityName: `${name} (${client.name})`,
-      metadata: { email, role, role_type: roleType, is_primary: body.isPrimary === true },
+      // client_id lets the client page's activity list find contact events (they are entity_type
+      // 'client_contact', keyed by the contact's own id).
+      metadata: { client_id: id, email, role, role_type: roleType, is_primary: body.isPrimary === true },
     })
 
     return NextResponse.json({ contact })

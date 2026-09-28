@@ -65,6 +65,17 @@ export default function ClientContactCard({
     catch { return [] }
   }, [])
 
+  // FIX (independent pass 2, section 14): save() used to PATCH all eight fields every time, whatever was
+  // touched. Two consequences: (a) it overwrote teammates' concurrent edits with this tab's stale copy of
+  // fields the person never touched (A fixes the email while B has Edit open and only adds a note — B's save
+  // put the old email back, cleared the bounce marker and re-ran the duplicate check); (b) a legacy value that
+  // no longer passes today's validation (an old free-text timezone, over-long notes) made a save that only
+  // changed a *different* field fail with an error about a field they hadn't touched. Only changed fields are
+  // sent now, compared against a snapshot taken when Edit was opened (the resync effect above is paused
+  // while editing, so `form` is the only thing that moves).
+  const [baseline, setBaseline] = useState<typeof form | null>(null)
+  function startEditing() { setBaseline({ ...form }); setEditing(true) }
+
   function set<K extends keyof typeof form>(key: K, value: string) {
     setForm(f => ({ ...f, [key]: value }))
   }
@@ -72,13 +83,14 @@ export default function ClientContactCard({
   async function save() {
     setSaving(true); setError('')
     try {
+      const changed: Record<string, string> = {}
+      for (const k of Object.keys(form) as (keyof typeof form)[]) {
+        if (!baseline || form[k] !== baseline[k]) changed[k] = form[k]
+      }
+      if (Object.keys(changed).length === 0) { setEditing(false); return }
       const res = await fetch(`/api/clients/${clientId}`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: form.name, companyName: form.companyName, email: form.email,
-          phone: form.phone, ccEmails: form.ccEmails, paymentTermsNote: form.paymentTermsNote,
-          notes: form.notes, timezone: form.timezone,
-        }),
+        body: JSON.stringify(changed),
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error)
@@ -95,7 +107,7 @@ export default function ClientContactCard({
         <div className="sec-hd" style={{ marginBottom: 10 }}>
           <div className="sec-title">Contact details</div>
           {editable && (
-            <button className="btn btn-ghost btn-sm" onClick={() => setEditing(true)}>Edit</button>
+            <button className="btn btn-ghost btn-sm" onClick={startEditing}>Edit</button>
           )}
         </div>
         <div className="settings-row" style={{ paddingTop: 0 }}>

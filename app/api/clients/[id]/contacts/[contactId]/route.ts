@@ -62,7 +62,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     }
     if (body.role !== undefined) {
       if (body.role !== null && typeof body.role !== 'string') return NextResponse.json({ error: 'Role must be text' }, { status: 400 })
-      patch.role = typeof body.role === 'string' ? body.role.trim().slice(0, 100) || null : null
+      if (typeof body.role === 'string' && body.role.trim().length > CLIENT_LIMITS.contactRole)
+        return NextResponse.json({ error: `Role is too long (${CLIENT_LIMITS.contactRole} characters max)` }, { status: 400 })
+      patch.role = typeof body.role === 'string' ? body.role.trim() || null : null
     }
     if (body.roleType !== undefined) {
       if (!CONTACT_ROLE_TYPES.includes(body.roleType))
@@ -101,7 +103,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
       eventType: 'client_contact.updated', entityType: 'client_contact',
       entityId: contactId, entityName: `${(patch.name as string) || contact.name} (${client.name})`,
-      metadata: { fields: Object.keys(changes), changes },
+      metadata: { client_id: id, fields: Object.keys(changes), changes },
     })
 
     return NextResponse.json({ ok: true })
@@ -133,7 +135,7 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
       actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
       eventType: 'client_contact.deleted', entityType: 'client_contact',
       entityId: contactId, entityName: `${contact.name} (${client.name})`,
-      metadata: { email: contact.email, role: contact.role, role_type: contact.role_type, was_primary: contact.is_primary },
+      metadata: { client_id: id, email: contact.email, role: contact.role, role_type: contact.role_type, was_primary: contact.is_primary },
     })
 
     return NextResponse.json({ ok: true })

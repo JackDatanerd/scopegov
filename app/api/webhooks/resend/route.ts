@@ -5,6 +5,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { verifyResendSignature, nextEmailStatus } from '@/lib/email/webhook'
 import { notifyUsers, notifyMembersWithPermission } from '@/lib/utils/notify'
 import type { Permission } from '@/lib/supabase/types'
+import { escapeLike } from '@/lib/utils/escape-like'
 
 // Resend delivery webhook (configure in the Resend dashboard → Webhooks → this URL, events
 // email.delivered / email.delivery_delayed / email.bounced / email.complained / email.failed, and
@@ -114,6 +115,9 @@ async function alertSender(service: any, row: any, status: 'bounced' | 'complain
 // address was dead. The client's primary email (only — a bounced CC is not the client's address) is now
 // marked on the record (shown on the client page and list) and cleared again by the next successful
 // delivery to it or by editing the address. Best-effort: a failure here never fails the webhook.
+// FIX (independent pass 2, section 14): the client is matched case-INSENSITIVELY. `to` is lower-cased here, but a
+// client row whose email was stored with capitals (legacy rows, and workspaces that predate the lower(email)
+// unique index) never matched an exact `.eq('email', to)`, so its bounce marker was silently never written.
 async function trackClientEmailHealth(service: any, row: any, status: string) {
   try {
     const to = String((row.to_emails || [])[0] || '').trim().toLowerCase()
@@ -121,13 +125,13 @@ async function trackClientEmailHealth(service: any, row: any, status: string) {
     if (status === 'bounced' || status === 'complained') {
       const { error } = await service.from('clients')
         .update({ email_bounced_at: new Date().toISOString(), email_bounce_kind: status === 'complained' ? 'complaint' : 'bounce' })
-        .eq('workspace_id', row.workspace_id).eq('email', to)
+        .eq('workspace_id', row.workspace_id).ilike('email', escapeLike(to))
       if (error) console.error('[resend-webhook] could not mark client email bounce:', error.message)
     } else if (status === 'delivered') {
       // Only a plain bounce clears on delivery — a spam complaint stays until the address is changed.
       const { error } = await service.from('clients')
         .update({ email_bounced_at: null, email_bounce_kind: null })
-        .eq('workspace_id', row.workspace_id).eq('email', to).eq('email_bounce_kind', 'bounce')
+        .ilike('email', escapeLike(to)).eq('email_bounce_kind', 'bounce')
       if (error) console.error('[resend-webhook] could not clear client email bounce:', error.message)
     }
   } catch (e) {

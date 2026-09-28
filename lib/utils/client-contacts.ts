@@ -58,7 +58,10 @@ export async function withPrimaryContactCc(
     q = routedTypes.length
       ? q.or(`is_primary.eq.true,role_type.in.(${routedTypes.join(',')})`)
       : q.eq('is_primary', true)
-    const { data: rows } = await q
+    // FIX (independent pass 2, section 14): no ORDER BY, so when more matching contacts existed than the
+    // MAX_CC_EMAILS cap has room for, WHICH ones were kept was whatever order Postgres returned — the client's
+    // designated primary contact could be the one dropped. Primary first, then oldest first (stable).
+    const { data: rows } = await q.order('is_primary', { ascending: false }).order('created_at', { ascending: true })
 
     const seen = new Set([clientEmail, ...cc].map(e => (e || '').toLowerCase().trim()).filter(Boolean))
     const extra: string[] = []

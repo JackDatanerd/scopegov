@@ -4,6 +4,8 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { wouldExceedLimit, isOverLimit, projectLimitMessage } from '@/lib/utils/project-limit'
 import { insertAuditRow } from '@/lib/utils/audit'
 import { fetchPaged } from '@/lib/utils/paginate'
+import { parseClientInput } from '@/lib/utils/client-input'
+import { escapeLike } from '@/lib/utils/escape-like'
 import {
   parseProjectName, parseOptionalText, parseProjectType, parseContractValue,
   parseCurrencyCode, parseStartDate, parseRetainerMonths,
@@ -89,54 +91,30 @@ export async function POST(request: NextRequest) {
     if (!resolvedClientId && newClient?.name && newClient?.email) {
       if (!hasPermission(session, 'VIEW_CLIENT_DATA'))
         return NextResponse.json({ error: 'Missing permission: VIEW_CLIENT_DATA' }, { status: 403 })
-      const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-      if (typeof newClient.name !== 'string' || typeof newClient.email !== 'string' || !EMAIL_RE.test(newClient.email.trim()))
-        return NextResponse.json({ error: 'Please enter a valid email address for the new client' }, { status: 400 })
-      // FIX (Projects & Dashboard deep audit): this checked newClient.name was
-      // a non-empty string but never `.trim()`ed it first — unlike POST
-      // /api/clients, which requires `name?.trim()`. A whitespace-only name
-      // passed both checks here and was then stored as `''`
-      // (clients.name is NOT NULL with no CHECK on content), silently
-      // producing a client with a blank name in every list/dropdown that
-      // reads it.
-      if (!newClient.name.trim())
-        return NextResponse.json({ error: 'Please enter a name for the new client' }, { status: 400 })
+      // FIX (independent pass 2, section 14 trace): this branch was a second, weaker copy of POST /api/clients —
+      // no length caps (name 200 / email 254), an EXACT-match duplicate lookup (an existing "Jane@Acme.com" was
+      // not found for "jane@acme.com", so a case-variant duplicate client was inserted), and a plain insert
+      // whose unique-constraint race surfaced as a 500 after the person had filled in the whole project form.
+      // It now validates with the same parseClientInput and creates through the same create_client RPC (the
+      // duplicate check and insert run under one advisory lock, case-insensitively); an existing client with
+      // that address — including one that won a race — is simply reused, as before.
+      const parsedClient = parseClientInput({ name: newClient.name, email: newClient.email }, 'create')
+      if (!parsedClient.ok) {
+        const msg = /email/i.test(parsedClient.error) ? `${parsedClient.error} for the new client` : parsedClient.error
+        return NextResponse.json({ error: msg }, { status: 400 })
+      }
+      const cu = parsedClient.updates as any
 
-      // maybeSingle: `.single()` errors (data:null) on a duplicate, which
-      // would fall through to a second insert.
-      const { data: existing } = await (service as any)
-        .from('clients')
-        .select('id, name, status')
-        .eq('workspace_id', session.workspaceId)
-        .eq('email', newClient.email.toLowerCase().trim())
-        .maybeSingle()
+      let existingClient: { id: string; name: string; status: string | null } | null = null
+      const { data: created, error: clientErr } = await (service as any).rpc('create_client', {
+        p_workspace_id: session.workspaceId, p_name: cu.name, p_email: cu.email,
+        p_company_name: null, p_cc_emails: [], p_phone: null, p_notes: null, p_timezone: null,
+        p_billing_address: null, p_vat_number: null, p_payment_terms_note: null,
+      })
+      if (clientErr && clientErr.code !== '23505') throw new Error(clientErr.message)
 
-      if (existing) {
-        resolvedClientId = existing.id
-        // Re-using an archived client's email reactivates it (not doing so
-        // left the client invisible on the Clients page).
-        if (existing.status === 'archived') {
-          await (service as any).from('clients').update({ status: 'active' }).eq('id', existing.id)
-          await insertAuditRow(service, {
-            workspace_id: session.workspaceId, actor_id: session.id,
-            actor_email: session.email, actor_name: session.name,
-            event_type: 'client.reactivated', entity_type: 'client',
-            entity_id: existing.id, entity_name: existing.name,
-            metadata: { reason: 'new_project' },
-          })
-        }
-      } else {
-        const { data: created, error: clientErr } = await (service as any)
-          .from('clients')
-          .insert({
-            workspace_id: session.workspaceId,
-            name:         newClient.name.trim(),
-            email:        newClient.email.toLowerCase().trim(),
-          })
-          .select('id')
-          .single()
-        if (clientErr) throw new Error(clientErr.message)
-        resolvedClientId = created.id
+      if (!clientErr && created?.ok) {
+        resolvedClientId = created.client_id
         // FIX (independent pass, section 14 trace): clients created through project creation left no
         // `client.created` audit row (POST /api/clients writes one), so the client's history started
         // with an unexplained record.
@@ -144,9 +122,29 @@ export async function POST(request: NextRequest) {
           workspace_id: session.workspaceId, actor_id: session.id,
           actor_email: session.email, actor_name: session.name,
           event_type: 'client.created', entity_type: 'client',
-          entity_id: created.id, entity_name: newClient.name.trim(),
+          entity_id: created.client_id, entity_name: cu.name,
           metadata: { via: 'project_creation' },
         })
+      } else {
+        // Already exists (RPC said so, or the unique constraint did) — look it up case-insensitively.
+        const lookup = created?.existing_id
+          ? await (service as any).from('clients').select('id, name, status').eq('id', created.existing_id).eq('workspace_id', session.workspaceId).maybeSingle()
+          : await (service as any).from('clients').select('id, name, status').eq('workspace_id', session.workspaceId).ilike('email', escapeLike(cu.email)).limit(1).maybeSingle()
+        existingClient = lookup.data
+        if (!existingClient) throw new Error('Could not create or find the client for this email')
+        resolvedClientId = existingClient.id
+        // Re-using an archived client's email reactivates it (not doing so
+        // left the client invisible on the Clients page).
+        if (existingClient.status === 'archived') {
+          await (service as any).from('clients').update({ status: 'active' }).eq('id', existingClient.id)
+          await insertAuditRow(service, {
+            workspace_id: session.workspaceId, actor_id: session.id,
+            actor_email: session.email, actor_name: session.name,
+            event_type: 'client.reactivated', entity_type: 'client',
+            entity_id: existingClient.id, entity_name: existingClient.name,
+            metadata: { reason: 'new_project' },
+          })
+        }
       }
     }
 

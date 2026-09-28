@@ -98,3 +98,33 @@ describe('client-reminders — "coming due" heads-up', () => {
     expect(h.invoiceEmails).toHaveLength(0)
   })
 })
+
+// FEATURE (independent pass 2, section 14): the Resend webhook's bounce / spam-complaint marker on the client is
+// now honoured — the cron no longer re-mails an address that is known to be dead or complaining.
+describe('client-reminders — bounced client address', () => {
+  const bouncedClient = (kind: 'bounce' | 'complaint' | null) => ({
+    name: 'Acme', email: 'pay@acme.test', cc_emails: [], email_bounced_at: kind ? '2026-09-01T00:00:00.000Z' : null,
+  })
+  const withClient = (clients: Row) => invoice({ projects: { id: 'p1', name: 'Acme site', client_id: 'c1', deleted_at: null, clients } })
+
+  it('sends nothing to a client whose address bounced, records nothing as sent, and counts the skip', async () => {
+    h.db = seed([withClient(bouncedClient('bounce'))])
+    const { body } = await run()
+    expect(h.invoiceEmails).toHaveLength(0)
+    expect(body.invoiceDueSoonRemindersSent).toBe(0)
+    expect(body.remindersSkippedBouncedAddress).toBe(1)
+    expect(h.db.tables.audit_log ?? []).toHaveLength(0)
+  })
+
+  it('a spam complaint is skipped the same way', async () => {
+    h.db = seed([withClient(bouncedClient('complaint'))])
+    await run()
+    expect(h.invoiceEmails).toHaveLength(0)
+  })
+
+  it('reminders resume as soon as the marker is cleared', async () => {
+    h.db = seed([withClient(bouncedClient(null))])
+    await run()
+    expect(h.invoiceEmails).toHaveLength(1)
+  })
+})

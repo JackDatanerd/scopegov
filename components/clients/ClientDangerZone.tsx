@@ -22,31 +22,66 @@
 // specifically meant to carry over. Combined into one alert with contacts_dropped rather than two
 // separate blocking popups when a merge happens to hit both caps at once.
 
+// FIX (independent pass 2, section 14): the list of clients to merge into was fetched server-side with
+// `.limit(500)` and no search — in a workspace with more than 500 clients, everything past #500 (A–Z) could
+// not be chosen, with no hint why. Targets are now loaded on demand from GET /api/clients (paged up to 5,000,
+// with a `truncated` flag) when the merge picker is opened, and the picker has a search box. The merge
+// confirm text also now says what happens to the source's billing/notes fields (migration 098).
+
 'use client'
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 
 interface Other { id: string; name: string; email: string | null; status: string | null }
 
+const MAX_OPTIONS_SHOWN = 300
+
 export default function ClientDangerZone({
-  clientId, clientName, visibleProjectCount, totalProjectCount, others, canMerge, canDelete,
+  clientId, clientName, visibleProjectCount, totalProjectCount, canMerge, canDelete,
 }: {
   clientId: string; clientName: string; visibleProjectCount: number; totalProjectCount: number
-  others: Other[]; canMerge: boolean; canDelete: boolean
+  canMerge: boolean; canDelete: boolean
 }) {
   const router = useRouter()
   const [merging, setMerging] = useState(false)
   const [targetId, setTargetId] = useState('')
+  const [others, setOthers] = useState<Other[] | null>(null)
+  const [othersTruncated, setOthersTruncated] = useState(false)
+  const [loadingOthers, setLoadingOthers] = useState(false)
+  const [filter, setFilter] = useState('')
   const [busy, setBusy] = useState<'merge' | 'delete' | null>(null)
   const [error, setError] = useState('')
 
   if (!canMerge && !canDelete) return null
 
+  async function openMerge() {
+    setMerging(true); setError('')
+    if (others) return
+    setLoadingOthers(true)
+    try {
+      const res = await fetch('/api/clients')
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json.error || 'Could not load clients')
+      setOthers((json.clients || []).filter((c: any) => c.id !== clientId)
+        .map((c: any) => ({ id: c.id, name: c.name, email: c.email ?? null, status: c.status ?? null })))
+      setOthersTruncated(json.truncated === true)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not load clients')
+      setMerging(false)
+    } finally { setLoadingOthers(false) }
+  }
+
+  const q = filter.trim().toLowerCase()
+  const matching = (others || []).filter(o => !q || o.name.toLowerCase().includes(q) || (o.email || '').toLowerCase().includes(q))
+  const shown = matching.slice(0, MAX_OPTIONS_SHOWN)
+  const selected = (others || []).find(o => o.id === targetId)
+  if (selected && !shown.some(o => o.id === selected.id)) shown.unshift(selected)
+
   async function doMerge() {
-    const target = others.find(o => o.id === targetId)
+    const target = (others || []).find(o => o.id === targetId)
     if (!target) return
     if (!window.confirm(
-      `Merge “${clientName}” into “${target.name}”?\n\nAll of ${clientName}'s projects, and as many of its contacts and CC addresses as fit under ${target.name}'s limits, move to ${target.name}; ${clientName} is then removed. This can't be undone.`,
+      `Merge “${clientName}” into “${target.name}”?\n\nAll of ${clientName}'s projects, and as many of its contacts and CC addresses as fit under ${target.name}'s limits, move to ${target.name}; ${clientName} is then removed. ${target.name}'s own details always win — ${clientName}'s billing address, VAT number, phone, timezone, payment terms, company and notes are only copied across where ${target.name} has none. This can't be undone.`,
     )) return
     setBusy('merge'); setError('')
     try {
@@ -76,6 +111,9 @@ export default function ClientDangerZone({
           `${json.cc_dropped} CC address${json.cc_dropped === 1 ? '' : 'es'} from ${clientName} ` +
           `(possibly including its own email) could not be carried over and ${json.cc_dropped === 1 ? 'was' : 'were'} not kept.`
         )
+      }
+      if (json.notes_truncated === true) {
+        warnings.push(`${target.name}'s notes were too long to hold all of ${clientName}'s notes, so the end of them was cut off.`)
       }
       if (warnings.length > 0) window.alert(`Merged. ${warnings.join(' ')}`)
       router.push(`/clients/${targetId}`)
@@ -109,24 +147,38 @@ export default function ClientDangerZone({
 
         {canMerge && (
           !merging ? (
-            <button className="btn btn-ghost btn-sm" onClick={() => setMerging(true)} disabled={others.length === 0}
-              title={others.length === 0 ? 'There is no other client to merge into' : 'Merge this client into another one'}>
-              <i className="ti ti-git-merge" style={{ fontSize: 13 }} /> Merge into another client…
+            <button className="btn btn-ghost btn-sm" onClick={openMerge} disabled={loadingOthers}
+              title="Merge this client into another one">
+              {loadingOthers ? <span className="spin" /> : <><i className="ti ti-git-merge" style={{ fontSize: 13 }} /> Merge into another client…</>}
             </button>
           ) : (
             <div>
               <label className="flbl">Merge into</label>
-              <select className="finp" value={targetId} onChange={e => setTargetId(e.target.value)} style={{ marginBottom: 8 }}>
-                <option value="">Choose the client to keep…</option>
-                {others.map(o => (
-                  <option key={o.id} value={o.id}>{o.name}{o.email ? ` — ${o.email}` : ''}{o.status === 'archived' ? ' (archived)' : ''}</option>
-                ))}
-              </select>
+              {(others || []).length === 0 ? (
+                <p style={{ fontSize: 12, color: 'var(--text-3)', margin: '0 0 8px' }}>There is no other client to merge into.</p>
+              ) : (
+                <>
+                  <input className="finp" value={filter} onChange={e => setFilter(e.target.value)}
+                    placeholder="Search by name or email…" style={{ marginBottom: 6 }} />
+                  <select className="finp" value={targetId} onChange={e => setTargetId(e.target.value)} style={{ marginBottom: 8 }}>
+                    <option value="">{matching.length === 0 ? 'No client matches your search' : 'Choose the client to keep…'}</option>
+                    {shown.map(o => (
+                      <option key={o.id} value={o.id}>{o.name}{o.email ? ` — ${o.email}` : ''}{o.status === 'archived' ? ' (archived)' : ''}</option>
+                    ))}
+                  </select>
+                  {matching.length > MAX_OPTIONS_SHOWN && (
+                    <p style={{ fontSize: 11, color: 'var(--text-4)', margin: '0 0 8px' }}>Showing the first {MAX_OPTIONS_SHOWN} of {matching.length} matches — type more to narrow it down.</p>
+                  )}
+                  {othersTruncated && (
+                    <p style={{ fontSize: 11, color: 'var(--text-4)', margin: '0 0 8px' }}>This workspace has more clients than can be listed here; the client you want may not appear.</p>
+                  )}
+                </>
+              )}
               <div style={{ display: 'flex', gap: 8 }}>
                 <button className="btn btn-primary btn-sm" disabled={!targetId || busy !== null} onClick={doMerge}>
                   {busy === 'merge' ? <span className="spin" /> : 'Merge'}
                 </button>
-                <button className="btn btn-ghost btn-sm" disabled={busy !== null} onClick={() => { setMerging(false); setTargetId('') }}>Cancel</button>
+                <button className="btn btn-ghost btn-sm" disabled={busy !== null} onClick={() => { setMerging(false); setTargetId(''); setFilter('') }}>Cancel</button>
               </div>
             </div>
           )

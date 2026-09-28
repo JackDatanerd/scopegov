@@ -19,7 +19,7 @@ export const MAX_CC_EMAILS = 10
 
 export const CLIENT_LIMITS = {
   name: 200, companyName: 200, email: 254, phone: 50, notes: 5000,
-  vatNumber: 50, paymentTermsNote: 1000, addressPart: 200,
+  vatNumber: 50, paymentTermsNote: 1000, addressPart: 200, contactRole: 100,
 } as const
 
 export const CONTACT_ROLE_TYPES = ['billing', 'scope', 'approver', 'other'] as const

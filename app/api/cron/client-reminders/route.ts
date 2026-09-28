@@ -60,6 +60,7 @@ export async function POST(request: NextRequest) {
   const nowIso = now.toISOString()
   const portalBase = process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL
   const sent = { sow: 0, co: 0, invoice: 0, invoiceDueSoon: 0 }
+  let skippedBounced = 0
 
   await run.step('send automatic client reminders', async () => {
     const workspaces = await fetchAll<any>('client-reminders workspaces select', (from, to) =>
@@ -75,7 +76,7 @@ export async function POST(request: NextRequest) {
         const replyTo   = await resolveReplyTo(service, ws.id, null)
 
         // ── gather candidates ────────────────────────────────────────────────────────────
-        const clientEmbed = 'clients(name, email, cc_emails)'
+        const clientEmbed = 'clients(name, email, cc_emails, email_bounced_at)'
         const todayStr = nowIso.slice(0, 10)
         const soonStr  = new Date(now.getTime() + DUE_SOON_DAYS * 86400000).toISOString().slice(0, 10)
         const [sows, cos, invoices, dueSoonInvoices] = await Promise.all([
@@ -153,6 +154,13 @@ export async function POST(request: NextRequest) {
             const project = doc.projects
             const client  = project?.clients
             if (!client?.email) continue // nowhere to send; the manual button reports this loudly, a cron just skips
+            // FEATURE (independent pass 2, section 14): the Resend webhook marks a client's primary address
+            // when mail to it bounced or drew a spam complaint, but nothing consulted that marker — this cron
+            // kept re-mailing a dead (or complaining) address every cycle up to `max` times per document, which
+            // is exactly what damages sender reputation. Skipped BEFORE the claim row is written so nothing is
+            // recorded as sent; reminders resume by themselves once the marker clears (a later successful
+            // delivery clears a plain bounce; correcting the address clears either kind).
+            if (client.email_bounced_at) { skippedBounced++; continue }
 
             // Claim first (like the manual routes) so a crash after sending can't cause a duplicate tomorrow.
             const claimed = await insertAuditRow(service, {
@@ -202,7 +210,7 @@ export async function POST(request: NextRequest) {
         }
       } catch (e) { run.rowError(`workspace ${ws.id}`, e) }
     }
-    Object.assign(run.result, { sowRemindersSent: sent.sow, coRemindersSent: sent.co, invoiceRemindersSent: sent.invoice, invoiceDueSoonRemindersSent: sent.invoiceDueSoon })
+    Object.assign(run.result, { sowRemindersSent: sent.sow, coRemindersSent: sent.co, invoiceRemindersSent: sent.invoice, invoiceDueSoonRemindersSent: sent.invoiceDueSoon, remindersSkippedBouncedAddress: skippedBounced })
   })
 
   const { body, status } = await run.finish()
