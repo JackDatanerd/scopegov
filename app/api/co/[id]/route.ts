@@ -6,7 +6,7 @@ import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
 import { isAdjustmentLine } from '@/lib/utils/rescale-line-items'
 import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
-import { computeCoTotals } from '@/lib/documents/co-totals'
+import { computeCoTotals, parseStoredLineItems } from '@/lib/documents/co-totals'
 import { parseCoFields } from '@/lib/documents/co-input'
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -34,7 +34,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       // FIX (independent pass, section 13 trace): the OUTER guardian_flags embed is ambiguous for the
       // same reason — change_orders.flag_id → guardian_flags (fk_co_flag) AND
       // guardian_flags.change_order_id → change_orders both exist — so it needs its own hint.
-      .select('*, projects(id,name,currency), guardian_flags!fk_co_flag(description,severity,sow_reference,guardian_checks!fk_flag_check(content))')
+      .select('*, projects(id,name,currency,type,retainer_duration_months), guardian_flags!fk_co_flag(description,severity,sow_reference,guardian_checks!fk_flag_check(content))')
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!co) return NextResponse.json({ error: 'Not found' }, { status: 404 })
@@ -82,7 +82,13 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     }
 
     return NextResponse.json({
-      co: { ...safeCoRest, currency: co.projects?.currency, flagRequestText },
+      co: {
+        ...safeCoRest, currency: co.projects?.currency, flagRequestText,
+        // The editor shows the retainer-renewal controls only on a retainer, and asks for a term only when the
+        // retainer has a fixed end to extend.
+        projectType: co.projects?.type ?? null,
+        retainerOpenEnded: co.projects?.type === 'retainer' && !(Number(co.projects?.retainer_duration_months) > 0),
+      },
       pendingApproval,
       permissions: {
         canEdit: hasPermission(session, 'CREATE_CHANGE_ORDERS'),
@@ -105,7 +111,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const service = createServiceClient()
     const { data: co } = await (service as any)
       .from('change_orders')
-      .select('id,status,project_id,line_items,tax_rate,tax_inclusive')
+      .select('id,status,project_id,line_items,tax_rate,tax_inclusive,is_credit,is_retainer_renewal,projects(type)')
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!co) return NextResponse.json({ error: 'Not found' }, { status: 404 })
@@ -124,7 +130,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const body = await request.json().catch(() => null)
     if (!body || typeof body !== 'object')
       return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
-    const { note, lineItems, taxRate, taxInclusive, isRetainerRenewal, renewalTermMonths } = body
+    const { note, lineItems, taxRate, taxInclusive, isRetainerRenewal, renewalTermMonths, isCredit } = body
 
     const parsedFields = parseCoFields(body)
     if (!parsedFields.ok) return NextResponse.json({ error: parsedFields.error }, { status: 400 })
@@ -132,6 +138,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       return NextResponse.json({ error: 'note must be text' }, { status: 400 })
     if (isRetainerRenewal !== undefined && typeof isRetainerRenewal !== 'boolean')
       return NextResponse.json({ error: 'isRetainerRenewal must be true or false' }, { status: 400 })
+    if (isCredit !== undefined && typeof isCredit !== 'boolean')
+      return NextResponse.json({ error: 'isCredit must be true or false' }, { status: 400 })
     const renewalTerm = parseRenewalTerm(renewalTermMonths)
     if (!renewalTerm.ok) return NextResponse.json({ error: renewalTerm.error }, { status: 400 })
     if (lineItems !== undefined && !Array.isArray(lineItems))
@@ -140,14 +148,26 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // Partial update: only fields that are present change. This route used to behave like PUT —
     // a body that left out `note`, `lineItems` or `isRetainerRenewal` silently blanked them
     // (an omitted list saved as an EMPTY list, an omitted flag un-marked a retainer renewal).
+    const effIsCredit: boolean = isCredit !== undefined ? isCredit : !!co.is_credit
+    const effIsRenewal: boolean = isRetainerRenewal !== undefined ? isRetainerRenewal : !!co.is_retainer_renewal
+    if (effIsCredit && effIsRenewal)
+      return NextResponse.json({ error: 'A credit change order cannot also be a retainer renewal.' }, { status: 400 })
+    if (isRetainerRenewal === true && (Array.isArray(co.projects) ? co.projects[0]?.type : co.projects?.type) !== 'retainer')
+      return NextResponse.json({ error: 'Only a retainer project can have a retainer renewal change order.' }, { status: 400 })
+    // Changing the mode re-derives the money, so it is a financial edit.
+    const moneyChange = lineItems !== undefined || taxRate !== undefined || taxInclusive !== undefined
+      || (isCredit !== undefined && isCredit !== !!co.is_credit)
+
     const update: Record<string, unknown> = { updated_at: new Date().toISOString() }
     if (parsedFields.fields.title !== undefined)              update.title = parsedFields.fields.title
     if (parsedFields.fields.scopeImpactNote !== undefined)    update.scope_impact_note = parsedFields.fields.scopeImpactNote
     if (parsedFields.fields.timelineImpactDays !== undefined) update.timeline_impact_days = parsedFields.fields.timelineImpactDays
     if (note !== undefined)               update.note = sanitizeRichTextOrNull(note)
     if (isRetainerRenewal !== undefined)  update.is_retainer_renewal = isRetainerRenewal
-    // The term only means something on a renewal: un-ticking the box clears it.
-    if (isRetainerRenewal === false)      update.renewal_term_months = null
+    if (isCredit !== undefined)           update.is_credit = isCredit
+    // The term only means something on a renewal: un-ticking the box clears it, and a term sent for a CO
+    // that is not a renewal is dropped instead of being stored on a row that ignores it.
+    if (isRetainerRenewal === false || (isRetainerRenewal === undefined && !effIsRenewal)) update.renewal_term_months = null
     else if (renewalTermMonths !== undefined) update.renewal_term_months = renewalTerm.value
 
     // FIX (deep audit round 2, CO logic — flagship finding, server-side belt to
@@ -160,12 +180,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // reason to touch these fields (the editor already renders them as a locked
     // "hidden" state for exactly this person), so refuse rather than trust the client
     // not to send them.
-    if ((lineItems !== undefined || taxRate !== undefined || taxInclusive !== undefined)
-        && !hasPermission(session, 'VIEW_FINANCIALS')) {
+    if (moneyChange && !hasPermission(session, 'VIEW_FINANCIALS')) {
       return NextResponse.json({ error: 'Missing permission: VIEW_FINANCIALS' }, { status: 403 })
     }
 
-    if (lineItems !== undefined || taxRate !== undefined || taxInclusive !== undefined) {
+    if (moneyChange) {
       // FIX (deep audit round 2, CO logic — bug #2): only ids that already carry
       // kind === 'adjustment' on THIS CO may keep claiming it — see co-totals.ts
       // for why the flag can no longer be trusted from the request body alone.
@@ -175,15 +194,21 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       // signature (ReadonlySet<string> | readonly string[]) then correctly rejects. The
       // .map callback itself always returns a real string; only the inference was wrong.
       const existingAdjustmentIds = new Set<string>(
-        (Array.isArray(co.line_items) ? co.line_items : [])
+        parseStoredLineItems(co.line_items)
           .filter((l: any) => isAdjustmentLine(l) && typeof l?.id === 'string')
           .map((l: any) => l.id as string)
       )
+      // Stored lines of a credit CO are negative (see co-totals.ts); when the money is re-derived from what is
+      // stored rather than from the request, feed them back in as the positive amounts the editor works in.
+      const storedItems: any[] = parseStoredLineItems(co.line_items)
+      const baseItems = co.is_credit ? storedItems.map((l: any) => ({ ...l, rate: Math.abs(Number(l?.rate) || 0) })) : storedItems
       const totals = computeCoTotals(
-        lineItems ?? co.line_items ?? [],
+        lineItems ?? baseItems,
         taxRate ?? co.tax_rate ?? 0,
         taxInclusive ?? co.tax_inclusive,
-        existingAdjustmentIds,
+        // Credit COs have no negotiation lines; an ordinary CO switched to credit sheds any it carried.
+        effIsCredit ? undefined : existingAdjustmentIds,
+        { credit: effIsCredit },
       )
       if (!totals.ok) return NextResponse.json({ error: totals.error }, { status: 400 })
       update.line_items    = totals.totals.lineItems

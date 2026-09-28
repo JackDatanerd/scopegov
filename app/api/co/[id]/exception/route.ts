@@ -82,6 +82,24 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     estimatedValue = Math.round(estimatedValue * 100) / 100
 
     const now = new Date().toISOString()
+    const grantedWhat = grantedWhatInput || co.title
+
+    // The exceptions_log row is the record Reports and the at-risk rollup read, so it is written FIRST. It used to
+    // be written after the status flip and treated as non-fatal — a failed insert left a CO marked 'exception_granted'
+    // with no ledger entry, and nothing could retry it (the CO was already terminal). Now a failed insert aborts
+    // before any state changes; a lost race below removes the row again.
+    const { data: excRow, error: excErr } = await (service as any).from('exceptions_log').insert({
+      project_id:      co.project_id,
+      workspace_id:    session.workspaceId,
+      flag_id:         co.flag_id || null,
+      deliverable:     co.title,
+      granted_what:    grantedWhat,
+      granted_by:      session.id,
+      estimated_value: estimatedValue,
+      reason:          reasonText,
+    }).select('id').single()
+    if (excErr || !excRow) throw new Error(`exceptions_log insert failed: ${excErr?.message || 'no row'}`)
+
     // CAS, same shape as close()'s: only the request that actually observes and flips this exact status
     // proceeds — a concurrent close/withdraw/client-response can't be silently overwritten.
     // Token deliberately left alone (matching close()'s own reasoning, see that file): the portal's
@@ -91,9 +109,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .update({ status: 'exception_granted', updated_at: now })
       .eq('id', id).eq('status', co.status)
       .select('id')
-    if (grantErr) throw new Error(grantErr.message)
-    if (!grantedCo || grantedCo.length === 0)
+    if (grantErr || !grantedCo || grantedCo.length === 0) {
+      await (service as any).from('exceptions_log').delete().eq('id', excRow.id)
+      if (grantErr) throw new Error(grantErr.message)
       return NextResponse.json({ error: 'This change order was already acted on by another action' }, { status: 409 })
+    }
 
     // Same orphaned-approval-request cleanup close() does: a 'draft' CO can have a pending 'co' approval
     // in flight, a 'countered' one a pending 'co_counter' — both would otherwise sit in the approver's
@@ -109,23 +129,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       reason: 'CO granted as an exception',
     })
 
-    const grantedWhat = grantedWhatInput || co.title
-
-    const { error: excErr } = await (service as any).from('exceptions_log').insert({
-      project_id:      co.project_id,
-      workspace_id:    session.workspaceId,
-      flag_id:         co.flag_id || null,
-      deliverable:     co.title,
-      granted_what:    grantedWhat,
-      granted_by:      session.id,
-      estimated_value: estimatedValue,
-      reason:          reasonText,
-    })
-    // Not fatal to the grant itself (the CO's own status change and audit row are the source of truth
-    // for "this happened"), but must never be silent — an exception without its Reports/at-risk-value
-    // entry is exactly the kind of gap this pass exists to close.
-    if (excErr) console.error('CO exception grant: exceptions_log insert failed (non-fatal):', excErr.message)
-
     // Resolve the linked flag as an EXCEPTION — not the 'open'/change_order_id:null reversion close()
     // and withdraw() do. Those represent "this CO went away, the underlying request is unresolved
     // again"; here the request was granted, so the flag's own history should say so, exactly the way
@@ -133,11 +136,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (co.flag_id) {
       const { data: flag } = await (service as any)
         .from('guardian_flags').select('id,status').eq('id', co.flag_id).single()
-      if (flag?.status === 'converted_to_co') {
+      // A CO that was declined (or expired) had its flag released back to 'open' by that path, so requiring
+      // 'converted_to_co' here left the flag open after the work had been granted — Reports then counted the same
+      // value twice (once as at-risk, once as an exception). 'open' is resolvable too; the change_order_id
+      // filter below still refuses a flag a newer revision has re-claimed.
+      if (flag && ['converted_to_co', 'open'].includes(flag.status)) {
         const { error: flagErr } = await (service as any).from('guardian_flags').update({
           status: 'resolved', resolution: 'exception',
           resolved_by: session.id, resolved_at: now, updated_at: now,
-        }).eq('id', co.flag_id).eq('status', 'converted_to_co')
+        }).eq('id', co.flag_id).in('status', ['converted_to_co', 'open'])
           // Only resolve a flag still linked to THIS CO (or to nothing) — see app/api/co/route.ts.
           .or(`change_order_id.eq.${co.id},change_order_id.is.null`)
         if (flagErr) console.error('CO exception grant: linked flag resolution failed (non-fatal):', flagErr.message)
@@ -162,9 +169,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     })
 
     const client = co.projects?.clients
-    const wasSentToClient = co.status !== 'draft'
+    // Only a client who can still act on the CO needs to hear it was granted (see close/route.ts).
+    const wasSentToClient = ['awaiting_response', 'stalled', 'countered', 'awaiting_countersignature'].includes(co.status)
     let clientNotified = true
-    if (wasSentToClient && client?.email) {
+    if (wasSentToClient && client?.email && !session.emailVerifiedAt) clientNotified = false
+    else if (wasSentToClient && client?.email) {
       const cc = await withPrimaryContactCc(service, co.projects?.client_id, client.email, client.cc_emails, 'co')
       const replyTo = await resolveReplyTo(service, session.workspaceId, session.email)
       const delivery = await checkedSend(() => sendCoExceptionGrantedEmail({

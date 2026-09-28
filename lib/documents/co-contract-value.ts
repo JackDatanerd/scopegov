@@ -28,7 +28,11 @@
 // relative to another still reports the value as it stood at the moment
 // THIS one was accepted, not a value influenced by COs that came later).
 export async function getContractValueBefore(
-  service: any, projectId: string, coId: string, baseContractValue: number | null
+  service: any, projectId: string, coId: string, baseContractValue: number | null,
+  // A retainer-renewal CO REPLACES the monthly rate. For one that is not yet accepted, `baseContractValue` IS the
+  // current monthly rate (finalize-co overwrites contract_value on acceptance) — adding the project's other
+  // amendments on top, as for an ordinary CO, printed a "Current Monthly Rate" that was not the rate at all.
+  opts: { isRenewal?: boolean } = {}
 ): Promise<number | null> {
   if (baseContractValue == null) return null
 
@@ -57,6 +61,7 @@ export async function getContractValueBefore(
   // client-facing Impact Analysis block when the true current value was
   // 60,000 — understated by every previously-accepted CO. A pending CO's
   // "before" is the base plus every amendment accepted to date.
+  if (!ownAmendment && opts.isRenewal) return baseContractValue
   if (!ownAmendment) {
     const { data: allAmendments } = await service
       .from('amendments')

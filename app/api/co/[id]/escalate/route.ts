@@ -51,7 +51,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // FIX (section-10 audit, feature gap — CO expiry): 'expired' added —
     // a dead signing link is exactly as terminal as accepted/closed/
     // withdrawn for this purpose; nothing left to escalate.
-    if (['accepted', 'closed', 'withdrawn', 'exception_granted', 'expired'].includes(co.status))
+    // A draft has not gone anywhere yet — there is no open negotiation to chase.
+    if (['draft', 'accepted', 'closed', 'withdrawn', 'exception_granted', 'expired'].includes(co.status))
       return NextResponse.json(
         { error: `This change order is ${co.status.replace(/_/g, ' ')} — there's nothing open to escalate.` },
         { status: 400 }
@@ -124,11 +125,17 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const previousEscalation = { to: (co as any).escalated_to ?? null, note: (co as any).escalation_note ?? null }
 
     // Spec §6.3: escalation NEVER changes status — it is an overlay
-    await (service as any).from('change_orders').update({
+    // Guarded on the status just read so an escalation can't land on a CO that closed in the meantime, and the
+    // result is checked — this write's error was ignored, so a failed update still notified the assignee and
+    // reported success for an escalation that was never recorded.
+    const { data: escalated, error: escErr } = await (service as any).from('change_orders').update({
       escalated_to:    resolvedEscalateTo || session.id,
       escalation_note: safeNote,
       updated_at:      now,
-    }).eq('id', id)
+    }).eq('id', id).eq('status', co.status).select('id')
+    if (escErr) throw new Error(escErr.message)
+    if (!escalated || escalated.length === 0)
+      return NextResponse.json({ error: 'This change order was just acted on by someone else — refresh and try again.' }, { status: 409 })
 
     // Event 24: escalation notification
     // FIX (audit): 'escalation' has a real toggle in Settings → Notifications

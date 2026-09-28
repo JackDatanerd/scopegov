@@ -3,7 +3,7 @@ export const runtime = 'nodejs'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
-import { sendCoDocument, validateCoForSend } from '@/lib/documents/send-co'
+import { sendCoDocument, validateCoForSend, renewalNeedsTerm } from '@/lib/documents/send-co'
 import { evaluateApprovalGate } from '@/lib/approvals/engine'
 import { sendBlockedReason } from '@/lib/documents/preflight'
 import { canReadProject } from '@/lib/utils/project-access'
@@ -26,8 +26,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // whole query (42703), which silently surfaces as "CO not found".
     const { data: co, error: coFetchErr } = await (service as any)
       .from('change_orders')
-      .select(`id,title,status,total,line_items,version,project_id,is_retainer_renewal,renewal_term_months,
-        projects(id,name,status,currency,type)`)
+      .select(`id,title,status,total,line_items,version,project_id,is_retainer_renewal,renewal_term_months,is_credit,
+        projects(id,name,status,currency,type,retainer_duration_months)`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!co) {
@@ -54,7 +54,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // the client would be asked to accept/decline/sign a document that
     // describes no actual work.
     // Shared with the approval chain's auto-send (sendCoDocument re-runs it).
-    const invalid = validateCoForSend({ total: co.total, lineItems: co.line_items })
+    const invalid = validateCoForSend({ total: co.total, lineItems: co.line_items, isCredit: !!co.is_credit })
     if (invalid) return NextResponse.json({ error: invalid }, { status: 400 })
 
     const project = co.projects
@@ -67,7 +67,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // missing its term but large enough to require approval used to sail through an
     // approver's decision and only fail once auto-send actually fired — burning a
     // real approval cycle on something that was checkable up front.
-    if (co.is_retainer_renewal && project.type === 'retainer' && !co.renewal_term_months)
+    if (renewalNeedsTerm(co, project))
       return NextResponse.json({
         error: 'A retainer renewal needs its term — enter how many months it extends the retainer for.',
       }, { status: 400 })
@@ -110,7 +110,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       documentId:   id,
       projectId:    project.id,
       projectName:  project.name,
-      amount:       co.total || 0,
+      // A credit is stored negative; approval thresholds are about the size of the change either way.
+      amount:       Math.abs(Number(co.total) || 0),
       currency:     project.currency || 'USD',
       documentTitle: co.title,
       requestedBy:  { id: session.id, name: session.name, email: session.email },

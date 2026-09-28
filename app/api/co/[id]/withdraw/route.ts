@@ -124,7 +124,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // to warn them about in that case.
     const client = co.projects?.clients
     let clientNotified = true
-    if (wasSentToClient && client?.email) {
+    if (wasSentToClient && client?.email && !session.emailVerifiedAt) clientNotified = false
+    else if (wasSentToClient && client?.email) {
       const cc = await withPrimaryContactCc(service, co.projects?.client_id, client.email, client.cc_emails, 'co')
       const replyTo = await resolveReplyTo(service, session.workspaceId, session.email)
       const delivery = await checkedSend(() => sendDocumentCancelledEmail({

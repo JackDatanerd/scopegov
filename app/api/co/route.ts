@@ -8,6 +8,7 @@ import { canReadProject } from '@/lib/utils/project-access'
 import { computeCoTotals } from '@/lib/documents/co-totals'
 import { parseCoFields } from '@/lib/documents/co-input'
 import { isTerminalStatus } from '@/lib/utils/project-status'
+import { workspaceTaxDefaults } from '@/lib/documents/tax-defaults'
 
 export async function POST(request: NextRequest) {
   try {
@@ -19,7 +20,7 @@ export async function POST(request: NextRequest) {
     const body    = await request.json().catch(() => null)
     if (!body || typeof body !== 'object')
       return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
-    const { projectId, title, note, lineItems, taxRate, taxInclusive, flagId, timelineImpactDays, scopeImpactNote, isRetainerRenewal, renewalTermMonths } = body
+    const { projectId, title, note, lineItems, taxRate, taxInclusive, flagId, timelineImpactDays, scopeImpactNote, isRetainerRenewal, renewalTermMonths, isCredit } = body
     if (!projectId || typeof projectId !== 'string' || title === undefined || title === null || title === '')
       return NextResponse.json({ error: 'projectId and title required' }, { status: 400 })
     const parsedFields = parseCoFields(body)
@@ -28,6 +29,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'note must be text' }, { status: 400 })
     if (isRetainerRenewal !== undefined && typeof isRetainerRenewal !== 'boolean')
       return NextResponse.json({ error: 'isRetainerRenewal must be true or false' }, { status: 400 })
+    if (isCredit !== undefined && typeof isCredit !== 'boolean')
+      return NextResponse.json({ error: 'isCredit must be true or false' }, { status: 400 })
+    if (isCredit === true && isRetainerRenewal === true)
+      return NextResponse.json({ error: 'A credit change order cannot also be a retainer renewal.' }, { status: 400 })
     const renewalTerm = parseRenewalTerm(renewalTermMonths)
     if (!renewalTerm.ok) return NextResponse.json({ error: renewalTerm.error }, { status: 400 })
     if (lineItems !== undefined && !Array.isArray(lineItems))
@@ -48,7 +53,7 @@ export async function POST(request: NextRequest) {
     // VIEW_OWN_PROJECTS-only holder of CREATE_CHANGE_ORDERS shouldn't be
     // able to create a CO against a project they're not assigned to.
     const { data: project } = await (service as any)
-      .from('projects').select('id, status').eq('id', projectId).eq('workspace_id', session.workspaceId)
+      .from('projects').select('id, status, type').eq('id', projectId).eq('workspace_id', session.workspaceId)
       .is('deleted_at', null).single()
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
     if (!(await canReadProject(service, session, projectId)))
@@ -85,6 +90,11 @@ export async function POST(request: NextRequest) {
     // point instead, same pattern as the SOW side's own hard-blocks
     // (governing law, footing) — cheaper for everyone than discovering it
     // at the client's expense.
+    // Retainer renewal only means something on a retainer (finalize-co and the PDF both ignore it
+    // elsewhere) — refuse it rather than store a flag that silently does nothing.
+    if (isRetainerRenewal === true && project.type !== 'retainer')
+      return NextResponse.json({ error: 'Only a retainer project can have a retainer renewal change order.' }, { status: 400 })
+
     const { data: signedSow } = await (service as any)
       .from('sow_documents').select('id')
       .eq('project_id', projectId).eq('status', 'signed')
@@ -145,7 +155,15 @@ export async function POST(request: NextRequest) {
     // FIX (deep audit round 2, bug #2): deliberately no allowlist passed here —
     // a brand-new CO has no pre-existing line items, so no line on a create
     // request can ever legitimately claim kind: 'adjustment'. See co-totals.ts.
-    const totals = computeCoTotals(lineItems || [], taxRate ?? 0, taxInclusive)
+    // Tax terms the request didn't state fall back to the workspace's billing defaults — the editor pre-fills
+    // them client-side, but a CO created any other way (API caller) used to always get 0%.
+    let effTaxRate: unknown = taxRate
+    let effTaxInclusive: unknown = taxInclusive
+    if (taxRate === undefined && taxInclusive === undefined) {
+      const d = await workspaceTaxDefaults(service, session.workspaceId)
+      effTaxRate = d.taxRate; effTaxInclusive = d.taxInclusive
+    }
+    const totals = computeCoTotals(lineItems || [], effTaxRate ?? 0, effTaxInclusive, undefined, { credit: isCredit === true })
     if (!totals.ok) return NextResponse.json({ error: totals.error }, { status: 400 })
     const { lineItems: items, subtotal, total } = totals.totals
 
@@ -194,6 +212,7 @@ export async function POST(request: NextRequest) {
         // FIX (section-10 audit, 10-B10): PATCH accepted
         // isRetainerRenewal but POST didn't, so a CO could never be
         // created as one — it could only become one on a later save.
+        is_credit:    isCredit === true,
         is_retainer_renewal: isRetainerRenewal === true,
         renewal_term_months: isRetainerRenewal === true ? renewalTerm.value : null,
         // FIX (doc-quality audit round 3, migration 018): captured

@@ -137,7 +137,7 @@ export async function runSigningIntegrity(service: any, opts: IntegrityOptions =
   // ── Accepted change orders ─────────────────────────────────────────────
   const cos = await fetchAll<any>('signing-integrity accepted COs', (from, to) =>
     service.from('change_orders')
-      .select('id, title, workspace_id, project_id, total, line_items, is_retainer_renewal, accepted_at, content_hash, pdf_path, projects!inner(id, name, type, deleted_at)')
+      .select('id, title, workspace_id, project_id, total, line_items, is_retainer_renewal, is_credit, accepted_at, content_hash, pdf_path, projects!inner(id, name, type, deleted_at)')
       .eq('status', 'accepted')
       .gte('accepted_at', oldest)
       .lte('accepted_at', newest)
@@ -166,11 +166,12 @@ export async function runSigningIntegrity(service: any, opts: IntegrityOptions =
             .order('version', { ascending: false }).limit(1).maybeSingle()
           if (!signedSow) throw new Error('no signed SOW to attach the amendment to')
           const lineItems = typeof co.line_items === 'string' ? JSON.parse(co.line_items) : (co.line_items || [])
-          const deliverables: string[] = lineItems.filter((l: any) => !isAdjustmentLine(l)).map((l: any) => l.description).filter(Boolean)
+          const workLines: string[] = lineItems.filter((l: any) => !isAdjustmentLine(l)).map((l: any) => l.description).filter(Boolean)
+          const deliverables: string[] = co.is_credit ? [] : workLines
           const { error: insErr } = await service.from('amendments').insert({
             project_id: co.project_id, workspace_id: co.workspace_id, change_order_id: co.id,
             signed_sow_id: signedSow.id, title: `Amendment — ${co.title}`,
-            added_deliverables: deliverables, removed_deliverables: [],
+            added_deliverables: deliverables, removed_deliverables: co.is_credit ? workLines : [],
             financial_impact: co.total, effective_at: co.accepted_at, pdf_path: '',
           })
           if (insErr) throw new Error(`insert amendment: ${insErr.message}`)

@@ -8,7 +8,7 @@ import { jwtVerify } from 'jose'
 import { formatAddress } from '@/lib/utils/format'
 import { getWorkspaceJwtSecret, isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
 
-const CO_COLUMNS = `id,title,note,status,version,line_items,subtotal,tax_rate,tax_inclusive,
+const CO_COLUMNS = `id,title,note,status,version,is_credit,line_items,subtotal,tax_rate,tax_inclusive,
   total,expires_at,flag_id,workspace_id,accepted_by,accepted_at,client_signature_data,first_viewed_at,
   timeline_impact_days,scope_impact_note,
   projects(id,name,currency,clients(name,email,cc_emails,company_name,billing_address,vat_number),
@@ -214,6 +214,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         clientBillingAddress: formatAddress(co.projects?.clients?.billing_address) || null,
         clientVatNumber:      co.projects?.clients?.vat_number || null,
         version:     co.version,
+        isCredit:    !!co.is_credit,
         expiresAt:   co.expires_at,
         // FIX (portal audit, section 18 — feature gap): scope_impact_note / timeline_impact_days
         // were rendered on the PDF (renderCoPdf) and explicitly labeled in CoEditor.tsx as "shown to

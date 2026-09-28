@@ -15,6 +15,7 @@ import { isTableSection, milestoneBlockLabels, type SowTableRow } from '@/lib/so
 import { formatAddressLines, type LegalAddress } from '@/lib/utils/format'
 import { PDF_FONT, sanitizeForPdf } from '@/lib/pdf/fonts'
 import { mapPdfSymbols } from '@/lib/pdf/pdf-symbols'
+import { coWatermarkLabel } from '@/lib/pdf/co-watermark'
 
 // Phase 11: the ScopeGov credit in the footer of every document is a real
 // hyperlink now, not plain text — same URL everywhere so it's one place to
@@ -96,6 +97,13 @@ export interface CoPdfData {
   // don't break; the badge simply doesn't render without it.
   status?:      string
   isWatermarked?: boolean
+  // Word stamped across a watermarked page. Defaults to DRAFT; a sent-but-unsigned or withdrawn/closed CO is
+  // not a "draft", and stamping it as one misdescribed the document. See coWatermarkLabel().
+  watermarkText?: string
+  // Revision number — printed from v2 on so a revision is distinguishable from the version it replaced.
+  version?: number | null
+  // Credit / descope change order (migration 100): amounts are reductions, lines describe removed scope.
+  isCredit?: boolean
   acceptedBy?:  string
   acceptedAt?:  string
   agencySignatureData?: string | null
@@ -527,7 +535,10 @@ const CO_STATUS_LABEL: Record<string, string> = {
   stalled:                   'Stalled',
   withdrawn:                 'Withdrawn',
   exception_granted:         'Exception Granted',
+  expired:                   'Expired',
 }
+
+
 const CO_STATUS_LOUD = new Set(['awaiting_response', 'awaiting_countersignature', 'countered', 'stalled'])
 
 function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
@@ -613,12 +624,12 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
   return (
     <Document>
       <Page size="A4" style={s.page}>
-        {data.isWatermarked && <Text style={s.watermark}>DRAFT</Text>}
+        {data.isWatermarked && <Text style={s.watermark}>{data.watermarkText || 'DRAFT'}</Text>}
         {/* Header */}
         <View style={s.header}>
           <View>
-            <Text style={s.h1}>Change Order</Text>
-            <Text style={s.meta}>{data.documentNumber ? `${data.documentNumber} · ` : ''}{data.coTitle}</Text>
+            <Text style={s.h1}>{data.isCredit ? 'Credit Change Order' : 'Change Order'}</Text>
+            <Text style={s.meta}>{data.documentNumber ? `${data.documentNumber} · ` : ''}{data.coTitle}{data.version && data.version > 1 ? ` · v${data.version}` : ''}</Text>
             <Text style={s.meta}>{data.projectName}</Text>
             {data.sowNumber && <Text style={[s.meta, { marginTop: 2 }]}>Amends SOW No. {data.sowNumber}</Text>}
             {data.acceptedAt && <Text style={[s.meta, { color: c, marginTop: 2 }]}>Accepted {fmtDate(data.acceptedAt)}</Text>}
@@ -668,7 +679,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
 
         {/* Line items table */}
         <View style={s.section}>
-          <Text style={s.secTitle}><Text style={s.secNum}>{itemsSecNum}. </Text>Description of Change</Text>
+          <Text style={s.secTitle}><Text style={s.secNum}>{itemsSecNum}. </Text>{data.isCredit ? 'Scope Removed / Credited' : 'Description of Change'}</Text>
           <View style={s.tableHdr}>
             <Text style={[s.th, { flex: 1 }]}>Description</Text>
             <Text style={[s.th, { width: 40, textAlign: 'center' }]}>Qty</Text>
@@ -690,7 +701,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
               <Text>Subtotal</Text>
               <Text style={s.mono}>{data.currency} {fmtMoney(data.subtotal)}</Text>
             </View>
-            {tax > 0 && (
+            {tax !== 0 && (
               <View style={s.totalRow}>
                 <Text>Tax ({data.taxRate}%){data.taxInclusive ? ' — included' : ''}</Text>
                 <Text style={s.mono}>{data.currency} {fmtMoney(tax)}</Text>
@@ -734,7 +745,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
                     <Text style={s.mono}>{data.currency} {fmtMoney(data.contractValueBefore!)}</Text>
                   </View>
                   <View style={s.impactRow}>
-                    <Text style={{ color: '#909090' }}>{isRenewalDoc ? 'Rate Change' : 'This Change Order'}</Text>
+                    <Text style={{ color: '#909090' }}>{isRenewalDoc ? 'Rate Change' : data.isCredit ? 'This Credit' : 'This Change Order'}</Text>
                     {/* FIX (section-10 audit, 10-B4): the '+' was
                         hardcoded, so a CO with a negative total printed
                         "+USD -5,000". Negative line items are refused at

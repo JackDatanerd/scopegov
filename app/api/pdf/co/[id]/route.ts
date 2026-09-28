@@ -4,6 +4,9 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { renderCoPdf } from '@/lib/pdf/renderer'
+import { coWatermarkLabel } from '@/lib/pdf/co-watermark'
+import { coPdfFilename } from '@/lib/documents/co-pdf-name'
+import { parseStoredLineItems } from '@/lib/documents/co-totals'
 import { canReadProject } from '@/lib/utils/project-access'
 import { getContractValueBefore } from '@/lib/documents/co-contract-value'
 import { fetchExecutedPdf } from '@/lib/documents/executed-pdf'
@@ -24,7 +27,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const service = createServiceClient()
     const { data: co } = await (service as any)
       .from('change_orders')
-      .select(`id, title, note, version, status, document_number, pdf_path, is_retainer_renewal, line_items, subtotal, tax_rate, tax_inclusive, total,
+      .select(`id, title, note, version, status, document_number, pdf_path, is_retainer_renewal, is_credit, line_items, subtotal, tax_rate, tax_inclusive, total,
         timeline_impact_days, scope_impact_note,
         accepted_at, accepted_by, client_signature_data, project_id,
         projects(id, name, type, currency, contract_value,
@@ -40,7 +43,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     if (!(await canReadProject(service, session, co.project_id)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
-    const fileName = `CO-${String(co.title).replace(/[^a-z0-9]/gi, '-')}.pdf`
+    const fileName = coPdfFilename(co.document_number, co.title)
     // An accepted CO is served from the copy frozen at acceptance (lib/documents/executed-pdf.ts), so it
     // cannot drift when live rows do. Older accepted COs fall through to a live render.
     if (co.status === 'accepted') {
@@ -64,7 +67,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       logoUrl = u?.publicUrl || null
     }
 
-    const lineItems = typeof co.line_items === 'string' ? JSON.parse(co.line_items) : (co.line_items || [])
+    const lineItems = parseStoredLineItems(co.line_items)
+    const isRenewalCo = !!co.is_retainer_renewal && co.projects?.type === 'retainer'
 
     // "Amends SOW No. X" — change_orders has no direct FK to sow_documents,
     // so this is resolved from the project's current signed SOW. Best
@@ -86,7 +90,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     // this understated both the before AND revised value on every accepted
     // CO's PDF, not just the multi-CO case the old comment disclosed.
     const contractValueBefore = await getContractValueBefore(
-      service, co.project_id, co.id, co.projects?.contract_value ?? null
+      service, co.project_id, co.id, co.projects?.contract_value ?? null, { isRenewal: isRenewalCo }
     )
 
     const pdfBuffer = await renderCoPdf({
@@ -123,6 +127,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       // this carries the same fix over: watermark anything that isn't
       // yet accepted.
       isWatermarked: co.status !== 'accepted',
+      watermarkText: coWatermarkLabel(co.status) ?? undefined,
+      version:     co.version ?? null,
+      isCredit:    !!co.is_credit,
       acceptedBy:  co.accepted_by || undefined,
       acceptedAt:  co.accepted_at || undefined,
       agencySignatureData: ws?.agency_signature_data || null,
@@ -131,8 +138,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       sowNumber:   sow?.document_number || null,
       contractValueBefore,
       // A retainer renewal replaces the monthly rate; it is not "original value + this CO".
-      isRetainerRenewal: !!co.is_retainer_renewal && co.projects?.type === 'retainer',
-      revisedContractValue: (!!co.is_retainer_renewal && co.projects?.type === 'retainer') ? Number(co.total || 0) : null,
+      isRetainerRenewal: isRenewalCo,
+      revisedContractValue: isRenewalCo ? Number(co.total || 0) : null,
       timelineImpactDays: co.timeline_impact_days ?? null,
       scopeImpactNote:    co.scope_impact_note || null,
     })

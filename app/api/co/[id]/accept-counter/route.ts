@@ -31,6 +31,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     if (!hasPermission(session, 'SEND_CHANGE_ORDERS'))
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
+    // Accepting a counter emails the client a countersignature request — same verified-email gate as send.
+    if (!session.emailVerifiedAt)
+      return NextResponse.json({ error: 'Please verify your email before accepting a counter-offer' }, { status: 403 })
 
     const service = createServiceClient()
     const { data: co } = await (service as any)
@@ -63,7 +66,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       documentId:   id,
       projectId:    co.project_id,
       projectName:  project?.name || '',
-      amount:       negotiatedTotal || 0,
+      amount:       Math.abs(Number(negotiatedTotal) || 0),
       currency:     project?.currency || 'USD',
       documentTitle: co.title,
       requestedBy:  { id: session.id, name: session.name, email: session.email },

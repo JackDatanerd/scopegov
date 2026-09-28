@@ -9,6 +9,8 @@ import { sanitizePlainText } from '@/lib/utils/sanitize'
 
 export const MAX_CO_TITLE_LENGTH      = 200
 export const MAX_CO_SCOPE_NOTE_LENGTH = 2000
+// The context note is rich text (HTML), so the cap is on the markup, generous enough for a long formatted note.
+export const MAX_CO_NOTE_LENGTH       = 20000
 export const MAX_CO_TIMELINE_DAYS     = 3650
 export const MIN_CO_TIMELINE_DAYS     = -365 // a change order can legitimately pull a date in
 
@@ -27,6 +29,9 @@ export function parseCoFields(body: any): { ok: true; fields: ParsedCoFields } |
     if (!title) return { ok: false, error: 'A change order needs a title' }
     fields.title = title
   }
+
+  if (typeof body?.note === 'string' && body.note.length > MAX_CO_NOTE_LENGTH)
+    return { ok: false, error: `The context note is too long (limit ${MAX_CO_NOTE_LENGTH.toLocaleString('en-US')} characters).` }
 
   if (body?.scopeImpactNote !== undefined) {
     if (body.scopeImpactNote === null) fields.scopeImpactNote = null

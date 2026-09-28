@@ -31,7 +31,7 @@ async function resolveCoAndToken(token: string, service: any) {
 
   const { data: co } = await (service as any)
     .from('change_orders')
-    .select(`id,title,status,flag_id,project_id,workspace_id,
+    .select(`id,title,status,flag_id,project_id,workspace_id,is_credit,
       projects(id,name,currency,client_id,clients(name,email,cc_emails),workspaces(agency_name,brand_colour))`)
     .eq('token', token).single()
 
@@ -252,6 +252,10 @@ export async function POST_COUNTER(request: NextRequest, token: string) {
   const { co } = result
   if (!CLIENT_RESPONDABLE_STATUSES.includes(co.status))
     return NextResponse.json({ error: 'CO cannot be countered in current status' }, { status: 409 })
+  // A counter-offer proposes a different (positive) price for added work; for a credit that would invert its
+  // meaning, and accept-counter's rescale has no notion of a reduction. A credit is accepted or declined.
+  if (co.is_credit)
+    return NextResponse.json({ error: 'A credit change order can be accepted or declined, not countered.' }, { status: 409 })
 
   const now = new Date().toISOString()
   // FIX (re-audit, race-condition finding): same class of gap as

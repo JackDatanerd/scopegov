@@ -124,6 +124,10 @@ const LABELS: Record<string, (c: Ctx) => string> = {
   'co.marked_stalled':      ({ name }) => name ? `change order ${name} marked stalled` : 'a change order was marked stalled',
   'co.amendment_failed':    () => 'change order accepted but the contract amendment failed to record',
   'co.link_viewed':         () => 'opened the change-order link',
+  'co.closed':              ({ name }) => name ? `closed change order ${name}` : 'closed a change order',
+  'co.exception_granted':   ({ name }) => name ? `granted change order ${name} as an exception` : 'granted a change order as an exception',
+  'co_attachment.added':    () => 'attached a file to a change order',
+  'co_attachment.removed':  () => 'removed a file from a change order',
 
   'flag.raised':            () => 'Guardian raised a scope flag',
   'flag.borderline_created':() => 'Guardian raised a borderline scope flag',

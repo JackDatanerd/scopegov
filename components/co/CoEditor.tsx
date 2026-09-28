@@ -43,6 +43,15 @@ export default function CoEditor({ projId, coId }: Props) {
   const [financialsHidden, setFinancialsHidden] = useState(false)
   const [saveError,   setSaveError]    = useState('')
   const [isRetainerRenewal, setIsRetainerRenewal] = useState(false)
+  // Credit / descope change order (migration 100): the agency enters positive amounts; the server stores them as a
+  // reduction and the client is asked to accept a credit. Mutually exclusive with a retainer renewal.
+  const [isCredit, setIsCredit] = useState(false)
+  // The renewal controls only apply to a retainer, and a term is only asked for when the retainer has a fixed end to
+  // extend (an open-ended one has nothing to extend).
+  const [projectType, setProjectType] = useState<string | null>(null)
+  const [retainerOpenEnded, setRetainerOpenEnded] = useState(false)
+  // How long the client's response link stays valid (server default 30, max 90).
+  const [expiresInDays, setExpiresInDays] = useState('30')
   const [renewalTermMonths, setRenewalTermMonths] = useState('')
   // FIX (doc-quality audit round 3, migration 018): optional Impact
   // Analysis fields — timelineImpactDays as a signed string so the input
@@ -71,18 +80,27 @@ export default function CoEditor({ projId, coId }: Props) {
   // Subtotal identical to Total. Back-solve the net the same way
   // lib/documents/co-totals.ts now does, so what the agency sees here is
   // exactly what gets stored and printed.
-  const lineSum  = lineItems.reduce((s, l) => s + (l.quantity * l.rate), 0)
+  // Mirrors lib/documents/co-totals.ts exactly (round the inputs, derive the line total from the rounded values, round
+  // the sums) so the figures shown here are the figures that get stored and printed, not a near miss.
+  const rq       = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100
+  const lineSum  = rq(lineItems.reduce((s, l) => s + rq(rq(l.quantity) * rq(l.rate)), 0))
   const rate     = parseFloat(taxRate) || 0
-  const subtotal = taxInclusive && rate > 0 ? lineSum / (1 + rate / 100) : lineSum
-  const total    = taxInclusive ? lineSum : lineSum * (1 + rate / 100)
-  const taxAmt   = total - subtotal
+  const subtotal = taxInclusive && rate > 0 ? rq(lineSum / (1 + rate / 100)) : lineSum
+  const total    = taxInclusive ? lineSum : rq(lineSum * (1 + rate / 100))
+  const taxAmt   = rq(total - subtotal)
+  // A credit is entered as positive amounts and shown as the reduction it is.
+  const money    = (n: number) => formatCurrency(isCredit ? -n : n, currency)
 
   useEffect(() => {
     if (!coId) {
       // Fetch project currency for new CO
       fetch(`/api/projects/${projId}`)
         .then(r => r.json())
-        .then(json => { if (json.project?.currency) setCurrency(json.project.currency) })
+        .then(json => {
+          if (json.project?.currency) setCurrency(json.project.currency)
+          setProjectType(json.project?.type ?? null)
+          setRetainerOpenEnded(json.project?.type === 'retainer' && !(Number(json.project?.retainer_duration_months) > 0))
+        })
         .catch(() => {})
       // Workspace billing defaults (Settings → Workspace → Billing defaults) pre-fill a new CO's tax
       // terms. Only applied while the rate is still untouched, and only when a rate is configured.
@@ -111,8 +129,16 @@ export default function CoEditor({ projId, coId }: Props) {
           const co = json.co
           setTitle(co.title || '')
           setNote(co.note || '')
-          const items = typeof co.line_items === 'string' ? JSON.parse(co.line_items) : (co.line_items || [])
+          const rawItems = typeof co.line_items === 'string' ? JSON.parse(co.line_items) : (co.line_items || [])
+          // A stored credit carries negative rates/totals; the editor works in the positive amounts the agency typed.
+          const items = co.is_credit
+            ? rawItems.map((l: any) => ({ ...l, rate: Math.abs(Number(l.rate) || 0), total: Math.abs(Number(l.total) || 0) }))
+            : rawItems
           setLineItems(items.length ? items : [{ id: nanoid(), description: '', quantity: 1, rate: 0, total: 0 }])
+          setIsCredit(!!co.is_credit)
+          setProjectType(co.projectType ?? null)
+          setRetainerOpenEnded(!!co.retainerOpenEnded)
+          awaitingBaseline.current = true
           setTaxRate(String(co.tax_rate || 0))
           setTaxInclusive(co.tax_inclusive || false)
           setCurrency(co.currency || 'USD')
@@ -135,7 +161,7 @@ export default function CoEditor({ projId, coId }: Props) {
     setLineItems(prev => prev.map(l => {
       if (l.id !== id) return l
       const updated = { ...l, [field]: value }
-      updated.total = updated.quantity * updated.rate
+      updated.total = rq(rq(updated.quantity) * rq(updated.rate))
       return updated
     }))
   }
@@ -155,6 +181,16 @@ export default function CoEditor({ projId, coId }: Props) {
   // closing the tab silently discarded the last edit. Same fix, plus the
   // unmount cleanup that was also missing.
   const pendingSave = useRef(false)
+  // What the server last saw. The autosave effect used to fire on the very state a load had just populated (and,
+  // for a locked or hidden-financials CO, on state it must never write): opening any non-draft CO flashed "Save
+  // failed — Only draft COs can be edited", and an untouched draft got a pointless PATCH that bumped updated_at.
+  // Comparing against the last-saved snapshot means only a real edit schedules a save.
+  const lastSaved = useRef<string | null>(null)
+  const awaitingBaseline = useRef(false)
+  // A create in flight — a second doSave (Save draft then Send in quick succession) awaits it and then PATCHes,
+  // instead of racing a second POST that would create a duplicate change order.
+  const createInFlight = useRef<Promise<string> | null>(null)
+  const snapshot = JSON.stringify([title, note, lineItems, taxRate, taxInclusive, isCredit, isRetainerRenewal, renewalTermMonths, timelineImpactDays, scopeImpactNote])
   useEffect(() => {
     function handleBeforeUnload(e: BeforeUnloadEvent) {
       if (pendingSave.current) { e.preventDefault(); e.returnValue = '' }
@@ -185,15 +221,32 @@ export default function CoEditor({ projId, coId }: Props) {
   // entirely while financials are hidden — matches PATCH being pointless
   // (and, until this fix, actively destructive) in that state.
   useEffect(() => {
-    if (pendingApproval || financialsHidden) return
-    // A brand-new CO has no server copy (and no autosave) until "Save draft"/"Send" — but leaving the
-    // tab used to discard everything typed with no warning, because pendingSave was only ever set on the
-    // autosave path below.
+    if (loading) return
+    // Never write (and never leave a timer armed) for a CO the server would refuse to edit or that the viewer can't
+    // see the pricing of. Clearing matters: the timer used to survive these early returns.
+    if (pendingApproval || financialsHidden || (savedCoId.current && status !== 'draft')) {
+      if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null }
+      pendingSave.current = false
+      if (awaitingBaseline.current) { awaitingBaseline.current = false }
+      return
+    }
+    // First run after a load: what is on screen IS what the server has.
+    if (awaitingBaseline.current) {
+      awaitingBaseline.current = false
+      lastSaved.current = snapshot
+      return
+    }
+    // A brand-new CO has no server copy (and no autosave) until "Save draft"/"Send" — but leaving the tab used to
+    // discard everything typed with no warning.
     if (!savedCoId.current) {
       pendingSave.current = !!(title.trim() || note.trim() || lineItems.some(l => l.description.trim() || l.rate))
       return
     }
-    if (status !== 'draft') return
+    if (snapshot === lastSaved.current) {
+      if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null }
+      pendingSave.current = false
+      return
+    }
     if (saveTimer.current) clearTimeout(saveTimer.current)
     pendingSave.current = true
     setSaveStatus('saving')
@@ -204,26 +257,15 @@ export default function CoEditor({ projId, coId }: Props) {
         setSaveError('')
         setTimeout(() => setSaveStatus('idle'), 2000)
       } catch (err: unknown) {
-        // FIX (section-10 audit, 10-G6): a failed autosave reset the
-        // indicator to 'idle', which reads as "nothing to save" — the
-        // same silent-failure shape as 9-B10. Surface it.
-        //
-        // FIX (independent pass, CO logic round): this bare `catch` discarded the
-        // thrown error entirely, so saveError — the state the banner below was
-        // already built to display (`title={saveError}` and the " — {saveError}"
-        // suffix on "Save failed") — stayed permanently '', the empty string it
-        // was initialized to. Every autosave failure rendered as an unadorned
-        // "Save failed" with no way to tell why (a validation error the user could
-        // fix immediately vs. a server outage), even though the UI right below
-        // was already wired to show exactly that. Capture and surface it, same as
-        // doSave()'s own explicit-save path already does with `error`.
+        // A failed autosave must not read as "nothing to save" — surface why (validation the user can fix vs an outage).
         setSaveError(err instanceof Error ? err.message : 'Save failed')
         setSaveStatus('error')
       } finally {
         pendingSave.current = false
       }
     }, 1500)
-  }, [title, note, lineItems, taxRate, taxInclusive, isRetainerRenewal, renewalTermMonths, timelineImpactDays, scopeImpactNote, financialsHidden])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [snapshot, financialsHidden, pendingApproval, status, loading])
 
   // FIX (CO send "not found" on a brand-new CO): doSave() used to always
   // call router.replace() to the new CO's own URL immediately after
@@ -244,27 +286,38 @@ export default function CoEditor({ projId, coId }: Props) {
         lineItems,
         taxRate:   parseFloat(taxRate) || 0,
         taxInclusive,
+        isCredit,
         isRetainerRenewal,
-        renewalTermMonths: isRetainerRenewal && renewalTermMonths.trim() !== '' ? parseInt(renewalTermMonths, 10) : null,
+        // Only a fixed-term retainer has a term to extend.
+        renewalTermMonths: isRetainerRenewal && !retainerOpenEnded && renewalTermMonths.trim() !== '' ? parseInt(renewalTermMonths, 10) : null,
         timelineImpactDays: timelineImpactDays.trim() !== '' ? timelineImpactDays.trim() : null,
         scopeImpactNote:    scopeImpactNote.trim() || null,
       }
+      // Another save is still creating this CO — wait for it, then update that row rather than creating a second.
+      if (!savedCoId.current && createInFlight.current) await createInFlight.current.catch(() => {})
       if (savedCoId.current) {
         const res = await fetch(`/api/co/${savedCoId.current}`, {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
         })
-        if (!res.ok) { const j = await res.json(); throw new Error(j.error) }
+        if (!res.ok) { const j = await res.json().catch(() => ({} as any)); throw new Error(j.error || 'Save failed') }
+        lastSaved.current = snapshot
         return savedCoId.current
       } else {
-        const res  = await fetch('/api/co', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-        })
-        const json = await res.json()
-        if (!res.ok) throw new Error(json.error)
-        savedCoId.current = json.coId
+        const create = (async () => {
+          const res  = await fetch('/api/co', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+          })
+          const json = await res.json().catch(() => ({} as any))
+          if (!res.ok) throw new Error(json.error || 'Save failed')
+          savedCoId.current = json.coId
+          lastSaved.current = snapshot
+          return json.coId as string
+        })()
+        createInFlight.current = create
+        try { await create } finally { createInFlight.current = null }
         pendingSave.current = false
-        if (navigate) router.replace(`/projects/${projId}/co/${json.coId}`)
-        return json.coId
+        if (navigate) router.replace(`/projects/${projId}/co/${savedCoId.current}`)
+        return savedCoId.current
       }
     } catch (err: unknown) {
       if (explicit) setError(err instanceof Error ? err.message : 'Save failed')
@@ -282,12 +335,15 @@ export default function CoEditor({ projId, coId }: Props) {
     // a blank description (total !== 0 doesn't imply description !== ''),
     // which would otherwise bill the client for something unnamed. Catch
     // it here too so it's not a round-trip-only error.
-    if (lineItems.some(l => l.total > 0 && !l.description.trim())) { setError('Every line item with a value needs a description'); return }
+    if (lineItems.some(l => l.total !== 0 && !l.description.trim())) { setError('Every line item with a value needs a description'); return }
     setSending(true); setError('')
     try {
       const id = await doSave(false, false)
       if (!id) throw new Error('Failed to save CO before sending')
-      const res  = await fetch(`/api/co/${id}/send`, { method: 'POST' })
+      const res  = await fetch(`/api/co/${id}/send`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expiresInDays: parseInt(expiresInDays, 10) || 30 }),
+      })
       const json = await res.json().catch(() => ({} as any))
       if (!res.ok) throw new Error(json.error || 'Send failed')
       if (json.pendingApproval) alert(json.message || 'Sent for approval — this change order will go to the client once it is signed off.')
@@ -381,11 +437,15 @@ export default function CoEditor({ projId, coId }: Props) {
               ? <>This change order is waiting on an approval request and can&rsquo;t be edited. Decide or cancel the request from <strong>Approvals</strong> to unlock it.</>
               : ['declined', 'withdrawn', 'closed', 'countered', 'expired'].includes(status)
                 ? <>This change order is {status} and can no longer be edited. Use <strong>Revise &amp; resend</strong> on the project&rsquo;s Change orders tab to continue from it in a new draft.</>
+                : status === 'exception_granted'
+                  ? <>This change order was granted to the client as an exception, so it can no longer be edited.</>
                 : status === 'accepted'
                   ? <>This change order has been accepted and signed. It is part of the agreement and can&rsquo;t be edited.</>
                   : status === 'awaiting_countersignature'
                     ? <>The client is confirming the negotiated amount. The change order is locked until they countersign.</>
-                    : <>This change order has been sent to the client and is locked while you wait on their response.</>}
+                    : status === 'stalled'
+                      ? <>The client hasn&rsquo;t responded yet, so this change order is locked. Use <strong>Try again</strong> on the project&rsquo;s Change orders tab to nudge them, or withdraw it there to revise.</>
+                      : <>This change order has been sent to the client and is locked while you wait on their response.</>}
           </div>
         )}
 
@@ -423,7 +483,7 @@ export default function CoEditor({ projId, coId }: Props) {
           <label className="flbl">Title</label>
           <input className="finp" value={title} disabled={isLocked}
             onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTitle(e.target.value)}
-            placeholder="Additional scope — Social media management" />
+            placeholder={isCredit ? 'Scope reduction — Social media management removed' : 'Additional scope — Social media management'} />
         </div>
 
         <div className="fgrp">
@@ -472,9 +532,9 @@ export default function CoEditor({ projId, coId }: Props) {
           <div style={{ display: 'flex', fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
             letterSpacing: '.07em', color: 'var(--text-3)', paddingBottom: 8,
             borderBottom: '1px solid var(--border)', marginBottom: 8 }}>
-            <span style={{ flex: 1 }}>Description</span>
+            <span style={{ flex: 1 }}>{isCredit ? 'Scope removed / credited' : 'Description'}</span>
             <span style={{ width: 64, textAlign: 'center' }}>Qty</span>
-            <span style={{ width: 100, textAlign: 'right' }}>Rate</span>
+            <span style={{ width: 100, textAlign: 'right' }}>{isCredit ? 'Credit each' : 'Rate'}</span>
             <span style={{ width: 100, textAlign: 'right' }}>Total</span>
             <span style={{ width: 32 }} />
           </div>
@@ -500,7 +560,7 @@ export default function CoEditor({ projId, coId }: Props) {
                   updateLineItem(item.id, 'rate', item.kind === 'adjustment' ? v : Math.max(0, v))
                 }} />
               <div style={{ width: 100, textAlign: 'right', fontSize: 13, fontFamily: 'IBM Plex Mono, monospace', color: 'var(--text-2)' }}>
-                {formatCurrency(item.total, currency)}
+                {money(item.total)}
               </div>
               <div style={{ width: 32, textAlign: 'right' }}>
                 {!isLocked && lineItems.length > 1 && (
@@ -522,7 +582,7 @@ export default function CoEditor({ projId, coId }: Props) {
           <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '4px 0', color: 'var(--text-2)' }}>
               <span>Subtotal</span>
-              <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{formatCurrency(subtotal, currency)}</span>
+              <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{money(subtotal)}</span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0' }}>
               <span style={{ fontSize: 12, color: 'var(--text-3)', flex: 1 }}>Tax rate (%)</span>
@@ -539,24 +599,39 @@ export default function CoEditor({ projId, coId }: Props) {
             {rate > 0 && (
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '4px 0', color: 'var(--text-2)' }}>
                 <span>Tax ({taxRate}%){taxInclusive ? ' — included' : ''}</span>
-                <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{formatCurrency(taxAmt, currency)}</span>
+                <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{money(taxAmt)}</span>
               </div>
             )}
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 16, fontWeight: 600, padding: '8px 0', borderTop: '1px solid var(--border)', marginTop: 6 }}>
               <span>Total</span>
-              <span style={{ color: 'var(--green)', fontFamily: 'IBM Plex Mono, monospace' }}>{formatCurrency(total, currency)}</span>
+              <span style={{ color: isCredit ? 'var(--red)' : 'var(--green)', fontFamily: 'IBM Plex Mono, monospace' }}>{money(total)}</span>
             </div>
           </div>
         </div>
         )}
 
-        <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13, color: 'var(--text-2)', marginBottom: 20 }}>
-          <input type="checkbox" checked={isRetainerRenewal} disabled={isLocked}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setIsRetainerRenewal(e.target.checked)}
+        {/* Credit / descope: the change order reduces scope and money instead of adding it. */}
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: isRetainerRenewal ? 'not-allowed' : 'pointer', fontSize: 13, color: 'var(--text-2)', marginBottom: 8, opacity: isRetainerRenewal ? 0.5 : 1 }}>
+          <input type="checkbox" checked={isCredit} disabled={isLocked || isRetainerRenewal}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setIsCredit(e.target.checked)}
             style={{ accentColor: 'var(--green)' }} />
-          This is a retainer renewal
+          This is a credit / scope reduction
         </label>
-        {isRetainerRenewal && (
+        {isCredit && (
+          <p style={{ fontSize: 11, color: 'var(--text-3)', margin: '0 0 14px 24px' }}>
+            List what is being removed, with the amount credited for each. On acceptance the amounts reduce the contract value and
+            the items leave the scope Guardian checks requests against. A credit can be accepted or declined by the client, not countered.
+          </p>
+        )}
+        {projectType === 'retainer' && (
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: isCredit ? 'not-allowed' : 'pointer', fontSize: 13, color: 'var(--text-2)', marginBottom: 20, opacity: isCredit ? 0.5 : 1 }}>
+            <input type="checkbox" checked={isRetainerRenewal} disabled={isLocked || isCredit}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setIsRetainerRenewal(e.target.checked)}
+              style={{ accentColor: 'var(--green)' }} />
+            This is a retainer renewal
+          </label>
+        )}
+        {projectType === 'retainer' && isRetainerRenewal && !retainerOpenEnded && (
           <div className="fgrp" style={{ marginTop: -8, marginBottom: 20 }}>
             <label className="flbl">Extends the retainer by <span className="fhint">— months, counted from the current end date</span></label>
             <input type="number" className="finp" style={{ maxWidth: 160 }} min={1} max={120} step={1}
@@ -567,9 +642,14 @@ export default function CoEditor({ projId, coId }: Props) {
             </p>
           </div>
         )}
+        {projectType === 'retainer' && isRetainerRenewal && retainerOpenEnded && (
+          <p style={{ fontSize: 11, color: 'var(--text-3)', margin: '-8px 0 20px 24px' }}>
+            This retainer is open-ended, so there is no end date to extend — accepting this renewal just sets the new monthly rate.
+          </p>
+        )}
 
         {!isLocked && (
-          <div style={{ display: 'flex', gap: 10 }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
             <button className="btn btn-primary" onClick={handleSend} disabled={sending || !title.trim()}>
               {sending ? <><span className="spin" /> Sending…</> : <><i className="ti ti-send" style={{ fontSize: 13 }} /> Send to client</>}
             </button>
@@ -577,6 +657,13 @@ export default function CoEditor({ projId, coId }: Props) {
               {saving ? <span className="spin spin-dark" /> : 'Save draft'}
             </button>
             <button className="btn btn-ghost" onClick={() => router.push(`/projects/${projId}?tab=co`)}>Cancel</button>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-3)', marginLeft: 'auto' }}>
+              Link valid for
+              <select className="finp" style={{ width: 'auto', fontSize: 12, padding: '4px 8px' }} value={expiresInDays}
+                onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setExpiresInDays(e.target.value)}>
+                {[7, 14, 30, 60, 90].map(d => <option key={d} value={String(d)}>{d} days</option>)}
+              </select>
+            </label>
           </div>
         )}
       </div>
@@ -593,9 +680,10 @@ export default function CoEditor({ projId, coId }: Props) {
             </div>
           ) : (
             <>
-              <div style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 30, color: 'var(--green)', marginBottom: 4 }}>
-                {formatCurrency(total, currency)}
+              <div style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 30, color: isCredit ? 'var(--red)' : 'var(--green)', marginBottom: 4 }}>
+                {money(total)}
               </div>
+              {isCredit && <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 6 }}>Credit — reduces the contract</div>}
               <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 16 }}>
                 {lineItems.filter(l => l.description).length} line item{lineItems.filter(l => l.description).length !== 1 ? 's' : ''}
                 {parseFloat(taxRate) > 0 && ` · ${taxRate}% tax`}
@@ -603,11 +691,12 @@ export default function CoEditor({ projId, coId }: Props) {
               {lineItems.filter(l => l.description).map(l => (
                 <div key={l.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '5px 0', borderBottom: '1px solid var(--surface-2)', color: 'var(--text-2)' }}>
                   <span style={{ flex: 1, marginRight: 8, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{l.description}</span>
-                  <span style={{ fontFamily: 'IBM Plex Mono, monospace', flexShrink: 0 }}>{formatCurrency(l.total, currency)}</span>
+                  <span style={{ fontFamily: 'IBM Plex Mono, monospace', flexShrink: 0 }}>{money(l.total)}</span>
                 </div>
               ))}
             </>
           )}
+          <CoAttachmentsPanel coId={savedCoId.current} canEdit={!isLocked} />
           {savedCoId.current && !financialsHidden && (
             <a href={`/api/pdf/co/${savedCoId.current}`} target="_blank"
               className="btn btn-ghost btn-sm" style={{ marginTop: 14, width: '100%', justifyContent: 'center', display: 'flex' }}>
@@ -616,6 +705,111 @@ export default function CoEditor({ projId, coId }: Props) {
           )}
         </div>
       </div>
+    </div>
+  )
+}
+
+// ── Attachments panel ────────────────────────────────────────────────────
+// UI for api/co/[id]/attachments (see that route's header comment). Internal working material — not shown to the
+// client. Self-contained fetch/upload/delete state, same shape as SowEditor's panel.
+function CoAttachmentsPanel({ coId, canEdit }: { coId: string | null; canEdit: boolean }) {
+  const [attachments, setAttachments] = useState<Array<{
+    id: string; fileName: string; fileSize: number; mimeType: string
+    uploadedAt: string; uploadedByName: string; downloadUrl: string | null
+  }>>([])
+  const [loading, setLoading] = useState(!!coId)
+  const [uploading, setUploading] = useState(false)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [error, setError] = useState('')
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const mounted = useRef(true)
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
+
+  useEffect(() => {
+    if (!coId) { setLoading(false); return }
+    setLoading(true)
+    fetch(`/api/co/${coId}/attachments`)
+      .then(res => res.json())
+      .then(json => { if (mounted.current) setAttachments(Array.isArray(json.attachments) ? json.attachments : []) })
+      .catch(() => {})
+      .finally(() => { if (mounted.current) setLoading(false) })
+  }, [coId])
+
+  async function handleFilePick(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file || !coId) return
+    if (file.size > 10 * 1024 * 1024) { setError('File exceeds 10 MB limit'); return }
+    setError(''); setUploading(true)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const res = await fetch(`/api/co/${coId}/attachments`, { method: 'POST', body: formData })
+      const json = await res.json().catch(() => ({} as any))
+      if (!res.ok) { setError(json.error || 'Upload failed'); return }
+      setAttachments(prev => [json.attachment, ...prev])
+    } catch {
+      setError('Upload failed — check your connection and try again.')
+    } finally { if (mounted.current) setUploading(false) }
+  }
+
+  async function handleDelete(id: string) {
+    if (!coId) return
+    setError(''); setDeletingId(id)
+    const previous = attachments
+    setAttachments(prev => prev.filter(a => a.id !== id))
+    try {
+      const res = await fetch(`/api/co/${coId}/attachments/${id}`, { method: 'DELETE' })
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({} as any))
+        setAttachments(previous)
+        setError(json.error || 'Could not remove attachment')
+      }
+    } catch {
+      setAttachments(previous)
+      setError('Could not remove attachment — check your connection.')
+    } finally { if (mounted.current) setDeletingId(null) }
+  }
+
+  if (loading) return null
+  const size = (b: number) => b < 1024 ? `${b} B` : b < 1048576 ? `${(b / 1024).toFixed(1)} KB` : `${(b / 1048576).toFixed(1)} MB`
+
+  return (
+    <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+        <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.07em', color: 'var(--text-3)' }}>
+          Attachments{attachments.length > 0 ? ` (${attachments.length})` : ''}
+        </span>
+        {coId && canEdit && (
+          <>
+            <input ref={fileInputRef} type="file" style={{ display: 'none' }} onChange={handleFilePick}
+              accept=".pdf,.png,.jpg,.jpeg,.webp,.txt,.eml,.docx" />
+            <button type="button" className="btn btn-ghost btn-xs" disabled={uploading}
+              onClick={() => fileInputRef.current?.click()} title="Attach a file">
+              {uploading ? <span className="spin spin-dark" style={{ width: 10, height: 10 }} /> : <i className="ti ti-paperclip" style={{ fontSize: 11 }} />}
+            </button>
+          </>
+        )}
+      </div>
+      {!coId && <div style={{ fontSize: 11, color: 'var(--text-3)' }}>Save the draft to attach files. Attachments are internal — the client doesn&rsquo;t see them.</div>}
+      {error && <div style={{ fontSize: 11, color: 'var(--red)', marginBottom: 4 }}>{error}</div>}
+      {attachments.map(a => (
+        <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 0', fontSize: 12 }}>
+          <i className="ti ti-file" style={{ fontSize: 12, color: 'var(--text-4)', flexShrink: 0 }} />
+          <a href={a.downloadUrl || undefined} target="_blank" rel="noopener noreferrer" title={`${a.fileName} — ${size(a.fileSize)}`}
+            style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              color: a.downloadUrl ? 'var(--text-2)' : 'var(--text-4)', textDecoration: 'none', pointerEvents: a.downloadUrl ? 'auto' : 'none' }}>
+            {a.fileName}
+          </a>
+          {canEdit && (
+            <button type="button" className="btn-icon" disabled={deletingId === a.id} onClick={() => handleDelete(a.id)}
+              title="Remove attachment" style={{ flexShrink: 0, width: 20, height: 20, color: 'var(--text-4)' }}>
+              {deletingId === a.id ? <span className="spin spin-dark" style={{ width: 9, height: 9 }} /> : <i className="ti ti-x" style={{ fontSize: 10 }} />}
+            </button>
+          )}
+        </div>
+      ))}
+      {coId && attachments.length === 0 && !error && <div style={{ fontSize: 11, color: 'var(--text-3)' }}>None yet. Internal only — not shown to the client.</div>}
     </div>
   )
 }

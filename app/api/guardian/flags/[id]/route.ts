@@ -7,6 +7,8 @@ import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { sanitizePlainText } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
+import { isTerminalStatus } from '@/lib/utils/project-status'
+import { workspaceTaxDefaults } from '@/lib/documents/tax-defaults'
 import { sendEscalationEmail } from '@/lib/email/templates'
 import { checkedSend } from '@/lib/email/delivery'
 import { filterByNotificationPreference, filterToProjectAccess } from '@/lib/utils/permissions-query'
@@ -94,7 +96,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // see that case for the full note.
     const { data: flag } = await (service as any)
       .from('guardian_flags')
-      .select('id,status,project_id,description,severity,sow_reference,change_order_id,check_id,escalated_to,escalation_note,resolution,projects(name),guardian_checks!fk_flag_check(creep_confidence)')
+      .select('id,status,project_id,description,severity,sow_reference,change_order_id,check_id,escalated_to,escalation_note,resolution,projects(name,status),guardian_checks!fk_flag_check(creep_confidence)')
       .eq('id', id)
       .eq('workspace_id', session.workspaceId)
       .single()
@@ -396,6 +398,15 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         // no signed SOW. Same guard, same place in the flow: before the
         // flag claim below, so a blocked draft doesn't even consume the
         // flag's one-shot conversion.
+        // Same terminal-project guard as POST /api/co, /api/co/draft, send and revise: a Complete or Archived
+        // project is closed to scope changes, and this second CO-creating path never checked it.
+        const flagProjectStatus = (Array.isArray(flag.projects) ? flag.projects[0]?.status : flag.projects?.status) || ''
+        if (isTerminalStatus(flagProjectStatus)) {
+          return NextResponse.json({
+            error: `This project is ${String(flagProjectStatus).toLowerCase()} — a change order can no longer be created. Reopen the project first.`,
+          }, { status: 409 })
+        }
+
         const { data: signedSow } = await (service as any)
           .from('sow_documents').select('id')
           .eq('project_id', flag.project_id).eq('status', 'signed')
@@ -435,11 +446,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         }
 
         // Create CO draft pre-filled from flag (spec §6.2)
+        const guardianTax = await workspaceTaxDefaults(service, session.workspaceId)
         const { data: co, error: coErr } = await (service as any).from('change_orders').insert({
           project_id:   flag.project_id,
           workspace_id: session.workspaceId,
           flag_id:      id,
-          title:        `Change Order — ${flag.sow_reference}`,
+          // sow_reference can be null (a flag raised without a matching clause) — that printed "Change Order — null".
+          title:        flag.sow_reference ? `Change Order — ${String(flag.sow_reference).slice(0, 150)}` : 'Change Order',
           status:       'draft',
           // FIX (section-10 audit, cross-cutting): line_items is a jsonb
           // column — JSON.stringify(...) here stores a JSON-encoded
@@ -460,6 +473,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           }],
           subtotal:     0,
           total:        0,
+          // Workspace billing defaults, like a CO started in the editor (a flag-drafted CO always got 0% tax).
+          tax_rate:      guardianTax.taxRate,
+          tax_inclusive: guardianTax.taxInclusive,
           created_by:   session.id,
         }).select('id').single()
 

@@ -23,6 +23,8 @@
 // One shared, validated implementation both routes call.
 
 import { roundCurrency } from '@/lib/utils/format'
+import { isAdjustmentLine } from '@/lib/utils/rescale-line-items'
+import { nanoid } from 'nanoid'
 
 export interface CoLineItem {
   id?: string
@@ -75,18 +77,35 @@ const MAX_RATE             = 1_000_000_000
 // being edited. A brand-new line — no id, or an id not on that list — can
 // never claim the escape hatch, however it's tagged, and falls through to
 // the ordinary non-negative validation like any other line.
+export interface CoTotalsOptions {
+  /**
+   * A credit / descope change order (migration 100). Lines are ENTERED as positive amounts and stored
+   * negative, so the CO's total (and its amendment) is a reduction. Credit COs carry no adjustment lines.
+   */
+  credit?: boolean
+}
+
 export function computeCoTotals(
   rawItems: unknown, rawTaxRate: unknown, rawTaxInclusive: unknown,
-  allowedAdjustmentIds?: ReadonlySet<string> | readonly string[]
+  allowedAdjustmentIds?: ReadonlySet<string> | readonly string[],
+  options: CoTotalsOptions = {},
 ): CoTotalsResult {
-  const allowedIds = allowedAdjustmentIds instanceof Set
-    ? allowedAdjustmentIds
-    : new Set(allowedAdjustmentIds ?? [])
+  const credit = options.credit === true
+  const allowedIds = new Set<string>(allowedAdjustmentIds instanceof Set
+    ? Array.from(allowedAdjustmentIds)
+    : (allowedAdjustmentIds ?? []))
+  // Each allowed id may be claimed by ONE line. Without this a caller could copy an existing adjustment's
+  // id onto any number of new lines tagged kind:'adjustment' and slip arbitrary negative amounts past the
+  // non-negative guard.
+  const seenIds = new Set<string>()
   if (!Array.isArray(rawItems)) return { ok: false, error: 'Line items must be a list' }
   if (rawItems.length > MAX_LINE_ITEMS)
     return { ok: false, error: `A change order can have at most ${MAX_LINE_ITEMS} line items` }
 
-  const taxRate = Number(rawTaxRate)
+  // Number('') is 0 and Number([]) is 0 — only a real number or a numeric string is a tax rate.
+  const taxRate = typeof rawTaxRate === 'number' ? rawTaxRate
+    : typeof rawTaxRate === 'string' && rawTaxRate.trim() !== '' ? Number(rawTaxRate)
+    : rawTaxRate === undefined || rawTaxRate === null || rawTaxRate === '' ? 0 : NaN
   if (!Number.isFinite(taxRate) || taxRate < 0 || taxRate > 100)
     return { ok: false, error: 'Tax rate must be between 0 and 100' }
 
@@ -103,8 +122,18 @@ export function computeCoTotals(
     // here — otherwise a revision cloned from such a CO could never be saved again. Only a line
     // that already carried this kind on the CO being edited (allowedIds) gets to keep it; see the
     // comment above the function signature.
-    const claimsAdjustment = raw?.kind === 'adjustment'
-    const isAdjustment = claimsAdjustment && typeof raw?.id === 'string' && allowedIds.has(raw.id)
+    // Rows written before the `kind` flag existed carry only the fixed "Negotiated discount…" wording, so
+    // recognise them the same way the rest of the codebase does (isAdjustmentLine) — otherwise a revision
+    // cloned from such a CO could never be saved. The id allowlist (ids already on THIS CO) is still the
+    // gate, so the wording alone grants nothing.
+    const rawId = typeof raw?.id === 'string' && raw.id.length > 0 && raw.id.length <= 100 ? raw.id : null
+    const isDuplicateId = rawId != null && seenIds.has(rawId)
+    const claimsAdjustment = !credit && isAdjustmentLine(raw)
+    const isAdjustment = claimsAdjustment && rawId != null && !isDuplicateId && allowedIds.has(rawId)
+    // A repeated id would collide as a React key and (before this) let one allowlisted id vouch for many
+    // lines. Keep the first occurrence's id, mint a fresh one for the rest.
+    const lineId = rawId == null ? null : isDuplicateId ? nanoid() : rawId
+    if (rawId != null) seenIds.add(rawId)
     const quantity = isAdjustment ? 1 : Number(raw?.quantity)
     const rate     = Number(raw?.rate)
 
@@ -125,12 +154,14 @@ export function computeCoTotals(
     // 2dp but multiplying the unrounded qty showed 1.33 × 90 = 119.97.)
     const q = roundCurrency(quantity)
     const r = roundCurrency(rate)
+    // Credit COs store the reduction as negative rate/total; quantity stays positive.
+    const storedRate = credit ? -r : r
     lineItems.push({
-      ...(typeof raw?.id === 'string' ? { id: raw.id } : {}),
+      ...(lineId != null ? { id: lineId } : {}),
       description,
       quantity: q,
-      rate:     r,
-      total:    roundCurrency(q * r),
+      rate:     storedRate,
+      total:    roundCurrency(q * storedRate),
       ...(isAdjustment ? { kind: 'adjustment' as const } : {}),
     })
   }
@@ -150,4 +181,16 @@ export function computeCoTotals(
     : roundCurrency(lineSum * (1 + taxRate / 100))
 
   return { ok: true, totals: { lineItems, subtotal, taxRate, taxInclusive, total } }
+}
+
+/**
+ * line_items is a jsonb column, but rows written by an old version of POST /api/co hold a JSON-encoded STRING
+ * inside it. Every reader needs the array either way; a malformed value reads as no lines rather than throwing.
+ */
+export function parseStoredLineItems(value: unknown): any[] {
+  if (Array.isArray(value)) return value
+  if (typeof value === 'string') {
+    try { const v = JSON.parse(value); return Array.isArray(v) ? v : [] } catch { return [] }
+  }
+  return []
 }

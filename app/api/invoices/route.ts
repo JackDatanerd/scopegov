@@ -207,11 +207,13 @@ export async function POST(request: NextRequest) {
     }
     if (coId) {
       const { data: co } = await (service as any)
-        .from('change_orders').select('id, project_id, status, subtotal, tax_rate, tax_inclusive')
+        .from('change_orders').select('id, project_id, status, subtotal, tax_rate, tax_inclusive, is_credit')
         .eq('id', coId).eq('project_id', projectId).single()
       if (!co) return NextResponse.json({ error: 'Change order not found on this project' }, { status: 404 })
       if (co.status !== 'accepted')
         return NextResponse.json({ error: 'Only an accepted change order can be invoiced against' }, { status: 400 })
+      if (co.is_credit)
+        return NextResponse.json({ error: 'A credit change order reduces the contract — there is nothing to invoice against it.' }, { status: 400 })
       // Carry the CO's own tax terms into the invoice by default, rather than
       // silently dropping them, unless the request overrides taxRate.
       if (taxRate === undefined) coTaxDefaults = { taxRate: Number(co.tax_rate) || 0, taxInclusive: !!co.tax_inclusive }

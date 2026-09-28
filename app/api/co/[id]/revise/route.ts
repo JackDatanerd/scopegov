@@ -6,6 +6,7 @@ import { canReadProject } from '@/lib/utils/project-access'
 import { isTerminalStatus } from '@/lib/utils/project-status'
 import { cancelApprovalRequest } from '@/lib/approvals/engine'
 import { insertNextCoVersion } from '@/lib/documents/co-version'
+import { parseStoredLineItems } from '@/lib/documents/co-totals'
 import { sendDocumentCancelledEmail } from '@/lib/email/templates'
 import { checkedSend } from '@/lib/email/delivery'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
@@ -52,7 +53,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .select(`id, title, note, status, version, project_id, flag_id, root_co_id,
         projects(name, status, client_id, clients(name, email, cc_emails), workspaces(agency_name, brand_colour)),
         line_items, subtotal, tax_rate, tax_inclusive, total,
-        counter_amount, counter_note, is_retainer_renewal, renewal_term_months,
+        counter_amount, counter_note, is_retainer_renewal, renewal_term_months, is_credit,
         timeline_impact_days, scope_impact_note`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
@@ -99,9 +100,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (live)
       return NextResponse.json({ error: `Version ${live.version} of this change order is ${String(live.status).replace(/_/g, ' ')}.` }, { status: 409 })
 
-    const lineItems = typeof co.line_items === 'string'
-      ? JSON.parse(co.line_items)
-      : (co.line_items || [])
+    const lineItems = parseStoredLineItems(co.line_items)
 
     // FIX (section-10 re-pass): this used to read `MAX(version) WHERE
     // project_id = X` — project-wide, unguarded, and the wrong scope. A
@@ -126,6 +125,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       tax_rate:     co.tax_rate,
       tax_inclusive: co.tax_inclusive,
       total:        co.total,
+      is_credit:            !!co.is_credit,
       is_retainer_renewal:  co.is_retainer_renewal,
       renewal_term_months:  co.renewal_term_months,
       timeline_impact_days: co.timeline_impact_days,

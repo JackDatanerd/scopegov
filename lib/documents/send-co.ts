@@ -12,6 +12,7 @@ import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
 import { checkedSend } from '@/lib/email/delivery'
 import { resolveReplyTo } from '@/lib/email/reply-to'
 import { isTerminalStatus } from '@/lib/utils/project-status'
+import { parseStoredLineItems } from '@/lib/documents/co-totals'
 
 export type SendCoResult =
   | {
@@ -26,15 +27,28 @@ export const DEFAULT_CO_EXPIRY_DAYS = 30
 export const MAX_CO_EXPIRY_DAYS = 90
 
 /**
+ * A retainer-renewal CO must state how many months it extends the retainer — but only when the retainer HAS a
+ * fixed end to extend. An open-ended retainer (retainer_duration_months NULL) has nothing to extend, so demanding
+ * a term there forced a meaningless number that finalize-co then discarded with a "check by hand" error.
+ */
+export function renewalNeedsTerm(co: { is_retainer_renewal?: boolean | null; renewal_term_months?: number | null }, project: { type?: string | null; retainer_duration_months?: number | null } | null | undefined): boolean {
+  return !!co.is_retainer_renewal && project?.type === 'retainer'
+    && Number(project?.retainer_duration_months) > 0 && !co.renewal_term_months
+}
+
+/**
  * What must hold before a CO is put in front of a client. Shared by the send route (which runs it
  * before the approval gate) and sendCoDocument (the approval chain's auto-send calls that
  * directly, and used to skip every one of these checks).
  */
-export function validateCoForSend(input: { total: unknown; lineItems: unknown }): string | null {
-  const items: any[] = typeof input.lineItems === 'string' ? JSON.parse(input.lineItems) : (Array.isArray(input.lineItems) ? input.lineItems : [])
+export function validateCoForSend(input: { total: unknown; lineItems: unknown; isCredit?: boolean }): string | null {
+  const items: any[] = parseStoredLineItems(input.lineItems)
   if (items.length === 0) return 'Add at least one line item before sending this change order.'
   const total = Number(input.total)
-  if (!Number.isFinite(total) || total <= 0) return 'This change order has no value — add line item amounts before sending.'
+  // A credit / descope CO is a reduction: its total is stored negative (migration 100).
+  if (input.isCredit) {
+    if (!Number.isFinite(total) || total >= 0) return 'This credit has no value — add line item amounts before sending.'
+  } else if (!Number.isFinite(total) || total <= 0) return 'This change order has no value — add line item amounts before sending.'
   if (items.some(li => Math.abs(Number(li?.total) || 0) > 0 && !String(li?.description || '').trim()))
     return 'Every line item with a value needs a description.'
   return null
@@ -60,8 +74,8 @@ export async function sendCoDocument(service: any, params: {
     // FIX (carried forward): 'currency' isn't a column on change_orders —
     // it lives on projects. Selecting it here makes PostgREST reject the
     // whole query (42703), which silently surfaces as "CO not found".
-    .select(`id,title,status,note,total,line_items,version,document_number,root_co_id,project_id,is_retainer_renewal,renewal_term_months,
-      projects(id,name,status,currency,type,client_id,deleted_at,
+    .select(`id,title,status,note,total,line_items,version,document_number,root_co_id,project_id,is_retainer_renewal,renewal_term_months,is_credit,
+      projects(id,name,status,currency,type,retainer_duration_months,client_id,deleted_at,
         clients(name,email,cc_emails),
         workspaces(id,agency_name,brand_colour))`)
     .eq('id', coId).eq('workspace_id', workspaceId).single()
@@ -98,11 +112,11 @@ export async function sendCoDocument(service: any, params: {
   if (!client?.email) return { ok: false, error: 'Client email required', status: 400 }
   // A renewal that doesn't say how long it runs would replace the rate but leave the retainer ending on its
   // original date — refuse to send it.
-  if (co.is_retainer_renewal && project?.type === 'retainer' && !co.renewal_term_months)
+  if (renewalNeedsTerm(co, project))
     return { ok: false, error: 'A retainer renewal needs its term — enter how many months it extends the retainer for.', status: 400 }
   if (project?.deleted_at) return { ok: false, error: 'This project has been deleted', status: 404 }
 
-  const invalid = validateCoForSend({ total: co.total, lineItems: co.line_items })
+  const invalid = validateCoForSend({ total: co.total, lineItems: co.line_items, isCredit: !!co.is_credit })
   if (invalid) return { ok: false, error: invalid, status: 400 }
 
   const { data: signedSow } = await (service as any)
@@ -146,35 +160,41 @@ export async function sendCoDocument(service: any, params: {
 
   const now = new Date().toISOString()
 
-  // Phase 0: assign sequential document number at send (not on draft
-  // creation). Never re-assign if already numbered.
-  let documentNumber: string
-  try {
-    documentNumber = co.document_number || await assignDocumentNumber(service, workspaceId, 'co')
-  } catch (e) {
-    // Thrown, not returned — without this the approval chain's auto-send had no failure result to
-    // record, leaving the request "approved" with nothing sent.
-    console.error('CO send: could not assign a document number', e)
-    return { ok: false, error: 'Could not assign a document number. Please try again.', status: 500 }
-  }
-
-  // FIX (re-audit, race-condition finding): same missing CAS as
-  // send-sow.ts — see that file's comment for the full rationale. Two
-  // racing callers (manual Send + approval-engine auto-send, or a
-  // double-click) could otherwise both pass the earlier `status !== 'draft'`
-  // read and both send, burning two document numbers and emailing the
-  // client two different tokens.
+  // Claim the send FIRST (compare-and-swap on status), and only then take a document number. The number used
+  // to be assigned before the swap, so every request that lost the race (a double-click, or a manual send
+  // racing the approval engine's auto-send) still burned one — leaving gaps in the sequence that
+  // lib/utils/document-number.ts promises stays continuous for anything a client actually saw.
+  // FIX (re-audit, race-condition finding): same missing CAS as send-sow.ts — see that file's comment.
   const { data: sent } = await (service as any).from('change_orders').update({
     status:          'awaiting_response',
     sent_at:         now,
     token,
     expires_at:      expiresAt.toISOString(),
-    document_number: documentNumber,
     updated_at:      now,
   }).eq('id', coId).eq('status', 'draft').select('id').maybeSingle()
 
   if (!sent) {
     return { ok: false, error: 'This change order was already sent by another action', status: 409 }
+  }
+
+  // Never re-assign if already numbered (a revision of a numbered draft keeps its number).
+  let documentNumber: string
+  try {
+    documentNumber = co.document_number || await assignDocumentNumber(service, workspaceId, 'co')
+    if (!co.document_number) {
+      const { error: numErr } = await (service as any).from('change_orders')
+        .update({ document_number: documentNumber }).eq('id', coId).eq('token', token)
+      if (numErr) throw new Error(numErr.message)
+    }
+  } catch (e) {
+    // Thrown, not returned — without this the approval chain's auto-send had no failure result to record,
+    // leaving the request "approved" with nothing sent. The claim is released so the CO is a draft again
+    // (nothing was emailed yet, and the token was never shown to anyone).
+    console.error('CO send: could not assign a document number', e)
+    await (service as any).from('change_orders').update({
+      status: 'draft', sent_at: null, token: null, expires_at: null, updated_at: new Date().toISOString(),
+    }).eq('id', coId).eq('status', 'awaiting_response').eq('token', token)
+    return { ok: false, error: 'Could not assign a document number. Please try again.', status: 500 }
   }
 
   const portalUrl = `${process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL}/portal/co/${token}`

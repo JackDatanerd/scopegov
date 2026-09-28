@@ -6,6 +6,9 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { jwtVerify } from 'jose'
 import { renderCoPdf } from '@/lib/pdf/renderer'
+import { coWatermarkLabel } from '@/lib/pdf/co-watermark'
+import { coPdfFilename } from '@/lib/documents/co-pdf-name'
+import { parseStoredLineItems } from '@/lib/documents/co-totals'
 import { getWorkspaceJwtSecret, isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
 import { getContractValueBefore } from '@/lib/documents/co-contract-value'
 import { fetchExecutedPdf } from '@/lib/documents/executed-pdf'
@@ -49,7 +52,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const { data: revoked } = await (service as any)
       .from('revoked_tokens').select('reason, document_id').eq('token', token).single()
 
-    const CO_PDF_COLUMNS = `id,title,note,status,line_items,subtotal,tax_rate,tax_inclusive,total,
+    const CO_PDF_COLUMNS = `id,title,note,status,version,is_credit,line_items,subtotal,tax_rate,tax_inclusive,total,
         timeline_impact_days,scope_impact_note,
         document_number,accepted_by,accepted_at,client_signature_data,workspace_id,project_id,pdf_path,is_retainer_renewal,
         projects(id,name,type,currency,contract_value,clients(name,email,company_name,billing_address,vat_number),
@@ -110,7 +113,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         return new NextResponse(new Uint8Array(frozen), {
           headers: {
             'Content-Type': 'application/pdf',
-            'Content-Disposition': `attachment; filename="${co.document_number || 'CO'}.pdf"`,
+            'Content-Disposition': `attachment; filename="${coPdfFilename(co.document_number, co.title)}"`,
             'Content-Length': String(frozen.length),
             'Cache-Control': 'private, no-cache',
           },
@@ -128,7 +131,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       logoUrl = u?.publicUrl || null
     }
 
-    const lineItems = typeof co.line_items === 'string' ? JSON.parse(co.line_items) : (co.line_items || [])
+    const lineItems = parseStoredLineItems(co.line_items)
+    const isRenewalCo = !!co.is_retainer_renewal && project?.type === 'retainer'
 
     const { data: sow } = await (service as any)
       .from('sow_documents')
@@ -140,7 +144,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       .maybeSingle()
 
     const contractValueBefore = await getContractValueBefore(
-      service, co.project_id, co.id, project?.contract_value ?? null
+      service, co.project_id, co.id, project?.contract_value ?? null, { isRenewal: isRenewalCo }
     )
 
     const pdfBuffer = await renderCoPdf({
@@ -178,14 +182,17 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       documentNumber: co.document_number || null,
       sowNumber:     sow?.document_number || null,
       contractValueBefore,
-      isRetainerRenewal: !!co.is_retainer_renewal && project?.type === 'retainer',
-      revisedContractValue: (!!co.is_retainer_renewal && project?.type === 'retainer') ? Number(co.total || 0) : null,
+      isRetainerRenewal: isRenewalCo,
+      revisedContractValue: isRenewalCo ? Number(co.total || 0) : null,
       timelineImpactDays: co.timeline_impact_days ?? null,
       scopeImpactNote:    co.scope_impact_note || null,
       isWatermarked: !isSigned,
+      watermarkText: coWatermarkLabel(co.status) ?? undefined,
+      version:       co.version ?? null,
+      isCredit:      !!co.is_credit,
     })
 
-    const filename = `${co.document_number || 'CO'}${isSigned ? '' : '-for-review'}.pdf`
+    const filename = coPdfFilename(co.document_number, co.title, isSigned ? '' : '-for-review')
     return new NextResponse(new Uint8Array(pdfBuffer), {
       headers: {
         'Content-Type':        'application/pdf',

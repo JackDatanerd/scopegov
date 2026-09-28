@@ -23,6 +23,8 @@ import { checkedSend } from '@/lib/email/delivery'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
 import { computeContentHash, storeExecutedPdf } from '@/lib/documents/executed-pdf'
 import { isAdjustmentLine } from '@/lib/utils/rescale-line-items'
+import { parseStoredLineItems } from '@/lib/documents/co-totals'
+import { coPdfFilename } from '@/lib/documents/co-pdf-name'
 import { getContractValueBefore } from '@/lib/documents/co-contract-value'
 import { createHash } from 'node:crypto'
 import { isTerminalStatus } from '@/lib/utils/project-status'
@@ -162,13 +164,14 @@ export async function finalizeCoAcceptance(service: any, params: {
       // moment can't overwrite each other's extension. The renewal has already been accepted and the rate already
       // replaced, so a failure here is logged loudly, not returned as an error to the client.
       let termExtension: { from: number; to: number } | null = null
+      let openEndedRetainer = false
       const termMonths = Number((co as any).renewal_term_months) || 0
       if (termMonths > 0) {
         for (let attempt = 0; attempt < 3 && !termExtension; attempt++) {
           const { data: fresh } = await (service as any)
             .from('projects').select('retainer_duration_months').eq('id', co.project_id).single()
           const current = fresh?.retainer_duration_months
-          if (current == null) break // no fixed term to extend
+          if (current == null) { openEndedRetainer = true; break } // open-ended retainer: nothing to extend
           const next = Number(current) + termMonths
           const { data: bumped, error: bumpErr } = await (service as any).from('projects')
             .update({ retainer_duration_months: next, updated_at: now })
@@ -176,7 +179,7 @@ export async function finalizeCoAcceptance(service: any, params: {
           if (bumpErr) { console.error('Retainer term extension failed after CO accept:', bumpErr, { coId: co.id }); break }
           if (bumped?.length) termExtension = { from: Number(current), to: next }
         }
-        if (!termExtension) console.error('Retainer renewal accepted but the term was not extended — check the project by hand', { coId: co.id, termMonths })
+        if (!termExtension && !openEndedRetainer) console.error('Retainer renewal accepted but the term was not extended — check the project by hand', { coId: co.id, termMonths })
       }
       await logAudit(service, {
         // FIX (build, Reports & Audit re-pass): actor_id is `uuid
@@ -197,13 +200,15 @@ export async function finalizeCoAcceptance(service: any, params: {
     }
   }
 
-  const lineItems    = typeof co.line_items === 'string' ? JSON.parse(co.line_items) : (co.line_items || [])
+  const lineItems    = parseStoredLineItems(co.line_items)
+  const isCredit     = !!co.is_credit && !isRenewal
   // Scope deliverables come from real work lines only. The system-written "Negotiated discount…" line
   // (counter-offers) and a retainer renewal's rate line are pricing, not scope — they were being
   // appended to the Guardian baseline as if they were deliverables.
-  const deliverables: string[] = isRenewal
-    ? []
-    : lineItems.filter((l: any) => !isAdjustmentLine(l)).map((l: any) => l.description).filter(Boolean)
+  // A credit / descope CO does the opposite: its lines are the deliverables being REMOVED from scope.
+  const workLines: string[] = lineItems.filter((l: any) => !isAdjustmentLine(l)).map((l: any) => String(l.description || '').trim()).filter(Boolean)
+  const deliverables: string[] = isRenewal || isCredit ? [] : workLines
+  const removedDeliverables: string[] = isCredit ? workLines : []
 
   // A renewal REPLACES the monthly rate (contract_value above); recording its total as a financial
   // impact as well double-counted it — effective value is contract_value + Σ amendments, so every
@@ -216,9 +221,10 @@ export async function finalizeCoAcceptance(service: any, params: {
     signed_sow_id:        signedSow.id,
     title:                isRenewal
       ? `Amendment — ${co.title} (retainer rate renewal)`
+      : isCredit ? `Credit — ${co.title}`
       : source === 'countersignature' ? `Amendment — ${co.title} (counter accepted)` : `Amendment — ${co.title}`,
     added_deliverables:   deliverables,
-    removed_deliverables: [],
+    removed_deliverables: removedDeliverables,
     financial_impact:     isRenewal ? 0 : co.total,
     effective_at:         now,
     pdf_path:             '',
@@ -297,6 +303,14 @@ export async function finalizeCoAcceptance(service: any, params: {
     // anyone the scope snapshot didn't actually get updated. Capture and
     // check `error` explicitly so a broken snapshot write is at least
     // visible in server logs instead of indistinguishable from success.
+    if (removedDeliverables.length) {
+      const { error: removeErr } = await (service as any).rpc('remove_scope_deliverables', {
+        p_project_id: co.project_id,
+        p_removed:    removedDeliverables,
+        p_now:        now,
+      })
+      if (removeErr) console.error('remove_scope_deliverables failed:', removeErr, { coId: co.id, projectId: co.project_id })
+    }
     if (deliverables.length) {
       const { error: appendErr } = await (service as any).rpc('append_scope_deliverables', {
         p_project_id: co.project_id,
@@ -325,7 +339,7 @@ export async function finalizeCoAcceptance(service: any, params: {
     title: co.title, note: co.note || null, lineItems, subtotal: co.subtotal,
     taxRate: co.tax_rate, taxInclusive: co.tax_inclusive, total: co.total, currency: project.currency || 'USD',
     timelineImpactDays: co.timeline_impact_days ?? null, scopeImpactNote: co.scope_impact_note || null,
-    isRetainerRenewal: isRenewal, previousContractValue,
+    isRetainerRenewal: isRenewal, previousContractValue, ...(isCredit ? { isCredit: true } : {}),
     acceptedBy: signerName.trim(), acceptedAt: now, source, signerEmail: client.email,
     signatureSha256: createHash('sha256').update(signatureData).digest('hex'),
   })
@@ -392,8 +406,10 @@ export async function finalizeCoAcceptance(service: any, params: {
       contractValueBefore,
       isRetainerRenewal:  isRenewal,
       revisedContractValue,
+      version:            co.version ?? null,
+      isCredit,
     })
-    pdfAttachment = { filename: `CO-${project.name.replace(/[^a-z0-9]/gi, '-')}.pdf`, content: pdfBuffer.toString('base64') }
+    pdfAttachment = { filename: coPdfFilename(co.document_number, co.title), content: pdfBuffer.toString('base64') }
   } catch (e) { console.error('CO PDF generation for email failed (emails will send without attachment):', e) }
 
   // Freeze the executed copy + fingerprint (see lib/documents/executed-pdf.ts). Separate updates so a

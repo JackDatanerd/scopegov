@@ -21,6 +21,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     if (!hasPermission(session, 'SEND_CHANGE_ORDERS'))
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
+    // Same gate as send: an unverified member can't put mail in a client's inbox.
+    if (!session.emailVerifiedAt)
+      return NextResponse.json({ error: 'Please verify your email before sending reminders' }, { status: 403 })
 
     const service = createServiceClient()
     const { data: co } = await (service as any)

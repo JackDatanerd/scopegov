@@ -35,6 +35,8 @@ interface CoData {
   clientBillingAddress: string | null
   clientVatNumber:      string | null
   version:     number
+  // Credit / descope change order: amounts are reductions, and it can be accepted or declined but not countered.
+  isCredit?:   boolean
   expiresAt:   string
   // FIX (portal audit, section 18 — feature gap): see the identical comment on
   // api/portal/co/[token]/route.ts. Plain text, never dangerouslySetInnerHTML.
@@ -354,14 +356,16 @@ export default function CoPortalPage() {
           <div className="portal-action-card" style={{ borderTopColor: accent }}>
             <h3 style={{ fontFamily: 'Georgia,serif', fontSize: 18, fontWeight: 400, margin: '0 0 6px' }}>How would you like to respond?</h3>
             <p style={{ fontSize: 13, color: '#555', margin: '0 0 18px', lineHeight: 1.6 }}>
-              Review the scope additions above. Accept to confirm the work and value,
-              propose a counter if you&apos;d like to negotiate, or decline to reject this change order.
+              {co.isCredit
+                ? <>Review the scope removed and the credit above. Accept to confirm it, or decline to reject this change order.</>
+                : <>Review the scope additions above. Accept to confirm the work and value,
+                  propose a counter if you&apos;d like to negotiate, or decline to reject this change order.</>}
             </p>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
               <button className="btn" style={{ background: accent, color: '#FFF', padding: '10px 22px', fontWeight: 600 }} onClick={() => setMode('accept')}>
                 <i className="ti ti-check" style={{ fontSize: 13 }} /> Accept
               </button>
-              <button className="btn btn-ghost" onClick={() => setMode('counter')}>Propose counter</button>
+              {!co.isCredit && <button className="btn btn-ghost" onClick={() => setMode('counter')}>Propose counter</button>}
               <button className="btn btn-ghost" style={{ color: '#B91C1C', borderColor: '#FECACA' }} onClick={() => setMode('decline')}>Decline</button>
             </div>
             {/* FIX (re-audit, portal section): co.expiresAt was fetched
@@ -382,7 +386,9 @@ export default function CoPortalPage() {
             <p style={{ fontSize: 13, color: '#555', margin: '0 0 16px' }}>
               {co.mode === 'countersign'
                 ? <>{co.agencyName} has accepted your proposed amount. Type your name, draw your signature, and confirm the change order at <strong>{co.currency} {formatAmount(co.total, co.currency)}</strong>.</>
-                : <>Type your name, draw your signature, and accept the additional scope and cost of <strong>{co.currency} {formatAmount(co.total, co.currency)}</strong>.</>}
+                : co.isCredit
+                  ? <>Type your name, draw your signature, and accept the scope reduction and credit of <strong>{co.currency} {formatAmount(Math.abs(co.total), co.currency)}</strong>.</>
+                  : <>Type your name, draw your signature, and accept the additional scope and cost of <strong>{co.currency} {formatAmount(co.total, co.currency)}</strong>.</>}
             </p>
             {error && <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 5, padding: '9px 12px', fontSize: 12, color: '#B91C1C', marginBottom: 12 }}>{error}</div>}
             <div style={{ marginBottom: 14 }}>

@@ -86,7 +86,9 @@ async function handleTerminalCoState(
   // a token-hygiene win that isn't actually reachable by anyone else
   // (every mutating portal route already gates on co.status, same as the
   // SOW side's equivalent request-changes case).
-  const wasSentToClient = co.status !== 'draft'
+  // Only a CO the client can still act on warrants a "closed" email. A declined or expired one is already dead
+  // from their side (they declined it themselves / the link lapsed), so mailing them that it was "closed" is noise.
+  const wasSentToClient = ['awaiting_response', 'stalled', 'countered', 'awaiting_countersignature'].includes(co.status)
 
   const now = new Date().toISOString()
   const updates: Record<string, unknown> = { status: newStatus, updated_at: now, close_reason: reason }
@@ -174,7 +176,10 @@ async function handleTerminalCoState(
 
   const client = co.projects?.clients
   let clientNotified = true
-  if (wasSentToClient && client?.email) {
+  // An unverified member never triggers outbound client email (same rule as sending) — the action itself
+  // still goes through, and the UI is told the client was not notified.
+  if (wasSentToClient && client?.email && !session.emailVerifiedAt) clientNotified = false
+  else if (wasSentToClient && client?.email) {
     const cc = await withPrimaryContactCc(service, co.projects?.client_id, client.email, client.cc_emails, 'co')
     const replyTo = await resolveReplyTo(service, session.workspaceId, session.email)
     const delivery = await checkedSend(() => sendDocumentCancelledEmail({
