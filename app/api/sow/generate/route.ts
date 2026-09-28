@@ -73,7 +73,9 @@ export async function POST(request: NextRequest) {
     if (!hasPermission(session, 'EDIT_SOW'))
       return NextResponse.json({ error: 'Missing permission: EDIT_SOW' }, { status: 403 })
 
-    const body = await request.json()
+    const body = await request.json().catch(() => null)
+    if (!body || typeof body !== 'object')
+      return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
     const { projectId } = body
 
     if (!projectId) return NextResponse.json({ error: 'projectId required' }, { status: 400 })

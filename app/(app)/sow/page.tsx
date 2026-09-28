@@ -66,8 +66,11 @@ export default async function SowPage() {
   let sowQuery = (service as any)
     .from('sow_documents')
     .select(`id, version, document_number, status, sent_at, signed_at, created_at,
-      projects(id, name, contract_value, currency, clients(name))`)
+      projects!inner(id, name, contract_value, currency, deleted_at, clients(name))`)
     .eq('workspace_id', session.workspaceId)
+    // FIX (SOW lifecycle independent pass, S2): SOWs of soft-deleted projects were listed and
+    // counted (and linked to a project page that 404s). Same filter the invoices registry uses.
+    .is('projects.deleted_at', null)
     .order('created_at', { ascending: false })
     .limit(limit)
   if (allowedProjectIds !== null) sowQuery = sowQuery.in('project_id', allowedProjectIds)
@@ -93,8 +96,8 @@ export default async function SowPage() {
   // failed `tsc --noEmit`. Capture the narrowed value.
   const workspaceId = session.workspaceId
   function countQuery(status?: string) {
-    let q = (service as any).from('sow_documents').select('id', { count: 'exact', head: true })
-      .eq('workspace_id', workspaceId)
+    let q = (service as any).from('sow_documents').select('id, projects!inner(deleted_at)', { count: 'exact', head: true })
+      .eq('workspace_id', workspaceId).is('projects.deleted_at', null)
     if (allowedProjectIds !== null) q = q.in('project_id', allowedProjectIds)
     if (status) q = q.eq('status', status)
     return q

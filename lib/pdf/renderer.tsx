@@ -240,10 +240,25 @@ const hasRichText = (html?: string | null) => !!html && html.replace(/<[^>]*>/g,
 
 // ── SOW PDF ──────────────────────────────────────────────────
 
+// FIX (SOW lifecycle independent pass, S1): prose sections were hard-coded wrap={false}. A section
+// taller than one page can't paginate under that setting — react-pdf logs "can't wrap between pages
+// and it's bigger than available page height" and draws the overflow on top of itself / off the
+// page, so text was silently lost from the PDF, including the copy frozen at signing. Short sections
+// still render as one visual block; anything long is allowed to flow across pages.
+const KEEP_TOGETHER_MAX_CHARS  = 1200
+const KEEP_TOGETHER_MAX_BLOCKS = 12
+function fitsOnOnePage(html: string | null | undefined): boolean {
+  const h = html || ''
+  const chars  = h.replace(/<[^>]*>/g, '').length
+  const blocks = (h.match(/<(p|li|h[1-4]|blockquote|pre)[\s>]/gi) || []).length
+  return chars <= KEEP_TOGETHER_MAX_CHARS && blocks <= KEEP_TOGETHER_MAX_BLOCKS
+}
+
 function SowSection({ sec, num, s, language }: { sec: SowPdfData['sections'][number]; num: number; s: any; language?: string }) {
+  const keepTogether = !isTableSection(sec.id) && fitsOnOnePage(sec.content)
   return (
-    <View style={s.section} wrap={isTableSection(sec.id) ? undefined : false}>
-      <Text style={s.secTitle}><Text style={s.secNum}>{num}. </Text>{sec.title}</Text>
+    <View style={s.section} wrap={keepTogether ? false : undefined}>
+      <Text style={s.secTitle} minPresenceAhead={48}><Text style={s.secNum}>{num}. </Text>{sec.title}</Text>
       {isTableSection(sec.id)
         ? <SowTable sectionId={sec.id} rows={sec.table || []} language={language} />
         : <RichText html={sec.content} style={s.body} />}
@@ -426,8 +441,8 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
             in the loop above instead, so the client always sees exactly
             one schedule at every stage. */}
         {hasMilestoneBlock && (
-          <View style={s.section} wrap={false}>
-            <Text style={s.secTitle}>
+          <View style={s.section} wrap={data.paymentSchedule!.length <= 12 ? false : undefined}>
+            <Text style={s.secTitle} minPresenceAhead={48}>
               <Text style={s.secNum}>{scheduleIndex + 1}. </Text>{paymentScheduleTitle}
             </Text>
             <View style={s.schedHdr}>
@@ -467,7 +482,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
         {(() => {
           const sigSec = data.sections.find(sec => sec.id === 'signature' && sec.visible)
           return sigSec && hasRichText(sigSec.content)
-            ? <View style={{ marginTop: 20 }} wrap={false}><RichText html={sigSec.content} style={s.body} /></View>
+            ? <View style={{ marginTop: 20 }} wrap={fitsOnOnePage(sigSec.content) ? false : undefined}><RichText html={sigSec.content} style={s.body} /></View>
             : null
         })()}
 

@@ -28,8 +28,10 @@ export async function POST(request: NextRequest) {
     if (!hasPermission(session, 'EDIT_SOW'))
       return NextResponse.json({ error: 'Missing permission: EDIT_SOW' }, { status: 403 })
 
-    const { briefText, projectType } = await request.json()
-    if (!briefText?.trim()) return NextResponse.json({ error: 'briefText required' }, { status: 400 })
+    const reqBody = await request.json().catch(() => null)
+    const briefText   = typeof reqBody?.briefText === 'string' ? reqBody.briefText : ''
+    const projectType = typeof reqBody?.projectType === 'string' ? reqBody.projectType : undefined
+    if (!briefText.trim()) return NextResponse.json({ error: 'briefText required' }, { status: 400 })
 
     // FIX (audit round 3): no rate limiting existed on this or any other
     // AI-cost route. See lib/utils/rate-limit.ts.

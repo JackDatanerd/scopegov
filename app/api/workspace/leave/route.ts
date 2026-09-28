@@ -18,7 +18,9 @@ export async function POST(request: NextRequest) {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-    const { workspaceId } = await request.json()
+    // FIX (workspace lifecycle independent pass, W2): an unparseable / non-object body threw into the 500 catch-all.
+    const reqBody = await request.json().catch(() => null)
+    const workspaceId = typeof reqBody?.workspaceId === 'string' ? reqBody.workspaceId : ''
     if (!workspaceId) return NextResponse.json({ error: 'workspaceId is required' }, { status: 400 })
 
     const service = createServiceClient()

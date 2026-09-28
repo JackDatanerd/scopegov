@@ -28,8 +28,12 @@ export async function POST(request: NextRequest) {
       .from('users').select('deleted_at').eq('id', user.id).maybeSingle()
     if (deletedCheck?.deleted_at) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-    const { agencyName: agencyNameRaw, industry, currency, timezone } = await request.json()
-    const agencyName = sanitizeDisplayName(agencyNameRaw)
+    // FIX (workspace lifecycle independent pass, W2): malformed body used to throw into the 500 catch-all.
+    const createBody = await request.json().catch(() => null)
+    if (!createBody || typeof createBody !== 'object')
+      return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+    const { agencyName: agencyNameRaw, industry, currency, timezone } = createBody as any
+    const agencyName = sanitizeDisplayName(typeof agencyNameRaw === 'string' ? agencyNameRaw : '')
     if (!agencyName || !industry) {
       return NextResponse.json({ error: 'Agency name and industry are required' }, { status: 400 })
     }

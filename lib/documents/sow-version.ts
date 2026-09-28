@@ -54,7 +54,31 @@ export async function insertNextSowVersion(
       .select('id, version')
       .single()
 
-    if (!error && inserted) return { ok: true, id: inserted.id, version: inserted.version }
+    if (!error && inserted) {
+      // FIX (SOW lifecycle independent pass, S3): reopen and portal request-changes both clone
+      // sections/metadata forward via `previous_version_id` but never touched sow_attachments — the
+      // old version is locked once superseded, so every new draft started with zero reference files,
+      // even though the same storage objects were still sitting there unreferenced by the new row.
+      // Attachment rows are metadata over a storage_path, not the file bytes, so this is a cheap copy,
+      // not a file duplication. Best-effort: a failure here must not fail the version creation itself.
+      const prevId = (row as any).previous_version_id
+      if (prevId) {
+        try {
+          const { data: prevAttachments } = await service
+            .from('sow_attachments')
+            .select('file_name, file_size, mime_type, storage_path, uploaded_by')
+            .eq('sow_id', prevId)
+          if (prevAttachments && prevAttachments.length > 0) {
+            await service.from('sow_attachments').insert(
+              prevAttachments.map((a: any) => ({ ...a, sow_id: inserted.id }))
+            )
+          }
+        } catch (copyErr) {
+          console.error('SOW version: could not carry attachments forward (non-fatal):', copyErr)
+        }
+      }
+      return { ok: true, id: inserted.id, version: inserted.version }
+    }
 
     lastError = error?.message || lastError
     // Anything other than a version collision is a real failure — don't
