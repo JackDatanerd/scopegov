@@ -54,12 +54,17 @@ export async function POST(request: NextRequest) {
   // old unpaginated query let those rows fill the first page forever and starve everything after
   // them — fetchAll pages through all of them.)
   await run.step('remind pending approvals', async () => {
+    // FIX (section-11 audit): neither this query nor the send-failure one below excluded a
+    // suspended/deleted workspace (workspaces.deleted_at) — a stalled approval in one kept
+    // generating reminders, escalation notifications and "no reachable approver" audit rows
+    // indefinitely, with nobody able (or expected) to act on a workspace nobody can open.
     const stale = await fetchAll<any>('approval-stall pending select', (from, to) =>
       (service as any).from('approval_requests')
-        .select('id, workspace_id, project_id, document_type, context, reminder_count, escalated_at')
+        .select('id, workspace_id, project_id, document_type, context, reminder_count, escalated_at, workspaces!inner(deleted_at)')
         .eq('status', 'pending')
         .is('sending_started_at', null)
         .lt('updated_at', cutoff)
+        .is('workspaces.deleted_at', null)
         .order('id')
         .range(from, to))
 
@@ -155,10 +160,11 @@ export async function POST(request: NextRequest) {
   await run.step('escalate stale send failures', async () => {
     const staleSendFailures = await fetchAll<any>('approval-stall send-failure select', (from, to) =>
       (service as any).from('approval_requests')
-        .select('id, workspace_id, project_id, requested_by, document_type, send_failed_reason, updated_at')
+        .select('id, workspace_id, project_id, requested_by, document_type, send_failed_reason, updated_at, workspaces!inner(deleted_at)')
         .eq('status', 'approved')
         .not('send_failed_at', 'is', null)
         .lt('updated_at', cutoff)
+        .is('workspaces.deleted_at', null)
         .order('id')
         .range(from, to))
 

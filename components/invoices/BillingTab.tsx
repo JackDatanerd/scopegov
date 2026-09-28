@@ -225,6 +225,30 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
     } catch (err: unknown) { setError(err instanceof Error ? err.message : 'Retry failed') }
     finally { setBusyId(null) }
   }
+  // An approved-but-unsent invoice is edit-locked, but the auto-send refuses a due date that has
+  // passed since submission — so the date alone can be changed here (the server allows only that)
+  // and the send retried, without throwing the approval away.
+  async function changeDueDateThenRetry(approvalId: string, invoiceId: string, current: string | null) {
+    const entered = window.prompt('New due date (YYYY-MM-DD). The approval stays in place — the send is retried right after.', current ? String(current).slice(0, 10) : '')
+    if (entered === null) return
+    const dueDate = entered.trim()
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) { setError('Enter the date as YYYY-MM-DD.'); return }
+    setBusyId(invoiceId); setError('')
+    try {
+      const res = await fetch(`/api/invoices/${invoiceId}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dueDate }),
+      })
+      const j = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(j.error || 'Could not change the due date')
+      const retry = await fetch(`/api/approvals/${approvalId}/retry-send`, { method: 'POST' })
+      const rj = await retry.json().catch(() => ({}))
+      if (!retry.ok) throw new Error(rj.error || 'Due date updated, but the retry failed')
+      if (rj.deliveryWarning) alert(rj.deliveryWarning)
+      window.dispatchEvent(new Event('scopegov:approvals-changed'))
+      await refresh()
+    } catch (err: unknown) { setError(err instanceof Error ? err.message : 'Could not change the due date') }
+    finally { setBusyId(null) }
+  }
   async function cancelApprovalFor(approvalId: string, invoiceId: string) {
     if (!confirm('Cancel this approved request? The invoice goes back to being an editable draft, and sending it again will need a fresh approval.')) return
     setBusyId(invoiceId); setError('')
@@ -410,6 +434,9 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
                       <button className="btn btn-ghost btn-sm" disabled={busyId === inv.id} onClick={() => cancelApprovalFor(pendingApproval.id, inv.id)}>
                         Cancel request
                       </button>
+                      <button className="btn btn-ghost btn-sm" disabled={busyId === inv.id} onClick={() => changeDueDateThenRetry(pendingApproval.id, inv.id, inv.due_date)}>
+                        Change due date
+                      </button>
                       <button className="btn btn-primary btn-sm" disabled={busyId === inv.id} onClick={() => retryApprovalSend(pendingApproval.id, inv.id)}>
                         {busyId === inv.id ? <span className="spin" /> : <><i className="ti ti-refresh" style={{ fontSize: 11 }} /> Retry send</>}
                       </button>
@@ -466,16 +493,7 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
                       {busyId === inv.id ? <span className="spin spin-dark" /> : <><i className="ti ti-circle-check" style={{ fontSize: 11 }} /> Resolve dispute</>}
                     </button>
                   )}
-                  {/* FIX (section-12 re-audit — feature gap): a voided invoice had no PDF
-                      access anywhere in the agency UI (here or the /invoices registry),
-                      even though api/pdf/invoice/[id] has no status restriction and
-                      lib/pdf/renderer.tsx already has dedicated void handling (a "this
-                      invoice has been voided" banner in place of balance-due). Void
-                      deliberately keeps a part-paid invoice's payment records on file —
-                      see api/invoices/[id]/void's own comment — specifically so the fact
-                      money was received isn't lost; losing the original document itself
-                      at the same moment undercuts that same intent. */}
-                  {(inv.status === 'paid' || inv.status === 'void') && (
+                  {inv.status === 'paid' && (
                     <a href={`/api/pdf/invoice/${inv.id}`} className="btn btn-ghost btn-sm" target="_blank" rel="noreferrer">
                       <i className="ti ti-download" style={{ fontSize: 11 }} /> PDF
                     </a>

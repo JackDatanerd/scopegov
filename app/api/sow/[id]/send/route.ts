@@ -8,6 +8,7 @@ import { evaluateApprovalGate } from '@/lib/approvals/engine'
 import { sendBlockedReason } from '@/lib/documents/preflight'
 import { canReadProject } from '@/lib/utils/project-access'
 import { validateSowForSend } from '@/lib/sow/validate-send'
+import { sowGateAmount } from '@/lib/approvals/gate-amount'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -29,7 +30,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { data: sow } = await (service as any)
       .from('sow_documents')
       .select(`id, version, status, project_id, sections, metadata,
-        projects(id, name, disc, contract_value, currency)`)
+        projects(id, name, disc, contract_value, currency, type, retainer_duration_months)`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!sow) return NextResponse.json({ error: 'SOW not found' }, { status: 404 })
@@ -71,7 +72,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       documentId:   id,
       projectId:    project.id,
       projectName:  project.name,
-      amount:       project.contract_value || 0,
+      // A fixed-term retainer's contract_value is the MONTHLY fee — gate on what the SOW
+      // actually commits the client to (see lib/approvals/gate-amount.ts).
+      amount:       sowGateAmount(project),
       currency:     project.currency || 'USD',
       documentTitle: `SOW v${sow.version} — ${project.name}`,
       requestedBy:  { id: session.id, name: session.name, email: session.email },

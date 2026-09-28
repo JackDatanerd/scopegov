@@ -8,6 +8,7 @@ import { evaluateApprovalGate } from '@/lib/approvals/engine'
 import { sendBlockedReason } from '@/lib/documents/preflight'
 import { canReadProject } from '@/lib/utils/project-access'
 import { isTerminalStatus } from '@/lib/utils/project-status'
+import { coGateAmount } from '@/lib/approvals/gate-amount'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -111,7 +112,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       projectId:    project.id,
       projectName:  project.name,
       // A credit is stored negative; approval thresholds are about the size of the change either way.
-      amount:       Math.abs(Number(co.total) || 0),
+      // A fixed-term retainer renewal's total is the new MONTHLY rate — scale by its own
+      // renewal_term_months so the gate sees the real commitment (see gate-amount.ts).
+      amount:       Math.abs(coGateAmount(co, project)),
       currency:     project.currency || 'USD',
       documentTitle: co.title,
       requestedBy:  { id: session.id, name: session.name, email: session.email },

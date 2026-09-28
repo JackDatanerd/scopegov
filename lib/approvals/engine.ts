@@ -688,7 +688,7 @@ export async function cancelApprovalRequest(service: any, params: {
   // workspace and newest-first instead.
   const { data: requestRows } = await service
     .from('approval_requests')
-    .select('id, project_id, current_step, context, status, requested_by')
+    .select('id, project_id, current_step, context, status, requested_by, sending_started_at')
     .eq('workspace_id', params.workspaceId)
     .eq('document_type', params.documentType)
     .eq('document_id', params.documentId)
@@ -697,6 +697,14 @@ export async function cancelApprovalRequest(service: any, params: {
     .limit(1)
   const request = requestRows && requestRows[0]
   if (!request) return
+
+  // FIX (section-11 audit): the route callers already refuse to cancel while a send
+  // (original OR retry) is actively claimed, but this is the actual write path every
+  // caller funnels through — belt-and-suspenders against any future caller that skips
+  // that check. A stale claim (crashed mid-send, past healStuckSends' own window) is
+  // still cancellable; only a claim young enough to plausibly still be in flight blocks.
+  if (request.sending_started_at &&
+      Date.now() - new Date(request.sending_started_at).getTime() < 2 * 60 * 1000) return
 
   const now = new Date().toISOString()
   // FIX (re-audit): no CAS here either — a cancel racing a genuine
@@ -939,10 +947,13 @@ export async function retryFailedSend(service: any, params: {
   const now = new Date().toISOString()
   if (outcome.ok) {
     const deliveryWarning = deliveryWarningFor(outcome)
+    // FIX (section-11 audit): CAS'd on status still being 'approved' — belt-and-suspenders
+    // alongside the cancel-side fix above, so a cancel that somehow still won the race can't
+    // have this write silently erase the send_failed_at evidence of what actually happened.
     await service.from('approval_requests').update({
       send_failed_at: null, send_failed_reason: null, sending_started_at: null,
       delivery_warning: deliveryWarning, updated_at: now,
-    }).eq('id', request.id)
+    }).eq('id', request.id).eq('status', 'approved')
     await logAudit(service, {
       workspaceId: params.workspaceId,
       actorId: params.actor.id, actorEmail: params.actor.email, actorName: params.actor.name,
@@ -1255,7 +1266,12 @@ async function notifyStepApprovers(service: any, args: {
       .eq('user_id', args.step.approver_user_id)
       .eq('status', 'active')
       .maybeSingle()
-    if (m?.users && m.users.id !== excludeId) {
+    // FIX (section-11 audit): a named approver who has since lost APPROVE_DOCUMENTS can never
+    // decide this step — the role-based branch below already filters on this permission via
+    // getMembersWithRole, but a specific-user assignment never did, so they kept getting
+    // "awaiting your approval" reminders that 403'd on click, and the stall cron counted them as
+    // a reachable approver, silencing its "no reachable approver" alert.
+    if (m?.users && m.users.id !== excludeId && m.effective_permissions?.APPROVE_DOCUMENTS === true) {
       recipients = [{ id: m.users.id, name: m.users.name, email: m.users.email }]
       // FIX (deep audit, RLS+permissions re-pass): same project-visibility
       // rule as the role-based branch below and as getMembersWithPermission

@@ -106,8 +106,12 @@ export default function Sidebar({ session }: { session: SessionUser }) {
           .catch(() => 0)
       )
     }
+    // send_failed_at is only ever set on a request that is (still) status='approved' — see
+    // engine.ts's own send_failed_at comments — so this can filter server-side instead of
+    // paging through every rejected/cancelled/successfully-sent request this member has ever
+    // submitted, on every navigation, just to throw almost all of it away client-side.
     requests.push(
-      fetch(`/api/approvals?scope=submitted`)
+      fetch(`/api/approvals?scope=submitted&status=approved`)
         .then(r => r.json())
         .then(json => (json.requests || []).filter((r: any) => !!r.send_failed_at).length)
         .catch(() => 0)

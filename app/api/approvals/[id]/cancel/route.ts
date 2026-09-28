@@ -33,9 +33,16 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // The last step cleared and the send is running right now — cancelling would
     // race a document that is about to go out. (A send that died mid-flight is
     // healed into the retryable state by the stall cron within minutes.)
-    if (req.status === 'pending' && req.sending_started_at &&
+    //
+    // FIX (section-11 audit): this only checked status==='pending', which is the
+    // original auto-send's claim state. retryFailedSend claims the SAME way but
+    // stays status==='approved' the whole time (send_failed_at isn't cleared until
+    // the retry finishes) — so this let a cancel land while a retry's email was
+    // actually going out, then leave the request 'cancelled' with no status guard
+    // on retryFailedSend's own success write to catch it. Cover both claim states.
+    if (req.sending_started_at &&
         Date.now() - new Date(req.sending_started_at).getTime() < 2 * 60 * 1000)
-      return NextResponse.json({ error: 'This request was just approved and is being sent — give it a moment, then refresh.' }, { status: 409 })
+      return NextResponse.json({ error: 'This request is being sent right now — give it a moment, then refresh.' }, { status: 409 })
     if (req.requested_by !== session.id && !hasPermission(session, 'MANAGE_WORKSPACE_SETTINGS'))
       return NextResponse.json({ error: 'Only the requester or an admin can cancel this' }, { status: 403 })
     // FIX (fix round, section-11 finding): recordApprovalDecision treats

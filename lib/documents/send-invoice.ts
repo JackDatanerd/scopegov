@@ -89,7 +89,7 @@ export async function sendInvoiceDocument(service: any, params: {
   if (!client?.email) return { ok: false, error: 'Client email required', status: 400 }
   if (!invoice.due_date) return { ok: false, error: 'Add a due date before sending this invoice.', status: 400 }
   if (isDueDateInPast(invoice.due_date))
-    return { ok: false, error: 'The due date has passed since this was submitted — update the due date, then retry the send.', status: 400 }
+    return { ok: false, error: 'The due date has passed since this was submitted — change the due date (the approval stays in place), then retry the send.', status: 400 }
   if (!invoice.payment_instructions?.trim())
     return { ok: false, error: 'Add payment instructions before sending this invoice.', status: 400 }
 

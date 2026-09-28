@@ -75,16 +75,30 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // A gated invoice stays at status:'draft' the entire time it's under review
     // (same pattern as SOW/CO): without this lock an approver could be reviewing
     // one amount while the requester quietly changes it underneath them.
-    if (await getPendingApprovalForDocument(service, 'invoice', id)) {
-      return NextResponse.json(
-        { error: 'This invoice has a pending approval request — cancel it before editing.' },
-        { status: 409 }
-      )
-    }
+    const activeApproval = await getPendingApprovalForDocument(service, 'invoice', id)
 
     const body = await request.json().catch(() => null)
     if (!body || typeof body !== 'object' || Array.isArray(body))
       return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+
+    // FIX (section-11 audit): an invoice that finished approval but whose auto-send failed on a
+    // stale due date had no way out — the send refuses a past due date (see send-invoice.ts), but
+    // this lock refused everything, including the date, unless the approval was cancelled first
+    // (throwing it away and starting over). The date isn't something approvers signed off on (the
+    // amount, title and payment instructions are, and those stay locked); let it move on its own
+    // so Retry can actually succeed.
+    if (activeApproval) {
+      const approvedNotSent = activeApproval.status === 'approved' && !!activeApproval.send_failed_at && !activeApproval.sending_started_at
+      const onlyDueDate = Object.keys(body).length > 0 && Object.keys(body).every(k => k === 'dueDate')
+      if (!(approvedNotSent && onlyDueDate)) {
+        return NextResponse.json(
+          { error: approvedNotSent
+              ? 'This invoice was approved but could not be sent. You can change its due date and retry the send from Approvals — to edit anything else, cancel that request first.'
+              : 'This invoice has a pending approval request — cancel it before editing.' },
+          { status: 409 }
+        )
+      }
+    }
 
     const update: Record<string, any> = { updated_at: new Date().toISOString() }
 

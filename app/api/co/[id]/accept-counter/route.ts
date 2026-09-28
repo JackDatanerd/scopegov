@@ -5,6 +5,7 @@ import { canReadProject } from '@/lib/utils/project-access'
 import { evaluateApprovalGate } from '@/lib/approvals/engine'
 import { sendBlockedReason } from '@/lib/documents/preflight'
 import { acceptCoCounter } from '@/lib/documents/accept-co-counter'
+import { coGateAmount } from '@/lib/approvals/gate-amount'
 
 // FIX (doc-completeness audit, decision: require re-sign): this route used
 // to finalize the CO as 'accepted' the moment the agency accepted the
@@ -38,8 +39,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const service = createServiceClient()
     const { data: co } = await (service as any)
       .from('change_orders')
-      .select(`id,title,status,flag_id,counter_amount,total,project_id,workspace_id,
-        projects(id,name,currency)`)
+      .select(`id,title,status,flag_id,counter_amount,total,project_id,workspace_id,is_retainer_renewal,renewal_term_months,
+        projects(id,name,currency,type)`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!co) return NextResponse.json({ error: 'CO not found' }, { status: 404 })
@@ -66,7 +67,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       documentId:   id,
       projectId:    co.project_id,
       projectName:  project?.name || '',
-      amount:       Math.abs(Number(negotiatedTotal) || 0),
+      // A retainer-renewal counter is still a new monthly rate for the same renewal term.
+      amount:       Math.abs(coGateAmount({ total: negotiatedTotal, is_retainer_renewal: co.is_retainer_renewal, renewal_term_months: co.renewal_term_months }, project)),
       currency:     project?.currency || 'USD',
       documentTitle: co.title,
       requestedBy:  { id: session.id, name: session.name, email: session.email },
