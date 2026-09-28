@@ -11,22 +11,18 @@
 // verb — same permission gate, same billing-row shape, same "don't tell
 // the customer it worked unless Paystack actually agrees" discipline.
 //
-// FIX (deep audit, Billing re-pass — independent redo): "mirrors
-// billing/cancel exactly" above wasn't quite true — cancel and upgrade
-// (see upgrade's own comment) both require a fresh step-up
-// re-authentication because they change real subscription/billing state
-// on a session that may be long-idle at aal2. This route does exactly
-// that too: it reverses a cancellation and recommits the workspace to
-// being charged again going forward, the same real-world stakes as
-// cancel's "will this card be charged" decision, and it was the one
-// sibling missing the guard.
+// DELIBERATELY NO step-up (re-authentication) guard here, unlike billing/cancel:
+// resuming only undoes a cancellation — it keeps a customer who was about to
+// leave, and nothing a hijacked session does here costs the victim anything
+// they had not already chosen to pay for. A challenge at a save-the-customer
+// moment is pure friction. (Cancel keeps its guard: it removes value with no
+// payment involved.)
 export const maxDuration = 30
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
-import { requireStepUpForCurrentUser } from '@/lib/auth/step-up'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { resumePaystackSubscription } from '@/lib/integrations/paystack'
 import { getBillingRecipients } from '@/lib/billing/recipients'
@@ -39,9 +35,6 @@ export async function POST(request: NextRequest) {
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     if (!hasPermission(session, 'MANAGE_BILLING'))
       return NextResponse.json({ error: 'Missing permission: MANAGE_BILLING' }, { status: 403 })
-
-    const stepUp = await requireStepUpForCurrentUser()
-    if (stepUp) return stepUp
 
     const service = createServiceClient()
     const { data: billing } = await (service as any)

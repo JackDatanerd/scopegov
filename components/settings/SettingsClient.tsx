@@ -1759,12 +1759,8 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
   async function handleResume() {
     setResuming(true); setResumeError('')
     try {
-      // FIX (deep audit, Billing re-pass — independent redo): plain fetch(),
-      // so the new requireStepUpForCurrentUser() guard on
-      // /api/billing/resume would have surfaced as an opaque "Could not
-      // resume" error for anyone without a fresh-enough session, with no
-      // way to actually get past it — same reasoning as handleUpgrade just
-      // below and handleCancel just above.
+      // billing/resume has no step-up guard (see its header); fetchWithStepUp is
+      // kept only so any future 401 step_up_required is handled, not swallowed.
       const res  = await fetchWithStepUp('/api/billing/resume', { method: 'POST' })
       const json = await res.json().catch(() => ({}))
       if (res.ok) window.location.reload()
@@ -1843,13 +1839,9 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
       await loadPaystackScript().catch(() => {
         throw new Error('Could not load the payment provider. If you\u2019re using an ad-blocker or privacy extension, try disabling it for this site, then refresh and try again.')
       })
-      // FIX (re-audit, Billing section): plain fetch(), so the new
-      // requireStepUpForCurrentUser() guard on /api/billing/upgrade would
-      // have surfaced as an opaque "Could not start checkout" error for
-      // anyone without a fresh-enough session, with no way to actually get
-      // past it. fetchWithStepUp is the same wrapper billing/cancel already
-      // uses just above — it shows the "Confirm it's you" modal and retries
-      // this exact request once confirmed.
+      // billing/upgrade has no step-up guard (see its header) — checkout must
+      // never be gated behind an MFA/password prompt. fetchWithStepUp is kept only
+      // so any future 401 step_up_required is handled, not swallowed.
       const res  = await fetchWithStepUp('/api/billing/upgrade', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ planKey, interval: targetInterval }),

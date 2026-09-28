@@ -24,3 +24,10 @@ GAP paystack.ts               Cancel/resume/plan-switch-disable failed forever w
 
 Tests: tests/billing.test.ts (+B1, 5 cases), tests/paystack-integration.test.ts (new, 7 cases),
 tests/cron-approval-billing-flags.test.ts (+B2, 1 case).
+
+STEP-UP REMOVED FROM CHECKOUT (product decision)
+  billing/upgrade and billing/resume no longer call requireStepUpForCurrentUser(). An MFA/password challenge at
+  the moment of conversion (and in the grace-period "Retry with a new card" recovery flow) was pure friction:
+  the actor must pay in Paystack's popup with their own card, so a hijacked session gains nothing by subscribing.
+  billing/cancel KEEPS its guard (it removes value with no payment involved). Comments in both routes, the
+  client and lib/auth/step-up.ts updated so the guard is not re-added by a later audit.
