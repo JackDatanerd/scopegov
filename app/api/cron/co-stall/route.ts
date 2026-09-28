@@ -31,12 +31,19 @@ export async function POST(request: NextRequest) {
     // ONLY awaiting_response — a 'countered' CO is an active negotiation and must not auto-stall.
     // (change_orders has no `deleted_at`; filtering on it made every run a silent no-op once.)
     // fetchAll throws on a query error instead of reporting "0 stalled" and a green heartbeat.
+    //
+    // FIX (re-audit, section 17): deleting/suspending a workspace deactivates every membership but
+    // never touches change_orders — same gap approval-stall was already fixed for. Without this join,
+    // a workspace nobody can open keeps getting its stale COs flipped to 'stalled' and audit-logged
+    // forever (until the 7-year purge). `!inner` is what makes `workspaces.deleted_at` actually
+    // restrict the parent rows under PostgREST.
     const staleCOs = await fetchAll<any>('co-stall select', (from, to) =>
       (service as any)
         .from('change_orders')
-        .select('id, title, project_id, workspace_id, sent_at, first_viewed_at, projects(name, clients(name))')
+        .select('id, title, project_id, workspace_id, sent_at, first_viewed_at, projects(name, clients(name)), workspaces!inner(deleted_at)')
         .eq('status', 'awaiting_response')
         .lt('sent_at', cutoff)
+        .is('workspaces.deleted_at', null)
         .order('id')
         .range(from, to))
 

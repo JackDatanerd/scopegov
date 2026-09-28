@@ -43,13 +43,21 @@ export async function POST(request: NextRequest) {
     const year  = now.getUTCFullYear()
     const currentKey = `${year}-${String(month).padStart(2, '0')}`
 
+    // FIX (re-audit, section 17): deleting/suspending a workspace deactivates every membership but
+    // never touches its projects — the one gap that mattered most in this file, since it meant this
+    // cron kept fabricating real, billable payment_milestones rows for a closed/suspended account
+    // every month, indefinitely. If that workspace is later restored (self-restore within 30 days,
+    // or an admin restore with no time limit) it comes back with a stack of milestones nobody ever
+    // decided to invoice for. `!inner` is what makes `workspaces.deleted_at` actually restrict the
+    // parent rows under PostgREST — same fix approval-stall already carries.
     const retainers = await fetchAll<any>('retainer-milestones select', (from, to) =>
       (service as any)
         .from('projects')
-        .select('id, workspace_id, name, contract_value, currency, retainer_duration_months, created_at, sow_documents(id, status, signed_at), clients(name)')
+        .select('id, workspace_id, name, contract_value, currency, retainer_duration_months, created_at, sow_documents(id, status, signed_at), clients(name), workspaces!inner(deleted_at)')
         .eq('type', 'retainer')
         .eq('status', 'Active')
         .is('deleted_at', null)
+        .is('workspaces.deleted_at', null)
         .order('id')
         .range(from, to))
 

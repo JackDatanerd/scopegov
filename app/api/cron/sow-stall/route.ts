@@ -27,14 +27,21 @@ export async function POST(request: NextRequest) {
     const threshold = 7 // days — configurable per workspace in future
     const cutoff    = new Date(now.getTime() - threshold * 86400000).toISOString()
 
-    // `!inner` is what makes `projects.status` actually restrict the parent rows under PostgREST.
+    // `!inner` is what makes `projects.status` (and, below, `workspaces.deleted_at`) actually
+    // restrict the parent rows under PostgREST.
+    //
+    // FIX (re-audit, section 17): deleting/suspending a workspace deactivates every membership but
+    // never touches sow_documents or projects.status — same gap approval-stall was already fixed
+    // for. Without this join, a workspace nobody can open keeps getting its project flipped to
+    // 'Stalled' and audit-logged forever (until the 7-year purge).
     const staleSOWs = await fetchAll<any>('sow-stall select', (from, to) =>
       (service as any)
         .from('sow_documents')
-        .select('id, project_id, workspace_id, sent_at, first_viewed_at, projects!inner(id, name, status, clients(name))')
+        .select('id, project_id, workspace_id, sent_at, first_viewed_at, projects!inner(id, name, status, clients(name)), workspaces!inner(deleted_at)')
         .eq('status', 'awaiting_signature')
         .lt('sent_at', cutoff)
         .eq('projects.status', 'Awaiting Signature')
+        .is('workspaces.deleted_at', null)
         .order('id')
         .range(from, to))
 

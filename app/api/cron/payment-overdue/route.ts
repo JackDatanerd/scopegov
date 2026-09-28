@@ -70,12 +70,18 @@ export async function POST(request: NextRequest) {
   // ── 1. Mark overdue payment milestones ──────────────────────────────────────────────────
   await run.step('1 milestones overdue', async () => {
     const retainerGraceDate = new Date(now.getTime() - RETAINER_INVOICE_GRACE_DAYS * 86400000).toISOString().split('T')[0]
+    // FIX (re-audit, section 17): this scan had no `projects.deleted_at` guard while step 1b right
+    // below it (invoices) already excludes a soft-deleted (trashed) project's own — "nobody can act
+    // on them from the UI" (section-12 audit, pass 2). Same table shape, same reasoning; applying it
+    // here for consistency and defense-in-depth. `!inner` is required for `projects.deleted_at` to
+    // actually restrict the parent rows under PostgREST.
     const overdueMilestones = await fetchAll<any>('overdue milestones select', (from, to) =>
       (service as any).from('payment_milestones')
-        .select(`id, title, amount, project_id, projects(id, name, workspace_id, currency, clients(name))`)
+        .select(`id, title, amount, project_id, projects!inner(id, name, workspace_id, currency, deleted_at, clients(name))`)
         .eq('status', 'pending')
         .not('due_date', 'is', null)
         .lt('due_date', today)
+        .is('projects.deleted_at', null)
         .or(`type.is.null,type.neq.retainer_monthly,due_date.lt.${retainerGraceDate}`)
         .order('id')
         .range(from, to))

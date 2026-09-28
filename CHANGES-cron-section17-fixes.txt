@@ -1,0 +1,38 @@
+Section 17 (cron jobs) — re-audit fixes
+
+1. app/api/cron/co-stall/route.ts
+   Added workspaces!inner(deleted_at) join + .is('workspaces.deleted_at', null).
+   A soft-deleted/suspended workspace's stale change orders kept getting
+   flipped to 'stalled' and audit-logged forever — same gap approval-stall
+   was already fixed for.
+
+2. app/api/cron/sow-stall/route.ts
+   Same fix: added workspaces!inner(deleted_at) join + deleted_at filter.
+   A soft-deleted/suspended workspace's project kept getting flipped to
+   'Stalled' indefinitely.
+
+3. app/api/cron/retainer-milestones/route.ts
+   Same fix. Highest-impact of the three: this cron was generating real,
+   billable payment_milestones rows every month for retainer projects in
+   closed/suspended workspaces, indefinitely — a genuine billing-integrity
+   issue if the workspace is later restored.
+
+4. app/api/cron/payment-overdue/route.ts
+   Step 1 (milestones overdue) had no projects.deleted_at exclusion, while
+   step 1b (invoices overdue) right below it already excludes a soft-
+   deleted (trashed) project's invoices. Brought step 1 in line with its
+   sibling for consistency/defense-in-depth.
+
+5. app/api/cron/workspace-purge/route.ts
+   Added .eq('suspended_by_admin', false) to the purge-candidate query.
+   Admin-suspended workspaces (migration 091) are deliberately NOT ordinary
+   deletes — no auto-expiry, reversible only by a human via
+   admin_restore_workspace. Without this, a still-suspended workspace would
+   get irreversibly hard-deleted (with everything under it) the moment it
+   crossed the 7-year mark.
+
+No behavior changes beyond the added filters. Checked against every test
+file that touches these five routes (retainer-milestones-cron.test.ts,
+payment-overdue-grace.test.ts, payment-overdue-billing-race.test.ts,
+cron-infra.test.ts) — none assert on query shape or exercise these
+filters, so none should break.

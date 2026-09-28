@@ -33,11 +33,21 @@ export async function POST(request: NextRequest) {
     // through from onboarding's logo-upload path): fetch logo_storage_path
     // now, while the row still exists — purge_workspace hard-deletes the
     // `workspaces` row itself, so this is the last point this is readable.
+    //
+    // FIX (re-audit, section 17): migration 091 added `suspended_by_admin` specifically so an admin
+    // suspension (fraud/ToS/payment investigation) is never treated as an ordinary self-service
+    // delete — it has no auto-expiry and is reversible only by a human via admin_restore_workspace.
+    // This query ignored that flag and would silently hard-delete a still-suspended workspace (and
+    // every project/client/invoice under it) the moment it crossed 7 years, which is exactly the
+    // "quietly reversed/erased with zero notice" failure mode 091 exists to prevent — just at the
+    // opposite end of the timeline instead of within the 30-day self-restore window. Excluded here;
+    // resolving a suspension (restore or a deliberate permanent removal) stays a human decision.
     const { data: candidates, error: findErr } = await (service as any)
       .from('workspaces')
       .select('id, logo_storage_path')
       .not('deleted_at', 'is', null)
       .lt('deleted_at', cutoff7yr)
+      .eq('suspended_by_admin', false)
       .order('deleted_at', { ascending: true })
       .limit(50) // oldest first; each purge is heavy, the remainder is picked up on the next weekly run
 
