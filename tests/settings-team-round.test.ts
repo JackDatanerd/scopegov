@@ -453,6 +453,35 @@ describe('POST /api/team/invite — an invite past its expiry', () => {
 })
 
 // ═════════════════════════════════════════════════════════════════════════
+// Invite POST: stale-tab workspaceId guard (fresh independent audit, section 4)
+// ═════════════════════════════════════════════════════════════════════════
+describe('POST /api/team/invite — caller-supplied workspaceId must match the active workspace', () => {
+  beforeEach(() => {
+    resolver = (t, ops) => {
+      if (t === 'roles') return { data: null, error: null }
+      if (t === 'users') return { data: null, error: null }
+      if (t === 'workspace_members' && first(ops) === 'select') return { data: [], error: null }
+      if (t === 'workspace_members' && first(ops) === 'insert') return { data: { id: 'new-member' }, error: null }
+      if (t === 'workspaces') return { data: { name: 'Acme', agency_name: 'Acme' }, error: null }
+      return { data: null, error: null }
+    }
+  })
+  it('refuses (409) when the onboarding wizard\u2019s remembered workspaceId no longer matches the session\u2019s active one', async () => {
+    session = mkSession(ALL) // workspaceId: 'w1'
+    const { POST } = await import('@/app/api/team/invite/route')
+    const res = await POST(req('/api/team/invite', 'POST', { email: 'new@x.com', workspaceId: 'some-other-workspace' }))
+    expect(res.status).toBe(409)
+    expect(calls.some(c => c.table === 'workspace_members' && first(c.ops) === 'insert')).toBe(false)
+  })
+  it('still invites when workspaceId matches the active workspace, or is omitted entirely (Team page never sends it)', async () => {
+    session = mkSession(ALL)
+    const { POST } = await import('@/app/api/team/invite/route')
+    expect((await POST(req('/api/team/invite', 'POST', { email: 'a@x.com', workspaceId: 'w1' }))).status).not.toBe(409)
+    expect((await POST(req('/api/team/invite', 'POST', { email: 'b@x.com' }))).status).not.toBe(409)
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════
 // Document numbering API
 // ═════════════════════════════════════════════════════════════════════════
 describe('/api/workspace/numbering', () => {

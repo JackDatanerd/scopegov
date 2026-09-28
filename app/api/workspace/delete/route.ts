@@ -17,6 +17,21 @@ export async function DELETE(request: Request) {
     if (!hasPermission(session, 'MANAGE_WORKSPACE_SETTINGS'))
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
 
+    // FIX (fresh independent audit, section 4): settings, branding and defaults all refuse
+    // (409) when the caller says which workspace it thinks it's acting on and that isn't the
+    // session's active one. This route — the most destructive write in the section — never
+    // did. The typed-name check below only proves the caller knows the ACTIVE workspace's
+    // name, so a stale onboarding tab (another tab/device switched the active workspace to
+    // one that happens to share the name — the wizard creates name === agency_name, and
+    // 'Acme' is a common choice) would delete the live workspace instead of the discarded
+    // one. When the caller names a workspace, it must be the one being deleted.
+    const deleteBody = await request.json().catch(() => null) as { confirmName?: unknown; workspaceId?: unknown } | null
+    if (deleteBody && deleteBody.workspaceId !== undefined && deleteBody.workspaceId !== session.workspaceId) {
+      return NextResponse.json({
+        error: 'You\u2019re no longer working on that workspace. Reload the page and try again.',
+      }, { status: 409 })
+    }
+
     const service = createServiceClient()
 
     // FIX (RLS+permissions audit round 2): this was gated on MANAGE_WORKSPACE_SETTINGS
@@ -42,7 +57,6 @@ export async function DELETE(request: Request) {
     }
 
     // The client's type-the-name box is a UX guard; enforce it where it can't be skipped.
-    const deleteBody = await request.json().catch(() => null) as { confirmName?: unknown } | null
     const expectedName = (session.workspaceName || '').trim()
     if (!expectedName || typeof deleteBody?.confirmName !== 'string' || deleteBody.confirmName.trim() !== expectedName) {
       return NextResponse.json({ error: 'Type the workspace name to confirm deletion.' }, { status: 400 })

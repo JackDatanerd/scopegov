@@ -8,7 +8,7 @@ import { sanitizeRichText } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
 import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
 import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
-import { AI_SECTION_IDS, SOW_LANGUAGE_NAMES, sectionTitle as canonicalSectionTitle } from '@/lib/ai/sow-content'
+import { AI_SECTION_IDS, sowLanguageName, sectionTitle as canonicalSectionTitle } from '@/lib/ai/sow-content'
 import { MAX_SECTION_CONTENT_LENGTH } from '@/lib/sow/sections'
 import Anthropic from '@anthropic-ai/sdk'
 
@@ -91,7 +91,7 @@ export async function POST(request: NextRequest) {
       ? Math.max(Math.ceil(currentWords * 1.2), 60)
       : Math.max(currentWords, 60)
     const title = canonicalSectionTitle(sectionId, (sow as any).metadata?.language)
-    const langName = SOW_LANGUAGE_NAMES[(sow as any).metadata?.language as string]
+    const langName = sowLanguageName((sow as any).metadata?.language)
     const languageLine = langName ? `\nWrite the section in ${langName}, the language this document is drafted in.` : ''
 
     const prompt = `You are rewriting one section of a professional Statement of Work.

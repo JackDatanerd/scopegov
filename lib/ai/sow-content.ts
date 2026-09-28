@@ -231,6 +231,21 @@ export const SOW_LANGUAGE_NAMES: Record<string, string> = {
   en: 'English', es: 'Spanish', fr: 'French', pt: 'Portuguese', de: 'German', sw: 'Swahili',
 }
 
+// FIX (fresh independent audit, section 4): every lookup/validation against the map above
+// used `code in SOW_LANGUAGE_NAMES` or a bare `SOW_LANGUAGE_NAMES[code]`. Both walk the
+// prototype chain, so a code like 'toString' or 'constructor' "exists" — workspace/defaults
+// accepted it and wrote it to workspaces.sow_language, after which BOILERPLATE_TEMPLATES[code]
+// resolved to Object.prototype.toString (truthy, so the `|| BOILERPLATE_TEMPLATES.en`
+// fallback never fired) and generation broke. Own-property checks only.
+export function isSowLanguage(code: unknown): code is string {
+  return typeof code === 'string' && Object.prototype.hasOwnProperty.call(SOW_LANGUAGE_NAMES, code)
+}
+
+/** Display name for a supported SOW language code, or undefined for anything else. */
+export function sowLanguageName(code: unknown): string | undefined {
+  return isSowLanguage(code) ? SOW_LANGUAGE_NAMES[code] : undefined
+}
+
 // ── 1. Boilerplate sections — deterministic, never asked of the model ──
 //
 // These three sections are never sent to the AI (see AI_SECTION_IDS
@@ -333,14 +348,14 @@ export function sectionTitle(id: string, language?: string): string {
   const def = SOW_SECTION_DEFS.find(d => d.id === id)
   const fallback = def?.title || id
   if (!language || language === 'en') return fallback
-  return SOW_SECTION_TITLES[language]?.[id] || fallback
+  return (isSowLanguage(language) ? SOW_SECTION_TITLES[language]?.[id] : undefined) || fallback
 }
 
 export function buildBoilerplateSections(input: SowContentInput): Record<string, string> {
   const agency = escapeHtml(input.agencyName)
   const client = escapeHtml(input.clientName)
   const law    = escapeHtml(input.governingLaw)
-  const template = BOILERPLATE_TEMPLATES[input.language || 'en'] || BOILERPLATE_TEMPLATES.en
+  const template = (isSowLanguage(input.language) ? BOILERPLATE_TEMPLATES[input.language] : undefined) || BOILERPLATE_TEMPLATES.en
   return template(agency, client, law)
 }
 
@@ -378,7 +393,7 @@ ${TABLE_END}` : ''
   // English regardless (they're parsed by exact string match in
   // parseDelimitedSections/parseTableSections), only the drafted content
   // switches language.
-  const languageName = SOW_LANGUAGE_NAMES[input.language || 'en']
+  const languageName = sowLanguageName(input.language || 'en')
   const languageInstruction = languageName && languageName !== 'English'
     ? `\n\nWrite ALL drafted section content and table row text in ${languageName}. Keep the section/table MARKER lines themselves exactly as specified below (in English, unchanged) — only the content after each marker is in ${languageName}.`
     : ''
@@ -669,7 +684,7 @@ const FALLBACK_STRINGS: Record<string, FallbackStrings> = {
 }
 
 export function buildFallbackSections(input: SowContentInput): Record<string, string> {
-  const t = FALLBACK_STRINGS[input.language || 'en'] || FALLBACK_STRINGS.en
+  const t = (isSowLanguage(input.language) ? FALLBACK_STRINGS[input.language] : undefined) || FALLBACK_STRINGS.en
 
   const outOfScopeItems = (input.outOfScope || '').split('\n').map(l => l.trim()).filter(Boolean)
     .map(l => `<li>${escapeHtml(l.replace(/^[-*]\s*/, ''))}</li>`).join('')
@@ -726,7 +741,7 @@ const FALLBACK_TABLE_STRINGS: Record<string, {
 
 /** Deterministic table fallback — same guarantee as buildFallbackSections: always produces at least one usable row per table from whatever the brief contains, never blocks document generation. */
 export function buildFallbackTables(input: SowContentInput): Record<SowTableSectionId, SowTableRow[]> {
-  const tt = FALLBACK_TABLE_STRINGS[input.language || 'en'] || FALLBACK_TABLE_STRINGS.en
+  const tt = (isSowLanguage(input.language) ? FALLBACK_TABLE_STRINGS[input.language] : undefined) || FALLBACK_TABLE_STRINGS.en
   // FIX (bug — Deliverables/Timeline rendering completely empty): the old
   // `input.deliverables || 'default text'` check treats a whitespace-only
   // string (someone typed a space into the brief field, or left it with

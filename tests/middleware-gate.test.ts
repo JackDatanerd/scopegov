@@ -84,6 +84,20 @@ describe('forced-MFA enrolment gate vs. onboarding', () => {
     expect(passes(await call('/api/auth/mfa/enroll', 'POST'))).toBe(true)
   })
 
+  // FIX (fresh independent audit, section 4 — feature gap): the aal2-challenge redirect to
+  // /mfa-challenge already carries `next` (covered above); this redirect to /mfa-setup didn't,
+  // so clicking "Create first project" at the end of onboarding — which every brand-new Owner
+  // is forced through this exact gate right after, since Owner is always MFA-mandatory — landed
+  // back on the default /dashboard once enrolment finished, silently dropping where they meant
+  // to go.
+  it('the redirect to /mfa-setup carries the originally-requested path as `next`', async () => {
+    state.gate = { ...state.gate, onboarding_complete: true }
+    const res = await call('/projects/new')
+    const dest = new URL(res.headers.get('location'))
+    expect(dest.pathname).toBe('/mfa-setup')
+    expect(dest.searchParams.get('next')).toBe('/projects/new')
+  })
+
   it('an enrolled account (aal2) is not gated', async () => {
     state.user = { id: 'u1', factors: [{ status: 'verified' }] }
     state.aal = { currentLevel: 'aal2', nextLevel: 'aal2' }

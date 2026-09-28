@@ -1,0 +1,128 @@
+scopegov — Section 4 (Onboarding: app/onboarding + workspace/complete-onboarding) fix round
+============================================================================================
+Fresh, independent audit pass (treated every prior FIX comment in this section as if it
+didn't exist; only checked them where something looked off). Fixes bugs B1–B5 and feature
+gaps G1–G3 from that pass, plus the trial-conflict "dead end" finding. Applied against the
+uploaded scopegov-full.tar.gz — this is not a git diff, so review before merging.
+
+MODIFIED FILES (9)
+------------------
+  app/onboarding/page.tsx
+      B1: discardWorkspace() now calls DELETE /api/workspace/delete through
+      fetchWithStepUp() instead of a plain fetch, and sends workspaceId.
+      B2: that same call now sends workspaceId (route enforces the match — see below).
+      B3: submitInvite() reads the emailFailed flag, clears the field, and carries a
+      message to step 4 instead of silently advancing as if the invite email sent.
+      B4: the step-0 back-edit PATCH now sends name alongside agencyName so the two
+      can't drift after an agency-name edit.
+      Trial conflict: the "Go to that workspace instead" button now switches into the
+      named conflictWorkspaceId (via the existing switchToWorkspace()) instead of just
+      reloading /onboarding, with a /dashboard fallback when none is named.
+      G2: step 1 shows a low-contrast warning for the brand colour (same check Settings
+      already applies).
+      G3: step 2 hints that governing law is required for SOW generation; step 4 shows
+      an amber note if it's still unsaved when the wizard finishes.
+      G1: step 4 now mentions the mandatory 2FA step coming up next.
+      Also: localStorage read/write wrapped in try/catch (private-mode/storage-disabled
+      browsers used to throw uncaught out of a plain effect); invite email trimmed.
+
+  app/onboarding/layout.tsx  [NEW]
+      B1: mounts <StepUpHost /> for the onboarding route tree, which previously had no
+      step-up modal anywhere in scope — see app/(app)/layout.tsx for the only other
+      place it was mounted, which /onboarding deliberately sits outside of.
+
+  app/api/workspace/delete/route.ts
+      B2: refuses (409) when the caller names a workspaceId that isn't the session's
+      active one, before any deletion logic runs. The existing typed-name confirmation
+      only proves the caller knows the ACTIVE workspace's name, which isn't enough when
+      a second tab/device switched, discarded or restored the active workspace since
+      this tab last loaded — the wizard creates name === agency_name, so a common
+      agency name can collide.
+
+  app/api/team/invite/route.ts
+      B2: same optional-workspaceId 409 guard as workspace/delete. Does not change the
+      existing confused-deputy defense (the route always invites into
+      session.workspaceId regardless of body) — this only refuses the mismatch instead
+      of silently ignoring it.
+
+  app/api/workspace/create/route.ts
+      Trial conflict: on the one_active_trial_per_creator 409, looks up the caller's
+      other active, non-exempt trial workspace and returns its id as
+      conflictWorkspaceId — but only when the caller is still an active member of it
+      (e.g. not returned for an admin-suspended trial they can no longer enter). The
+      lookup is wrapped in its own try/catch and is non-fatal: a lookup failure still
+      returns the 409, just without the id.
+
+  middleware.ts
+      G1: the forced-MFA-enrolment redirect to /mfa-setup now carries the originally
+      requested path as ?next=, matching the /mfa-challenge redirect right above it in
+      the same file. /mfa-setup already validates next with safeRedirectPath() before
+      using it. Without this, "Create first project" at the end of onboarding — which
+      every brand-new Owner hits this exact gate right after, since Owner is always
+      MFA-mandatory — silently dropped the destination once enrolment finished.
+
+  lib/ai/sow-content.ts
+      B5: adds isSowLanguage()/sowLanguageName(), both using
+      Object.prototype.hasOwnProperty.call instead of `in` or a bare index lookup.
+      Every language-keyed lookup in this file (buildBoilerplateSections, sectionTitle,
+      buildFallbackSections, buildFallbackTables, the prompt's languageName) now goes
+      through one of them. Previously a code like 'toString' or 'constructor' read as
+      "present" via the prototype chain; BOILERPLATE_TEMPLATES['toString'] resolved to
+      Object.prototype.toString (a function, so truthy — the `|| BOILERPLATE_TEMPLATES.en`
+      fallback never fired) and SOW generation broke on that workspace.
+
+  app/api/workspace/defaults/route.ts
+      B5: PATCH validation now calls isSowLanguage(sowLanguage) instead of
+      `sowLanguage in SOW_LANGUAGE_NAMES` — this was the only way a bad value could
+      reach workspaces.sow_language in the first place.
+
+  app/api/sow/regenerate-section/route.ts
+      B5: uses sowLanguageName() instead of a bare SOW_LANGUAGE_NAMES[...] index.
+
+NEW TEST FILES (2)
+-------------------
+  tests/sow-language-guard.test.ts
+      isSowLanguage/sowLanguageName reject every JS Object prototype key
+      ('toString', 'constructor', 'hasOwnProperty', 'valueOf', '__proto__') and accept
+      only the six real codes; buildBoilerplateSections/buildFallbackSections/
+      buildFallbackTables/sectionTitle all produce the exact same output for a
+      prototype-key language as for 'en'.
+
+  tests/workspace-create-trial-conflict.test.ts
+      conflictWorkspaceId is returned only when the caller is still an active member of
+      the conflicting workspace; omitted (not a hard failure) when they aren't, or when
+      the lookup itself errors; untouched for a constraint violation that isn't the
+      trial-cap one.
+
+EXTENDED TEST FILES (3)
+------------------------
+  tests/route-authority.test.ts
+      DELETE /api/workspace/delete: 409s (before any write or RPC call) when
+      workspaceId in the body doesn't match the active workspace; unaffected when it
+      matches or is omitted.
+
+  tests/settings-team-round.test.ts
+      POST /api/team/invite: same 409-on-mismatch coverage, plus confirms an omitted
+      workspaceId (the Team page's own call shape) still works.
+
+  tests/middleware-gate.test.ts
+      The /mfa-setup redirect now carries next=<originally-requested-path>; the
+      existing /dashboard→/mfa-setup test is untouched (it only asserts .pathname, not
+      the full URL, so it still passes).
+
+NOT INCLUDED (discussed, held back by design)
+----------------------------------------------
+  - No DB migration in this round — nothing here needed a schema change.
+  - Audit-only items from the pass that don't reach shippable code (none this round).
+
+DELIVERY
+--------
+  cd "C:\Users\jackk\Desktop\MyWebApps\scopegov\scopegov"
+  tar -xzf ~/Downloads/scopegov-onboarding-fixes.tar.gz --strip-components=1 -C .
+  git add -A
+  git commit -m "Onboarding: step-up on discard, invite emailFailed, name sync, workspace guards, SOW-language hardening"
+  git push
+  tar --exclude=node_modules --exclude=.next --exclude=.git --exclude=.env.local -czf ~/Downloads/scopegov-full.tar.gz .
+
+Run the suite after extracting (npm test / vitest) before pushing — I could not run it here
+(no node_modules, no network in this sandbox), so this round is reviewed by hand only.

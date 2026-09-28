@@ -82,8 +82,28 @@ export async function POST(request: NextRequest) {
       // one expired). Surface that specific conflict with a real message
       // instead of the generic failure below.
       if (rpcError.code === '23505' && String(rpcError.message || '').includes('one_active_trial_per_creator')) {
+        // FIX (fresh independent audit, section 4): the wizard's "Go to that workspace instead"
+        // button could only send the person to /onboarding, which resolves to /dashboard whenever
+        // their ACTIVE workspace is already complete — so when the conflicting trial was a
+        // different, abandoned workspace they still had no way to reach it from this screen.
+        // Name it, but only when the caller can actually enter it (active member of a live one).
+        let conflictWorkspaceId: string | null = null
+        try {
+          const { data: conflict } = await (service as any)
+            .from('workspaces').select('id')
+            .eq('created_by', user.id).eq('plan_tier', 'trial')
+            .is('deleted_at', null).eq('trial_cap_exempt', false)
+            .order('created_at', { ascending: true }).limit(1).maybeSingle()
+          if (conflict?.id) {
+            const { data: mem } = await (service as any)
+              .from('workspace_members').select('id')
+              .eq('workspace_id', conflict.id).eq('user_id', user.id).eq('status', 'active').maybeSingle()
+            if (mem) conflictWorkspaceId = conflict.id
+          }
+        } catch (e) { console.error('trial conflict lookup failed (non-fatal):', e) }
         return NextResponse.json({
           error: 'You already have an active trial workspace. Upgrade it, delete it, or contact support@scopegov.app to start another trial.',
+          ...(conflictWorkspaceId ? { conflictWorkspaceId } : {}),
         }, { status: 409 })
       }
       // FIX (deep audit, Workspace lifecycle + Onboarding re-pass —

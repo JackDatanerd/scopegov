@@ -43,6 +43,15 @@ export async function POST(request: NextRequest) {
     const email  = body?.email
     const roleId = body?.roleId
     const wsId = session.workspaceId
+    // FIX (fresh independent audit, section 4): the onboarding wizard already sends its own
+    // workspaceId here, but nothing read it — settings/branding/defaults refuse a mismatch with
+    // the session's active workspace (a second tab or device that switched, discarded or restored
+    // a workspace mid-wizard), and this route silently invited into whatever was active instead.
+    // Optional, so other callers (Team page) that never send it keep working unchanged.
+    if (body?.workspaceId !== undefined && body.workspaceId !== wsId)
+      return NextResponse.json({
+        error: 'You\u2019re no longer working on that workspace. Reload the page and try again.',
+      }, { status: 409 })
     if (typeof email !== 'string' || !email.trim())
       return NextResponse.json({ error: 'Email required' }, { status: 400 })
     if (email.trim().length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()))

@@ -221,6 +221,27 @@ describe('DELETE /api/workspace/delete', () => {
     expect(res.status).toBe(401)
     expect(writes).toEqual([])
   })
+
+  // FIX (fresh independent audit, section 4): a stale onboarding tab (another tab/device
+  // switched, discarded or restored the active workspace) could otherwise pass its OWN idea
+  // of which workspace it's deleting, be silently redirected onto the now-active one, and
+  // delete the wrong workspace as long as the typed name happened to match (the wizard sets
+  // name === agency_name, so a common name collides easily).
+  it('refuses (409) when the caller names a workspace that is not the active one, before anything runs', async () => {
+    session = mkSession(['MANAGE_WORKSPACE_SETTINGS'], { id: 'owner1' })
+    tables.workspaces = { data: { created_by: 'owner1' }, error: null }
+    const res = await del({ confirmName: 'Acme', workspaceId: 'some-other-workspace' })
+    expect(res.status).toBe(409)
+    expect(writes).toEqual([])
+    expect(rpcCalls).toEqual([])
+  })
+
+  it('still proceeds when the caller names the active workspace, or names none at all', async () => {
+    session = mkSession(['MANAGE_WORKSPACE_SETTINGS'], { id: 'owner1' })
+    tables.workspaces = { data: { created_by: 'owner1' }, error: null }
+    expect((await del({ confirmName: 'Acme', workspaceId: 'w1' })).status).not.toBe(409)
+    expect((await del({ confirmName: 'Acme' })).status).not.toBe(409)
+  })
 })
 
 // ─────────────────────────────────────────────────────────────────────────────

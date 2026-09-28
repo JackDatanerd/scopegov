@@ -8,6 +8,10 @@ import { useRouter, useSearchParams } from 'next/navigation'
 // against them — importing the one shared list means the dropdown and
 // the server-side validation literally cannot drift apart again.
 import { INDUSTRIES, CURRENCIES, TIMEZONES, SOW_LANGUAGES } from '@/lib/constants/workspace-options'
+// FIX (fresh independent audit, section 4): see discardWorkspace() and app/onboarding/layout.tsx.
+import { fetchWithStepUp } from '@/lib/client/step-up'
+// FIX (fresh independent audit, section 4 — feature gap): see the brand-colour hint on step 1.
+import { isLowContrastForWhiteText } from '@/lib/utils/colour-contrast'
 
 const STEPS = [
   { label: 'Your agency',   sub: 'Identity & locale' },
@@ -133,6 +137,19 @@ function OnboardingWizard() {
   // gap): see submitIdentity's own comment on the explicitNew create
   // path — powers the "resume that workspace instead" link on step 0.
   const [trialConflict, setTrialConflict] = useState(false)
+  // FIX (fresh independent audit, section 4): workspace/create now names the conflicting trial
+  // workspace on that 409 so the button below can switch INTO it rather than just reloading
+  // /onboarding (which routes to /dashboard when the active workspace is already complete).
+  const [trialConflictWorkspaceId, setTrialConflictWorkspaceId] = useState<string | null>(null)
+  // FIX (fresh independent audit, section 4): POST /api/team/invite can succeed (ok: true) with
+  // `emailFailed: true` — the invite row exists but the email never went out. Step 3 ignored the
+  // flag and advanced as if it had sent. Carried to step 4 so it can say so.
+  const [inviteNotice, setInviteNotice] = useState('')
+  // FIX (fresh independent audit, section 4 — feature gap): the governing law that is actually
+  // SAVED on the workspace (server value on resume, or what submitDefaults last saved) — not
+  // whatever is currently typed in the field, which "Skip" leaves unsaved. SOW generation
+  // hard-blocks without it, so step 4 says so when it's still empty.
+  const [savedGoverningLaw, setSavedGoverningLaw] = useState('')
 
   // FEATURE (deep audit, Workspace lifecycle + Onboarding re-pass —
   // feature gap): see restore_workspace_atomic's own comment (migration
@@ -245,6 +262,9 @@ function OnboardingWizard() {
         setInviteRoleId('')
         setInviteRoles([])
         setTrialConflict(false)
+        setTrialConflictWorkspaceId(null)
+        setInviteNotice('')
+        setSavedGoverningLaw('')
         setError('')
         setShowExit(false)
         setStep(0)
@@ -351,7 +371,7 @@ function OnboardingWizard() {
         if (status.logoStoragePath)  setLogoPreview(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/logos/${status.logoStoragePath}`)
         if (status.revisionRounds)   setRevisionRounds(status.revisionRounds)
         if (status.paymentStructure) setPaymentStructure(status.paymentStructure)
-        if (status.governingLaw)     setGoverningLaw(status.governingLaw)
+        if (status.governingLaw)     { setGoverningLaw(status.governingLaw); setSavedGoverningLaw(status.governingLaw) }
         if (status.sowLanguage)      setSowLanguage(status.sowLanguage)
 
         // Local progress only ever supplements the server's pick — and
@@ -427,16 +447,20 @@ function OnboardingWizard() {
     if (!restored || !workspaceId) return
     supabase.auth.getUser().then(({ data: { user } }) => {
       if (!user) return
-      localStorage.setItem(STORAGE_KEY_PREFIX + user.id, JSON.stringify({
-        step, workspaceId, agencyName, industry, currency, timezone,
-        brandColour, revisionRounds, paymentStructure, governingLaw, sowLanguage,
-      }))
+      // localStorage can throw (Safari private mode, storage disabled/full); every other access
+      // to it in this file is already guarded, and progress persistence is best-effort.
+      try {
+        localStorage.setItem(STORAGE_KEY_PREFIX + user.id, JSON.stringify({
+          step, workspaceId, agencyName, industry, currency, timezone,
+          brandColour, revisionRounds, paymentStructure, governingLaw, sowLanguage,
+        }))
+      } catch { /* best-effort */ }
     })
   }, [restored, step, workspaceId, agencyName, industry, currency, timezone, brandColour, revisionRounds, paymentStructure, governingLaw, sowLanguage])
 
   function clearSavedProgress() {
     supabase.auth.getUser().then(({ data: { user } }) => {
-      if (user) localStorage.removeItem(STORAGE_KEY_PREFIX + user.id)
+      if (user) { try { localStorage.removeItem(STORAGE_KEY_PREFIX + user.id) } catch { /* ignore */ } }
     })
   }
 
@@ -539,10 +563,16 @@ function OnboardingWizard() {
         setError('Could not discard this workspace — try again, or contact support@scopegov.app.')
         return
       }
-      const res  = await fetch('/api/workspace/delete', {
+      // FIX (fresh independent audit, section 4): workspace/delete is step-up guarded (a sign-in
+      // more than 10 minutes old gets 401 step_up_required). This used a plain fetch, so anyone
+      // who came back to an abandoned wizard — the exact person this exit hatch exists for — was
+      // told to "confirm it's you" with no way to. fetchWithStepUp opens the modal mounted by
+      // app/onboarding/layout.tsx and retries once. workspaceId is sent so the route can refuse
+      // (409) if another tab has since changed the active workspace.
+      const res  = await fetchWithStepUp('/api/workspace/delete', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ confirmName: current.name }),
+        body: JSON.stringify({ confirmName: current.name, workspaceId }),
       })
       const json = await res.json().catch(() => ({}))
       if (!res.ok) {
@@ -629,7 +659,13 @@ function OnboardingWizard() {
         // weren't.
         const res  = await fetch('/api/workspace/settings', {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ workspaceId, agencyName, industry, currency, timezone }),
+          // FIX (fresh independent audit, section 4): workspace/create sets `name` and
+          // `agency_name` to the same value, and this edit only ever PATCHed agencyName — so
+          // `name` (what invite emails, the delete-confirmation, audit-log entries and report PDFs
+          // read) stayed on the ORIGINAL spelling forever. Onboarding is the only point where the
+          // two are meant to be identical (Settings can't be reached until it finishes), so keep
+          // them in step here.
+          body: JSON.stringify({ workspaceId, name: agencyName, agencyName, industry, currency, timezone }),
         })
         const json = await res.json().catch(() => ({}))
         if (!res.ok) {
@@ -642,7 +678,7 @@ function OnboardingWizard() {
       } finally { setLoading(false) }
       return
     }
-    setLoading(true); setError(''); setTrialConflict(false)
+    setLoading(true); setError(''); setTrialConflict(false); setTrialConflictWorkspaceId(null)
     try {
       const res  = await fetch('/api/workspace/create', {
         method: 'POST',
@@ -662,6 +698,7 @@ function OnboardingWizard() {
         // and offer the one real way back to it.
         if (res.status === 409 && /active trial workspace/i.test(String(json.error || ''))) {
           setTrialConflict(true)
+          setTrialConflictWorkspaceId(typeof json.conflictWorkspaceId === 'string' ? json.conflictWorkspaceId : null)
         }
         throw new Error(json.error || 'Failed to create workspace')
       }
@@ -780,6 +817,7 @@ function OnboardingWizard() {
           setError(json.error || 'Could not save your defaults — try again, or skip this step.')
           return
         }
+        setSavedGoverningLaw(governingLaw.trim())
       } catch {
         setError('Could not save your defaults — try again, or skip this step.')
         return
@@ -810,7 +848,7 @@ function OnboardingWizard() {
         const res  = await fetch('/api/team/invite', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: inviteEmail, workspaceId, ...(inviteRoleId ? { roleId: inviteRoleId } : {}) }),
+          body: JSON.stringify({ email: inviteEmail.trim(), workspaceId, ...(inviteRoleId ? { roleId: inviteRoleId } : {}) }),
         })
         const json = await res.json().catch(() => ({}))
         if (!res.ok) {
@@ -821,6 +859,15 @@ function OnboardingWizard() {
           setError(json.error || 'Could not send that invite — check the email address, or skip this step.')
           return
         }
+        // FIX (fresh independent audit, section 4): the route answers ok:true + emailFailed:true
+        // when the invite row was created but the provider rejected the send (Team page already
+        // handles this flag). Retrying here would just 409 "already pending", so don't block —
+        // carry the fact to step 4. Clear the field so going Back and pressing Continue again
+        // doesn't re-submit the same (now pending) address.
+        setInviteNotice(json.emailFailed
+          ? `The invite for ${inviteEmail.trim()} was created, but the email couldn\u2019t be sent. Open Team \u2192 Pending invites to copy the link or resend it.`
+          : '')
+        setInviteEmail('')
       } catch {
         // FIX (fresh independent audit, Workspace lifecycle + Onboarding):
         // every sibling step function in this wizard (submitIdentity,
@@ -1157,9 +1204,18 @@ function OnboardingWizard() {
             <p className="ob-sub">This appears on all client-facing documents and emails.</p>
             {error && <div className="auth-error">{error}</div>}
             {trialConflict && (
+              // FIX (fresh independent audit, section 4): this used to just reload /onboarding,
+              // which resolves to /dashboard only when the ACTIVE workspace is already complete —
+              // if the conflicting trial was a different, abandoned workspace (the common case:
+              // you're here because you're mid-onboarding on ANOTHER one) there was no way to
+              // reach it from this screen at all. workspace/create now names it on the 409, so
+              // switch into it directly with the same switchToWorkspace() the sidebar uses. When
+              // it can't be named (not a member — e.g. an admin-suspended trial), fall back to the
+              // dashboard, which explains that case on its own.
               <button type="button" className="btn btn-ghost btn-sm" style={{ marginBottom: 16 }}
-                onClick={() => window.location.assign('/onboarding')}>
-                Go to that workspace instead
+                disabled={loading}
+                onClick={() => trialConflictWorkspaceId ? switchToWorkspace(trialConflictWorkspaceId) : router.push('/dashboard')}>
+                {loading ? <span className="spin spin-dark" /> : 'Go to that workspace instead'}
               </button>
             )}
 
@@ -1257,6 +1313,16 @@ function OnboardingWizard() {
                   placeholder="#1A5C3A" />
                 <div style={{ width: 38, height: 38, borderRadius: 'var(--radius-sm)', background: brandColour, border: '1px solid var(--border)', flexShrink: 0 }} />
               </div>
+              {/* FIX (fresh independent audit, section 4 — feature gap): PATCH /api/workspace/branding
+                  already computes and returns this exact warning — Settings shows it, the wizard
+                  silently dropped it, so a pale colour that makes white button/email-CTA text hard
+                  to read sailed through onboarding with no notice at all. */}
+              {isLowContrastForWhiteText(brandColour) && (
+                <p style={{ fontSize: 11, color: 'var(--amber, #B45309)', marginTop: 6 }}>
+                  <i className="ti ti-alert-triangle" style={{ fontSize: 11, marginRight: 4 }} />
+                  This colour is light — text on buttons and email headers using it may be hard to read. You can adjust it later in Settings.
+                </p>
+              )}
             </div>
 
             <div className="ob-nav">
@@ -1304,6 +1370,11 @@ function OnboardingWizard() {
               <input className="finp" value={governingLaw}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setGoverningLaw(e.target.value)}
                 placeholder="e.g. Republic of Kenya" />
+              {/* FIX (fresh independent audit, section 4 — feature gap): /api/sow/generate hard-
+                  refuses to draft a SOW when this is empty — nothing on this step said so, and
+                  "Skip for now" makes it easy to leave blank without realizing SOW generation is
+                  blocked until it's filled in from Settings. */}
+              <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>Required before you can generate a SOW — you can fill it in now or later from Settings.</p>
             </div>
             <div className="fgrp">
               <label className="flbl">SOW language <span className="fhint">— the language every generated SOW is drafted in</span></label>
@@ -1377,6 +1448,29 @@ function OnboardingWizard() {
               generate a Statement of Work, send it to your client — and Guardian
               takes over from there, monitoring every communication for scope drift.
             </p>
+            {/* FIX (fresh independent audit, section 4 — feature gap): an Owner is always
+                MFA-mandatory and has no factor yet, so the very next thing after either button
+                below is a forced detour to /mfa-setup — this said nothing about it, and it landed
+                as a surprise. */}
+            <p style={{ fontSize: 12, color: 'var(--text-3)', textAlign: 'center', marginBottom: 16 }}>
+              <i className="ti ti-shield-lock" style={{ fontSize: 12, marginRight: 4 }} />
+              One more step first: you&rsquo;ll be asked to set up two-factor authentication, required for this role.
+            </p>
+            {/* FIX (fresh independent audit, section 4): see inviteNotice on submitInvite(). */}
+            {inviteNotice && (
+              <p style={{ fontSize: 12, color: 'var(--amber, #B45309)', textAlign: 'center', marginBottom: 16, maxWidth: 320, marginLeft: 'auto', marginRight: 'auto' }}>
+                <i className="ti ti-alert-triangle" style={{ fontSize: 12, marginRight: 4 }} />
+                {inviteNotice}
+              </p>
+            )}
+            {/* FIX (fresh independent audit, section 4 — feature gap): see savedGoverningLaw and
+                the step-2 hint — /api/sow/generate refuses to run without this saved. */}
+            {!savedGoverningLaw.trim() && (
+              <p style={{ fontSize: 12, color: 'var(--amber, #B45309)', textAlign: 'center', marginBottom: 16 }}>
+                <i className="ti ti-alert-triangle" style={{ fontSize: 12, marginRight: 4 }} />
+                You&rsquo;ll need to add a governing law in Settings before you can generate a SOW.
+              </p>
+            )}
             {error && <div className="auth-error">{error}</div>}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 280, margin: '0 auto' }}>
               <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', padding: '11px' }}

@@ -6,7 +6,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { diffFields, sameValue } from '@/lib/utils/audit-diff'
 import { parseStandardsInput } from '@/lib/utils/agency-standards'
-import { SOW_LANGUAGE_NAMES } from '@/lib/ai/sow-content'
+import { SOW_LANGUAGE_NAMES, isSowLanguage } from '@/lib/ai/sow-content'
 import type { SessionUser } from '@/lib/supabase/types'
 
 const PROJECT_TYPES = ['web', 'mobile', 'brand', 'ecomm', 'marketing', 'retainer', 'video', 'other'] as const
@@ -90,7 +90,7 @@ async function saveDefaults(workspaceId: string, body: any, actor: SessionUser) 
   // can't be used to write a code no generation path knows how to draft in.
   let sowLanguageValue: string | undefined
   if (sowLanguage !== undefined && sowLanguage !== null) {
-    if (typeof sowLanguage !== 'string' || !(sowLanguage in SOW_LANGUAGE_NAMES)) {
+    if (!isSowLanguage(sowLanguage)) {
       throw new DefaultsValidationError(`Unsupported SOW language. Must be one of: ${Object.keys(SOW_LANGUAGE_NAMES).join(', ')}`)
     }
     sowLanguageValue = sowLanguage

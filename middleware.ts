@@ -312,7 +312,14 @@ export async function middleware(request: NextRequest) {
           // back).
           return finalize(NextResponse.json({ error: 'Two-factor enrollment required for this account.', code: 'mfa_enrollment_required' }, { status: 401 }))
         }
-        return finalize(NextResponse.redirect(new URL('/mfa-setup', request.url)))
+        // FIX (fresh independent audit, section 4 — feature gap): the aal2-challenge redirect
+        // above carries `next`; this one didn't, so the person who clicked "Create first project"
+        // at the end of onboarding (a brand-new Owner is ALWAYS forced here right after) finished
+        // enrolment and landed on the default /dashboard instead. /mfa-setup validates `next`
+        // with safeRedirectPath() before using it, so this is safe to pass through.
+        const setupUrl = new URL('/mfa-setup', request.url)
+        setupUrl.searchParams.set('next', pathname + search)
+        return finalize(NextResponse.redirect(setupUrl))
       }
     }
   }
