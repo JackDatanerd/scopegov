@@ -1,0 +1,156 @@
+export const runtime = 'nodejs'
+
+import { createServiceClient } from '@/lib/supabase/server'
+import { NextResponse, type NextRequest } from 'next/server'
+import { getSession, hasPermission } from '@/lib/auth/session'
+import { sendCoDocument, validateCoForSend, renewalNeedsTerm } from '@/lib/documents/send-co'
+import { evaluateApprovalGate } from '@/lib/approvals/engine'
+import { sendBlockedReason } from '@/lib/documents/preflight'
+import { canReadProject } from '@/lib/utils/project-access'
+import { isTerminalStatus } from '@/lib/utils/project-status'
+import { coGateAmount } from '@/lib/approvals/gate-amount'
+
+export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    const { id }  = await params
+    const session = await getSession()
+    if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!hasPermission(session, 'SEND_CHANGE_ORDERS'))
+      return NextResponse.json({ error: 'Missing permission: SEND_CHANGE_ORDERS' }, { status: 403 })
+    if (!session.emailVerifiedAt)
+      return NextResponse.json({ error: 'Please verify your email before sending change orders' }, { status: 403 })
+
+    const service = createServiceClient()
+
+    // FIX (carried forward): 'currency' isn't a column on change_orders —
+    // it lives on projects. Selecting it here makes PostgREST reject the
+    // whole query (42703), which silently surfaces as "CO not found".
+    const { data: co, error: coFetchErr } = await (service as any)
+      .from('change_orders')
+      .select(`id,title,status,total,line_items,version,project_id,is_retainer_renewal,renewal_term_months,is_credit,
+        projects(id,name,status,currency,type,retainer_duration_months)`)
+      .eq('id', id).eq('workspace_id', session.workspaceId).single()
+
+    if (!co) {
+      console.error('CO send: lookup failed', { id, workspaceId: session.workspaceId, error: coFetchErr })
+      return NextResponse.json({ error: 'CO not found' }, { status: 404 })
+    }
+    // FIX (audit round 3): see lib/utils/project-access.ts — same
+    // workspace-only-scoping gap as the rest of the CO surface.
+    if (!(await canReadProject(service, session, co.project_id)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    if (co.status !== 'draft')
+      return NextResponse.json({ error: 'Only draft COs can be sent' }, { status: 400 })
+    // FIX (Projects & Dashboard deep audit, flagship finding): checked here
+    // too (not just inside sendCoDocument) so a terminal project fails
+    // fast, before an approval gate even creates a request for a CO that
+    // could never actually be sent.
+    if (isTerminalStatus(co.projects?.status || ''))
+      return NextResponse.json({
+        error: `This project is ${co.projects.status.toLowerCase()} — a change order can no longer be sent. Reopen the project first.`,
+      }, { status: 409 })
+
+    // FIX (doc-completeness audit, Group E — hard block): nothing
+    // previously stopped an empty or $0 change order from being sent —
+    // the client would be asked to accept/decline/sign a document that
+    // describes no actual work.
+    // Shared with the approval chain's auto-send (sendCoDocument re-runs it).
+    const invalid = validateCoForSend({ total: co.total, lineItems: co.line_items, isCredit: !!co.is_credit })
+    if (invalid) return NextResponse.json({ error: invalid }, { status: 400 })
+
+    const project = co.projects
+    if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
+
+    // FIX (fix round, CO-B4): same check sendCoDocument already runs, hoisted here
+    // to fail fast — per lib/documents/preflight.ts's own stated purpose ("checked
+    // before evaluateApprovalGate() in every send route"), this one was left living
+    // only inside sendCoDocument (which runs AFTER the gate). A retainer-renewal CO
+    // missing its term but large enough to require approval used to sail through an
+    // approver's decision and only fail once auto-send actually fired — burning a
+    // real approval cycle on something that was checkable up front.
+    if (renewalNeedsTerm(co, project))
+      return NextResponse.json({
+        error: 'A retainer renewal needs its term — enter how many months it extends the retainer for.',
+      }, { status: 400 })
+
+    // FIX (CO-logic fix round): backstop for the same check now applied at
+    // creation time in POST /api/co — kept here too since this route has
+    // no way to know whether a given CO predates that check, or the
+    // project's signed SOW was somehow withdrawn/reopened after this CO
+    // was drafted. Cheaper to catch here than to let the client discover
+    // it at finalize-co.ts's own hard block after signing.
+    const { data: signedSow } = await (service as any)
+      .from('sow_documents').select('id')
+      .eq('project_id', co.project_id).eq('status', 'signed')
+      .limit(1).maybeSingle()
+    if (!signedSow) {
+      return NextResponse.json({
+        error: 'This project has no signed SOW yet — a change order can only be sent once the original scope of work is signed.',
+      }, { status: 409 })
+    }
+
+    const blockedReason = await sendBlockedReason(service, project.id)
+    if (blockedReason) return NextResponse.json({ error: blockedReason }, { status: 400 })
+
+    // Phase 3 — Approval Chains: gate on the CO's own total, not the
+    // project's overall contract value — a $500 CO on a $200k retainer
+    // shouldn't trip a $10k threshold meant for large scope additions.
+    // Document numbering (Phase 0) only happens once send actually fires
+    // inside sendCoDocument, so a gated-but-not-yet-approved CO stays
+    // un-numbered — consistent with numbers only ever being burned by a
+    // real send.
+    // FIX (independent pass 3): moved up from just before sendCoDocument so the gate
+    // (and, through it, the auto-send after approval — see dispatchSend in
+    // lib/approvals/engine.ts) can see the requester's chosen expiry too, instead of it
+    // silently reverting to the 30-day default whenever this send goes through approval.
+    const reqBody = await request.json().catch(() => ({} as any))
+
+    const gate = await evaluateApprovalGate(service, {
+      workspaceId:  session.workspaceId,
+      documentType: 'co',
+      documentId:   id,
+      projectId:    project.id,
+      projectName:  project.name,
+      // A credit is stored negative; approval thresholds are about the size of the change either way.
+      // A fixed-term retainer renewal's total is the new MONTHLY rate — scale by its own
+      // renewal_term_months so the gate sees the real commitment (see gate-amount.ts).
+      amount:       Math.abs(coGateAmount(co, project)),
+      currency:     project.currency || 'USD',
+      documentTitle: co.title,
+      requestedBy:  { id: session.id, name: session.name, email: session.email },
+      expiresInDays: reqBody?.expiresInDays,
+    })
+
+    // FIX (section-11 audit, pass 2): the gate can now REFUSE (nobody able to
+    // approve, an approved-but-unsent request already exists, a workflow with
+    // no approvers). Never proceed to a send in that case.
+    if (gate.blocked) {
+      return NextResponse.json({ error: gate.error, approvalRequestId: gate.approvalRequestId }, { status: gate.status || 409 })
+    }
+
+    if (gate.requiresApproval) {
+      return NextResponse.json({
+        ok: true,
+        pendingApproval: true,
+        approvalRequestId: gate.approvalRequestId,
+        message: 'Sent for approval — the client will be notified once it clears.',
+      })
+    }
+
+    const result = await sendCoDocument(service, {
+      coId: id,
+      workspaceId: session.workspaceId,
+      actorId: session.id, actorEmail: session.email, actorName: session.name,
+      expiresInDays: reqBody?.expiresInDays,
+    })
+
+    if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status })
+    return NextResponse.json({
+      ok: true, token: result.token, portalUrl: result.portalUrl, documentNumber: result.documentNumber,
+      emailSent: result.emailSent, ...(result.emailError ? { emailError: result.emailError } : {}),
+    })
+  } catch (err) {
+    console.error('CO send error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+  }
+}
