@@ -178,6 +178,18 @@ function ContactForm({ clientId, initial, onDone, onCancel }: {
       if (roleType !== (baseline?.role_type || 'other')) payload.roleType = roleType
       if (isPrimary !== !!baseline?.is_primary) payload.isPrimary = isPrimary
       if (Object.keys(payload).length === 0) { onCancel(); return }
+      // FIX (deep audit, section 14 — bug): unchecking "Primary contact" on the contact that
+      // currently holds it reaches the exact same end state as Remove on a primary contact — the
+      // client is left with no primary contact, and nobody gets CC'd via that route from here on —
+      // but Remove has always warned about that ("nobody will be CC'd by default afterwards") while
+      // this path saved silently. client_contact_update only demotes OTHER contacts when a patch sets
+      // is_primary TRUE; it never auto-promotes a replacement when the sole primary is explicitly
+      // unset, so this needs the same warning Remove already gives, not a silent save.
+      if (payload.isPrimary === false && baseline?.is_primary) {
+        if (!window.confirm(`Remove ${baseline.name} as the primary contact? Nobody will be CC’d by default afterwards unless you make another contact primary.`)) {
+          return
+        }
+      }
     }
     setSaving(true); setError('')
     try {

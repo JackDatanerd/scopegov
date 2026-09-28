@@ -1,0 +1,65 @@
+ScopeGov — Section 14 (Clients) — independent pass 3
+======================================================
+Scope: app/api/clients, components/clients, app/(app)/clients — audited fresh, independently of
+every prior round's comments (only consulted afterward to check whether they still held up). No
+feature gaps found this round — every major gap from earlier passes (contacts, merge, delete,
+archive, billing address/VAT, timezone, notes visibility, activity feed, per-client money summary,
+CSV export, role-based CC routing) is already built and holds up. Three bugs found and fixed.
+
+1. components/clients/BillingDetailsCard.tsx — clobbered concurrent edits (flagship finding)
+--------------------------------------------------------------------------------------------
+save() unconditionally sent BOTH billingAddress and vatNumber on every save, regardless of what was
+actually touched — the exact bug class ClientContactCard.tsx was fixed for a round ago ("save() used
+to PATCH all eight fields every time... overwrote teammates' concurrent edits"), but that fix was
+never applied to this sibling card on the same page. Concretely: teammate A opens the address editor
+and only touches City; teammate B, in another tab, corrects the VAT number a moment earlier. When A
+saves, the stale `vat` value captured when A's editor opened is sent back and silently reverts B's
+change — no conflict, no warning, and the audit trail shows the reversion as A's own edit. Checked
+every prior CHANGES-*.txt in this repo: zero mentions of BillingDetailsCard, confirming this was
+never actually addressed.
+
+Fix: same shape as ClientContactCard's fix. A baseline snapshot ({ form, vat }) is taken when Edit
+opens; save() now diffs the current form against it (address compared field-by-field, VAT
+trimmed-string compared) and only includes billingAddress / vatNumber in the PATCH body when that
+field actually changed. Cancel also clears the baseline.
+
+2. components/clients/ClientContactsCard.tsx — silent primary-contact zero-out
+--------------------------------------------------------------------------------------------
+client_contact_update() only demotes OTHER contacts when a patch sets is_primary = TRUE; it never
+auto-promotes a replacement when the sole primary contact is explicitly unset. Unchecking "Primary
+contact" on the current primary in the Edit form (PATCH { isPrimary: false }) reached that exact
+state — client left with zero primary contacts, so withPrimaryContactCc() silently stops CC'ing
+anyone from client_contacts on future sends. The inconsistency: Remove already warns for the
+identical end state ("They are the primary contact, so nobody will be CC'd by default afterwards"),
+but reaching it via Edit → uncheck Primary → Save gave no warning at all.
+
+Fix: ContactForm's save() now shows the same warning Remove already gives, specifically when the
+diffed payload demotes the contact that was primary when the form opened (payload.isPrimary === false
+&& baseline.is_primary). Declining the confirm cancels the save; nothing else about the diffing
+changed. Deliberately did NOT add auto-promotion of a replacement primary — that would make Edit
+behave differently from Remove for the same situation, and a silent auto-pick of "whoever's next"
+as primary contact is its own can of worms (which contact, chosen how) that nobody asked for. Warn,
+like Remove already does, and let the person pick a new primary explicitly if they want one.
+
+3. supabase/migrations/101_merge_clients_lock_order.sql — merge_clients() lock-ordering deadlock
+--------------------------------------------------------------------------------------------
+merge_clients() took FOR UPDATE locks on the source client row and then the target client row, in
+whatever order the caller passed them (always source-first, from POST /api/clients/[id]/merge). Two
+concurrent merges going in opposite directions between the same pair of clients (A merged into B
+while, at the same moment, someone else merges B into A) lock in opposite orders and deadlock;
+Postgres aborts one side with a bare deadlock_detected error, surfaced to that user as a generic
+"Could not merge the clients." Low-probability in practice, but this codebase has fixed the identical
+ordering-bug class elsewhere (RLS project-access atomicity rounds) and never applied it here.
+
+Fix: migration 101 replaces merge_clients() with the same function body as 098, changing only the
+locking block — the smaller of the two client ids (as a uuid) is always locked first, regardless of
+which end of a given call it is source vs. target. Every concurrent pair of merges touching the same
+two clients now takes locks in the same order and queues instead of deadlocking. Verified by diff
+against 098 that nothing else in the function (project moving, contact-cap/priority logic, primary
+re-promotion, CC de-dup/cap, field carry-over, notes truncation) changed.
+
+Files touched
+-------------
+components/clients/BillingDetailsCard.tsx
+components/clients/ClientContactsCard.tsx
+supabase/migrations/101_merge_clients_lock_order.sql   (new)

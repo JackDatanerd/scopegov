@@ -37,6 +37,11 @@ function formatAddress(a: BillingAddress | null): string[] {
   return [a.line1, a.line2, line2, a.country].filter((l): l is string => !!l && l.trim().length > 0)
 }
 
+const ADDRESS_KEYS: (keyof BillingAddress)[] = ['line1', 'line2', 'city', 'region', 'postalCode', 'country']
+function addressEqual(a: BillingAddress, b: BillingAddress): boolean {
+  return ADDRESS_KEYS.every(k => (a[k] || '') === (b[k] || ''))
+}
+
 export default function BillingDetailsCard({ clientId, vatNumber, billingAddress, editable }: Props) {
   const router = useRouter()
   const [editing, setEditing] = useState(false)
@@ -44,6 +49,14 @@ export default function BillingDetailsCard({ clientId, vatNumber, billingAddress
   const [error,   setError]   = useState('')
   const [form, setForm] = useState<BillingAddress>(billingAddress || {})
   const [vat,  setVat]  = useState(vatNumber || '')
+  // FIX (deep audit, section 14 — bug): save() used to PATCH billingAddress AND vatNumber every
+  // time, whatever was actually touched — unlike ClientContactCard (fixed for exactly this a round
+  // ago), this card never got the equivalent fix. A teammate who opened this editor to fix a typo in
+  // the city, while someone else had *just* corrected the VAT number in another tab, would save and
+  // silently put the old VAT number back — no conflict, no warning, just a reverted field the person
+  // who changed it never touched. Only what actually changed (against a snapshot taken when Edit was
+  // opened) is sent now, same shape as ClientContactCard's fix.
+  const [baseline, setBaseline] = useState<{ form: BillingAddress; vat: string } | null>(null)
 
   // Re-sync from props when not editing (another teammate's edit / router.refresh) — the form was
   // initialised once and the next Edit would otherwise overwrite newer data with stale values.
@@ -60,12 +73,21 @@ export default function BillingDetailsCard({ clientId, vatNumber, billingAddress
     setForm(f => ({ ...f, [key]: value }))
   }
 
+  function startEditing() {
+    setBaseline({ form: { ...form }, vat })
+    setEditing(true)
+  }
+
   async function save() {
     setSaving(true); setError('')
     try {
+      const changed: Record<string, unknown> = {}
+      if (!baseline || !addressEqual(form, baseline.form)) changed.billingAddress = form
+      if (!baseline || vat.trim() !== (baseline.vat || '').trim()) changed.vatNumber = vat
+      if (Object.keys(changed).length === 0) { setEditing(false); return }
       const res = await fetch(`/api/clients/${clientId}`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ billingAddress: form, vatNumber: vat }),
+        body: JSON.stringify(changed),
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error)
@@ -82,7 +104,7 @@ export default function BillingDetailsCard({ clientId, vatNumber, billingAddress
         <div className="sec-hd" style={{ marginBottom: hasAddress || vatNumber ? 10 : 4 }}>
           <div className="sec-title">Billing details</div>
           {editable && (
-            <button className="btn btn-ghost btn-sm" onClick={() => setEditing(true)}>
+            <button className="btn btn-ghost btn-sm" onClick={startEditing}>
               {hasAddress ? 'Edit' : 'Add'}
             </button>
           )}
@@ -148,7 +170,7 @@ export default function BillingDetailsCard({ clientId, vatNumber, billingAddress
         <button className="btn btn-primary btn-sm" disabled={saving} onClick={save}>
           {saving ? <span className="spin" /> : 'Save billing details'}
         </button>
-        <button className="btn btn-ghost btn-sm" onClick={() => { setEditing(false); setForm(billingAddress || {}); setVat(vatNumber || '') }}>
+        <button className="btn btn-ghost btn-sm" onClick={() => { setEditing(false); setForm(billingAddress || {}); setVat(vatNumber || ''); setBaseline(null) }}>
           Cancel
         </button>
       </div>
