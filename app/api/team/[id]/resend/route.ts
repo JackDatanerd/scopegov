@@ -97,7 +97,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // An expired invite no longer holds a seat (invite creation only counts
     // active and pending ones), so bringing it back has to pass the same seat
     // check a fresh invite does.
-    if (member.status === 'expired') {
+    // A row still flagged 'invited' whose expiry has passed (the daily cron hasn't flipped it yet) is
+    // expired in every way that matters: it holds no seat (checkSeatLimit ignores it) and the Team page
+    // lists it under Expired. Treat it the same here.
+    const lapsedNow = member.status === 'invited' && !!member.invite_token_expires_at
+      && new Date(member.invite_token_expires_at).getTime() <= Date.now()
+    if (member.status === 'expired' || lapsedNow) {
       const seatCheck = await checkSeatLimit(service, session.workspaceId, session.planTier, ['active', 'invited'])
       if (!seatCheck.ok)
         return NextResponse.json({ error: seatCheck.message, upgradeRequired: true }, { status: 403 })

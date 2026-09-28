@@ -61,6 +61,9 @@ export async function POST(request: NextRequest) {
     if (typeof description === 'string' && description.trim().length > 300)
       return NextResponse.json({ error: 'Role description must be under 300 characters' }, { status: 400 })
 
+    if (isDefault !== undefined && isDefault !== null && typeof isDefault !== 'boolean')
+      return NextResponse.json({ error: 'isDefault must be true or false' }, { status: 400 })
+
     // FIX (audit round 4, finding #1): MANAGE_ROLES let you shape the
     // workspace's role structure — it was never meant to let you mint a
     // role with permissions you don't personally hold and then assign it

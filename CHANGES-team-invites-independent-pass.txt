@@ -1,0 +1,9 @@
+Team & invites — independent pass (base 9ca93aa). No migration.
+B1 reset-mfa: owner protection (isProtectedOwnerTarget) now applies; peers can't strip the owner's 2FA.
+B2 resend: seat check also runs for a lapsed-but-still-'invited' row.
+B3 link: a live link whose inviter can no longer grant the role is re-issued under the caller instead of copied dead.
+B4 reactivate: seat check counts active + pending invites.
+B5 roles POST: isDefault must be boolean.
+B6 invite page/GET/signup: revoked/replaced link no longer reads "already used" (404 -> expired screen; signup 410 invalid).
+B7 invite + signup pages: Terms/Privacy links point at /legal/terms and /legal/privacy.
+B8 accept: 23505 on activation returns a clear 409 instead of generic 500.

@@ -21,7 +21,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       .eq('invite_token', token)
       .single()
 
-    if (!member) return NextResponse.json({ error: 'Invalid invite token' }, { status: 404 })
+    if (!member) return NextResponse.json({ error: 'Invalid invite token', invalid: true }, { status: 404 })
 
     // Fix: status === 'active' means signup already succeeded (invite_token
     // was cleared) — distinguish this from a genuinely expired/deactivated

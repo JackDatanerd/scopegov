@@ -2,6 +2,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { permissionsBeyondActorForTarget } from '@/lib/utils/permission-ceiling'
+import { isProtectedOwnerTarget, OWNER_PROTECTED_MESSAGE } from '@/lib/utils/owner-protection'
 import { logAudit } from '@/lib/utils/audit'
 import { sendMfaDisabledEmail } from '@/lib/email/templates'
 import { checkedSend } from '@/lib/email/delivery'
@@ -63,6 +64,13 @@ export async function POST(
       return NextResponse.json({
         error: `Cannot reset MFA for a member who holds permissions you don't hold yourself: ${outOfReach.join(', ')}`,
       }, { status: 403 })
+
+    // Owner protection (lib/utils/owner-protection.ts) applies here exactly as it does to DELETE and
+    // PATCH on this member surface: a peer holding every permission must not be able to strip the
+    // workspace owner's second factor and sign them out everywhere. The owner recovers with a backup
+    // code (api/auth/mfa/recover) or hands ownership over first.
+    if (await isProtectedOwnerTarget(service, session.workspaceId, session.id, member.user_id))
+      return NextResponse.json({ error: OWNER_PROTECTED_MESSAGE }, { status: 403 })
 
     const { data: factorsData, error: listErr } = await (service as any).auth.admin.mfa.listFactors({ userId: member.user_id })
     if (listErr) throw new Error(listErr.message)

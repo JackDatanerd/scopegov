@@ -232,7 +232,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         }, { status: 403 })
       }
 
-      const seatCheck = await checkSeatLimit(service, session.workspaceId, session.planTier, ['active'])
+      // Pending invites hold seats too (invite creation reserves them), so reactivating must not take one.
+      const seatCheck = await checkSeatLimit(service, session.workspaceId, session.planTier, ['active', 'invited'])
       if (!seatCheck.ok) {
         return NextResponse.json({ error: seatCheck.message }, { status: 409 })
       }

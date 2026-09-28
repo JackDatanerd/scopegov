@@ -39,10 +39,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .single()
 
     if (!member) {
+      // No row for this token: it was revoked, replaced by a Resend/Copy link, or purged — a used invite
+      // keeps its row (status 'active'), so "already used" would be the wrong thing to say here.
       return NextResponse.json({
-        error: 'This invite link has already been used. Try signing in directly.',
-        alreadyUsed: true,
-      }, { status: 409 })
+        error: 'This invite link is no longer valid. Ask the workspace admin to send a new invitation.',
+        invalid: true,
+      }, { status: 410 })
     }
 
     if (member.status === 'active') {

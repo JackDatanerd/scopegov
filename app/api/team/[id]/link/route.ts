@@ -7,6 +7,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { nanoid } from 'nanoid'
 import { checkSeatLimit } from '@/lib/utils/seat-limit'
 import { roleWithinCeiling } from '@/lib/utils/permission-ceiling'
+import { inviterMayStillGrant } from '@/lib/utils/invite-authority'
 
 // "Copy invite link": hands an admin the invite URL so it can be shared over WhatsApp/Slack when the
 // email bounced or landed in spam. A still-live invite returns its EXISTING link (nothing rotates, so
@@ -26,7 +27,7 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
     const service = createServiceClient() as any
     const { data: member } = await service
       .from('workspace_members')
-      .select('id,status,invited_email,invite_token,invite_token_expires_at,roles(name,permissions),users!workspace_members_user_id_fkey(email)')
+      .select('id,status,invited_email,invited_by,role_id,invite_token,invite_token_expires_at,roles(name,permissions),users!workspace_members_user_id_fkey(email)')
       .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
 
     if (!member) return NextResponse.json({ error: 'Invite not found' }, { status: 404 })
@@ -42,15 +43,24 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
     const stillLive = member.status === 'invited' && !!member.invite_token && !!member.invite_token_expires_at
       && new Date(member.invite_token_expires_at).getTime() > Date.now()
 
+    // A live link is only worth handing out if it will still be accepted: accept/signup refuse an invite
+    // whose inviter of record can no longer grant the role (demoted, deactivated, left). Re-issue such a
+    // link under this person's name, exactly as Resend does, rather than copy one that fails with a 410.
+    const authorityOk = !stillLive
+      || await inviterMayStillGrant(service, session.workspaceId, member.invited_by, member.role_id)
+
     let token: string = member.invite_token
     let expiresAt: string = member.invite_token_expires_at
     let reissued = false
 
-    if (!stillLive) {
+    if (!stillLive || !authorityOk) {
       // Same rule as Resend: an expired invite no longer holds a seat, so bringing it back must pass the seat check.
-      const seatCheck = await checkSeatLimit(service, session.workspaceId, session.planTier, ['active', 'invited'])
-      if (!seatCheck.ok)
-        return NextResponse.json({ error: seatCheck.message, upgradeRequired: true }, { status: 403 })
+      // (A live invite being re-attributed already holds its seat.)
+      if (!stillLive) {
+        const seatCheck = await checkSeatLimit(service, session.workspaceId, session.planTier, ['active', 'invited'])
+        if (!seatCheck.ok)
+          return NextResponse.json({ error: seatCheck.message, upgradeRequired: true }, { status: 403 })
+      }
 
       token = nanoid(32)
       expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()

@@ -202,8 +202,8 @@ export default function SignupPage() {
           </p>
           <p style={{ fontSize: 11, color: 'var(--text-3)', textAlign: 'center', marginTop: 14, lineHeight: 1.6 }}>
             By signing up you agree to our{' '}
-            <a href="https://scopegov.app/terms" target="_blank" className="auth-link">Terms</a> and{' '}
-            <a href="https://scopegov.app/privacy" target="_blank" className="auth-link">Privacy Policy</a>.
+            <a href="/legal/terms" target="_blank" className="auth-link">Terms</a> and{' '}
+            <a href="/legal/privacy" target="_blank" className="auth-link">Privacy Policy</a>.
           </p>
         </div>
       </div>

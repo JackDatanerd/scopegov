@@ -133,6 +133,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // Nothing else may happen (active workspace switch, audit, notifications)
     // unless the membership really flipped to active — a failed write, or a
     // second simultaneous accept that lost the race, must not report success.
+    if (activateErr && (activateErr as any).code === '23505') {
+      // (workspace_id, user_id) is unique: this account already has another membership row here.
+      console.error('Invite accept: account already has a membership in this workspace:', activateErr)
+      return NextResponse.json({
+        error: 'This account already has a membership in this workspace (possibly deactivated). Ask a workspace admin to reactivate it or sort out the duplicate invite.',
+      }, { status: 409 })
+    }
     if (activateErr) {
       console.error('Invite accept: membership update failed:', activateErr)
       return NextResponse.json({ error: 'Could not accept this invite. Please try again.' }, { status: 500 })

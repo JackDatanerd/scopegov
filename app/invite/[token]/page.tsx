@@ -59,7 +59,9 @@ export default function InvitePage() {
         // Fix: check alreadyAccepted flag OR 404 — not just 404.
         // A cleared invite_token (status === 'active') returns 200 with
         // alreadyAccepted: true, which previously fell through to 'expired'.
-        if (r.status === 404 || json.alreadyAccepted) {
+        // A 404 means no row carries this token any more (revoked, or replaced by a newer link) — a used
+        // invite keeps its row and answers with alreadyAccepted, so 404 must not read as "already used".
+        if (json.alreadyAccepted) {
           setMode('already_used')
           return
         }
@@ -95,6 +97,7 @@ export default function InvitePage() {
         // form, which would fail identically forever on retry, with no
         // way to actually get to the sign-in screen it was telling the
         // person to use. Route to the screen that can actually succeed.
+        if (json.invalid) { setMode('expired'); return }
         if (json.alreadyUsed) { setMode('already_used'); return }
         if (json.existingAccount || json.alreadyMember) {
           setInvite(prev => prev ? { ...prev, email: json.email || prev.email } : prev)
@@ -253,7 +256,7 @@ export default function InvitePage() {
             </div>
             <h2 className="auth-form-title">Invite link expired</h2>
             <p style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.7, margin: '8px 0 24px' }}>
-              This invite link has expired or is no longer valid. Ask the workspace owner to send a fresh invitation.
+              This invite link has expired, was revoked, or was replaced by a newer one. Check your inbox for a more recent invitation, or ask a workspace admin to send a fresh one.
             </p>
             <Link href="/login"><button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'center' }}>Sign in instead</button></Link>
           </div>
@@ -384,8 +387,8 @@ export default function InvitePage() {
                   </button>
                   <p style={{ fontSize: 11, color: 'var(--text-3)', textAlign: 'center', marginTop: 12, lineHeight: 1.6 }}>
                     By creating an account you agree to our{' '}
-                    <a href="https://scopegov.app/terms" target="_blank" rel="noreferrer" className="auth-link">Terms</a> and{' '}
-                    <a href="https://scopegov.app/privacy" target="_blank" rel="noreferrer" className="auth-link">Privacy Policy</a>.
+                    <a href="/legal/terms" target="_blank" rel="noreferrer" className="auth-link">Terms</a> and{' '}
+                    <a href="/legal/privacy" target="_blank" rel="noreferrer" className="auth-link">Privacy Policy</a>.
                   </p>
                 </form>
               </>
