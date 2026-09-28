@@ -2371,9 +2371,22 @@ function DangerTab({ workspace, permissions, session }: any) {
     if (!canDelete) return
     setDeleting(true); setErr('')
     try {
+      // FIX (deep audit, Workspace lifecycle independent pass): workspaceId
+      // was never sent here, so the route's own stale-tab check (refuses
+      // with a 409 when the caller names a workspace that isn't the
+      // session's currently active one) was dead code on this — the main —
+      // delete path. A tab left open from before another tab/device
+      // switched the account's active workspace, where the old and new
+      // active workspace happen to share a name (the wizard sets
+      // name === agency_name, and a name like "Acme" is a real collision
+      // risk), would delete whatever is CURRENTLY active instead of the
+      // one shown on screen, with no error — the typed-name check alone
+      // can't catch that case since both names match by hypothesis. The
+      // onboarding wizard's own discardWorkspace() already sends this;
+      // this call site was the one left out.
       const res  = await fetchWithStepUp('/api/workspace/delete', {
         method: 'DELETE', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ confirmName: confirm.trim() }),
+        body: JSON.stringify({ confirmName: confirm.trim(), workspaceId: workspace?.id }),
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error)
