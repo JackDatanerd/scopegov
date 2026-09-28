@@ -376,7 +376,11 @@ export default async function InvoicesPage({ searchParams }: {
                     )}
                   </td>
                   <td style={{ textAlign: 'right' }}>
-                    {inv.status !== 'draft' && inv.status !== 'void' && (
+                    {/* FIX (section-12 re-audit — feature gap): void was excluded here
+                        the same way BillingTab.tsx's invoice list excluded it — see that
+                        file's matching fix for why a voided invoice's PDF still needs to
+                        stay reachable (the backend already supports it unconditionally). */}
+                    {inv.status !== 'draft' && (
                       <a href={`/api/pdf/invoice/${inv.id}`} target="_blank" rel="noreferrer" title="Download PDF" style={{ color: 'var(--text-3)' }}>
                         <i className="ti ti-file-type-pdf" style={{ fontSize: 15 }} />
                       </a>

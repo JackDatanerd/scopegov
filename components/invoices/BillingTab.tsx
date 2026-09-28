@@ -466,7 +466,16 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
                       {busyId === inv.id ? <span className="spin spin-dark" /> : <><i className="ti ti-circle-check" style={{ fontSize: 11 }} /> Resolve dispute</>}
                     </button>
                   )}
-                  {inv.status === 'paid' && (
+                  {/* FIX (section-12 re-audit — feature gap): a voided invoice had no PDF
+                      access anywhere in the agency UI (here or the /invoices registry),
+                      even though api/pdf/invoice/[id] has no status restriction and
+                      lib/pdf/renderer.tsx already has dedicated void handling (a "this
+                      invoice has been voided" banner in place of balance-due). Void
+                      deliberately keeps a part-paid invoice's payment records on file —
+                      see api/invoices/[id]/void's own comment — specifically so the fact
+                      money was received isn't lost; losing the original document itself
+                      at the same moment undercuts that same intent. */}
+                  {(inv.status === 'paid' || inv.status === 'void') && (
                     <a href={`/api/pdf/invoice/${inv.id}`} className="btn btn-ghost btn-sm" target="_blank" rel="noreferrer">
                       <i className="ti ti-download" style={{ fontSize: 11 }} /> PDF
                     </a>
