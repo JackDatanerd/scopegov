@@ -280,6 +280,7 @@ export async function GET() {
         .eq('workspace_id', session.workspaceId)
         .is('deleted_at', null)
         .order('name')
+        .order('id')
         .range(from, to)
       if (restrictedIds !== null) q = q.in('id', restrictedIds)
       return q

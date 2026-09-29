@@ -57,6 +57,7 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
       .eq('workspace_id', session.workspaceId)
       .is('deleted_at', null)
       .order('updated_at', { ascending: false })
+      .order('id', { ascending: false })
       .range(from, to)
     if (restrictedIds !== null) q = q.in('id', restrictedIds)
     return q

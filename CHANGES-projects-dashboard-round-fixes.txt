@@ -1,0 +1,27 @@
+Projects & Dashboard (section 7) — fix round
+===========================================
+Pass findings re-verified against the live repo before fixing.
+
+Already fixed upstream (no change made): B1 — project detail select() contained // comment lines.
+  Live repo already has the comment moved out of the template. A regression test now guards the whole repo.
+
+Fixed here
+- B2 components/projects/ProjectDiscussion.tsx: poll cursor and read marker were derived from the local
+  message list, which includes your own just-posted message. Posting could jump both past a teammate's
+  message that was never fetched (never shown, never counted unread). Now driven by a server-fetched cursor
+  (fetchedRef / fetchedUpTo) that posting does not move.
+- B3 components/projects/ProjectDetail.tsx: Overview said open-ended retainers "won't auto-generate" monthly
+  billing; the retainer-milestones cron does bill them monthly. Copy corrected.
+- B4 stable pagination: id tiebreaker added to app/api/projects/route.ts (name), dashboard/page.tsx and
+  projects/page.tsx (updated_at), and lib/utils/contract-value.ts loadRetainerMonthsBilled (.range had no order).
+- B5 app/(app)/dashboard/page.tsx: activity feed now over-fetches (60) and keeps only rows whose project is live,
+  then shows 14 — no more name-less entries linking to deleted projects.
+- app/api/projects/[id]/messages/read/route.ts: upTo is echoed to Postgres only if strict ISO-8601; otherwise
+  the parsed time is re-serialised (was a 500 for strings JS parses but Postgres rejects).
+
+Tests
+- tests/projects-dashboard-round-fixes.test.ts (new): repo-wide guard against comments inside PostgREST
+  template strings; id-tiebreaker guards; Discussion cursor guards; retainer copy guard.
+- tests/contract-value-and-limit.test.ts: three fake builders gained .order() (loadRetainerMonthsBilled now orders).
+
+No migrations.

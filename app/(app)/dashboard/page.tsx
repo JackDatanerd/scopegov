@@ -116,6 +116,7 @@ export default async function DashboardPage() {
       .eq('workspace_id', session.workspaceId)
       .is('deleted_at', null)
       .order('updated_at', { ascending: false })
+      .order('id', { ascending: false })
       .range(from, to)
     if (accessibleProjectIds !== null) q = q.in('id', accessibleProjectIds)
     return q
@@ -164,14 +165,17 @@ export default async function DashboardPage() {
     .eq('workspace_id', session.workspaceId)
     .not('project_id', 'is', null)
   for (const pattern of DASHBOARD_NOISE_EVENT_PATTERNS) activityQuery = activityQuery.not('event_type', 'like', pattern)
-  activityQuery = activityQuery.order('created_at', { ascending: false }).order('id', { ascending: false }).limit(14)
+  // Over-fetch, then keep only rows whose project is still live: audit rows of soft-deleted projects (and, for
+  // restricted members, project_members rows pointing at deleted projects) otherwise render as name-less entries
+  // linking to a page that 404s. The project's own Activity route already hides them.
+  activityQuery = activityQuery.order('created_at', { ascending: false }).order('id', { ascending: false }).limit(60)
 
   if (!canViewAll) {
     activityQuery = activityQuery.in('project_id', accessibleProjectIds || [])
   }
 
   const { data: activityRaw = [] } = await activityQuery
-  const activity = (activityRaw || []).map((a: any) =>
+  const activity = (activityRaw || []).filter((a: any) => projectNameById.has(a.project_id)).slice(0, 14).map((a: any) =>
     shapeActivityRow(a, { viewFinancials: canViewFinances, projectName: projectNameById.get(a.project_id) ?? null }))
 
   // FIX (section-11/12 audit — flagship feature gap): see lib/utils/attention.ts

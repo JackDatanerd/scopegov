@@ -84,6 +84,7 @@ export async function loadRetainerMonthsBilled(service: any, projects: ValueProj
     for (;;) {
       const { data, error } = await service.from('payment_milestones').select('id, project_id')
         .in('project_id', chunk).eq('type', 'retainer_monthly')
+        .order('id')
         .range(offset, offset + RETAINER_MONTHS_PAGE_SIZE - 1)
       if (error) { console.error('[contract-value] retainer months lookup failed:', error.message); break }
       const batch = data || []

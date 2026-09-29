@@ -122,6 +122,12 @@ export default function ProjectDiscussion({
   // Server clock at the last successful sync — passed back as changedSince so edits/deletes made by
   // OTHER people show up without a reload.
   const syncedAtRef = useRef<string | null>(null)
+  // Newest message the SERVER has handed us (via load or a poll) — deliberately NOT derived from `messages`.
+  // Posting appends our own message locally; if the poll cursor and the read marker followed the local list,
+  // posting at 10:20 would jump both past a teammate's 10:10 message we never fetched, so it would never
+  // appear until a reload and would never count as unread either.
+  const [fetchedUpTo, setFetchedUpTo] = useState<string | null>(null)
+  const fetchedRef = useRef<string | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
 
@@ -132,9 +138,13 @@ export default function ProjectDiscussion({
       const res = await fetch(base)
       const json = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(json.error || 'Could not load the discussion.')
-      setMessages(json.messages || [])
+      const loadedMsgs: Message[] = json.messages || []
+      setMessages(loadedMsgs)
       setHasMore(!!json.hasMore)
       syncedAtRef.current = json.syncedAt || null
+      const newest = loadedMsgs.length ? loadedMsgs[loadedMsgs.length - 1].createdAt : null
+      fetchedRef.current = newest
+      setFetchedUpTo(newest)
       setLoaded(true)
     } catch (e) { setError(e instanceof Error ? e.message : 'Could not load the discussion.'); setLoaded(true) }
   }, [base])
@@ -174,27 +184,24 @@ export default function ProjectDiscussion({
   // Mark read up to the newest message actually on screen (not "now"), so a
   // message that arrives between the fetch and this call is not silently
   // marked as read.
-  const newestCreatedAt = messages.length ? messages[messages.length - 1].createdAt : null
   useEffect(() => {
     if (!loaded) return
     fetch(`${base}/read`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newestCreatedAt ? { upTo: newestCreatedAt } : {}),
+      body: JSON.stringify(fetchedUpTo ? { upTo: fetchedUpTo } : {}),
     }).catch(() => {})
     onRead?.()
-  }, [loaded, base, newestCreatedAt]) // eslint-disable-line
+  }, [loaded, base, fetchedUpTo]) // eslint-disable-line
 
   // Poll for new messages while the tab is visible.
-  const newestRef = useRef<string | null>(null)
-  newestRef.current = newestCreatedAt
   useEffect(() => {
     if (!loaded) return
     const timer = setInterval(async () => {
       if (document.visibilityState !== 'visible') return
       try {
-        if (!newestRef.current) { await load(); return }
-        const qs = new URLSearchParams({ after: newestRef.current })
+        if (!fetchedRef.current) { await load(); return }
+        const qs = new URLSearchParams({ after: fetchedRef.current })
         if (syncedAtRef.current) qs.set('changedSince', syncedAtRef.current)
         const res = await fetch(`${base}?${qs.toString()}`)
         if (!res.ok) return
@@ -202,6 +209,11 @@ export default function ProjectDiscussion({
         if (json.syncedAt) syncedAtRef.current = json.syncedAt
         const incoming: Message[] = json.messages || []
         const changed: Message[] = json.changed || []
+        if (incoming.length) {
+          const newest = incoming[incoming.length - 1].createdAt
+          fetchedRef.current = newest
+          setFetchedUpTo(newest)
+        }
         if (!incoming.length && !changed.length) return
         setMessages(prev => {
           const have = new Set(prev.map(m => m.id))

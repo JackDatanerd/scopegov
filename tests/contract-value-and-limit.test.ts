@@ -52,6 +52,7 @@ describe('contract value — one definition', () => {
         b.select = () => b
         b.in = (_c: string, ids: string[]) => { calls.push(ids); return b }
         b.eq = () => b
+        b.order = () => b
         // FIX (Projects & Dashboard / Portfolio independent pass, round 2): loadRetainerMonthsBilled
         // now pages via .range() instead of a single .limit(5000) (see that function's own comment —
         // the old single limit() silently truncated with no signal). Mock terminates on .range() now.
@@ -75,7 +76,7 @@ describe('contract value — one definition', () => {
     const service = {
       from: () => {
         const b: any = {}
-        b.select = () => b; b.in = () => b; b.eq = () => b
+        b.select = () => b; b.in = () => b; b.eq = () => b; b.order = () => b
         b.range = () => {
           call++
           if (call === 1) return Promise.resolve({ data: Array.from({ length: 1000 }, (_, i) => ({ id: String(i), project_id: 'open' })), error: null })
@@ -90,7 +91,7 @@ describe('contract value — one definition', () => {
   })
 
   it('a failed lookup degrades to "no months known" instead of throwing', async () => {
-    const service = { from: () => { const b: any = {}; b.select = () => b; b.in = () => b; b.eq = () => b; b.range = () => Promise.resolve({ data: null, error: { message: 'boom' } }); return b } }
+    const service = { from: () => { const b: any = {}; b.select = () => b; b.in = () => b; b.eq = () => b; b.order = () => b; b.range = () => Promise.resolve({ data: null, error: { message: 'boom' } }); return b } }
     const months = await loadRetainerMonthsBilled(service, [{ id: 'x', contract_value: 1, type: 'retainer', retainer_duration_months: null }])
     expect(months.size).toBe(0)
   })

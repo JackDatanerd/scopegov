@@ -42,7 +42,11 @@ export async function POST(
     const existingMs = existing?.last_read_at ? new Date(existing.last_read_at).getTime() : 0
     // Keep the exact timestamp string the client echoed back (it carries the
     // database's microseconds); only fall back to a JS date for the "now" case.
-    const stamp = typeof body?.upTo === 'string' && target !== nowMs ? body.upTo : new Date(target).toISOString()
+    // Only echo the client's string when it is a strict ISO-8601 timestamp: JS's Date parser accepts formats
+    // Postgres rejects ("Sep 29", "2026/09/29"), which used to surface as a 500 instead of a clean result.
+    const ISO_TS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})$/
+    const stamp = typeof body?.upTo === 'string' && target !== nowMs && ISO_TS.test(body.upTo)
+      ? body.upTo : new Date(target).toISOString()
     if (target <= existingMs) return NextResponse.json({ ok: true })
 
     const { error } = await (service as any)
