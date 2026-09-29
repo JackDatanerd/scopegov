@@ -27,6 +27,7 @@ const HISTORY_EVENT_TYPES = [
   'billing.payment_failed_grace_started',
   'billing.payment_retry_failed',
   'billing.refund_processed',
+  'billing.refund_failed',
   'billing.charge_dispute_create',
   'billing.charge_dispute_resolve',
   'billing.downgraded_for_nonpayment',

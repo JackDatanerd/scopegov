@@ -1,0 +1,67 @@
+CHANGES — Section 16 (Billing) independent pass (api/billing cancel / upgrade / webhook, Paystack)
+==========================================================================================
+
+Independent audit, audited as if no earlier comment existed. 1 feature gap + 8 bugs, all closed.
+
+FEATURE
+G1  Update the card on a LIVE subscription.
+    The card-expiring email and the payment-failed banner both say "update your payment method"; nothing did.
+    The only path was billing/upgrade, which starts a NEW subscription, charges at once and ends the old one
+    (forfeiting the time already paid for).
+      + app/api/billing/update-card/route.ts        POST -> { url } (Paystack-hosted manage page)
+      + lib/integrations/paystack.ts                generatePaystackManageLink (https + paystack domain only)
+      + SettingsClient BillingTab                    "Update card" button next to the card on file
+
+BUGS
+B1  cancel: local write hit billing by workspace_id alone, AFTER a Paystack call of up to 24s. A plan switch in
+    that window had its new paid subscription flagged cancels_at_period_end (Paystack kept charging; the
+    period-end sweep later downgraded the customer to Solo).                          -> cancel/route.ts
+B7  cancel: two clicks, or the not_renew webhook beating the route, gave duplicate audit rows and emails.
+    Fixed with B1: the route now CLAIMS FIRST (compare-and-set on subscription code AND flag = false), then
+    calls Paystack, and rolls the claim back if Paystack refuses (retried once, ops paged if it cannot be
+    undone). A post-call re-read reports a plan change instead of announcing a cancellation that did not happen.
+B2  webhook: audit() discarded logAudit's boolean. billing/history is built only from audit_log, so a payment
+    whose row failed to write vanished from Payment history and the claim still completed.
+    audit() now retries once, pages ops, and — where a redelivery genuinely re-runs the audit call
+    (charge.success, invoice.payment_failed, dispute/refund family) — throws so Paystack redelivers.
+    subscription.create / subscription.disable do NOT throw: their redelivery takes the "already applied" early
+    exit and could never write the row, so they page ops with the row to add by hand instead.
+    (The dunning email is now sent BEFORE the payment_failed audit so a redelivery cannot skip it.)
+B3  A late event for an ENDED subscription (code cleared, customer code kept) was treated as live:
+    invoice.payment_failed started a grace period on a Solo workspace (dunning email, banner, then a second
+    downgrade + "subscription ended").                                    -> resolve.ts, webhook/route.ts
+    - isSuperseded(): an event naming a subscription the row no longer holds (different OR absent) is superseded
+    - several ended workspaces + a late event no longer pages ops as an "ambiguity"
+    - invoice.payment_failed ignores a workspace with no live subscription, and pins the grace write to the
+      subscription it resolved
+B4  subscription.create binds to a checkout by (email, plan). Two workspaces of one login with open checkouts
+    for the same plan (abandoned popup on A, real purchase on B) relied on metadata.workspaceId, which is not
+    confirmed to survive onto a Subscription payload -> a paid subscription reported "ambiguous", never applied.
+    - charge.success stamps the checkout it resolved to (charged_at, authorization_code)     [migration 113]
+    - findPendingCheckout prefers: browser hint -> exact card authorization -> the one charged workspace
+    - subscription.create arriving BEFORE charge.success now fails (500) so Paystack redelivers, instead of a
+      silent 200 that dropped the payment; two workspaces BOTH charged with nothing to tell them apart remain
+      a human page (no endless retry)
+B5  upgrade: no check that payments are configured. A missing SECRET key let customers pay while every webhook
+    401'd forever (verifyPaystackSignature fails closed); a missing public key opened the popup with
+    publicKey: undefined. Now refuses (503) before recording a checkout.
+B6  billing.refund_failed was written by the webhook but missing from HISTORY_EVENT_TYPES / labels.
+B8  maxDuration 30 was below the worst case of cancel (2x12s Paystack + DB + emails) and resume (3x12s = 36s).
+    Raised to 60. Also: a failed billing READ in cancel/resume used to fall into "No active subscription found —
+    contact support" for a customer with a healthy subscription; it is now a 500. resume's local write is pinned
+    to the re-enabled subscription code, retried once, and pages ops if it cannot be recorded.
+
+MIGRATION
+  supabase/migrations/113_billing_checkouts_charge_stamp.sql   (ADD COLUMN IF NOT EXISTS charged_at,
+  authorization_code on billing_checkouts). Additive and safe to run before or after the deploy: until it is
+  applied, the stamping UPDATE errors -> charge.success 500s -> Paystack retries and succeeds once it is.
+  RUN THE MIGRATION BEFORE DEPLOYING.
+
+TESTS (new, vitest)
+  tests/billing-cancel-claim.test.ts             9
+  tests/billing-webhook-section16.test.ts       12
+  tests/billing-update-card-and-config.test.ts   7
+  tests/billing-resume-guard.test.ts             4
+  Verified against the pre-fix code: cancel 5/9 and webhook 9/12 of these FAIL there, and pass now.
+  Existing billing.test.ts (38), payment-overdue-* , cron-section17-pass2, admin-suspend-billing and
+  cron-approval-billing-flags all still pass.

@@ -17,7 +17,12 @@
 // they had not already chosen to pay for. A challenge at a save-the-customer
 // moment is pure friction. (Cancel keeps its guard: it removes value with no
 // payment involved.)
-export const maxDuration = 30
+// FIX (Billing independent pass — B8): raised 30 -> 60. Resume's worst case is
+// THREE sequential 12s Paystack calls (fetch the email token, enable, then the
+// "is it already active?" check on refusal) = 36s, past the old limit — a kill
+// there lands after Paystack re-enabled renewal but before the local flag is
+// cleared, i.e. the period-end sweep would later downgrade a paying customer.
+export const maxDuration = 60
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
@@ -37,11 +42,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Missing permission: MANAGE_BILLING' }, { status: 403 })
 
     const service = createServiceClient()
-    const { data: billing } = await (service as any)
+    const { data: billing, error: billingErr } = await (service as any)
       .from('billing')
       .select('paystack_subscription_code, paystack_email_token, cancels_at_period_end, current_period_end')
       .eq('workspace_id', session.workspaceId)
       .maybeSingle()
+    // A failed read must not masquerade as "no subscription — contact support".
+    if (billingErr) {
+      console.error('[BILLING] resume: could not read billing state', billingErr.message)
+      return NextResponse.json({ error: 'Could not load your subscription. Please try again.' }, { status: 500 })
+    }
 
     if (!billing?.paystack_subscription_code) {
       return NextResponse.json({
@@ -75,10 +85,16 @@ export async function POST(request: NextRequest) {
     // FIX (Billing re-pass #3): the write's `error` was never read — see
     // billing/cancel for the same reasoning. Paystack has already re-enabled
     // renewal at this point.
+    // Conditional on the subscription code we re-enabled: a plan switch landing
+    // during the Paystack call replaces the code (and already resets the flag for
+    // the new subscription) — an unconditional write here would be harmless
+    // today only by accident of both writing `false`.
     const localUpdate = () => (service as any).from('billing').update({
       cancels_at_period_end: false,
       updated_at: new Date().toISOString(),
     }).eq('workspace_id', session.workspaceId)
+      .eq('paystack_subscription_code', billing.paystack_subscription_code)
+      .select('workspace_id')
     let upd = await localUpdate()
     if (upd.error) upd = await localUpdate()
     if (upd.error) {
@@ -87,6 +103,13 @@ export async function POST(request: NextRequest) {
         `Paystack subscription was RE-ENABLED but billing.cancels_at_period_end could not be cleared: ${upd.error.message}`,
         'Left as-is, the period-end sweep would downgrade a customer who is still being charged.',
       ])
+    } else if (!upd.data || upd.data.length === 0) {
+      // The subscription changed under us (plan switch). Its own handler owns the
+      // row now; there is nothing of ours to record, and no "resumed" to announce.
+      return NextResponse.json({
+        error: 'Your subscription changed while we were processing this. Check Billing to see your current plan.',
+        planChanged: true,
+      }, { status: 409 })
     }
 
     await logAudit(service, {

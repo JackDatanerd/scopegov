@@ -15,7 +15,14 @@ export interface PendingCheckout {
   plan_interval: string
   plan_code: string
   created_at: string
+  // Stamped by charge.success once a payment has been resolved to this row
+  // (migration 113). Lets subscription.create tell an abandoned popup from
+  // the checkout that was actually paid when several workspaces overlap.
+  charged_at?: string | null
+  authorization_code?: string | null
 }
+
+const CHECKOUT_COLS = 'id, workspace_id, user_id, email, plan_key, plan_interval, plan_code, created_at, charged_at, authorization_code'
 
 export async function createPendingCheckout(service: any, c: {
   workspaceId: string; userId: string; email: string; planKey: string; interval: string; planCode: string
@@ -48,6 +55,11 @@ export interface CheckoutResolution {
   // (email, plan_code) and hintWorkspaceId didn't identify one of them —
   // there is genuinely no way to tell which workspace this event is for.
   ambiguous: boolean
+  // Ambiguous AND no candidate has been charged yet. subscription.create can
+  // land before charge.success, which is what stamps the paid checkout — so
+  // this is "not decidable YET", not "undecidable": the caller should let
+  // Paystack redeliver instead of paging a human for an unapplied payment.
+  awaitingCharge?: boolean
 }
 
 /**
@@ -79,12 +91,13 @@ export interface CheckoutResolution {
  */
 export async function findPendingCheckout(
   service: any, email: string, planCode: string, hintWorkspaceId?: string | null, now: number = Date.now(),
+  authorizationCode?: string | null,
 ): Promise<CheckoutResolution> {
   const none: CheckoutResolution = { checkout: null, ambiguous: false }
   if (!email || !planCode) return none
   const since = new Date(now - CHECKOUT_TTL_MS).toISOString()
   const { data, error } = await service.from('billing_checkouts')
-    .select('id, workspace_id, user_id, email, plan_key, plan_interval, plan_code, created_at')
+    .select(CHECKOUT_COLS)
     .eq('email', email.trim().toLowerCase()).eq('plan_code', planCode)
     .is('consumed_at', null).gte('created_at', since)
     .order('created_at', { ascending: false }).limit(10)
@@ -99,7 +112,26 @@ export async function findPendingCheckout(
   // for (the same person re-opening checkout). Only candidates spanning
   // DIFFERENT workspaces are a genuine "can't tell". `rows` is newest-first.
   if (rows.every(r => r.workspace_id === rows[0].workspace_id)) return { checkout: rows[0], ambiguous: false }
-  return { checkout: null, ambiguous: true }
+
+  // FIX (Billing independent pass — B4): candidates span DIFFERENT workspaces
+  // and the browser hint didn't pick one. Decide from what this server saw
+  // happen, not from what the browser said:
+  //  1. the card authorization on the event equals the one stamped on exactly
+  //     one workspace's checkout by charge.success (exact);
+  //  2. exactly one workspace has a checkout that a charge was resolved to —
+  //     the others are popups that were opened and abandoned.
+  // Anything else (two workspaces both paid) is a real ambiguity for a human.
+  if (authorizationCode) {
+    const byAuth = rows.filter(r => r.authorization_code && r.authorization_code === authorizationCode)
+    if (byAuth.length && byAuth.every(r => r.workspace_id === byAuth[0].workspace_id)) {
+      return { checkout: byAuth[0], ambiguous: false }
+    }
+  }
+  const charged = rows.filter(r => !!r.charged_at)
+  if (charged.length && charged.every(r => r.workspace_id === charged[0].workspace_id)) {
+    return { checkout: charged[0], ambiguous: false }
+  }
+  return { checkout: null, ambiguous: true, awaitingCharge: charged.length === 0 }
 }
 
 /**
@@ -118,13 +150,29 @@ export async function findHintedCheckout(
   if (!email || !planCode || !hintWorkspaceId || typeof hintWorkspaceId !== 'string') return null
   const since = new Date(now - CHECKOUT_TTL_MS).toISOString()
   const { data, error } = await service.from('billing_checkouts')
-    .select('id, workspace_id, user_id, email, plan_key, plan_interval, plan_code, created_at')
+    .select(CHECKOUT_COLS)
     .eq('email', email.trim().toLowerCase()).eq('plan_code', planCode)
     .eq('workspace_id', hintWorkspaceId)
     .is('consumed_at', null).gte('created_at', since)
     .order('created_at', { ascending: false }).limit(1)
   if (error) throw new Error(`checkout lookup failed: ${error.message}`)
   return (data && data[0]) || null
+}
+
+/**
+ * charge.success resolved a payment to this checkout: record that it was the
+ * one actually paid (see findPendingCheckout). Throws on a failed write — the
+ * caller is a webhook handler, where a thrown error releases the claim so
+ * Paystack's redelivery retries it; leaving it unstamped would silently keep
+ * the ambiguity that stamping exists to remove.
+ */
+export async function stampCheckoutCharged(service: any, checkout: PendingCheckout, authorizationCode?: string | null): Promise<void> {
+  const patch: Record<string, unknown> = { charged_at: new Date().toISOString() }
+  if (authorizationCode) patch.authorization_code = authorizationCode
+  const { error } = await service.from('billing_checkouts').update(patch)
+    .eq('workspace_id', checkout.workspace_id).eq('email', checkout.email)
+    .eq('plan_code', checkout.plan_code).is('consumed_at', null)
+  if (error) throw new Error(`could not stamp checkout as charged: ${error.message}`)
 }
 
 export async function consumeCheckout(service: any, id: string): Promise<void> {

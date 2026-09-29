@@ -48,6 +48,21 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'This plan is not available for purchase right now. Please contact support@scopegov.app.' }, { status: 422 })
     }
 
+    // FIX (Billing independent pass — B5): both keys are required for a payment to
+    // work end to end, and neither was checked. A missing public key recorded a
+    // checkout and handed the popup `publicKey: undefined`; a missing SECRET key was
+    // worse — customers could still pay, but verifyPaystackSignature() fails closed
+    // on an unset secret, so EVERY webhook was rejected with 401 and nobody was ever
+    // upgraded, for money that had already been taken. Refuse before any money can
+    // move, and tell the operator which one is missing.
+    if (!process.env.NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY || !process.env.PAYSTACK_SECRET_KEY) {
+      console.error(`[BILLING] Checkout refused — payments are not configured: ${[
+        !process.env.NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY && 'NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY',
+        !process.env.PAYSTACK_SECRET_KEY && 'PAYSTACK_SECRET_KEY',
+      ].filter(Boolean).join(', ')} is not set`)
+      return NextResponse.json({ error: 'Payments are not available right now. Please contact support@scopegov.app.' }, { status: 503 })
+    }
+
     const service = createServiceClient()
 
     // Already on exactly this plan + interval with a healthy, renewing

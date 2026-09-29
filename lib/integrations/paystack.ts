@@ -173,6 +173,43 @@ export async function resumePaystackSubscription(billing: {
   }
 }
 
+// FEATURE (Billing independent pass — G1): the card-expiring email and the
+// payment-failed banner both tell the customer to "update your payment method",
+// and nothing in the app could do that: the only path was /api/billing/upgrade,
+// which starts a NEW subscription, charges immediately and ends the current one,
+// forfeiting the time already paid for. Paystack hosts a page where the customer
+// swaps the card on the EXISTING subscription; this fetches a link to it.
+// No email token needed (unlike disable/enable) — the link is scoped to the code.
+export interface PaystackManageLinkResult {
+  ok: boolean
+  link?: string
+  notFound?: boolean
+  error?: string
+}
+
+export async function generatePaystackManageLink(subscriptionCode: string | null | undefined): Promise<PaystackManageLinkResult> {
+  if (!subscriptionCode) return { ok: false, error: 'No subscription on file' }
+  try {
+    const resp = await paystackFetch(`https://api.paystack.co/subscription/${encodeURIComponent(subscriptionCode)}/manage/link`, {
+      headers: { 'Authorization': `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
+    })
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}))
+      return { ok: false, notFound: resp.status === 404, error: err?.message || `Paystack returned ${resp.status}` }
+    }
+    const body = await resp.json().catch(() => null)
+    const link = body?.data?.link
+    // Only ever hand the browser an https URL on Paystack's own domain.
+    if (typeof link !== 'string' || !/^https:\/\/([a-z0-9-]+\.)*paystack\.(com|co)(\/|$)/i.test(link)) {
+      return { ok: false, error: 'Paystack did not return a usable link' }
+    }
+    return { ok: true, link }
+  } catch (e) {
+    console.error('Paystack manage-link call failed:', e)
+    return { ok: false, error: e instanceof Error ? e.message : 'Could not reach Paystack' }
+  }
+}
+
 export async function cancelPaystackSubscription(billing: {
   paystack_subscription_code?: string | null
   paystack_email_token?: string | null

@@ -1620,6 +1620,7 @@ const BILLING_HISTORY_LABELS: Record<string, string> = {
   'billing.plan_changed':               'Plan changed',
   'billing.payment_retry_failed':       'Payment retry failed',
   'billing.refund_processed':           'Refund processed',
+  'billing.refund_failed':              'Refund failed',
   'billing.charge_dispute_create':      'Payment disputed',
   'billing.charge_dispute_resolve':     'Dispute resolved',
 }
@@ -1705,6 +1706,10 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
   // never existed until now.
   const [resuming,     setResuming]     = useState(false)
   const [resumeError,  setResumeError]  = useState('')
+  // FEATURE (Billing independent pass — G1): change the card on the EXISTING
+  // subscription (api/billing/update-card) instead of starting a new one.
+  const [updatingCard, setUpdatingCard] = useState(false)
+  const [cardError,    setCardError]    = useState('')
 
   // FEATURE (deep audit, Reports & Audit / Billing re-pass — feature gap):
   // there was no way at all to see past charges/receipts in-app — see
@@ -1775,6 +1780,17 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
       if (res.ok) window.location.reload()
       else setResumeError(json.error || 'Could not resume — try again or contact support.')
     } finally { setResuming(false) }
+  }
+
+  async function handleUpdateCard() {
+    setUpdatingCard(true); setCardError('')
+    try {
+      const res  = await fetchWithStepUp('/api/billing/update-card', { method: 'POST' })
+      const json = await res.json().catch(() => ({}))
+      if (res.ok && typeof json.url === 'string') { window.location.assign(json.url); return }
+      setCardError(json.error || 'Could not open the card update page — try again or contact support.')
+    } catch { setCardError('Could not open the card update page — try again or contact support.') }
+    finally { setUpdatingCard(false) }
   }
 
   // The webhook, not the popup, changes the plan (BUG-054), so after a
@@ -1945,6 +1961,12 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
                 {billing.payment_method_type ? `${billing.payment_method_type} ` : ''}···· {billing.payment_method_last4}
               </div>
             )}
+            {planTier !== 'trial' && hasSubscription && !billing?.cancels_at_period_end && (
+              <button className="btn btn-ghost btn-sm" style={{ marginTop: 6, paddingLeft: 0 }}
+                disabled={updatingCard} onClick={handleUpdateCard}>
+                {updatingCard ? <span className="spin spin-dark" /> : 'Update card'}
+              </button>
+            )}
           </div>
           {planTier !== 'trial' && hasSubscription && !billing?.cancels_at_period_end && (
             <button className="btn btn-ghost btn-sm" style={{ color: 'var(--red)' }}
@@ -1966,6 +1988,9 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
         )}
         {cancelError && (
           <p style={{ fontSize: 12, color: 'var(--red)', marginTop: 10 }}>{cancelError}</p>
+        )}
+        {cardError && (
+          <p style={{ fontSize: 12, color: 'var(--red)', marginTop: 10 }}>{cardError}</p>
         )}
       </div>
 

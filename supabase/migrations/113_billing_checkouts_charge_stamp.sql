@@ -1,0 +1,21 @@
+-- 113_billing_checkouts_charge_stamp.sql
+--
+-- Section 16 (Billing) independent pass — B4.
+--
+-- subscription.create binds a paid subscription to a workspace by matching a
+-- server-recorded checkout on (customer email, plan code). When one login owns
+-- several workspaces and two of them have an open checkout for the same plan
+-- (an abandoned popup on A, a real purchase on B inside the 24h window), the
+-- only tie-breaker was metadata.workspaceId — which is not confirmed to
+-- survive onto a Subscription payload. Without it the paid subscription was
+-- reported "ambiguous" and never applied.
+--
+-- charge.success DOES reliably carry that metadata, so when it resolves a
+-- payment to a checkout it now stamps the row. subscription.create can then
+-- prefer the row that was actually charged:
+--   charged_at         when charge.success resolved a payment to this checkout
+--   authorization_code the card authorization on that charge (also present on
+--                      the subscription payload when Paystack includes it — an
+--                      exact tie-breaker if two checkouts were both charged)
+ALTER TABLE public.billing_checkouts ADD COLUMN IF NOT EXISTS charged_at timestamptz;
+ALTER TABLE public.billing_checkouts ADD COLUMN IF NOT EXISTS authorization_code text;

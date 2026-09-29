@@ -77,7 +77,14 @@ export interface Resolution {
   billing: BillingRowLite | null
   checkout: PendingCheckout | null
   ambiguous: boolean
-  /** True when the event names a subscription other than the one on file. */
+  /** Ambiguous only because no candidate checkout has been charged yet (see checkouts.ts). */
+  awaitingCharge?: boolean
+  /**
+   * True when the event names a subscription other than the one on file —
+   * including a workspace whose subscription has ENDED (code cleared, customer
+   * code kept). With no workspaceId it means "a late event for a subscription
+   * that no workspace holds any more"; callers ignore it rather than page.
+   */
   superseded: boolean
 }
 
@@ -87,6 +94,21 @@ const BILLING_COLS =
 function embeddedTier(row: BillingRowLite): string | null {
   const w = Array.isArray(row.workspaces) ? row.workspaces[0] : row.workspaces
   return w?.plan_tier ?? null
+}
+
+/**
+ * FIX (Billing independent pass — B3): "superseded" used to require the row to
+ * hold a DIFFERENT non-null subscription code. After a non-payment downgrade or
+ * a period-end lapse the code is cleared to null but the customer code is kept
+ * (on purpose, so late events still resolve) — and a null code fell through as
+ * "not superseded", so a late invoice.payment_failed for the dead subscription
+ * started a fresh grace period on an already-Solo workspace (a dunning email, a
+ * banner, then a second downgrade + "subscription ended" email days later).
+ * An event that NAMES a subscription the row no longer holds — different or
+ * absent — is for a subscription this workspace has moved on from.
+ */
+function isSuperseded(eventSubCode: string | null, rowSubCode: string | null | undefined): boolean {
+  return !!eventSubCode && rowSubCode !== eventSubCode
 }
 
 export function eventSubscriptionCode(data: any): string | null {
@@ -117,7 +139,7 @@ export async function resolveWorkspace(
   // file header for why).
   if (mode === 'strict') {
     if (email && opts.planCode) {
-      const result = await findPendingCheckout(service, email, opts.planCode, data?.metadata?.workspaceId)
+      const result = await findPendingCheckout(service, email, opts.planCode, data?.metadata?.workspaceId, Date.now(), data?.authorization?.authorization_code)
       if (result.checkout) return { ...none, workspaceId: result.checkout.workspace_id, via: 'checkout', checkout: result.checkout }
       // FIX (deep audit, Billing re-pass — independent redo): see
       // checkouts.ts's findPendingCheckout header. More than one candidate
@@ -126,7 +148,7 @@ export async function resolveWorkspace(
       // to the caller, when in fact we know EXACTLY the risk: two workspaces
       // both mid-checkout for the same plan, and guessing wrong means
       // binding a paid subscription to the wrong one.
-      if (result.ambiguous) return { ...none, ambiguous: true }
+      if (result.ambiguous) return { ...none, ambiguous: true, awaitingCharge: !!result.awaitingCharge }
     }
     return none
   }
@@ -161,7 +183,7 @@ export async function resolveWorkspace(
       const row = rows[0]
       // The event names a subscription, it isn't the one on file: it belongs
       // to a subscription this workspace has already moved on from.
-      const superseded = !!(subCode && row.paystack_subscription_code && row.paystack_subscription_code !== subCode)
+      const superseded = isSuperseded(subCode, row.paystack_subscription_code)
       return { ...none, workspaceId: row.workspace_id, via: 'customer_code', billing: row, superseded }
     }
     if (rows && rows.length > 1) {
@@ -185,7 +207,7 @@ export async function resolveWorkspace(
         const hintId = data?.metadata?.workspaceId
         const hinted = typeof hintId === 'string' ? cands.find(r => r.workspace_id === hintId) : undefined
         if (hinted) {
-          const superseded = !!(subCode && hinted.paystack_subscription_code && hinted.paystack_subscription_code !== subCode)
+          const superseded = isSuperseded(subCode, hinted.paystack_subscription_code)
           return { ...none, workspaceId: hinted.workspace_id, via: 'customer_code', billing: hinted, superseded }
         }
       }
@@ -200,9 +222,14 @@ export async function resolveWorkspace(
       }
       if (cands.length === 1) {
         const row = cands[0]
-        const superseded = !!(subCode && row.paystack_subscription_code && row.paystack_subscription_code !== subCode)
+        const superseded = isSuperseded(subCode, row.paystack_subscription_code)
         return { ...none, workspaceId: row.workspace_id, via: 'customer_code', billing: row, superseded }
       }
+      // Several rows share this customer, NONE holds a live subscription, and
+      // the event names one: it is a late event for a subscription that has
+      // ended on every one of them. Nothing to apply and nothing to attribute —
+      // not an ambiguity worth paging a human about.
+      if (cands.length === 0 && subCode) return { ...none, superseded: true }
       return { ...none, ambiguous: true }
     }
   }
@@ -211,9 +238,9 @@ export async function resolveWorkspace(
   // there is no billing row yet — a first-ever charge for a brand-new
   // customer is the only realistic way to land here for 'prefer'.
   if (mode === 'prefer' && email && opts.planCode) {
-    const result = await findPendingCheckout(service, email, opts.planCode, data?.metadata?.workspaceId)
+    const result = await findPendingCheckout(service, email, opts.planCode, data?.metadata?.workspaceId, Date.now(), data?.authorization?.authorization_code)
     if (result.checkout) return { ...none, workspaceId: result.checkout.workspace_id, via: 'checkout', checkout: result.checkout }
-    if (result.ambiguous) return { ...none, ambiguous: true }
+    if (result.ambiguous) return { ...none, ambiguous: true, awaitingCharge: !!result.awaitingCharge }
   }
 
   return none

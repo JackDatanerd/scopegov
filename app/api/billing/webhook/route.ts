@@ -20,7 +20,7 @@ import { sendPaymentFailedEmail, sendCardExpiringEmail } from '@/lib/email/templ
 import { cancelPaystackSubscription, fetchPaystackNextPaymentDate } from '@/lib/integrations/paystack'
 import { planCodeToTier, planCodeToInterval, fromSubunit, GRACE_DAYS } from '@/lib/billing/plans'
 import { resolveWorkspace, type Resolution } from '@/lib/billing/resolve'
-import { consumeCheckoutGroup } from '@/lib/billing/checkouts'
+import { consumeCheckoutGroup, stampCheckoutCharged } from '@/lib/billing/checkouts'
 import { claimWebhookEvent, completeWebhookEvent, releaseWebhookEvent } from '@/lib/billing/webhook-claims'
 import { getBillingRecipients } from '@/lib/billing/recipients'
 import { alertBillingOps } from '@/lib/billing/ops-alert'
@@ -160,13 +160,47 @@ function isFuture(iso: string | null | undefined): iso is string {
   return !!iso && !isNaN(Date.parse(iso)) && Date.parse(iso) > Date.now()
 }
 
-async function audit(service: any, workspaceId: string, eventType: string, customerEmail: string | undefined, metadata: Record<string, unknown>) {
-  await logAudit(service, {
+// FIX (Billing independent pass — B2): this awaited logAudit and threw its result
+// away. logAudit resolves `false` on a failed insert (it never throws, by design,
+// so a user action isn't failed by an audit hiccup) and its own header says the
+// billing webhook is the caller that must react. Here the audit row is not a
+// side note: billing/history is built ONLY from audit_log, so a payment whose row
+// failed to write vanishes from the customer's Payment history, and the claim
+// was still marked done, so nothing would ever retry it.
+//
+// One immediate retry absorbs a blip. If the row still cannot be written:
+//  - `redeliverable: true` throws, so the webhook returns 500, the claim is
+//    released and Paystack redelivers. Used only where a redelivery genuinely
+//    RE-RUNS the audit call (charge.success, invoice.payment_failed, the
+//    dispute/refund family) — those handlers' writes are idempotent.
+//  - otherwise (subscription.create / subscription.disable): a redelivery takes
+//    the "already applied" / "already cancelling" early exit and would never
+//    write the row either, so throwing would only produce a stream of 500s. Page
+//    ops with everything needed to add the entry by hand instead.
+async function audit(
+  service: any, workspaceId: string, eventType: string, customerEmail: string | undefined,
+  metadata: Record<string, unknown>, opts: { redeliverable?: boolean } = {},
+) {
+  const write = () => logAudit(service, {
     workspaceId, actorId: null,
     actorEmail: customerEmail || 'billing@paystack', actorName: 'Paystack',
     eventType, entityType: 'workspace', entityId: workspaceId, entityName: customerEmail,
     metadata,
   })
+  if (await write()) return
+  await new Promise(r => setTimeout(r, 250))
+  if (await write()) return
+  await alertBillingOps(service, `billing:audit-write:${eventType}:${workspaceId}:${String(metadata.reference ?? metadata.plan_code ?? metadata.action ?? 'x')}`,
+    'Billing audit row could not be written', [
+      `workspace: ${workspaceId}`,
+      `event type: ${eventType}`,
+      `customer: ${customerEmail ?? '-'}`,
+      `metadata: ${JSON.stringify(metadata).slice(0, 800)}`,
+      opts.redeliverable
+        ? 'The webhook will be retried by Paystack. If this keeps recurring, add the entry to audit_log by hand.'
+        : 'Paystack will NOT retry this usefully — the change itself was applied; add the entry to audit_log by hand so Payment history is complete.',
+    ])
+  if (opts.redeliverable) throw new Error(`audit write failed for ${eventType} (workspace ${workspaceId})`)
 }
 
 async function handleEvent(service: any, event: any): Promise<void> {
@@ -214,6 +248,18 @@ async function handleEvent(service: any, event: any): Promise<void> {
         // MORE THAN ONE workspace mid-checkout for this exact email+plan —
         // a real paid subscription that a human must attribute by hand,
         // not the generic "nothing matches" case below.
+        if (res.ambiguous && res.awaitingCharge) {
+          // FIX (Billing independent pass — B4): several workspaces have an open
+          // checkout for this email + plan and NONE has had a payment resolved to it
+          // yet — charge.success (which stamps the paid checkout) has not been
+          // processed. Paystack does not guarantee the order of these two events, so
+          // this is "not decidable yet", not "undecidable": returning normally would
+          // end the claim as done and the paid subscription would never be applied
+          // (Paystack does not redeliver a 200). Page ops so a permanent case is not
+          // silent, then fail so the claim is released and the redelivery decides.
+          await unresolved(service, event, 'A subscription was created while several workspaces have an open checkout for this email + plan and none has been matched to a payment yet (charge.success has not landed). It will be retried automatically; if this keeps recurring, attribute it by hand.')
+          throw new Error(`subscription.create for ${subCode}: waiting for charge.success to identify which of several open checkouts was paid`)
+        }
         if (res.ambiguous) {
           await unresolved(service, event, `A subscription was created, but more than one workspace has a pending checkout for this email + plan within the last 24h — could not tell which one actually paid. Attribute it by hand.`)
         } else {
@@ -353,6 +399,14 @@ async function handleEvent(service: any, event: any): Promise<void> {
       const workspaceId = res.workspaceId
       const customerEmail: string | undefined = data?.customer?.email
 
+      // FIX (Billing independent pass — B4): record that THIS checkout is the one a
+      // payment was actually resolved to, so a subscription.create that cannot tell
+      // several open checkouts apart (no metadata on a Subscription payload) can
+      // still pick the paid one. Throws on failure -> claim released -> redelivery.
+      if (res.via === 'checkout' && res.checkout) {
+        await stampCheckoutCharged(service, res.checkout, data?.authorization?.authorization_code)
+      }
+
       // (B3) A checkout-bound first charge for a workspace that has since been
       // deleted/suspended: the money is taken but nothing will ever be applied
       // (subscription.create disables the subscription) — make sure a human
@@ -398,7 +452,7 @@ async function handleEvent(service: any, event: any): Promise<void> {
         reference: data?.reference, channel: data?.channel, plan_code: planCode,
         interval: planCodeToInterval(planCode) ?? undefined,
         paid_at: data?.paid_at ?? data?.paidAt,
-      })
+      }, { redeliverable: true })
       return
     }
 
@@ -421,23 +475,48 @@ async function handleEvent(service: any, event: any): Promise<void> {
     case 'invoice.payment_failed': {
       const customerEmail: string | undefined = data?.customer?.email
       const res = await resolveWorkspace(service, data)
+      // A late event for a subscription no workspace holds any more (see
+      // resolve.ts isSuperseded): not an unattributable payment, nothing to do.
+      if (!res.workspaceId && res.superseded) { console.log('invoice.payment_failed for an ended subscription — ignoring'); return }
       if (!res.workspaceId) { await unresolved(service, event, 'A payment failed but no workspace could be identified, so no grace period was started.'); return }
       if (res.superseded) { console.log('invoice.payment_failed for a superseded subscription — ignoring'); return }
       const workspaceId = res.workspaceId
+      // FIX (Billing independent pass — B3): a workspace with NO live subscription
+      // has nothing that can fail to renew. It reaches here when the subscription
+      // ended (non-payment downgrade / period-end lapse clear the code but keep the
+      // customer code) and Paystack delivers a late failure whose payload carries no
+      // subscription code to compare. Starting a grace period on it produced a
+      // dunning email + banner, then a second downgrade and "subscription ended".
+      const liveCode = res.billing?.paystack_subscription_code
+      if (!liveCode) { console.log('invoice.payment_failed for a workspace with no live subscription on file — ignoring'); return }
 
       const now = new Date().toISOString()
       // Only the FIRST failure starts the window; Paystack's later retries
-      // must not push it out (see point 5 at the top of this file).
+      // must not push it out (see point 5 at the top of this file). Pinned to the
+      // subscription we resolved: a plan switch that lands in between must not
+      // have its brand-new subscription put into grace for the old one's failure.
       const started = must(await service.from('billing')
         .update({ grace_period_started_at: now, updated_at: now })
-        .eq('workspace_id', workspaceId).is('grace_period_started_at', null)
+        .eq('workspace_id', workspaceId).eq('paystack_subscription_code', liveCode)
+        .is('grace_period_started_at', null)
         .select('workspace_id'), 'start grace period').data
       const newlyStarted = (started || []).length > 0
+      if (!newlyStarted) {
+        // Either grace was already running (an ordinary Paystack retry — recorded
+        // below) or the subscription was replaced under us (ignore it).
+        const cur = must(await service.from('billing').select('paystack_subscription_code')
+          .eq('workspace_id', workspaceId).maybeSingle(), 'read billing').data
+        if (!cur || cur.paystack_subscription_code !== liveCode) {
+          console.log('invoice.payment_failed: subscription changed while processing — ignoring')
+          return
+        }
+      }
 
-      await audit(service, workspaceId,
-        newlyStarted ? 'billing.payment_failed_grace_started' : 'billing.payment_retry_failed',
-        customerEmail, { amount: fromSubunit(data?.amount), currency: data?.currency, reference: data?.reference })
-
+      // The dunning email goes BEFORE the audit row on purpose. If the audit write
+      // fails the handler throws and Paystack redelivers; on redelivery grace is
+      // already running (newlyStarted === false), so an email queued after the audit
+      // would never be sent. The redelivered row is then recorded as a retry failure
+      // (the history line still shows the failed charge and its amount).
       if (newlyStarted) {
         const ws = must(await service.from('workspaces').select('agency_name').eq('id', workspaceId).maybeSingle(), 'read workspace').data
         const recipients = await getBillingRecipients(service, workspaceId, [{ email: customerEmail }])
@@ -451,6 +530,11 @@ async function handleEvent(service: any, event: any): Promise<void> {
           } catch (e) { console.error('Payment failed email error:', e) }
         }
       }
+
+      await audit(service, workspaceId,
+        newlyStarted ? 'billing.payment_failed_grace_started' : 'billing.payment_retry_failed',
+        customerEmail, { amount: fromSubunit(data?.amount), currency: data?.currency, reference: data?.reference },
+        { redeliverable: true })
       return
     }
 
@@ -479,6 +563,7 @@ async function handleEvent(service: any, event: any): Promise<void> {
       // never created. An ambiguous one means we DID recognize the customer
       // but couldn't tell which of their workspaces it's for, which is
       // exactly the "needs a human" case this file alerts on everywhere else.
+      if (!res.workspaceId && res.superseded) { console.log(`Paystack ${event.event} for an ended subscription no workspace holds — ignoring`); return }
       if (!res.workspaceId) {
         if (res.ambiguous) await unresolved(service, event, `A subscription was ${event.event === 'subscription.not_renew' ? 'set to not renew' : 'disabled'}, but the customer code matches more than one workspace — could not tell which one to update.`)
         else console.log(`Paystack ${event.event} matched no workspace — ignoring`)
@@ -567,16 +652,11 @@ async function handleEvent(service: any, event: any): Promise<void> {
     case 'refund.processed':
     case 'refund.failed': {
       const res = await resolveWorkspace(service, data)
-      if (res.workspaceId) {
-        await audit(service, res.workspaceId, `billing.${event.event.replace(/\./g, '_')}`, data?.customer?.email, {
-          amount: fromSubunit(data?.amount ?? data?.refund_amount), currency: data?.currency,
-          reference: data?.transaction_reference ?? data?.transaction?.reference ?? data?.reference,
-          status: data?.status, resolution: data?.resolution,
-        })
-      }
       // See incidentKey's comment above `unresolved()` — same fix, same
       // reason: without it, two different customers' disputes/refunds
       // within 5 minutes of each other silently collapsed onto one alert.
+      // The ops alert goes FIRST: it is the part a human must not miss, and the
+      // audit write below may throw (see audit()) to get Paystack to redeliver.
       await alertBillingOps(service, `billing:incident:${event.event}:${incidentKey(data)}`, `Paystack ${event.event}`, [
         `event: ${event.event}`,
         `workspace: ${res.workspaceId ?? 'unresolved'}`,
@@ -585,6 +665,13 @@ async function handleEvent(service: any, event: any): Promise<void> {
         `status: ${data?.status ?? '-'}`,
         'Decide manually whether the workspace should be downgraded.',
       ], 5 * 60_000)
+      if (res.workspaceId) {
+        await audit(service, res.workspaceId, `billing.${event.event.replace(/\./g, '_')}`, data?.customer?.email, {
+          amount: fromSubunit(data?.amount ?? data?.refund_amount), currency: data?.currency,
+          reference: data?.transaction_reference ?? data?.transaction?.reference ?? data?.reference,
+          status: data?.status, resolution: data?.resolution,
+        }, { redeliverable: true })
+      }
       return
     }
 
