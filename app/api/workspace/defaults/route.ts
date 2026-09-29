@@ -137,7 +137,20 @@ async function saveDefaults(workspaceId: string, body: any, actor: SessionUser) 
   // the SAME KIND of thing as global's resolved value (both null, or both a
   // real value that happens to match) — never when one side is null and the
   // other is a real, empty value.
+  //
+  // FIX (Settings pass, B4): the one exception is blank-vs-blank. When the workspace-wide value is
+  // itself unset/blank (the default for every workspace that never touched Standard terms —
+  // onboarding leaves them NULL), a submitted '' or [] says exactly what inheriting already
+  // resolves to, and the Defaults form can't tell "left blank" from "deliberately blank" there.
+  // Storing it made any project-type save (say, only changing revision rounds) freeze all four
+  // standards as explicit blanks — later additions to the global terms then silently never reached
+  // that type's SOWs — and made merely opening a type and pressing Save create a phantom override.
+  // A deliberately blank override is only meaningful against a NON-blank global value, and that
+  // case still stores the explicit blank.
+  const isBlankStandard = (v: unknown): boolean =>
+    v === null || v === undefined || (typeof v === 'string' && v.trim() === '') || (Array.isArray(v) && v.length === 0)
   const sameStandardsValue = (a: unknown, b: unknown): boolean => {
+    if (isBlankStandard(a) && isBlankStandard(b)) return true
     if (a === null || b === null) return a === b
     return sameValue(a, b)
   }

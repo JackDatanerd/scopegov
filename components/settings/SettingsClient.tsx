@@ -302,6 +302,17 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
     params.set('tab', next)
     router.replace(`/settings?${params.toString()}`, { scroll: false })
   }
+  // FIX (Settings pass, B3): `tab` was read from ?tab= only once, in the initialiser above, so a link
+  // to /settings?tab=billing followed while already on Settings (the sidebar "Upgrade" button is on
+  // every page, this one included) changed the URL and left the old tab showing. Follow the URL
+  // whenever it names a valid, different tab; our own setTab() writes the same value back, so it
+  // is a no-op there.
+  useEffect(() => {
+    const wanted = searchParams.get('tab')
+    if (wanted && TABS.some(t => t.key === wanted)) {
+      setTabState(prev => (prev === wanted ? prev : (wanted as SettingsTab)))
+    }
+  }, [searchParams])
   const [saving, setSaving] = useState(false)
   const [saved,  setSaved]  = useState('')
   const [error,  setError]  = useState('')
@@ -1074,6 +1085,12 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, save
     setUploading(true)
     try {
       let logoStoragePath: string | undefined
+      // FIX (Settings pass, B1): `freshUpdatedAt` is the value captured when this render ran, so
+      // calling setFreshUpdatedAt() after the upload never changed what the branding PATCH below
+      // sent — it still carried the pre-upload timestamp and was refused as a conflict every time a
+      // logo and a colour were saved together. Track the baseline in a local variable that the
+      // upload can advance in place.
+      let baseline: string | null = freshUpdatedAt
       if (logoFile) {
         // FIX (audit round 3): route the upload through the server so
         // MANAGE_WORKSPACE_SETTINGS and file validation are enforced
@@ -1091,7 +1108,10 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, save
           // the server. Advance our own baseline to match before the
           // branding PATCH below fires, or that PATCH's concurrency check
           // sees a mismatch against its own preceding request every time.
-          if (json.updatedAt) setFreshUpdatedAt(json.updatedAt)
+          if (json.updatedAt) { setFreshUpdatedAt(json.updatedAt); baseline = json.updatedAt }
+          // The upload route already linked the logo to the workspace, so a failed colour save below
+          // must not leave the file selected (a retry would upload and conflict all over again).
+          setLogoFile(null)
         } else {
           // FIX (deep audit, Settings section): this fell through to the
           // branding PATCH below with no early return, so a failed logo
@@ -1108,7 +1128,7 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, save
       const ok = await onSave('/api/workspace/branding', {
         brandColour: colour,
         ...(logoStoragePath ? { logoStoragePath } : {}),
-        ...(freshUpdatedAt ? { expectedUpdatedAt: freshUpdatedAt } : {}),
+        ...(baseline ? { expectedUpdatedAt: baseline } : {}),
       })
       // FIX (deep audit, Settings re-pass round 2): keep our local baseline
       // in step with what this save actually landed, same reasoning as the

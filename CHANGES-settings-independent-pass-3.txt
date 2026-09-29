@@ -1,0 +1,52 @@
+CHANGES — Settings, independent re-audit (pass 3)
+=================================================
+
+Scope: app/(app)/settings (+ settings/approvals, settings/audit),
+api/workspace/settings, api/workspace/defaults, api/workspace/branding.
+Applied against HEAD 4d5c467. No migration required.
+
+Audit done cold (prior comments not trusted). No unbuilt features found.
+Four bugs, all fixed.
+
+1. Branding: logo upload + "Save branding" always refused as a conflict
+   Files: components/settings/SettingsClient.tsx
+   saveBranding() called setFreshUpdatedAt(json.updatedAt) after the logo
+   upload, but the branding PATCH on the next line still sent the value
+   captured when the render ran (pre-upload), so the server refused it.
+   The baseline is now a local variable advanced in place. logoFile is
+   also cleared once the upload has persisted, so a retry after a failed
+   colour save no longer re-uploads and re-conflicts.
+
+2. Branding: timestamp compared as text -> false conflicts
+   Files: app/api/workspace/branding/route.ts, lib/utils/timestamps.ts (new)
+   expectedUpdatedAt was compared with !== against the DB value. Routes
+   echo toISOString() ("...155Z"), PostgREST returns "...155+00:00", so
+   after any signature save/clear, logo upload/removal or branding save
+   the next save conflicted with the person's own action. Now compared
+   by instant (sameInstant). The write also became a compare-and-swap on
+   updated_at (as /api/workspace/settings already was): 0 rows -> 409.
+
+3. Settings: ?tab= deep links ignored while already on Settings
+   Files: components/settings/SettingsClient.tsx
+   tab state was seeded from the URL once. The sidebar Upgrade button
+   (/settings?tab=billing) changed the URL but not the tab. Added an
+   effect that follows a valid ?tab= change.
+
+4. Defaults: project-type save froze standard terms as blanks
+   Files: app/api/workspace/defaults/route.ts
+   With global standards unset (the state onboarding leaves), any
+   project-type save stored '' / [] for all four standards, so later
+   global additions never reached that type, and opening a type and
+   pressing Save created a phantom override. Blank-vs-blank now collapses
+   to NULL (inherit). Blanking a NON-blank global value still stores the
+   explicit blank. This REVISES the earlier "S-9" decision; its tests
+   were rewritten accordingly.
+
+Tests
+-----
+  tests/settings-team-repass-2.test.ts   S-9 block revised (+2 cases)
+  tests/settings-team-repass-3.test.ts   R3-1 mock updated for CAS; +3 cases
+  tests/settings-pass-timestamps.test.ts new
+tsc --noEmit clean. Full suite: 2 failures, both pre-existing on HEAD and
+outside this section (tests/invoicing-section12-independent-pass.test.ts,
+tests/search-route.test.ts).

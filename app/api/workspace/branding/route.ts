@@ -5,6 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { diffFields } from '@/lib/utils/audit-diff'
+import { sameInstant } from '@/lib/utils/timestamps'
 // FIX (deep audit, client-facing/signing section — feature gap): see this module's own comment —
 // nothing ever checked a saved brand colour for legibility as white button text before this.
 import { isLowContrastForWhiteText } from '@/lib/utils/colour-contrast'
@@ -112,7 +113,13 @@ export async function PATCH(request: NextRequest) {
     // mismatch means someone else's write landed since — refuse rather than
     // clobber it, mirroring settings' own conflict shape (`conflicts: [...]`)
     // so the existing "Reload latest settings" UI just works here too.
-    if (typeof expectedUpdatedAt === 'string' && expectedUpdatedAt !== current.updated_at) {
+    // FIX (Settings pass, B2): this was a strict string comparison, but the two sides can never
+    // be equal as strings even when they are the same instant — this route (and the logo route)
+    // hand back `new Date().toISOString()` ("...155Z") while PostgREST returns the stored value as
+    // "...155+00:00" (and may carry microseconds). So after ANY write that echoed updatedAt
+    // (signature save/clear, logo upload/removal, a previous branding save) the very next save
+    // was refused as a conflict with the person's own action. Compare instants, not text.
+    if (typeof expectedUpdatedAt === 'string' && !sameInstant(expectedUpdatedAt, current.updated_at)) {
       return NextResponse.json({
         error: 'Branding was changed elsewhere since you loaded this page.',
         conflicts: ['branding'],
@@ -132,10 +139,20 @@ export async function PATCH(request: NextRequest) {
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
     for (const key of changedKeys) updates[key] = proposed[key]
 
-    const { error } = await service.from('workspaces').update(updates).eq('id', session.workspaceId)
+    // Compare-and-swap on updated_at, like /api/workspace/settings: the staleness check above and
+    // this write are two round trips, so two admins saving at the same instant could both pass it.
+    let write = service.from('workspaces').update(updates).eq('id', session.workspaceId)
+    if (current.updated_at) write = write.eq('updated_at', current.updated_at)
+    const { data: written, error } = await write.select('id')
     if (error) {
       console.error('Workspace branding update failed:', error)
       return NextResponse.json({ error: 'Failed to update branding' }, { status: 500 })
+    }
+    if (!written || written.length === 0) {
+      return NextResponse.json({
+        error: 'Branding was changed elsewhere since you loaded this page.',
+        conflicts: ['branding'],
+      }, { status: 409 })
     }
 
     const signatureOnly = changedKeys.length === 1 && changedKeys[0] === 'agency_signature_data'

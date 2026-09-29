@@ -539,12 +539,12 @@ describe('S-2b fix: a fully-inherited project-type save creates/leaves no overri
 // but only in this specific starting condition (global blank too), which is
 // the default state for any workspace that hasn't set global Standard terms.
 // ═════════════════════════════════════════════════════════════════════════
-describe('S-9 fix: an explicit empty override survives even when the global default is also blank', () => {
+describe('S-9 (revised, Settings pass B4): blank standards collapse to inherit when the global default is also blank', () => {
   const blankGlobalRow = { id: 'g1', project_type: null, revision_rounds: 2, payment_structure: '50_50', governing_law: null,
     revision_policy: null, payment_terms: null, out_of_scope_clauses: null, assumptions: null,
     updated_at: '2026-01-01T00:00:00Z' }
 
-  it('a first-time override save with blank standards fields stores [] / \'\', not null, when global is blank too', async () => {
+  it('a first-time override save with blank standards stores null (inherit), not frozen blanks, when global is blank too', async () => {
     session = mkSession(['MANAGE_WORKSPACE_SETTINGS'])
     let inserted: any = null
     resolver = (t, ops) => {
@@ -556,53 +556,66 @@ describe('S-9 fix: an explicit empty override survives even when the global defa
       return { data: null, error: null }
     }
     const { POST } = await import('@/app/api/workspace/defaults/route')
-    // The person only actually wants to change the payment structure for
-    // Web, and deliberately leaves Standard exclusions/assumptions blank —
-    // exactly what DefaultsTab.saveCurrent() sends either way, since it
-    // can't distinguish "never touched" from "deliberately cleared" at the
-    // textarea level. Before this fix, every one of these blank submissions
-    // matched blankGlobalRow's own null columns via sameValue's blank
-    // equivalence and got stored as null (inherit) regardless of intent.
+    // Only the payment structure genuinely changes for Web. The form sends '' / [] for the untouched
+    // standards (it cannot tell "left blank" from "cleared"); with global blank too, that must mean
+    // "inherit", or a later addition to the global terms would never reach Web SOWs.
     const res = await POST(req('/api/workspace/defaults', 'POST', {
       projectType: 'web',
-      revisionRounds: 2, paymentStructure: 'milestones', // the one genuine change
+      revisionRounds: 2, paymentStructure: 'milestones',
       revisionPolicy: '', paymentTerms: '', outOfScopeClauses: [], assumptions: [],
     }))
     expect(res.status).toBe(200)
     expect(inserted.payment_structure).toBe('milestones')
-    // FIX: these must survive as the real, distinct empty value — not null.
-    expect(inserted.revision_policy).toBe('')
-    expect(inserted.payment_terms).toBe('')
-    expect(inserted.out_of_scope_clauses).toEqual([])
-    expect(inserted.assumptions).toEqual([])
+    expect(inserted.revision_policy).toBeNull()
+    expect(inserted.payment_terms).toBeNull()
+    expect(inserted.out_of_scope_clauses).toBeNull()
+    expect(inserted.assumptions).toBeNull()
   })
 
-  it('a later re-save of that same override does not flip its explicit-empty fields back to inherit', async () => {
+  it('opening a project type and saving with nothing changed creates no phantom override', async () => {
     session = mkSession(['MANAGE_WORKSPACE_SETTINGS'])
-    const existingOverride = { id: 'ov1', project_type: 'web', revision_rounds: 2, payment_structure: 'milestones',
-      revision_policy: '', payment_terms: '', out_of_scope_clauses: [], assumptions: [], updated_at: '2026-01-02T00:00:00Z' }
-    let updatedPayload: any = null
+    let inserted: any = null
     resolver = (t, ops) => {
       if (t === 'workspace_defaults') {
-        if (has(ops, 'update')) { updatedPayload = arg(ops, 'update')![0]; return { error: null } }
+        if (has(ops, 'insert')) { inserted = arg(ops, 'insert')![0]; return { error: null } }
         if (has(ops, 'is')) return { data: [blankGlobalRow], error: null }
-        return { data: [existingOverride], error: null }
+        return { data: [], error: null }
       }
       return { data: null, error: null }
     }
     const { POST } = await import('@/app/api/workspace/defaults/route')
-    // Re-saving with revisionRounds genuinely bumped, standards fields
-    // untouched (still blank) — this must not be treated as "fully
-    // inherited" (it isn't: payment_structure still differs from global).
     const res = await POST(req('/api/workspace/defaults', 'POST', {
       projectType: 'web',
-      revisionRounds: 5, paymentStructure: 'milestones',
+      revisionRounds: 2, paymentStructure: '50_50',
       revisionPolicy: '', paymentTerms: '', outOfScopeClauses: [], assumptions: [],
     }))
     expect(res.status).toBe(200)
-    expect(updatedPayload.revision_rounds).toBe(5)
-    expect(updatedPayload.out_of_scope_clauses).toEqual([])
-    expect(updatedPayload.assumptions).toEqual([])
+    expect(inserted).toBeNull()
+  })
+
+  it('an override that blanks a NON-blank global standard still stores the explicit blank', async () => {
+    session = mkSession(['MANAGE_WORKSPACE_SETTINGS'])
+    const nonBlankGlobal = { ...blankGlobalRow, out_of_scope_clauses: ['Hosting'], revision_policy: 'Global policy' }
+    let inserted: any = null
+    resolver = (t, ops) => {
+      if (t === 'workspace_defaults') {
+        if (has(ops, 'insert')) { inserted = arg(ops, 'insert')![0]; return { error: null } }
+        if (has(ops, 'is')) return { data: [nonBlankGlobal], error: null }
+        return { data: [], error: null }
+      }
+      return { data: null, error: null }
+    }
+    const { POST } = await import('@/app/api/workspace/defaults/route')
+    const res = await POST(req('/api/workspace/defaults', 'POST', {
+      projectType: 'web',
+      revisionRounds: 2, paymentStructure: '50_50',
+      revisionPolicy: '', paymentTerms: '', outOfScopeClauses: [], assumptions: [], // clears two non-blank globals
+    }))
+    expect(res.status).toBe(200)
+    expect(inserted.out_of_scope_clauses).toEqual([])
+    expect(inserted.revision_policy).toBe('')
+    expect(inserted.payment_terms).toBeNull()   // global blank too -> inherit
+    expect(inserted.assumptions).toBeNull()
   })
 
   it('an override field that genuinely matches a NON-blank global value still collapses to inherit (unaffected)', async () => {
@@ -622,7 +635,7 @@ describe('S-9 fix: an explicit empty override survives even when the global defa
       projectType: 'web',
       revisionRounds: 6, paymentStructure: '50_50',
       revisionPolicy: '', paymentTerms: '',
-      outOfScopeClauses: ['Hosting'], assumptions: ['Client supplies content'], // == global -> still inherit
+      outOfScopeClauses: ['Hosting'], assumptions: ['Client supplies content'],
     }))
     expect(res.status).toBe(200)
     expect(inserted.out_of_scope_clauses).toBeNull()

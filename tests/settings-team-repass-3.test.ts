@@ -74,7 +74,7 @@ describe('R3-1: PATCH /api/workspace/branding echoes updatedAt', () => {
       if (table === 'workspaces' && ops.some(o => o.name === 'single')) {
         return { data: { brand_colour: '#111111', logo_storage_path: null, agency_signature_data: null, updated_at: '2026-01-01T00:00:00.000Z' }, error: null }
       }
-      if (table === 'workspaces' && ops.some(o => o.name === 'update')) return { data: null, error: null }
+      if (table === 'workspaces' && ops.some(o => o.name === 'update')) return { data: [{ id: 'w1' }], error: null }
       return { data: null, error: null }
     }
     const { PATCH } = await import('@/app/api/workspace/branding/route')
@@ -175,5 +175,53 @@ describe('R3-3: DELETE /api/workspace/branding/logo echoes updatedAt', () => {
     expect(res.status).toBe(200)
     expect(json.ok).toBe(true)
     expect(json.updatedAt).toBeUndefined()
+  })
+})
+
+
+// ═════════════════════════════════════════════════════════════════════════
+// Settings independent pass (B2): the staleness check compared timestamp TEXT. The routes echo
+// `new Date().toISOString()` ("...Z") but PostgREST returns the stored value as "...+00:00", so a
+// client that had just received an echoed updatedAt could never match the row again.
+// ═════════════════════════════════════════════════════════════════════════
+describe('B2: branding staleness check compares instants, not strings', () => {
+  const row = (updated_at: string) => ({ brand_colour: '#111111', logo_storage_path: null, agency_signature_data: null, updated_at })
+  const patch = async (body: any) => {
+    const { PATCH } = await import('@/app/api/workspace/branding/route')
+    return PATCH(new NextRequest('http://localhost/api/workspace/branding', {
+      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    }))
+  }
+
+  it('accepts an echoed "…Z" timestamp against the same instant stored as "…+00:00"', async () => {
+    resolver = (table, ops) => {
+      if (table === 'workspaces' && ops.some(o => o.name === 'single')) return { data: row('2026-09-29T08:41:58.155+00:00'), error: null }
+      if (table === 'workspaces' && ops.some(o => o.name === 'update')) return { data: [{ id: 'w1' }], error: null }
+      return { data: null, error: null }
+    }
+    const res = await patch({ brandColour: '#222222', expectedUpdatedAt: '2026-09-29T08:41:58.155Z' })
+    expect(res.status).toBe(200)
+  })
+
+  it('still rejects a genuinely older timestamp', async () => {
+    resolver = (table, ops) => {
+      if (table === 'workspaces' && ops.some(o => o.name === 'single')) return { data: row('2026-09-29T08:41:58.155+00:00'), error: null }
+      return { data: null, error: null }
+    }
+    const res = await patch({ brandColour: '#222222', expectedUpdatedAt: '2026-09-29T08:00:00.000Z' })
+    expect(res.status).toBe(409)
+    expect((await res.json()).conflicts).toEqual(['branding'])
+  })
+
+  it('refuses (409) when the row moved between the read and the write (compare-and-swap matched no row)', async () => {
+    resolver = (table, ops) => {
+      if (table === 'workspaces' && ops.some(o => o.name === 'single')) return { data: row('2026-09-29T08:41:58.155+00:00'), error: null }
+      if (table === 'workspaces' && ops.some(o => o.name === 'update')) return { data: [], error: null }
+      return { data: null, error: null }
+    }
+    const res = await patch({ brandColour: '#222222' })
+    expect(res.status).toBe(409)
+    const casCall = calls.find(c => c.table === 'workspaces' && c.ops.some(o => o.name === 'update'))!
+    expect(casCall.ops.some(o => o.name === 'eq' && o.args[0] === 'updated_at' && o.args[1] === '2026-09-29T08:41:58.155+00:00')).toBe(true)
   })
 })
