@@ -60,6 +60,14 @@ export default function CoPortalPage() {
   const [error,  setError]  = useState('')
   const [acceptedInfo, setAcceptedInfo] = useState<{ acceptedBy: string | null; clientSignatureData: string | null } | null>(null)
   const sigPadRef = useRef<SignaturePadHandle>(null)
+  // The Accept / Counter / Decline forms now flow after the document instead of covering it
+  // (see .portal-action-card in styles/globals.css), so bring the one the client just opened
+  // into view. Not for the countersign landing: there the form is the page's purpose, mode is set
+  // on load, and the name input autoFocuses.
+  useEffect(() => {
+    if (mode === 'view' || co?.mode === 'countersign') return
+    document.querySelector('.portal-action-card')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [mode, co?.mode])
 
   useEffect(() => {
     fetch(`/api/portal/co/${token}`)

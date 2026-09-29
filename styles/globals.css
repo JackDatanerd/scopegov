@@ -444,7 +444,16 @@ p, h1, h2, h3, h4, h5 { margin: 0; }
 .portal-doc-body { padding: 28px 32px; }
 .portal-section-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--text-3); margin-bottom: 10px; }
 .portal-section-body { font-size: 14px; color: var(--text-2); line-height: 1.75; }
-.portal-action-card { background: var(--surface); border: 1px solid var(--border); border-top: 3px solid var(--green); border-radius: var(--radius); padding: 24px 28px; position: sticky; bottom: 20px; box-shadow: var(--shadow-md); }
+/* FIX (portal signing UX): this card is pinned to the viewport bottom so the compact
+   "Accept / Counter / Decline" prompt stays reachable while the client reads the document.
+   The FORM variants (typed name + signature pad, counter amount, decline reason) are far
+   taller than that prompt: pinned, they covered most of the screen (all of it on a phone)
+   and hid the document being signed, with no way to collapse them. Any card that contains a
+   form control or the signature canvas now flows normally after the document instead. The
+   max-height/overflow on the base rule is the fallback for browsers without :has(): a pinned
+   card can never exceed the viewport, and it scrolls internally. */
+.portal-action-card { background: var(--surface); border: 1px solid var(--border); border-top: 3px solid var(--green); border-radius: var(--radius); padding: 24px 28px; position: sticky; bottom: 20px; box-shadow: var(--shadow-md); max-height: calc(100vh - 40px); overflow-y: auto; }
+.portal-action-card:has(input, textarea, select, canvas) { position: static; max-height: none; overflow: visible; }
 
 /* ── TEAM CARDS ──────────────────────────────────────────────── */
 .member-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }

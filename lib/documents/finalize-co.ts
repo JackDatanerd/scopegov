@@ -125,8 +125,15 @@ export async function finalizeCoAcceptance(service: any, params: {
     : casUpdate.eq('status', expectedStatus)
   ).select('id')
 
-  if (updateErr)
+  if (updateErr) {
+    // The client only ever sees the generic message, and this used to be swallowed entirely — so a
+    // failing CAS (missing column, constraint, trigger) was undiagnosable from the logs.
+    console.error('CO acceptance CAS update failed:', {
+      coId: co.id, source, expectedStatus,
+      code: updateErr.code, message: updateErr.message, details: updateErr.details, hint: updateErr.hint,
+    })
     return { ok: false as const, error: 'Failed to record acceptance', status: 500 }
+  }
   if (!updatedCo || updatedCo.length === 0)
     return { ok: false as const, error: 'This change order was already accepted', status: 409 }
 
