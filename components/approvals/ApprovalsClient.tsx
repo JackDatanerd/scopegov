@@ -164,10 +164,11 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
 
   const loadMineCount = useCallback(async () => {
     try {
-      const res  = await fetch('/api/approvals?scope=mine')
+      // FIX (section-11 audit, pass 1 — B2): count-only; this used to download the whole queue a second time.
+      const res  = await fetch('/api/approvals?scope=mine&light=1')
       const json = await res.json()
       if (!res.ok) return
-      setMineCount((json.requests || []).length)
+      setMineCount(typeof json.count === 'number' ? json.count : 0)
     } catch { /* non-fatal — the button just shows no count */ }
   }, [])
 
@@ -185,7 +186,9 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
 
   const loadNeedsRetry = useCallback(async () => {
     try {
-      const res  = await fetch('/api/approvals?scope=submitted')
+      // FIX (section-11 audit, pass 1 — B2): filtered in the query (this used to download every request the
+      // member had ever submitted and keep the few that failed to send).
+      const res  = await fetch('/api/approvals?scope=submitted&sendFailed=1')
       const json = await res.json()
       if (!res.ok) return
       setNeedsRetry((json.requests || []).filter((r: ApprovalRequest) => r.status === 'approved' && !!r.send_failed_at))
@@ -225,17 +228,23 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
     if (searchedHighlight.current === highlight) return
     searchedHighlight.current = highlight
     ;(async () => {
-      for (const scope of (canViewAll ? ['submitted', 'all'] : ['submitted'])) {
-        try {
-          const res  = await fetch(`/api/approvals?scope=${scope}`)
-          const json = await res.json()
-          if (!res.ok) continue
-          const found = (json.requests || []).find((r: ApprovalRequest) => r.id === highlight)
-          if (found) { openedHighlight.current = highlight; setSelected(found); return }
-        } catch { /* try the next scope */ }
+      // FEATURE (section-11 audit, pass 1 — G1): open the linked request directly. A role-based step notifies
+      // everyone holding the role, so once a colleague decides first the request is in none of this viewer's
+      // lists — the old list-searching lookup found nothing and left an empty page with no explanation. The
+      // request is opened read-only-by-construction: canDecide is computed for this viewer, so a request that
+      // is already decided simply shows who decided it and when.
+      try {
+        const res  = await fetch(`/api/approvals/${encodeURIComponent(highlight)}`)
+        const json = await res.json().catch(() => ({}))
+        if (res.ok && json.request) { openedHighlight.current = highlight; setSelected(json.request as ApprovalRequest); return }
+        setError(res.status === 404
+          ? 'That approval request could not be found — it may have been removed, or you may not have access to it.'
+          : (json.error || 'Could not open that approval request'))
+      } catch {
+        setError('Could not open that approval request — check your connection and try again.')
       }
     })()
-  }, [highlight, items, needsRetry, loading, canViewAll])
+  }, [highlight, items, needsRetry, loading])
 
   async function refreshAfterAction() {
     setSelected(null)
@@ -433,7 +442,11 @@ function ApprovalDetailModal({ request, session, canManageWorkflows, onClose, on
       const json = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(json.error || `Failed to ${action}`)
       // Approved and sent, but the client email bounced — say so before closing.
-      if (action === 'approve' && json.deliveryWarning) alert(json.deliveryWarning)
+      // FEATURE (section-11 audit, pass 1 — G2): the final approval runs the send inside this request. If it
+      // failed, the approver used to see the modal simply close and reasonably assume the document went out.
+      if (action === 'approve' && json.status === 'approved' && json.autoSent === false)
+        alert(`Approved — but it could not be sent automatically${json.sendFailedReason ? ` (${json.sendFailedReason})` : ''}. The requester has been notified and can retry from Approvals; no re-approval is needed.`)
+      else if (action === 'approve' && json.deliveryWarning) alert(json.deliveryWarning)
       if (action === 'retry-send' && json.deliveryWarning) alert(json.deliveryWarning)
       onDone()
     } catch (err) {

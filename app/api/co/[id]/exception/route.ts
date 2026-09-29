@@ -25,7 +25,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
-import { cancelApprovalRequest } from '@/lib/approvals/engine'
+import { cancelApprovalRequest, approvalSendInFlight, SEND_IN_FLIGHT_MESSAGE } from '@/lib/approvals/engine'
 import { sendCoExceptionGrantedEmail } from '@/lib/email/templates'
 import { cleanTextField } from '@/lib/utils/sanitize'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
@@ -67,6 +67,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     if (!EXCEPTION_FROM.includes(co.status))
       return NextResponse.json({ error: `Cannot grant an exception on a CO with status "${co.status}"` }, { status: 400 })
+
+    // FIX (section-11 audit, pass 1 — B4): a final approval's auto-send (or counter-acceptance) is running right
+    // now — granting the exception first would make it fail and leave a false "Approved — not sent" behind.
+    if (await approvalSendInFlight(service, session.workspaceId, ['co', 'co_counter'], id))
+      return NextResponse.json({ error: SEND_IN_FLIGHT_MESSAGE }, { status: 409 })
 
     // Estimated value: defaults to the CO's own total (the value actually being given away) but can be
     // overridden — e.g. only part of the CO's scope is being waived. Same validation as the flag-side

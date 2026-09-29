@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { cancelApprovalRequest } from '@/lib/approvals/engine'
+import { isSendClaimLive } from '@/lib/approvals/send-claim'
 import { canReadProject } from '@/lib/utils/project-access'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -40,8 +41,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // the retry finishes) — so this let a cancel land while a retry's email was
     // actually going out, then leave the request 'cancelled' with no status guard
     // on retryFailedSend's own success write to catch it. Cover both claim states.
-    if (req.sending_started_at &&
-        Date.now() - new Date(req.sending_started_at).getTime() < 2 * 60 * 1000)
+    if (isSendClaimLive(req.sending_started_at))
       return NextResponse.json({ error: 'This request is being sent right now — give it a moment, then refresh.' }, { status: 409 })
     if (req.requested_by !== session.id && !hasPermission(session, 'MANAGE_WORKSPACE_SETTINGS'))
       return NextResponse.json({ error: 'Only the requester or an admin can cancel this' }, { status: 403 })

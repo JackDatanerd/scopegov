@@ -3,7 +3,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
-import { cancelApprovalRequest } from '@/lib/approvals/engine'
+import { cancelApprovalRequest, projectApprovalSendInFlight, SEND_IN_FLIGHT_MESSAGE } from '@/lib/approvals/engine'
 
 // FIX (Projects & Dashboard deep audit, flagship finding): SOW/CO sends and
 // CO-counter acceptance now refuse outright on a Complete/Archived project
@@ -60,6 +60,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         blockingCos: blockingCos.map((co: any) => ({ id: co.id, title: co.title, status: co.status })),
       }, { status: 409 })
     }
+
+    // FIX (section-11 audit, pass 1 — B4): a SOW / CO / counter-acceptance auto-send is running right now.
+    // Completing the project first makes that send fail on the terminal-status check and leaves a false
+    // "Approved — not sent" behind (cancelApprovalRequest below skips a live send and used to say nothing).
+    if (await projectApprovalSendInFlight(service, session.workspaceId, id, ['sow', 'co', 'co_counter']))
+      return NextResponse.json({ error: SEND_IN_FLIGHT_MESSAGE }, { status: 409 })
 
     const now = new Date().toISOString()
 

@@ -9,6 +9,7 @@ import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
 import { computeInvoiceTotals, enteredAmountOf, parseDateOnly } from '@/lib/documents/invoice-totals'
 import { baseContractValue, computeContractPosition } from '@/lib/reports/contract-position'
 import { getPendingApprovalForDocument, cancelApprovalRequest } from '@/lib/approvals/engine'
+import { isSendClaimLive } from '@/lib/approvals/send-claim'
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -305,8 +306,7 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
     // The last approval step just cleared and the send is running: deleting now
     // would race a document that is about to go out.
     const active = await getPendingApprovalForDocument(service, 'invoice', id)
-    if (active?.status === 'pending' && active.sending_started_at &&
-        Date.now() - new Date(active.sending_started_at).getTime() < 2 * 60 * 1000)
+    if (active?.status === 'pending' && isSendClaimLive(active.sending_started_at))
       return NextResponse.json({ error: 'This invoice was just approved and is being sent — refresh in a moment.' }, { status: 409 })
 
     // A gated invoice stays 'draft' the whole time it's under review, so the status

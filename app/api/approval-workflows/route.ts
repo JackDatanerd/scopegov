@@ -5,6 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { CURRENCIES } from '@/lib/constants/workspace-options'
+import { parseWorkflowSteps, parseThresholdAmount } from '@/lib/approvals/workflow-input'
 
 // Configuring who approves what is treated as a workspace setting rather
 // than minting a new permission — MANAGE_WORKSPACE_SETTINGS already gates
@@ -58,8 +59,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
     const documentType: string = body?.documentType
     const name: string = typeof body?.name === 'string' ? body.name.trim() : ''
-    const thresholdAmount = body?.thresholdAmount === '' || body?.thresholdAmount == null
-      ? null : Number(body.thresholdAmount)
+    // FIX (section-11 audit, pass 1 — B5): shared parsers, see lib/approvals/workflow-input.ts. A threshold
+    // must be above zero (0 silently behaved as a catch-all that skipped the duplicate guard below).
+    const thresholdParsed = parseThresholdAmount(body?.thresholdAmount)
+    const thresholdAmount = thresholdParsed.ok ? thresholdParsed.value : null
     // FIX (re-audit): threshold_amount was compared against a document's
     // amount with no currency awareness at all — see migration 023.
     // Required whenever a threshold is actually set (a currency-agnostic
@@ -67,7 +70,7 @@ export async function POST(request: NextRequest) {
     const thresholdCurrency: string | null = thresholdAmount != null
       ? (typeof body?.thresholdCurrency === 'string' && body.thresholdCurrency ? body.thresholdCurrency : 'USD').toUpperCase()
       : null
-    const steps: Array<{ approverRoleId?: string; approverUserId?: string }> = Array.isArray(body?.steps) ? body.steps : []
+    const stepsParsed = parseWorkflowSteps(body?.steps)
     // FIX (section-11 audit, pass 2 — feature gaps): three explicit policy
     // switches the engine had no way to express. See migration 069.
     for (const key of ['allowSelfApproval', 'requireDistinctApprovers', 'applyToOtherCurrencies']) {
@@ -85,15 +88,9 @@ export async function POST(request: NextRequest) {
     if (name.length > 120) return NextResponse.json({ error: 'Name must be under 120 characters' }, { status: 400 })
     if (thresholdCurrency && !(CURRENCIES as readonly string[]).includes(thresholdCurrency))
       return NextResponse.json({ error: 'Invalid threshold currency' }, { status: 400 })
-    if (steps.length > 10) return NextResponse.json({ error: 'An approval workflow can have at most 10 steps' }, { status: 400 })
-    if (thresholdAmount != null && (!Number.isFinite(thresholdAmount) || thresholdAmount < 0))
-      return NextResponse.json({ error: 'Threshold must be a positive number' }, { status: 400 })
-    if (steps.length === 0)
-      return NextResponse.json({ error: 'At least one approval step is required' }, { status: 400 })
-    for (const s of steps) {
-      if ((!s.approverRoleId && !s.approverUserId) || (s.approverRoleId && s.approverUserId))
-        return NextResponse.json({ error: 'Each step needs exactly one approver — a role or a person' }, { status: 400 })
-    }
+    if (!thresholdParsed.ok) return NextResponse.json({ error: thresholdParsed.error }, { status: 400 })
+    if (!stepsParsed.ok) return NextResponse.json({ error: stepsParsed.error }, { status: 400 })
+    const steps = stepsParsed.steps
 
     const service = createServiceClient()
 
@@ -210,6 +207,13 @@ export async function POST(request: NextRequest) {
     // info-disclosure pattern as the catch-alls below; log it and hand
     // back a generic message instead.
     if (insertErr || !workflow) {
+      // FIX (section-11 audit, pass 1 — B5): two simultaneous saves can both pass the count() guards above;
+      // migration 117's partial unique indexes now decide the race — report it as the same 409 the guards give.
+      if (insertErr?.code === '23505') {
+        return NextResponse.json({
+          error: 'An active workflow for this document type already exists at this threshold (or is already a catch-all). Edit or deactivate the existing rule instead.',
+        }, { status: 409 })
+      }
       if (insertErr) console.error('Approval workflow insert failed:', insertErr)
       return NextResponse.json({ error: 'Could not create workflow' }, { status: 500 })
     }

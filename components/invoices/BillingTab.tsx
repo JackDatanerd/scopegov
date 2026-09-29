@@ -223,6 +223,8 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
       const j = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(j.error || 'Retry failed')
       if (j.deliveryWarning) alert(j.deliveryWarning)
+      // FIX (section-11 audit, pass 1 — B3): clears the sidebar badge's "needs a retry" count immediately.
+      window.dispatchEvent(new Event('scopegov:approvals-changed'))
       await refresh()
     } catch (err: unknown) { setError(err instanceof Error ? err.message : 'Retry failed') }
     finally { setBusyId(null) }

@@ -6,6 +6,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { diffFields } from '@/lib/utils/audit-diff'
 import { CURRENCIES } from '@/lib/constants/workspace-options'
+import { parseWorkflowSteps, parseThresholdAmount } from '@/lib/approvals/workflow-input'
 
 function canManage(session: any) {
   return hasPermission(session, 'MANAGE_WORKSPACE_SETTINGS')
@@ -44,14 +45,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       patch.name = body.name.trim()
     }
     if (body.thresholdAmount !== undefined) {
-      if (body.thresholdAmount !== '' && body.thresholdAmount != null) {
-        const n = Number(body.thresholdAmount)
-        if (!Number.isFinite(n) || n < 0)
-          return NextResponse.json({ error: 'Threshold must be a positive number' }, { status: 400 })
-        patch.threshold_amount = n
-      } else {
-        patch.threshold_amount = null
-      }
+      // FIX (section-11 audit, pass 1 — B5): shared parser; 0 is no longer accepted (see workflow-input.ts).
+      const parsedThreshold = parseThresholdAmount(body.thresholdAmount)
+      if (!parsedThreshold.ok) return NextResponse.json({ error: parsedThreshold.error }, { status: 400 })
+      patch.threshold_amount = parsedThreshold.value
     }
     // FIX (section-11 audit, pass 2 — feature gaps): policy switches, see migration 069.
     for (const [key, col] of [
@@ -76,19 +73,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       patch.threshold_currency = 'USD' // amount is being set for the first time with no currency supplied
     }
 
-    let steps: Array<{ approverRoleId?: string; approverUserId?: string }> | undefined
+    let steps: Array<{ approverRoleId: string | null; approverUserId: string | null }> | undefined
     if (body.steps !== undefined) {
-      if (!Array.isArray(body.steps) || body.steps.length === 0)
-        return NextResponse.json({ error: 'An approval workflow needs at least one approver step' }, { status: 400 })
-      if (body.steps.length > 10)
-        return NextResponse.json({ error: 'An approval workflow can have at most 10 steps' }, { status: 400 })
-      steps = body.steps as typeof steps
-      for (const st of steps!) {
-        if (!st || typeof st !== 'object' ||
-            (typeof st.approverRoleId !== 'string' && typeof st.approverUserId !== 'string') ||
-            (st.approverRoleId && st.approverUserId))
-          return NextResponse.json({ error: 'Each step needs exactly one approver — a role or a person' }, { status: 400 })
-      }
+      // FIX (section-11 audit, pass 1 — B5): `approverRoleId: ""` used to pass here, become a step with no
+      // approver inside the RPC and die on the one-approver CHECK as an opaque 500. Same parser as POST.
+      const parsedSteps = parseWorkflowSteps(body.steps)
+      if (!parsedSteps.ok) return NextResponse.json({ error: parsedSteps.error }, { status: 400 })
+      steps = parsedSteps.steps
       const roleIds = steps!.map(st => st.approverRoleId).filter(Boolean) as string[]
       const userIds = steps!.map(st => st.approverUserId).filter(Boolean) as string[]
       if (roleIds.length) {
@@ -176,6 +167,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       p_steps:        steps ?? null,
     })
     if (rpcErr) {
+      // FIX (section-11 audit, pass 1 — B5): migration 117's partial unique indexes decide a race between two
+      // simultaneous saves that both passed the count() guards above.
+      if ((rpcErr as any).code === '23505') {
+        return NextResponse.json({
+          error: 'An active workflow for this document type already exists at this threshold (or is already a catch-all). Deactivate the other rule first.',
+        }, { status: 409 })
+      }
       console.error('update_approval_workflow_atomic failed:', rpcErr)
       return NextResponse.json({ error: 'Could not save this workflow. Nothing was changed — please try again.' }, { status: 500 })
     }

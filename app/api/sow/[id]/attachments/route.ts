@@ -33,6 +33,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { ALLOWED_ATTACHMENT_TYPES as ALLOWED_TYPES, matchesDeclaredType } from '@/lib/utils/file-signature'
 import { EVIDENCE_BUCKET } from '@/lib/utils/storage-cleanup'
+import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024 // 10 MB — same cap as flag evidence
 const MAX_ATTACHMENTS_PER_SOW = 20
@@ -95,6 +96,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // something to keep silently mutating once a document is out for
     // signature (or signed, declined, withdrawn, expired).
     if (sow.sent_at) return NextResponse.json({ error: 'SOW is locked — attachments can only be added to a draft.' }, { status: 409 })
+    // FIX (section-11 audit, pass 1 — B1): a SOW inside an approval chain (or approved but not yet sent)
+    // is still status 'draft', so the sent_at check above never applied. Approvers sign off on a snapshot of
+    // the document; changing its attachments underneath them means the SOW that goes out is not the one
+    // that was approved. Same lock the CO attachment route, SOW PATCH, generate and regenerate-section apply.
+    if (await getPendingApprovalForDocument(service, 'sow', id))
+      return NextResponse.json({ error: 'This SOW has a pending approval request — cancel it before changing attachments.' }, { status: 409 })
 
     const { count } = await (service as any)
       .from('sow_attachments').select('id', { count: 'exact', head: true }).eq('sow_id', id)
@@ -129,7 +136,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     })
     if (uploadError) throw new Error(uploadError.message)
 
-    // Cap + draft-lock are re-checked atomically inside sow_attachment_add (migration 109), under a
+    // Cap + draft-lock (+ the active-approval lock, migration 117) are re-checked atomically inside sow_attachment_add (migration 109), under a
     // row lock on the SOW — the pre-checks above are only a fast-path, they can't stop two
     // concurrent uploads (or an upload racing a send) from both getting through.
     const { data: added, error } = await (service as any).rpc('sow_attachment_add', {
@@ -151,6 +158,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         return NextResponse.json({ error: `A SOW can have at most ${MAX_ATTACHMENTS_PER_SOW} attachments.` }, { status: 400 })
       if (msg.includes('sow_locked'))
         return NextResponse.json({ error: 'SOW is locked — attachments can only be added to a draft.' }, { status: 409 })
+      if (msg.includes('sow_approval_pending'))
+        return NextResponse.json({ error: 'This SOW has a pending approval request — cancel it before changing attachments.' }, { status: 409 })
       if (msg.includes('sow_not_found'))
         return NextResponse.json({ error: 'Not found' }, { status: 404 })
       throw new Error(error?.message || 'sow_attachment_add returned no row')

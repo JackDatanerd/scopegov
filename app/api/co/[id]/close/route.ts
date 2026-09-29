@@ -4,7 +4,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
-import { cancelApprovalRequest } from '@/lib/approvals/engine'
+import { cancelApprovalRequest, approvalSendInFlight, SEND_IN_FLIGHT_MESSAGE } from '@/lib/approvals/engine'
 import { sendDocumentCancelledEmail } from '@/lib/email/templates'
 import { cleanTextField } from '@/lib/utils/sanitize'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
@@ -48,6 +48,12 @@ async function handleTerminalCoState(
   // FIX (audit round 3): see lib/utils/project-access.ts.
   if (!(await canReadProject(service, session, co.project_id)))
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
+  // FIX (section-11 audit, pass 1 — B4): a final approval's auto-send is running right now — closing the CO
+  // under it makes that send fail and leaves a false "Approved — not sent" behind. (cancelApprovalRequest
+  // below deliberately skips a live send and used to say nothing about it.)
+  if (await approvalSendInFlight(service, session.workspaceId, ['co', 'co_counter'], id))
+    return NextResponse.json({ error: SEND_IN_FLIGHT_MESSAGE }, { status: 409 })
 
   const TERMINAL_FROM: Record<string, string[]> = {
     // FIX (doc-completeness audit, migration 014): 'awaiting_countersignature'

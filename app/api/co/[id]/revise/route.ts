@@ -4,7 +4,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
 import { isTerminalStatus } from '@/lib/utils/project-status'
-import { cancelApprovalRequest } from '@/lib/approvals/engine'
+import { cancelApprovalRequest, approvalSendInFlight, SEND_IN_FLIGHT_MESSAGE } from '@/lib/approvals/engine'
 import { insertNextCoVersion } from '@/lib/documents/co-version'
 import { parseStoredLineItems } from '@/lib/documents/co-totals'
 import { sendDocumentCancelledEmail } from '@/lib/email/templates'
@@ -80,6 +80,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         { error: `A ${co.status.replace(/_/g, ' ')} change order can't be revised.` },
         { status: 400 }
       )
+
+    // FIX (section-11 audit, pass 1 — B4): revising a 'countered' CO supersedes (closes) it and cancels its
+    // co_counter approval — refuse while that request's final-approval auto-send is running right now.
+    if (co.status === 'countered' && await approvalSendInFlight(service, session.workspaceId, ['co_counter'], co.id))
+      return NextResponse.json({ error: SEND_IN_FLIGHT_MESSAGE }, { status: 409 })
 
     // line_items has been written both ways historically (see the
     // JSON.stringify note in app/api/co/route.ts) — handle both.

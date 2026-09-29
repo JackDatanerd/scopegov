@@ -17,6 +17,7 @@ import { canReadProject } from '@/lib/utils/project-access'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { EVIDENCE_BUCKET } from '@/lib/utils/storage-cleanup'
+import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
 
 export async function DELETE(
   request: NextRequest,
@@ -37,6 +38,10 @@ export async function DELETE(
     if (!(await canReadProject(service, session, sow.project_id)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     if (sow.sent_at) return NextResponse.json({ error: 'SOW is locked — attachments can only be removed from a draft.' }, { status: 409 })
+    // FIX (section-11 audit, pass 1 — B1): see the POST route — a SOW in an approval chain is still
+    // 'draft', so removing an attachment would change a document approvers already reviewed.
+    if (await getPendingApprovalForDocument(service, 'sow', id))
+      return NextResponse.json({ error: 'This SOW has a pending approval request — cancel it before changing attachments.' }, { status: 409 })
 
     // Scoped by sow_id, not just id — an attachmentId that belongs to a
     // different SOW (even one in this same workspace) must 404, not delete.

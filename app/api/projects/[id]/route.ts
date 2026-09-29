@@ -3,7 +3,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
-import { getPendingApprovalForDocument, cancelApprovalRequest } from '@/lib/approvals/engine'
+import { getPendingApprovalForDocument, cancelApprovalRequest, projectApprovalSendInFlight, SEND_IN_FLIGHT_MESSAGE } from '@/lib/approvals/engine'
 import { isTerminalStatus, TERMINAL_PROJECT_STATUSES } from '@/lib/utils/project-status'
 import {
   parseProjectName, parseOptionalText, parseProjectType, parseContractValue,
@@ -360,6 +360,12 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
       return NextResponse.json({ error: 'Only Draft or Intake projects can be deleted' }, { status: 400 })
     if ((project.sow_documents || []).some((s: any) => s.status === 'signed'))
       return NextResponse.json({ error: 'Project has a signed SOW — archive instead' }, { status: 400 })
+
+    // FIX (section-11 audit, pass 1 — B4): a document's final-approval auto-send is running right now —
+    // deleting the project under it makes that send fail (send-sow refuses a deleted project) and leaves a
+    // red "Approved — not sent" on a project that no longer exists. Ask before anything is changed.
+    if (await projectApprovalSendInFlight(service, session.workspaceId, id))
+      return NextResponse.json({ error: SEND_IN_FLIGHT_MESSAGE }, { status: 409 })
 
     // Status re-checked in the write itself so a SOW send between the read and
     // this update can't leave a soft-deleted project with a live SOW.

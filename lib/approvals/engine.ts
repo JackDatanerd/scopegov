@@ -34,6 +34,7 @@ import { hasPermission } from '@/lib/auth/session'
 import { canReadProject } from '@/lib/utils/project-access'
 import { eligibleApprovers, checkChainFeasibility } from '@/lib/approvals/eligibility'
 import { pickWorkflow } from '@/lib/approvals/pick-workflow'
+import { SEND_CLAIM_WINDOW_MS, isSendClaimLive, SEND_IN_FLIGHT_MESSAGE } from '@/lib/approvals/send-claim'
 
 export { pickWorkflow }
 import type { SessionUser } from '@/lib/supabase/types'
@@ -423,7 +424,7 @@ interface DecisionParams {
 }
 
 export type DecisionResult =
-  | { ok: true; status: 'pending' | 'approved' | 'rejected'; autoSent?: boolean; deliveryWarning?: string | null }
+  | { ok: true; status: 'pending' | 'approved' | 'rejected'; autoSent?: boolean; deliveryWarning?: string | null; sendFailedReason?: string | null }
   | { ok: false; error: string; status: number }
 
 export async function recordApprovalDecision(service: any, params: DecisionParams): Promise<DecisionResult> {
@@ -644,7 +645,51 @@ export async function recordApprovalDecision(service: any, params: DecisionParam
     })
   }
 
-  return { ok: true, status: 'approved', autoSent, deliveryWarning }
+  return { ok: true, status: 'approved', autoSent, deliveryWarning, sendFailedReason }
+}
+
+// ── SEND-IN-FLIGHT GUARD ─────────────────────────────────────────
+// FIX (section-11 audit, pass 1 — B4): cancelApprovalRequest() deliberately does nothing while a send claim
+// is young enough to still be running (below), but it reported nothing either — so every caller that
+// changes or destroys the document (CO close / withdraw / revise / exception, invoice void, project
+// delete / complete) carried on regardless. E.g. closing a CO in the seconds after its final approval
+// wrote 'closed' first; the in-flight auto-send then failed "Only draft COs can be sent" and the request
+// finalized as a red "Approved — not sent" on a CO that no longer exists in any sendable state.
+// Callers now ask this BEFORE they mutate and answer 409 "being sent right now" instead. Same 2-minute
+// window the cancel route and cancelApprovalRequest use (a claim older than that is presumed dead and is
+// healed by healStuckSends).
+// (the pure clock lives in lib/approvals/send-claim.ts so it can be unit-tested without this file's I/O deps)
+export { SEND_CLAIM_WINDOW_MS, isSendClaimLive, SEND_IN_FLIGHT_MESSAGE }
+
+/** True when any of these documents has a final-approval auto-send actively running (or a retry claimed). */
+export async function approvalSendInFlight(
+  service: any, workspaceId: string, documentTypes: ApprovalDocumentType[], documentId: string,
+): Promise<boolean> {
+  const { data } = await service
+    .from('approval_requests')
+    .select('sending_started_at')
+    .eq('workspace_id', workspaceId)
+    .in('document_type', documentTypes)
+    .eq('document_id', documentId)
+    .not('sending_started_at', 'is', null)
+    .or('status.eq.pending,and(status.eq.approved,send_failed_at.not.is.null)')
+  return (data || []).some((r: any) => isSendClaimLive(r.sending_started_at))
+}
+
+/** Same guard for every document of a project (project delete / complete cancel them all). */
+export async function projectApprovalSendInFlight(
+  service: any, workspaceId: string, projectId: string, documentTypes?: ApprovalDocumentType[],
+): Promise<boolean> {
+  let q = service
+    .from('approval_requests')
+    .select('sending_started_at')
+    .eq('workspace_id', workspaceId)
+    .eq('project_id', projectId)
+    .not('sending_started_at', 'is', null)
+    .or('status.eq.pending,and(status.eq.approved,send_failed_at.not.is.null)')
+  if (documentTypes) q = q.in('document_type', documentTypes)
+  const { data } = await q
+  return (data || []).some((r: any) => isSendClaimLive(r.sending_started_at))
 }
 
 // ── CANCELLATION ─────────────────────────────────────────────────
@@ -704,8 +749,7 @@ export async function cancelApprovalRequest(service: any, params: {
   // caller funnels through — belt-and-suspenders against any future caller that skips
   // that check. A stale claim (crashed mid-send, past healStuckSends' own window) is
   // still cancellable; only a claim young enough to plausibly still be in flight blocks.
-  if (request.sending_started_at &&
-      Date.now() - new Date(request.sending_started_at).getTime() < 2 * 60 * 1000) return
+  if (isSendClaimLive(request.sending_started_at)) return
 
   const now = new Date().toISOString()
   // FIX (re-audit): no CAS here either — a cancel racing a genuine
@@ -933,7 +977,7 @@ export async function retryFailedSend(service: any, params: {
     return { ok: false, error: 'The person who requested this no longer has an account, so it could not be sent automatically. Cancel this request and send the document again.' }
 
   const claimStamp = new Date().toISOString()
-  const staleBefore = new Date(Date.now() - 2 * 60 * 1000).toISOString()
+  const staleBefore = new Date(Date.now() - SEND_CLAIM_WINDOW_MS).toISOString()
   const { data: claimed } = await service.from('approval_requests')
     .update({ sending_started_at: claimStamp })
     .eq('id', request.id).eq('status', 'approved').not('send_failed_at', 'is', null)

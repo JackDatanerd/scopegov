@@ -103,9 +103,11 @@ export default function Sidebar({ session }: { session: SessionUser }) {
         // FIX (section-11 audit, B7): scope=all is the oversight view — every request in the workspace, any
         // status, ever. This badge only counts pending ones, so filter server-side instead of paging the whole
         // history down on every navigation. (scope=mine is already pending-only by construction.)
-        fetch(`/api/approvals?scope=${approvalScope}${approvalScope === 'all' ? '&status=pending' : ''}`)
+        // FIX (section-11 audit, pass 1 — B2): `light=1` returns just { count } (slim select, no lazy heal)
+        // instead of every request with its four embeds on every navigation.
+        fetch(`/api/approvals?scope=${approvalScope}&light=1${approvalScope === 'all' ? '&status=pending' : ''}`)
           .then(r => r.json())
-          .then(json => (json.requests || []).filter((r: any) => r.status === 'pending').length)
+          .then(json => (typeof json.count === 'number' ? json.count : 0))
           .catch(() => 0)
       )
     }
@@ -114,9 +116,12 @@ export default function Sidebar({ session }: { session: SessionUser }) {
     // paging through every rejected/cancelled/successfully-sent request this member has ever
     // submitted, on every navigation, just to throw almost all of it away client-side.
     requests.push(
-      fetch(`/api/approvals?scope=submitted&status=approved`)
+      // FIX (section-11 audit, pass 1 — B2): this asked for status=approved and threw away everything
+      // without send_failed_at CLIENT-side — i.e. it downloaded every approved request the member had ever
+      // submitted, on every navigation. `sendFailed=1` filters in the query itself.
+      fetch(`/api/approvals?scope=submitted&sendFailed=1&light=1`)
         .then(r => r.json())
-        .then(json => (json.requests || []).filter((r: any) => !!r.send_failed_at).length)
+        .then(json => (typeof json.count === 'number' ? json.count : 0))
         .catch(() => 0)
     )
     Promise.all(requests).then(counts => setPendingApprovals(counts.reduce((a, b) => a + b, 0)))

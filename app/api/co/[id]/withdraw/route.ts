@@ -3,7 +3,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
-import { cancelApprovalRequest } from '@/lib/approvals/engine'
+import { cancelApprovalRequest, approvalSendInFlight, SEND_IN_FLIGHT_MESSAGE } from '@/lib/approvals/engine'
 import { canReadProject } from '@/lib/utils/project-access'
 import { sendDocumentCancelledEmail } from '@/lib/email/templates'
 import { cleanTextField } from '@/lib/utils/sanitize'
@@ -49,6 +49,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const WITHDRAWABLE_FROM = ['awaiting_response', 'stalled', 'draft', 'awaiting_countersignature']
     if (!WITHDRAWABLE_FROM.includes(co.status))
       return NextResponse.json({ error: 'Cannot withdraw CO in current status' }, { status: 400 })
+
+    // FIX (section-11 audit, pass 1 — B4): see close/route.ts — don't pull the CO out from under a final approval's
+    // auto-send that is running right now.
+    if (co.status === 'draft' && await approvalSendInFlight(service, session.workspaceId, ['co'], id))
+      return NextResponse.json({ error: SEND_IN_FLIGHT_MESSAGE }, { status: 409 })
 
     const wasSentToClient = co.status !== 'draft'
 

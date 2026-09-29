@@ -757,6 +757,9 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
       if (!res.ok) throw new Error(json.error || 'Retry failed')
       // Approved and sent, but the mail provider rejected the client email.
       if (json.deliveryWarning) alert(json.deliveryWarning)
+      // FIX (section-11 audit, pass 1 — B3): a successful retry clears the request's send-failed flag, so the
+      // sidebar badge's red "needs a retry" count has to drop now — it only refetches on navigation or this event.
+      window.dispatchEvent(new Event('scopegov:approvals-changed'))
       router.refresh()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Retry failed')
@@ -2347,6 +2350,8 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
       const json = await res.json().catch(() => ({}))
       if (!res.ok) { setActionError(json?.error || 'Retry failed'); return }
       if (json?.deliveryWarning) alert(json.deliveryWarning)
+      // FIX (section-11 audit, pass 1 — B3): see SowTab.handleRetrySend.
+      window.dispatchEvent(new Event('scopegov:approvals-changed'))
       router.refresh()
     } catch {
       setActionError('Retry failed')

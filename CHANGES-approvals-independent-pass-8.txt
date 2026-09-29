@@ -1,0 +1,42 @@
+CHANGES — Approval workflows engine (section 11), independent pass 1 of this round
+====================================================================================
+
+RUN FIRST:   supabase/migrations/117_approvals_pass_fixes.sql   (before deploying the code)
+             (115 and 116 were taken by other sessions while this was in progress)
+
+Feature gaps closed
+  G1  GET /api/approvals/[id] (new, lib/approvals/list.ts holds the shared read helpers).
+      Notification / email links go to /approvals?highlight=<id>; the page used to find the request only by
+      searching the viewer's lists, so a role-based approver whose colleague decided first landed on an empty
+      page. The page now opens the request directly and shows who decided it. Readable by the requester, anyone
+      involved in a step (named, holding the role, or having decided) and oversight; everyone but the requester
+      must also be able to read the project. Anything else is a 404.
+  G2  The approve response now carries sendFailedReason; the modal tells the approver when the final approval
+      could not be sent automatically instead of just closing.
+
+Bugs fixed
+  B1  SOW attachments could be added/removed while the SOW sat in an approval chain (or approved-not-sent).
+      Locked in POST and DELETE, and — for the race with a gate starting mid-upload — inside sow_attachment_add
+      itself (migration 117), which now raises sow_approval_pending under the SOW row lock.
+  B2  The sidebar badge, "My queue (n)" and the send-failed banner downloaded whole request lists (four embeds
+      each) on every navigation. New query params on GET /api/approvals: light=1 (count only, slim select, no
+      lazy heal) and sendFailed=1 (filtered in the query). Sidebar and ApprovalsClient use them.
+  B3  Successful Retry send on the SOW tab, CO card and BillingTab now dispatches scopegov:approvals-changed so
+      the sidebar badge drops immediately.
+  B4  Changing a document while its final-approval auto-send is running made cancelApprovalRequest() silently do
+      nothing and left a false "Approved — not sent". CO close / withdraw / revise (countered) / exception,
+      project delete and project complete now answer 409 "being sent right now" first. Shared clock in
+      lib/approvals/send-claim.ts (also used by the cancel route, invoice DELETE, retry claim).
+      (Invoice void needs no guard: it only voids already-sent invoices.)
+  B5  Workflow validation: one shared parser (lib/approvals/workflow-input.ts) for POST and PATCH — null step
+      entries were a 500 on POST, "" approver ids slipped through PATCH into a CHECK-constraint 500, ids are now
+      uuid-checked, threshold 0 is refused (it behaved as a catch-all that skipped the duplicate guard).
+      Migration 117 adds partial unique indexes (one active catch-all per workspace+type; one active workflow per
+      workspace+type+threshold+currency) so two simultaneous saves can no longer leave a dead rule; both routes
+      map the resulting 23505 to the same 409 as the count() guards. If existing duplicates prevent an index,
+      the migration RAISEs a WARNING with the exact statement to re-run after deactivating the extras.
+
+Tests: tests/approvals-pass-fixes.test.ts (17 cases, pure logic).
+Not verifiable here (no node_modules / network in the audit sandbox): full `tsc --noEmit`, `next build`, the
+full vitest run. All 23 changed TS/TSX files were syntax-checked and the new pure modules + test were
+type-checked under `strict` and executed.
