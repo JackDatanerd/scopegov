@@ -62,7 +62,7 @@ export default async function ProjectPage({ params, searchParams }: Props) {
   const { data: project } = await (service as any)
     .from('projects')
     .select(`
-      id, name, disc, type, status, stall_reason, contract_value, currency,
+      id, name, disc, type, status, stall_reason, stalled_at, contract_value, currency,
       start_date, internal_ref, retainer_duration_months, created_at, updated_at,
       client_id, created_by, workspace_id, guardian_email,
       clients(id, name, company_name, email, cc_emails, phone, notes),

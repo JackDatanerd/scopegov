@@ -58,6 +58,12 @@ function NewProjectPageInner() {
   // re-submits (see handleBasicsSubmit).
   const [createdClientId, setCreatedClientId] = useState<string | null>(null)
   const [createdClientEmail, setCreatedClientEmail] = useState<string>('')
+  // FIX (Projects & Dashboard deep audit — bug): the reuse check below only ever compared
+  // email. Going "← Back" and fixing a typo in the *name* of a client just created inline
+  // (while leaving the email as-is) matched the reuse branch and silently kept the old name
+  // — the project appeared to save fine, but the client record never got the correction.
+  // Tracked alongside createdClientEmail so a name change on Back can be detected and applied.
+  const [createdClientName, setCreatedClientName] = useState<string>('')
 
   // Step 0: Basics
   const [clientId,     setClientId]     = useState('')
@@ -209,6 +215,16 @@ function NewProjectPageInner() {
           const email = clientEmail.trim().toLowerCase()
           if (createdClientId && createdClientEmail === email) {
             nextClientId = createdClientId
+            const trimmedName = clientName.trim()
+            if (trimmedName && trimmedName !== createdClientName) {
+              const nr = await fetch(`/api/clients/${createdClientId}`, {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: trimmedName }),
+              })
+              const nj = await nr.json().catch(() => ({}))
+              if (!nr.ok) throw new Error(nj.error || 'Could not update the client name')
+              setCreatedClientName(trimmedName)
+            }
           } else {
             const cr = await fetch('/api/clients', {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -218,7 +234,7 @@ function NewProjectPageInner() {
             if (cr.ok) nextClientId = cj.clientId
             else if (cr.status === 409 && cj.existingClientId) nextClientId = cj.existingClientId
             else throw new Error(cj.error || 'Could not create the client')
-            setCreatedClientId(nextClientId); setCreatedClientEmail(email)
+            setCreatedClientId(nextClientId); setCreatedClientEmail(email); setCreatedClientName(clientName.trim())
           }
         }
         const pr = await fetch(`/api/projects/${projectId}`, {
@@ -252,6 +268,7 @@ function NewProjectPageInner() {
       setProjectId(json.projectId)
       setCreatedClientId(json.clientId || clientId || null)
       setCreatedClientEmail(clientEmail.trim().toLowerCase())
+      setCreatedClientName(clientName.trim())
       setStep(1)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Something went wrong')

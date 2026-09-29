@@ -256,6 +256,10 @@ export default function ProjectDetail({
 
   const [unarchiving, setUnarchiving] = useState(false)
   async function handleUnarchive() {
+    // FIX (Projects & Dashboard deep audit — bug): every other lifecycle action in this
+    // header (Delete, Archive, Pause/Resume, Reopen) confirms before firing; this one
+    // fired the POST straight from the click. Mirrors handleArchive/handleReopen's shape.
+    if (!confirm(`Unarchive "${project.name}"? It returns to Complete and reappears in active project views.`)) return
     setUnarchiving(true); setError('')
     try {
       const res = await fetch(`/api/projects/${project.id}/unarchive`, { method: 'POST' })
@@ -285,6 +289,24 @@ export default function ProjectDetail({
               </h1>
               {project.disc && <span style={{ fontSize: 13, color: 'var(--text-3)' }}>{project.disc}</span>}
               <span className={`pill pill-${projectPill(project.status)}`}>{projectStatusLabel(project.status)}</span>
+              {/* FIX (section-7 audit — feature gap): the Dashboard and Projects list both
+                  explain a Stalled project via attentionReason() ("Paused for N days" /
+                  "SOW unsigned — project stalled"), but this page — the one place someone
+                  actually goes to act on it — showed nothing but the bare pill. This isn't
+                  attentionReason() itself: that function is gated by isRecentManualPause()
+                  so the aggregate "needs attention" register can stay quiet for the first
+                  14 days of a deliberate pause. That gate is about what surfaces in a list;
+                  it says nothing about what the person looking straight at this project
+                  should be told, so a project paused yesterday still gets an explanation here. */}
+              {project.status === 'Stalled' && (
+                <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
+                  {project.stall_reason === 'sow_unsigned'
+                    ? 'SOW unsigned'
+                    : project.stalled_at
+                      ? `Paused ${formatRelative(project.stalled_at)}`
+                      : 'Manually paused'}
+                </span>
+              )}
               {guardianActive && (
                 <span className="pill pill-green"><i className="ti ti-shield-bolt" style={{ fontSize: 10 }} /> Guardian active</span>
               )}
@@ -367,12 +389,24 @@ export default function ProjectDetail({
           </div>
         )}
 
-        {permissions.viewFinancials && effectiveContractValue > 0 && (
+        {/* FIX (Projects & Dashboard deep audit — bug): baseValue + recoveredAmt always equals
+            effectiveContractValue exactly (effectiveContractValue = base + accepted-CO impact —
+            see contract-value.ts), but atRiskAmt (pending, not-yet-accepted CO totals) is NOT part
+            of effectiveContractValue. Dividing all three segments by effectiveContractValue alone
+            made their flex-grow ratios sum to more than 1 whenever there was pending CO value, so
+            the flex row silently renormalized them — Base and Recovered rendered narrower than
+            their true share once At-risk was nonzero, understating how much of the bar is actually
+            committed. barTotal folds At-risk into the denominator so all three segments are drawn
+            as a share of "everything currently at stake" (effective total + pending), and the three
+            ratios sum to exactly 1 again. */}
+        {permissions.viewFinancials && (effectiveContractValue + atRiskAmt) > 0 && (() => {
+          const barTotal = effectiveContractValue + atRiskAmt
+          return (
           <div style={{ marginBottom: 16 }}>
             <div className="lb-track">
-              <div style={{ flex: baseValue / effectiveContractValue, background: 'var(--blue)', height: 4 }} />
-              {recoveredAmt > 0 && <div style={{ flex: recoveredAmt / effectiveContractValue, background: 'var(--green)', height: 4 }} />}
-              {atRiskAmt > 0 && <div style={{ flex: atRiskAmt / effectiveContractValue, background: 'var(--gold)', height: 4 }} />}
+              <div style={{ flex: baseValue / barTotal, background: 'var(--blue)', height: 4 }} />
+              {recoveredAmt > 0 && <div style={{ flex: recoveredAmt / barTotal, background: 'var(--green)', height: 4 }} />}
+              {atRiskAmt > 0 && <div style={{ flex: atRiskAmt / barTotal, background: 'var(--gold)', height: 4 }} />}
             </div>
             <div className="lb-cap">
               <span className="lb-cap-item"><span className="lb-dot" style={{ background: 'var(--blue)' }} />Base</span>
@@ -380,7 +414,8 @@ export default function ProjectDetail({
               {atRiskAmt > 0 && <span className="lb-cap-item"><span className="lb-dot" style={{ background: 'var(--gold)' }} />Pending</span>}
             </div>
           </div>
-        )}
+          )
+        })()}
 
         <div className="tabbar">
           {TABS.map(t => (

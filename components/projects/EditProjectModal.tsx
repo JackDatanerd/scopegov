@@ -205,12 +205,25 @@ export default function EditProjectModal({
                   </div>
                 ) : (
                   filteredClients.map(c => (
-                    <button key={c.id} type="button"
-                      style={{ display: 'block', width: '100%', textAlign: 'left', padding: '10px 12px', background: 'none', border: 'none', cursor: 'pointer', borderBottom: '1px solid var(--surface-2)' }}
-                      onClick={() => { setClientId(c.id); setClientSearch('') }}>
+                    // FIX (Projects & Dashboard deep audit — bug): this list is copied from the
+                    // new-project wizard's client picker, where picking an archived client is fine
+                    // because POST /api/projects reactivates it. PATCH /api/projects/[id] does NOT —
+                    // reassigning an existing project to an archived client 409s with "restore it
+                    // first" — so letting this button select one just walked the person into a
+                    // confusing failure on Save. Archived clients stay visible (so they're findable
+                    // and the person understands why they can't be picked) but are no longer clickable.
+                    <button key={c.id} type="button" disabled={c.status === 'archived'}
+                      title={c.status === 'archived' ? 'Archived — restore this client from the Clients page first' : undefined}
+                      style={{
+                        display: 'block', width: '100%', textAlign: 'left', padding: '10px 12px', background: 'none',
+                        border: 'none', borderBottom: '1px solid var(--surface-2)',
+                        cursor: c.status === 'archived' ? 'not-allowed' : 'pointer',
+                        opacity: c.status === 'archived' ? 0.55 : 1,
+                      }}
+                      onClick={() => { if (c.status === 'archived') return; setClientId(c.id); setClientSearch('') }}>
                       <div style={{ fontSize: 13, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 6 }}>
                         {c.name}
-                        {c.status === 'archived' && <span className="pill pill-slate pill-sm">Archived</span>}
+                        {c.status === 'archived' && <span className="pill pill-slate pill-sm">Archived — restore first</span>}
                       </div>
                       <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{c.email}</div>
                     </button>

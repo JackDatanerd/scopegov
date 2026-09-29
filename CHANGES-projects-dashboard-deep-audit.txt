@@ -1,0 +1,114 @@
+Section 7 — Projects & Dashboard — fresh independent deep-audit pass
+(app/(app)/dashboard, app/(app)/projects (+[id]), api/projects/*)
+
+Audited as if no prior pass existed. The permission/access-scoping layer
+(canReadProject, project_members_active, every route's workspace/deleted_at
+scoping), the mention system, message-feed pagination/polling, the Activity
+tab, attention.ts's predicate, contract-value.ts, and the plan-limit race
+handling were all re-derived from scratch and held up — nothing changed there.
+
+Six things did not:
+
+1. FEATURE GAP — Stalled projects showed no reason or duration on their own
+   detail page.
+   app/(app)/projects/[id]/page.tsx, components/projects/ProjectDetail.tsx
+   The Dashboard and Projects list both explain a Stalled project via
+   attentionReason() ("Paused for N days" / "SOW unsigned — project
+   stalled"), but the project's own page — selecting everything else about
+   it — never selected `stalled_at` and showed nothing but a bare red
+   "Stalled" pill. Added `stalled_at` to the select and a small inline note
+   next to the pill. Deliberately does NOT reuse attentionReason() itself:
+   that function's isRecentManualPause() gate exists to keep the aggregate
+   "needs attention" register quiet for the first 14 days of a deliberate
+   pause — a list-surfacing concern, not a "does the person looking at this
+   project deserve to know why" concern. So a project paused yesterday still
+   gets an explanation here even though it wouldn't appear in the register
+   yet.
+
+2. BUG — the new-project wizard silently dropped a corrected client name.
+   app/(app)/projects/new/page.tsx
+   Step 0 creates a project (and, in "new client" mode, a client) on first
+   submit; "← Back" returns to Step 0 and resubmitting edits the existing
+   project instead of creating a second one. The reuse check for the
+   already-created client only ever compared email
+   (`createdClientId && createdClientEmail === email`). Going back and
+   fixing a typo in the client's *name* while leaving the email unchanged
+   matched the reuse branch, so the old (wrong) name was kept — no error,
+   project saved fine, client record just never got the correction. Now
+   tracks `createdClientName` alongside `createdClientEmail` and PATCHes
+   /api/clients/[id] with the corrected name when it drifts from what was
+   last saved, blocking submit (matching the existing client-creation
+   failure handling) if that PATCH fails.
+
+3. BUG — EditProjectModal let you pick an archived client, which then 409'd
+   on save with no warning.
+   components/projects/EditProjectModal.tsx
+   The client-reassignment picker was copied from the new-project wizard,
+   where selecting an archived client is fine because POST /api/projects
+   reactivates it — and the "Archived" pill was carried over unchanged. But
+   PATCH /api/projects/[id] does NOT reactivate on reassignment; it hard-
+   rejects with 409 "That client is archived. Restore it first." Archived
+   clients now render disabled (greyed out, not-allowed cursor, "Archived —
+   restore first" pill, tooltip) instead of being selectable — visible and
+   findable, but no longer a dead end at Save.
+
+4. BUG — PATCH /api/projects/[id] didn't re-check terminal status for a
+   plain field edit, so a narrow race could edit a Complete/Archived
+   project.
+   app/api/projects/[id]/route.ts
+   The route reads the project once, checks isTerminalStatus() against
+   that read, then does further async work (SOW-lock checks, a fresh
+   re-read scoped only to value/client/type/currency). The final UPDATE
+   only added `.eq('status', project.status)` when a status change
+   (pause/resume) was part of the request. So editing just name/disc/
+   startDate/internalRef while another request completed or archived the
+   project in that window still landed — silently mutating a project this
+   same route calls read-only once terminal. Every other lock in this file
+   (contract value, retainer months, client, type, currency) already gets a
+   "re-check immediately before the write" treatment for exactly this
+   class of race; this one didn't. The write query now unconditionally
+   excludes TERMINAL_PROJECT_STATUSES via `.not('status', 'in', ...)`
+   regardless of whether a status change was requested (a non-terminal
+   project.status can never itself be in that list, so this doesn't
+   weaken the existing pause/resume `.eq('status', project.status)`
+   guard). The conflict response also now distinguishes "it went
+   terminal" from a generic "changed while editing" conflict instead of
+   collapsing both into the same message.
+
+5. BUG — "Unarchive" was the only project-lifecycle button with no
+   confirmation dialog.
+   components/projects/ProjectDetail.tsx
+   handleDelete, handleArchive, handlePauseResume and handleReopen all
+   confirm() before acting; handleUnarchive fired the POST straight from
+   the click. Added a confirm() matching the existing wording style
+   (mirrors handleArchive/handleReopen).
+
+6. BUG (minor/cosmetic) — the contract-value progress bar's segments didn't
+   sum to the container width once a project had pending change orders.
+   components/projects/ProjectDetail.tsx
+   baseValue + recoveredAmt always equals effectiveContractValue exactly
+   (effectiveContractValue = base + accepted-CO impact — see
+   contract-value.ts), but atRiskAmt (pending, not-yet-accepted CO totals)
+   is not part of effectiveContractValue. All three segments' flex-grow
+   was divided by effectiveContractValue alone, so whenever there was
+   pending CO value the three ratios summed to more than 1 and the flex
+   row silently renormalized them — Base and Recovered rendered narrower
+   than their true share, understating how much of the bar is actually
+   committed. Introduced `barTotal = effectiveContractValue + atRiskAmt`
+   as the shared denominator so the three segments are drawn as a share of
+   "everything currently at stake" and sum to exactly 1 again; the render
+   guard changed to match (`(effectiveContractValue + atRiskAmt) > 0`)
+   so a project with $0 effective value but pending CO exposure still
+   shows a (fully at-risk) bar instead of nothing.
+
+Verification: npx tsc --noEmit clean on all touched files (pre-existing,
+unrelated errors only in tests/reassign-feasibility.test.ts); npx vitest run
+— 873 passed / 1 pre-existing unrelated failure (portal-routes.test.ts,
+untouched code) / reassign-feasibility.test.ts pre-existing parse failure,
+both unrelated to this section; npx eslint on touched files — 0 errors, 2
+pre-existing unrelated warnings; npx next build — all Projects/Dashboard
+routes and every other route compiled and prerendered cleanly (129/129
+static pages); the only build failures were /forgot-password,
+/reset-password, /signup, which fail in this sandbox purely because
+.env.local has no Supabase keys (@supabase/ssr throws at prerender) —
+unrelated to any file touched here.

@@ -4,7 +4,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
 import { getPendingApprovalForDocument, cancelApprovalRequest } from '@/lib/approvals/engine'
-import { isTerminalStatus } from '@/lib/utils/project-status'
+import { isTerminalStatus, TERMINAL_PROJECT_STATUSES } from '@/lib/utils/project-status'
 import {
   parseProjectName, parseOptionalText, parseProjectType, parseContractValue,
   parseCurrencyCode, parseStartDate, parseRetainerMonths,
@@ -269,16 +269,40 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // Guard the write: still not deleted, and — for a pause/resume — still in
     // the status we validated against (a stall cron or SOW send may have moved
     // it since we read the row).
+    //
+    // FIX (Projects & Dashboard deep audit — bug): the terminal-status check above
+    // (isTerminalStatus(project.status)) only looks at the row we read at the top of
+    // this request. Every other value this route re-validates before writing (contract
+    // value / retainer months / client / type / currency, a few lines up) gets a fresh
+    // re-check immediately before the update for exactly this reason — this one didn't.
+    // A plain field edit (name/disc/startDate/internalRef, statusChanged === false) had
+    // no status filter on the write at all, so if another request completed or archived
+    // the project in the gap between the read above and this write, the edit still
+    // landed — silently mutating a project this route otherwise treats as fully
+    // read-only once terminal. Excluding the terminal statuses unconditionally closes
+    // that gap without weakening the existing pause/resume `.eq('status', ...)` guard
+    // (a non-terminal project.status can never itself be in this list).
     let q = (service as any).from('projects').update(updates)
       .eq('id', id).eq('workspace_id', session.workspaceId).is('deleted_at', null)
+      .not('status', 'in', `(${TERMINAL_PROJECT_STATUSES.join(',')})`)
     if (statusChanged) q = q.eq('status', project.status)
     const { data: written, error: updErr } = await q.select('id')
     if (updErr) {
       console.error('Project update error:', updErr)
       return NextResponse.json({ error: 'Could not save the changes. Please try again.' }, { status: 500 })
     }
-    if (!written || written.length === 0)
+    if (!written || written.length === 0) {
+      // Distinguish "someone else beat us to it" from a genuine transient failure so the
+      // person isn't told to just retry when retrying would fail again for the same reason.
+      const { data: nowRow } = await (service as any)
+        .from('projects').select('status').eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
+      if (nowRow && isTerminalStatus(nowRow.status)) {
+        return NextResponse.json({
+          error: `This project is ${nowRow.status.toLowerCase()} and read-only. Reopen it first to make changes.`,
+        }, { status: 409 })
+      }
       return NextResponse.json({ error: 'This project changed while you were editing it. Refresh and try again.' }, { status: 409 })
+    }
 
     // Audit. `changes` is { field: { from, to } }; the status event's readers (Dashboard feed, project
     // Activity tab) look for a flat `metadata.to`, which this row never carried — so every pause/resume
