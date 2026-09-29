@@ -2466,3 +2466,43 @@ export async function sendEmailChangeRequestedEmail(params: { to: string; name: 
   })
   return deliver({ from: systemFrom(), to, subject: 'A sign-in email change was requested on your ScopeGov account', html })
 }
+
+// ── Security: repeated failed sign-in / confirmation attempts ─────────────
+// FEATURE (deep audit, Auth+MFA section — feature gap): every other
+// security-relevant event in this file (new device, password changed, MFA
+// on/off, backup codes regenerated, email-change requested) tells the
+// account owner. Five wrong authenticator codes, five wrong backup codes,
+// or five wrong current-password/step-up attempts in a row — the single
+// clearest signal that someone besides the owner is trying to get in —
+// told nobody but whoever happens to go check the audit log (and only if
+// their role has VIEW_AUDIT_LOG). Wired in from the three throttled app
+// routes (mfa/verify, mfa/recover, change-password) and step-up, at the
+// exact attempt that crosses lib/auth/attempt-limit.ts's threshold — once
+// per lockout window, not once per wrong guess.
+export async function sendAccountLockedEmail(params: {
+  to: string; name: string; context: 'mfa_code' | 'backup_code' | 'password'
+}) {
+  const { to, name: nameRaw, context } = params
+  const name = escapeHtml(nameRaw)
+  const what = context === 'mfa_code' ? 'authenticator code' : context === 'backup_code' ? 'backup code' : 'password'
+  const html = baseTemplate({
+    agencyName: 'ScopeGov',
+    headerColour: C.red,
+    headerIcon: '⚠️',
+    label: 'Security',
+    headline: 'Repeated failed sign-in attempts on your account',
+    body: `
+      <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${name},</p>
+      <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
+        The wrong ${what} was entered for your ScopeGov account several times in a row.
+        As a precaution, sign-in with a ${what} has been temporarily locked for a few minutes.
+      </p>
+      <p style="font-size:13px;color:${C.text2};line-height:1.7;">
+        If this was you, just wait a few minutes and try again. If it wasn't, your account is still
+        protected — but consider changing your password from Settings once you're back in, and check
+        your recent sign-ins there too.
+      </p>
+    `,
+  })
+  return deliver({ from: systemFrom(), to, subject: 'Repeated failed sign-in attempts on your ScopeGov account', html })
+}

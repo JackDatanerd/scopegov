@@ -1,6 +1,10 @@
 // lib/auth/login-audit.ts
 //
-// Sign-ins are recorded by a database trigger on auth.sessions (migration 066),
+// FIX (cosmetic, deep audit Auth+MFA re-pass): this cited migration 066
+// (workspace_defaults_one_global_row.sql — unrelated). The auth.sessions
+// sign-in trigger is migration 068, as every other file in this section
+// correctly calls it.
+// Sign-ins are recorded by a database trigger on auth.sessions (migration 068),
 // which sees EVERY sign-in — including ones made straight against GoTrue. The
 // app-side hooks (login form, OAuth callback, MFA challenge) remain as a
 // fallback for a database where the trigger could not be created, and use this

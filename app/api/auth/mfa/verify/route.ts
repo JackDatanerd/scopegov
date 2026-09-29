@@ -18,7 +18,7 @@ import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/
 import { logAudit } from '@/lib/utils/audit'
 import { notifySecurityEvent } from '@/lib/utils/notify'
 import { issueBackupCodes } from '@/lib/auth/backup-code-store'
-import { sendMfaEnabledEmail } from '@/lib/email/templates'
+import { sendMfaEnabledEmail, sendAccountLockedEmail } from '@/lib/email/templates'
 import { resolveActiveWorkspaceId, resolveActorName } from '@/lib/auth/session'
 import { decodeJwtPayload, loginMethodFromAmr, authenticationAgeSeconds } from '@/lib/auth/auth-time'
 import {
@@ -108,18 +108,31 @@ export async function POST(request: Request) {
 
       // A genuine wrong code: the reservation stays as the recorded failure.
       if (!isEnrolment) {
+        const locked = begin.failures >= AUTH_ATTEMPT_LIMIT.maxFailures
         try {
+          const actorName = await resolveActorName(service, user.id, user.user_metadata?.name || user.email!)
           await logAudit(service, {
             workspaceId: (await resolveActiveWorkspaceId(service, user.id)) || '',
-            actorId: user.id, actorEmail: user.email!,
-            actorName: await resolveActorName(service, user.id, user.user_metadata?.name || user.email!),
+            actorId: user.id, actorEmail: user.email!, actorName,
             eventType: 'security.mfa_challenge_failed', entityType: 'user', entityId: user.id, entityName: user.email!,
             metadata: {
               failures_in_window: begin.failures,
-              locked: begin.failures >= AUTH_ATTEMPT_LIMIT.maxFailures,
+              locked,
               window_seconds: AUTH_ATTEMPT_LIMIT.windowSeconds,
             },
           })
+          // FEATURE (deep audit, Auth+MFA section — feature gap): this used to
+          // stop at the audit row — visible only to whoever checks the log,
+          // if their role even has VIEW_AUDIT_LOG. The person being guessed
+          // at heard nothing. Fire once, exactly on the attempt that crosses
+          // the lockout threshold (see attempt-limit.ts) — not on every
+          // subsequent already-locked request, which never reaches this far.
+          if (locked) {
+            await notifySecurityEvent(service, user.id, 'Repeated failed sign-in attempts',
+              'Several wrong authenticator codes were entered in a row. Sign-in has been temporarily locked as a precaution.')
+            await sendAccountLockedEmail({ to: user.email!, name: actorName, context: 'mfa_code' })
+              .catch(e => console.error('Account-locked email failed (non-fatal):', e))
+          }
         } catch (e) { console.error('MFA failure audit log failed (non-fatal):', e) }
       }
       return NextResponse.json({ error: 'Incorrect code. Check your authenticator app and try again.', code: 'incorrect_code' }, { status: 400 })

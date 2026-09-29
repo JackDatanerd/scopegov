@@ -4,7 +4,8 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { createServerSupabaseClient, createServiceClient, createStatelessAuthClient } from '@/lib/supabase/server'
 import { userHasAnyMfaMandatoryMembership, resolveActiveWorkspaceId, resolveActorName } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
-import { sendPasswordChangedEmail } from '@/lib/email/templates'
+import { notifySecurityEvent } from '@/lib/utils/notify'
+import { sendPasswordChangedEmail, sendAccountLockedEmail } from '@/lib/email/templates'
 import { validatePassword } from '@/lib/auth/password-policy'
 import { decodeJwtPayload, authenticationAgeSeconds } from '@/lib/auth/auth-time'
 import {
@@ -75,14 +76,23 @@ export async function POST(request: NextRequest) {
           console.error('Password verification unavailable:', (verifyError as any).code, verifyError.message)
           return NextResponse.json({ error: 'We couldn\u2019t verify your password right now. Please try again.' }, { status: 502 })
         }
+        const locked = begin.failures >= AUTH_ATTEMPT_LIMIT.maxFailures
         try {
+          const actorName = await resolveActorName(service, user.id, user.user_metadata?.name || user.email!)
           await logAudit(service, {
             workspaceId: (await resolveActiveWorkspaceId(service, user.id)) || '',
-            actorId: user.id, actorEmail: user.email!,
-            actorName: await resolveActorName(service, user.id, user.user_metadata?.name || user.email!),
+            actorId: user.id, actorEmail: user.email!, actorName,
             eventType: 'security.password_verify_failed', entityType: 'user', entityId: user.id, entityName: user.email!,
-            metadata: { context: 'change_password', failures_in_window: begin.failures, locked: begin.failures >= AUTH_ATTEMPT_LIMIT.maxFailures, window_seconds: AUTH_ATTEMPT_LIMIT.windowSeconds },
+            metadata: { context: 'change_password', failures_in_window: begin.failures, locked, window_seconds: AUTH_ATTEMPT_LIMIT.windowSeconds },
           })
+          // FEATURE (deep audit, Auth+MFA section — feature gap): see
+          // mfa/verify's own comment — same gap, same fix.
+          if (locked) {
+            await notifySecurityEvent(service, user.id, 'Repeated failed sign-in attempts',
+              'Several wrong current-password attempts were entered in a row. This confirmation step has been temporarily locked as a precaution.')
+            await sendAccountLockedEmail({ to: user.email!, name: actorName, context: 'password' })
+              .catch(e => console.error('Account-locked email failed (non-fatal):', e))
+          }
         } catch (e) { console.error('Password verify-failure audit log failed (non-fatal):', e) }
         return NextResponse.json({ error: 'Current password is incorrect' }, { status: 401 })
       }

@@ -11,8 +11,44 @@ export const runtime = 'nodejs'
 
 import { NextResponse, type NextRequest } from 'next/server'
 import { createServerSupabaseClient, createServiceClient, createStatelessAuthClient } from '@/lib/supabase/server'
-import { beginAuthAttempt, releaseAuthAttempt, clearAuthFailures, lockedResponseBody } from '@/lib/auth/attempt-limit'
+import { beginAuthAttempt, releaseAuthAttempt, clearAuthFailures, lockedResponseBody, AUTH_ATTEMPT_LIMIT } from '@/lib/auth/attempt-limit'
 import { loadStepUpContext, recordStepUpGrant, STEP_UP_WINDOW_SECONDS } from '@/lib/auth/step-up'
+import { logAudit } from '@/lib/utils/audit'
+import { notifySecurityEvent } from '@/lib/utils/notify'
+import { resolveActiveWorkspaceId, resolveActorName } from '@/lib/auth/session'
+import { sendAccountLockedEmail } from '@/lib/email/templates'
+
+// FEATURE (deep audit, Auth+MFA section — feature gap): this route shares
+// attempt-limit.ts's per-user ledger with mfa/verify, mfa/recover and
+// change-password (its own doc comment lists all four), but — unlike
+// those three — never logged a failed attempt at all, so a step-up
+// confirmation that someone else is failing repeatedly left no audit
+// trail and, same gap as the other three, never told the account owner.
+// Shared by both branches below so the "once per lockout, not per guess"
+// firing point only needs to be right in one place.
+async function logStepUpFailure(
+  service: any,
+  user: { id: string; email?: string | null; user_metadata?: any },
+  method: 'totp' | 'password',
+  failures: number,
+): Promise<void> {
+  const locked = failures >= AUTH_ATTEMPT_LIMIT.maxFailures
+  try {
+    const actorName = await resolveActorName(service, user.id, user.user_metadata?.name || user.email || '')
+    await logAudit(service, {
+      workspaceId: (await resolveActiveWorkspaceId(service, user.id)) || '',
+      actorId: user.id, actorEmail: user.email || '', actorName,
+      eventType: 'security.step_up_failed', entityType: 'user', entityId: user.id, entityName: user.email || '',
+      metadata: { method, failures_in_window: failures, locked, window_seconds: AUTH_ATTEMPT_LIMIT.windowSeconds },
+    })
+    if (locked) {
+      await notifySecurityEvent(service, user.id, 'Repeated failed confirmation attempts',
+        `Several wrong ${method === 'totp' ? 'authenticator codes' : 'passwords'} were entered in a row while confirming a sensitive action. Confirmation has been temporarily locked as a precaution.`)
+      await sendAccountLockedEmail({ to: user.email || '', name: actorName, context: method === 'totp' ? 'mfa_code' : 'password' })
+        .catch(e => console.error('Account-locked email failed (non-fatal):', e))
+    }
+  } catch (e) { console.error('Step-up failure audit log failed (non-fatal):', e) }
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -60,6 +96,7 @@ export async function POST(request: NextRequest) {
             { status: locked ? 429 : 502 }
           )
         }
+        await logStepUpFailure(service, user, 'totp', begin.failures)
         return NextResponse.json({ error: 'Incorrect code. Check your authenticator app and try again.', code: 'incorrect_code' }, { status: 400 })
       }
       await clearAuthFailures(service, user.id, 'mfa_verify')
@@ -79,6 +116,7 @@ export async function POST(request: NextRequest) {
           await releaseAuthAttempt(service, begin.attemptId)
           return NextResponse.json({ error: 'We couldn\u2019t verify your password right now. Please try again.', code: 'verify_unavailable' }, { status: 502 })
         }
+        await logStepUpFailure(service, user, 'password', begin.failures)
         return NextResponse.json({ error: 'Incorrect password.', code: 'incorrect_password' }, { status: 400 })
       }
       await clearAuthFailures(service, user.id, 'password_verify')

@@ -5,7 +5,7 @@ import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/
 import { logAudit } from '@/lib/utils/audit'
 import { notifySecurityEvent } from '@/lib/utils/notify'
 import { backupCodeCandidateHashes } from '@/lib/utils/backup-codes'
-import { sendMfaDisabledEmail } from '@/lib/email/templates'
+import { sendMfaDisabledEmail, sendAccountLockedEmail } from '@/lib/email/templates'
 import { resolveActiveWorkspaceId, resolveActorName } from '@/lib/auth/session'
 import {
   beginAuthAttempt, releaseAuthAttempt, clearAuthFailures, lockedResponseBody, AUTH_ATTEMPT_LIMIT,
@@ -77,13 +77,23 @@ export async function POST(request: Request) {
     }
 
     if (!claimed) {
+      const locked = begin.failures >= AUTH_ATTEMPT_LIMIT.maxFailures
       try {
         await logAudit(service, {
           workspaceId: workspaceId || '',
           actorId: user.id, actorEmail: user.email!, actorName,
           eventType: 'security.mfa_recovery_failed', entityType: 'user', entityId: user.id, entityName: user.email!,
-          metadata: { failures_in_window: begin.failures, locked: begin.failures >= AUTH_ATTEMPT_LIMIT.maxFailures, window_seconds: AUTH_ATTEMPT_LIMIT.windowSeconds },
+          metadata: { failures_in_window: begin.failures, locked, window_seconds: AUTH_ATTEMPT_LIMIT.windowSeconds },
         })
+        // FEATURE (deep audit, Auth+MFA section — feature gap): see
+        // mfa/verify's own comment — same gap, same fix, same "once per
+        // lockout, not per guess" firing point.
+        if (locked) {
+          await notifySecurityEvent(service, user.id, 'Repeated failed sign-in attempts',
+            'Several wrong backup codes were entered in a row. Sign-in has been temporarily locked as a precaution.')
+          await sendAccountLockedEmail({ to: user.email!, name: actorName, context: 'backup_code' })
+            .catch(e => console.error('Account-locked email failed (non-fatal):', e))
+        }
       } catch (e) { console.error('MFA recovery-failure audit log failed (non-fatal):', e) }
       return NextResponse.json({ error: 'That backup code is invalid or has already been used.' }, { status: 400 })
     }

@@ -1,0 +1,118 @@
+ScopeGov — Auth + MFA: independent audit, round 4 (fresh pass, prior rounds'
+comments ignored on the way in)
+
+Scope this round: login/signup/forgot-reset-password, mfa-setup,
+mfa-challenge, api/auth/mfa/*, api/auth/callback, api/auth/signout,
+middleware.ts, lib/auth — audited standalone, as if no other section existed.
+
+RESULT OF THE FRESH PASS
+  - No bugs found. Went through middleware's full gate ordering (aal2-challenge
+    vs. auth-route bounce vs. onboarding vs. mandatory-enrolment), the atomic
+    attempt ledger, backup-code claiming, step-up freshness windows, cookie
+    domain scoping across all three Supabase clients, and the fallback-
+    workspace resolution now shared by getSession()/middleware_gate_state()/
+    resolveActiveWorkspaceId() (confirmed migration 074 already carries the
+    "prefer a completed workspace" fix into middleware_gate_state() — an
+    earlier-looking mismatch against 064 in isolation turned out to already be
+    fixed there). Nothing in this section needed a bugfix this round.
+  - One feature gap found and built (below).
+  - One no-op cosmetic fix: a stale migration-number reference in a comment.
+
+FEATURE GAP — BUILT
+  Repeated failed authentication attempts told nobody but the audit log.
+  Every OTHER security-relevant event in this section already sends the
+  account owner BOTH an email and an in-app notification: new-device sign-in
+  (session-seen.ts), password changed, MFA enabled/disabled, backup codes
+  regenerated, sign-in email change requested. Five wrong authenticator
+  codes, five wrong backup codes, or five wrong current-password/step-up
+  attempts in a row — arguably the single clearest signal of an actual
+  account-takeover attempt in progress — logged an audit_log row
+  (`security.mfa_challenge_failed` / `mfa_recovery_failed` /
+  `password_verify_failed`, with a `locked: true` flag once the 5-in-5-minute
+  threshold in lib/auth/attempt-limit.ts trips) and stopped there. The person
+  being guessed at found out only if they personally hold VIEW_AUDIT_LOG and
+  went looking — everyone else found out only if the attacker eventually
+  succeeded. Checked every send* export in lib/email/templates.ts and every
+  cron job for anything that already surfaced this: nothing did.
+
+  A second, adjacent gap surfaced while wiring this up: POST /api/auth/step-up
+  shares the exact same per-user attempt ledger as mfa/verify, mfa/recover and
+  change-password (its own header comment lists all four routes) but — unlike
+  those three — never logged a failed attempt AT ALL. A step-up confirmation
+  being guessed at left literally no trace anywhere, audit log included.
+  Fixed alongside the main gap rather than left half-done, since the whole
+  point of this feature is "the person finds out" and step-up is one of the
+  four throttled flows by design.
+
+  Built:
+    - lib/email/templates.ts: new sendAccountLockedEmail({ to, name, context })
+      — context is 'mfa_code' | 'backup_code' | 'password', reusing the same
+      baseTemplate/escapeHtml/deliver plumbing every other security email in
+      this file already uses. Same red header treatment as
+      sendMfaDisabledEmail/sendPasswordChangedEmail.
+    - app/api/auth/mfa/verify/route.ts: on the attempt that crosses the
+      lockout threshold (not on every failed guess, and never on a request
+      that's already locked — those never reach this far), fires
+      notifySecurityEvent (in-app, every active workspace) +
+      sendAccountLockedEmail(context: 'mfa_code').
+    - app/api/auth/mfa/recover/route.ts: same, context: 'backup_code', on the
+      wrong-backup-code path.
+    - app/api/auth/change-password/route.ts: same, context: 'password', on
+      the wrong-current-password path.
+    - app/api/auth/step-up/route.ts: added the audit-log write this route was
+      missing entirely (new event type `security.step_up_failed`, metadata
+      `{ method, failures_in_window, locked, window_seconds }` — same shape
+      as its three siblings), plus the same lockout notification, for both
+      the TOTP and password confirmation branches. Factored into one
+      `logStepUpFailure()` helper shared by both branches so the "once per
+      lockout" firing point only has to be right in one place.
+    - lib/auth/login-audit.ts: no behavior change — the header comment cited
+      migration 066 (workspace_defaults_one_global_row.sql, unrelated) for
+      the auth.sessions sign-in trigger; every other file in this section
+      correctly cites migration 068, which is the one that actually creates
+      it. Corrected the comment only.
+
+  No new tables, no migration — this is pure application code, entirely
+  built on the audit_log / notifications / email infrastructure every
+  sibling security event in this section already uses
+  (logAudit, notifySecurityEvent, checked-non-fatal email sends).
+
+  Deliberately NOT done: no change to the actual lockout behavior or
+  durations — this only makes an existing, correct lockout visible to the
+  person it protects. Also deliberately one email per lockout WINDOW, not
+  per failed guess: firing only on the attempt whose `begin.failures` first
+  reaches AUTH_ATTEMPT_LIMIT.maxFailures means a fresh burst of guesses that
+  re-trips the same lock after the window rolls over gets a fresh email (as
+  it should — that's a new attack window), while the four requests that get
+  rejected at the reservation stage in between (beginAuthAttempt returning
+  allowed:false before the credential is even checked) never call this path
+  at all, so there's no risk of spamming the inbox.
+
+FILES
+  Modified: lib/email/templates.ts, app/api/auth/mfa/verify/route.ts,
+            app/api/auth/mfa/recover/route.ts,
+            app/api/auth/change-password/route.ts,
+            app/api/auth/step-up/route.ts, lib/auth/login-audit.ts
+
+VERIFIED
+  - Manual re-read of all four call sites against lib/auth/attempt-limit.ts's
+    actual `failures` semantics ("failures in the window INCLUDING this
+    reservation, when allowed") to confirm the `locked` check fires exactly
+    once per lockout and never on an already-locked request.
+  - Confirmed no existing test imports or mocks any of the four route
+    handlers' internals in a way this touches (tests/step-up.test.ts only
+    exercises the pure lib/auth/step-up.ts functions, not the route handler;
+    tests/middleware-gate.test.ts references these paths only as strings for
+    its own gating assertions).
+  - npm/tsc/vitest could not be run in this environment (no network access to
+    install dependencies) — please run the usual `npx tsc --noEmit` and
+    `npx vitest run` before merging, same as every prior round's changelog
+    asks.
+
+NOT DONE / KNOWN LIMITS (unchanged from round 3)
+  - The "trusted device" / remember-me-for-30-days feature gap remains a
+    deliberate product decision, not built.
+  - hook_password_verification_attempt (the GoTrue-level password lockout)
+    still needs the Supabase Team/Enterprise plan to enable — on a lower
+    plan, password sign-in throttling is GoTrue's own IP-based limiter only,
+    same limitation as every prior round has documented (README §1.3).
