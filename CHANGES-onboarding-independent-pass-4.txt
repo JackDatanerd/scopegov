@@ -1,0 +1,17 @@
+Onboarding (section 4) — independent pass 4
+Files: app/onboarding/page.tsx, tests/onboarding-independent-pass-4.test.ts
+
+G1  (feature gap) Waiting screen offered only "Leave this workspace" / "Sign out". Invite accept always
+    repoints active_workspace_id at the invited workspace, so someone who already had a finished
+    workspace could be locked out of it until the inviter finished onboarding. The screen now lists
+    the user's already-onboarded workspaces (via /api/workspace/list) and switches with the existing
+    switchToWorkspace().
+B1  Skip (step 1) and Back (steps 1-3) never cleared `error`, so stale banners (failed logo upload,
+    failed invite) carried onto other steps. A step change now clears it.
+B2  Step 4 always claimed the user "will be asked to set up two-factor authentication". The middleware
+    only forces enrolment when there is no verified factor. Notice now shown only when
+    getAuthenticatorAssuranceLevel().nextLevel === 'aal1' (or the lookup fails).
+B3  The progress-saving effect called supabase.auth.getUser() on every keystroke (network call, results
+    could resolve out of order). The user id is captured once at mount in a ref; the write is synchronous.
+B4  A failed invite email was forgotten when a later invite sent fine (state overwritten). Failed
+    addresses now accumulate and step 4 lists them all.

@@ -164,7 +164,10 @@ function OnboardingWizard() {
   // FIX (fresh independent audit, section 4): POST /api/team/invite can succeed (ok: true) with
   // `emailFailed: true` — the invite row exists but the email never went out. Step 3 ignored the
   // flag and advanced as if it had sent. Carried to step 4 so it can say so.
-  const [inviteNotice, setInviteNotice] = useState('')
+  // FIX (Onboarding independent pass 4 — B4): was a single string overwritten on every invite,
+  // so a failed email for the first invite was forgotten as soon as a second one sent fine.
+  // Keeps every address whose email failed instead.
+  const [inviteFailedEmails, setInviteFailedEmails] = useState<string[]>([])
   // FIX (fresh independent audit, section 4 — feature gap): the governing law that is actually
   // SAVED on the workspace (server value on resume, or what submitDefaults last saved) — not
   // whatever is currently typed in the field, which "Skip" leaves unsaved. SOW generation
@@ -197,6 +200,17 @@ function OnboardingWizard() {
   // "switch to an existing workspace" and "discard this one."
   const [otherWorkspaces, setOtherWorkspaces] = useState<Array<{ id: string; agencyName: string; name: string; onboardingComplete?: boolean }>>([])
   const [showExit, setShowExit] = useState(false)
+  // FIX (Onboarding independent pass 4 — G1): workspaces this user has already finished setting up,
+  // offered on the 'waiting' screen so an invite to a not-yet-onboarded workspace can't lock them
+  // out of their own working one (team/invite accept always repoints active_workspace_id at the
+  // invited workspace, and the (app) layout then bounces them here).
+  const [waitingOthers, setWaitingOthers] = useState<Array<{ id: string; agencyName: string; name: string }>>([])
+  // FIX (Onboarding independent pass 4 — B2): null = not known yet, false = no verified factor
+  // (the middleware will force enrolment), true = already enrolled (no detour).
+  const [mfaEnrolled, setMfaEnrolled] = useState<boolean | null>(null)
+  // FIX (Onboarding independent pass 4 — B3): the signed-in user's id, captured once at mount so
+  // the progress-saving effect doesn't need a getUser() round trip on every keystroke.
+  const userIdRef = useRef<string | null>(null)
 
   // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — critical):
   // extracted so the resume path (mount effect) and its retry button (the
@@ -220,6 +234,7 @@ function OnboardingWizard() {
   useEffect(() => {
     supabase.auth.getUser().then(async ({ data: { user } }) => {
       if (!user) { router.push('/login'); return }
+      userIdRef.current = user.id
 
       // FIX (Onboarding independent pass 3 — B2): submitIdentity() strips ?new=1 from the URL once
       // the workspace exists, which changes explicitNew and re-runs this effect. The wizard is
@@ -288,7 +303,7 @@ function OnboardingWizard() {
         setInviteRoles([])
         setTrialConflict(false)
         setTrialConflictWorkspaceId(null)
-        setInviteNotice('')
+        setInviteFailedEmails([])
         setSavedGoverningLaw('')
         setError('')
         setShowExit(false)
@@ -473,18 +488,56 @@ function OnboardingWizard() {
   // restore runs).
   useEffect(() => {
     if (!restored || !workspaceId) return
-    supabase.auth.getUser().then(({ data: { user } }) => {
-      if (!user) return
-      // localStorage can throw (Safari private mode, storage disabled/full); every other access
-      // to it in this file is already guarded, and progress persistence is best-effort.
-      try {
-        localStorage.setItem(STORAGE_KEY_PREFIX + user.id, JSON.stringify({
-          step, workspaceId, agencyName, industry, currency, timezone,
-          brandColour, revisionRounds, paymentStructure, governingLaw, sowLanguage,
-        }))
-      } catch { /* best-effort */ }
-    })
+    // FIX (Onboarding independent pass 4 — B3): this used to await supabase.auth.getUser() (a network
+    // call) on every keystroke in the agency-name / colour / governing-law fields, and the responses
+    // could resolve out of order and leave an older snapshot in storage. The id is captured once at
+    // mount instead, so the write below is synchronous and always the latest state.
+    const uid = userIdRef.current
+    if (!uid) return
+    // localStorage can throw (Safari private mode, storage disabled/full); every other access
+    // to it in this file is already guarded, and progress persistence is best-effort.
+    try {
+      localStorage.setItem(STORAGE_KEY_PREFIX + uid, JSON.stringify({
+        step, workspaceId, agencyName, industry, currency, timezone,
+        brandColour, revisionRounds, paymentStructure, governingLaw, sowLanguage,
+      }))
+    } catch { /* best-effort */ }
   }, [restored, step, workspaceId, agencyName, industry, currency, timezone, brandColour, revisionRounds, paymentStructure, governingLaw, sowLanguage])
+
+  // FIX (Onboarding independent pass 4 — B1): Skip on step 1 and Back on steps 1-3 never cleared
+  // `error`, so a failed logo upload ("you can add it later") or a failed invite followed by Back
+  // carried its red banner onto a step it has nothing to do with. A step change always starts clean.
+  useEffect(() => { setError('') }, [step])
+
+  // FIX (Onboarding independent pass 4 — B2): the step-4 notice said everyone "will be asked to set
+  // up two-factor authentication", but the middleware only forces enrolment when the account has no
+  // verified factor. Ask the auth server, and only show the notice when it is actually true. If the
+  // lookup fails, keep the old (conservative) notice.
+  useEffect(() => {
+    if (step !== 4 || gate !== 'create') return
+    let cancelled = false
+    supabase.auth.mfa.getAuthenticatorAssuranceLevel()
+      .then(({ data, error: aalErr }) => {
+        if (cancelled) return
+        setMfaEnrolled(aalErr || !data ? false : data.nextLevel !== 'aal1')
+      })
+      .catch(() => { if (!cancelled) setMfaEnrolled(false) })
+    return () => { cancelled = true }
+  }, [step, gate])
+
+  // FIX (Onboarding independent pass 4 — G1): see waitingOthers above.
+  useEffect(() => {
+    if (gate !== 'waiting' || !waitingFor?.workspaceId) return
+    let cancelled = false
+    fetch('/api/workspace/list')
+      .then(r => r.json())
+      .then(json => {
+        if (cancelled || !Array.isArray(json.workspaces)) return
+        setWaitingOthers(json.workspaces.filter((w: any) => w.id !== waitingFor.workspaceId && w.onboardingComplete))
+      })
+      .catch(() => { /* non-critical — the screen just won't offer a switch target */ })
+    return () => { cancelled = true }
+  }, [gate, waitingFor?.workspaceId])
 
   function clearSavedProgress() {
     supabase.auth.getUser().then(({ data: { user } }) => {
@@ -927,9 +980,12 @@ function OnboardingWizard() {
         // handles this flag). Retrying here would just 409 "already pending", so don't block —
         // carry the fact to step 4. Clear the field so going Back and pressing Continue again
         // doesn't re-submit the same (now pending) address.
-        setInviteNotice(json.emailFailed
-          ? `The invite for ${inviteEmail.trim()} was created, but the email couldn\u2019t be sent. Open Team \u2192 Pending invites to copy the link or resend it.`
-          : '')
+        // FIX (Onboarding independent pass 4 — B4): accumulate instead of overwrite, so a failed
+        // email isn't forgotten when a later invite sends fine.
+        if (json.emailFailed) {
+          const failed = inviteEmail.trim()
+          setInviteFailedEmails(prev => prev.includes(failed) ? prev : [...prev, failed])
+        }
         setInviteEmail('')
       } catch {
         // FIX (fresh independent audit, Workspace lifecycle + Onboarding):
@@ -1127,6 +1183,21 @@ function OnboardingWizard() {
             you&rsquo;ll get full access automatically — no need to do anything here.
           </p>
           {error && <div className="auth-error" style={{ marginBottom: 12 }}>{error}</div>}
+          {/* FIX (Onboarding independent pass 4 — G1): see waitingOthers. Without this, a person who
+              already has a finished workspace but accepted an invite into one that isn't set up yet
+              could reach nothing but "Leave" or "Sign out" from here. */}
+          {waitingOthers.length > 0 && (
+            <div style={{ maxWidth: 280, margin: '0 auto 16px', textAlign: 'left' }}>
+              <p style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 6 }}>Or keep working in a workspace you already set up:</p>
+              {waitingOthers.map(w => (
+                <button key={w.id} type="button" className="btn btn-ghost btn-sm"
+                  style={{ display: 'block', width: '100%', textAlign: 'left', marginBottom: 4 }}
+                  disabled={loading || leavingWait} onClick={() => switchToWorkspace(w.id)}>
+                  {w.agencyName || w.name}
+                </button>
+              ))}
+            </div>
+          )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 280, margin: '0 auto' }}>
             {/* FIX (deep audit, Workspace lifecycle + Onboarding re-pass —
                 feature gap): see leaveWaitingWorkspace()'s own comment —
@@ -1515,15 +1586,20 @@ function OnboardingWizard() {
                 MFA-mandatory and has no factor yet, so the very next thing after either button
                 below is a forced detour to /mfa-setup — this said nothing about it, and it landed
                 as a surprise. */}
-            <p style={{ fontSize: 12, color: 'var(--text-3)', textAlign: 'center', marginBottom: 16 }}>
-              <i className="ti ti-shield-lock" style={{ fontSize: 12, marginRight: 4 }} />
-              One more step first: you&rsquo;ll be asked to set up two-factor authentication, required for this role.
-            </p>
-            {/* FIX (fresh independent audit, section 4): see inviteNotice on submitInvite(). */}
-            {inviteNotice && (
+            {mfaEnrolled === false && (
+              <p style={{ fontSize: 12, color: 'var(--text-3)', textAlign: 'center', marginBottom: 16 }}>
+                <i className="ti ti-shield-lock" style={{ fontSize: 12, marginRight: 4 }} />
+                One more step first: you&rsquo;ll be asked to set up two-factor authentication, required for this role.
+              </p>
+            )}
+            {/* FIX (fresh independent audit, section 4): see inviteFailedEmails on submitInvite(). */}
+            {inviteFailedEmails.length > 0 && (
               <p style={{ fontSize: 12, color: 'var(--amber, #B45309)', textAlign: 'center', marginBottom: 16, maxWidth: 320, marginLeft: 'auto', marginRight: 'auto' }}>
                 <i className="ti ti-alert-triangle" style={{ fontSize: 12, marginRight: 4 }} />
-                {inviteNotice}
+                {inviteFailedEmails.length === 1
+                  ? `The invite for ${inviteFailedEmails[0]} was created, but the email couldn\u2019t be sent.`
+                  : `The invites for ${inviteFailedEmails.join(', ')} were created, but their emails couldn\u2019t be sent.`}
+                {' '}Open Team \u2192 Pending invites to copy the link or resend it.
               </p>
             )}
             {/* FIX (fresh independent audit, section 4 — feature gap): see savedGoverningLaw and
