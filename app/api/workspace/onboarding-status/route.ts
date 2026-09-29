@@ -40,6 +40,7 @@
 import { createServiceClient, createServerSupabaseClient } from '@/lib/supabase/server'
 import { pickFallbackMembership } from '@/lib/auth/session'
 import { NextResponse } from 'next/server'
+import { DEFAULT_TIMEZONE } from '@/lib/constants/workspace-options'
 
 async function buildResumePayload(service: any, w: any) {
   // FIX (round 3, Onboarding Finding 2 — severe): this response used to
@@ -67,7 +68,7 @@ async function buildResumePayload(service: any, w: any) {
     agencyName: w.agency_name || w.name || '',
     industry: w.industry || '',
     currency: w.currency || 'USD',
-    timezone: w.timezone || 'America/New_York',
+    timezone: w.timezone || DEFAULT_TIMEZONE,
     brandColour: w.brand_colour || null,
     logoStoragePath: w.logo_storage_path || null,
     governingLaw: w.governing_law || '',

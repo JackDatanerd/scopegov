@@ -38,15 +38,16 @@ export const SOW_LANGUAGES = [
 ] as const
 
 export const TIMEZONES = [
-  'Africa/Nairobi', 'Africa/Lagos', 'Africa/Accra', 'Africa/Johannesburg', 'Africa/Cairo',
+  'UTC', 'Africa/Nairobi', 'Africa/Lagos', 'Africa/Accra', 'Africa/Johannesburg', 'Africa/Cairo',
   'Europe/London', 'Europe/Paris', 'America/New_York', 'America/Los_Angeles',
   'Asia/Dubai', 'Asia/Kolkata', 'Australia/Sydney',
 ] as const
 
 // FIX (Onboarding independent audit): the wizard hardcoded 'America/New_York' as its
-// starting timezone while this list leads with Africa/Nairobi and workspace/create's own
-// fallback (no timezone sent) is Africa/Nairobi too — three places, two answers, so anyone
-// who didn't touch the dropdown got US Eastern time. One constant, read by the wizard's
-// initial state, its ?new=1 reset, and the create route's fallback, so they can't drift.
-export const DEFAULT_TIMEZONE: typeof TIMEZONES[number] = TIMEZONES[0]
+// starting timezone while workspace/create's own fallback (no timezone sent) and the DB column
+// default were Africa/Nairobi — several places, several answers. Every default is UTC now
+// (the same zone resolveTimeZone() falls back to), held in one constant read by the wizard's
+// initial state, its ?new=1 reset, the resume payload fallback and the create route fallback.
+// UTC is listed first so the dropdown's first option is the value it starts on.
+export const DEFAULT_TIMEZONE: typeof TIMEZONES[number] = 'UTC'
 export const DEFAULT_CURRENCY: typeof CURRENCIES[number] = CURRENCIES[0]

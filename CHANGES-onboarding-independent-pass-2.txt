@@ -1,0 +1,5 @@
+Onboarding (section 4) - default timezone is UTC everywhere
+- TIMEZONES now leads with 'UTC'; DEFAULT_TIMEZONE = 'UTC' (lib/constants/workspace-options.ts).
+- onboarding-status resume payload fallback was 'America/New_York' -> DEFAULT_TIMEZONE (a third, separate mismatch).
+- Migration 107: workspaces.timezone column default 'Africa/Nairobi' -> 'UTC' (future inserts only).
+- tests/onboarding-defaults.test.ts updated.
