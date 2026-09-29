@@ -1,0 +1,46 @@
+PORTFOLIO (section 8) — independent deep-audit fix round
+File: components/portfolio/PortfolioDashboard.tsx
+
+Fresh independent audit (comments from prior rounds disregarded while
+reading, checked only afterward). No feature gaps found. One bug found
+and fixed below.
+
+------------------------------------------------------------------------------
+BUG — TrendChart date labels off by one day in any browser timezone behind UTC
+------------------------------------------------------------------------------
+File: components/portfolio/PortfolioDashboard.tsx (TrendChart)
+
+data.history[].date is a plain calendar day (YYYY-MM-DD, no time —
+scope_health_snapshots.snapshot_date). TrendChart's axis labels (chart
+start/end date) and its hover tooltip date both formatted this value with
+the shared formatDate() and no options. formatDate() parses a date-only
+string as UTC midnight but formats it with no `timeZone` override, so it
+renders in whatever timezone the runtime defaults to — client-side, the
+viewer's browser timezone. Any viewer in a zone behind UTC (all of the
+Americas) saw every chart date shifted back one calendar day.
+
+This is the exact bug class already fixed everywhere else this same kind
+of value appears in the codebase, including in this feature's own sibling
+file: lib/pdf/portfolio-report.tsx has a dedicated fmtSnapshotDate()
+specifically for this reason ("Snapshot dates are plain calendar days
+... format them as-is. Running them through a zone conversion would shift
+them by a day in any zone behind UTC."), pinning timeZone: 'UTC'. The same
+guard already exists in lib/email/templates.ts, api/billing/cancel/route.ts,
+api/cron/retainer-milestones/route.ts and lib/utils/viewed.ts. The chart
+was the one place in this feature carrying the same data type that never
+got the same treatment.
+
+Secondary consequence: since PortfolioDashboard is a Client Component that
+can be server-rendered once before hydration, and server runtimes are
+commonly pinned to UTC while browsers aren't, the mismatched output could
+also produce a React hydration warning for affected users, not just a
+cosmetic date error.
+
+Fix: added a local fmtSnapshotDate() helper (mirroring the PDF's own),
+formatDate(day, { day: 'numeric', month: 'short', year: 'numeric',
+timeZone: 'UTC' }), and switched all three TrendChart call sites (the two
+axis-label spans and the hover-tooltip date line) from the bare
+formatDate() to it. No other call site in this file uses formatDate() on a
+calendar-only value — every other formatDate() usage elsewhere in the app
+is either a full timestamp (fine as-is) or already goes through a
+UTC-pinned wrapper.

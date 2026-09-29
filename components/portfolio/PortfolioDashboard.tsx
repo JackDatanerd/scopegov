@@ -468,6 +468,19 @@ function sampleForChart<T>(rows: T[], max: number): T[] {
   return out
 }
 
+// FIX (Portfolio deep audit, section 8): history[].date is a plain calendar
+// day (YYYY-MM-DD, no time — scope_health_snapshots.snapshot_date). The
+// shared formatDate() parses that as UTC midnight but then formats it with
+// no `timeZone` override, so it renders in the browser's local zone — any
+// viewer west of UTC sees every axis label and hover-tooltip date shifted
+// back one day. lib/pdf/portfolio-report.tsx already solved this exact
+// problem for the exact same data (see its fmtSnapshotDate: "format them
+// as-is... a zone conversion would shift them by a day in any zone behind
+// UTC") — this chart just never got the same treatment. Pin UTC here too.
+function fmtSnapshotDate(day: string): string {
+  return formatDate(day, { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })
+}
+
 function TrendChart({ points: allPoints, mode, currency, hasSnapshots }: { points: HistoryPoint[]; mode: 'risk' | 'flags'; currency: string; hasSnapshots: boolean }) {
   const [hover, setHover] = useState<number | null>(null)
   const W = 640, H = 180, PAD = 8, PADL = 46 // left gutter for the y-axis labels
@@ -547,15 +560,15 @@ function TrendChart({ points: allPoints, mode, currency, hasSnapshots }: { point
         )}
       </svg>
       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10.5, color: 'var(--text-4)', marginTop: 2, paddingLeft: `${(PADL / W) * 100}%` }}>
-        <span>{formatDate(points[0].date)}</span>
-        <span>{formatDate(points[points.length - 1].date)}</span>
+        <span>{fmtSnapshotDate(points[0].date)}</span>
+        <span>{fmtSnapshotDate(points[points.length - 1].date)}</span>
       </div>
       {hover !== null && (
         <div style={{
           position: 'absolute', top: 4, left: 4, background: 'var(--surface)', border: '1px solid var(--border)',
           borderRadius: 'var(--radius-sm)', padding: '6px 10px', fontSize: 11.5, boxShadow: '0 4px 12px rgba(0,0,0,.08)',
         }}>
-          <div style={{ color: 'var(--text-3)', marginBottom: 2 }}>{formatDate(points[hover].date)}</div>
+          <div style={{ color: 'var(--text-3)', marginBottom: 2 }}>{fmtSnapshotDate(points[hover].date)}</div>
           <div style={{ fontWeight: 600, color: 'var(--text-1)' }}>
             {mode === 'risk'
               ? formatCurrency(points[hover].contractValueAtRisk ?? 0, currency, true)
