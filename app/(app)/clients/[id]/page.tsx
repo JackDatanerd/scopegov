@@ -23,11 +23,20 @@ export default async function ClientDetailPage({ params }: Props) {
   const canViewClientData = hasPermission(session, 'VIEW_CLIENT_DATA')
   const canViewFinancials = hasPermission(session, 'VIEW_FINANCIALS')
 
-  const { data: client } = await (service as any)
+  // FIX (independent pass, section 14 re-audit — flagship finding): this used to destructure only
+  // `{ data: client }` — a read failure (a DB blip, a dropped connection) comes back as `{ data: null,
+  // error: {...} }`, indistinguishable from "no such client" once `error` is thrown away. That fell
+  // straight into `if (!client) notFound()`, so an outage 404'd a client that still exists — exactly
+  // the risk class this page's OWN money-summary section, and the sibling list page/route, were
+  // already fixed to avoid ("an outage rendered as an empty list… which invites creating
+  // duplicates"). A read failure now throws to Next's error boundary instead of masquerading as
+  // "this client doesn't exist."
+  const { data: client, error: clientErr } = await (service as any)
     .from('clients')
     .select('*')
     .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
+  if (clientErr && clientErr.code !== 'PGRST116') throw new Error(clientErr.message)
   if (!client) notFound()
 
   // FIX (re-audit, cosmetic-gate finding): select('*') shipped email,
@@ -65,14 +74,25 @@ export default async function ClientDetailPage({ params }: Props) {
   // client_contacts has existed in the schema since day one and is only
   // now getting a read/write surface. Same visibility gate as every other
   // contact-visibility field on this page (email/phone/cc_emails above).
-  const { data: contacts = [] } = canViewClientData
+  //
+  // FIX (independent pass, section 14 re-audit): this, and the three reads below it (project
+  // membership, this client's projects, and the total-project count for the Danger Zone), all used
+  // to destructure only `{ data }` — a read failure came back indistinguishable from "there is
+  // none," the same risk class just fixed above for the client record itself. A failed contacts read
+  // silently showed "no named contacts"; a failed projects read silently showed "No projects yet" on
+  // a client that has some; a failed project-membership read silently hid every project from a
+  // limited-access viewer; a failed count read could make the Delete button in the Danger Zone look
+  // available (DELETE /api/clients/[id] re-checks and still refuses safely, but the button itself
+  // would be lying). All four now throw on a real error instead of rendering as empty.
+  const { data: contacts = [], error: contactsErr } = canViewClientData
     ? await (service as any)
         .from('client_contacts')
         .select('id,name,email,role,role_type,is_primary,created_at')
         .eq('client_id', id)
         .order('is_primary', { ascending: false })
         .order('created_at', { ascending: true })
-    : { data: [] }
+    : { data: [], error: null }
+  if (contactsErr) throw new Error(contactsErr.message)
 
   // FIX (deep audit, section 14 — flagship finding): same project-
   // visibility gap as the clients list page — see that page's comment for
@@ -83,18 +103,20 @@ export default async function ClientDetailPage({ params }: Props) {
   const canViewAllProjects = hasPermission(session, 'VIEW_ALL_PROJECTS')
   let accessibleProjectIds: Set<string> | null = null
   if (!canViewAllProjects) {
-    const { data: ids } = await (service as any)
+    const { data: ids, error: idsErr } = await (service as any)
       .from('project_members')
       .select('project_id, workspace_members!inner(user_id)')
       .eq('workspace_members.user_id', session.id)
+    if (idsErr) throw new Error(idsErr.message)
     accessibleProjectIds = new Set((ids || []).map((r: { project_id: string }) => r.project_id))
   }
 
-  const { data: projectsAll = [] } = await (service as any)
+  const { data: projectsAll = [], error: projectsErr } = await (service as any)
     .from('projects')
     .select('id,name,disc,type,status,contract_value,currency,retainer_duration_months,created_at,guardian_flags(status),change_orders(status),sow_documents(status)')
     .eq('client_id', id).eq('workspace_id', session.workspaceId).is('deleted_at', null)
     .order('created_at', { ascending: false })
+  if (projectsErr) throw new Error(projectsErr.message)
 
   const projectsRaw = canViewAllProjects
     ? (projectsAll || [])
@@ -244,10 +266,17 @@ export default async function ClientDetailPage({ params }: Props) {
   // whose only projects were soft-deleted showed the button as available, and clicking it always
   // 409'd with no way to see what was blocking it. Count all projects here (unfiltered by
   // deleted_at) so the UI can match the API's real eligibility check.
-  const { count: totalProjectCount } = canDeleteClients
+  // FIX (independent pass, section 14 re-audit): see the contacts/projects/project-membership
+  // reads above — this had the same gap. A failed count came back as `count: null`, and
+  // `totalProjectCount || 0` below then read as "zero projects," which could make the Delete
+  // button in the Danger Zone appear available on a client that still has projects (DELETE
+  // /api/clients/[id] re-checks and refuses safely — no data loss — but the button would be lying
+  // about why, surfacing a bare 500 instead of the real 409 explanation).
+  const { count: totalProjectCount, error: totalProjectCountErr } = canDeleteClients
     ? await (service as any).from('projects').select('id', { count: 'exact', head: true })
         .eq('workspace_id', session.workspaceId).eq('client_id', id)
-    : { count: 0 }
+    : { count: 0, error: null }
+  if (totalProjectCountErr) throw new Error(totalProjectCountErr.message)
 
   function pillVariant(status: string): string {
     const m: Record<string, string> = {

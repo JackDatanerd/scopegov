@@ -1,0 +1,27 @@
+CHANGES — Section 14 (Clients), independent pass 4
+
+Bug 1 — client detail page treated failed reads as "nothing here"
+  app/(app)/clients/[id]/page.tsx
+  * The client row read discarded `error`, so a DB blip fell into `if (!client) notFound()` and 404'd
+    a client that still exists. Now: throws unless the error is PGRST116 (genuine "no rows").
+  * Same gap closed for the contacts, project_members, projects, and total-project-count reads
+    (each silently rendered as empty / "0 projects" / Delete-looks-available on a read failure).
+    All now throw to the error boundary.
+
+Bug 2 — PATCH /api/clients/[id] email-change duplicate check was a racy select-then-update
+  supabase/migrations/108_update_client_checked.sql  (NEW)
+  app/api/clients/[id]/route.ts
+  * Same TOCTOU shape 088 closed for create_client, never extended to the edit path. Workspaces
+    without clients_workspace_email_lower (077) could end up with case-variant duplicate emails
+    from two concurrent edits.
+  * New RPC update_client_checked(p_client_id, p_workspace_id, p_patch jsonb): takes the same
+    advisory lock as create_client on (workspace_id, lower(email)), checks for a duplicate, and
+    performs the write in one transaction. Route now calls it; RPC conflict -> 409 with
+    existingClientId; 23505 still handled as a last resort. Cleared billing_address stored as SQL NULL.
+  * Removed the now-unused escapeLike import from the route.
+
+Tests
+  tests/client-update-route.test.ts (NEW) — RPC-backed PATCH path, conflict -> 409, permission gates, 404.
+
+DEPLOY NOTE: apply migration 108 BEFORE (or together with) deploying the route change — the route
+now depends on the update_client_checked function existing.

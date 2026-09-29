@@ -18,9 +18,6 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { parseClientInput } from '@/lib/utils/client-input'
-// FIX (independent pass round 2, section 14): this route's own local escapeLike() was broken
-// (see lib/utils/escape-like.ts for the full story) — imported instead of re-typed.
-import { escapeLike } from '@/lib/utils/escape-like'
 
 // Free-text fields whose VALUE is not copied into the audit trail (only "changed").
 const AUDIT_REDACT = new Set(['notes'])
@@ -68,11 +65,6 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // Email changes go through the same duplicate check as creation (case-insensitive).
     const emailChanged = typeof updates.email === 'string' && updates.email !== String(existing.email || '').toLowerCase()
     if (emailChanged) {
-      const { data: dupe } = await (service as any)
-        .from('clients').select('id').eq('workspace_id', session.workspaceId)
-        .ilike('email', escapeLike(updates.email as string)).neq('id', id).limit(1).maybeSingle()
-      if (dupe) return NextResponse.json({ error: 'A client with this email already exists', existingClientId: dupe.id }, { status: 409 })
-
       // The new primary must not also sit in the CC list, and a corrected address gets a clean
       // delivery-health slate (the bounce marker belonged to the OLD address).
       if (updates.cc_emails === undefined && Array.isArray(existing.cc_emails)) {
@@ -83,11 +75,27 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       updates.email_bounce_kind = null
     }
 
-    const { error } = await (service as any)
-      .from('clients').update(updates).eq('id', id).eq('workspace_id', session.workspaceId)
+    // FIX (independent pass, section 14 re-audit — flagship finding): this used to be a plain
+    // select-then-update — an `ilike` pre-check for a duplicate email, then a SEPARATE `.update()`
+    // call. That's the exact TOCTOU shape migration 088's own comment identifies and closes for
+    // client CREATION via an advisory-locked RPC (create_client) — a fix that was never extended to
+    // this edit path, which writes the same column under the same invariant. For any workspace
+    // where clients_workspace_email_lower (077) doesn't exist (one that had a case-variant
+    // duplicate email when 077 ran and was never cleaned up), two concurrent edits changing two
+    // different clients' emails to case-variants of the same address could both pass this route's
+    // own pre-check and both commit — silently reintroducing the exact duplicate condition the
+    // whole 077→088 lineage exists to prevent. update_client_checked (108) does the duplicate check
+    // AND the write inside one transaction, under the same advisory lock create_client already uses.
+    const { data: result, error } = await (service as any).rpc('update_client_checked', {
+      p_client_id: id, p_workspace_id: session.workspaceId, p_patch: updates,
+    })
+    // Belt-and-braces: the DB's own UNIQUE constraint still exists as a last resort (e.g. a schema
+    // rollback that predates 108) — surface it the same clean way as the RPC's own dup result.
     if (error?.code === '23505')
       return NextResponse.json({ error: 'A client with this email already exists' }, { status: 409 })
     if (error) throw new Error(error.message)
+    if (!result?.ok)
+      return NextResponse.json({ error: 'A client with this email already exists', existingClientId: result?.existing_id }, { status: 409 })
 
     // FIX (independent pass, section 14): the audit row recorded only Object.keys(body) — which
     // fields were SENT, not what changed (and it listed a field as updated even when the route
