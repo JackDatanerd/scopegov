@@ -319,11 +319,24 @@ export async function DELETE(request: Request) {
     // resurrect someone who'd genuinely left or been removed earlier.
     // Stamping it with the exact same `now` used for the workspace's own
     // deleted_at just below gives restore an exact, reliable match.
+    //
+    // FIX (deep audit, Team & Invites independent pass — B1): this used to
+    // be `.neq('status', 'deactivated')`, which also swept up PENDING and
+    // EXPIRED invite rows (status 'invited' / 'expired'; user_id NULL, or an
+    // existing user's id for an invite that was never accepted). Stamping
+    // those with deactivated_at made restore_workspace_atomic's exact-match
+    // reactivation flip them to status 'active' — ghost members with no
+    // account (or, for an invite to an existing user, an account that never
+    // consented) that consumed seats, counted as permission holders in the
+    // admin floor, and locked the real invitee out ("already accepted").
+    // Only genuine members are deactivated now. Invites need no handling
+    // here: invite GET/accept/signup all refuse while the workspace has
+    // deleted_at set, and invite-cleanup/purge deal with them afterwards.
     const { error: deactivateError } = await (service as any)
       .from('workspace_members')
       .update({ status: 'deactivated', deactivated_at: now })
       .eq('workspace_id', session.workspaceId)
-      .neq('status', 'deactivated')
+      .eq('status', 'active')
     if (deactivateError) {
       console.error('Workspace member deactivation failed after soft-delete:', deactivateError)
       return NextResponse.json({

@@ -26,8 +26,6 @@ export async function inviterMayStillGrant(
     .from('workspace_members').select('effective_permissions')
     .eq('workspace_id', workspaceId).eq('user_id', invitedBy).eq('status', 'active').maybeSingle()
   if (!inviter) return false
-  const held = grantedKeys(inviter.effective_permissions)
-  if (!held.includes('INVITE_MEMBERS')) return false
 
   let rolePerms: unknown = null
   if (roleId) {
@@ -37,6 +35,20 @@ export async function inviterMayStillGrant(
     const { data } = await service.from('roles').select('permissions').eq('workspace_id', workspaceId).eq('is_default', true).maybeSingle()
     rolePerms = data?.permissions ?? null
   }
+  return inviterGrantAllowed(inviter.effective_permissions, rolePerms)
+}
+
+/**
+ * The pure half of inviterMayStillGrant, for callers that already hold the data (the Team page
+ * flags pending invites whose sender has since lost the authority to grant them, without an
+ * extra query per row). `inviterPerms` is the inviter's effective_permissions, or null/undefined
+ * when they are no longer an active member. A role with no permission map (deleted / not found)
+ * can't be checked and is allowed, exactly as before.
+ */
+export function inviterGrantAllowed(inviterPerms: unknown, rolePerms: unknown): boolean {
+  if (!inviterPerms) return false
+  const held = grantedKeys(inviterPerms)
+  if (!held.includes('INVITE_MEMBERS')) return false
   if (!rolePerms) return true
   return roleWithinCeiling({ permissions: held } as any, { permissions: rolePerms as Record<string, unknown> })
 }

@@ -28,17 +28,9 @@ import { PLAN_LIMITS } from '@/lib/utils/format'
 
 export type SeatLimitResult = { ok: true } | { ok: false; message: string }
 
-export async function checkSeatLimit(
-  service: any,
-  workspaceId: string,
-  planTier: string,
-  countedStatuses: string[]
-): Promise<SeatLimitResult> {
-  const limits = PLAN_LIMITS[planTier]
-  if (!limits?.seats) return { ok: true }
-
-  // A pending invite whose expiry has passed no longer holds a seat, even before the daily
-  // invite-cleanup cron flips it to 'expired' — otherwise a dead invite blocks a real one for up to a day.
+async function countSeats(
+  service: any, workspaceId: string, countedStatuses: string[]
+): Promise<{ count: number; error: any }> {
   const nowIso = new Date().toISOString()
   const settled = countedStatuses.filter(st => st !== 'invited')
   let count = 0
@@ -49,6 +41,8 @@ export async function checkSeatLimit(
       .eq('workspace_id', workspaceId).in('status', settled)
     error = r.error; count += r.count || 0
   }
+  // A pending invite only holds a seat until it lapses: an expired-but-not-yet-flipped invite (the
+  // daily cron hasn't run) holds none, and the Team page already lists it under Expired.
   if (!error && countedStatuses.includes('invited')) {
     const r = await service.from('workspace_members')
       .select('id', { count: 'exact', head: true })
@@ -56,20 +50,59 @@ export async function checkSeatLimit(
       .or(`invite_token_expires_at.is.null,invite_token_expires_at.gt.${nowIso}`)
     error = r.error; count += r.count || 0
   }
+  return { count, error }
+}
 
-  // Fail open on a DB error here, same reasoning as checkInviteRateLimit
-  // (lib/utils/rate-limit.ts) — a broken seat-count query should never be
-  // the thing that locks a real member out of their own account.
+export async function checkSeatLimit(
+  service: any,
+  workspaceId: string,
+  planTier: string,
+  countedStatuses: string[]
+): Promise<SeatLimitResult> {
+  const limits = PLAN_LIMITS[planTier]
+  if (!limits?.seats) return { ok: true }
+
+  const { count, error } = await countSeats(service, workspaceId, countedStatuses)
   if (error) {
     console.error('Seat limit check failed (failing open):', error)
     return { ok: true }
   }
 
   if (count >= limits.seats) {
-    return {
-      ok: false,
-      message: `This workspace is at its ${limits.seats}-seat limit on the ${limits.name} plan. Deactivate a member or upgrade in Settings \u2192 Billing first.`,
-    }
+    return { ok: false, message: seatLimitMessage(limits) }
   }
+  return { ok: true }
+}
+
+function seatLimitMessage(limits: { seats: number; name: string }) {
+  return `This workspace is at its ${limits.seats}-seat limit on the ${limits.name} plan. Deactivate a member or upgrade in Settings \u2192 Billing first.`
+}
+
+/**
+ * FIX (Team & Invites independent pass — H1): checkSeatLimit is a read followed, some milliseconds
+ * later, by a write, and nothing serializes the two — two admins inviting (or reactivating, or
+ * reviving an expired invite) at the same moment with one seat left both read "room for one" and
+ * both write, leaving the workspace one over its plan. The seat-CONSUMING writes (invite creation,
+ * reactivation, re-issuing an expired invite) call this AFTER their write lands: the count now
+ * includes the caller's own row, so more than `seats` means the caller lost the race and must undo
+ * its own write. Two simultaneous writers can both undo (each sees the other's row) — that fails
+ * closed and is retryable, which is the right side to err on for a paid limit. Accepting an invite
+ * needs none of this: it converts a seat the invite already reserved, so the total never moves.
+ * Like checkSeatLimit it fails open on a query error.
+ */
+export async function seatLimitBreachedAfterWrite(
+  service: any,
+  workspaceId: string,
+  planTier: string,
+  countedStatuses: string[]
+): Promise<SeatLimitResult> {
+  const limits = PLAN_LIMITS[planTier]
+  if (!limits?.seats) return { ok: true }
+  const { count, error } = await countSeats(service, workspaceId, countedStatuses)
+  if (error) {
+    console.error('Post-write seat limit check failed (failing open):', error)
+    return { ok: true }
+  }
+  if (count > limits.seats) return { ok: false, message: seatLimitMessage(limits) }
   return { ok: true }
 }

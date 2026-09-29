@@ -49,7 +49,7 @@ vi.mock('@/lib/utils/notify', async () => {
   return Object.fromEntries(Object.keys(actual).map(k => [k, async () => undefined]))
 })
 vi.mock('@/lib/utils/rate-limit', () => ({ checkInviteRateLimit: async () => ({ allowed: true }) }))
-vi.mock('@/lib/utils/seat-limit', () => ({ checkSeatLimit: async () => ({ ok: true }) }))
+vi.mock('@/lib/utils/seat-limit', () => ({ checkSeatLimit: async () => ({ ok: true }), seatLimitBreachedAfterWrite: async () => ({ ok: true }) }))
 
 const ALL = [
   'VIEW_OWN_PROJECTS', 'VIEW_ALL_PROJECTS', 'VIEW_FINANCIALS', 'VIEW_CLIENT_DATA', 'CREATE_PROJECTS', 'EDIT_SOW', 'SEND_SOW',

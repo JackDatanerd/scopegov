@@ -677,4 +677,42 @@ describe.skipIf(!URL_)('Postgres replay (migrations 001..latest on a real databa
       expect(Number(ws.default_tax_rate)).toBe(16)
     })
   })
+
+  // ── Team & Invites independent pass — B1 (migration 112) ──────────────────
+  describe('migration 112 — workspace restore never resurrects unaccepted invites', () => {
+    it('reactivates real members only, drops leftover invite rows, and the CHECK forbids an active row without a user', async () => {
+      await makeUser(120); await makeUser(121); await makeUser(122)
+      await makeWorkspace(120, 120, 'agency')
+      const [{ id: roleId }] = await sql(`SELECT id FROM public.roles WHERE workspace_id = $1 AND name = 'Account Manager'`, [W(120)])
+      // a genuine former member (joined_at set, as accept/signup do)
+      await sql(`INSERT INTO public.workspace_members (workspace_id, user_id, role_id, status, invited_email, joined_at) VALUES ($1,$2,$3,'active',$4, now())`, [W(120), U(121), roleId, 'u121@test.dev'])
+      // pending invite for an address with no account, and one for an existing account that never accepted
+      await sql(`INSERT INTO public.workspace_members (workspace_id, user_id, role_id, status, invited_email, invite_token) VALUES ($1,NULL,$2,'invited','nobody@test.dev','tok-a')`, [W(120), roleId])
+      await sql(`INSERT INTO public.workspace_members (workspace_id, user_id, role_id, status, invited_email, invite_token) VALUES ($1,$2,$3,'invited','u122@test.dev','tok-b')`, [W(120), U(122), roleId])
+
+      // What workspace/delete did BEFORE the fix: stamp every non-deactivated row.
+      const stamp = new Date(Date.now() - 60_000).toISOString()
+      await sql(`UPDATE public.workspaces SET deleted_at = $2 WHERE id = $1`, [W(120), stamp])
+      await sql(`UPDATE public.workspace_members SET status = 'deactivated', deactivated_at = $2 WHERE workspace_id = $1 AND status <> 'deactivated'`, [W(120), stamp])
+
+      await sql(`SELECT public.restore_workspace_atomic($1, $2)`, [W(120), U(120)])
+
+      const rows = await sql(`SELECT user_id, status, invited_email FROM public.workspace_members WHERE workspace_id = $1 ORDER BY invited_email NULLS FIRST`, [W(120)])
+      // no ghost: every ACTIVE row has a user, and the two invite rows are gone
+      expect(rows.filter(r => r.status === 'active' && !r.user_id)).toEqual([])
+      expect(rows.some(r => r.invited_email === 'nobody@test.dev')).toBe(false)
+      expect(rows.some(r => r.invited_email === 'u122@test.dev')).toBe(false)
+      const active = rows.filter(r => r.status === 'active').map(r => r.user_id).sort()
+      expect(active).toEqual([U(120), U(121)].sort())
+
+      await expect(sql(`INSERT INTO public.workspace_members (workspace_id, user_id, status) VALUES ($1, NULL, 'active')`, [W(120)]))
+        .rejects.toThrow(/workspace_members_active_has_user/)
+    })
+
+    it('migration 112 can be applied a second time without error', async () => {
+      const f = fs.readdirSync(MIGRATIONS).find(x => x.startsWith('112_'))!
+      await pool.query(fs.readFileSync(path.join(MIGRATIONS, f), 'utf8'))
+    })
+  })
+
 })

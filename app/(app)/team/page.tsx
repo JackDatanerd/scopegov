@@ -11,6 +11,7 @@ import { PLAN_LIMITS } from '@/lib/utils/format'
 import { permissionsRequireMfa } from '@/lib/auth/mfa-policy'
 import { roleWithinCeiling } from '@/lib/utils/permission-ceiling'
 import { roleHolderCounts } from '@/lib/utils/role-holders'
+import { inviterGrantAllowed } from '@/lib/utils/invite-authority'
 
 export const metadata = { title: 'Team' }
 
@@ -26,7 +27,7 @@ export default async function TeamPage() {
       .select(`
         id, status, joined_at, invited_at, effective_permissions, role_id,
         permission_overrides,
-        invited_email, invite_token_expires_at,
+        invited_email, invite_token_expires_at, invited_by,
         users!workspace_members_user_id_fkey(id, name, email, avatar_url),
         roles(id, name)
       `)
@@ -105,14 +106,31 @@ export default async function TeamPage() {
   const roles = (rolesRes.data || []).map((r: any) => canManageRoles ? r : ({
     id: r.id, name: r.name, description: r.description, is_default: r.is_default,
   }))
-  const active  = allMembers.filter((m: any) => m.status === 'active').map(withMfa)
+  const active  = allMembers.filter((m: any) => m.status === 'active').map(({ invited_by, ...rest }: any) => rest).map(withMfa)
   // An invite past its expiry is expired for every purpose here even if the daily cron hasn't flipped its
   // status yet: it shows under Expired (with Resend) instead of a "Pending" pill that can't be used.
   const nowMs = Date.now()
   const isLapsed = (m: any) => m.status === 'invited' && !!m.invite_token_expires_at
     && new Date(m.invite_token_expires_at).getTime() <= nowMs
-  const pending = canInvite ? allMembers.filter((m: any) => m.status === 'invited' && !isLapsed(m)).map(stripPermissions).map(redactStrangerProfile) : []
-  const expired = canInvite ? allMembers.filter((m: any) => m.status === 'expired' || isLapsed(m)).map(stripPermissions).map(redactStrangerProfile) : []
+  // FIX (Team & Invites independent pass — feature gap): an invite is only as good as its sender's
+  // authority at the moment it is USED (accept/signup re-check that — see lib/utils/invite-authority).
+  // Deactivating or removing the sender revokes their invites outright, but DEMOTING them (a role
+  // change or override that drops INVITE_MEMBERS or a permission of the role they offered) left
+  // their pending invites showing a normal "Pending" pill while every acceptance would 410. Flag
+  // those rows here so an admin can Resend / Copy link (both re-issue the invite under their own
+  // authority) before the invitee hits a dead link. Same predicate the accept route applies.
+  const activePermsByUser = new Map<string, unknown>(
+    allMembers.filter((m: any) => m.status === 'active' && m.users?.id).map((m: any) => [m.users.id, m.effective_permissions]))
+  const rolePermsById = new Map<string, unknown>((rolesRes.data || []).map((r: any) => [r.id, r.permissions]))
+  const defaultRolePerms = (rolesRes.data || []).find((r: any) => r.is_default)?.permissions ?? null
+  const withAuthorityFlag = (m: any) => {
+    const { invited_by, ...rest } = m
+    const rolePerms = m.role_id ? (rolePermsById.get(m.role_id) ?? null) : defaultRolePerms
+    const stale = !!invited_by && !inviterGrantAllowed(activePermsByUser.get(invited_by), rolePerms)
+    return stale ? { ...rest, sender_lost_authority: true } : rest
+  }
+  const pending = canInvite ? allMembers.filter((m: any) => m.status === 'invited' && !isLapsed(m)).map(withAuthorityFlag).map(stripPermissions).map(redactStrangerProfile) : []
+  const expired = canInvite ? allMembers.filter((m: any) => m.status === 'expired' || isLapsed(m)).map(({ invited_by, ...rest }: any) => rest).map(stripPermissions).map(redactStrangerProfile) : []
   const deactivated = canInvite ? (deactivatedRes.data || []).map(stripPermissions).map(redactStrangerProfile) : []
 
   // FIX (deep audit, Team & Invites — bug): the Roles tab (gated on

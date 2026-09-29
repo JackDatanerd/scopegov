@@ -5,7 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { nanoid } from 'nanoid'
-import { checkSeatLimit } from '@/lib/utils/seat-limit'
+import { checkSeatLimit, seatLimitBreachedAfterWrite } from '@/lib/utils/seat-limit'
 import { roleWithinCeiling } from '@/lib/utils/permission-ceiling'
 import { inviterMayStillGrant } from '@/lib/utils/invite-authority'
 
@@ -86,6 +86,19 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
         return NextResponse.json({
           error: 'This invite was just changed by someone else \u2014 possibly resent or accepted a moment ago. Refresh the Team page to see its current state before trying again.',
         }, { status: 409 })
+      }
+      // FIX (Team & Invites independent pass — H1): reviving an expired invite takes a seat and the check
+      // above isn't atomic with this write — re-count, and put the invite back exactly as it was if a
+      // concurrent invite/reactivation took the last seat.
+      if (!stillLive) {
+        const postSeat = await seatLimitBreachedAfterWrite(service, session.workspaceId, session.planTier, ['active', 'invited'])
+        if (!postSeat.ok) {
+          await service.from('workspace_members').update({
+            invite_token: member.invite_token, invite_token_expires_at: member.invite_token_expires_at,
+            status: member.status, invited_by: member.invited_by ?? null,
+          }).eq('id', id).eq('invite_token', token)
+          return NextResponse.json({ error: postSeat.message, upgradeRequired: true }, { status: 403 })
+        }
       }
       reissued = true
     }

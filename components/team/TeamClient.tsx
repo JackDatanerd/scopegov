@@ -149,6 +149,13 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
   // id keyed to whichever row is mid-action; every handler below checks
   // and sets it, and every triggering button disables on it.
   const [busyId,  setBusyId]  = useState<string | null>(null)
+  // FIX (Team & Invites independent pass — feature gap): POST /api/team/invite
+  // has always answered "this person was deactivated" with the deactivated
+  // row's id (reactivateMemberId) so the client could offer the fix in one
+  // click, but nothing ever read it — the admin got a sentence telling them
+  // to go find the Deactivated list. Held here so the invite dialog can
+  // offer "Reactivate instead" directly.
+  const [reactivateOffer, setReactivateOffer] = useState<string | null>(null)
 
   // Seats: every active member plus every live pending invite holds one (the same count the invite
   // route enforces), so the meter and the Invite button agree with what the server will accept.
@@ -160,18 +167,21 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
 
   // Opening a dialog starts clean: an error from an earlier, unrelated action
   // shouldn't greet the person inside a different dialog.
-  function openModal(next: 'invite' | 'role') { setError(''); setNotice(''); setModal(next) }
+  function openModal(next: 'invite' | 'role') { setError(''); setNotice(''); setReactivateOffer(null); setModal(next) }
 
   async function handleInvite(e: React.FormEvent) {
     e.preventDefault()
-    setLoading(true); setError('')
+    setLoading(true); setError(''); setReactivateOffer(null)
     try {
       const res  = await fetch('/api/team/invite', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: inviteEmail, roleId: inviteRoleId || null }),
       })
       const json = await res.json()
-      if (!res.ok) throw new Error(json.error)
+      if (!res.ok) {
+        if (typeof json.reactivateMemberId === 'string') setReactivateOffer(json.reactivateMemberId)
+        throw new Error(json.error)
+      }
       setModal(null); setInviteEmail(''); setInviteRoleId('')
       // FIX (deep audit, Team & Invites re-pass): the invite row is
       // created even when the email fails to send — surface that instead
@@ -618,7 +628,13 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
                           {m.invite_token_expires_at ? formatDate(m.invite_token_expires_at) : '—'}
                         </td>
                         <td>
-                          <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                          <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center' }}>
+                            {m.sender_lost_authority && (
+                              <span className="pill pill-red pill-sm"
+                                title="The person who sent this invite no longer has access to grant this role, so accepting it will fail. Resend or Copy link re-issues it under your name.">
+                                Sender lost access — Resend
+                              </span>
+                            )}
                             <span className="pill pill-amber pill-sm">Pending</span>
                             {canManageRoles && (
                               <button className="btn btn-ghost btn-xs" disabled={busyId === m.id}
@@ -893,6 +909,14 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
             <h2 className="modal-title">Invite team member</h2>
             <p className="modal-sub">Send an invitation email. The link expires in 7 days.</p>
             {error && <div className="auth-error">{error}</div>}
+            {reactivateOffer && (
+              <div style={{ margin: '0 0 12px' }}>
+                <button type="button" className="btn btn-ghost" disabled={!!busyId}
+                  onClick={() => { const id = reactivateOffer; const label = inviteEmail.trim(); setModal(null); setReactivateOffer(null); setInviteEmail(''); setInviteRoleId(''); handleReactivate(id, label) }}>
+                  Reactivate {inviteEmail.trim() || 'them'} instead
+                </button>
+              </div>
+            )}
             <form onSubmit={handleInvite}>
               <div className="fgrp">
                 <label className="flbl">Email address</label>

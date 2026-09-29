@@ -9,7 +9,7 @@ import { checkedSend } from '@/lib/email/delivery'
 import { nanoid } from 'nanoid'
 import { roleWithinCeiling } from '@/lib/utils/permission-ceiling'
 import { checkInviteRateLimit } from '@/lib/utils/rate-limit'
-import { checkSeatLimit } from '@/lib/utils/seat-limit'
+import { checkSeatLimit, seatLimitBreachedAfterWrite } from '@/lib/utils/seat-limit'
 
 export async function POST(request: NextRequest) {
   try {
@@ -154,6 +154,15 @@ export async function POST(request: NextRequest) {
       if ((memberErr as any).code === '23505')
         return NextResponse.json({ error: 'An invite is already pending for this email' }, { status: 409 })
       throw new Error(memberErr.message)
+    }
+
+    // FIX (Team & Invites independent pass — H1): the seat check above and this insert aren't atomic.
+    // Re-count now that our row exists; if a concurrent invite/reactivation took the last seat, undo
+    // ours (see seatLimitBreachedAfterWrite).
+    const postSeat = await seatLimitBreachedAfterWrite(service, wsId, session.planTier, ['active', 'invited'])
+    if (!postSeat.ok) {
+      await (service as any).from('workspace_members').delete().eq('id', member.id).eq('status', 'invited')
+      return NextResponse.json({ error: postSeat.message, upgradeRequired: true }, { status: 403 })
     }
 
     // Fetch workspace info for email

@@ -1,0 +1,48 @@
+CHANGES — Team & invites, independent pass 2 (fresh audit, section 6)
+=====================================================================
+
+Verification note: static audit + syntax parse of every changed file with the TypeScript compiler API.
+NOT run here: tsc type-check, vitest, or the Postgres replay (no node_modules / no Postgres in the audit
+sandbox). Run `npx tsc --noEmit`, `npx vitest run`, and the pg-replay suite (PG_REPLAY_URL) before shipping.
+
+B1 (HIGH) — workspace delete -> restore resurrected pending invites as ghost ACTIVE members
+  Cause : app/api/workspace/delete deactivated every row that wasn't already deactivated
+          (.neq('status','deactivated')), including status 'invited'/'expired' invite rows, stamping
+          deactivated_at. restore_workspace_atomic (091) reactivates every row with a matching
+          deactivated_at, never checking the row was ever a member.
+  Effect: "active" members with no account (or an existing account that never accepted): they consumed
+          seats, counted as permission holders in the admin floor (so the last REAL holder of
+          MANAGE_ROLES / INVITE_MEMBERS could be removed), locked the invitee out ("already accepted"),
+          and showed as "Unknown" cards / project assignees.
+  Fix   : - workspace/delete: deactivate ONLY status='active' rows (invites are already refused while the
+            workspace is deleted — invite GET/accept/signup check deleted_at).
+          - migration 112: restore_workspace_atomic reactivates only rows with user_id AND joined_at,
+            deletes leftover never-accepted invite rows (never the restorer's own row); heals existing
+            ghosts (active+no user -> deleted; active+user+no joined_at+invite_token -> deactivated,
+            creators excluded); adds CHECK workspace_members_active_has_user.
+          - PATCH /api/team/[id] (reactivate): refuses a deactivated row with no joined_at
+            ("never accepted") — same class of phantom access via the Reactivate button.
+
+H1 (LOW) — seat limit was read-then-write with nothing serializing the two
+  Fix   : lib/utils/seat-limit.ts: shared countSeats + new seatLimitBreachedAfterWrite(). The three
+          seat-CONSUMING writes re-count after writing and undo their own write if they lost the race:
+          POST /api/team/invite (delete own row), PATCH reactivate (back to deactivated, original
+          deactivated_at), Resend + Copy link on an expired invite (restore previous token/status).
+          Fails closed on a simultaneous race (both may undo; retryable), fails open on query error
+          (same as checkSeatLimit). Accept/signup need nothing: they convert an already-reserved seat.
+
+Feature gaps closed
+  - "Reactivate instead" button in the invite dialog (the API always returned reactivateMemberId; the UI
+    ignored it).
+  - Team page flags pending invites whose sender was demoted / lost INVITE_MEMBERS ("Sender lost access —
+    Resend" pill). Uses new pure helper inviterGrantAllowed (extracted from inviterMayStillGrant; same
+    predicate accept/signup apply). invited_by is stripped from the payload sent to the browser.
+
+Tests
+  - tests/team-invites-independent-pass.test.ts (new): reactivate guard, seat-race rollback, real
+    seatLimitBreachedAfterWrite, inviterGrantAllowed, source contracts for delete route + migration 112.
+  - tests/pg-replay.test.ts: delete->restore round trip against real Postgres + CHECK + re-apply.
+  - Three existing tests that mock '@/lib/utils/seat-limit' now also export seatLimitBreachedAfterWrite.
+
+Deploy order: apply migration 112 BEFORE (or with) the app deploy. The route change alone is safe; the
+migration is what cleans up existing ghost rows and fixes restore for workspaces deleted before the fix.

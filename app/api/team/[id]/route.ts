@@ -11,7 +11,7 @@ import { permissionsBeyondCeiling, permissionsBeyondActorForTarget, roleWithinCe
 import { isProtectedOwnerTarget, OWNER_PROTECTED_MESSAGE } from '@/lib/utils/owner-protection'
 import { parsePermissionMap } from '@/lib/utils/permission-map'
 import { mergePermissions, protectedPermissionsOrphanedBy, describeProtectedPermission, PROTECTED_PERMISSIONS, approvalPermissionOrphanedBy, APPROVE_DOCUMENTS_ORPHAN_MESSAGE } from '@/lib/utils/admin-floor'
-import { checkSeatLimit } from '@/lib/utils/seat-limit'
+import { checkSeatLimit, seatLimitBreachedAfterWrite } from '@/lib/utils/seat-limit'
 import { diffOverrides } from '@/lib/utils/permission-diff'
 
 const namesOf = (rows: any[] | null | undefined, pick: (r: any) => string | undefined) =>
@@ -215,12 +215,17 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
       const { data: member } = await service
         .from('workspace_members')
-        .select('id,status,user_id,role_id,effective_permissions,users!workspace_members_user_id_fkey(name,email,deleted_at)')
+        .select('id,status,user_id,joined_at,deactivated_at,role_id,effective_permissions,users!workspace_members_user_id_fkey(name,email,deleted_at)')
         .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
       if (!member) return NextResponse.json({ error: 'Member not found' }, { status: 404 })
       if (member.status !== 'deactivated')
         return NextResponse.json({ error: 'Member is not deactivated' }, { status: 400 })
-      if (!member.user_id)
+      // FIX (Team & Invites independent pass — B1): joined_at is only ever set
+      // when an invite is accepted (or a workspace is created), so a
+      // deactivated row without it is a leftover invite, never a member. For
+      // an invite to an EXISTING account user_id is set, and reactivating it
+      // would have granted access the person never accepted.
+      if (!member.user_id || !member.joined_at)
         return NextResponse.json({ error: 'This invite was never accepted and has no account to reactivate — send a new invite instead.' }, { status: 400 })
       if (member.users?.deleted_at)
         return NextResponse.json({ error: 'This person deleted their account, so it can\u2019t be reactivated. Send a new invite if they should rejoin with a new account.' }, { status: 409 })
@@ -264,6 +269,17 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       }
       if (!reactivated || reactivated.length === 0) {
         return NextResponse.json({ error: 'This member was already reactivated \u2014 possibly by someone else a moment ago.' }, { status: 409 })
+      }
+
+      // FIX (Team & Invites independent pass — H1): the seat check above and the flip just made aren't
+      // atomic — re-count now that this member is active and, if a concurrent invite/reactivation took
+      // the last seat, put them back exactly as they were (see seatLimitBreachedAfterWrite).
+      const postSeat = await seatLimitBreachedAfterWrite(service, session.workspaceId, session.planTier, ['active', 'invited'])
+      if (!postSeat.ok) {
+        await service.from('workspace_members')
+          .update({ status: 'deactivated', deactivated_at: member.deactivated_at ?? new Date().toISOString() })
+          .eq('id', id).eq('status', 'active')
+        return NextResponse.json({ error: postSeat.message }, { status: 409 })
       }
 
       const { data: restored, error: restoreErr } = await service.rpc('restore_member_projects', { p_member_id: id })

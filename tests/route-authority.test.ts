@@ -84,7 +84,7 @@ vi.mock('@/lib/utils/notify', async () => {
   return Object.fromEntries(Object.keys(actual).map(k => [k, async () => undefined]))
 })
 vi.mock('@/lib/utils/rate-limit', () => ({ checkInviteRateLimit: async () => ({ allowed: true }) }))
-vi.mock('@/lib/utils/seat-limit', () => ({ checkSeatLimit: async () => ({ ok: true }) }))
+vi.mock('@/lib/utils/seat-limit', () => ({ checkSeatLimit: async () => ({ ok: true }), seatLimitBreachedAfterWrite: async () => ({ ok: true }) }))
 
 const mkSession = (permissions: string[], extra: any = {}) => ({
   id: 'actor', workspaceId: 'w1', name: 'Actor', email: 'actor@x', agencyName: 'A', workspaceName: 'Acme', planTier: 'agency', permissions, ...extra,
