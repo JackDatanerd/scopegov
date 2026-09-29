@@ -128,12 +128,17 @@ export async function POST(request: NextRequest) {
           if (recent) continue
           // A broken approver assignment (role with no active holder, or a user no longer active)
           // needs a human to fix the assignment, not another silent retry.
-          await insertAuditRow(service, {
+          // FIX (cron section 17, pass 2): this audit row IS the dedupe marker, and insertAuditRow reports a
+          // failed write by returning false (it never throws) — the result was ignored, so with audit_log
+          // failing the alert re-fired every day instead of weekly. Marker first; if it can't be written,
+          // skip the notification and retry next run (same discipline retainer-milestones uses).
+          const marked = await insertAuditRow(service, {
             workspace_id: r.workspace_id, actor_id: null, project_id: r.project_id,
             actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
             event_type: 'approval.no_reachable_approver', entity_type: 'approval_request', entity_id: r.id,
             metadata: { days_pending: threshold },
           })
+          if (!marked) throw new Error('could not record approval.no_reachable_approver (dedupe marker) — alert withheld, will retry next run')
           await notifyMembersWithPermission(service, {
             // FIX (Notifications & email fix round): this went to MANAGE_ROLES holders, but the fix
             // it asks for ("check the approval workflow's assignment") needs MANAGE_WORKSPACE_SETTINGS —

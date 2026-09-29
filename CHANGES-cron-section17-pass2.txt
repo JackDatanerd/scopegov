@@ -1,0 +1,48 @@
+Section 17 (cron jobs) — independent pass 2 fixes
+Applied against HEAD 01ab31a. Code + tests only; NO migration.
+
+B1. Deleted / admin-suspended workspaces were still mutated by two crons
+    app/api/cron/payment-overdue/route.ts  (steps 1 and 1b)
+    app/api/cron/reconciliation-rollup/route.ts
+    Workspace delete / admin suspend sets workspaces.deleted_at and deactivates memberships but never sets
+    projects.deleted_at. Steps 1 (milestones) and 1b (invoices) only guarded on projects.deleted_at, so a closed
+    workspace's milestones/invoices kept flipping to 'overdue' with audit rows and no one to notify; a restored
+    workspace came back with them already overdue, so the real alert never fired. The rollup wrote a snapshot per
+    project per night for the same workspaces. Added the workspaces!inner(deleted_at) join + filter (nested via
+    projects for milestones), matching approval-stall / co-stall / sow-stall / retainer-milestones.
+
+B2. Grace-enforcement / cancelled-subscription downgrade could overwrite a plan set by a concurrent plan switch
+    app/api/cron/payment-overdue/route.ts  (steps 4 and 5)
+    Step 4 downgraded to 'solo' BEFORE touching the Paystack subscription and, if a plan switch was detected,
+    "reverted" to the plan_tier read at select time — clobbering the tier the webhook had just written. Step 5's
+    downgrade was unconditional on id. Now: step 4 settles the subscription first, skips entirely when raced
+    (nothing to revert), and downgrades LAST with a compare-and-set on the plan read (.eq('plan_tier', ws.plan_tier));
+    a zero-row result means someone else changed the plan, so no downgrade / audit / email. Step 5's downgrade is
+    the same CAS, its claim is additionally pinned to the subscription code that was read, and its rollback only
+    restores billing fields if nothing has re-populated the subscription code. The grace-clock restore in step 4
+    only applies if no fresh clock was started.
+
+B3. approval-stall ignored a failed write of its own dedupe marker
+    app/api/cron/approval-stall/route.ts
+    The "no reachable approver" alert dedupes on its audit row; insertAuditRow returns false on failure (never
+    throws) and the result was ignored, so with audit_log failing the alert re-fired every daily run instead of
+    weekly. The marker is now checked; on failure the notification is withheld and a row error raised (retry next
+    run), as retainer-milestones already does for retainer.ended.
+
+TESTS
+    tests/cron-section17-pass2.test.ts (8 tests). 6 of them fail against the pre-fix routes and pass now; the
+    other 2 pin the unchanged normal paths. Existing cron / billing / approvals suites unchanged and green.
+
+NOT CHANGED (noted, deliberately)
+    - trial-warning says "ends tomorrow" for a trial ending within the next 24h even if that is later today
+      (ceil of days). The email template only takes whole days; wording-only.
+    - reconciliation-rollup stops at fetchAll's 50k-row ceiling (logged). Scale note, not a bug today.
+    - tests/reassign-feasibility.test.ts fails to load on a clean checkout (vitest cannot parse
+      lib/pdf/renderer.tsx, which it imports transitively). Pre-existing, approvals area, unrelated to this change.
+
+FILES (5)
+    app/api/cron/approval-stall/route.ts
+    app/api/cron/payment-overdue/route.ts
+    app/api/cron/reconciliation-rollup/route.ts
+    tests/cron-section17-pass2.test.ts
+    CHANGES-cron-section17-pass2.txt

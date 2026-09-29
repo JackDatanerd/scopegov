@@ -28,9 +28,13 @@ export async function POST(request: NextRequest) {
 
     const projects = await fetchAll<any>('reconciliation projects select', (from, to) =>
       (service as any).from('projects')
-        .select('id, workspace_id, contract_value, status, type, retainer_duration_months')
+        .select('id, workspace_id, contract_value, status, type, retainer_duration_months, workspaces!inner(deleted_at)')
         .is('deleted_at', null)
         .neq('status', 'Archived')
+        // FIX (cron section 17, pass 2): a deleted / admin-suspended workspace keeps its projects (workspace
+        // delete never sets projects.deleted_at), so it kept accruing a snapshot row per project per night
+        // that nobody can see. `!inner` is what makes the parent filter restrict rows under PostgREST.
+        .is('workspaces.deleted_at', null)
         .order('id')
         .range(from, to))
     processed = projects.length

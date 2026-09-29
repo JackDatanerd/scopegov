@@ -77,11 +77,17 @@ export async function POST(request: NextRequest) {
     // actually restrict the parent rows under PostgREST.
     const overdueMilestones = await fetchAll<any>('overdue milestones select', (from, to) =>
       (service as any).from('payment_milestones')
-        .select(`id, title, amount, project_id, projects!inner(id, name, workspace_id, currency, deleted_at, clients(name))`)
+        .select(`id, title, amount, project_id, projects!inner(id, name, workspace_id, currency, deleted_at, clients(name), workspaces!inner(deleted_at))`)
         .eq('status', 'pending')
         .not('due_date', 'is', null)
         .lt('due_date', today)
         .is('projects.deleted_at', null)
+        // FIX (cron section 17, pass 2): workspace delete / admin suspend sets workspaces.deleted_at and
+        // deactivates memberships but never touches projects.deleted_at, so this scan kept flipping a closed
+        // workspace's milestones to 'overdue' (and audit-logging it) with nobody left to notify — and a
+        // restored workspace came back with them already overdue, so the real alert never fired. Same
+        // `!inner` guard approval-stall / co-stall / sow-stall / retainer-milestones already carry.
+        .is('projects.workspaces.deleted_at', null)
         .or(`type.is.null,type.neq.retainer_monthly,due_date.lt.${retainerGraceDate}`)
         .order('id')
         .range(from, to))
@@ -143,10 +149,12 @@ export async function POST(request: NextRequest) {
     const overdueInvoices = await fetchAll<any>('overdue invoices select', (from, to) =>
       (service as any).from('invoices')
         .select(`id, title, amount, amount_paid, currency, invoice_number, workspace_id, disputed_at, dispute_resolved_at,
-          projects!inner(id, name, deleted_at, clients(name))`)
+          projects!inner(id, name, deleted_at, clients(name)), workspaces!inner(deleted_at)`)
         // Invoices of a soft-deleted (trashed) project are not chased or flagged
         // (section-12 audit, pass 2) — nobody can act on them from the UI.
         .is('projects.deleted_at', null)
+        // FIX (cron section 17, pass 2): nor those of a deleted / admin-suspended workspace (see step 1).
+        .is('workspaces.deleted_at', null)
         .in('status', ['sent', 'partially_paid'])
         .not('due_date', 'is', null)
         .lt('due_date', today)
@@ -369,18 +377,6 @@ export async function POST(request: NextRequest) {
         if (claimErr) throw new Error(claimErr.message)
         if (!guardedBilling?.length) continue // cleared concurrently
 
-        const { error: downgradeErr } = await (service as any).from('workspaces')
-          .update({ plan_tier: 'solo', updated_at: now.toISOString() })
-          .eq('id', ws.id)
-        if (downgradeErr) {
-          // Put the clock back so tomorrow's run retries instead of the workspace keeping paid features
-          // forever with nothing left to trigger the downgrade.
-          console.error('Grace enforcement: downgrade failed, restoring grace clock:', downgradeErr.message)
-          await (service as any).from('billing')
-            .update({ grace_period_started_at: b.grace_period_started_at }).eq('workspace_id', b.workspace_id)
-          throw new Error(`downgrade failed for ${ws.id}: ${downgradeErr.message}`)
-        }
-
         // FIX (deep audit, Billing re-pass — independent redo #4): every write below that
         // assumes b.paystack_subscription_code is still the workspace's live subscription
         // used to be conditioned on workspace_id alone — unlike the functionally identical
@@ -396,9 +392,8 @@ export async function POST(request: NextRequest) {
         // or — worse — flag that brand-new subscription needs_paystack_cancel: true, which
         // step 4b would then actually go and cancel on a later run. Every write here now
         // carries the same subscription-code guard, and a guard that matches zero rows means
-        // a newer subscription is already on file: nothing to do, so the downgrade this loop
-        // just applied is reverted (mirroring the downgradeErr rollback above) rather than
-        // left standing against a workspace that just paid.
+        // a newer subscription is already on file: nothing to do, and the workspace is left
+        // on whatever plan that subscription's own handler set (the downgrade below is skipped).
         let paystackCancelled = true
         let raced = false
         if (!b.paystack_subscription_code) {
@@ -443,10 +438,33 @@ export async function POST(request: NextRequest) {
         }
 
         if (raced) {
-          console.log(`Grace enforcement: workspace ${ws.id} got a new subscription while this row was being processed — reverting the downgrade instead of acting on stale subscription data`)
-          const { error: revertErr } = await (service as any).from('workspaces')
-            .update({ plan_tier: ws.plan_tier, updated_at: now.toISOString() }).eq('id', ws.id)
-          if (revertErr) console.error(`Grace enforcement: could not revert downgrade for ${ws.id} after detecting a concurrent plan switch:`, revertErr.message)
+          // A newer subscription is already on file: its own handler owns the workspace's plan. The
+          // downgrade has not been applied yet (it now runs LAST, below), so there is nothing to revert —
+          // the old revert wrote back the stale plan_tier read at select time and could clobber the tier
+          // the plan switch had just set.
+          console.log(`Grace enforcement: workspace ${ws.id} got a new subscription while this row was being processed — leaving its plan untouched`)
+          continue
+        }
+
+        // FIX (cron section 17, pass 2): the downgrade is the LAST write and compare-and-set on the plan the
+        // row was read with. It used to run first and be reverted to that stale value when a plan switch
+        // was detected, which overwrote the new plan the webhook had written in between.
+        const { data: downgraded, error: downgradeErr } = await (service as any).from('workspaces')
+          .update({ plan_tier: 'solo', updated_at: now.toISOString() })
+          .eq('id', ws.id).eq('plan_tier', ws.plan_tier)
+          .select('id')
+        if (downgradeErr) {
+          // The subscription side is already settled, so put the grace clock back (only if nothing has
+          // started a fresh one) and tomorrow's run retries instead of the workspace keeping paid
+          // features forever with nothing left to trigger the downgrade.
+          console.error('Grace enforcement: downgrade failed, restoring grace clock:', downgradeErr.message)
+          await (service as any).from('billing')
+            .update({ grace_period_started_at: b.grace_period_started_at })
+            .eq('workspace_id', b.workspace_id).is('grace_period_started_at', null)
+          throw new Error(`downgrade failed for ${ws.id}: ${downgradeErr.message}`)
+        }
+        if (!downgraded?.length) {
+          console.log(`Grace enforcement: workspace ${ws.id} changed plan while this row was being processed — not downgrading`)
           continue
         }
 
@@ -573,22 +591,31 @@ export async function POST(request: NextRequest) {
         if (!ws || ws.deleted_at) continue
 
         // Claim first (only one run/webhook proceeds; also guards a reactivation landing in between)...
-        const { data: guardedBilling, error: claimErr } = await (service as any).from('billing')
+        // FIX (cron section 17, pass 2): the claim is now also pinned to the subscription code that was read,
+        // so a plan switch that replaced it between the select and this write can't have its brand-new
+        // subscription's fields wiped by ENDED_SUBSCRIPTION_FIELDS.
+        let claimQ = (service as any).from('billing')
           .update({ ...ENDED_SUBSCRIPTION_FIELDS, paystack_customer_code: null, updated_at: now.toISOString() })
           .eq('workspace_id', b.workspace_id)
           .eq('cancels_at_period_end', true)
           .lt('current_period_end', now.toISOString())
-          .select('workspace_id')
+        claimQ = b.paystack_subscription_code
+          ? claimQ.eq('paystack_subscription_code', b.paystack_subscription_code)
+          : claimQ.is('paystack_subscription_code', null)
+        const { data: guardedBilling, error: claimErr } = await claimQ.select('workspace_id')
         if (claimErr) throw new Error(claimErr.message)
-        if (!guardedBilling?.length) continue // reactivated concurrently
+        if (!guardedBilling?.length) continue // reactivated / plan-switched concurrently
         cancelledSubscriptionsEndedCount++
 
-        // ...then downgrade. This write's error used to be ignored: if it failed, the claim above had
-        // already wiped cancels_at_period_end, so nothing would ever select this workspace again and it
-        // kept its paid plan for free indefinitely. (Section 4 had the same fix; this section never got it.)
-        const { error: downgradeErr } = await (service as any).from('workspaces')
+        // ...then downgrade, compare-and-set on the plan the row was read with: a subscription.create that
+        // lands between the claim and this write has already set the new plan, and an unconditional write
+        // here would have flattened it to 'solo'. This write's error used to be ignored: if it failed, the
+        // claim above had already wiped cancels_at_period_end, so nothing would ever select this workspace
+        // again and it kept its paid plan for free indefinitely. (Section 4 had the same fix.)
+        const { data: downgraded, error: downgradeErr } = await (service as any).from('workspaces')
           .update({ plan_tier: 'solo', updated_at: now.toISOString() })
-          .eq('id', ws.id)
+          .eq('id', ws.id).eq('plan_tier', ws.plan_tier)
+          .select('id')
         if (downgradeErr) {
           await (service as any).from('billing').update({
             cancels_at_period_end: true,
@@ -599,9 +626,14 @@ export async function POST(request: NextRequest) {
             plan_interval: b.plan_interval ?? null,
             payment_method_last4: b.payment_method_last4 ?? null,
             payment_method_type: b.payment_method_type ?? null,
-          }).eq('workspace_id', b.workspace_id)
+          }).eq('workspace_id', b.workspace_id).is('paystack_subscription_code', null)
           cancelledSubscriptionsEndedCount--
           throw new Error(`downgrade failed for ${ws.id}: ${downgradeErr.message}`)
+        }
+        if (!downgraded?.length) {
+          cancelledSubscriptionsEndedCount--
+          console.log(`Cancelled-subscription sweep: workspace ${ws.id} changed plan while this row was being processed — not downgrading`)
+          continue
         }
 
         await insertAuditRow(service, {
