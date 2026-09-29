@@ -1790,7 +1790,7 @@ export async function sendInvoicePaymentClaimedEmail(params: {
   const projectName = escapeHtml(projectNameRaw)
   const reference   = escapeHtml(referenceRaw)
   const note        = escapeHtml(noteRaw)
-  const amount = `${currency} ${Number(balanceDue).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  const amount = money(balanceDue, currency)
 
   const html = baseTemplate({
     agencyName: 'ScopeGov',

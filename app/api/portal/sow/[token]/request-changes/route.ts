@@ -194,6 +194,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         to: client.email, cc, clientName: client.name, agencyName: project.workspaces.agency_name,
         projectName: project.name, documentLabel: 'Statement of Work', response: 'requested changes to',
         note: note.slice(0, 500), brandColour: project.workspaces.brand_colour,
+        log: { workspaceId: sow.workspace_id, kind: 'sow.changes_receipt', entityType: 'sow', entityId: sow.id, projectId: project.id },
       }), 'SOW changes requested (client receipt)')
     }
     await notifyMembersWithPermission(service, {

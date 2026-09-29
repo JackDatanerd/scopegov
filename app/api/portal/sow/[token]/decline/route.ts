@@ -139,6 +139,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         to: client.email, cc, clientName: client.name, agencyName: project.workspaces.agency_name,
         projectName: project.name, documentLabel: 'Statement of Work', response: 'declined',
         note: reason ? reason.slice(0, 500) : null, brandColour: project.workspaces.brand_colour,
+        log: { workspaceId: sow.workspace_id, kind: 'sow.decline_receipt', entityType: 'sow', entityId: sow.id, projectId: project.id },
       }), 'SOW declined (client receipt)')
     }
     await notifyMembersWithPermission(service, {

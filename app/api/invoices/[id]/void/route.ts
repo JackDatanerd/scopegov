@@ -166,6 +166,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         projectName: invoice.projects?.name, documentLabel: 'Invoice',
         documentTitle: invoice.title, action: 'voided', reason: reason || null,
         brandColour: invoice.projects?.workspaces?.brand_colour,
+        log: { workspaceId: session.workspaceId, kind: 'invoice.void_notice', entityType: 'invoice', entityId: id, projectId: invoice.project_id, actorId: session.id },
       }), 'Invoice voided (client) email')
       clientNotified = delivery.ok
     }

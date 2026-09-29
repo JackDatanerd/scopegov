@@ -81,10 +81,12 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   for (const m of (activeMembers || [])) {
     if (!m?.user?.email) continue
     try {
-      await sendWorkspaceSuspendedEmail({
+      // sendEmail resolves { ok: false } on a provider rejection instead of throwing.
+      const res = await sendWorkspaceSuspendedEmail({
         to: m.user.email, name: m.user.name || m.user.email, agencyName: agencyLabel,
       })
-      notified++
+      if (res && res.ok === false) console.error('[admin] Workspace suspended email rejected for', m.user.email, res.error)
+      else if (!res || !res.skipped) notified++
     } catch (e) {
       console.error('[admin] Workspace suspended email failed for', m.user.email, e)
     }

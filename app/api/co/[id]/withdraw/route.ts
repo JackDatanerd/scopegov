@@ -135,6 +135,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         projectName: co.projects?.name, documentLabel: 'Change Order',
         documentTitle: co.title, action: 'withdrawn', reason: reason || null,
         brandColour: co.projects?.workspaces?.brand_colour,
+        log: { workspaceId: session.workspaceId, kind: 'co.withdraw_notice', entityType: 'change_order', entityId: id, projectId: co.project_id, actorId: session.id },
       }), 'CO withdrawn (client) email')
       clientNotified = delivery.ok
     }

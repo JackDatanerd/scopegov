@@ -137,6 +137,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         to: client.email, cc, clientName: client.name, agencyName: project?.workspaces?.agency_name || '',
         projectName: project?.name || invoice.title, documentLabel: 'Invoice', response: 'disputed',
         note: note.trim().slice(0, 500), brandColour: project?.workspaces?.brand_colour,
+        log: { workspaceId: invoice.workspace_id, kind: 'invoice.dispute_receipt', entityType: 'invoice', entityId: invoice.id, projectId: invoice.project_id },
       }), 'Invoice disputed (client receipt)')
     }
 

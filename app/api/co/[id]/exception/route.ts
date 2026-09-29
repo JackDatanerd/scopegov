@@ -181,6 +181,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         clientName: client.name, agencyName: co.projects?.workspaces?.agency_name,
         projectName: co.projects?.name, coTitle: co.title, note: reasonText,
         brandColour: co.projects?.workspaces?.brand_colour,
+        log: { workspaceId: session.workspaceId, kind: 'co.exception_notice', entityType: 'change_order', entityId: id, projectId: co.project_id, actorId: session.id },
       }), 'CO exception granted (client) email')
       clientNotified = delivery.ok
     }

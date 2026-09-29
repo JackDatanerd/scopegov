@@ -207,6 +207,7 @@ export async function POST_DECLINE(request: NextRequest, token: string) {
       to: client.email, cc, clientName: client.name, agencyName: co.projects?.workspaces?.agency_name || '',
       projectName: co.projects?.name || '', documentLabel: 'Change Order', response: 'declined',
       note: reason ? reason.slice(0, 500) : null, brandColour: co.projects?.workspaces?.brand_colour,
+      log: { workspaceId: co.workspace_id, kind: 'co.decline_receipt', entityType: 'change_order', entityId: co.id, projectId: co.project_id },
     }), 'CO declined (client receipt)')
   }
 
@@ -322,6 +323,7 @@ export async function POST_COUNTER(request: NextRequest, token: string) {
         projectName: co.projects?.name || '', documentLabel: 'Change Order', response: 'countered',
         note: `${formatMoney(parsedAmount, co.projects?.currency)}${counterNote ? ` — ${counterNote.slice(0, 400)}` : ''}`,
         brandColour: co.projects?.workspaces?.brand_colour,
+        log: { workspaceId: co.workspace_id, kind: 'co.counter_receipt', entityType: 'change_order', entityId: co.id, projectId: co.project_id },
       }), 'CO countered (client receipt)')
     }
   }

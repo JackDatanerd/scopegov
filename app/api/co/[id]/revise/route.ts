@@ -243,6 +243,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
             documentTitle: co.title, action: 'closed',
             reason: `Superseded by revision v${revision.version}`,
             brandColour: co.projects?.workspaces?.brand_colour,
+            log: { workspaceId: session.workspaceId, kind: 'co.revise_notice', entityType: 'change_order', entityId: co.id, projectId: co.project_id, actorId: session.id },
           }), 'CO superseded-by-revision (client) email')
           clientNotified = delivery.ok
         }

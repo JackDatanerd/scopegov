@@ -2231,6 +2231,7 @@ function WorkspaceNotificationDefaultsSection() {
   const [defaults, setDefaults] = useState<Record<string, { emailEnabled: boolean; inAppEnabled: boolean; locked: boolean }> | null>(null)
   const [saving,   setSaving]   = useState<string | null>(null)
   const [loadErr,  setLoadErr]  = useState('')
+  const [saveErr,  setSaveErr]  = useState('')
 
   useEffect(() => {
     fetch('/api/workspace/notification-defaults')
@@ -2253,6 +2254,7 @@ function WorkspaceNotificationDefaultsSection() {
       ...(inAppEnabled !== undefined ? { inAppEnabled } : {}) }
     setDefaults(d => ({ ...(d || {}), [key]: next })) // optimistic
     setSaving(key)
+    setSaveErr('')
     try {
       const res = await fetch('/api/workspace/notification-defaults', {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
@@ -2261,6 +2263,7 @@ function WorkspaceNotificationDefaultsSection() {
       if (!res.ok) throw new Error()
     } catch {
       setDefaults(d => ({ ...(d || {}), [key]: current })) // revert on failure
+      setSaveErr('Could not save that change — it has been put back. Try again.')
     } finally { setSaving(null) }
   }
 
@@ -2277,6 +2280,7 @@ function WorkspaceNotificationDefaultsSection() {
         turned off individually. Locking overrides any personal choice already made.
       </p>
       {loadErr && <p className="ferr">{loadErr}</p>}
+      {saveErr && <p className="ferr">{saveErr}</p>}
       {!defaults && !loadErr && <p style={{ fontSize: 12, color: 'var(--text-3)' }}>Loading…</p>}
       {defaults && allItems.map(item => {
         const d = defaults[item.key] || { emailEnabled: true, inAppEnabled: true, locked: false }

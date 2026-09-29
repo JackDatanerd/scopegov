@@ -450,6 +450,7 @@ export async function finalizeCoAcceptance(service: any, params: {
       total: co.total, currency: project.currency || 'USD',
       portalUrl,
       attachments: pdfAttachment ? [pdfAttachment] : undefined,
+      log: { workspaceId: co.workspace_id, kind: 'co.accepted_confirmation', entityType: 'change_order', entityId: co.id, projectId: co.project_id },
     }), 'CO accepted (client) email')
   }
 

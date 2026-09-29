@@ -536,16 +536,23 @@ async function handleEvent(service: any, event: any): Promise<void> {
         if (already && already.length) continue
         const ws = must(await service.from('workspaces').select('agency_name').eq('id', res.workspaceId).maybeSingle(), 'read workspace').data
         const recipients = await getBillingRecipients(service, res.workspaceId, [{ email: item?.customer?.email }])
+        // The audit row below is the 20-day dedupe key, so it is only written once somebody was actually
+        // reached — a rejected send (sendEmail resolves { ok: false }, it does not throw) must not mark
+        // the warning as sent and suppress the retry.
+        let anySent = false
         for (const r of recipients) {
           try {
-            await sendCardExpiringEmail({
+            const delivery = await sendCardExpiringEmail({
               to: r.email, name: r.name, agencyName: ws?.agency_name || 'your workspace',
               cardLabel: item?.description || [item?.brand, item?.last4 && `ending ${item.last4}`].filter(Boolean).join(' ') || 'your card',
               expiryLabel: item?.expiry_date || 'soon',
               manageUrl: `${process.env.NEXT_PUBLIC_APP_URL}/settings?tab=billing`,
             })
+            if (delivery.ok) anySent = true
+            else console.error('Card expiring email rejected:', delivery.error)
           } catch (e) { console.error('Card expiring email error:', e) }
         }
+        if (recipients.length > 0 && !anySent) continue
         await audit(service, res.workspaceId, 'billing.card_expiring', item?.customer?.email, { expiry_date: item?.expiry_date ?? undefined })
       }
       return

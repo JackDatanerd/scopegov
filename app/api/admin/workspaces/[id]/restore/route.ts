@@ -42,11 +42,13 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     for (const m of (reactivated || [])) {
       if (!m?.user?.email) continue
       try {
-        await sendWorkspaceRestoredEmail({
+        // sendEmail resolves { ok: false } on a provider rejection instead of throwing.
+        const res = await sendWorkspaceRestoredEmail({
           to: m.user.email, name: m.user.name || m.user.email, agencyName: agencyLabel,
           restoredByName: 'The ScopeGov team', isRestorer: false, workspaceId: params.id,
         })
-        notified++
+        if (res && res.ok === false) console.error('[admin] Workspace restored email rejected for', m.user.email, res.error)
+        else if (!res || !res.skipped) notified++
       } catch (e) {
         console.error('[admin] Workspace restored email failed for', m.user.email, e)
       }

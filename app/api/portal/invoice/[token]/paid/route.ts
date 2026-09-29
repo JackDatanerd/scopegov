@@ -143,6 +143,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         projectName: project?.name || invoice.title, documentLabel: 'Invoice', response: "told us you've paid",
         note: note.trim() ? note.trim().slice(0, 500) : (reference.trim() ? `Reference: ${reference.trim()}` : null),
         brandColour: project?.workspaces?.brand_colour,
+        log: { workspaceId: invoice.workspace_id, kind: 'invoice.paid_receipt', entityType: 'invoice', entityId: invoice.id, projectId: invoice.project_id },
       }), 'Invoice payment claimed (client receipt)')
     }
 

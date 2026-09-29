@@ -2,7 +2,7 @@ export const runtime = 'nodejs'
 
 import { NextResponse, type NextRequest } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/server'
-import { verifyResendSignature, nextEmailStatus } from '@/lib/email/webhook'
+import { verifyResendSignature, nextEmailStatus, classifyEmailKind, bounceAlertBody } from '@/lib/email/webhook'
 import { notifyUsers, notifyMembersWithPermission } from '@/lib/utils/notify'
 import type { Permission } from '@/lib/supabase/types'
 import { escapeLike } from '@/lib/utils/escape-like'
@@ -76,17 +76,16 @@ export async function POST(request: NextRequest) {
 }
 
 async function alertSender(service: any, row: any, status: 'bounced' | 'complained') {
-  const docKind = String(row.kind || '').split('.')[0]
+  const { docKind, role } = classifyEmailKind(row.kind)
   const doc = DOC_BY_KIND[docKind]
   const to = (row.to_emails || [])[0] || 'the client'
   const what = doc ? doc.label : 'email'
-  const isReminder = String(row.kind || '').endsWith('.reminder')
 
   const title = status === 'bounced'
     ? `Email to ${to} bounced`
     : `${to} marked your email as spam`
   const body = status === 'bounced'
-    ? `Your ${isReminder ? 'reminder for the' : ''} ${what} was not delivered. Check the address on the client record, then resend.`.replace(/\s+/g, ' ')
+    ? bounceAlertBody(role, what)
     : `Your ${what} email was reported as spam. Avoid further emails to this address until you have spoken to them.`
 
   const shared = {
@@ -131,7 +130,7 @@ async function trackClientEmailHealth(service: any, row: any, status: string) {
       // Only a plain bounce clears on delivery — a spam complaint stays until the address is changed.
       const { error } = await service.from('clients')
         .update({ email_bounced_at: null, email_bounce_kind: null })
-        .ilike('email', escapeLike(to)).eq('email_bounce_kind', 'bounce')
+        .eq('workspace_id', row.workspace_id).ilike('email', escapeLike(to)).eq('email_bounce_kind', 'bounce')
       if (error) console.error('[resend-webhook] could not clear client email bounce:', error.message)
     }
   } catch (e) {

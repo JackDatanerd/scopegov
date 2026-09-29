@@ -59,3 +59,37 @@ describe('nextEmailStatus — out-of-order and retried events must never downgra
     expect(nextEmailStatus('sent', 'email.clicked')).toBeNull()
   })
 })
+
+import { classifyEmailKind, bounceAlertBody } from '@/lib/email/webhook'
+
+describe('classifyEmailKind', () => {
+  it('splits the document kind from the email role', () => {
+    expect(classifyEmailKind('sow.send')).toEqual({ docKind: 'sow', role: 'send' })
+    expect(classifyEmailKind('co.countersign_request')).toEqual({ docKind: 'co', role: 'send' })
+    expect(classifyEmailKind('invoice.reminder')).toEqual({ docKind: 'invoice', role: 'reminder' })
+  })
+  it('treats automatic reminders as reminders (".auto_reminder" used to miss ".reminder")', () => {
+    expect(classifyEmailKind('invoice.auto_reminder').role).toBe('reminder')
+    expect(classifyEmailKind('sow.auto_reminder').role).toBe('reminder')
+    expect(classifyEmailKind('co.auto_reminder').role).toBe('reminder')
+  })
+  it('recognises notices and confirmations/receipts', () => {
+    for (const k of ['invoice.void_notice', 'sow.withdraw_notice', 'co.close_notice', 'co.exception_notice', 'invoice.dispute_resolved_notice'])
+      expect(classifyEmailKind(k).role).toBe('notice')
+    for (const k of ['sow.signed_confirmation', 'co.accepted_confirmation', 'sow.decline_receipt', 'invoice.paid_receipt'])
+      expect(classifyEmailKind(k).role).toBe('confirmation')
+  })
+  it('falls back to other for unknown or empty kinds', () => {
+    expect(classifyEmailKind('mystery.thing').role).toBe('other')
+    expect(classifyEmailKind(null)).toEqual({ docKind: '', role: 'other' })
+  })
+})
+
+describe('bounceAlertBody', () => {
+  it('only advises resending for sends and reminders', () => {
+    expect(bounceAlertBody('send', 'invoice')).toMatch(/then resend/)
+    expect(bounceAlertBody('reminder', 'invoice')).toMatch(/^Your reminder for the invoice/)
+    expect(bounceAlertBody('notice', 'invoice')).not.toMatch(/resend/)
+    expect(bounceAlertBody('confirmation', 'Statement of Work')).not.toMatch(/resend/)
+  })
+})

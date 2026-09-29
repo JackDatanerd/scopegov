@@ -36,6 +36,35 @@ export function verifyResendSignature(
   return false
 }
 
+export type EmailKindRole = 'send' | 'reminder' | 'notice' | 'confirmation' | 'other'
+
+/**
+ * Classify an email_log `kind` ('sow.send', 'co.withdraw_notice', 'invoice.auto_reminder', …) so the bounce
+ * alert can say something accurate. `_reminder` covers both '.reminder' and '.auto_reminder'.
+ */
+export function classifyEmailKind(kind: string | null | undefined): { docKind: string; role: EmailKindRole } {
+  const k = String(kind || '')
+  const docKind = k.split('.')[0]
+  const tail = k.includes('.') ? k.slice(k.indexOf('.') + 1) : ''
+  let role: EmailKindRole = 'other'
+  if (tail === 'send' || tail === 'countersign_request') role = 'send'
+  else if (/(^|_)reminder$/.test(tail)) role = 'reminder'
+  else if (/_notice$/.test(tail)) role = 'notice'
+  else if (/_(confirmation|receipt)$/.test(tail)) role = 'confirmation'
+  return { docKind, role }
+}
+
+/** Body of the in-app alert raised for the sender when an email bounces. `what` is e.g. 'invoice'. */
+export function bounceAlertBody(role: EmailKindRole, what: string): string {
+  switch (role) {
+    case 'reminder':     return `Your reminder for the ${what} was not delivered. Check the address on the client record, then resend.`
+    case 'send':         return `Your ${what} was not delivered. Check the address on the client record, then resend.`
+    case 'notice':       return `The ${what} notice to your client was not delivered, so they may still act on the old link. Check the address on the client record and let them know another way.`
+    case 'confirmation': return `The ${what} confirmation email to your client was not delivered. Check the address on the client record and share their copy another way.`
+    default:             return `An email about your ${what} was not delivered. Check the address on the client record.`
+  }
+}
+
 export type EmailLogStatus = 'sent' | 'delayed' | 'delivered' | 'failed' | 'bounced' | 'complained'
 
 // A later event must never downgrade an earlier, more final one (webhooks arrive out of order and

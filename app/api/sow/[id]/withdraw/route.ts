@@ -119,6 +119,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         documentTitle: `${sow.projects?.name} — SOW v${sow.version}`,
         action: 'withdrawn', reason: reason || null,
         brandColour: sow.projects?.workspaces?.brand_colour,
+        log: { workspaceId: session.workspaceId, kind: 'sow.withdraw_notice', entityType: 'sow', entityId: id, projectId: sow.project_id, actorId: session.id },
       }), 'SOW withdrawn email')
       emailed = delivery.ok
     }

@@ -393,6 +393,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       projectName: project.name,
       portalUrl:   `${portalBase}/portal/sow/${clientToken}`,
       attachments: pdfAttachment ? [pdfAttachment] : undefined,
+      log: { workspaceId: sow.workspace_id, kind: 'sow.signed_confirmation', entityType: 'sow', entityId: sow.id, projectId: project.id },
     }), 'SOW signed (client) email')
 
     } catch (postErr) {

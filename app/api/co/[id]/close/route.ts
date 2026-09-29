@@ -189,6 +189,7 @@ async function handleTerminalCoState(
       projectName: co.projects?.name, documentLabel: 'Change Order',
       documentTitle: co.title, action: 'closed', reason,
       brandColour: co.projects?.workspaces?.brand_colour,
+      log: { workspaceId: session.workspaceId, kind: 'co.close_notice', entityType: 'change_order', entityId: id, projectId: co.project_id, actorId: session.id },
     }), 'CO closed (client) email')
     clientNotified = delivery.ok
   }

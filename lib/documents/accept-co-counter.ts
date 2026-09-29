@@ -146,6 +146,7 @@ export async function acceptCoCounter(service: any, params: {
     projectName: project?.name, coTitle: co.title,
     total: rescaledTotal, currency: project?.currency || 'USD',
     portalUrl, brandColour: ws?.brand_colour,
+    log: { workspaceId, kind: 'co.countersign_request', entityType: 'change_order', entityId: coId, projectId: project?.id, actorId },
   }), 'CO countersignature request email')
 
   return { ok: true, awaitingCountersignature: true, emailSent: delivery.ok, ...(delivery.ok ? {} : { emailError: delivery.error }) }

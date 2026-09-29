@@ -1,0 +1,20 @@
+Notifications & email (section 19) — independent pass, fix round
+Base: 7071ee4.  Verified: tsc clean; vitest 924 passed (54 pre-existing skips).
+No migration required.
+
+B1  app/api/webhooks/resend/route.ts — the "delivered" branch cleared email_bounced_at on clients in EVERY
+    workspace with the same address; it now filters on the log row's workspace_id like the bounce branch.
+B2  Bounce alerts for automatic reminders (kind '*.auto_reminder') were worded as plain sends. New
+    classifyEmailKind()/bounceAlertBody() in lib/email/webhook.ts; wording now depends on the email's role.
+B3  admin/workspaces/[id]/suspend + restore counted rejected sends in the audit `membersNotified`.
+B4  billing/webhook subscription.expiring_cards wrote its 20-day dedupe audit row even when every send was
+    rejected; it is now withheld until someone was actually reached.
+B5  Settings > Notifications > Workspace defaults: a failed save reverted silently; it now shows an error.
+B6  sendInvoicePaymentClaimedEmail hand-formatted money (wrong digits for JPY/KWD, raw currency into HTML);
+    now uses formatMoney like every other template.
+G1  Client-facing emails that were never tracked (so a delayed bounce was invisible) now pass an email_log
+    context: CO countersignature request, SOW-signed and CO-accepted confirmations, void/withdraw/close/
+    revise/exception/dispute-resolved notices, and the six portal "response received" receipts.
+    Kinds: co.countersign_request, sow.signed_confirmation, co.accepted_confirmation, *_notice, *_receipt.
+
+Tests: tests/email-webhook.test.ts (+classifyEmailKind, bounceAlertBody), tests/email-templates-money.test.ts (new).

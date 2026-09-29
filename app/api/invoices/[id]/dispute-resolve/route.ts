@@ -79,6 +79,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         projectName: project?.name || invoice.title, invoiceNumber: invoice.invoice_number, note,
         portalUrl: `${process.env.NEXT_PUBLIC_PORTAL_URL || process.env.NEXT_PUBLIC_APP_URL}/portal/invoice/${invoice.token}`,
         brandColour: project?.workspaces?.brand_colour,
+        log: { workspaceId: session.workspaceId, kind: 'invoice.dispute_resolved_notice', entityType: 'invoice', entityId: invoice.id, projectId: invoice.project_id, actorId: session.id },
       }), 'Invoice dispute resolved (client) email')
       emailed = delivery.ok
     }
