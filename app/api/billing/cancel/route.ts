@@ -17,10 +17,10 @@ export const maxDuration = 60
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
-import { logAudit } from '@/lib/utils/audit'
+import { logBillingAuditWithRetry } from '@/lib/billing/audit-retry'
 import { requireStepUpForCurrentUser } from '@/lib/auth/step-up'
 import { getClientIp } from '@/lib/utils/request-ip'
-import { cancelPaystackSubscription } from '@/lib/integrations/paystack'
+import { cancelPaystackSubscription, fetchPaystackNextPaymentDate } from '@/lib/integrations/paystack'
 import { getBillingRecipients } from '@/lib/billing/recipients'
 import { alertBillingOps } from '@/lib/billing/ops-alert'
 import { sendSubscriptionCancelScheduledEmail } from '@/lib/email/templates'
@@ -96,8 +96,26 @@ export async function POST(request: NextRequest) {
     //  - a plan switch that replaced the code matches zero rows and cannot be
     //    flagged. If Paystack then refuses, the claim is rolled back (below).
     const code = billing.paystack_subscription_code as string
+
+    // FIX (Billing independent pass 7 — latent): cron/payment-overdue step 5 only selects rows whose
+    // current_period_end IS NOT NULL. A subscription recorded without a next_payment_date could therefore be
+    // cancelled here and then never be downgraded at period end (paid plan kept free indefinitely). When the
+    // date is missing, take it from Paystack now and store it with the claim. Best-effort: a failed read just
+    // leaves the old behaviour (the daily billing-reconcile cron also fills it in once it is in the future).
+    let backfilledPeriodEnd: string | null = null
+    if (!billing.current_period_end) {
+      try {
+        const fetched = await fetchPaystackNextPaymentDate(code)
+        if (fetched && !isNaN(Date.parse(fetched)) && Date.parse(fetched) > Date.now()) backfilledPeriodEnd = fetched
+      } catch (e) { console.error('[BILLING] cancel: could not backfill current_period_end', e) }
+    }
+    if (backfilledPeriodEnd) billing.current_period_end = backfilledPeriodEnd
+
     const claim = await (service as any).from('billing')
-      .update({ cancels_at_period_end: true, updated_at: new Date().toISOString() })
+      .update({
+        cancels_at_period_end: true, updated_at: new Date().toISOString(),
+        ...(backfilledPeriodEnd ? { current_period_end: backfilledPeriodEnd } : {}),
+      })
       .eq('workspace_id', session.workspaceId)
       .eq('paystack_subscription_code', code)
       .eq('cancels_at_period_end', false)
@@ -172,7 +190,8 @@ export async function POST(request: NextRequest) {
       }, { status: 409 })
     }
 
-    await logAudit(service, {
+    // FIX (Billing independent pass 7 — B1): retried + ops-paged on failure; see lib/billing/audit-retry.ts.
+    await logBillingAuditWithRetry(service, {
       workspaceId: session.workspaceId, actorId: session.id,
       actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
       eventType: 'billing.plan_changed', entityType: 'workspace',

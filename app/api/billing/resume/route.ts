@@ -27,7 +27,7 @@ export const maxDuration = 60
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
-import { logAudit } from '@/lib/utils/audit'
+import { logBillingAuditWithRetry } from '@/lib/billing/audit-retry'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { resumePaystackSubscription } from '@/lib/integrations/paystack'
 import { getBillingRecipients } from '@/lib/billing/recipients'
@@ -112,7 +112,8 @@ export async function POST(request: NextRequest) {
       }, { status: 409 })
     }
 
-    await logAudit(service, {
+    // FIX (Billing independent pass 7 — B1): retried + ops-paged on failure; see lib/billing/audit-retry.ts.
+    await logBillingAuditWithRetry(service, {
       workspaceId: session.workspaceId, actorId: session.id,
       actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
       eventType: 'billing.plan_changed', entityType: 'workspace',

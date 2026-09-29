@@ -298,22 +298,31 @@ async function handleEvent(service: any, event: any): Promise<void> {
 
       // Changing plans opens a fresh checkout, which creates a BRAND NEW
       // subscription; Paystack does not cancel the customer's other ones, so
-      // disable the previous one or it keeps charging invisibly. Best-effort
-      // for the write path (the new, already-paid subscription must still be
-      // recorded) but a failure is now an alert, not a log line.
-      let previousDisabled: boolean | undefined
-      if (prevBilling?.paystack_subscription_code && prevBilling.paystack_subscription_code !== subCode) {
-        const r = await cancelPaystackSubscription(prevBilling)
-        previousDisabled = r.ok
-        if (!r.ok) {
-          await alertBillingOps(service, `billing:double-billing:${workspaceId}`, 'Previous subscription NOT disabled after a plan switch', [
-            `workspace: ${workspaceId}`,
-            `old subscription: ${prevBilling.paystack_subscription_code}`,
-            `new subscription: ${subCode}`,
-            `error: ${r.error}`,
-            'The customer may be double-billed until the old subscription is disabled in the Paystack dashboard.',
-          ])
-        }
+      // the previous one must be disabled or it keeps charging invisibly.
+      //
+      // FIX (Billing independent pass 7 — B2): the order used to be disable-old
+      // FIRST, write-new-row after. Disabling makes Paystack fire
+      // subscription.disable for the OLD code, and that event can reach this
+      // webhook before the new billing row below is written — the old code was
+      // still on file, so it was treated as a genuine cancellation: a false
+      // `subscription_disabled` row in the customer's Payment history (and a
+      // transient cancels_at_period_end flag). Now:
+      //   1. durably record the old subscription as pending-disable
+      //      (billing_pending_subscription_cancels, retried daily by
+      //      payment-overdue 4c) — so a crash after the row swap below can
+      //      never leave the old subscription charging with no record, since a
+      //      redelivery would take the "already applied" early exit;
+      //   2. write the new plan + billing row;
+      //   3. only then disable the old subscription. Its disable event now
+      //      finds the new code on file and is ignored as superseded.
+      const oldSubCode = prevBilling?.paystack_subscription_code && prevBilling.paystack_subscription_code !== subCode
+        ? prevBilling.paystack_subscription_code : null
+      if (oldSubCode) {
+        must(await service.from('billing_pending_subscription_cancels').upsert({
+          workspace_id:      workspaceId,
+          subscription_code: oldSubCode,
+          email_token:       prevBilling!.paystack_email_token ?? null,
+        }, { onConflict: 'workspace_id,subscription_code' }), 'record pending old-subscription cancel')
       }
 
       // BUG-054: planTier ONLY updated on webhook — never browser callback
@@ -337,26 +346,26 @@ async function handleEvent(service: any, event: any): Promise<void> {
         updated_at:                 new Date().toISOString(),
       }, { onConflict: 'workspace_id' }), 'upsert billing')
 
-      // FIX (deep audit, Billing re-pass — independent redo #2): this used
-      // to be a single pending_cancel_subscription_code/email_token SLOT on
-      // the billing row (081), overwritten on every plan switch — so a
-      // second switch's outcome (even a SUCCESSFUL one, for a different old
-      // subscription) could silently erase the retry record for an earlier,
-      // still-undisabled subscription, permanently defeating the exact
-      // safety net (payment-overdue step 4c) built for this failure mode.
-      // A dedicated table with one row per still-unresolved old
-      // subscription (migration 094) means this workspace's earlier
-      // failures — if any are still sitting unresolved from a previous
-      // switch — are untouched by this one; only the subscription THIS
-      // event just failed to disable is recorded, keyed with the new
-      // subscription so a retry can never target it by mistake.
-      if (previousDisabled === false && prevBilling?.paystack_subscription_code) {
-        const { error: pendingErr } = await service.from('billing_pending_subscription_cancels').upsert({
-          workspace_id:       workspaceId,
-          subscription_code:  prevBilling.paystack_subscription_code,
-          email_token:        prevBilling.paystack_email_token ?? null,
-        }, { onConflict: 'workspace_id,subscription_code' })
-        if (pendingErr) console.error('[BILLING] could not record pending cancel retry:', pendingErr.message)
+      // Best-effort: the new, already-paid subscription is recorded above
+      // either way. A failure is an alert and stays in the pending table for
+      // the daily retry; a success removes the pending row.
+      let previousDisabled: boolean | undefined
+      if (oldSubCode) {
+        const r = await cancelPaystackSubscription({ paystack_subscription_code: oldSubCode, paystack_email_token: prevBilling!.paystack_email_token ?? null })
+        previousDisabled = r.ok
+        if (r.ok) {
+          const { error: clearErr } = await service.from('billing_pending_subscription_cancels').delete()
+            .eq('workspace_id', workspaceId).eq('subscription_code', oldSubCode)
+          if (clearErr) console.error('[BILLING] could not clear pending old-subscription cancel (the daily retry will find it already disabled):', clearErr.message)
+        } else {
+          await alertBillingOps(service, `billing:double-billing:${workspaceId}`, 'Previous subscription NOT disabled after a plan switch', [
+            `workspace: ${workspaceId}`,
+            `old subscription: ${oldSubCode}`,
+            `new subscription: ${subCode}`,
+            `error: ${r.error}`,
+            'The customer may be double-billed until the old subscription is disabled in the Paystack dashboard. It is queued for the daily retry.',
+          ])
+        }
       }
 
       if (res.checkout) await consumeCheckoutGroup(service, res.checkout)

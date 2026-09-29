@@ -1,0 +1,43 @@
+CHANGES — Section 16 (Billing) independent pass 7 (api/billing cancel / upgrade / webhook, Paystack)
+====================================================================================================
+
+Independent audit at commit 4d5c467, audited as if no earlier comment existed. No feature gaps. 2 bugs + 1 latent
+issue, all closed. upgrade/route.ts came back clean.
+
+BUGS
+B1  cancel + resume: a failed audit write vanished silently.
+    logAudit() resolves `false` on a failed insert; both routes awaited it and discarded the result. billing/history
+    is built ONLY from audit_log, and since the claim-first cancel rewrite the webhook's not_renew handler exits early
+    when the cancel route already set the flag — so the route's row is the ONLY record of a cancellation. A failed
+    insert meant the cancellation/resume was missing from Payment history and nobody was told.
+      + lib/billing/audit-retry.ts      logBillingAuditWithRetry(): one retry, then alertBillingOps with the row to add
+                                        by hand. Never throws / never fails the user's action.
+      ~ app/api/billing/cancel/route.ts  uses it
+      ~ app/api/billing/resume/route.ts  uses it
+
+B2  webhook subscription.create: a plan switch could write a false "subscription_disabled" history row.
+    The handler disabled the OLD subscription BEFORE writing the new billing row. Disabling makes Paystack fire
+    subscription.disable for the old code; if that reached the webhook inside the gap, the old code was still on file
+    and was recorded as a genuine cancellation (false Payment-history row + transient cancels_at_period_end flag).
+    New order: (1) durably queue the old subscription in billing_pending_subscription_cancels (so a crash after the row
+    swap can never leave it charging unrecorded — a redelivery takes the "already applied" early exit), (2) write the
+    new plan + billing row, (3) disable the old subscription; its disable event now finds the new code on file and is
+    ignored as superseded. Success removes the queue row; failure alerts ops and leaves it for payment-overdue 4c.
+      ~ app/api/billing/webhook/route.ts
+
+LATENT
+L1  cancel: a subscription with no current_period_end could be cancelled and then never downgraded — payment-overdue
+    step 5 only selects rows with a non-null current_period_end, so the workspace would keep its paid plan free.
+    cancel now backfills the date from Paystack (only if in the future) as part of the claim write. Best-effort.
+      ~ app/api/billing/cancel/route.ts
+
+TESTS (new, vitest) — 7 of these 10 FAIL on the pre-fix code and pass now (3 are healthy-path/unchanged guards)
+  tests/billing-pass7-cancel-resume.test.ts       6
+  tests/billing-pass7-plan-switch-order.test.ts   4
+Full suite: 1022 passed. 2 failures, both pre-existing on a clean checkout and NOT touched here:
+  tests/search-route.test.ts (member search)
+  tests/invoicing-section12-independent-pass.test.ts ("project page computes the Billing-tab position live…" — a
+  source-text assertion that no longer matches projects/[id]/page.tsx after commit 1e0b836)
+tsc --noEmit clean.
+
+NO MIGRATION. billing_pending_subscription_cancels already exists (migration 094).
