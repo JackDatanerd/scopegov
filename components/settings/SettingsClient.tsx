@@ -1081,6 +1081,7 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, save
         // app/api/workspace/branding/logo/route.ts.
         const body = new FormData()
         body.append('file', logoFile)
+        if (workspaceId) body.append('workspaceId', workspaceId)
         const res  = await fetch('/api/workspace/branding/logo', { method: 'POST', body })
         if (res.ok) {
           const json = await res.json()
@@ -1127,7 +1128,7 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, save
     if (!confirm('Remove the workspace logo? This can\u2019t be undone — you\u2019ll need to upload a new one.')) return
     setRemovingLogo(true); setFileError('')
     try {
-      const res = await fetch('/api/workspace/branding/logo', { method: 'DELETE' })
+      const res = await fetch(workspaceId ? `/api/workspace/branding/logo?workspaceId=${encodeURIComponent(workspaceId)}` : '/api/workspace/branding/logo', { method: 'DELETE' })
       const json = await res.json().catch(() => ({}))
       if (!res.ok) { setFileError(json.error || 'Could not remove logo — try again.'); return }
       // FIX (deep audit, Settings re-pass round 2 — false-conflict bug):

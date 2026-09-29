@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect, Suspense } from 'react'
+import { useState, useEffect, useRef, Suspense } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter, useSearchParams } from 'next/navigation'
 // FIX (Workspace lifecycle + Onboarding, round 4): these were defined
@@ -8,6 +8,8 @@ import { useRouter, useSearchParams } from 'next/navigation'
 // against them — importing the one shared list means the dropdown and
 // the server-side validation literally cannot drift apart again.
 import { INDUSTRIES, CURRENCIES, TIMEZONES, SOW_LANGUAGES, DEFAULT_TIMEZONE, DEFAULT_CURRENCY } from '@/lib/constants/workspace-options'
+// FIX (Onboarding independent pass 3): see tzOptions and detectBrowserTimezone() use below.
+import { listRuntimeTimezones, detectBrowserTimezone } from '@/lib/utils/timezone'
 // FIX (fresh independent audit, section 4): see discardWorkspace() and app/onboarding/layout.tsx.
 import { fetchWithStepUp } from '@/lib/client/step-up'
 // FIX (fresh independent audit, section 4 — feature gap): see the brand-colour hint on step 1.
@@ -59,6 +61,24 @@ function OnboardingWizard() {
   const [industry,   setIndustry]   = useState('')
   const [currency,   setCurrency]   = useState<string>(DEFAULT_CURRENCY)
   const [timezone,   setTimezone]   = useState<string>(DEFAULT_TIMEZONE)
+  // FIX (Onboarding independent pass 3 — feature gap): the dropdown only ever offered 13 zones
+  // while Settings and (now) workspace/create accept any valid IANA zone, so anyone outside those
+  // 13 had to pick a wrong zone and fix it later. Starts on the curated list (identical on server
+  // and first client render, so hydration matches) and widens to the runtime's full list after
+  // mount. The current value is always included so a resumed workspace's zone never renders blank.
+  const [tzOptions, setTzOptions] = useState<string[]>([...TIMEZONES])
+  useEffect(() => {
+    const runtime = listRuntimeTimezones()
+    if (runtime.length > 1) setTzOptions(runtime)
+  }, [])
+  const tzChoices = tzOptions.includes(timezone) ? tzOptions : [timezone, ...tzOptions]
+
+  // FIX (Onboarding independent pass 3 — B2): workspaceIdRef mirrors state so the mount effect can
+  // tell "the wizard is already live" without re-running on every state change; newFlagConsumedRef
+  // records that this tab has already acted on ?new=1 (see the effect and submitIdentity).
+  const workspaceIdRef = useRef<string | null>(null)
+  workspaceIdRef.current = workspaceId
+  const newFlagConsumedRef = useRef(false)
 
   // Step 1
   const [brandColour,  setBrandColour]  = useState('#1A5C3A')
@@ -201,6 +221,11 @@ function OnboardingWizard() {
     supabase.auth.getUser().then(async ({ data: { user } }) => {
       if (!user) { router.push('/login'); return }
 
+      // FIX (Onboarding independent pass 3 — B2): submitIdentity() strips ?new=1 from the URL once
+      // the workspace exists, which changes explicitNew and re-runs this effect. The wizard is
+      // already live at that point — re-deciding routing here would only flicker or clobber it.
+      if (!explicitNew && workspaceIdRef.current) return
+
       // FIX (round 3, Workspace lifecycle Finding 1): explicit intent to
       // start a NEW workspace overrides both the localStorage restore and
       // the onboarding-status check below — otherwise either one could
@@ -208,7 +233,7 @@ function OnboardingWizard() {
       // click was for. Clear any stale saved progress first so a leftover
       // in-progress record for a DIFFERENT (already-abandoned) workspace
       // doesn't get resumed instead.
-      if (explicitNew) {
+      if (explicitNew && !newFlagConsumedRef.current) {
         try { localStorage.removeItem(STORAGE_KEY_PREFIX + user.id) } catch { /* ignore */ }
         // FIX (fresh independent audit, section 4): explicitNew is reached both by a
         // genuine full page load (Sidebar's "Create new workspace" link — a different
@@ -250,7 +275,7 @@ function OnboardingWizard() {
         setAgencyName(userName ? `${userName.split(' ')[0]}'s Agency` : '')
         setIndustry('')
         setCurrency(DEFAULT_CURRENCY)
-        setTimezone(DEFAULT_TIMEZONE)
+        setTimezone(detectBrowserTimezone() || DEFAULT_TIMEZONE)
         setBrandColour('#1A5C3A')
         setLogoFile(null)
         setLogoPreview(null)
@@ -435,6 +460,9 @@ function OnboardingWizard() {
       try { localStorage.removeItem(STORAGE_KEY_PREFIX + user.id) } catch { /* ignore */ }
       const userName = user.user_metadata?.name || ''
       if (userName) setAgencyName(`${userName.split(' ')[0]}'s Agency`)
+      // Brand-new workspace: start on the browser's own zone rather than UTC when it is valid.
+      const detectedTz = detectBrowserTimezone()
+      if (detectedTz) setTimezone(detectedTz)
       setRestored(true)
       setGate('create')
     })
@@ -633,6 +661,8 @@ function OnboardingWizard() {
         }
       } catch { /* status check failed — fall through to starting fresh */ }
       setWorkspaceId(null)
+      workspaceIdRef.current = null
+      newFlagConsumedRef.current = false
       setStep(0)
       router.replace('/onboarding?new=1')
     } catch {
@@ -702,7 +732,31 @@ function OnboardingWizard() {
         }
         throw new Error(json.error || 'Failed to create workspace')
       }
-      setWorkspaceId(json.workspaceId)
+      const newId: string = json.workspaceId
+      workspaceIdRef.current = newId
+      setWorkspaceId(newId)
+      // FIX (Onboarding independent pass 3 — B2): ?new=1 means "start a blank wizard", which is
+      // right exactly once — for THIS create. Left in the URL, any reload / back-forward / remount
+      // re-ran the explicitNew branch: it cleared saved progress and showed a blank step 0 over a
+      // workspace that already existed and was active, whose next submit hit the trial-cap 409 /
+      // TRIAL_ALREADY_USED dead end (or, for trial-cap-exempt users, silently created a second
+      // orphaned workspace). Consume the flag and drop it from the URL so a reload takes the
+      // normal server-driven resume path.
+      if (explicitNew) {
+        newFlagConsumedRef.current = true
+        try { window.history.replaceState(window.history.state, '', '/onboarding') } catch { /* cosmetic */ }
+      }
+      // FIX (Onboarding independent pass 3 — B4): the server could not confirm it made this the
+      // active workspace. Every later wizard write resolves off the ACTIVE workspace, so switch
+      // explicitly now and block on the existing retry gate if that fails too.
+      if (json.activeSet === false) {
+        const switched = await switchIntoWorkspace(newId)
+        if (!switched) {
+          setResumeTarget({ workspaceId: newId, agencyName })
+          setGate('switch_error')
+          return
+        }
+      }
       setStep(1)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Something went wrong')
@@ -770,6 +824,9 @@ function OnboardingWizard() {
         setUploading(true)
         const body = new FormData()
         body.append('file', logoFile)
+        // FIX (Onboarding independent pass 3 — B3): tie the upload to the workspace this wizard is
+        // working on; the route 409s if the server's active workspace has since changed.
+        body.append('workspaceId', workspaceId)
         const upRes  = await fetch('/api/workspace/branding/logo', { method: 'POST', body })
         const upJson = await upRes.json().catch(() => ({}))
         setUploading(false)
@@ -778,6 +835,12 @@ function OnboardingWizard() {
           return
         }
         logoStoragePath = upJson.logoStoragePath
+        // FIX (Onboarding independent pass 3 — B6): logoFile was never cleared, so every further
+        // press of Continue (e.g. after the branding PATCH below failed, or Back then Continue)
+        // re-uploaded the identical file — a fresh storage write, an audit-log row and a new
+        // updated_at each time. The route already links the path to the workspace; the preview
+        // stays on screen from logoPreview.
+        setLogoFile(null)
       }
       const res  = await fetch('/api/workspace/branding', {
         method: 'PATCH',
@@ -1261,7 +1324,7 @@ function OnboardingWizard() {
                 <label className="flbl">Timezone</label>
                 <select className="finp" value={timezone}
                   onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setTimezone(e.target.value)}>
-                  {TIMEZONES.map(t => <option key={t} value={t}>{t.replace(/_/g,' ')}</option>)}
+                  {tzChoices.map(t => <option key={t} value={t}>{t.replace(/_/g,' ')}</option>)}
                 </select>
               </div>
             </div>
@@ -1293,7 +1356,7 @@ function OnboardingWizard() {
                 <div>
                   <label className="btn btn-ghost btn-sm" style={{ cursor: 'pointer' }}>
                     <i className="ti ti-upload" style={{ fontSize: 12 }} />
-                    {uploading ? 'Uploading…' : logoFile ? 'Change logo' : 'Upload logo'}
+                    {uploading ? 'Uploading…' : logoPreview ? 'Change logo' : 'Upload logo'}
                     <input type="file" accept="image/png,image/jpeg" style={{ display: 'none' }}
                       onChange={handleLogoChange} />
                   </label>

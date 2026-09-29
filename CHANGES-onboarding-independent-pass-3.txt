@@ -1,0 +1,17 @@
+Onboarding — independent pass 3 (base 86f6722)
+
+B1  Discard/restore turning pending invites into active ghost members — ALREADY CLOSED by the
+    Team & invites commit (migration 112 + workspace/delete .eq('status','active')). No change here.
+B2  ?new=1 now consumed after create (ref + history.replaceState); reload resumes from the server.
+    Effect re-run caused by the strip no longer re-routes a live wizard; discard re-arms the flag.
+B3  branding/logo POST + DELETE accept workspaceId and 409 on mismatch; wizard and Settings send it.
+B4  workspace/create retries the active_workspace_id write and returns activeSet; wizard switches
+    explicitly and falls into the existing switch_error gate if that fails.
+B5  Slugs: lowercase [a-z0-9] suffix, hyphen-trimmed base, 'workspace' fallback (matches Settings validator).
+B6  Wizard clears logoFile after a successful upload (no re-upload on repeat Continue).
+GAP Timezone: wizard offers the runtime's full IANA list (after mount), defaults a NEW workspace to the
+    browser zone when valid; workspace/create validates with isValidTimeZone (same as Settings).
+
+Files: app/onboarding/page.tsx, app/api/workspace/create/route.ts, app/api/workspace/branding/logo/route.ts,
+components/settings/SettingsClient.tsx, lib/utils/timezone.ts, tests/onboarding-independent-pass-3.test.ts
+Not changed: existing rows with legacy mixed-case slugs (slug is only used in export filenames).

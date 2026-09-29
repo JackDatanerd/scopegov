@@ -69,3 +69,27 @@ export function formatDateInZone(
     timeZone: resolveTimeZone(tz), day: 'numeric', month: 'short', year: 'numeric',
   }).format(d)
 }
+
+/**
+ * The IANA zones this runtime knows, with 'UTC' first (Intl.supportedValuesOf omits it).
+ * Client-side only in practice: read it AFTER mount so server and first client render match.
+ */
+export function listRuntimeTimezones(): string[] {
+  try {
+    if (typeof Intl.supportedValuesOf === 'function') {
+      const list = Intl.supportedValuesOf('timeZone')
+      return list.includes('UTC') ? list : ['UTC', ...list]
+    }
+  } catch { /* fall through */ }
+  return ['UTC']
+}
+
+/** The browser's own zone if it is a valid IANA id, else null. */
+export function detectBrowserTimezone(): string | null {
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
+    return isValidTimeZone(tz) ? tz : null
+  } catch {
+    return null
+  }
+}

@@ -61,6 +61,18 @@ export async function POST(request: NextRequest) {
     }
 
     const formData = await request.formData()
+    // FIX (Onboarding independent pass 3 — B3): every other write the onboarding wizard makes
+    // (settings, branding PATCH, defaults, invite, delete) sends the workspaceId it believes it
+    // is working on and gets a 409 when the server's active workspace has since changed (another
+    // tab/device switched it). This upload sent only the file and trusted session.workspaceId,
+    // so a stale wizard tab overwrote ANOTHER workspace's logo, re-pointed its
+    // logo_storage_path and deleted its previous logo file. Same guard, same 409 copy.
+    const expectedWorkspaceId = formData.get('workspaceId')
+    if (typeof expectedWorkspaceId === 'string' && expectedWorkspaceId !== '' && expectedWorkspaceId !== session.workspaceId) {
+      return NextResponse.json({
+        error: 'You\u2019re no longer working on that workspace. Reload the page and try again.',
+      }, { status: 409 })
+    }
     const file = formData.get('file')
     if (!(file instanceof File)) {
       return NextResponse.json({ error: 'No file provided' }, { status: 400 })
@@ -195,12 +207,20 @@ export async function POST(request: NextRequest) {
 // A dedicated DELETE here (rather than overloading PATCH) keeps the
 // Storage removal and the DB column update in the same request, same
 // reasoning as POST's own upload+link-in-one-request fix above.
-export async function DELETE() {
+export async function DELETE(request?: NextRequest) {
   try {
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     if (!hasPermission(session, 'MANAGE_WORKSPACE_SETTINGS')) {
       return NextResponse.json({ error: 'Missing permission: MANAGE_WORKSPACE_SETTINGS' }, { status: 403 })
+    }
+
+    // FIX (Onboarding independent pass 3 — B3): same stale-tab guard as the upload above.
+    const expectedWorkspaceId = request ? new URL(request.url).searchParams.get('workspaceId') : null
+    if (expectedWorkspaceId && expectedWorkspaceId !== session.workspaceId) {
+      return NextResponse.json({
+        error: 'You\u2019re no longer working on that workspace. Reload the page and try again.',
+      }, { status: 409 })
     }
 
     const service = createServiceClient()

@@ -1,17 +1,28 @@
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
-import { nanoid } from 'nanoid'
+import { customAlphabet } from 'nanoid'
 import crypto from 'crypto'
 import { sanitizeDisplayName } from '@/lib/utils/sanitize'
-import { INDUSTRIES, CURRENCIES, TIMEZONES, DEFAULT_TIMEZONE, DEFAULT_CURRENCY } from '@/lib/constants/workspace-options'
+import { INDUSTRIES, CURRENCIES, DEFAULT_TIMEZONE, DEFAULT_CURRENCY } from '@/lib/constants/workspace-options'
+import { isValidTimeZone } from '@/lib/utils/timezone'
 import { sendWorkspaceCreatedEmail } from '@/lib/email/templates'
 
+// FIX (Onboarding independent pass 3 — B5): the suffix used nanoid's default alphabet
+// (A-Za-z0-9_-), so slugs came out like 'foo--Ab_9x', '-Ab_9x' (non-Latin names strip to an
+// empty base) or with uppercase — none of which Settings' own slug validator
+// (^[a-z0-9]+(-[a-z0-9]+)*$, 3-50) accepts, so the first time the owner opened the handle
+// field and saved anything the value could not round-trip. Lowercase alphanumeric suffix, base
+// trimmed of hyphens after the length cap, and a 'workspace' fallback for an empty base.
+const slugSuffix = customAlphabet('abcdefghijklmnopqrstuvwxyz0123456789', 6)
+
 function generateSlug(name: string): string {
-  return name.toLowerCase()
+  const base = name.toLowerCase()
     .replace(/[^a-z0-9\s-]/g, '')
     .replace(/\s+/g, '-')
     .replace(/-+/g, '-')
-    .slice(0, 40) + '-' + nanoid(6)
+    .slice(0, 40)
+    .replace(/^-+|-+$/g, '')
+  return `${base || 'workspace'}-${slugSuffix()}`
 }
 
 export async function POST(request: NextRequest) {
@@ -50,7 +61,10 @@ export async function POST(request: NextRequest) {
     if (currency !== undefined && currency !== null && !(CURRENCIES as readonly string[]).includes(currency)) {
       return NextResponse.json({ error: 'Invalid currency' }, { status: 400 })
     }
-    if (timezone !== undefined && timezone !== null && !(TIMEZONES as readonly string[]).includes(timezone)) {
+    // FIX (Onboarding independent pass 3): validated against the runtime IANA check (the same one
+    // Settings uses) rather than the 13-zone dropdown list, so the wizard can offer the browser's
+    // own zone and someone in Africa/Kampala isn't forced onto a wrong zone until Settings.
+    if (timezone !== undefined && timezone !== null && !isValidTimeZone(timezone)) {
       return NextResponse.json({ error: 'Invalid timezone' }, { status: 400 })
     }
 
@@ -148,13 +162,24 @@ export async function POST(request: NextRequest) {
     // read back the canonical `name` here (one round trip) rather than
     // falling back to user.user_metadata?.name below — see the
     // audit-log insert's own comment for why that fallback is stale.
-    const { data: userRow, error: activeWsError } = await (service as any)
+    // FIX (Onboarding independent pass 3 — B4): this failure used to be logged and ignored, yet
+    // every later wizard write resolves its target from users.active_workspace_id — a transient
+    // failure here 409'd the very next step and a reload sent the user to 'complete' on some other
+    // workspace, stranding this one (still holding the trial slot). Retry once; if it still fails,
+    // say so in the response (activeSet: false) so the wizard switches into the workspace itself
+    // and blocks with its retry gate rather than carrying on against the wrong one.
+    const setActive = () => (service as any)
       .from('users')
       .update({ active_workspace_id: workspaceId })
       .eq('id', user.id)
       .select('name')
       .maybeSingle()
-    if (activeWsError) console.error('Failed to set active_workspace_id after create (non-fatal):', activeWsError)
+    let { data: userRow, error: activeWsError } = await setActive()
+    if (activeWsError) {
+      console.error('Failed to set active_workspace_id after create (retrying):', activeWsError)
+      ;({ data: userRow, error: activeWsError } = await setActive())
+      if (activeWsError) console.error('Failed to set active_workspace_id after create (retry failed):', activeWsError)
+    }
 
     // FIX (section-by-section re-audit, Workspace lifecycle Finding 3):
     // this audit-log insert wasn't wrapped in its own try/catch, so a
@@ -202,7 +227,7 @@ export async function POST(request: NextRequest) {
       }).catch(e => console.error('Workspace created email failed (non-fatal):', e))
     }
 
-    return NextResponse.json({ workspaceId, slug })
+    return NextResponse.json({ workspaceId, slug, activeSet: !activeWsError })
   } catch (err) {
     console.error('Workspace create error:', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
