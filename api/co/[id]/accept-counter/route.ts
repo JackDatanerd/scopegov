@@ -1,0 +1,119 @@
+import { createServiceClient } from '@/lib/supabase/server'
+import { NextResponse, type NextRequest } from 'next/server'
+import { getSession, hasPermission } from '@/lib/auth/session'
+import { canReadProject } from '@/lib/utils/project-access'
+import { evaluateApprovalGate } from '@/lib/approvals/engine'
+import { sendBlockedReason } from '@/lib/documents/preflight'
+import { acceptCoCounter } from '@/lib/documents/accept-co-counter'
+import { coGateAmount } from '@/lib/approvals/gate-amount'
+import { isTerminalStatus } from '@/lib/utils/project-status'
+
+// FIX (doc-completeness audit, decision: require re-sign): this route used
+// to finalize the CO as 'accepted' the moment the agency accepted the
+// client's counter-offer — with no client signature ever captured for the
+// negotiated amount. It now moves the CO to 'awaiting_countersignature'
+// (migration 014) at the counter amount, issues a fresh signing link, and
+// emails the client to countersign. The CO only becomes 'accepted' — and
+// the amendment only gets created — once they do that, via
+// /api/portal/co/[token]/countersign (see lib/documents/finalize-co.ts).
+//
+// FIX (section-11 audit, headline finding): this route never re-checked
+// the approval-workflow gate against the NEGOTIATED amount — a CO could
+// send fine at $5,000 under a "$10k+ needs approval" workflow, get
+// countered to $75,000, and have that counter accepted with zero sign-off,
+// since the gate only ever ran once, at the original (lower) send. The
+// actual finalize logic is now in lib/documents/accept-co-counter.ts so it
+// can be invoked either directly here (ungated) or from
+// lib/approvals/engine.ts's recordApprovalDecision() on final approval
+// (gated) — same split as the regular SOW/CO send routes.
+export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    const { id }  = await params
+    const session = await getSession()
+    if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!hasPermission(session, 'SEND_CHANGE_ORDERS'))
+      return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
+    // Accepting a counter emails the client a countersignature request — same verified-email gate as send.
+    if (!session.emailVerifiedAt)
+      return NextResponse.json({ error: 'Please verify your email before accepting a counter-offer' }, { status: 403 })
+
+    const service = createServiceClient()
+    const { data: co } = await (service as any)
+      .from('change_orders')
+      .select(`id,title,status,flag_id,counter_amount,total,project_id,workspace_id,is_retainer_renewal,renewal_term_months,
+        projects(id,name,status,currency,type)`)
+      .eq('id', id).eq('workspace_id', session.workspaceId).single()
+
+    if (!co) return NextResponse.json({ error: 'CO not found' }, { status: 404 })
+    // FIX (audit round 3): see lib/utils/project-access.ts.
+    if (!(await canReadProject(service, session, co.project_id)))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    if (co.status !== 'countered')
+      return NextResponse.json({ error: 'CO is not in countered status' }, { status: 400 })
+
+    const project = co.projects
+    // FIX (section-10 audit, closing pass): checked here too (not just inside
+    // acceptCoCounter) so a terminal project fails fast, before an approval gate
+    // even creates a request for a counter-acceptance that could never actually
+    // go through — same reasoning as the identical hoist in send/route.ts
+    // ("Projects & Dashboard deep audit, flagship finding").
+    if (isTerminalStatus(project?.status || ''))
+      return NextResponse.json({
+        error: `This project is ${(project?.status || '').toLowerCase()} — a change order can no longer be accepted. Reopen the project first.`,
+      }, { status: 409 })
+
+    // FIX (section-10 audit, 10-B2): `||` sent a legitimate 0 counter
+    // through to the original total. Matches lib/documents/accept-co-counter.ts.
+    const negotiatedTotal = co.counter_amount ?? co.total
+
+    const blockedReason = await sendBlockedReason(service, co.project_id)
+    if (blockedReason) return NextResponse.json({ error: blockedReason }, { status: 400 })
+
+    // FIX (section-11 audit): gate on the NEGOTIATED amount, using the
+    // same 'co' workflows an admin already configured — a counter-offer
+    // shouldn't need its own separate workflow type to be covered.
+    const gate = await evaluateApprovalGate(service, {
+      workspaceId:  session.workspaceId,
+      documentType: 'co_counter',
+      documentId:   id,
+      projectId:    co.project_id,
+      projectName:  project?.name || '',
+      // A retainer-renewal counter is still a new monthly rate for the same renewal term.
+      amount:       Math.abs(coGateAmount({ total: negotiatedTotal, is_retainer_renewal: co.is_retainer_renewal, renewal_term_months: co.renewal_term_months }, project)),
+      currency:     project?.currency || 'USD',
+      documentTitle: co.title,
+      requestedBy:  { id: session.id, name: session.name, email: session.email },
+    })
+
+    // FIX (section-11 audit, pass 2): the gate can now REFUSE (nobody able to
+    // approve, an approved-but-unsent request already exists, a workflow with
+    // no approvers). Never proceed to a send in that case.
+    if (gate.blocked) {
+      return NextResponse.json({ error: gate.error, approvalRequestId: gate.approvalRequestId }, { status: gate.status || 409 })
+    }
+
+    if (gate.requiresApproval) {
+      return NextResponse.json({
+        ok: true,
+        pendingApproval: true,
+        approvalRequestId: gate.approvalRequestId,
+        message: 'Sent for approval — the client will be notified once it clears.',
+      })
+    }
+
+    const result = await acceptCoCounter(service, {
+      coId: id,
+      workspaceId: session.workspaceId,
+      actorId: session.id, actorEmail: session.email, actorName: session.name,
+    })
+
+    if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status })
+    return NextResponse.json({
+      ok: true, awaitingCountersignature: true,
+      emailSent: result.emailSent, ...(result.emailError ? { emailError: result.emailError } : {}),
+    })
+  } catch (err) {
+    console.error('CO accept-counter error:', err)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+  }
+}
