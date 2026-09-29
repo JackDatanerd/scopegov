@@ -122,13 +122,14 @@ export function wouldOrphanManageRoles(
 // Human-readable label for an error message, so the UI says
 // "no one who can manage workspace settings" rather than echoing a
 // permission constant at the person.
-export function describeProtectedPermission(permission: ProtectedPermission): string {
+export function describeProtectedPermission(permission: ProtectedPermission | 'APPROVE_DOCUMENTS'): string {
   switch (permission) {
     case 'MANAGE_ROLES': return 'manage roles'
     case 'MANAGE_WORKSPACE_SETTINGS': return 'manage workspace settings'
     case 'MANAGE_BILLING': return 'manage billing'
     case 'INVITE_MEMBERS': return 'invite members'
     case 'VIEW_AUDIT_LOG': return 'view the audit log'
+    case 'APPROVE_DOCUMENTS': return 'approve documents'
     default: return permission
   }
 }

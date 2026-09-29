@@ -1,0 +1,50 @@
+RLS + permissions — independent audit pass 2 (fix round)
+=========================================================
+
+Method: migrations 001..117 replayed into a real Postgres 16 (tests/pg-replay shim), then the FINAL
+database state was audited (policies, grants, column privileges, function ACLs, triggers) rather than
+migration text. Prior FIX comments were treated as if they did not exist.
+
+Clean: every table has RLS; anon holds nothing; authenticated reads only users / workspaces / own
+backup-code metadata (column-level); every function callable by the API roles is a trigger function or
+pins to auth.uid(); no storage.objects policies; every cron/webhook/admin route verifies its secret,
+signature or admin guard; all 42 .rpc() call sites use the service client.
+
+BUGS FIXED
+1. (Medium) The last APPROVE_DOCUMENTS holder could leave, or delete their account, and orphan the
+   permission for good (nobody can grant what they don't hold). leave_workspace_atomic — also the path
+   DELETE /api/account/delete takes — guarded five permissions but not this one. Reproduced on Postgres.
+2. (Low) update_role_permissions_atomic / update_member_permissions_atomic did not guard it either; only
+   the Node routes did, from a non-atomic snapshot, so two concurrent demotions could both pass.
+   Rule for all three: block only when a holder exists BEFORE the change and none would AFTER; a workspace
+   that never granted it is unaffected. Same 'would_orphan_permissions:APPROVE_DOCUMENTS' error shape,
+   friendly copy in leave / account-delete / team member / role routes.
+3. (Dead permissions) MARK_DELIVERABLE_STATUS and MARK_PAYMENT_MILESTONES were role-editor switches that
+   no route or component enforced (same class as EXPORT_DATA). Retired: keys stripped from roles,
+   overrides and effective_permissions; no longer seeded by create_workspace_atomic; removed from the
+   Permission type, ALL_PERMISSIONS, the project page props and ProjectDetail.
+4. (High, cross-section: workspace lifecycle) Migration 116's delete_workspace_atomic referenced
+   invoice_payments.workspace_id, a column that does not exist. plpgsql binds late, so 116 installed and
+   then failed on EVERY call. The route's own payment guard (app/api/workspace/delete/route.ts) filtered on
+   the same missing column, the error was ignored and the count read as 0 — the "recorded payments block
+   deletion" rule never fired. Both now go through invoices (payment -> invoice -> workspace).
+
+TESTS
+- tests/pg-replay.test.ts: 8 new real-Postgres tests (sole approver can't leave; non-last approver and
+  never-granted workspaces unaffected; role RPC and member RPC refuse; concurrent strips can't both win;
+  retired keys gone; delete refuses a workspace with a payment; 118 idempotent).
+- The "applied a second time" tests re-ran OLD migrations for real, silently reverting later function
+  definitions (068 re-creates create_workspace_atomic / leave_workspace_atomic) for every test after them.
+  They now re-apply inside a transaction that is rolled back (helper reapply()).
+- pg-replay approval fixtures inserted a second ACTIVE catch-all workflow per test, colliding with
+  migration 117's one-active-catch-all index; fixtures are now inactive.
+- Owner-permission count 26 -> 24; search-route expectation updated for /team?highlight=<id>.
+
+NOT FIXED (other sections, failing on untouched HEAD 2c4c64e in this environment)
+- tests/invoicing-section12-independent-pass.test.ts: asserts computeContractPosition(service, id) in the
+  project page, which a later commit changed.
+- tests/projects-dashboard-round-fixes.test.ts: "retainer copy" scan of ProjectDetail.tsx.
+- tests/settings-team-repass-2.test.ts (S-16): POST /api/approval-workflows now returns 400, test expects 500.
+- tests/sow-attachments-integrity.test.ts: vite cannot parse lib/pdf/renderer.tsx in this sandbox.
+
+Migration: supabase/migrations/118_approve_documents_last_holder_floor.sql (idempotent).

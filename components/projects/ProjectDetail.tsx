@@ -70,7 +70,7 @@ function flagPill(status: string): string {
 interface Permissions {
   editSow: boolean; sendSow: boolean; createCo: boolean; sendCo: boolean
   approveFlags: boolean; grantExceptions: boolean; markComplete: boolean
-  markDeliverable: boolean; markMilestone: boolean; submitGuardian: boolean
+  submitGuardian: boolean
   viewGuardianHistory: boolean; assignTeam: boolean; viewFinancials: boolean
   deleteProject: boolean; sendInvoices: boolean; moderateMessages: boolean
   editProject: boolean

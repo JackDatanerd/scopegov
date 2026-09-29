@@ -199,6 +199,8 @@ export async function PATCH(
       if (rpcError) {
         if (rpcError.message?.startsWith('would_orphan_permissions:')) {
           const orphaned = rpcError.message.split(':')[1].split(',') as (typeof PROTECTED_PERMISSIONS)[number][]
+        if (orphaned.length === 1 && (orphaned[0] as string) === 'APPROVE_DOCUMENTS')
+          return NextResponse.json({ error: APPROVE_DOCUMENTS_ORPHAN_MESSAGE }, { status: 409 })
           const label = orphaned.map(describeProtectedPermission).join(' or ')
           return NextResponse.json({
             error: `This would leave the workspace with no one who can ${label}. Grant ${orphaned.join(' / ')} to another member or role first — once nobody holds it, nobody can grant it back.`,

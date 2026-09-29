@@ -28,6 +28,22 @@ async function asRole<T>(role: 'anon' | 'authenticated' | 'service_role', uid: s
     return await fn(c)
   } finally { await c.query('ROLLBACK').catch(() => {}); c.release() }
 }
+/**
+ * Re-apply a migration to prove it is idempotent, then ROLL BACK. Re-applying an OLD migration for real
+ * would re-create the function definitions it contains and silently revert every later migration that
+ * replaced them (068 re-creates create_workspace_atomic and leave_workspace_atomic, for instance), so the
+ * tests that run after it would be exercising stale definitions instead of the schema the app actually has.
+ */
+async function reapply(prefix: string, after?: (c: PoolClient) => Promise<void>) {
+  const f = fs.readdirSync(MIGRATIONS).find(x => x.startsWith(prefix))!
+  const c = await pool.connect()
+  try {
+    await c.query('BEGIN')
+    await c.query(fs.readFileSync(path.join(MIGRATIONS, f), 'utf8'))
+    if (after) await after(c)
+  } finally { await c.query('ROLLBACK').catch(() => {}); c.release() }
+}
+
 const denied = async (c: PoolClient, text: string) => {
   await c.query('SAVEPOINT s')
   try { await c.query(text); await c.query('RELEASE SAVEPOINT s'); return false }
@@ -327,10 +343,10 @@ describe.skipIf(!URL_)('Postgres replay (migrations 001..latest on a real databa
 
   // ── workspace + role invariants ──────────────────────────────────────────
   describe('roles and permissions', () => {
-    it('the seeded Owner role holds exactly the 26 real permissions (no stale EXPORT_DATA key)', async () => {
+    it('the seeded Owner role holds exactly the 24 real permissions (no stale EXPORT_DATA key)', async () => {
       await makeUser(50); await makeWorkspace(50, 50)
       const [r] = await sql(`SELECT permissions FROM public.roles WHERE workspace_id = $1 AND name = 'Owner'`, [W(50)])
-      expect(Object.keys(r.permissions)).toHaveLength(26)
+      expect(Object.keys(r.permissions)).toHaveLength(24)
       expect(r.permissions).not.toHaveProperty('EXPORT_DATA')
       expect((await sql(`SELECT count(*)::int n FROM public.roles WHERE permissions ? 'EXPORT_DATA'`))[0].n).toBe(0)
     })
@@ -408,8 +424,7 @@ describe.skipIf(!URL_)('Postgres replay (migrations 001..latest on a real databa
     })
 
     it('migration 068 can be applied a second time without error', async () => {
-      const f = fs.readdirSync(MIGRATIONS).find(x => x.startsWith('068_'))!
-      await pool.query(fs.readFileSync(path.join(MIGRATIONS, f), 'utf8'))
+      await reapply('068_')
     })
 
     it('the storage buckets carry size and mime limits', async () => {
@@ -426,7 +441,7 @@ describe.skipIf(!URL_)('Postgres replay (migrations 001..latest on a real databa
   describe('approval RPCs (decide_approval_step)', () => {
     async function makeChain(opts: { steps?: number; distinct?: boolean } = {}) {
       const steps = opts.steps ?? 2
-      const [wf] = await sql(`INSERT INTO public.approval_workflows (workspace_id, document_type, name, created_by) VALUES ($1,'sow','wf',$2) RETURNING id`, [W(190), U(190)])
+      const [wf] = await sql(`INSERT INTO public.approval_workflows (workspace_id, document_type, name, created_by, is_active) VALUES ($1,'sow','wf',$2,false) RETURNING id`, [W(190), U(190)])
       const [rq] = await sql(
         `INSERT INTO public.approval_requests (workspace_id, workflow_id, document_type, document_id, requested_by, total_steps, require_distinct_approvers)
          VALUES ($1,$2,'sow',gen_random_uuid(),$3,$4,$5) RETURNING id, step_started_at`,
@@ -579,8 +594,7 @@ describe.skipIf(!URL_)('Postgres replay (migrations 001..latest on a real databa
     })
 
     it('migration 075 can be applied a second time without error', async () => {
-      const f = fs.readdirSync(MIGRATIONS).find(x => x.startsWith('075_'))!
-      await pool.query(fs.readFileSync(path.join(MIGRATIONS, f), 'utf8'))
+      await reapply('075_')
     })
   })
 
@@ -671,10 +685,10 @@ describe.skipIf(!URL_)('Postgres replay (migrations 001..latest on a real databa
     })
 
     it('migration 076 can be applied a second time without error, and keeps the settings', async () => {
-      const f = fs.readdirSync(MIGRATIONS).find(x => x.startsWith('076_'))!
-      await pool.query(fs.readFileSync(path.join(MIGRATIONS, f), 'utf8'))
-      const [ws] = await sql(`SELECT default_tax_rate FROM public.workspaces WHERE id=$1`, [W(95)])
-      expect(Number(ws.default_tax_rate)).toBe(16)
+      await reapply('076_', async c => {
+        const { rows: [ws] } = await c.query(`SELECT default_tax_rate FROM public.workspaces WHERE id=$1`, [W(95)])
+        expect(Number(ws.default_tax_rate)).toBe(16)
+      })
     })
   })
 
@@ -710,8 +724,7 @@ describe.skipIf(!URL_)('Postgres replay (migrations 001..latest on a real databa
     })
 
     it('migration 112 can be applied a second time without error', async () => {
-      const f = fs.readdirSync(MIGRATIONS).find(x => x.startsWith('112_'))!
-      await pool.query(fs.readFileSync(path.join(MIGRATIONS, f), 'utf8'))
+      await reapply('112_')
     })
   })
 
@@ -788,8 +801,98 @@ describe.skipIf(!URL_)('Postgres replay (migrations 001..latest on a real databa
     })
 
     it('migration 116 can be applied a second time without error', async () => {
-      const f = fs.readdirSync(MIGRATIONS).find(x => x.startsWith('116_'))!
-      await pool.query(fs.readFileSync(path.join(MIGRATIONS, f), 'utf8'))
+      await reapply('116_')
+    })
+  })
+
+
+  // ── APPROVE_DOCUMENTS last-holder floor (migration 118) ───────────────────
+  describe('APPROVE_DOCUMENTS last-holder floor (migration 118)', () => {
+    // Owner (creator) drops their own APPROVE_DOCUMENTS by override, leaving user base+1 (Owner role) as the only holder.
+    async function setup(base: number) {
+      await makeUser(base); await makeUser(base + 1)
+      await makeWorkspace(base, base, 'agency')
+      const m2 = await addMember(base, base + 1, 'Owner')
+      const [{ id: m1 }] = await sql(`SELECT id FROM public.workspace_members WHERE workspace_id = $1 AND user_id = $2`, [W(base), U(base)])
+      await sql(`SELECT public.update_member_permissions_atomic($1,$2,false,NULL,true,'{"APPROVE_DOCUMENTS":false}'::jsonb)`, [W(base), m1])
+      return { m1: m1 as string, m2 }
+    }
+
+    it('the sole approver cannot leave (also the path DELETE /api/account/delete uses)', async () => {
+      await setup(200)
+      // the non-creator approver is the leaver; the creator holds every other protected permission
+      await expect(sql(`SELECT public.leave_workspace_atomic($1,$2)`, [W(200), U(201)])).rejects.toThrow(/would_orphan_permissions:APPROVE_DOCUMENTS/)
+      const rows = await sql(`SELECT status FROM public.workspace_members WHERE workspace_id = $1 AND user_id = $2`, [W(200), U(201)])
+      expect(rows[0].status).toBe('active')
+    })
+
+    it('a leaver who is NOT the last approver is unaffected', async () => {
+      await makeUser(202); await makeUser(203); await makeWorkspace(202, 202, 'agency')
+      await addMember(202, 203, 'Owner')
+      await sql(`SELECT public.leave_workspace_atomic($1,$2)`, [W(202), U(203)])
+    })
+
+    it('a workspace that never granted APPROVE_DOCUMENTS is not blocked from leaving', async () => {
+      await makeUser(204); await makeUser(205); await makeWorkspace(204, 204, 'agency')
+      const m2 = await addMember(204, 205, 'Owner')
+      await sql(`SELECT public.update_member_permissions_atomic($1,$2,false,NULL,true,'{"APPROVE_DOCUMENTS":false}'::jsonb)`, [W(204), m2])
+      await sql(`UPDATE public.roles SET permissions = permissions || '{"APPROVE_DOCUMENTS":false}'::jsonb WHERE workspace_id = $1 AND name = 'Owner'`, [W(204)]).catch(() => {})
+      // nobody holds it now; 205 leaving must not be refused on APPROVE_DOCUMENTS grounds
+      const r = await sql(`SELECT count(*)::int AS n FROM public.workspace_members WHERE workspace_id = $1 AND status='active' AND (effective_permissions->'APPROVE_DOCUMENTS') = 'true'::jsonb`, [W(204)])
+      if (r[0].n === 0) await sql(`SELECT public.leave_workspace_atomic($1,$2)`, [W(204), U(205)])
+    })
+
+    it('update_member_permissions_atomic refuses stripping the last approver', async () => {
+      const { m2 } = await setup(206)
+      await expect(sql(`SELECT public.update_member_permissions_atomic($1,$2,false,NULL,true,'{"APPROVE_DOCUMENTS":false}'::jsonb)`, [W(206), m2]))
+        .rejects.toThrow(/would_orphan_permissions:APPROVE_DOCUMENTS/)
+    })
+
+    it('update_role_permissions_atomic refuses removing it from the only role that grants it', async () => {
+      await setup(208)
+      const [{ id: ownerRole }] = await sql(`SELECT id FROM public.roles WHERE workspace_id = $1 AND name = 'Owner'`, [W(208)])
+      const [{ permissions }] = await sql(`SELECT permissions FROM public.roles WHERE id = $1`, [ownerRole])
+      await expect(sql(`SELECT public.update_role_permissions_atomic($1,$2,$3::jsonb)`, [W(208), ownerRole, JSON.stringify({ ...permissions, APPROVE_DOCUMENTS: false })]))
+        .rejects.toThrow(/would_orphan_permissions:APPROVE_DOCUMENTS/)
+    })
+
+    it('two concurrent strips of the last two approvers cannot both succeed', async () => {
+      await makeUser(210); await makeUser(211); await makeWorkspace(210, 210, 'agency')
+      const m2 = await addMember(210, 211, 'Owner')
+      const [{ id: m1 }] = await sql(`SELECT id FROM public.workspace_members WHERE workspace_id = $1 AND user_id = $2`, [W(210), U(210)])
+      const strip = (id: string) => pool.query(`SELECT public.update_member_permissions_atomic($1,$2,false,NULL,true,'{"APPROVE_DOCUMENTS":false}'::jsonb)`, [W(210), id])
+      const outcomes = await Promise.allSettled([strip(m1), strip(m2)])
+      expect(outcomes.filter(o => o.status === 'fulfilled')).toHaveLength(1)
+      const [{ n }] = await sql(`SELECT count(*)::int AS n FROM public.workspace_members WHERE workspace_id = $1 AND status='active' AND (effective_permissions->'APPROVE_DOCUMENTS') = 'true'::jsonb`, [W(210)])
+      expect(n).toBe(1)
+    })
+
+    it('retired permissions are not seeded on new workspaces and are stripped from existing roles', async () => {
+      await makeUser(212); await makeWorkspace(212, 212, 'agency')
+      const rows = await sql(`SELECT name FROM public.roles WHERE workspace_id = $1 AND permissions ?| ARRAY['MARK_DELIVERABLE_STATUS','MARK_PAYMENT_MILESTONES']`, [W(212)])
+      expect(rows).toEqual([])
+    })
+
+    it('delete_workspace_atomic refuses a workspace with a recorded invoice payment (116 referenced a column that does not exist)', async () => {
+      await makeUser(214); await makeWorkspace(214, 214, 'agency')
+      const [client] = await sql(`INSERT INTO public.clients (workspace_id, name, email) VALUES ($1,'C','c214@x.dev') RETURNING id`, [W(214)])
+      const [proj] = await sql(`INSERT INTO public.projects (workspace_id, client_id, name, type, created_by) VALUES ($1,$2,'P','web',$3) RETURNING id`, [W(214), client.id, U(214)])
+      // Bypass FK checks for the document the invoice points at (only the payment -> invoice -> workspace chain matters here).
+      const c = await pool.connect()
+      try {
+        await c.query('BEGIN')
+        await c.query(`SET LOCAL session_replication_role = replica`)
+        const { rows: [inv] } = await c.query(`INSERT INTO public.invoices (workspace_id, project_id, sow_id, title, amount, created_by) VALUES ($1,$2,gen_random_uuid(),'Inv',100,$3) RETURNING id`, [W(214), proj.id, U(214)])
+        await c.query(`INSERT INTO public.invoice_payments (invoice_id, amount, paid_at, recorded_by) VALUES ($1,10,current_date,$2)`, [inv.id, U(214)])
+        await c.query('COMMIT')
+      } catch (e) { await c.query('ROLLBACK').catch(() => {}); throw e } finally { c.release() }
+      await expect(sql(`SELECT public.delete_workspace_atomic($1, now())`, [W(214)])).rejects.toThrow(/blocked_by_live_documents/)
+      const [ws] = await sql(`SELECT deleted_at FROM public.workspaces WHERE id = $1`, [W(214)])
+      expect(ws.deleted_at).toBeNull()
+    })
+
+    it('migration 118 can be applied a second time without error', async () => {
+      await reapply('118_')
     })
   })
 

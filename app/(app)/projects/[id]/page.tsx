@@ -342,8 +342,6 @@ export default async function ProjectPage({ params, searchParams }: Props) {
         markComplete: hasPermission(session, 'MARK_PROJECT_COMPLETE'),
         // Edit details / pause / resume (PATCH /api/projects/[id]).
         editProject: hasPermission(session, 'CREATE_PROJECTS'),
-        markDeliverable: hasPermission(session, 'MARK_DELIVERABLE_STATUS'),
-        markMilestone: hasPermission(session, 'MARK_PAYMENT_MILESTONES'),
         submitGuardian: hasPermission(session, 'SUBMIT_GUARDIAN_CHECKS'),
         viewGuardianHistory: hasPermission(session, 'ACCESS_GUARDIAN_HISTORY'),
         assignTeam: hasPermission(session, 'ASSIGN_TEAM_MEMBERS'),

@@ -136,6 +136,10 @@ export interface WorkspaceMember {
 
 // ── ROLES ─────────────────────────────────────────────────────
 
+// Retired (migration 115): 'MARK_DELIVERABLE_STATUS' and 'MARK_PAYMENT_MILESTONES'
+// rendered as role-editor switches but no route or component ever enforced
+// them (same class as EXPORT_DATA below). Deliverable and milestone status
+// are driven by the SOW/invoice/cron flows, not by a manual permission.
 export type Permission =
   | 'VIEW_OWN_PROJECTS'
   | 'VIEW_ALL_PROJECTS'
@@ -148,8 +152,6 @@ export type Permission =
   | 'SEND_CHANGE_ORDERS'
   | 'APPROVE_FLAGS'
   | 'GRANT_EXCEPTIONS'
-  | 'MARK_DELIVERABLE_STATUS'
-  | 'MARK_PAYMENT_MILESTONES'
   | 'MARK_PROJECT_COMPLETE'
   | 'ASSIGN_TEAM_MEMBERS'
   | 'SUBMIT_GUARDIAN_CHECKS'
@@ -193,7 +195,7 @@ export type Permission =
 export const ALL_PERMISSIONS: Permission[] = [
   'VIEW_OWN_PROJECTS', 'VIEW_ALL_PROJECTS', 'VIEW_FINANCIALS', 'VIEW_CLIENT_DATA',
   'CREATE_PROJECTS', 'EDIT_SOW', 'SEND_SOW', 'CREATE_CHANGE_ORDERS', 'SEND_CHANGE_ORDERS',
-  'APPROVE_FLAGS', 'GRANT_EXCEPTIONS', 'MARK_DELIVERABLE_STATUS', 'MARK_PAYMENT_MILESTONES',
+  'APPROVE_FLAGS', 'GRANT_EXCEPTIONS',
   'MARK_PROJECT_COMPLETE', 'ASSIGN_TEAM_MEMBERS', 'SUBMIT_GUARDIAN_CHECKS',
   'ACCESS_GUARDIAN_HISTORY', 'INVITE_MEMBERS', 'MANAGE_ROLES', 'MANAGE_BILLING',
   'DELETE_PROJECTS', 'VIEW_AUDIT_LOG', 'MANAGE_WORKSPACE_SETTINGS',

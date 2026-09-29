@@ -167,7 +167,7 @@ describe('GET /api/search', () => {
   it('returns matching active team members without exposing e-mail', async () => {
     tables.workspace_members = { data: [{ id: 'm1', users: { id: 'u1', name: 'Wanjiru Kamau' }, roles: { name: 'Admin' } }], error: null }
     const json = await (await GET(req('wanjiru'))).json()
-    expect(json.results.find((r: any) => r.type === 'member')).toMatchObject({ title: 'Wanjiru Kamau', href: '/team', sub: 'Team · Admin' })
+    expect(json.results.find((r: any) => r.type === 'member')).toMatchObject({ title: 'Wanjiru Kamau', href: '/team?highlight=m1', sub: 'Team · Admin' })
     const q = queried.find(x => x.table === 'workspace_members')!
     expect(q.calls).toContainEqual(['eq', 'status', 'active'])
     expect((q.calls.find(c => c[0] === 'select')![1] as string)).not.toContain('email')

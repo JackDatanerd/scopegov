@@ -184,8 +184,10 @@ export async function DELETE(request: Request) {
 
     const { count: paymentCount } = await (service as any)
       .from('invoice_payments')
-      .select('id', { count: 'exact', head: true })
-      .eq('workspace_id', session.workspaceId)
+      // invoice_payments has no workspace_id column of its own — filtering on one made this query
+      // error, the error was ignored, and the count read as 0, so the guard never blocked anything.
+      .select('id, invoices!inner(workspace_id)', { count: 'exact', head: true })
+      .eq('invoices.workspace_id', session.workspaceId)
 
     if ((paymentCount || 0) > 0) {
       return NextResponse.json({
