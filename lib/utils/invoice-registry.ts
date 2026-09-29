@@ -28,21 +28,33 @@ export function parseRegistryFilters(params: { status?: string | string[]; q?: s
   return { status: VALID.has(status) ? status : '', q }
 }
 
+// FIX (section-12 pass, B3): the matching project ids go into ONE PostgREST or() filter (project_id.in.(...)) on the request URL.
+// Up to ~700 uuids (~26 KB) could be sent, past what gateways accept, so a broad search term failed outright (empty registry /
+// 500 on export). The list is now capped so the URL stays small; `truncated` says results may be incomplete so callers can tell
+// the user to narrow the search instead of silently showing a partial list.
+export const MAX_TEXT_PROJECT_IDS = 150
+
+export interface ProjectTextMatch { ids: string[]; truncated: boolean }
+
 /** Projects whose own name, or whose client's name/company, matches the search text. */
-export async function projectIdsMatching(service: any, workspaceId: string, q: string): Promise<string[]> {
-  if (!q) return []
+export async function projectIdsMatching(service: any, workspaceId: string, q: string): Promise<ProjectTextMatch> {
+  if (!q) return { ids: [], truncated: false }
   const like = `%${q}%`
   const [{ data: byName }, { data: clients }] = await Promise.all([
-    service.from('projects').select('id').eq('workspace_id', workspaceId).ilike('name', like).limit(200),
+    service.from('projects').select('id').eq('workspace_id', workspaceId).ilike('name', like).limit(MAX_TEXT_PROJECT_IDS + 1),
     service.from('clients').select('id').eq('workspace_id', workspaceId).or(`name.ilike.${like},company_name.ilike.${like}`).limit(200),
   ])
   const ids = new Set<string>((byName || []).map((p: any) => p.id))
+  let truncated = (byName || []).length > MAX_TEXT_PROJECT_IDS || (clients || []).length >= 200
   const clientIds = (clients || []).map((c: any) => c.id)
   if (clientIds.length > 0) {
-    const { data: byClient } = await service.from('projects').select('id').eq('workspace_id', workspaceId).in('client_id', clientIds).limit(500)
+    const { data: byClient } = await service.from('projects').select('id').eq('workspace_id', workspaceId).in('client_id', clientIds).limit(MAX_TEXT_PROJECT_IDS + 1)
+    if ((byClient || []).length > MAX_TEXT_PROJECT_IDS) truncated = true
     for (const p of byClient || []) ids.add(p.id)
   }
-  return Array.from(ids)
+  const all = Array.from(ids)
+  if (all.length > MAX_TEXT_PROJECT_IDS) truncated = true
+  return { ids: all.slice(0, MAX_TEXT_PROJECT_IDS), truncated }
 }
 
 /** Applies the status filter and text search to an `invoices` query. */

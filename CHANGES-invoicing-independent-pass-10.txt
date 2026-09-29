@@ -1,0 +1,7 @@
+Invoicing (section 12) - independent pass, fixes
+B1 components/invoices/BillingTab.tsx: no "paid / due" balance line on a voided invoice.
+B2 app/api/invoices/[id]/route.ts (GET): client email withheld without VIEW_CLIENT_DATA.
+B3 lib/utils/invoice-registry.ts, app/(app)/invoices/page.tsx, app/api/invoices/export/route.ts:
+   project-id list in the search filter capped at 150; page shows a "narrow your search" banner, export refuses (422) rather than hand over a partial ledger.
+   projectIdsMatching now returns { ids, truncated }.
+B4 components/invoices/BillingTab.tsx: milestones with a draft invoice no longer offered; picking a SOW resets amount/tax/due date to defaults.

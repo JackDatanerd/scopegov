@@ -46,6 +46,11 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     // unless the caller can actually act as the sender.
     if (!hasPermission(session, 'SEND_INVOICES')) invoice.token = null
 
+    // FIX (section-12 pass, B2): the client's email came back to anyone with VIEW_FINANCIALS; GET /api/projects/[id] withholds it
+    // without VIEW_CLIENT_DATA. Nothing in the UI reads it from this response.
+    if (!hasPermission(session, 'VIEW_CLIENT_DATA') && invoice.projects?.clients)
+      invoice.projects.clients = { ...invoice.projects.clients, email: null }
+
     return NextResponse.json({ invoice, payments: payments || [] })
   } catch (err) {
     console.error('Invoice detail fetch error:', err)

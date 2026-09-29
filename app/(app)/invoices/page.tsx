@@ -62,7 +62,8 @@ export default async function InvoicesPage({ searchParams }: {
   // FEATURE (section-12 audit, pass 2): filter, search and page — the list used to be
   // one unfiltered, hard-capped (500) table. Invoices of a soft-deleted project are
   // excluded (they link to a project page that 404s).
-  const textProjectIds = await projectIdsMatching(service, session.workspaceId, filters.q)
+  const textMatch = await projectIdsMatching(service, session.workspaceId, filters.q)
+  const textProjectIds = textMatch.ids
   const from = isSoloCapped ? 0 : (page - 1) * pageSize
   let invoicesQuery = (service as any)
     .from('invoices')
@@ -331,6 +332,12 @@ export default async function InvoicesPage({ searchParams }: {
           )
         })}
       </div>
+
+      {textMatch.truncated && (
+        <div className="banner banner-info" style={{ marginBottom: 16 }}>
+          <span>Your search matches a lot of projects, so project and client matches may be incomplete — try a more specific search.</span>
+        </div>
+      )}
 
       {!safeInvoices.length ? (
         <div className="surface">

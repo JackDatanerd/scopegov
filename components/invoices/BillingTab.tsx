@@ -58,7 +58,11 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
   // agency, which is exactly how the double-invoicing bug happened in
   // practice, not just via API tampering. Matches the API-level fix in
   // POST /api/invoices.
-  const billableMilestones = milestones.filter((m: any) => m.status !== 'paid' && m.status !== 'invoiced')
+  // FIX (section-12 pass, B4): a milestone that already has a DRAFT invoice was still offered here (the milestone only flips to
+  // 'invoiced' on send), and picking it just hit the server's 409. Any live (non-void) invoice against it takes it off the list.
+  const billableMilestones = milestones.filter((m: any) =>
+    m.status !== 'paid' && m.status !== 'invoiced' &&
+    !invoices.some((i: any) => i.milestone_id === m.id && i.status !== 'void'))
 
   // FIX (section-12 fix round, flagship finding): a signed SOW or accepted
   // CO stayed selectable in "Bill against" no matter how many invoices
@@ -403,7 +407,8 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
                     <div style={{ fontSize: 17, fontFamily: 'Cormorant Garamond, Georgia, serif' }}>
                       {formatCurrencyExact(inv.amount, inv.currency || currency)}
                     </div>
-                    {inv.amount_paid > 0 && inv.status !== 'paid' && (
+                    {/* FIX (section-12 pass, B1): a voided part-paid invoice is not payable (its PDF says so) — don't show a "due" balance for it. */}
+                    {inv.amount_paid > 0 && inv.status !== 'paid' && inv.status !== 'void' && (
                       <div style={{ fontSize: 11.5, color: 'var(--green)' }}>
                         {formatCurrencyExact(inv.amount_paid, inv.currency || currency)} paid · {formatCurrencyExact(balance, inv.currency || currency)} due
                       </div>
@@ -873,7 +878,15 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
       }
     } else if (type === 'sow') {
       const s = sows.find((x: any) => x.id === id)
-      if (s) setTitle(`SOW v${s.version}${s.document_number ? ` (${s.document_number})` : ''}`)
+      if (s) {
+        setTitle(`SOW v${s.version}${s.document_number ? ` (${s.document_number})` : ''}`)
+        // FIX (section-12 pass, B4): switching to a SOW from a milestone/CO used to keep that source's amount, tax rate and
+        // due date on the form. A SOW carries no terms of its own, so go back to the workspace defaults.
+        if (!itemized) setAmount('')
+        setDueDate(defaultDue)
+        setTaxRate(String(billingDefaults?.taxRate ?? 0))
+        setTaxInclusive(itemized ? false : (billingDefaults?.taxInclusive ?? true))
+      }
     } else if (type === 'co') {
       const c = cos.find((x: any) => x.id === id)
       // FIX (section-12 audit, flagship finding): unlike the milestone

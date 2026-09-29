@@ -41,7 +41,11 @@ export async function GET(request: NextRequest) {
         .eq('workspace_members.user_id', session.id)
       allowedProjectIds = (ids || []).map((r: any) => r.project_id)
     }
-    const textProjectIds = await projectIdsMatching(service, session.workspaceId, filters.q)
+    const textMatch = await projectIdsMatching(service, session.workspaceId, filters.q)
+    // A partial ledger must never be handed over as the whole one.
+    if (textMatch.truncated)
+      return NextResponse.json({ error: 'That search matches too many projects to export reliably — make it more specific and try again.' }, { status: 422 })
+    const textProjectIds = textMatch.ids
 
     const rows = await fetchAll<any>('invoice export', (from, to) => {
       let q = (service as any)
