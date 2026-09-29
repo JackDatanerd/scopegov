@@ -1,0 +1,32 @@
+-- 105_guardian_check_attachments_grant_lockdown.sql
+--
+-- RLS + permissions independent audit (fresh pass, Postgres-replay method —
+-- every prior FIX comment in this area, including migration 103's own, treated
+-- as if it didn't exist, then checked against what every migration actually
+-- leaves in place).
+--
+-- FIX (LOW / hygiene — missing explicit REVOKE, same class as migration 103's
+-- own finding): migration 068 revoked table privileges from `anon`/`authenticated`
+-- for every table that existed at that time via a one-off DO $$ sweep, then tried
+-- to cover tables created afterward with `ALTER DEFAULT PRIVILEGES` — which its
+-- own comment (and 103's) admits "may silently no-op depending on which role owns
+-- the schema defaults." Because that fallback is acknowledged as unreliable,
+-- every OTHER table created after 068 got its own explicit belt-and-braces
+-- REVOKE: cron_run_history (075, "same ownership model as cron_heartbeats /
+-- ops_alert_state"), platform_admin_audit_log (090), and
+-- billing_pending_subscription_cancels (094) — and 103 itself retroactively added
+-- one for the project_members_active view for exactly this reason.
+--
+-- guardian_check_attachments (085) — private-bucket evidence-file metadata
+-- (file names, sizes, storage paths for client-submitted Guardian evidence) —
+-- was created chronologically between 075 and 090 and is the one table that
+-- never got this. Missed even by 103's own dedicated hunt for this exact
+-- pattern.
+--
+-- Actual exposure: low. RLS is enabled with zero policies, which default-denies
+-- SELECT/INSERT/UPDATE/DELETE for every non-owner role regardless of table-level
+-- grants, and the file bytes themselves are only ever reachable through
+-- service-role-issued signed URLs (app/api/guardian/checks/[id]/attachments/route.ts).
+-- Fixing on principle, same severity class as 103's own finding, so this table
+-- matches every sibling's lockdown instead of being the one silent exception.
+REVOKE ALL ON public.guardian_check_attachments FROM PUBLIC, anon, authenticated;

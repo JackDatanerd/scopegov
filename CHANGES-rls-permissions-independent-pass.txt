@@ -1,0 +1,74 @@
+RLS + permissions — independent audit pass, fix round
+======================================================
+
+Scope: supabase/migrations (policies/grants), lib/supabase, permission-ceiling.ts /
+permission-ceiling.test.ts. Fresh pass — every prior FIX comment in this area,
+migration 103's own included, treated as if it didn't exist, then re-derived from
+what the migrations actually leave in place (Postgres-replay method, done by hand
+since this sandbox has no PG_REPLAY_URL / network to run tests/pg-replay.test.ts
+for real — same limitation migration 103 itself flags).
+
+FEATURE GAPS: none found. This section is security/access-control plumbing with
+no half-built user-facing surface — nothing to build.
+
+BUGS FOUND THIS ROUND: 1 (fixed).
+
+--------------------------------------------------------------------------------
+FIX (LOW / hygiene — missing explicit REVOKE, same class as migration 103's own
+finding): guardian_check_attachments (migration 085) — private-bucket evidence-
+file metadata (file names, sizes, storage paths for client-submitted Guardian
+evidence) — was created with ENABLE ROW LEVEL SECURITY but never got the explicit
+REVOKE ALL ... FROM PUBLIC, anon, authenticated that every other table created
+after migration 068 received:
+  - cron_run_history (075) — "same ownership model as cron_heartbeats / ops_alert_state"
+  - platform_admin_audit_log (090)
+  - billing_pending_subscription_cancels (094)
+  - project_members_active, a VIEW (070/083) — retroactively locked down by 103
+    itself, for this exact reason
+
+Migration 068's one-off DO $$ sweep only revoked table privileges from
+anon/authenticated for tables that existed AT THAT TIME; it also tried to cover
+every table created afterward via ALTER DEFAULT PRIVILEGES, but that same
+migration's own comment (and 103's) admits it "may silently no-op depending on
+which role owns the schema defaults." Every other post-068 table got its own
+belt-and-braces REVOKE for exactly that reason. guardian_check_attachments — created
+chronologically between 075 and 090 — is the one table that never did, missed even
+by 103's own dedicated hunt for this pattern.
+
+Actual exposure: low. RLS enabled + zero policies already default-denies
+SELECT/INSERT/UPDATE/DELETE for every non-owner role regardless of table-level
+grants, and the file bytes themselves are only ever reachable through
+service-role-issued signed URLs (app/api/guardian/checks/[id]/attachments/route.ts).
+Fixed on principle, same severity class as 103's own finding, so this table now
+matches every sibling's lockdown instead of being the one silent exception.
+
+Fix: supabase/migrations/105_guardian_check_attachments_grant_lockdown.sql
+  REVOKE ALL ON public.guardian_check_attachments FROM PUBLIC, anon, authenticated;
+
+No app code changes. No data migration. Safe to run any time; idempotent
+(a bare REVOKE on privileges that are already absent is a no-op).
+--------------------------------------------------------------------------------
+
+ALSO VERIFIED CLEAN THIS PASS (no fix needed, no new migration):
+  - Every SECURITY DEFINER function's signature history cross-checked against its
+    REVOKE/GRANT pairs (the decide_approval_step / migration 095 bug class) — no
+    other function has a signature change that outlived its old grant state.
+  - All 59 tables in the schema have RLS enabled; none slipped through since 010.
+  - The only 3 functions granted to anon/authenticated (is_active_workspace_member,
+    is_current_user_platform_admin, middleware_gate_state) all pin to auth.uid()
+    internally — no cross-user oracle.
+  - No session-bound (createServerSupabaseClient) code path touches .from() on a
+    real table anywhere in app/lib/components/middleware.ts — re-checked by hand
+    for the exact `(supabase as any)` regex-miss pattern rls-contract.test.ts's own
+    header comment warns about.
+  - permissionsBeyondCeiling / roleWithinCeiling / permissionsBeyondActorForTarget
+    usage traced into every call site (team/roles, team/roles/[id], team/[id],
+    team/invite) — consistently enforced, nothing bypasses the ceiling.
+  - guardian_check_attachments traced through purge_project()/purge_workspace()
+    (cascades via check_id, no orphaned rows) and storage-cleanup.ts (already
+    included in collectAttachmentPaths()) — no purge/orphan-file bug.
+
+Not run in this sandbox (no network/node_modules): npm test / tsc. Run the test
+suite locally before committing — tests/rls-contract.test.ts and
+tests/permission-ceiling.test.ts both apply to this change; tests/pg-replay.test.ts
+would additionally verify this fix against a real Postgres if PG_REPLAY_URL is set.
