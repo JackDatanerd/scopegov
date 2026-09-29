@@ -1,6 +1,7 @@
 import { getSession, userHasAnyMfaMandatoryMembership } from '@/lib/auth/session'
 import { redirect } from 'next/navigation'
 import MfaSetupClient from '@/components/mfa/MfaSetupClient'
+import StepUpHost from '@/components/auth/StepUpHost'
 // FIX (section-by-section re-audit): `next` used to be passed through raw.
 // LoginForm.tsx, app/mfa-challenge/page.tsx, and api/auth/callback/route.ts
 // all validate `next` with safeRedirectPath() before using it — this page
@@ -25,12 +26,18 @@ export default async function MfaSetupPage({ searchParams }: Props) {
   // for now" link that just looped them back — see userHasAnyMfaMandatoryMembership.
   const mandatory = await userHasAnyMfaMandatoryMembership(session.id)
 
+  // StepUpHost: /api/auth/mfa/enroll asks for a fresh password confirmation before
+  // it starts a first enrolment (see that route) — this page sits outside the (app)
+  // and onboarding layouts that normally mount the modal.
   return (
-    <MfaSetupClient
-      mandatory={mandatory}
-      next={safeRedirectPath(sp.next)}
-      recovered={sp.recovered === '1'}
-      userName={session.name}
-    />
+    <>
+      <StepUpHost />
+      <MfaSetupClient
+        mandatory={mandatory}
+        next={safeRedirectPath(sp.next)}
+        recovered={sp.recovered === '1'}
+        userName={session.name}
+      />
+    </>
   )
 }

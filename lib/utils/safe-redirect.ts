@@ -31,12 +31,20 @@ export function safeRedirectPath(next: string | null | undefined): string {
   // Must be a single-leading-slash relative path: not "//host" (protocol
   // relative), not "/\host" (browsers normalize backslash to slash), and
   // must not contain a scheme separator or an "@" (userinfo) anywhere.
+  //
+  // FIX (Auth+MFA fresh audit — LOW): the `@` / `://` rejection used to look at the WHOLE
+  // string, so a legitimate deep link such as `/clients?search=jo@agency.com` or
+  // `/settings?return=https://…` silently became /dashboard after login. Neither can
+  // change the authority once the value is a single-leading-slash path — the userinfo
+  // trick needs the `@` in the position where the host would start, which the
+  // startsWith checks already rule out. They are still refused inside the PATH portion.
+  const pathPart = next.split(/[?#]/, 1)[0]
   if (
     !next.startsWith('/') ||
     next.startsWith('//') ||
     next.startsWith('/\\') ||
-    next.includes('@') ||
-    next.includes('://') ||
+    pathPart.includes('@') ||
+    pathPart.includes('://') ||
     /[\x00-\x1f]/.test(next) // control characters (some parsers strip these before re-evaluating the URL)
   ) {
     return SAFE_DEFAULT

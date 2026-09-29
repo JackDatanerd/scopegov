@@ -1,6 +1,7 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
+import { fetchWithStepUp } from '@/lib/client/step-up'
 
 interface Props {
   mandatory: boolean
@@ -9,7 +10,7 @@ interface Props {
   userName: string
 }
 
-type Step = 'loading' | 'scan' | 'backup-codes' | 'already-enrolled' | 'error'
+type Step = 'loading' | 'scan' | 'backup-codes' | 'already-enrolled' | 'error' | 'signin-again'
 
 function PanelLeft() {
   return (
@@ -39,20 +40,44 @@ export default function MfaSetupClient({ mandatory, next, recovered, userName }:
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
-  useEffect(() => {
-    fetch('/api/auth/mfa/enroll', { method: 'POST' })
+  // FIX (Auth+MFA fresh audit — HIGH, see api/auth/mfa/enroll): starting a first
+  // enrolment now needs fresh proof. fetchWithStepUp shows the "Confirm it's you"
+  // password prompt and retries once. An account with no password (Google-only) whose
+  // sign-in is older than the window can't be prompted — the API answers
+  // step_up_required with no methods — so it is asked to sign in again instead.
+  const startedRef = useRef(false)
+  function startEnrol() {
+    setStep('loading'); setError('')
+    fetchWithStepUp('/api/auth/mfa/enroll', { method: 'POST' })
       .then(async res => {
-        const json = await res.json()
+        const json = await res.json().catch(() => ({} as { error?: string; code?: string; factorId?: string; qrCode?: string; secret?: string }))
         if (res.status === 409) { setStep('already-enrolled'); return }
+        if (res.status === 401 && json.code === 'step_up_required') {
+          setError(json.error || 'Please confirm it\u2019s you to continue.')
+          setStep('signin-again')
+          return
+        }
         if (!res.ok) throw new Error(json.error || 'Could not start enrollment')
-        setFactorId(json.factorId); setQrCode(json.qrCode); setSecret(json.secret)
+        setFactorId(json.factorId ?? null); setQrCode(json.qrCode ?? null); setSecret(json.secret ?? null)
         setStep('scan')
       })
       .catch((err: unknown) => {
         setError(err instanceof Error ? err.message : 'Could not start enrollment')
         setStep('error')
       })
+  }
+  useEffect(() => {
+    if (startedRef.current) return   // StrictMode double-invoke would open two prompts
+    startedRef.current = true
+    startEnrol()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  async function handleSignInAgain() {
+    await fetch('/api/auth/signout', { method: 'POST' }).catch(() => {})
+    const back = '/mfa-setup?next=' + encodeURIComponent(next)
+    window.location.href = '/login?next=' + encodeURIComponent(back)
+  }
 
   async function handleVerify(e: React.FormEvent) {
     e.preventDefault()
@@ -122,6 +147,25 @@ export default function MfaSetupClient({ mandatory, next, recovered, userName }:
             <>
               <h2 className="auth-form-title">Something went wrong</h2>
               <div className="auth-error">{error}</div>
+              <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', padding: '10px' }} onClick={startEnrol}>
+                Try again
+              </button>
+            </>
+          )}
+
+          {step === 'signin-again' && (
+            <>
+              <h2 className="auth-form-title">Confirm it&apos;s you</h2>
+              <div className="auth-error">{error}</div>
+              <p style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.7, margin: '0 0 16px' }}>
+                Setting up two-factor authentication needs a recent sign-in. Sign in again and you&apos;ll come straight back here.
+              </p>
+              <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', padding: '10px', marginBottom: 8 }} onClick={handleSignInAgain}>
+                Sign in again
+              </button>
+              <button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'center', padding: '10px' }} onClick={startEnrol}>
+                I&apos;ve confirmed — try again
+              </button>
             </>
           )}
 

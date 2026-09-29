@@ -69,7 +69,8 @@ function MfaChallengeInner() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ factorId, code }),
       })
-      const json = await res.json()
+      // A gateway/HTML error page is not JSON — don't surface "Unexpected token <".
+      const json = await res.json().catch(() => ({} as { error?: string }))
       if (!res.ok) throw new Error(json.error || 'Verification failed')
       router.push(next)
       router.refresh()
@@ -87,7 +88,8 @@ function MfaChallengeInner() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code: backupCode }),
       })
-      const json = await res.json()
+      // A gateway/HTML error page is not JSON — don't surface "Unexpected token <".
+      const json = await res.json().catch(() => ({} as { error?: string }))
       if (!res.ok) throw new Error(json.error || 'Recovery failed')
       // FIX (deep audit, Auth+MFA re-pass): this used to hardcode the
       // redirect with no `next`, unlike handleVerify above — mfa-setup's

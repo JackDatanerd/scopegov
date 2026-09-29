@@ -1,0 +1,21 @@
+Auth + MFA — fresh independent audit (baseline HEAD 7345e92 audit, fixed on a38a928)
+
+1. HIGH   mfa/enroll: starting a FIRST enrolment now needs step-up (sign-in <=10 min or password
+          grant). A hijacked password-only session could enrol its own authenticator; the enrolment's
+          fresh `totp` amr then satisfied step-up (change-email, delete, transfer) and /verify's
+          sign-out-others evicted the owner. UI: /mfa-setup mounts <StepUpHost/>, uses
+          fetchWithStepUp, and shows a "Sign in again" state for passwordless accounts.
+          middleware: /api/auth/step-up is exempt from the enrolment gate only (not the aal2 gate).
+2. MEDIUM step-up (totp): refuses when there is no verified factor or factorId is not that verified
+          factor (it used to be able to complete a half-enrolled factor with no codes/audit/notice).
+3. LOW    Migration 115 + createStatelessAuthClient User-Agent marker: password re-verification
+          sessions are no longer audited as `security.login_succeeded`.
+4. LOW    forgot-password / login resend / signup resend surface 429 + failures instead of a false
+          "sent" notice and cooldown.
+5. LOW    middleware: GoTrue outage on getUser() -> retryable 503 (not 401 / redirect to /login).
+6. LOW    safeRedirectPath: '@' and '://' only refused in the PATH (deep links with them in the query
+          survive); mfa-challenge guards non-JSON responses; mfa/verify reports listFactors failure as
+          verify_unavailable (502) not factor_not_found.
+
+Tests: tests/auth-mfa-fresh-audit.test.ts, tests/safe-redirect.test.ts, tests/middleware-gate.test.ts.
+Run migration 115 in the Supabase SQL editor after 114.

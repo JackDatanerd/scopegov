@@ -11,7 +11,7 @@ vi.mock('@supabase/ssr', () => ({
       getUser: async () => {
         // A real refresh writes the rotated tokens through setAll() while getUser() runs.
         if (state.refreshTo) opts.cookies.setAll([{ name: 'sb-test-auth-token', value: state.refreshTo, options: { path: '/' } }])
-        return { data: { user: state.user } }
+        return { data: { user: state.user }, error: state.userError ?? null }
       },
       signOut: async () => ({}),
       mfa: { getAuthenticatorAssuranceLevel: async () => ({ data: state.aal, error: state.aalError ?? null }) },
@@ -21,6 +21,7 @@ vi.mock('@supabase/ssr', () => ({
 }))
 
 import { NextRequest } from 'next/server'
+import { AuthRetryableFetchError, AuthApiError } from '@supabase/supabase-js'
 import { middleware } from '../middleware'
 
 const call = (path: string, method = 'GET', headers: Record<string, string> = {}) =>
@@ -34,6 +35,7 @@ beforeEach(() => {
     gate: { deleted: false, has_workspace: true, onboarding_complete: false, must_enroll_mfa: true },
     refreshTo: null,
     aalError: null,
+    userError: null,
   }
 })
 
@@ -177,3 +179,54 @@ describe('session refresh reaches the handler that runs after the middleware', (
     expect(res.headers.get('set-cookie')).toContain('sb-test-auth-token=NEW-TOKEN')
   })
 })
+
+// FIX (Auth+MFA fresh audit): getUser()'s error used to be ignored, so a GoTrue outage looked
+// like "signed out" (401 / redirect to /login for everyone). Also: /api/auth/step-up must stay
+// reachable while a forced enrolment is pending — the enrolment step-up prompt calls it.
+describe('auth outage vs. signed-out', () => {
+  it('a GoTrue outage on a protected API route is a retryable 503, not a 401', async () => {
+    state.user = null
+    state.userError = new AuthRetryableFetchError('fetch failed', 0)
+    const res = await call('/api/projects')
+    expect(res.status).toBe(503)
+    expect(res.headers.get('retry-after')).toBe('5')
+  })
+
+  it('a GoTrue 5xx on a protected page is a 503, not a redirect to /login', async () => {
+    state.user = null
+    state.userError = new AuthApiError('upstream', 502, 'unexpected_failure')
+    expect((await call('/dashboard')).status).toBe(503)
+  })
+
+  it('an ordinary invalid/expired session is still just signed-out', async () => {
+    state.user = null
+    state.userError = new AuthApiError('invalid JWT', 401, 'bad_jwt')
+    expect((await call('/api/projects')).status).toBe(401)
+    const page = await call('/dashboard')
+    expect(page.status).toBe(307)
+    expect(new URL(page.headers.get('location')).pathname).toBe('/login')
+  })
+
+  it('public and auth pages keep working through an outage', async () => {
+    state.user = null
+    state.userError = new AuthRetryableFetchError('fetch failed', 0)
+    expect(passes(await call('/login'))).toBe(true)
+    expect(passes(await call('/legal/terms'))).toBe(true)
+    expect(passes(await call('/api/auth/signup', 'POST'))).toBe(true)
+  })
+})
+
+describe('step-up route during a forced enrolment', () => {
+  it('is reachable while enrolment is pending (the setup page prompts through it)', async () => {
+    state.gate = { ...state.gate, onboarding_complete: true }
+    expect(passes(await call('/api/auth/step-up', 'POST'))).toBe(true)
+  })
+
+  it('but still sits behind the aal2 challenge for an enrolled, password-only session', async () => {
+    state.user = { id: 'u1', factors: [{ status: 'verified' }] }
+    state.aal = { currentLevel: 'aal1', nextLevel: 'aal2' }
+    state.gate = { ...state.gate, onboarding_complete: true }
+    expect((await call('/api/auth/step-up', 'POST')).status).toBe(401)
+  })
+})
+

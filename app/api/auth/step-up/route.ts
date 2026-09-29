@@ -79,6 +79,24 @@ export async function POST(request: NextRequest) {
       if (!/^\d{6}$/.test(code)) {
         return NextResponse.json({ error: 'Enter the 6-digit code from your authenticator app.' }, { status: 400 })
       }
+      // FIX (Auth+MFA fresh audit — MEDIUM): a TOTP step-up is a confirmation against an
+      // EXISTING verified factor. With no verified factor this branch was still open,
+      // and GoTrue's challenge-and-verify completes a half-enrolled factor — so a
+      // session could finish enrolment through here with none of /mfa/verify's
+      // consequences (no backup codes, no `mfa_enabled` audit row, no notice, other
+      // sessions left signed in) and be handed a step-up grant on top. Require the
+      // factor to be verified and to be the one named.
+      if (!ctx.mfaEnrolled) {
+        return NextResponse.json({ error: 'Confirm with your password instead.', code: 'totp_not_available' }, { status: 400 })
+      }
+      const { data: factorList, error: listErr } = await supabase.auth.mfa.listFactors()
+      if (listErr) {
+        console.error('Step-up: could not list factors:', listErr.message)
+        return NextResponse.json({ error: 'We couldn\u2019t verify that code right now. Please try again.', code: 'verify_unavailable' }, { status: 502 })
+      }
+      if (!(factorList?.totp || []).some(f => f.id === body.factorId && f.status === 'verified')) {
+        return NextResponse.json({ error: 'That authenticator is no longer registered on this account. Refresh the page and try again.', code: 'factor_not_found' }, { status: 400 })
+      }
       const begin = await beginAuthAttempt(service, user.id, 'mfa_verify')
       if (!begin.allowed) {
         return NextResponse.json(lockedResponseBody(begin), { status: 429, headers: { 'Retry-After': String(begin.retryAfterSeconds) } })

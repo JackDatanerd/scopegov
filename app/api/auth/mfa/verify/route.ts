@@ -50,7 +50,15 @@ export async function POST(request: Request) {
       return NextResponse.json(lockedResponseBody(begin), { status: 429, headers: { 'Retry-After': String(begin.retryAfterSeconds) } })
     }
 
-    const { data: factorList } = await supabase.auth.mfa.listFactors()
+    const { data: factorList, error: listErr } = await supabase.auth.mfa.listFactors()
+    // FIX (Auth+MFA fresh audit — LOW): a transient failure here left `factorList`
+    // undefined and was reported as "that authenticator is no longer registered" —
+    // sending the person to refresh a page that was fine. It is an availability error.
+    if (listErr) {
+      await releaseAuthAttempt(service, begin.attemptId)
+      console.error('MFA verify: could not list factors:', listErr.message)
+      return NextResponse.json({ error: 'We couldn\u2019t verify that code right now. Please try again.', code: 'verify_unavailable' }, { status: 502 })
+    }
     const factor = (factorList?.all || []).find(f => f.id === factorId)
     if (!factor) {
       await releaseAuthAttempt(service, begin.attemptId)

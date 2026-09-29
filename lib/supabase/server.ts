@@ -54,10 +54,22 @@ export function createServiceClient() {
 // scope. Anon key, not service role — this only ever asks GoTrue "is this
 // email+password combination valid," the same privilege level a real login
 // attempt has.
+//
+// FIX (Auth+MFA fresh audit — LOW/MEDIUM): every call through this client mints a real
+// auth.sessions row, and the sign-in audit trigger (migration 068) logged each one as
+// `security.login_succeeded` — so every current-password check in change-password /
+// step-up put a login that never happened (from the server's egress IP) into every
+// audit log. The client now identifies itself with CREDENTIAL_CHECK_USER_AGENT and
+// migration 115 makes the trigger skip sessions carrying it.
+export const CREDENTIAL_CHECK_USER_AGENT = 'ScopeGov-CredentialCheck/1'
+
 export function createStatelessAuthClient() {
   return createSupabaseClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    { auth: { autoRefreshToken: false, persistSession: false } }
+    {
+      auth: { autoRefreshToken: false, persistSession: false },
+      global: { headers: { 'User-Agent': CREDENTIAL_CHECK_USER_AGENT } },
+    }
   )
 }

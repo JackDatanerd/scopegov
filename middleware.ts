@@ -1,6 +1,7 @@
 import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 import { sharedCookieOptions, domainScopedCookieOptions } from './lib/supabase/cookie-options'
+import { isAuthRetryableFetchError } from '@supabase/supabase-js'
 import { MFA_REQUIRED_PERMISSIONS } from './lib/auth/mfa-policy'
 
 // State the middleware needs about the signed-in user, from ONE SECURITY DEFINER
@@ -102,7 +103,7 @@ export async function middleware(request: NextRequest) {
   )
 
   // Validates the JWT with Supabase Auth (and refreshes it when near expiry).
-  const { data: { user } } = await supabase.auth.getUser()
+  const { data: { user }, error: userError } = await supabase.auth.getUser()
 
   const isAuthRoute = pathname.startsWith('/login') ||
     pathname.startsWith('/signup') ||
@@ -139,6 +140,13 @@ export async function middleware(request: NextRequest) {
     pathname === '/'
 
   const isOnboarding = pathname === '/onboarding'
+
+  // FIX (Auth+MFA fresh audit): /mfa-setup now asks for a password step-up before it
+  // starts a first enrolment, and a forced enrolee is held at the enrolment gate below
+  // — which would refuse the very call the step-up prompt makes. Only that gate skips
+  // this route; the aal2-challenge gate still applies (the route itself also refuses
+  // TOTP unless a verified factor exists).
+  const isStepUpRoute = pathname === '/api/auth/step-up'
 
   // Platform admin panel (app/(admin)/admin/*, app/api/admin/*): a signed-in,
   // MFA-satisfied user, but NOT gated on having/completing a workspace —
@@ -180,6 +188,17 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith('/api/auth/mfa/') ||
     pathname === '/api/auth/signout' ||
     pathname.startsWith('/api/auth/login-event')
+
+  // FIX (Auth+MFA fresh audit — LOW): getUser()'s `error` was never read, so a GoTrue
+  // outage (5xx / network failure) looked exactly like "signed out": API callers got
+  // a 401 and pages a redirect to /login, bouncing every signed-in person while Auth
+  // was merely unavailable. Every other lookup in this file answers a retryable 503
+  // instead. An ordinary missing/invalid session (400/401/403) is still signed-out.
+  if (!user && userError && !isAuthRoute && !isPublicRoute && !isOnboarding &&
+      (isAuthRetryableFetchError(userError) || ((userError as any).status ?? 0) >= 500)) {
+    console.error('getUser failed (auth unavailable):', userError.message)
+    return finalize(unavailable())
+  }
 
   // Unauthenticated: API callers get a JSON 401 (a redirect to the login page
   // made fetch() clients try to parse HTML), pages get the login redirect —
@@ -313,7 +332,7 @@ export async function middleware(request: NextRequest) {
 
   // ── Mandatory MFA enrolment: an account that holds governance-critical
   // permissions but has no verified factor may only reach the setup flow.
-  if (user && !isPublicRoute && !isMfaFlowRoute && !isAuthRoute && !isOnboarding) {
+  if (user && !isPublicRoute && !isMfaFlowRoute && !isAuthRoute && !isOnboarding && !isStepUpRoute) {
     if (currentLevel === 'aal1' && nextLevel === 'aal1') {
       const gate = await loadGate()
       // Fail CLOSED (this check used to fail open whenever the lookup errored).

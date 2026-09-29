@@ -34,9 +34,21 @@ export default function ForgotPasswordPage() {
       // /reset-password lets the browser Supabase client complete the
       // exchange itself (handled in that page), which is simpler and matches
       // Supabase's own recommended pattern for password recovery.
-      await supabase.auth.resetPasswordForEmail(email, {
+      // FIX (Auth+MFA fresh audit — LOW): supabase-js RETURNS its error rather than
+      // throwing, and this page ignored it — a rate-limited (429) or failed request
+      // still showed "Check your inbox". GoTrue answers an unknown address with the
+      // same success as a known one, so surfacing a real failure reveals nothing
+      // about which emails are registered.
+      const { error: resetErr } = await supabase.auth.resetPasswordForEmail(email, {
         redirectTo: `${window.location.origin}/reset-password`,
       })
+      if (resetErr) {
+        const rateLimited = (resetErr as any).status === 429 || (resetErr as any).code === 'over_email_send_rate_limit'
+        setError(rateLimited
+          ? 'Too many reset requests. Please wait a few minutes before trying again.'
+          : 'We couldn\u2019t send the reset link. Please try again.')
+        return
+      }
       setSent(true)
     } catch {
       setError('Something went wrong. Please try again.')

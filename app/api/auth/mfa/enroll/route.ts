@@ -1,7 +1,8 @@
 export const runtime = 'nodejs'
 
 import { NextResponse } from 'next/server'
-import { createServerSupabaseClient } from '@/lib/supabase/server'
+import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
+import { requireStepUp } from '@/lib/auth/step-up'
 
 // Starts TOTP enrollment. Returns a QR code (SVG data URI, rendered by
 // Supabase itself) plus the raw secret for manual entry. The factor is
@@ -14,11 +15,25 @@ export async function POST() {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+    // FIX (Auth+MFA fresh audit — HIGH): first-time enrolment used to need nothing
+    // beyond a session. A hijacked password-only session could enrol ITS OWN
+    // authenticator, and the enrolment itself then satisfied step-up (a fresh `totp`
+    // entry in `amr`) — unlocking change-email, account/workspace deletion and
+    // ownership transfer without the password, while /verify's sign-out-others
+    // evicted the real owner. Starting an enrolment now needs the same fresh proof
+    // as those actions: a sign-in in the last 10 minutes, or a password step-up.
+    // (An account that already has a verified factor is answered 409 below without
+    // a challenge — nothing can be enrolled for it.)
+    const { data: existing } = await supabase.auth.mfa.listFactors()
+    if (!(existing?.totp || [])[0]) {
+      const stepUp = await requireStepUp(supabase, createServiceClient(), user)
+      if (stepUp) return stepUp
+    }
+
     // Clear out any dangling unverified factor from an abandoned previous
     // attempt first — Supabase allows multiple factors, but we only ever
     // want one active TOTP factor per user for a single, unambiguous
     // enrollment state in the UI.
-    const { data: existing } = await supabase.auth.mfa.listFactors()
     // FIX (build — Auth independent audit, LOW): only the FIRST stale factor was
     // cleaned up and the result was never checked. A leftover half-enrolled
     // factor blocks the next enrol with GoTrue's "friendly name already exists"

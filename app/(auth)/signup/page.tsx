@@ -17,6 +17,7 @@ export default function SignupPage() {
   // dead end.
   const [resendCooldown, setResendCooldown] = useState(0)
   const [resendNotice, setResendNotice] = useState('')
+  const [resendFailed, setResendFailed] = useState(false)
   const supabase = createClient()
 
   useEffect(() => {
@@ -27,11 +28,19 @@ export default function SignupPage() {
 
   async function handleResend() {
     if (!email || resendCooldown > 0) return
-    setResendNotice('')
-    await supabase.auth.resend({
+    setResendNotice(''); setResendFailed(false)
+    // FIX (Auth+MFA fresh audit — LOW): see the same fix in login/LoginForm.tsx.
+    const { error: resendErr } = await supabase.auth.resend({
       type: 'signup', email,
       options: { emailRedirectTo: `${window.location.origin}/api/auth/callback?next=/onboarding` },
-    }).catch(() => {})
+    }).catch(() => ({ error: { status: 0 } as any }))
+    if (resendErr) {
+      setResendFailed(true)
+      setResendNotice((resendErr as any).status === 429 || (resendErr as any).code === 'over_email_send_rate_limit'
+        ? 'Too many verification emails requested. Please wait a few minutes and try again.'
+        : 'We couldn\u2019t send the verification email. Please try again.')
+      return
+    }
     setResendCooldown(60)
     setResendNotice('A new verification link is on its way.')
   }
@@ -125,7 +134,7 @@ export default function SignupPage() {
                 try a different email address
               </button>.
             </p>
-            {resendNotice && <p style={{ fontSize: 12, color: 'var(--green)', marginTop: 10 }}>{resendNotice}</p>}
+            {resendNotice && <p style={{ fontSize: 12, color: resendFailed ? 'var(--red)' : 'var(--green)', marginTop: 10 }}>{resendNotice}</p>}
           </div>
         </div>
       </div>

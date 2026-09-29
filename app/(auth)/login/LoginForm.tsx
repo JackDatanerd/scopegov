@@ -41,10 +41,18 @@ export default function LoginForm() {
     setResendNotice('')
     // Same answer whether or not the address has an account waiting for
     // verification, so this can't be used to probe which emails are registered.
-    await supabase.auth.resend({
+    // FIX (Auth+MFA fresh audit — LOW): the returned error was dropped, so a rate-limited
+    // request still claimed "a new link is on its way" and started the cooldown.
+    const { error: resendErr } = await supabase.auth.resend({
       type: 'signup', email,
       options: { emailRedirectTo: `${window.location.origin}/api/auth/callback?next=${encodeURIComponent(next)}` },
-    }).catch(() => {})
+    }).catch(() => ({ error: { status: 0 } as any }))
+    if (resendErr) {
+      setError((resendErr as any).status === 429 || (resendErr as any).code === 'over_email_send_rate_limit'
+        ? 'Too many verification emails requested. Please wait a few minutes and try again.'
+        : 'We couldn\u2019t send the verification email. Please try again.')
+      return
+    }
     setResendCooldown(60)
     setResendNotice('If that address is waiting for verification, a new link is on its way. Check your spam folder too.')
   }
