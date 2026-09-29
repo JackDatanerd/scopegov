@@ -3,7 +3,6 @@ export const runtime = 'nodejs'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
-import { quotePostgrestValue } from '@/lib/audit/search'
 import {
   foldedTokens, plainTokens, likePattern, prefixLike, isSearchable, rankBy, searchRateLimited,
 } from '@/lib/search/query'
@@ -41,6 +40,19 @@ import {
 //   • Projects are found by `internal_ref`; SOWs, change orders, invoices and flags are found by their
 //     CLIENT's name as well as their project's; client contacts use an accent-folded search_text
 //     (migration 073); active team members are searchable by name.
+
+// Round 3 (Search section, independent pass) — what this pass found and fixes:
+//   • Projects' own "matching client" sub-query (`byClient`) was the one fetch in the whole file with
+//     no ORDER BY at all — every analogous byClientIds fetch on the other four blocks orders
+//     newest-first before its LIMIT; this one didn't, so a client with more than FETCH projects could
+//     silently lose the actual match to an arbitrary subset. Same for the members block's only query.
+//   • Team members were matched with a plain, accent-SENSITIVE ilike on `users.name` — the exact
+//     "Cafe never matched Café" gap migrations 062/073 closed for projects/clients/contacts, just never
+//     propagated to users when member search was added. Migration 111 gives users the same
+//     accent-folded search_text column; members now match on `folded` tokens like everything else.
+//   • Member results linked to bare /team with no way to tell which of potentially many rows matched —
+//     every other category deep-links to the specific thing (a client id, ?tab=co, ...). /team now
+//     honours the same `?highlight=` convention ApprovalsClient/ProjectDetail/BillingTab already use.
 
 type Result = { type: string; id: string; title: string; sub: string; href: string }
 
@@ -129,7 +141,10 @@ export async function GET(request: NextRequest) {
           .eq('workspace_id', wsId).is('deleted_at', null), 'id')
         let own = base()
         for (const t of folded) own = own.ilike('search_text', likePattern(t))
-        const byClient = clientIds.length ? base().in('client_id', clientIds).limit(FETCH) : null
+        // FIX (Search section, round 3): was a bare LIMIT with no ORDER BY — the one
+        // "matching client" fetch in the file that didn't order newest-first, unlike its
+        // three siblings in this same query and every byClientIds fetch below.
+        const byClient = clientIds.length ? base().in('client_id', clientIds).order('created_at', NEWEST).limit(FETCH) : null
         const none = Promise.resolve({ data: [], error: null })
         const [a, b, c, d] = await Promise.all([
           own.order('created_at', NEWEST).limit(FETCH),
@@ -164,17 +179,26 @@ export async function GET(request: NextRequest) {
       }),
 
       // ── Team members (active only; names only — e-mails stay on the Team page) ──
+      // FIX (Search section, round 3): used to match with a plain, accent-sensitive
+      // ilike against users.name — the "Cafe never matched Café" gap already closed
+      // for projects/clients/contacts (migrations 062/073), just never propagated to
+      // users. Now filters on users.search_text (migration 111) with folded tokens
+      // like every other block. Also added the missing ORDER BY (see note at top).
       block('members', async () => {
         let mq = service.from('workspace_members')
           .select('id, users!workspace_members_user_id_fkey!inner(id, name), roles(name)')
           .eq('workspace_id', wsId).eq('status', 'active')
-        for (const t of plain) mq = mq.ilike('users.name', likePattern(t))
-        const rows = dedupe(must<any[]>(await mq.limit(FETCH)))
-        return rankBy(rows, plain, m => m.users?.name || '').slice(0, 3).map(m => ({
+        for (const t of folded) mq = mq.ilike('users.search_text', likePattern(t))
+        const rows = dedupe(must<any[]>(await mq.order('created_at', NEWEST).limit(FETCH)))
+        return rankBy(rows, folded, m => m.users?.name || '').slice(0, 3).map(m => ({
           type: 'member', id: m.id,
           title: m.users?.name || 'Team member',
           sub: m.roles?.name ? `Team · ${m.roles.name}` : 'Team member',
-          href: '/team',
+          // FIX (Search section, round 3 — feature gap): every other category deep-links to
+          // the specific thing that matched; this always sent people to bare /team with no
+          // way to tell which of potentially many rows was the match. TeamClient now honours
+          // this the same way ApprovalsClient/ProjectDetail/BillingTab already use ?highlight=.
+          href: `/team?highlight=${m.id}`,
         }))
       }),
 

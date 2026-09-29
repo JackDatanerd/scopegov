@@ -5,7 +5,7 @@
 
 'use client'
 import { fetchWithStepUp } from '@/lib/client/step-up'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import type { SessionUser } from '@/lib/supabase/types'
@@ -70,6 +70,25 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
   // same `?tab=` deep-link pattern SettingsClient already uses so a link
   // elsewhere in the app can open straight to Roles.
   const [tab,   setTab]   = useState<'members' | 'roles'>(searchParams.get('tab') === 'roles' ? 'roles' : 'members')
+  // FIX (deep audit, Search section — feature gap): /api/search's "members"
+  // block has always returned a real workspace_members.id for each match,
+  // but every other search category deep-links to the exact thing that
+  // matched (a client id, a project id, ?tab=co, etc.) while this one just
+  // sent everyone to bare /team — same app-wide `?highlight=` convention
+  // ApprovalsClient/ProjectDetail/BillingTab already use for "jump to and
+  // reveal one specific row", just never wired up on this page. Scrolls the
+  // matched card into view and flashes it briefly; fades on its own so it
+  // doesn't linger as a permanent visual oddity.
+  const highlightId = searchParams.get('highlight')
+  const [flashId, setFlashId] = useState<string | null>(highlightId)
+  useEffect(() => {
+    if (!highlightId || tab !== 'members') return
+    const el = document.getElementById(`member-${highlightId}`)
+    if (!el) return
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    const t = setTimeout(() => setFlashId(null), 2600)
+    return () => clearTimeout(t)
+  }, [highlightId, tab])
   const [modal, setModal] = useState<'invite' | 'role' | null>(null)
   const [inviteEmail,  setInviteEmail]  = useState('')
   const [inviteRoleId, setInviteRoleId] = useState('')
@@ -478,7 +497,8 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
               const name   = u?.name || u?.email || 'Unknown'
               const colour = avatarColour(name)
               return (
-                <div key={m.id} className="member-card">
+                <div key={m.id} id={`member-${m.id}`}
+                  className={`member-card${flashId === m.id ? ' member-card-flash' : ''}`}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
                     {/* FIX (deep audit, Workspace lifecycle + Onboarding
                         re-pass — feature gap): u.avatar_url has been
