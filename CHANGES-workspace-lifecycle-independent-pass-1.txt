@@ -1,0 +1,32 @@
+Workspace lifecycle — independent pass 1
+=========================================
+Scope: api/workspace/{create,complete-onboarding,delete,leave,list,switch,profile}
+(+ restore, onboarding-status, profile/avatar traced as part of the lifecycle).
+
+FIXED
+ B2/B9  delete: soft-delete + member deactivation + active-workspace reassignment are one
+        transaction (delete_workspace_atomic, migration 116) under a workspace row lock.
+        A second/overlapping DELETE is refused (already_deleted) instead of re-stamping
+        deleted_at, which made restore match nobody. Blockers are re-checked under the lock.
+        If the delete fails after the Paystack cancel, the subscription is resumed (or ops
+        alerted) and the message no longer claims "nothing was changed" when billing had been.
+ B10    restore_workspace_atomic and admin_restore_workspace leave members whose account was
+        deleted after the workspace was deleted deactivated (they used to come back active).
+ B3     sanitizeDisplayName strips bidi controls / zero-width / format characters, treats blank
+        filler characters as whitespace, returns '' when nothing visible is left (callers already
+        reject ''), keeps ZWNJ/ZWJ next to visible text, and never cuts an emoji in half.
+ B5     restore POST: malformed body / non-UUID workspaceId -> 400 instead of 500.
+ B6     Sidebar switch/leave/restore report failures instead of failing silently.
+ B7     avatar upload strips EXIF/GPS/XMP/comments (JPEG) and text/EXIF/time chunks (PNG) before
+        the file goes into the public bucket; EXIF orientation is preserved; unparseable images
+        are refused.
+ B8     Danger Zone and wizard-discard copy no longer say a deleted workspace is unrecoverable
+        (it is restorable for 30 days) and list every blocker, not just signed documents.
+Already closed by other sessions (verified, not re-done): invite rows resurrected by restore
+(migration 112), slug format + active_workspace_id retry (Onboarding pass 3).
+Withdrawn: per-route rate limiting (create is bounded by the trial cap, avatar by one object
+per user, delete by step-up).
+
+MIGRATION: 116_workspace_delete_atomic_restore_skips_deleted_accounts.sql (idempotent).
+TESTS: tests/workspace-lifecycle-pass1.test.ts; tests/pg-replay.test.ts (needs PG_REPLAY_URL);
+       tests/team-invites-independent-pass.test.ts (B1 contract now asserts the RPC/migration).

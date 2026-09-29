@@ -122,12 +122,37 @@ export function escapeHtml(text: string | null | undefined): string {
 // this way is unclear (it's not raw SMTP header composition), but there's
 // no reason a display name needs newlines or control characters, so this
 // closes the gap defensively regardless of that uncertainty.
+// FIX (Workspace lifecycle independent pass — B3 / B11): this only removed ASCII control
+// characters, so a display name could still be made of things that render as NOTHING
+// (zero-width space U+200B, word joiner, invisible separators, Hangul/Braille filler
+// characters U+115F/U+1160/U+3164/U+FFA0/U+2800) or could flip the rendering direction of
+// whatever follows it (U+202E "right-to-left override", the isolates U+2066-2069). Because
+// users.name / workspaces.agency_name feed the audit log, notifications, team lists and the
+// From line of outgoing email, that lets a person be blank or impersonate someone else
+// ("Admin" + RLO + "gnirts"). The route-level "is it empty?" checks were also defeated: a
+// name of three zero-width spaces is truthy.
+//   * All Unicode format characters (\p{Cf}: bidi controls, zero-width space/word-joiner,
+//     BOM, soft hyphen, tag characters, ...) are removed — EXCEPT ZWNJ (U+200C) and ZWJ
+//     (U+200D), which real names need (Persian/Urdu/Indic shaping, emoji sequences); those are
+//     only ever allowed alongside at least one visible character, checked below.
+//   * Filler characters that draw as blanks are treated as whitespace.
+//   * A name with no visible character at all comes back as '' so callers' existing
+//     "required" checks reject it.
+//   * B11: slicing at maxLength could cut an emoji's surrogate pair in half; the lone
+//     surrogate is not valid in a JSON body to Postgres and made the whole write fail.
 export function sanitizeDisplayName(text: string | null | undefined, maxLength = 120): string {
   if (!text) return ''
-  return text
+  const cleaned = text
     // eslint-disable-next-line no-control-regex
     .replace(/[\r\n\x00-\x1F\x7F]/g, ' ')
+    .replace(/(?![\u200C\u200D])\p{Cf}/gu, '')
+    .replace(/[\u115F\u1160\u3164\uFFA0\u2800]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
+  // Nothing but whitespace / joiners left → no visible name.
+  if (!/[^\s\u200C\u200D]/u.test(cleaned)) return ''
+  return cleaned
     .slice(0, maxLength)
+    .replace(/[\uD800-\uDBFF]$/, '')   // don't leave half an emoji at the cut
+    .trimEnd()
 }

@@ -2481,8 +2481,12 @@ function DangerTab({ workspace, permissions, session }: any) {
       <div className="settings-section" style={{ border: '1px solid #FECACA' }}>
         <div className="settings-section-title" style={{ color: 'var(--red)' }}>Delete workspace</div>
         <p style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.6, marginBottom: 16 }}>
-          Permanently delete this workspace and all its data. This cannot be undone.
-          <strong> Workspaces with signed documents cannot be deleted.</strong>
+          Delete this workspace and everything in it. Every member loses access straight away and the
+          billing subscription is cancelled. For 30 days you can restore it from the &ldquo;Recently
+          deleted&rdquo; list (in the workspace switcher, or on the setup page if it was your only
+          workspace); after that it can&rsquo;t be brought back.
+          <strong> Workspaces with signed documents, documents awaiting a client, accepted or open change
+          orders, recorded payments or unpaid invoices cannot be deleted.</strong>
           Your data is retained for 7 years for legal compliance before permanent removal.
         </p>
         <div className="fgrp">
@@ -2500,7 +2504,7 @@ function DangerTab({ workspace, permissions, session }: any) {
         <button className="btn btn-danger btn-sm"
           disabled={!canDelete || deleting}
           onClick={handleDelete}>
-          {deleting ? <span className="spin" /> : 'Delete workspace permanently'}
+          {deleting ? <span className="spin" /> : 'Delete workspace'}
         </button>
       </div>
     </div>

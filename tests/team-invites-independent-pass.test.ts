@@ -186,12 +186,18 @@ describe('B1 source contracts', () => {
   const read = (p: string) => fs.readFileSync(path.join(root, p), 'utf8')
 
   it('workspace/delete only deactivates ACTIVE members (never invites)', () => {
-    const src = read('app/api/workspace/delete/route.ts')
-    const at = src.indexOf(".update({ status: 'deactivated', deactivated_at: now })")
+    // Workspace lifecycle pass (B2): the deactivation moved out of the route into
+    // delete_workspace_atomic (migration 116) — the invariant is unchanged and is now
+    // asserted where the write lives.
+    const route = read('app/api/workspace/delete/route.ts')
+    expect(route).toContain("rpc('delete_workspace_atomic'")
+    expect(route).not.toContain(".neq('status', 'deactivated')")
+    const sql = read('supabase/migrations/116_workspace_delete_atomic_restore_skips_deleted_accounts.sql')
+    const at = sql.indexOf("SET status = 'deactivated', deactivated_at = p_now")
     expect(at).toBeGreaterThan(-1)
-    const stmt = src.slice(at, at + 200)
-    expect(stmt).toContain(".eq('status', 'active')")
-    expect(stmt).not.toContain(".neq('status', 'deactivated')")
+    const stmt = sql.slice(at, at + 200)
+    expect(stmt).toContain("status = 'active'")
+    expect(stmt).not.toMatch(/status\s*<>\s*'deactivated'/)
   })
 
   it('migration 112 only reactivates rows that were really members, heals ghosts, and adds the CHECK', () => {

@@ -79,8 +79,17 @@ export async function POST(request: NextRequest) {
       .from('users').select('deleted_at').eq('id', user.id).maybeSingle()
     if (deletedCheck?.deleted_at) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-    const { workspaceId } = await request.json()
+    // FIX (Workspace lifecycle independent pass — B5): a bare `await request.json()` threw on a
+    // malformed / empty body (→ 500 "Internal server error"), a body of `null` threw on the
+    // destructure, and a non-UUID workspaceId went straight to the RPC and came back as a
+    // Postgres 22P02 → 500 "Failed to restore workspace". Every sibling route already answers
+    // these with a 400; this one was missed.
+    const body = await request.json().catch(() => null) as { workspaceId?: unknown } | null
+    const workspaceId = typeof body?.workspaceId === 'string' ? body.workspaceId.trim() : ''
     if (!workspaceId) return NextResponse.json({ error: 'workspaceId is required' }, { status: 400 })
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(workspaceId)) {
+      return NextResponse.json({ error: 'workspaceId is not valid' }, { status: 400 })
+    }
 
     const { error: rpcError } = await (service as any)
       .rpc('restore_workspace_atomic', { p_workspace_id: workspaceId, p_user_id: user.id })

@@ -3,6 +3,7 @@ export const runtime = 'nodejs'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession } from '@/lib/auth/session'
+import { stripImageMetadata } from '@/lib/utils/image-metadata'
 
 // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — feature
 // gap): `users.avatar_url` has been a real column since 001_initial_schema,
@@ -82,7 +83,15 @@ export async function POST(request: NextRequest) {
     // trusted from the client — a user can only ever overwrite their own
     // avatar, not anyone else's.
     const path = `avatars/${session.id}.${ext}`
-    const bytes = new Uint8Array(buffer)
+    // FIX (Workspace lifecycle independent pass — B7): the avatar lands in a PUBLIC bucket at a
+    // predictable URL, so EXIF (GPS position, device, timestamps) and XMP/text chunks are
+    // removed before storing. EXIF orientation is preserved. A file that can't be parsed as
+    // the image type it claims to be is refused rather than stored uninspected.
+    const cleaned = stripImageMetadata(file.type, buffer)
+    if (!cleaned) {
+      return NextResponse.json({ error: 'That image file looks damaged. Try re-saving it as a PNG or JPG.' }, { status: 400 })
+    }
+    const bytes = new Uint8Array(cleaned)
 
     const { error } = await (service as any).storage
       .from(AVATAR_BUCKET)

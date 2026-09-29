@@ -715,4 +715,82 @@ describe.skipIf(!URL_)('Postgres replay (migrations 001..latest on a real databa
     })
   })
 
+
+  // ── Workspace lifecycle independent pass (migration 116) ──────────────────
+  describe('migration 116 — atomic workspace delete, and restore skips deleted accounts', () => {
+    const joined = (w: number, u: number) => sql(`UPDATE public.workspace_members SET joined_at = now() WHERE workspace_id = $1 AND user_id = $2`, [W(w), U(u)])
+
+    it('delete_workspace_atomic deactivates only ACTIVE members, reassigns active workspaces, and refuses a second delete', async () => {
+      await makeUser(130); await makeUser(131); await makeUser(132)
+      await makeWorkspace(130, 130, 'agency')
+      await makeWorkspace(131, 132, 'agency')                         // a second, live workspace (the fallback)
+      await addMember(131, 130, 'Account Manager'); await joined(131, 130)
+      await sql(`UPDATE public.users SET active_workspace_id = $1 WHERE id = $2`, [W(130), U(130)])
+      await addMember(130, 131, 'Account Manager'); await joined(130, 131)
+      const [{ id: roleId }] = await sql(`SELECT id FROM public.roles WHERE workspace_id = $1 AND name = 'Account Manager'`, [W(130)])
+      await sql(`INSERT INTO public.workspace_members (workspace_id, user_id, role_id, status, invited_email, invite_token) VALUES ($1,NULL,$2,'invited','pending@test.dev','tok-116')`, [W(130), roleId])
+
+      const stamp = new Date(Date.now() - 60_000).toISOString()
+      await sql(`SELECT public.delete_workspace_atomic($1, $2)`, [W(130), stamp])
+
+      const [ws] = await sql(`SELECT deleted_at FROM public.workspaces WHERE id = $1`, [W(130)])
+      expect(new Date(ws.deleted_at).toISOString()).toBe(stamp)
+      const rows = await sql(`SELECT user_id, status, deactivated_at FROM public.workspace_members WHERE workspace_id = $1`, [W(130)])
+      const pending = rows.find(r => r.user_id === null)!
+      expect(pending.status).toBe('invited')                          // never stamped
+      expect(pending.deactivated_at).toBeNull()
+      for (const r of rows.filter(r => r.user_id)) {
+        expect(r.status).toBe('deactivated')
+        expect(new Date(r.deactivated_at).toISOString()).toBe(stamp)  // exact match restore relies on
+      }
+      const [u] = await sql(`SELECT active_workspace_id FROM public.users WHERE id = $1`, [U(130)])
+      expect(u.active_workspace_id).toBe(W(131))
+
+      // a second (overlapping / retried) delete must NOT re-stamp deleted_at
+      await expect(sql(`SELECT public.delete_workspace_atomic($1, now())`, [W(130)])).rejects.toThrow(/already_deleted/)
+      const [ws2] = await sql(`SELECT deleted_at FROM public.workspaces WHERE id = $1`, [W(130)])
+      expect(new Date(ws2.deleted_at).toISOString()).toBe(stamp)
+
+      // and restore therefore still brings the real members back
+      await sql(`SELECT public.restore_workspace_atomic($1, $2)`, [W(130), U(130)])
+      const active = (await sql(`SELECT user_id FROM public.workspace_members WHERE workspace_id = $1 AND status = 'active'`, [W(130)])).map(r => r.user_id).sort()
+      expect(active).toEqual([U(130), U(131)].sort())
+    })
+
+    it('delete_workspace_atomic is closed to the API roles', async () => {
+      await asRole('authenticated', U(130), async c => { expect(await denied(c, `SELECT public.delete_workspace_atomic('${W(131)}', now())`)).toBe(true) })
+      await asRole('anon', null, async c => { expect(await denied(c, `SELECT public.delete_workspace_atomic('${W(131)}', now())`)).toBe(true) })
+    })
+
+    it('restore leaves a member whose account was deleted after the workspace was deleted deactivated', async () => {
+      await makeUser(140); await makeUser(141); await makeUser(142)
+      await makeWorkspace(140, 140, 'agency')
+      await addMember(140, 141, 'Account Manager'); await joined(140, 141)
+      await addMember(140, 142, 'Account Manager'); await joined(140, 142)
+      await sql(`SELECT public.delete_workspace_atomic($1, now() - interval '1 minute')`, [W(140)])
+      await sql(`UPDATE public.users SET deleted_at = now() WHERE id = $1`, [U(142)])   // account/delete after the workspace delete
+      await sql(`SELECT public.restore_workspace_atomic($1, $2)`, [W(140), U(140)])
+      const rows = await sql(`SELECT user_id, status FROM public.workspace_members WHERE workspace_id = $1`, [W(140)])
+      expect(rows.find(r => r.user_id === U(141))!.status).toBe('active')
+      expect(rows.find(r => r.user_id === U(142))!.status).toBe('deactivated')
+    })
+
+    it('admin restore skips deleted accounts too', async () => {
+      await makeUser(143); await makeUser(144)
+      await makeWorkspace(143, 143, 'agency')
+      await addMember(143, 144, 'Account Manager'); await joined(143, 144)
+      await sql(`SELECT public.admin_suspend_workspace($1)`, [W(143)])
+      await sql(`UPDATE public.users SET deleted_at = now() WHERE id = $1`, [U(144)])
+      await sql(`SELECT public.admin_restore_workspace($1)`, [W(143)])
+      const rows = await sql(`SELECT user_id, status FROM public.workspace_members WHERE workspace_id = $1`, [W(143)])
+      expect(rows.find(r => r.user_id === U(143))!.status).toBe('active')
+      expect(rows.find(r => r.user_id === U(144))!.status).toBe('deactivated')
+    })
+
+    it('migration 116 can be applied a second time without error', async () => {
+      const f = fs.readdirSync(MIGRATIONS).find(x => x.startsWith('116_'))!
+      await pool.query(fs.readFileSync(path.join(MIGRATIONS, f), 'utf8'))
+    })
+  })
+
 })

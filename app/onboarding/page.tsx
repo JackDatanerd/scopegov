@@ -565,7 +565,7 @@ function OnboardingWizard() {
   async function discardWorkspace() {
     if (!workspaceId) return
     if (typeof window !== 'undefined' && !window.confirm(
-      'Discard this workspace? Everything entered so far will be permanently deleted. This can\u2019t be undone.'
+      'Discard this workspace? Everything entered so far will be deleted. You can restore it for 30 days from the \u201CRecently deleted\u201D list.'
     )) return
     setLoading(true); setError('')
     try {

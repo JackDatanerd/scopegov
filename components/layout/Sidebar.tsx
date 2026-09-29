@@ -197,7 +197,16 @@ export default function Sidebar({ session }: { session: SessionUser }) {
         // and a hard navigation is the simplest way to guarantee all of it
         // (not just the current route) reflects the new workspace.
         window.location.href = '/dashboard'
+        return
       }
+      // FIX (Workspace lifecycle independent pass — B6): a refused switch (the workspace was
+      // deleted or the person was removed since the list loaded, a 403/404, a 500) used to do
+      // nothing at all — the spinner cleared and the menu just sat there. Say so, and drop the
+      // stale entry's ambiguity by telling them to reload.
+      const json = await res.json().catch(() => ({}))
+      alert(json.error || 'Could not switch to that workspace. Reload the page and try again.')
+    } catch {
+      alert('Could not reach the server to switch workspaces. Check your connection and try again.')
     } finally { setSwitching(false) }
   }
 
@@ -215,6 +224,8 @@ export default function Sidebar({ session }: { session: SessionUser }) {
       // server component reading session data off active_workspace_id
       // needs to see the newly-restored workspace.
       window.location.href = '/dashboard'
+    } catch {
+      alert('Could not reach the server to restore that workspace. Check your connection and try again.')
     } finally { setRestoringId(null) }
   }
 
@@ -226,9 +237,12 @@ export default function Sidebar({ session }: { session: SessionUser }) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ workspaceId }),
       })
-      const json = await res.json()
+      // .catch: a gateway error page (502/504) isn't JSON and made this throw with no feedback.
+      const json = await res.json().catch(() => ({}))
       if (!res.ok) { alert(json.error || 'Could not leave that workspace.'); return }
       setWorkspaces(prev => prev.filter(w => w.id !== workspaceId))
+    } catch {
+      alert('Could not reach the server to leave that workspace. Check your connection and try again.')
     } finally { setLeavingId(null) }
   }
 

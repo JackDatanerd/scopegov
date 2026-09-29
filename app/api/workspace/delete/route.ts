@@ -4,8 +4,9 @@
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
-import { getSession, hasPermission, pickFallbackMembership } from '@/lib/auth/session'
-import { cancelPaystackSubscription } from '@/lib/integrations/paystack'
+import { getSession, hasPermission } from '@/lib/auth/session'
+import { cancelPaystackSubscription, resumePaystackSubscription } from '@/lib/integrations/paystack'
+import { alertBillingOps } from '@/lib/billing/ops-alert'
 import { logAudit } from '@/lib/utils/audit'
 import { requireStepUpForCurrentUser } from '@/lib/auth/step-up'
 import { sendWorkspaceDeletedEmail } from '@/lib/email/templates'
@@ -281,17 +282,54 @@ export async function DELETE(request: Request) {
       .eq('status', 'active')
     const otherMembers = (allMembers || []).filter((m: any) => m.user_id !== session.id)
 
-    // Soft delete workspace
-    // FIX (round 3, Workspace lifecycle Finding 3): this write's result was
-    // previously discarded — a failure here (RLS, transient DB error) left
-    // the route returning { ok: true } while nothing had actually changed.
+    // FIX (Workspace lifecycle independent pass — B2/B9): soft-delete, member
+    // deactivation and active-workspace reassignment used to be three separate
+    // writes from this route. (1) The soft-delete UPDATE had no `deleted_at IS NULL`
+    // guard, so two overlapping DELETEs (double click, retry after a slow response)
+    // re-stamped deleted_at with a NEWER value than the one the members were
+    // deactivated with; restore matches deactivated_at EXACTLY, so it then
+    // reactivated nobody. (2) A failure after the soft-delete left the workspace
+    // deleted with every member still 'active' and no rollback. (3) The blocker
+    // checks above are reads, not atomic with this write. delete_workspace_atomic
+    // (migration 116) does all of it in one transaction under a workspace row lock,
+    // re-checks the blockers under that lock, and refuses a second delete.
     const { error: wsDeleteError } = await (service as any)
-      .from('workspaces')
-      .update({ deleted_at: now })
-      .eq('id', session.workspaceId)
+      .rpc('delete_workspace_atomic', { p_workspace_id: session.workspaceId, p_now: now })
     if (wsDeleteError) {
-      console.error('Workspace soft-delete failed:', wsDeleteError)
-      return NextResponse.json({ error: 'Failed to delete workspace. Nothing was changed — try again.' }, { status: 500 })
+      const msg = String(wsDeleteError.message || '')
+      // Someone (another tab / a retry) already deleted it: the request that won owns
+      // the billing cancellation — do NOT resume anything here.
+      if (msg.includes('already_deleted') || msg.includes('workspace_not_found')) {
+        return NextResponse.json({ error: 'This workspace has already been deleted.' }, { status: 409 })
+      }
+      console.error('Workspace delete RPC failed:', JSON.stringify(wsDeleteError))
+      // The subscription was cancelled above, before the workspace was touched. The delete
+      // did not happen, so put billing back the way it was rather than leave a live
+      // workspace with a dead subscription (the old message "Nothing was changed" was
+      // simply untrue for billing).
+      let billingRestored = true
+      if (billing?.paystack_subscription_code && !cancelResult.alreadyCancelled) {
+        const resumed = await resumePaystackSubscription(billing).catch((e: unknown) => ({ ok: false, error: String(e) }))
+        if (!resumed.ok) {
+          billingRestored = false
+          await alertBillingOps(service, `billing:delete-rollback-resume:${session.workspaceId}`, 'Workspace delete failed after Paystack cancel — subscription NOT resumed', [
+            `workspace: ${session.workspaceId}`,
+            `delete_workspace_atomic failed: ${msg}`,
+            `resume error: ${resumed.error || 'unknown'}`,
+            'The workspace is still live but its Paystack subscription is cancelled. Resume it manually.',
+          ]).catch(() => {})
+        }
+      }
+      if (msg.includes('blocked_by_live_documents')) {
+        return NextResponse.json({
+          error: 'This workspace has live documents, open negotiations, unpaid invoices or recorded payments, so it can\u2019t be deleted right now. Refresh and check what changed, or contact support@scopegov.app.',
+        }, { status: 409 })
+      }
+      return NextResponse.json({
+        error: billingRestored
+          ? 'Failed to delete workspace. Nothing was changed — try again.'
+          : 'Failed to delete workspace, and its billing subscription could not be re-enabled automatically. Our team has been alerted — contact support@scopegov.app.',
+      }, { status: 500 })
     }
 
     // FIX (Billing re-pass, independent redo #3 — B3): drop this workspace's
@@ -303,88 +341,9 @@ export async function DELETE(request: Request) {
       .eq('workspace_id', session.workspaceId).is('consumed_at', null)
     if (purgeErr) console.error('Could not purge pending checkouts on workspace delete:', purgeErr.message)
 
-    // FIX 6: Deactivate all memberships so getSession() finds no active row
-    // on next login — prevents the deleted workspace from being accessible.
-    // FIX (round 3, Workspace lifecycle Finding 3): same unchecked-write gap
-    // as above — a failure here previously left the workspace soft-deleted
-    // but every membership still 'active', silently, with the client told
-    // deletion succeeded.
-    // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — feature
-    // gap): this write never stamped deactivated_at (unlike
-    // leave_workspace_atomic's own deactivation, which always does) —
-    // harmless on its own, but restore_workspace_atomic (migration 065,
-    // the new workspace-restore feature) needs to tell "deactivated BY
-    // THIS deletion" apart from "was already deactivated for an unrelated
-    // reason before the deletion happened" so a restore can't accidentally
-    // resurrect someone who'd genuinely left or been removed earlier.
-    // Stamping it with the exact same `now` used for the workspace's own
-    // deleted_at just below gives restore an exact, reliable match.
-    //
-    // FIX (deep audit, Team & Invites independent pass — B1): this used to
-    // be `.neq('status', 'deactivated')`, which also swept up PENDING and
-    // EXPIRED invite rows (status 'invited' / 'expired'; user_id NULL, or an
-    // existing user's id for an invite that was never accepted). Stamping
-    // those with deactivated_at made restore_workspace_atomic's exact-match
-    // reactivation flip them to status 'active' — ghost members with no
-    // account (or, for an invite to an existing user, an account that never
-    // consented) that consumed seats, counted as permission holders in the
-    // admin floor, and locked the real invitee out ("already accepted").
-    // Only genuine members are deactivated now. Invites need no handling
-    // here: invite GET/accept/signup all refuse while the workspace has
-    // deleted_at set, and invite-cleanup/purge deal with them afterwards.
-    const { error: deactivateError } = await (service as any)
-      .from('workspace_members')
-      .update({ status: 'deactivated', deactivated_at: now })
-      .eq('workspace_id', session.workspaceId)
-      .eq('status', 'active')
-    if (deactivateError) {
-      console.error('Workspace member deactivation failed after soft-delete:', deactivateError)
-      return NextResponse.json({
-        error: 'Workspace was deleted but some memberships could not be deactivated. Contact support@scopegov.app.',
-      }, { status: 500 })
-    }
-
-    // FIX (round 3, Workspace lifecycle Finding 4): leave_workspace_atomic
-    // (migration 027) reassigns the leaver's active_workspace_id to a
-    // fallback workspace when their active workspace membership ends —
-    // delete had no equivalent for ANY of the members it just deactivated
-    // (including the actor). Their active_workspace_id kept pointing at the
-    // now-deleted workspace forever. getSession() tolerates this fine (it
-    // falls back to the oldest remaining active membership), but
-    // workspace/list.ts's `active` flag is a direct equality check with no
-    // such fallback, so the workspace switcher showed NO workspace as
-    // active at all for every affected member until they manually
-    // switched. Best-effort, sequential (this route is single-actor and
-    // admin-gated, so the same TOCTOU concern that justified an RPC for
-    // leave/route.ts doesn't apply here) — must never block the deletion
-    // itself, which has already succeeded by this point.
-    for (const m of (allMembers || [])) {
-      try {
-        const { data: u } = await (service as any)
-          .from('users').select('active_workspace_id').eq('id', m.user_id).maybeSingle()
-        if (u?.active_workspace_id !== session.workspaceId) continue
-        // FIX (deep audit, Workspace lifecycle + Onboarding re-pass —
-        // flagship finding): this used to grab only the single oldest
-        // remaining active membership, with no regard for whether THAT
-        // workspace had actually finished onboarding — see
-        // pickFallbackMembership's own comment in lib/auth/session.ts for
-        // the full story and the other three call sites sharing this exact
-        // gap. Concretely reachable via the onboarding wizard's own
-        // "Discard this workspace" button: an invited member sitting on
-        // the 'waiting' screen for THIS workspace could get reassigned
-        // into some other older-but-still-incomplete workspace of theirs
-        // instead of a perfectly usable, already-onboarded one. Fetch a
-        // real candidate set and prefer a completed workspace.
-        const { data: candidates } = await (service as any)
-          .from('workspace_members')
-          .select('workspace_id, workspaces(deleted_at, onboarding_completed_at)')
-          .eq('user_id', m.user_id).eq('status', 'active')
-          .order('created_at', { ascending: true }).limit(25)
-        const fallback = pickFallbackMembership(candidates)
-        await (service as any)
-          .from('users').update({ active_workspace_id: fallback?.workspace_id ?? null }).eq('id', m.user_id)
-      } catch (e) { console.error('active_workspace_id reassignment failed (non-fatal):', m.user_id, e) }
-    }
+    // Member deactivation and active_workspace_id reassignment (which used to live
+    // here as two separate best-effort writes) now happen inside
+    // delete_workspace_atomic above, in the same transaction as the soft-delete.
 
     // Best-effort — must never block the deletion itself, which has
     // already succeeded by this point.
