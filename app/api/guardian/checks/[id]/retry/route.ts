@@ -65,6 +65,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       if (res.reason === 'no_snapshot') return NextResponse.json({ error: 'No signed SOW to classify against yet' }, { status: 400 })
       if (res.reason === 'claimed') return NextResponse.json({ error: 'This check is already being retried — refresh in a moment.' }, { status: 409 })
       if (res.reason === 'not_found') return NextResponse.json({ error: 'Check not found' }, { status: 404 })
+      if (res.reason === 'inactive') return NextResponse.json({ error: 'This project is no longer active — the check can’t be re-classified.' }, { status: 409 })
       return NextResponse.json({ error: 'Only a classification_failed check can be retried' }, { status: 400 })
     }
     if (res.status === 'failed') {

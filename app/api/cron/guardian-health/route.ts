@@ -95,16 +95,25 @@ async function sweepUnclassified(service: any) {
   const now = Date.now()
   const oldest = new Date(now - SWEEP_MAX_AGE_DAYS * 86400000).toISOString()
   const cols = 'id, workspace_id, project_id, classification_failed, classification_attempts, last_attempt_at, created_at'
+  // Dead rows (soft-deleted project, Complete/Archived project, suspended/deleted workspace) are
+  // excluded in the query, not just skipped in reclassifyCheck: a skip happens before the attempt
+  // claim, so those rows would keep winning the oldest-first ordering and fill the whole batch
+  // forever, starving live checks.
+  const live = (q: any) => q
+    .is('projects.deleted_at', null)
+    .not('projects.status', 'in', '(Complete,Archived)')
+    .is('projects.workspaces.deleted_at', null)
 
-  const { data: failedRows, error: failedErr } = await service.from('guardian_checks').select(cols)
+  const { data: failedRows, error: failedErr } = await live(service.from('guardian_checks')
+    .select(`${cols}, projects!inner(deleted_at, status, workspaces!inner(deleted_at))`))
     .eq('outcome', 'pending').eq('is_duplicate', false).eq('classification_failed', true)
     .lt('classification_attempts', MAX_AUTO_CLASSIFICATION_ATTEMPTS).gte('created_at', oldest)
     .order('created_at', { ascending: true }).limit(40)
   if (failedErr) throw new Error(`guardian sweep (failed): ${failedErr.message}`)
 
   // Backlog: pending, never failed, and the project NOW has a signed-SOW snapshot.
-  const { data: backlogRows, error: backlogErr } = await service.from('guardian_checks')
-    .select(`${cols}, projects!inner(project_scope_snapshot!inner(id))`)
+  const { data: backlogRows, error: backlogErr } = await live(service.from('guardian_checks')
+    .select(`${cols}, projects!inner(deleted_at, status, workspaces!inner(deleted_at), project_scope_snapshot!inner(id))`))
     .eq('outcome', 'pending').eq('is_duplicate', false).eq('classification_failed', false)
     .lt('classification_attempts', MAX_AUTO_CLASSIFICATION_ATTEMPTS).gte('created_at', oldest)
     .order('created_at', { ascending: true }).limit(40)
@@ -162,8 +171,11 @@ export async function POST(request: NextRequest) {
     // unpaginated row select (silently capped at PostgREST's 1,000 rows) and its denominator
     // included checks that were never classifiable at all (pending because no SOW was signed),
     // which diluted the rate and could hide a real outage. Exact counts over classifiable checks only.
-    const windowBase = () => service.from('guardian_checks')
-      .select('id', { count: 'exact', head: true }).gte('created_at', since15m).eq('is_duplicate', false)
+    const liveOnly = (q: any) => q
+      .is('projects.deleted_at', null).is('projects.workspaces.deleted_at', null)
+    const liveSel = 'id, projects!inner(deleted_at, workspaces!inner(deleted_at))'
+    const windowBase = () => liveOnly(service.from('guardian_checks')
+      .select(liveSel, { count: 'exact', head: true })).gte('created_at', since15m).eq('is_duplicate', false)
     const [{ count: totalCount, error: totalErr }, { count: failedCount, error: failedCountErr }] = await Promise.all([
       windowBase().or('classification_failed.eq.true,outcome.neq.pending'),
       windowBase().eq('classification_failed', true),
@@ -176,7 +188,8 @@ export async function POST(request: NextRequest) {
     const rate   = total > 0 ? failed / total : 0
 
     if (rate > 0.01 && total >= 5) {
-      const { data: failedRows } = await service.from('guardian_checks').select('workspace_id')
+      const { data: failedRows } = await liveOnly(service.from('guardian_checks')
+        .select('workspace_id, projects!inner(deleted_at, workspaces!inner(deleted_at))'))
         .gte('created_at', since15m).eq('is_duplicate', false).eq('classification_failed', true).limit(500)
       const msg = `Classification failure rate: ${(rate * 100).toFixed(1)}% (${failed}/${total} in last 15 min)`
       console.error(`[GUARDIAN ALERT] ${msg}`)
@@ -194,9 +207,9 @@ export async function POST(request: NextRequest) {
     // Alert on failures that are still unresolved after 24h (auto-retries included — a check
     // only stays here once the sweep has exhausted its attempts, or the outage is ongoing).
     const since24h = new Date(Date.now() - 24 * 3600000).toISOString()
-    const { count: unresolvedCount, error: unresolvedErr } = await (service as any)
+    const { count: unresolvedCount, error: unresolvedErr } = await liveOnly((service as any)
       .from('guardian_checks')
-      .select('id', { count: 'exact', head: true })
+      .select(liveSel, { count: 'exact', head: true }))
       .eq('classification_failed', true)
       .lt('created_at', since24h)
       .eq('outcome', 'pending')
@@ -206,7 +219,8 @@ export async function POST(request: NextRequest) {
     if (unresolvedErr) throw new Error(`guardian-health unresolved-failures count: ${unresolvedErr.message}`)
 
     if ((unresolvedCount || 0) > 0) {
-      const { data: stuckRows } = await service.from('guardian_checks').select('workspace_id')
+      const { data: stuckRows } = await liveOnly(service.from('guardian_checks')
+        .select('workspace_id, projects!inner(deleted_at, workspaces!inner(deleted_at))'))
         .eq('classification_failed', true).eq('outcome', 'pending').lt('created_at', since24h).limit(500)
       const msg = `${unresolvedCount} unresolved classification failures older than 24h`
       console.error(`[GUARDIAN ALERT] ${msg}`)

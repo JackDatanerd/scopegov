@@ -95,9 +95,10 @@ export async function POST(request: NextRequest) {
     const { data: projects, error: projectErr } = await (service as any)
       .from('projects')
       .select(`id, name, status, stall_reason, workspace_id, client_id,
-        workspaces(id, agency_name, guardian_sensitivity_tier),
+        workspaces(id, agency_name, guardian_sensitivity_tier, deleted_at),
         project_scope_snapshot(deliverables, out_of_scope)`)
       .ilike('guardian_email', `proj-${guardianPrefix}@%`)
+      .is('deleted_at', null) // soft-deleted project: same as "no such project"
       .limit(1)
     const project = projects?.[0]
 
@@ -110,6 +111,12 @@ export async function POST(request: NextRequest) {
       console.warn(`No project found for guardian email prefix: ${guardianPrefix}`)
       return NextResponse.json({ ok: true, message: 'No matching project' })
     }
+
+    // A suspended / deleted workspace is gone everywhere else (session, portal, the stall crons) —
+    // its project address must not keep spending AI, raising flags and emailing the team. Fail
+    // closed if the workspace row didn't come back. 200 so Postmark doesn't redeliver.
+    if (!project.workspaces || project.workspaces.deleted_at)
+      return NextResponse.json({ ok: true, message: 'Workspace inactive — message not processed' })
 
     // Archived / Complete projects accept no new checks. (There is deliberately NO auto-reply:
     // Postmark inbound never sends one, and replying to an unauthenticated sender's

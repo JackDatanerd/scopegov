@@ -1,0 +1,14 @@
+Section 13 (Guardian / Scope governance) — fresh independent audit, base d541bf1
+
+B1  Suspended/deleted workspaces kept running Guardian:
+    - cron/guardian-flag-stall: now filters workspaces.deleted_at (like approval-stall/co-stall/sow-stall)
+    - guardian/inbound: skips (200) when the workspace is deleted/missing
+    - cron/guardian-health + reclassifyCheck: sweep candidates and health/alert counts exclude dead workspaces
+B2  Soft-deleted projects were live in Guardian: deleted_at filter added to guardian/check,
+    guardian/checks (GET), guardian/scope-adjustment, guardian/inbound, sweep.
+B3  reclassifyCheck (sweep + manual retry) ignored Complete/Archived projects: new 'inactive' skip
+    reason, checked before the attempt claim. Sweep queries exclude these rows so they can't
+    starve live checks out of the batch. Retry route returns 409 for 'inactive'.
+B4  flags/[id] draft_co: failing to link change_order_id left the flag stranded at converted_to_co.
+    Now 3 guarded attempts, then deletes the unseen draft CO and reopens the flag (500). CO-insert
+    failure release is now guarded and its error logged.

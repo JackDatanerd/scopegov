@@ -46,6 +46,7 @@ export async function POST(request: NextRequest) {
         project_scope_snapshot(deliverables, out_of_scope)`)
       .eq('id', projectId)
       .eq('workspace_id', session.workspaceId)
+      .is('deleted_at', null) // a soft-deleted project is gone everywhere else; don't spend AI on it
       .single()
 
     // FIX (independent pass, section 13): a real read failure (timeout, connection drop, RLS/grant

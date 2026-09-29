@@ -63,10 +63,11 @@ export async function POST(request: NextRequest) {
       const stale = await fetchAll<any>('guardian-flag-stall select', (from, to) =>
         (service as any)
           .from('guardian_flags')
-          .select('id, workspace_id, project_id, status, severity, description, sow_reference, projects!inner(id, name, status, deleted_at, clients(name))')
+          .select('id, workspace_id, project_id, status, severity, description, sow_reference, projects!inner(id, name, status, deleted_at, clients(name)), workspaces!inner(deleted_at)')
           .in('status', ['open', 'borderline_review'])
           .lt('updated_at', cutoff)
           .is('projects.deleted_at', null)
+          .is('workspaces.deleted_at', null) // suspended/deleted workspaces get no reminders (same as approval-stall, co-stall, sow-stall)
           .not('projects.status', 'in', '(Complete,Archived)')
           .order('id')
           .range(from, to))

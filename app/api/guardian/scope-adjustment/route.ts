@@ -47,7 +47,7 @@ export async function POST(request: NextRequest) {
     // Verify project
     const { data: project } = await (service as any)
       .from('projects').select('id,name').eq('id', projectId)
-      .eq('workspace_id', session.workspaceId).single()
+      .eq('workspace_id', session.workspaceId).is('deleted_at', null).single()
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
     if (!(await canReadProject(service, session, projectId)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })

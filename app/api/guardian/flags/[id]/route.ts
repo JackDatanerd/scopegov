@@ -495,14 +495,30 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           // The claim already moved the flag to converted_to_co; failing to record the CO id must
           // not be silent (the flag would point at nothing) — retry once, then surface it.
           let linkErr: any = null
-          for (let attempt = 0; attempt < 2; attempt++) {
+          for (let attempt = 0; attempt < 3; attempt++) {
             const r = await (service as any).from('guardian_flags').update({
               change_order_id: co.id, updated_at: now,
-            }).eq('id', id)
-            linkErr = r.error
+            }).eq('id', id).eq('status', 'converted_to_co').select('id')
+            linkErr = r.error || (!r.data?.length ? { message: 'flag no longer converted_to_co' } : null)
             if (!linkErr) break
           }
-          if (linkErr) console.error('Could not link flag → change order:', id, co.id, linkErr.message)
+          if (linkErr) {
+            // Could not record the link: leaving the flag at converted_to_co with no CO id strands it
+            // (no action accepts that state). The draft was never returned to anyone, so roll BOTH
+            // back — delete the draft, reopen the flag — like every other failure path here.
+            console.error('Could not link flag → change order:', id, co.id, linkErr.message)
+            const { error: delErr } = await (service as any).from('change_orders')
+              .delete().eq('id', co.id).eq('status', 'draft')
+            if (!delErr) {
+              const { error: relErr } = await (service as any).from('guardian_flags')
+                .update({ status: 'open', change_order_id: null, updated_at: now })
+                .eq('id', id).eq('status', 'converted_to_co')
+              if (relErr) console.error('Could not release flag after CO rollback:', id, relErr.message)
+              return NextResponse.json({ error: 'Could not link the change order to this flag — nothing was created. Please try again.' }, { status: 500 })
+            }
+            // Rollback failed too: the draft exists and is reachable via coId below; surface it.
+            console.error('Could not roll back unlinked draft CO:', co.id, delErr.message)
+          }
           await logAudit(service, {
             workspaceId: session.workspaceId, actorId: session.id,
             actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
@@ -514,9 +530,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
         // CO creation failed after the claim succeeded — release the claim
         // so the flag isn't stranded as 'converted_to_co' with no CO.
-        await (service as any).from('guardian_flags').update({
+        const { error: releaseErr } = await (service as any).from('guardian_flags').update({
           status: 'open', updated_at: now,
-        }).eq('id', id)
+        }).eq('id', id).eq('status', 'converted_to_co')
+        if (releaseErr) console.error('Could not release flag claim after CO insert failure:', id, releaseErr.message)
         return NextResponse.json({ error: coErr?.message || 'Could not create change order' }, { status: 500 })
       }
 

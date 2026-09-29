@@ -249,7 +249,7 @@ export async function classifyAndRecord(service: any, p: {
 export type ReclassifyResult =
   | { status: 'classified'; classification: ClassificationResult; flagId: string | null; project: PipelineProject }
   | { status: 'failed'; reason: 'classification' | 'flag' }
-  | { status: 'skipped'; reason: 'not_found' | 'not_eligible' | 'no_snapshot' | 'max_attempts' | 'claimed' }
+  | { status: 'skipped'; reason: 'not_found' | 'not_eligible' | 'no_snapshot' | 'max_attempts' | 'claimed' | 'inactive' }
   | { status: 'duplicate'; duplicateOfId: string }
 
 export async function reclassifyCheck(service: any, checkId: string, opts: {
@@ -289,9 +289,14 @@ export async function reclassifyCheck(service: any, checkId: string, opts: {
   if (attempts >= (opts.maxAttempts ?? Infinity)) return { status: 'skipped', reason: 'max_attempts' }
 
   const { data: project } = await service.from('projects')
-    .select(`id, name, workspace_id, workspaces(id, guardian_sensitivity_tier), project_scope_snapshot(deliverables, out_of_scope)`)
+    .select(`id, name, status, deleted_at, workspace_id, workspaces(id, guardian_sensitivity_tier, deleted_at), project_scope_snapshot(deliverables, out_of_scope)`)
     .eq('id', check.project_id).eq('workspace_id', check.workspace_id).maybeSingle()
   if (!project) return { status: 'skipped', reason: 'not_found' }
+  // Same gates as live submission: nothing is classified, flagged or emailed for a deleted project,
+  // a Complete/Archived one, or a suspended/deleted workspace. Checked BEFORE the claim so no
+  // attempt is burned and no AI usage recorded.
+  if (project.deleted_at || !project.workspaces || project.workspaces.deleted_at || ['Complete', 'Archived'].includes(project.status))
+    return { status: 'skipped', reason: 'inactive' }
   const snapshot = project.project_scope_snapshot
   if (!snapshot) return { status: 'skipped', reason: 'no_snapshot' }
 

@@ -37,7 +37,8 @@ export async function GET(request: NextRequest) {
     // Scope to workspace before anything else — same pattern as every
     // other Guardian route (check, scope-adjustment).
     const { data: project } = await (service as any)
-      .from('projects').select('id').eq('id', projectId).eq('workspace_id', session.workspaceId).single()
+      .from('projects').select('id').eq('id', projectId).eq('workspace_id', session.workspaceId)
+      .is('deleted_at', null).single()
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
     if (!(await canReadProject(service, session, projectId)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
