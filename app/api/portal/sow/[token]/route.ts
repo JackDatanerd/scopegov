@@ -35,7 +35,18 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       if (revokedReason === 'superseded' && documentId) {
         const { data: sow } = await (service as any)
           .from('sow_documents').select(SOW_COLUMNS).eq('id', documentId).single()
-        if (sow) return NextResponse.json(await buildSowResponse(sow, service, request.headers.get('user-agent')))
+        if (sow) {
+          // FIX (SOW lifecycle deep audit, round 4): this branch resolves straight to
+          // buildSowResponse without the isWorkspaceDeleted check every other path in
+          // this file enforces (see line ~75 below) — and without it the CO portal
+          // route's identical superseded branch already checks for. A client
+          // revisiting the ORIGINAL pre-signing link after the agency's workspace has
+          // since been deleted/suspended could still view the full executed document.
+          const supersededWorkspaceId = sow.projects?.workspaces?.id
+          if (supersededWorkspaceId && await isWorkspaceDeleted(service, supersededWorkspaceId))
+            return NextResponse.json({ state: 'revoked' })
+          return NextResponse.json(await buildSowResponse(sow, service, request.headers.get('user-agent')))
+        }
       }
       return NextResponse.json({
         state: revokedReason === 'declined' ? 'declined'

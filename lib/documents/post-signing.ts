@@ -203,7 +203,16 @@ export async function createSowMilestones(
           amount: parseTableAmount(r?.amount) ?? 0,
           trigger: String(r?.trigger || '').trim(),
         }))
-        .filter(r => r.title && r.amount > 0)
+        // FIX (SOW lifecycle deep audit, round 4): dropped the `r.amount > 0` half of
+        // this filter. validate-send.ts's own SOW-B3 fix (and SowEditor's
+        // scheduleTotal) deliberately count every named row regardless of sign, to
+        // support a legitimate negative "credit"/discount milestone. Keeping the
+        // amount>0 restriction here meant a schedule with such a row would foot
+        // correctly at send time but NOT here — scheduleSum would silently exclude
+        // the credit row, miss contractValue, and fall through to the lump-sum
+        // fallback below, discarding the itemized schedule the client actually
+        // signed. Match validate-send.ts: only require a title.
+        .filter(r => r.title)
       const scheduleSum = parsedRows.reduce((s, r) => s + r.amount, 0)
 
       if (parsedRows.length > 0 && Math.abs(scheduleSum - contractValue) < 0.01) {

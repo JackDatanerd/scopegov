@@ -9,6 +9,7 @@ import { sendBlockedReason } from '@/lib/documents/preflight'
 import { canReadProject } from '@/lib/utils/project-access'
 import { validateSowForSend } from '@/lib/sow/validate-send'
 import { sowGateAmount } from '@/lib/approvals/gate-amount'
+import { isTerminalStatus } from '@/lib/utils/project-status'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -41,6 +42,16 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const project = sow.projects
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
+
+    // FIX (SOW lifecycle deep audit, round 4): checked here too (not just inside
+    // sendSowDocument), matching api/co/[id]/send/route.ts's own fix for this exact
+    // gap — otherwise a terminal project only fails once the approval chain clears
+    // and auto-send is attempted, after an approver already signed off on a send
+    // that could never happen.
+    if (isTerminalStatus(project.status))
+      return NextResponse.json({
+        error: `This project is ${project.status.toLowerCase()} — a SOW can no longer be sent. Reopen the project first.`,
+      }, { status: 409 })
 
     // Everything that must hold before a SOW reaches a client lives in lib/sow/validate-send.ts
     // (shared with the approval-chain auto-send, which used to skip all of it).
