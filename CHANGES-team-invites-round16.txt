@@ -1,0 +1,11 @@
+Team & Invites — round 16 (independent pass)
+B1  invite/[token]/accept: refuse soft-deleted / suspended accounts (users.deleted_at) before activating a membership.
+B2  invite POST: a deactivated row with no joined_at is a leftover invite — cleared on re-invite instead of a dead-end
+    "Reactivate" offer. DELETE /api/team/[id] can now remove such rows. Team UI: "Never accepted" pill + Remove button.
+B3  DELETE /api/team/[id] (invite revoke) and invite POST's stale-row cleanup: status-guarded deletes; a lost race
+    with an accept returns 409 instead of hard-deleting an active member.
+B4  GET/accept/signup invite lookups: read errors are 500 (page shows "Try again"), not 404/"expired". GET now also
+    reports up front when the sender lost authority or the workspace is full (page shows the reason).
+Open (needs decision): a member who LEFT voluntarily is indistinguishable from a removed one (both 'deactivated'
+    with joined_at) — they can only return via admin Reactivate, which skips acceptance.
+Tests: tests/team-invites-round16.test.ts (9 tests).

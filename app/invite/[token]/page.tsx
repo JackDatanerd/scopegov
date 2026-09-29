@@ -18,7 +18,9 @@ export default function InvitePage() {
   const supabase = createClient()
 
   const [invite,   setInvite]   = useState<{ email: string; workspaceName: string; agencyName: string; inviterName: string } | null>(null)
-  const [mode,     setMode]     = useState<'loading' | 'expired' | 'already_used' | 'new-user' | 'existing-user' | 'done'>('loading')
+  const [mode,     setMode]     = useState<'loading' | 'expired' | 'already_used' | 'new-user' | 'existing-user' | 'done' | 'load_error'>('loading')
+  // Set when the invite exists but can't currently be used (sender lost authority, workspace full).
+  const [unusableReason, setUnusableReason] = useState<string | null>(null)
   const [name,     setName]     = useState('')
   const [password, setPassword] = useState('')
   const [loading,  setLoading]  = useState(false)
@@ -65,12 +67,15 @@ export default function InvitePage() {
           setMode('already_used')
           return
         }
+        // FIX (round 16 — B4): a server/DB failure is not an expired link.
+        if (r.status >= 500) { setMode('load_error'); return }
+        if (json.expired && typeof json.reason === 'string') { setUnusableReason(json.reason); setMode('expired'); return }
         if (!r.ok || json.expired) { setMode('expired'); return }
 
         setInvite(json.invite)
         setMode(json.hasAccount ? 'existing-user' : 'new-user')
       })
-      .catch(() => setMode('expired'))
+      .catch(() => setMode('load_error'))
   }, [token])
 
   async function handleNewUser(e: React.FormEvent) {
@@ -246,6 +251,22 @@ export default function InvitePage() {
     )
   }
 
+  if (mode === 'load_error') {
+    return (
+      <div className="auth-root"><PanelLeft />
+        <div className="auth-form-side">
+          <div className="auth-form-wrap">
+            <h2 className="auth-form-title">Couldn&apos;t check this invite</h2>
+            <p style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.7, margin: '8px 0 24px' }}>
+              Something went wrong on our side while validating your invite link. The link itself may be perfectly fine — try again in a moment.
+            </p>
+            <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center' }} onClick={() => window.location.reload()}>Try again</button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   if (mode === 'expired') {
     return (
       <div className="auth-root"><PanelLeft />
@@ -254,9 +275,9 @@ export default function InvitePage() {
             <div style={{ width: 52, height: 52, background: 'var(--red-lt)', border: '1px solid #FECACA', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 20 }}>
               <i className="ti ti-link-off" style={{ fontSize: 22, color: 'var(--red)' }} />
             </div>
-            <h2 className="auth-form-title">Invite link expired</h2>
+            <h2 className="auth-form-title">{unusableReason ? 'This invite can\u2019t be used right now' : 'Invite link expired'}</h2>
             <p style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.7, margin: '8px 0 24px' }}>
-              This invite link has expired, was revoked, or was replaced by a newer one. Check your inbox for a more recent invitation, or ask a workspace admin to send a fresh one.
+              {unusableReason || 'This invite link has expired, was revoked, or was replaced by a newer one. Check your inbox for a more recent invitation, or ask a workspace admin to send a fresh one.'}
             </p>
             <Link href="/login"><button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'center' }}>Sign in instead</button></Link>
           </div>

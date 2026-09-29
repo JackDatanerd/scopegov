@@ -29,13 +29,17 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
 
     const { data: member } = await service
       .from('workspace_members')
-      .select('id,user_id,role_id,status,invited_email,effective_permissions,users!workspace_members_user_id_fkey(name,email)')
+      .select('id,user_id,role_id,status,joined_at,invited_email,effective_permissions,users!workspace_members_user_id_fkey(name,email)')
       .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
 
     if (!member) return NextResponse.json({ error: 'Member not found' }, { status: 404 })
     if (member.user_id === session.id)
       return NextResponse.json({ error: 'You cannot deactivate yourself' }, { status: 400 })
-    if (member.status === 'deactivated')
+    // FIX (Team & Invites round 16 — B2): a 'deactivated' row that never had a joined_at is a leftover INVITE
+    // (a pre-fix revocation, or migration 112's heal), not a member. Reactivate refuses it and re-inviting the same
+    // address was blocked by it, so nothing could clear it. Treat it as a revocable invite here.
+    const leftoverInvite = member.status === 'deactivated' && !member.joined_at
+    if (member.status === 'deactivated' && !leftoverInvite)
       return NextResponse.json({ error: 'This member is already deactivated' }, { status: 409 })
 
     // An actor can only remove someone whose permissions are a subset of their own.
@@ -49,7 +53,7 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
     if (await isProtectedOwnerTarget(service, session.workspaceId, session.id, member.user_id))
       return NextResponse.json({ error: OWNER_PROTECTED_MESSAGE }, { status: 403 })
 
-    const wasInvite = member.status === 'invited' || member.status === 'expired'
+    const wasInvite = member.status === 'invited' || member.status === 'expired' || leftoverInvite
 
     // A pending invite holds no permissions of its own yet, so the check above passes trivially for
     // it — check the ROLE it would grant, the same standard Resend applies, so someone can't cancel
@@ -83,10 +87,19 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
     }
 
     if (wasInvite) {
-      const { error } = await service.from('workspace_members').delete().eq('id', id)
+      // FIX (round 16 — B3): this delete had no status guard. An invitee accepting between the read above and this
+      // delete would have had their freshly ACTIVE membership hard-deleted. Only never-accepted rows may go, and a
+      // miss is reported instead of silently succeeding.
+      const { data: removed, error } = await service.from('workspace_members').delete()
+        .eq('id', id).eq('workspace_id', session.workspaceId)
+        .or('status.in.(invited,expired),and(status.eq.deactivated,joined_at.is.null)')
+        .select('id')
       if (error) {
         console.error('Invite revoke failed:', error)
         return NextResponse.json({ error: 'Could not revoke the invite. Try again.' }, { status: 500 })
+      }
+      if (!removed || removed.length === 0) {
+        return NextResponse.json({ error: 'This invite was just accepted or changed by someone else. Refresh the Team page to see its current state.' }, { status: 409 })
       }
     } else {
       // FIX (deep audit, RLS+permissions re-pass round 3 — HIGH): this used to

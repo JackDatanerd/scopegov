@@ -32,12 +32,17 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // FIX (deep audit, Settings + Team re-pass round 2 — MEDIUM): invited_by
     // is now selected so the inviter-authority check below can run — see
     // that check's own comment for why it was missing entirely on this path.
-    const { data: member } = await (service as any)
+    const { data: member, error: memberReadErr } = await (service as any)
       .from('workspace_members')
       .select('id, status, invite_token_expires_at, invited_email, invited_by, workspace_id, role_id, workspaces(name,deleted_at,plan_tier,trial_ends_at)')
       .eq('invite_token', token)
-      .single()
+      .maybeSingle()
 
+    // FIX (round 16 — B4): a read failure used to fall into the "no longer valid" branch below.
+    if (memberReadErr) {
+      console.error('Invite signup: invite lookup failed:', memberReadErr)
+      return NextResponse.json({ error: 'Could not check this invite right now. Please try again.' }, { status: 500 })
+    }
     if (!member) {
       // No row for this token: it was revoked, replaced by a Resend/Copy link, or purged — a used invite
       // keeps its row (status 'active'), so "already used" would be the wrong thing to say here.

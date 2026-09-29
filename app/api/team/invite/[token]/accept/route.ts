@@ -16,12 +16,32 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const service = createServiceClient()
 
-    const { data: member } = await (service as any)
+    // FIX (Team & Invites round 16 — B1): this route authenticates with a bare auth.getUser(), which never
+    // looks at users.deleted_at, and it sits under the public /api/team/invite/ prefix so middleware's
+    // deleted-account gate doesn't cover it either. A self-deleted or platform-suspended account whose
+    // access token was still valid could flip a membership to 'active' (taking a seat), rewrite its own
+    // active_workspace_id, and become a live member the day-30 anonymization sweep would then scrub.
+    // Same gap round 20 closed on the workspace routes; this sibling was missed.
+    const { data: acctRow, error: acctErr } = await (service as any)
+      .from('users').select('deleted_at').eq('id', user.id).maybeSingle()
+    if (acctErr) {
+      console.error('Invite accept: account lookup failed:', acctErr)
+      return NextResponse.json({ error: 'Could not accept this invite. Please try again.' }, { status: 500 })
+    }
+    if (acctRow?.deleted_at)
+      return NextResponse.json({ error: 'This account has been deleted and can\u2019t accept invitations.' }, { status: 403 })
+
+    // FIX (round 16 — B4): .single() turned a transient read failure into a 404 "Invalid invite token".
+    const { data: member, error: memberReadErr } = await (service as any)
       .from('workspace_members')
       .select('id,status,workspace_id,invite_token_expires_at,invited_email,invited_by,role_id,workspaces(name,deleted_at,plan_tier,trial_ends_at)')
       .eq('invite_token', token)
-      .single()
+      .maybeSingle()
 
+    if (memberReadErr) {
+      console.error('Invite accept: invite lookup failed:', memberReadErr)
+      return NextResponse.json({ error: 'Could not check this invite right now. Please try again.' }, { status: 500 })
+    }
     if (!member) return NextResponse.json({ error: 'Invalid invite token' }, { status: 404 })
     if (member.status === 'active')
       return NextResponse.json({ error: 'Invite already accepted' }, { status: 409 })

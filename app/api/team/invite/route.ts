@@ -90,7 +90,7 @@ export async function POST(request: NextRequest) {
     // Every membership row in this workspace that already belongs to this
     // person: matched by account AND by invited address, because an invite
     // sent before they registered has no user_id yet.
-    const memberSelect = 'id,status,user_id,invited_email,invite_token_expires_at'
+    const memberSelect = 'id,status,user_id,invited_email,invite_token_expires_at,joined_at'
     const [byEmailRes, byUserRes] = await Promise.all([
       (service as any).from('workspace_members').select(memberSelect)
         .eq('workspace_id', wsId).eq('invited_email', normalizedEmail),
@@ -113,10 +113,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'This person is already a member of the workspace' }, { status: 409 })
     if (byStatus('invited'))
       return NextResponse.json({ error: 'An invite is already pending for this email' }, { status: 409 })
-    if (byStatus('deactivated'))
+    // FIX (Team & Invites round 16 — B2): only a deactivated row that really was a member (joined_at set) can be
+    // reactivated. A deactivated row that never had one is a leftover invite: the Reactivate this branch used to
+    // offer refuses it ("never accepted… send a new invite"), leaving the address permanently un-invitable. Those
+    // rows are cleared below together with the expired ones (which also frees the (workspace_id, user_id) slot).
+    const isStaleDeactivated = (r: any) => r.status === 'deactivated' && !r.joined_at
+    const realDeactivated = related.find(r => r.status === 'deactivated' && !isStaleDeactivated(r))
+    if (realDeactivated)
       return NextResponse.json({
         error: 'This person was deactivated in this workspace. Reactivate them from the Deactivated list instead of sending a new invite \u2014 that restores the access their role already had.',
-        reactivateMemberId: byStatus('deactivated').id,
+        reactivateMemberId: realDeactivated.id,
       }, { status: 409 })
 
     const seatCheck = await checkSeatLimit(service, wsId, session.planTier, ['active', 'invited'])
@@ -125,9 +131,11 @@ export async function POST(request: NextRequest) {
 
     // Expired, never-accepted invites for this address carry nothing worth
     // keeping; clear them so the new invite is the only row.
-    const expiredIds = related.filter(r => r.status === 'expired' || isLapsed(r)).map(r => r.id)
+    const expiredIds = related.filter(r => r.status === 'expired' || isLapsed(r) || isStaleDeactivated(r)).map(r => r.id)
     if (expiredIds.length > 0) {
+      // Status-guarded like every other delete of a never-accepted row: an accept racing this can't lose its row.
       await (service as any).from('workspace_members').delete().in('id', expiredIds)
+        .or('status.in.(invited,expired),and(status.eq.deactivated,joined_at.is.null)')
     }
 
     const inviteToken   = nanoid(32)

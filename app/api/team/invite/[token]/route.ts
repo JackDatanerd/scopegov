@@ -4,23 +4,32 @@
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
+import { inviterMayStillGrant } from '@/lib/utils/invite-authority'
+import { checkSeatLimit } from '@/lib/utils/seat-limit'
+import { effectivePlanTier } from '@/lib/billing/plans'
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   try {
     const { token } = await params
     const service   = createServiceClient()
 
-    const { data: member } = await (service as any)
+    // FIX (Team & Invites round 16 — B4): .single() reported ANY failure (a transient DB error included) as
+    // "Invalid invite token" (404), which the page renders as "Invite link expired". Only a genuine miss is a 404.
+    const { data: member, error: readErr } = await (service as any)
       .from('workspace_members')
       .select(`
         id, status, invite_token_expires_at, invited_email, user_id,
-        workspace_id,
-        workspaces (id, name, agency_name, deleted_at),
+        workspace_id, invited_by, role_id,
+        workspaces (id, name, agency_name, deleted_at, plan_tier, trial_ends_at),
         invited_by_user:users!workspace_members_invited_by_fkey (name)
       `)
       .eq('invite_token', token)
-      .single()
+      .maybeSingle()
 
+    if (readErr) {
+      console.error('Invite validation read failed:', readErr)
+      return NextResponse.json({ error: 'Error validating invite' }, { status: 500 })
+    }
     if (!member) return NextResponse.json({ error: 'Invalid invite token', invalid: true }, { status: 404 })
 
     // Fix: status === 'active' means signup already succeeded (invite_token
@@ -45,6 +54,23 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const expires = new Date(member.invite_token_expires_at)
     if (expires < new Date()) {
       return NextResponse.json({ error: 'Invite expired', expired: true })
+    }
+
+    // FIX (round 16 — B4): accept/signup refuse an invite whose sender can no longer grant the role, or whose
+    // workspace is full for its plan — but this page used to show a normal "create your account" form and let the
+    // invitee fill it in before finding out. Say so up front (same predicates as accept/signup).
+    if (!(await inviterMayStillGrant(service, member.workspace_id, member.invited_by, member.role_id))) {
+      return NextResponse.json({
+        error: 'Invite can no longer be used', expired: true,
+        reason: 'The person who sent this invite can no longer grant this role. Ask a workspace admin to send you a new invitation.',
+      })
+    }
+    const seatCheck = await checkSeatLimit(service, member.workspace_id, effectivePlanTier(member.workspaces?.plan_tier, member.workspaces?.trial_ends_at), ['active'])
+    if (!seatCheck.ok) {
+      return NextResponse.json({
+        error: 'Workspace full', expired: true,
+        reason: 'This workspace is currently full for its plan. Ask a workspace admin to free up a seat or upgrade the plan, then open this link again.',
+      })
     }
 
     let inviteEmail = member.invited_email || ''

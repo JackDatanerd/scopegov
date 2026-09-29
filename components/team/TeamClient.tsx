@@ -730,11 +730,14 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
                   <tbody>
                     {deactivatedMembers.map((m: any) => {
                       const u = m.users
-                      const name = u?.name || u?.email || 'Unknown'
+                      // FIX (round 16 — B2): a deactivated row that never had a joined_at is a leftover invite,
+                      // not a member — Reactivate always refuses it, so offer Remove instead.
+                      const neverJoined = !m.joined_at
+                      const name = u?.name || u?.email || m.invited_email || 'Unknown'
                       return (
                         <tr key={m.id}>
-                          <td className="td-primary" style={{ color: 'var(--text-3)' }}>{name}</td>
-                          <td style={{ color: 'var(--text-3)', fontSize: 12 }}>{u?.email}</td>
+                          <td className="td-primary" style={{ color: 'var(--text-3)' }}>{name}{neverJoined && <span className="pill pill-slate pill-sm" style={{ marginLeft: 6 }}>Never accepted</span>}</td>
+                          <td style={{ color: 'var(--text-3)', fontSize: 12 }}>{u?.email || m.invited_email}</td>
                           <td style={{ color: 'var(--text-3)', fontSize: 12 }}>{m.roles?.name || 'No role'}</td>
                           <td style={{ color: 'var(--text-3)', fontSize: 12 }}>{m.deactivated_at ? formatDate(m.deactivated_at) : '—'}</td>
                           <td>
@@ -755,11 +758,19 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
                                   it with a 409. Without this, clicking did
                                   nothing but surface an error the button
                                   gave no warning of. */}
+                              {neverJoined ? (
+                                <button className="btn btn-ghost btn-xs" style={{ color: 'var(--red)' }} disabled={busyId === m.id}
+                                  title="This invitation was never accepted, so there is no member to reactivate. Remove it, then send a new invite if needed."
+                                  onClick={() => handleRevokeInvite(m.id)}>
+                                  {busyId === m.id ? <span className="spin spin-dark" /> : 'Remove'}
+                                </button>
+                              ) : (
                               <button className="btn btn-ghost btn-xs" disabled={busyId === m.id || atSeatCapacity}
                                 title={atSeatCapacity ? 'Every seat on your plan is in use — free one up or upgrade first' : undefined}
                                 onClick={() => handleReactivate(m.id, name)}>
                                 {busyId === m.id ? <span className="spin spin-dark" /> : 'Reactivate'}
                               </button>
+                              )}
                             </div>
                           </td>
                         </tr>
