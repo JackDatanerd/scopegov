@@ -18,6 +18,11 @@ export const runtime = 'nodejs'
 // (app/api/scope-governance/[entityType]/[entityId]/attachments/route.ts) —
 // same private-bucket-plus-signed-URL model, just scoped to a SOW instead of
 // a Guardian flag. See that route's own comments for why each check exists.
+//
+// FIX (section-9 independent pass): the 20-attachment cap and the draft-only lock were plain
+// read-then-insert checks, so concurrent uploads could exceed the cap and an upload racing a send
+// could land on a locked SOW. The insert now goes through sow_attachment_add (migration 109),
+// which rechecks both under a row lock; the pre-checks below remain only as a cheap fast-path.
 
 import { randomUUID } from 'crypto'
 import { createServiceClient } from '@/lib/supabase/server'
@@ -124,25 +129,33 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     })
     if (uploadError) throw new Error(uploadError.message)
 
-    const { data: attachment, error } = await (service as any)
-      .from('sow_attachments')
-      .insert({
-        sow_id: id,
-        file_name: displayName,
-        file_size: file.size,
-        mime_type: file.type,
-        storage_path: storagePath,
-        uploaded_by: session.id,
-      })
-      .select('id, uploaded_at')
-      .single()
+    // Cap + draft-lock are re-checked atomically inside sow_attachment_add (migration 109), under a
+    // row lock on the SOW — the pre-checks above are only a fast-path, they can't stop two
+    // concurrent uploads (or an upload racing a send) from both getting through.
+    const { data: added, error } = await (service as any).rpc('sow_attachment_add', {
+      p_sow_id: id,
+      p_file_name: displayName,
+      p_file_size: file.size,
+      p_mime_type: file.type,
+      p_storage_path: storagePath,
+      p_uploaded_by: session.id,
+    })
 
-    if (error) {
+    if (error || !added) {
       // Roll back the orphaned object rather than leaving storage and the
       // DB out of sync.
-      await service.storage.from(EVIDENCE_BUCKET).remove([storagePath])
-      throw new Error(error.message)
+      const { error: rollbackError } = await service.storage.from(EVIDENCE_BUCKET).remove([storagePath])
+      if (rollbackError) console.error('Could not roll back SOW attachment object after failed insert:', rollbackError.message)
+      const msg = String(error?.message || '')
+      if (msg.includes('attachment_limit_exceeded'))
+        return NextResponse.json({ error: `A SOW can have at most ${MAX_ATTACHMENTS_PER_SOW} attachments.` }, { status: 400 })
+      if (msg.includes('sow_locked'))
+        return NextResponse.json({ error: 'SOW is locked — attachments can only be added to a draft.' }, { status: 409 })
+      if (msg.includes('sow_not_found'))
+        return NextResponse.json({ error: 'Not found' }, { status: 404 })
+      throw new Error(error?.message || 'sow_attachment_add returned no row')
     }
+    const attachment = { id: added.id as string, uploaded_at: added.uploaded_at as string }
 
     await logAudit(service, {
       workspaceId: session.workspaceId, actorId: session.id,

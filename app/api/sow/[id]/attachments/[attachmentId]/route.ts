@@ -48,13 +48,28 @@ export async function DELETE(
       .from('sow_attachments').delete().eq('id', attachmentId).eq('sow_id', id)
     if (deleteError) throw new Error(deleteError.message)
 
-    // Best-effort: the row is gone either way — an orphaned Storage object
-    // is cleaned up later by the same purge-time sweep in
-    // lib/utils/storage-cleanup.ts if this remove() call fails, never the
-    // other way around (never delete the object while the row, the only
-    // record of its path, still exists).
-    const { error: removeError } = await service.storage.from(EVIDENCE_BUCKET).remove([attachment.storage_path])
-    if (removeError) console.error('Could not remove SOW attachment object from storage:', removeError.message)
+    // FIX (section-9 independent pass): a storage_path is NOT unique per row. Reopening a SOW (and
+    // the portal's request-changes) copies attachment rows onto the new draft via
+    // lib/documents/sow-version.ts while pointing at the SAME Storage object — the superseded
+    // version keeps its row (it is locked and can never be edited). Removing the object
+    // unconditionally here would silently break the file behind every other version's copy of this
+    // attachment, including closed historical versions. Only delete the object once no remaining
+    // row references it. If the lookup itself fails, keep the object: an orphan is swept up by
+    // storage-cleanup, a dangling reference on a historical SOW is unrecoverable.
+    const { count: stillReferenced, error: refError } = await (service as any)
+      .from('sow_attachments').select('id', { count: 'exact', head: true })
+      .eq('storage_path', attachment.storage_path)
+    if (refError) {
+      console.error('Could not check SOW attachment references — keeping the storage object:', refError.message)
+    } else if ((stillReferenced || 0) === 0) {
+      // Best-effort: the row is gone either way — an orphaned Storage object
+      // is cleaned up later by the same purge-time sweep in
+      // lib/utils/storage-cleanup.ts if this remove() call fails, never the
+      // other way around (never delete the object while the row, the only
+      // record of its path, still exists).
+      const { error: removeError } = await service.storage.from(EVIDENCE_BUCKET).remove([attachment.storage_path])
+      if (removeError) console.error('Could not remove SOW attachment object from storage:', removeError.message)
+    }
 
     await logAudit(service, {
       workspaceId: session.workspaceId, actorId: session.id,

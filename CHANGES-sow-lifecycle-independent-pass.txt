@@ -1,0 +1,29 @@
+SECTION 9 — SOW lifecycle: fresh independent pass (fixes)
+Scope audited: app/(app)/sow, api/sow/*, lib/sow, lib/pdf (SOW portion), api/pdf/sow, components/sow/SowEditor.
+Feature gaps found: none.
+Bugs found and fixed: 2
+
+1. DELETE /api/sow/[id]/attachments/[attachmentId] destroyed a Storage object still referenced by other SOW versions.
+   lib/documents/sow-version.ts (used by reopen and the portal's request-changes) copies sow_attachments ROWS onto
+   the new draft while keeping the same storage_path (no file duplication). The superseded version is locked and
+   keeps its row. The DELETE route then called storage.remove() unconditionally, so removing the attachment from
+   the new draft silently 404'd the file behind the old, historical version's row.
+   Fix: after deleting the row, count rows still referencing that storage_path; remove the object only when none
+   remain. If the count query fails, keep the object (an orphan is swept by storage-cleanup; a dangling reference
+   on a historical SOW is unrecoverable).
+   Files: app/api/sow/[id]/attachments/[attachmentId]/route.ts
+
+2. POST /api/sow/[id]/attachments: 20-attachment cap (and the draft-only lock) were read-then-insert checks.
+   Two concurrent uploads at the boundary could both pass and exceed the cap; an upload racing a send could land on
+   a SOW that had just been sent. Same TOCTOU class as migration 093 (client contacts).
+   Fix: new sow_attachment_add() (migration 109) takes FOR UPDATE on the sow_documents row, rechecks sent_at and
+   the count, then inserts. The route calls it via rpc, maps attachment_limit_exceeded -> 400, sow_locked -> 409,
+   sow_not_found -> 404, and rolls back the uploaded object on any failure. The route's own pre-check stays as a
+   fast-path. Also adds an index on sow_attachments(storage_path) for the reference lookup in fix 1.
+   Files: app/api/sow/[id]/attachments/route.ts, supabase/migrations/109_sow_attachment_add_enforce_cap_under_lock.sql
+
+Tests: tests/sow-attachments-integrity.test.ts (8 cases). NOT run in the authoring sandbox (no node_modules, no network);
+run `npm test` locally before committing.
+
+DEPLOY ORDER: apply migration 109 to the database BEFORE (or together with) deploying the route change — the new
+POST route calls the sow_attachment_add function and will 500 until it exists.
