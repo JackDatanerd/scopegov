@@ -28,6 +28,7 @@ import { EMAIL_RE, CLIENT_LIMITS, CONTACT_ROLE_TYPES, type ContactRoleType } fro
 // FIX (independent pass round 2, section 14): this route's own local escapeLike() was broken
 // (see lib/utils/escape-like.ts for the full story) — imported instead of re-typed.
 import { escapeLike } from '@/lib/utils/escape-like'
+import { isUuidString } from '@/lib/utils/uuid'
 
 const MAX_CONTACTS_PER_CLIENT = 25
 const CONTACT_COLS = 'id,name,email,role,role_type,is_primary,created_at'
@@ -39,6 +40,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     if (!hasPermission(session, 'VIEW_CLIENT_DATA'))
       return NextResponse.json({ error: 'Missing permission: VIEW_CLIENT_DATA' }, { status: 403 })
+    // FIX (independent pass 1, section 14 — B3): a non-UUID id used to reach Postgres (22P02) and surface as a 500.
+    if (!isUuidString(id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     const service = createServiceClient()
     const { data: client, error: clientErr } = await (service as any)
@@ -69,6 +72,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     if (!hasPermission(session, 'CREATE_PROJECTS') || !hasPermission(session, 'VIEW_CLIENT_DATA'))
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
+    // FIX (independent pass 1, section 14 — B3): a non-UUID id used to reach Postgres (22P02) and surface as a 500.
+    if (!isUuidString(id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     const service = createServiceClient()
     const { data: client, error: clientErr } = await (service as any)

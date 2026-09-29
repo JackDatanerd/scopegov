@@ -18,6 +18,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { parseClientInput } from '@/lib/utils/client-input'
+import { isUuidString } from '@/lib/utils/uuid'
 
 // Free-text fields whose VALUE is not copied into the audit trail (only "changed").
 const AUDIT_REDACT = new Set(['notes'])
@@ -29,6 +30,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     if (!hasPermission(session, 'CREATE_PROJECTS'))
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
+    // FIX (independent pass 1, section 14 — B3): a non-UUID id used to reach Postgres (22P02) and surface as a 500.
+    if (!isUuidString(id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     const service = createServiceClient()
 
@@ -141,6 +144,8 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     if (!hasPermission(session, 'DELETE_PROJECTS'))
       return NextResponse.json({ error: 'Missing permission: DELETE_PROJECTS' }, { status: 403 })
+    // FIX (independent pass 1, section 14 — B3): a non-UUID id used to reach Postgres (22P02) and surface as a 500.
+    if (!isUuidString(id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     const service = createServiceClient()
     const { data: client, error: clientErr } = await (service as any)

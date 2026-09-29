@@ -43,10 +43,13 @@ export default async function ClientsPage() {
   const canViewAllProjects = hasPermission(session, 'VIEW_ALL_PROJECTS')
   let accessibleProjectIds: Set<string> | null = null
   if (!canViewAllProjects) {
-    const { data: ids } = await (service as any)
+    // FIX (independent pass 1, section 14 — B5): the error was dropped, so a failed read looked like "this member
+    // has no projects" and every client showed 0 projects. The detail page already throws here; so does this.
+    const { data: ids, error: idsErr } = await (service as any)
       .from('project_members')
       .select('project_id, workspace_members!inner(user_id)')
       .eq('workspace_members.user_id', session.id)
+    if (idsErr) throw new Error(idsErr.message)
     accessibleProjectIds = new Set((ids || []).map((r: { project_id: string }) => r.project_id))
   }
 

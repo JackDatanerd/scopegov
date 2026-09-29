@@ -192,7 +192,7 @@ export default function ClientContactCard({
           placeholder="finance@acme.com, legal@acme.com" />
       </div>
       <div className="fgrp">
-        <label className="flbl">Timezone <span className="fhint">— optional, e.g. Africa/Nairobi</span></label>
+        <label className="flbl">Timezone <span className="fhint">— optional, e.g. Africa/Nairobi. Decides when an invoice counts as &ldquo;coming due&rdquo; for automatic reminders.</span></label>
         <input className="finp" list="client-timezones" value={form.timezone} onChange={e => set('timezone', e.target.value)}
           placeholder="Africa/Nairobi" />
         {zones.length > 0 && <datalist id="client-timezones">{zones.map(z => <option key={z} value={z} />)}</datalist>}

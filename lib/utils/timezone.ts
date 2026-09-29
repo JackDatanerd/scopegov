@@ -93,3 +93,23 @@ export function detectBrowserTimezone(): string | null {
     return null
   }
 }
+
+/**
+ * FEATURE (independent pass 1, section 14 — G2): the calendar date ("YYYY-MM-DD") it is right now in `tz`.
+ * An invoice due date is a plain date, so "is it due in the next 3 days?" depends on whose calendar you use —
+ * for a client in Auckland, UTC's "today" is still yesterday for the first half of their day.
+ */
+export function dateStringInZone(tz: string | null | undefined, at: Date = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: resolveTimeZone(tz), year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(at)
+  const get = (t: string) => parts.find(p => p.type === t)?.value || ''
+  return `${get('year')}-${get('month')}-${get('day')}`
+}
+
+/** Add whole days to a "YYYY-MM-DD" date string (calendar arithmetic, no timezone involved). */
+export function addDaysToDateString(date: string, days: number): string {
+  const d = new Date(`${date}T00:00:00Z`)
+  d.setUTCDate(d.getUTCDate() + days)
+  return d.toISOString().slice(0, 10)
+}

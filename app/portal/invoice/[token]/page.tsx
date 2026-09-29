@@ -22,6 +22,7 @@ interface InvoiceData {
   dueDate: string | null
   sentAt: string | null
   paymentInstructions: string | null
+  clientPaymentTerms?: string | null
   invoiceNumber: string | null
   poNumber: string | null
   milestoneTrigger: string | null
@@ -322,6 +323,14 @@ export default function InvoicePortalPage() {
                     reaches this public, unauthenticated page — same
                     guarantee SOW sections and CO notes already have. */}
                 <div className="portal-section-body" dangerouslySetInnerHTML={{ __html: invoice.paymentInstructions }} />
+              </div>
+            )}
+
+            {invoice.clientPaymentTerms && (
+              <div style={{ marginBottom: 20 }}>
+                <div className="portal-section-title">Payment terms</div>
+                {/* Plain text (clients.payment_terms_note is never rich text) — rendered as a text node, not HTML. */}
+                <div className="portal-section-body" style={{ whiteSpace: 'pre-wrap' }}>{invoice.clientPaymentTerms}</div>
               </div>
             )}
 

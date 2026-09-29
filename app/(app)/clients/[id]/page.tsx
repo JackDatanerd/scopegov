@@ -11,6 +11,7 @@ import ClientDangerZone from '@/components/clients/ClientDangerZone'
 import { IN_PROGRESS_STATUSES } from '@/lib/utils/project-status'
 import { computeContractPositions } from '@/lib/reports/contract-position'
 import { fetchAll } from '@/lib/utils/fetch-all'
+import { isUuidString } from '@/lib/utils/uuid'
 
 interface Props { params: Promise<{ id: string }> }
 
@@ -18,6 +19,10 @@ export default async function ClientDetailPage({ params }: Props) {
   const { id }  = await params
   const session = await getSession()
   if (!session) redirect('/login')
+
+  // FIX (independent pass 1, section 14 — B3): a non-UUID id reached Postgres (22P02), which the read below
+  // treats as an outage — the error boundary instead of a 404.
+  if (!isUuidString(id)) notFound()
 
   const service = createServiceClient()
   const canViewClientData = hasPermission(session, 'VIEW_CLIENT_DATA')
@@ -234,14 +239,19 @@ export default async function ClientDetailPage({ params }: Props) {
   // appeared on the client's timeline at all. Those rows now carry metadata.client_id, and are merged in here.
   // (Contact rows written before this change have no client_id and stay off the timeline.)
   const auditCols = 'id, event_type, entity_name, actor_name, created_at, metadata'
+  // FIX (independent pass 1, section 14 — B1): contact events carry the contact's NAME in entity_name, and the
+  // Contacts card is hidden from anyone without VIEW_CLIENT_DATA — but this list showed "Contact added — Jane
+  // Mwangi" to any VIEW_AUDIT_LOG holder. Contact events are only fetched for viewers who may see contacts.
   const [clientActivity, contactActivity] = canViewAudit
     ? await Promise.all([
         (service as any).from('audit_log').select(auditCols)
           .eq('workspace_id', session.workspaceId).eq('entity_type', 'client').eq('entity_id', id)
           .order('created_at', { ascending: false }).limit(8),
-        (service as any).from('audit_log').select(auditCols)
-          .eq('workspace_id', session.workspaceId).eq('entity_type', 'client_contact').eq('metadata->>client_id', id)
-          .order('created_at', { ascending: false }).limit(8),
+        canViewClientData
+          ? (service as any).from('audit_log').select(auditCols)
+              .eq('workspace_id', session.workspaceId).eq('entity_type', 'client_contact').eq('metadata->>client_id', id)
+              .order('created_at', { ascending: false }).limit(8)
+          : Promise.resolve({ data: [] }),
       ])
     : [{ data: [] }, { data: [] }]
   const activity = [...(clientActivity.data || []), ...(contactActivity.data || [])]

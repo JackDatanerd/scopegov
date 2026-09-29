@@ -25,7 +25,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const resolved = await resolveInvoiceToken(service, token, `id, title, amount, amount_paid, currency, status, due_date, sent_at,
         payment_instructions, invoice_number, po_number, project_id, milestone_id, sow_id, co_id, workspace_id,
         subtotal, tax_rate, tax_inclusive, line_items,
-        projects(id, name, clients(name, company_name, billing_address, vat_number),
+        projects(id, name, clients(name, company_name, billing_address, vat_number, payment_terms_note),
           workspaces(agency_name, brand_colour, logo_storage_path,
             legal_address, tax_id, phone, website)),
         sow_documents(document_number), change_orders(document_number, title)`)
@@ -75,6 +75,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       clientCompany: invoice.projects?.clients?.company_name || null,
       clientBillingAddress: invoice.projects?.clients?.billing_address || null,
       clientVatNumber:      invoice.projects?.clients?.vat_number || null,
+      clientPaymentTerms:   invoice.projects?.clients?.payment_terms_note || null,
       poNumber:     invoice.po_number || null,
       milestoneTrigger,
       projectName:  invoice.projects?.name || '',

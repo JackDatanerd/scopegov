@@ -149,6 +149,8 @@ export interface InvoicePdfData {
   clientCompany?: string | null
   clientBillingAddress?: LegalAddress | null
   clientVatNumber?: string | null
+  // Free-text terms saved on the client record (clients.payment_terms_note) — printed under the payment instructions.
+  clientPaymentTerms?: string | null
   poNumber?:    string | null
   milestoneTrigger?: string | null
   projectName:  string
@@ -1048,6 +1050,13 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
           <View style={s.section}>
             <Text style={s.secTitle}>Payment instructions</Text>
             <RichText html={data.paymentInstructions} style={s.body} />
+          </View>
+        )}
+
+        {data.clientPaymentTerms && (
+          <View style={s.section}>
+            <Text style={s.secTitle}>Payment terms</Text>
+            <Text style={s.body}>{data.clientPaymentTerms}</Text>
           </View>
         )}
 

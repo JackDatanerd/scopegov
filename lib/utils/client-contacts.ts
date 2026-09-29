@@ -66,17 +66,17 @@ export async function withPrimaryContactCc(
     const seen = new Set([clientEmail, ...cc].map(e => (e || '').toLowerCase().trim()).filter(Boolean))
     const extra: string[] = []
     for (const r of (Array.isArray(rows) ? rows : (rows ? [rows] : []))) {
+      // FIX (independent pass 1, section 14 — B2): the cap was checked AFTER pushing, so a client whose own
+      // CC list already held MAX_CC_EMAILS still got one contact appended (11 addresses). Check first.
+      if (cc.length + extra.length >= MAX_CC_EMAILS) break
       const email = String(r?.email || '').trim()
       const key = email.toLowerCase()
       if (!email || seen.has(key)) continue
       seen.add(key)
       extra.push(email)
-      // FIX (independent pass round 4, section 14): normalizeCcEmails() rejects an explicit CC
-      // list past MAX_CC_EMAILS, but this function had no equivalent limit — a client with several
-      // matching scope/approver/billing contacts plus a primary could push the routed total well
-      // past 10. `cc` (what the person actually entered) is never trimmed; only how many contact
-      // rows get added on top is capped, to the room left under the same invariant.
-      if (cc.length + extra.length >= MAX_CC_EMAILS) break
+      // (independent pass round 4) normalizeCcEmails() rejects an explicit CC list past MAX_CC_EMAILS, so
+      // the routed total is capped to the same invariant — `cc` (what the person entered) is never trimmed;
+      // only how many contact rows get added on top is limited, by the check at the top of the loop.
     }
     return extra.length ? [...cc, ...extra] : cc
   } catch (e) {

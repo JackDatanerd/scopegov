@@ -1,0 +1,39 @@
+Clients (section 14) — independent pass 6 (audit pass 1 of this round): 2 feature gaps closed, 5 bugs fixed.
+
+FEATURE GAPS
+G1. clients.payment_terms_note ("Net 30, wire only") was collected and editable but read by nothing. It now
+    prints as a "Payment terms" block under the payment instructions on the invoice PDF (agency PDF, the emailed
+    attachment and the portal PDF), on the portal invoice page, and in the invoice email and both invoice
+    reminder emails (manual and automatic). Plain text everywhere — escaped in email, a text node in React.
+G2. clients.timezone was editable/displayed but consumed by nothing. The client-reminders cron now judges
+    "invoice coming due" on the CLIENT's calendar date (client zone -> workspace zone -> UTC) instead of UTC's.
+    The query window is widened one day each side and each invoice is filtered on its own client's date.
+    The edit form's hint says what the field is for. (Send hour is deliberately not gated: a daily cron that
+    skipped "outside business hours" could skip a client forever.)
+
+BUGS
+B1. Client page "Recent activity" showed contact NAMES ("Contact added — Jane") to VIEW_AUDIT_LOG holders who
+    lack VIEW_CLIENT_DATA (the Contacts card itself is hidden from them). Contact events are now only fetched for
+    viewers who can see contacts.
+B2. withPrimaryContactCc checked the MAX_CC_EMAILS cap after pushing, so a client whose CC list already held 10
+    still got one contact appended (11). Checked before.
+B3. A non-UUID id (mistyped URL, probe) reached Postgres (22P02) and came back as a 500 / error boundary. New
+    lib/utils/uuid.ts isUuidString(); the client page, PATCH/DELETE clients/[id], both contacts routes and merge
+    (source id -> 404, targetId -> 400) now answer 404/400 before querying.
+B4. Contact duplicate-email check ran outside the client row lock (route-level ilike, then the RPC). Migration
+    119 re-checks under the lock in client_contact_add / client_contact_update (23505 with "email" in the message,
+    which the routes already map to the friendly 409). 093's cap logic and 077's body are otherwise verbatim.
+B5. (a) clients list page discarded the project_members read error — an outage showed limited-access viewers 0
+    projects on every client; it now throws like the detail page. (b) GET /api/clients returned
+    email_bounced_at to members without VIEW_CLIENT_DATA although the page withholds it; now null.
+
+MIGRATION: supabase/migrations/119_client_contact_email_dup_under_lock.sql — run it before/with the deploy
+(the app code works without it; B4 is simply not closed until it runs).
+
+Files: app/(app)/clients/page.tsx, app/(app)/clients/[id]/page.tsx, app/api/clients/route.ts,
+[id]/route.ts, [id]/merge/route.ts, [id]/contacts/route.ts, [id]/contacts/[contactId]/route.ts,
+app/api/cron/client-reminders/route.ts, app/api/invoices/[id]/remind/route.ts, app/api/pdf/invoice/[id]/route.ts,
+app/api/portal/invoice/[token]/route.ts, [token]/pdf/route.ts, app/portal/invoice/[token]/page.tsx,
+components/clients/ClientContactCard.tsx, lib/documents/send-invoice.ts, lib/email/templates.ts,
+lib/pdf/renderer.tsx, lib/utils/client-contacts.ts, lib/utils/timezone.ts, lib/utils/uuid.ts (new),
+supabase/migrations/119_… (new), tests/clients-pass1-fixes.test.ts (new).

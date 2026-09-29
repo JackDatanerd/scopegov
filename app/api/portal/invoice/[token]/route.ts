@@ -19,7 +19,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         payment_instructions, invoice_number, po_number, project_id, milestone_id, workspace_id,
         subtotal, tax_rate, tax_inclusive, line_items, sow_id, co_id, first_viewed_at, disputed_at, dispute_note, dispute_resolved_at, dispute_resolution_note,
         payment_claimed_at, payment_claim_reference, payment_claim_cleared_at,
-        projects(id, name, clients(name, company_name, billing_address, vat_number),
+        projects(id, name, clients(name, company_name, billing_address, vat_number, payment_terms_note),
           workspaces(agency_name, brand_colour, logo_storage_path,
             legal_address, tax_id, phone, website)),
         sow_documents(document_number), change_orders(document_number, title)`)
@@ -116,6 +116,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         clientCompany: invoice.projects?.clients?.company_name,
         clientBillingAddress: formatAddress(invoice.projects?.clients?.billing_address) || null,
         clientVatNumber: invoice.projects?.clients?.vat_number || null,
+        clientPaymentTerms: invoice.projects?.clients?.payment_terms_note || null,
         agencyName: workspace?.agency_name,
         // FIX (bug — React error #31, same root cause as the SOW portal route)
         agencyAddress: formatAddress(workspace?.legal_address) || null,

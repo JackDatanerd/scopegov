@@ -66,7 +66,7 @@ export async function sendInvoiceDocument(service: any, params: {
     .from('invoices')
     .select(`id, title, amount, currency, status, due_date, payment_instructions, invoice_number,
       po_number, milestone_id, project_id, subtotal, tax_rate, tax_inclusive, line_items, sow_id, co_id,
-      projects(id, name, client_id, deleted_at, clients(name, email, cc_emails, company_name, billing_address, vat_number),
+      projects(id, name, client_id, deleted_at, clients(name, email, cc_emails, company_name, billing_address, vat_number, payment_terms_note),
         workspaces(id, agency_name, brand_colour, logo_storage_path, legal_address, tax_id, phone, website)),
       sow_documents(document_number), change_orders(document_number, title)`)
     .eq('id', invoiceId).eq('workspace_id', workspaceId).single()
@@ -185,6 +185,7 @@ export async function sendInvoiceDocument(service: any, params: {
       clientCompany: client.company_name || null,
       clientBillingAddress: client.billing_address || null,
       clientVatNumber:      client.vat_number || null,
+      clientPaymentTerms:   client.payment_terms_note || null,
       poNumber:      invoice.po_number || null,
       milestoneTrigger,
       projectName:   project.name,
@@ -231,6 +232,7 @@ export async function sendInvoiceDocument(service: any, params: {
     portalUrl,
     brandColour: workspace.brand_colour,
     paymentInstructions: invoice.payment_instructions,
+    paymentTerms: client.payment_terms_note || null,
     attachments: pdfAttachment ? [pdfAttachment] : undefined,
     replyTo,
     log:         { workspaceId, kind: 'invoice.send', entityType: 'invoice', entityId: invoiceId, projectId: project.id, actorId },

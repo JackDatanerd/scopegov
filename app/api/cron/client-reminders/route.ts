@@ -13,6 +13,7 @@ import { resolveReplyTo } from '@/lib/email/reply-to'
 import { sendClientDocumentReminderEmail, sendInvoiceReminderEmail } from '@/lib/email/templates'
 import { renewInvoiceTokenIfExpired } from '@/lib/documents/renew-invoice-token'
 import { isReminderDue, summarizeReminders, type ReminderEvent } from '@/lib/utils/client-reminder-schedule'
+import { addDaysToDateString, dateStringInZone, isValidTimeZone } from '@/lib/utils/timezone'
 
 // FEATURE (cron/portal audit round 2). Every stall cron only ever told the AGENCY; chasing the client was a manual
 // "Remind" click per document. Workspaces that opt in (Settings → Workspace → Client reminders, default OFF) get:
@@ -65,7 +66,7 @@ export async function POST(request: NextRequest) {
   await run.step('send automatic client reminders', async () => {
     const workspaces = await fetchAll<any>('client-reminders workspaces select', (from, to) =>
       (service as any).from('workspaces')
-        .select('id, agency_name, brand_colour, client_reminder_after_days, client_reminder_max')
+        .select('id, agency_name, brand_colour, timezone, client_reminder_after_days, client_reminder_max')
         .eq('auto_client_reminders', true).is('deleted_at', null)
         .order('id').range(from, to))
 
@@ -76,9 +77,13 @@ export async function POST(request: NextRequest) {
         const replyTo   = await resolveReplyTo(service, ws.id, null)
 
         // ── gather candidates ────────────────────────────────────────────────────────────
-        const clientEmbed = 'clients(name, email, cc_emails, email_bounced_at)'
-        const todayStr = nowIso.slice(0, 10)
-        const soonStr  = new Date(now.getTime() + DUE_SOON_DAYS * 86400000).toISOString().slice(0, 10)
+        const clientEmbed = 'clients(name, email, cc_emails, email_bounced_at, payment_terms_note, timezone)'
+        // FEATURE (independent pass 1, section 14 — G2): "coming due" is judged on the CLIENT's calendar (clients.timezone,
+        // falling back to the workspace's zone, then UTC). The query is widened by a day either side of UTC's window —
+        // no zone is more than a calendar day away from UTC — and each invoice is then filtered on its own client's date.
+        const utcToday = nowIso.slice(0, 10)
+        const todayStr = addDaysToDateString(utcToday, -1)
+        const soonStr  = addDaysToDateString(utcToday, DUE_SOON_DAYS + 1)
         const [sows, cos, invoices, dueSoonInvoices] = await Promise.all([
           fetchAll<any>('reminder SOWs', (from, to) => (service as any).from('sow_documents')
             .select(`id, token, sent_at, expires_at, project_id, projects!inner(id, name, status, client_id, deleted_at, ${clientEmbed})`)
@@ -113,7 +118,11 @@ export async function POST(request: NextRequest) {
           // on its way; nagging them for it is exactly what the claim exists to stop. Recording a payment (which
           // clears the claim) or the agency disputing it resumes reminders.
           ...invoices.filter((d: any) => !(d.disputed_at && !d.dispute_resolved_at) && !hasOpenPaymentClaim(d)).map((doc: any) => ({ kind: 'invoice' as Kind, doc })),
-          ...dueSoonInvoices.filter((d: any) => !(d.disputed_at && !d.dispute_resolved_at) && !hasOpenPaymentClaim(d) && Number(d.amount) - Number(d.amount_paid) > 0.005)
+          ...dueSoonInvoices.filter((d: any) => {
+            const clientTz = d.projects?.clients?.timezone
+            const clientToday = dateStringInZone(isValidTimeZone(clientTz) ? clientTz : ws.timezone, now)
+            return !!d.due_date && d.due_date >= clientToday && d.due_date <= addDaysToDateString(clientToday, DUE_SOON_DAYS)
+          }).filter((d: any) => !(d.disputed_at && !d.dispute_resolved_at) && !hasOpenPaymentClaim(d) && Number(d.amount) - Number(d.amount_paid) > 0.005)
             .map((doc: any) => ({ kind: 'invoice' as Kind, doc, dueSoon: true })),
         ]
         if (!candidates.length) continue
@@ -184,7 +193,7 @@ export async function POST(request: NextRequest) {
                 projectName: project?.name || doc.title, invoiceNumber: doc.invoice_number, title: doc.title,
                 balanceDue: Number(doc.amount) - Number(doc.amount_paid), currency: doc.currency || 'USD', dueDate: doc.due_date,
                 portalUrl: `${portalBase}/portal/invoice/${token}`, brandColour: ws.brand_colour, isOverdue: !dueSoon, dueSoon: !!dueSoon,
-                paymentInstructions: doc.payment_instructions,
+                paymentInstructions: doc.payment_instructions, paymentTerms: client.payment_terms_note || null,
               })
             } else {
               result = await sendClientDocumentReminderEmail({

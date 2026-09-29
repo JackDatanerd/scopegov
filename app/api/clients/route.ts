@@ -34,7 +34,9 @@ export async function GET() {
     const canViewClientData = hasPermission(session, 'VIEW_CLIENT_DATA')
     const result = canViewClientData
       ? (clients || [])
-      : (clients || []).map((c: any) => ({ ...c, email: null }))
+      // FIX (independent pass 1, section 14 — B5): the page also withholds email_bounced_at (it says the address
+      // is dead — contact-data health); this route returned it to everyone.
+      : (clients || []).map((c: any) => ({ ...c, email: null, email_bounced_at: null }))
 
     // FIX (deep audit, section 14 — bug, traced into Projects): POST here
     // requires CREATE_PROJECTS + VIEW_CLIENT_DATA (see that handler), but

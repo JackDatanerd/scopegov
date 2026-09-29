@@ -5,6 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
+import { isUuidString } from '@/lib/utils/uuid'
 
 // FEATURE (independent pass, section 14): duplicate clients (the same company entered under two
 // email addresses) had no fix — no delete, no merge. This moves every project, saved contact and
@@ -45,6 +46,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     try { body = await request.json() } catch { return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 }) }
     const targetId = body?.targetId
     if (typeof targetId !== 'string' || !targetId) return NextResponse.json({ error: 'targetId is required' }, { status: 400 })
+    // FIX (independent pass 1, section 14 — B3): non-UUID ids used to reach `.in('id', …)` and 500 as "Could not merge".
+    if (!isUuidString(sourceId)) return NextResponse.json({ error: 'Client not found' }, { status: 404 })
+    if (!isUuidString(targetId)) return NextResponse.json({ error: 'targetId must be a valid client id' }, { status: 400 })
     if (targetId === sourceId) return NextResponse.json({ error: 'Choose a different client to merge into.' }, { status: 400 })
 
     const service = createServiceClient()

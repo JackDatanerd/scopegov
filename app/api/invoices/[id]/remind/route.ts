@@ -26,7 +26,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .from('invoices')
       .select(`id, title, amount, amount_paid, currency, status, due_date, token, expires_at, invoice_number, project_id, payment_instructions,
         disputed_at, dispute_resolved_at, payment_claimed_at, payment_claim_cleared_at,
-        projects(id, name, client_id, clients(name, email, cc_emails), workspaces(agency_name, brand_colour))`)
+        projects(id, name, client_id, clients(name, email, cc_emails, payment_terms_note), workspaces(agency_name, brand_colour))`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
@@ -127,6 +127,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       brandColour: workspace?.brand_colour,
       isOverdue:   invoice.status === 'overdue',
       paymentInstructions: invoice.payment_instructions,
+      paymentTerms: client.payment_terms_note || null,
       replyTo,
       log:         { workspaceId: session.workspaceId, kind: 'invoice.reminder', entityType: 'invoice', entityId: id, projectId: project?.id, actorId: session.id },
     }), 'Invoice reminder')

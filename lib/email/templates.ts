@@ -1371,6 +1371,8 @@ export async function sendInvoiceEmail(params: {
   projectName: string; invoiceNumber?: string | null; title: string
   amount: number; currency: string; dueDate?: string | null
   portalUrl: string; brandColour?: string; paymentInstructions?: string | null
+  /** clients.payment_terms_note — free text, escaped here. */
+  paymentTerms?: string | null
   // FIX (doc-completeness audit, finding #4): this email used to be
   // link-only — no way to attach the invoice PDF, unlike the SOW/CO
   // signed-confirmation emails. Many AP/procurement workflows expect an
@@ -1380,6 +1382,7 @@ export async function sendInvoiceEmail(params: {
 }) {
   const { to, cc, clientName: clientNameRaw, agencyName: agencyNameRaw, projectName: projectNameRaw, invoiceNumber, title: titleRaw,
     amount, currency, dueDate, portalUrl, brandColour, paymentInstructions: paymentInstructionsRaw, attachments } = params
+  const paymentTerms         = escapeHtml(params.paymentTerms)
   const clientName           = escapeHtml(clientNameRaw)
   const agencyName           = escapeHtml(agencyNameRaw)
   const projectName          = escapeHtml(projectNameRaw)
@@ -1409,6 +1412,12 @@ export async function sendInvoiceEmail(params: {
         <p style="font-size:13px;color:${C.text2};margin:0;line-height:1.6;white-space:pre-line;">${paymentInstructions}</p>
       </div>
       ` : ''}
+      ${paymentTerms ? `
+      <div style="background:${C.bg};border:1px solid ${C.border};border-radius:6px;padding:14px 16px;margin:16px 0;">
+        <p style="font-size:11px;color:${C.text3};text-transform:uppercase;letter-spacing:.05em;margin:0 0 6px;">Payment terms</p>
+        <p style="font-size:13px;color:${C.text2};margin:0;line-height:1.6;white-space:pre-line;">${paymentTerms}</p>
+      </div>
+      ` : ''}
     `,
     cta: 'View invoice →',
     ctaUrl: portalUrl,
@@ -1436,6 +1445,8 @@ export async function sendInvoiceReminderEmail(params: {
   /** A heads-up BEFORE the due date (cron/client-reminders "due soon"): wording says "due on", not "was due". */
   dueSoon?: boolean
   paymentInstructions?: string | null
+  /** clients.payment_terms_note — free text, escaped here. */
+  paymentTerms?: string | null
 }) {
   const { to, cc, clientName: clientNameRaw, agencyName: agencyNameRaw, projectName: projectNameRaw, invoiceNumber, title: titleRaw,
     balanceDue, currency, dueDate, portalUrl, brandColour, isOverdue, dueSoon, paymentInstructions: paymentInstructionsRaw } = params
@@ -1444,6 +1455,7 @@ export async function sendInvoiceReminderEmail(params: {
   const projectName = escapeHtml(projectNameRaw)
   const title       = escapeHtml(titleRaw)
   const paymentInstructions = escapeHtml(paymentInstructionsRaw)
+  const paymentTerms        = escapeHtml(params.paymentTerms)
 
   const html = baseTemplate({
     agencyName,
@@ -1462,6 +1474,12 @@ export async function sendInvoiceReminderEmail(params: {
       <div style="background:${C.bg};border:1px solid ${C.border};border-radius:6px;padding:14px 16px;margin:16px 0;">
         <p style="font-size:11px;color:${C.text3};text-transform:uppercase;letter-spacing:.05em;margin:0 0 6px;">Payment instructions</p>
         <p style="font-size:13px;color:${C.text2};margin:0;line-height:1.6;white-space:pre-line;">${paymentInstructions}</p>
+      </div>
+      ` : ''}
+      ${paymentTerms ? `
+      <div style="background:${C.bg};border:1px solid ${C.border};border-radius:6px;padding:14px 16px;margin:16px 0;">
+        <p style="font-size:11px;color:${C.text3};text-transform:uppercase;letter-spacing:.05em;margin:0 0 6px;">Payment terms</p>
+        <p style="font-size:13px;color:${C.text2};margin:0;line-height:1.6;white-space:pre-line;">${paymentTerms}</p>
       </div>
       ` : ''}
     `,

@@ -12,6 +12,7 @@ import { EMAIL_RE, CLIENT_LIMITS, CONTACT_ROLE_TYPES } from '@/lib/utils/client-
 // FIX (independent pass round 2, section 14): this route's own local escapeLike() was broken
 // (see lib/utils/escape-like.ts for the full story) — imported instead of re-typed.
 import { escapeLike } from '@/lib/utils/escape-like'
+import { isUuidString } from '@/lib/utils/uuid'
 
 async function loadContact(service: any, workspaceId: string, clientId: string, contactId: string) {
   // Read failures throw (→ 500) rather than reading as "not found".
@@ -35,6 +36,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     if (!hasPermission(session, 'CREATE_PROJECTS') || !hasPermission(session, 'VIEW_CLIENT_DATA'))
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
+    // FIX (independent pass 1, section 14 — B3): a non-UUID id used to reach Postgres (22P02) and surface as a 500.
+    if (!isUuidString(id)) return NextResponse.json({ error: 'Client not found' }, { status: 404 })
+    if (!isUuidString(contactId)) return NextResponse.json({ error: 'Contact not found' }, { status: 404 })
 
     const service = createServiceClient()
     const { client, contact } = await loadContact(service, session.workspaceId, id, contactId)
@@ -123,6 +127,9 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     if (!hasPermission(session, 'CREATE_PROJECTS') || !hasPermission(session, 'VIEW_CLIENT_DATA'))
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
+    // FIX (independent pass 1, section 14 — B3): a non-UUID id used to reach Postgres (22P02) and surface as a 500.
+    if (!isUuidString(id)) return NextResponse.json({ error: 'Client not found' }, { status: 404 })
+    if (!isUuidString(contactId)) return NextResponse.json({ error: 'Contact not found' }, { status: 404 })
 
     const service = createServiceClient()
     const { client, contact } = await loadContact(service, session.workspaceId, id, contactId)
