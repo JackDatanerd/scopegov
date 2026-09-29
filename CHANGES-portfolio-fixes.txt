@@ -1,0 +1,95 @@
+PORTFOLIO (section 8) — fix round
+Files: app/api/reports/portfolio/route.ts, app/api/reports/portfolio/export/route.ts,
+       lib/reports/portfolio-data.ts, lib/pdf/portfolio-report.tsx,
+       components/portfolio/PortfolioDashboard.tsx
+
+Independent audit found no feature gaps. Two bugs found and fixed below.
+
+------------------------------------------------------------------------------
+BUG 1 — live JSON route had no timeout budget
+------------------------------------------------------------------------------
+File: app/api/reports/portfolio/route.ts
+
+app/api/reports/portfolio/route.ts is the live route — hit on every page
+load and every period switch — running the same workspace-wide
+computeScopeHealth rollup as its own export sibling (plus a snapshot-history
+fetch of up to 20,000 rows). It declared neither `runtime` nor
+`maxDuration`.
+
+- Its own sibling, export/route.ts, declares runtime='nodejs' + maxDuration=60.
+- The directly comparable app/api/reports/route.ts (same "workspace-wide
+  rollup" class, by that file's own comment) also declares maxDuration=60.
+- vercel.json has no global function-duration override.
+
+So this route was silently running on the platform default instead of the
+60s every other heavy rollup route here explicitly claims — on the one
+route in the feature hit most often.
+
+Fix: added `export const runtime = 'nodejs'` and `export const maxDuration
+= 60`, matching its sibling and the comparable reports route.
+
+------------------------------------------------------------------------------
+BUG 2 — stuckDocs had no cap, unlike flags and exceptions
+------------------------------------------------------------------------------
+Files: lib/reports/portfolio-data.ts, app/api/reports/portfolio/export/route.ts,
+       lib/pdf/portfolio-report.tsx, components/portfolio/PortfolioDashboard.tsx
+
+getPortfolioData has cap options for flagsPerSeverity and exceptionsLimit,
+deliberately, to keep the live dashboard route's payload small. There was
+no equivalent cap for stuckDocs. Unlike SOWs (current-version-only), a CO's
+declined/expired/stalled/countered state has no such restriction — every
+one a workspace has ever had stays in the set forever — so for a mature,
+multi-year workspace this list grows unbounded and shipped in full over the
+live JSON route (not just CSV/PDF), the same unbounded-payload risk
+flagsPerSeverity/exceptionsLimit were introduced to avoid for their own
+lists.
+
+Fix, mirroring the flags/exceptions pattern throughout:
+
+- lib/reports/portfolio-data.ts
+  - Added DEFAULT_STUCK_DOCS_LIMIT = 100 and an opts.stuckDocsLimit
+    parameter (same shape as flagsPerSeverity/exceptionsLimit).
+  - Added `stuckDocsTotal: number` to the PortfolioData type — the exact
+    all-time count, taken before the cap is applied (mirrors
+    exceptionsTotal).
+  - health.stuckDocs is now sliced to stuckDocsLimit before mapping (it's
+    already oldest-first from scope-health.ts, so the cap keeps the most
+    overdue items — matching the ordering CSV/PDF already assumed).
+
+- app/api/reports/portfolio/export/route.ts
+  - CSV requests now pass stuckDocsLimit: 5000 alongside the existing
+    flagsPerSeverity/exceptionsLimit overrides, so the "CSV export lists
+    every one" claim made elsewhere on this page stays true in practice.
+  - The CSV "Documents needing action (N)" header is now truncation-aware,
+    matching the existing pattern for the flags and exceptions headers in
+    the same file, instead of silently printing the capped count as if it
+    were the total.
+
+- lib/pdf/portfolio-report.tsx
+  - The "Documents needing action" header used stuck.length (now the
+    capped array) for its "of N" figure. Switched to data.stuckDocsTotal
+    so it still reports the true count, and the condition for showing the
+    "oldest N of Total" phrasing now also fires when the upstream cap (not
+    just the PDF's own STALL_ROWS render cap) has trimmed the list.
+  - Updated the stale header comment above STALL_ROWS (previously said
+    stuckDocs "had no limit parameter to cap it with" — no longer true).
+
+- components/portfolio/PortfolioDashboard.tsx
+  - Added stuckDocsTotal to the local PortfolioData type (optional, with a
+    `?? data.stuckDocs.length` fallback at each use site, same defensive
+    pattern already used for openFlagsTotal).
+  - StalledPanel now takes a `total` prop and uses it for the section
+    header count (previously docs.length, which is now the possibly-capped
+    fetched count, not the true total — the same bug ExceptionsPanel's own
+    `count` prop already avoided). Added the same "Oldest N of Total — the
+    CSV export lists every one" note ExceptionsPanel shows for its own list,
+    worded for "oldest" since this list runs oldest-first instead of
+    newest-first.
+  - MetricStrip's "+N declined/expired" subtext for the Stalled tile
+    counted `data.stuckDocs.filter(d => !d.stalled).length` — directly off
+    the now-capped array, which would silently undercount once a workspace
+    exceeded the cap. Replaced with `stuckDocsTotal - stalledSowCount -
+    stalledCoCount`: exact by construction (stalledSowCount/stalledCoCount
+    are computed workspace-wide, uncapped, from the identical predicate
+    that produces the "stalled" stuckDocs entries), with no dependency on
+    how much of the list actually arrived.

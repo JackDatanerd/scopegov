@@ -15,6 +15,20 @@ import { getPortfolioData } from '@/lib/reports/portfolio-data'
 // lives in lib/reports/portfolio-data.ts, shared with
 // api/reports/portfolio/export/route.ts (CSV/PDF) — see the FIX note
 // there for why.
+//
+// FIX (Portfolio deep audit, section 8): this is the live route — hit on
+// every page load and every period switch — running the exact same
+// workspace-wide computeScopeHealth rollup as the export route below it
+// (plus a snapshot-history fetch of up to 20,000 rows), but it declared
+// no runtime budget at all. Its own sibling (export/route.ts) sets
+// runtime='nodejs' + maxDuration=60, and so does the directly comparable
+// app/api/reports/route.ts (same "workspace-wide rollup" class, by that
+// file's own comment). vercel.json has no global override, so this route
+// was silently running on the platform default instead of the 60s every
+// other heavy rollup route here explicitly claims — on the one route in
+// the feature that gets hit the most often.
+export const runtime = 'nodejs'
+export const maxDuration = 60
 export async function GET(request: NextRequest) {
   try {
     const session = await getSession()

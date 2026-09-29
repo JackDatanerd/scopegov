@@ -47,7 +47,7 @@ export async function GET(request: NextRequest) {
     // The CSV is the complete record (every open flag and exception); the PDF is a readable summary, so it
     // keeps the dashboard's per-severity cap and says so.
     const data = await getPortfolioData(service, session.workspaceId, period, canViewFinancials, canViewClients,
-      format === 'csv' ? { flagsPerSeverity: 5000, exceptionsLimit: 5000 } : {})
+      format === 'csv' ? { flagsPerSeverity: 5000, exceptionsLimit: 5000, stuckDocsLimit: 5000 } : {})
     const filenameBase = filenameSlug(session.workspaceSlug, session.workspaceName, period)
 
     // Build the file FIRST, audit after: the audit row used to be written
@@ -166,7 +166,12 @@ function toCsv(data: Awaited<ReturnType<typeof getPortfolioData>>, canViewFinanc
   // Every document needing the agency's action, not just the stalled ones: declined / expired / changes-
   // requested SOWs and declined / expired / countered COs are exactly what the Dashboard's Needs attention
   // lists, and used to be missing here.
-  lines.push(`Documents needing action (${data.stuckDocs.length})`)
+  // FIX (Portfolio deep audit, section 8): stuckDocs is now capped like every other big list here (see
+  // stuckDocsLimit in getPortfolioData) — mirror the same truncation-aware header flags/exceptions already use
+  // rather than silently printing the capped count as if it were the total.
+  lines.push(data.stuckDocsTotal > data.stuckDocs.length
+    ? `Documents needing action (oldest ${data.stuckDocs.length} of ${data.stuckDocsTotal})`
+    : `Documents needing action (${data.stuckDocs.length})`)
   lines.push(['Type', 'Status', 'Document', 'Project', 'Client', 'Since', 'Amount', 'Currency'].map(csvCell).join(','))
   for (const d of data.stuckDocs) {
     // FIX (Portfolio deep audit, feature gap follow-up): this used to only apply

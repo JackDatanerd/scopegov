@@ -79,11 +79,11 @@ const EXC_ROWS = 15
 // FIX (Portfolio independent pass): "Projects by risk" and "Exceptions"
 // were both deliberately capped, specifically to keep this a short,
 // readable summary (see the FIX notes at their own render sites below) —
-// but "Documents needing action" (stuckDocs) had no equivalent cap.
-// scope-health.ts returns every stalled/declined/expired/changes-requested/
-// countered document workspace-wide with no limit parameter to cap it with,
-// so a workspace with a lot of history could render an unbounded number of
-// rows here, against the export route's own 60-second timeout.
+// but "Documents needing action" (stuckDocs) had no equivalent cap at the
+// time. getPortfolioData now caps it too (stuckDocsLimit, default 100 —
+// see the FIX note there for why), so this is a render-only cap on top of
+// that data-level one, the same relationship FLAG_ROWS below has with the
+// already-capped 100-per-severity flags.
 const STALL_ROWS = 40
 // FIX (Projects & Dashboard / Portfolio deep audit): "Open scope flags" was
 // the one list on this page that STALL_ROWS/EXC_ROWS's own reasoning was
@@ -251,8 +251,14 @@ function PortfolioReportDocument({ report }: { report: PortfolioReportData }) {
           </>
         )}
 
+        {/* FIX (Portfolio deep audit, section 8): stuck (data.stuckDocs) is now itself capped upstream
+            (stuckDocsLimit in getPortfolioData, default 100) — this header used to compare against
+            stuck.length, which silently became the capped count instead of the true total once that cap
+            existed. data.stuckDocsTotal is the exact all-time count; show it whenever either cap trimmed. */}
         <Text style={s.h2}>
-          Documents needing action ({stuck.length > STALL_ROWS ? `oldest ${STALL_ROWS} of ${stuck.length} — the CSV export lists every one` : stuck.length})
+          Documents needing action ({stuck.length > STALL_ROWS || data.stuckDocsTotal > stuck.length
+            ? `oldest ${Math.min(STALL_ROWS, stuck.length)} of ${data.stuckDocsTotal} — the CSV export lists every one`
+            : stuck.length})
         </Text>
         {stuck.length === 0 ? (
           <Text style={s.emptyNote}>No stalled, declined or expired documents across the portfolio.</Text>

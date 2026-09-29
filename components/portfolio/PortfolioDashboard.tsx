@@ -66,6 +66,10 @@ interface PortfolioData {
   openFlagsTotal?: number
   openFlags: OpenFlag[]
   stuckDocs: StuckDoc[]
+  // FIX (Portfolio deep audit, section 8): stuckDocs is now capped server-side
+  // (getPortfolioData's stuckDocsLimit) like flags/exceptions already were —
+  // this is the exact all-time count behind that capped list.
+  stuckDocsTotal?: number
   projectRisk: RiskRow[]
   exceptions: ExceptionItem[]
   exceptionsTotal: number
@@ -289,7 +293,7 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName, canO
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24, alignItems: 'start', marginBottom: 24 }}>
-            <StalledPanel docs={data.stuckDocs} canViewFinancials={canViewFinancials} canOpenProjects={canOpenProjects} />
+            <StalledPanel docs={data.stuckDocs} total={data.stuckDocsTotal ?? data.stuckDocs.length} canViewFinancials={canViewFinancials} canOpenProjects={canOpenProjects} />
             <ExceptionsPanel
               count={data.current.exceptionsCount}
               value={data.current.exceptionsValueTotal}
@@ -429,7 +433,14 @@ function MetricStrip({ data, canViewFinancials }: { data: PortfolioData; canView
         </div>
         <div className="mc-sub">
           {c.stalledSowCount} SOW · {c.stalledCoCount} CO
-          {(() => { const other = data.stuckDocs.filter(d => !d.stalled).length; return other > 0 ? ` · +${other} declined/expired` : '' })()}
+          {/* FIX (Portfolio deep audit, section 8): stuckDocs is now capped server-side, so counting "not
+              stalled" from the (possibly-truncated) array itself would silently undercount for a workspace
+              with more stuck docs than the cap. stuckDocsTotal minus the stalled tiles (exact, uncapped)
+              gives the same figure without depending on how much of the list actually arrived. */}
+          {(() => {
+            const other = (data.stuckDocsTotal ?? data.stuckDocs.length) - c.stalledSowCount - c.stalledCoCount
+            return other > 0 ? ` · +${other} declined/expired` : ''
+          })()}
         </div>
       </div>
     </div>
@@ -600,7 +611,7 @@ const REASON_PILL: Record<string, string> = {
   'SOW unsigned': 'red', Stalled: 'red', Declined: 'red', Expired: 'red', 'Changes requested': 'amber', 'Counter-offer': 'amber',
 }
 
-function StalledPanel({ docs, canViewFinancials, canOpenProjects }: { docs: StuckDoc[]; canViewFinancials: boolean; canOpenProjects: boolean }) {
+function StalledPanel({ docs, total, canViewFinancials, canOpenProjects }: { docs: StuckDoc[]; total: number; canViewFinancials: boolean; canOpenProjects: boolean }) {
   const [expanded, setExpanded] = useState(false)
   const visible = expanded ? docs : docs.slice(0, STALLED_PREVIEW_COUNT)
   const hiddenCount = docs.length - visible.length
@@ -608,7 +619,10 @@ function StalledPanel({ docs, canViewFinancials, canOpenProjects }: { docs: Stuc
   return (
     <div className="surface surface-p">
       <div className="sec-hd" style={{ marginBottom: 14 }}>
-        <div className="sec-title">Documents needing action ({docs.length})</div>
+        {/* FIX (Portfolio deep audit, section 8): the header used docs.length — correct back when the list
+            was uncapped, but that's now the (possibly-truncated) fetched count, not the true total. `total`
+            is the exact figure, same as ExceptionsPanel's own count prop just below in this file. */}
+        <div className="sec-title">Documents needing action ({total})</div>
       </div>
       {docs.length === 0 ? (
         <p style={{ fontSize: 12.5, color: 'var(--text-3)' }}>Nothing stalled, declined or expired across the portfolio.</p>
@@ -645,6 +659,13 @@ function StalledPanel({ docs, canViewFinancials, canOpenProjects }: { docs: Stuc
             >
               {expanded ? 'Show less' : `Show ${hiddenCount} more`}
             </button>
+          )}
+          {/* FIX (Portfolio deep audit, section 8): docs (data.stuckDocs) is now capped server-side, same
+              as exceptions already were — mirror ExceptionsPanel's own "Newest N of Total" note (ours reads
+              "Oldest" since this list is oldest-first) rather than letting "Show N more" silently mean
+              "reveal the rest of the ALREADY-TRUNCATED list" with no signal more exist beyond it. */}
+          {total > docs.length && (
+            <p style={{ fontSize: 11, color: 'var(--text-4)', marginTop: 8 }}>Oldest {docs.length} of {total} — the CSV export lists every one.</p>
           )}
         </>
       )}

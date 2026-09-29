@@ -81,7 +81,7 @@ export interface PortfolioData {
     contractValue: number | null; currency: string
   }>
   /**
-   * Every document that needs the agency's action, oldest first: stalled SOWs and COs (the Stalled tile) plus
+   * Oldest-first, capped; `stuckDocsTotal` is the exact count. Stalled SOWs and COs (the Stalled tile) plus
    * declined / expired / changes-requested SOWs and declined / expired / countered COs — the same states the
    * Dashboard's Needs-attention register already treats as action items.
    */
@@ -89,6 +89,12 @@ export interface PortfolioData {
     kind: 'SOW' | 'CO'; reason: string; stalled: boolean; title: string; total: number | null; currency: string
     projectId: string; projectName: string; clientName: string | null; since: string
   }>
+  /**
+   * Exact all-time count behind `stuckDocs` (before the cap). Unlike SOWs (current-version-only), a CO has no
+   * such restriction — every declined/expired/stalled/countered CO a workspace has ever had stays in this set
+   * forever — so, same as flags and exceptions, the list itself is capped and this carries the true count.
+   */
+  stuckDocsTotal: number
   /** "Projects by risk": in-progress projects with at least one signal, biggest exposure first. */
   projectRisk: Array<{
     projectId: string; projectName: string; clientName: string | null; status: string; currency: string
@@ -112,6 +118,15 @@ export interface PortfolioData {
 
 const DEFAULT_FLAGS_PER_SEVERITY = 100
 const EXCEPTIONS_LIST_LIMIT = 25
+// FIX (Portfolio deep audit, section 8): stuckDocs had no cap at all — the
+// one big list in this file that flagsPerSeverity/exceptionsLimit's own
+// reasoning was never extended to. A CO's declined/expired/stalled/
+// countered state is permanent (no "current version only" rule like SOWs
+// have), so this set only grows across a workspace's lifetime; shipping it
+// in full over the LIVE dashboard route (not just CSV/PDF) was the same
+// unbounded-payload risk this file's other two lists were deliberately
+// capped to avoid. Same order of magnitude as flags.
+const DEFAULT_STUCK_DOCS_LIMIT = 100
 // One row per workspace per day (daily rollup cron) — 20,000 is ~54 years of
 // history, effectively unbounded for any real workspace, but still a real
 // cap with a real error on the other side of it (see the fetchPaged call
@@ -124,10 +139,11 @@ export async function getPortfolioData(
   period: PeriodKey,
   canViewFinancials: boolean,
   canViewClients: boolean = true,
-  opts: { flagsPerSeverity?: number; exceptionsLimit?: number } = {},
+  opts: { flagsPerSeverity?: number; exceptionsLimit?: number; stuckDocsLimit?: number } = {},
 ): Promise<PortfolioData> {
   const flagsPerSeverity = opts.flagsPerSeverity ?? DEFAULT_FLAGS_PER_SEVERITY
   const exceptionsLimit = opts.exceptionsLimit ?? EXCEPTIONS_LIST_LIMIT
+  const stuckDocsLimit = opts.stuckDocsLimit ?? DEFAULT_STUCK_DOCS_LIMIT
   const days = PERIOD_DAYS[period]
   const since = days === null ? '2000-01-01' : new Date(Date.now() - days * 86400000).toISOString().split('T')[0]
   const now = new Date()
@@ -272,7 +288,9 @@ export async function getPortfolioData(
         currency: p?.currency || 'USD',
       }
     }),
-    stuckDocs: health.stuckDocs.map(d => {
+    stuckDocsTotal: health.stuckDocs.length,
+    // Already oldest-first (scope-health.ts) — the cap keeps the most overdue items, matching the CSV/PDF ordering.
+    stuckDocs: health.stuckDocs.slice(0, stuckDocsLimit).map(d => {
       const p = projectById.get(d.projectId)
       return {
         kind: d.kind, reason: d.reason, stalled: d.stalled, title: d.title,
