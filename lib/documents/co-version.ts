@@ -59,7 +59,33 @@ export async function insertNextCoVersion(
       .select('id, version')
       .single()
 
-    if (!error && inserted) return { ok: true, id: inserted.id, version: inserted.version }
+    if (!error && inserted) {
+      // Revising a CO clones its content forward via `parent_co_id` but used to leave co_attachments behind:
+      // the superseded CO is locked (attachments can only be added/removed on a draft), so every revision
+      // started with zero reference files while the same Storage objects sat there referenced only by the
+      // dead version. Mirrors lib/documents/sow-version.ts — attachment rows are metadata over a
+      // storage_path, so this is a cheap row copy, not a file duplication. Best-effort: a failure here must
+      // not fail the revision itself. (The attachment DELETE route only removes the Storage object once no
+      // row references it, so removing a copy from the draft never breaks the historical version.)
+      const parentId = (row as any).parent_co_id
+      if (parentId) {
+        try {
+          const { data: prevAttachments } = await service
+            .from('co_attachments')
+            .select('file_name, file_size, mime_type, storage_path, uploaded_by')
+            .eq('co_id', parentId)
+          if (prevAttachments && prevAttachments.length > 0) {
+            const { error: copyError } = await service.from('co_attachments').insert(
+              prevAttachments.map((a: any) => ({ ...a, co_id: inserted.id }))
+            )
+            if (copyError) console.error('CO version: could not carry attachments forward (non-fatal):', copyError.message)
+          }
+        } catch (copyErr) {
+          console.error('CO version: could not carry attachments forward (non-fatal):', copyErr)
+        }
+      }
+      return { ok: true, id: inserted.id, version: inserted.version }
+    }
 
     lastError = error?.message || lastError
     if (error?.code !== UNIQUE_VIOLATION) return { ok: false, error: lastError }

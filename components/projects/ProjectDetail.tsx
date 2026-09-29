@@ -588,7 +588,7 @@ function OverviewTab({ project, milestones, amendments, permissions, currency, r
                 <div>
                   {project.retainer_duration_months
                     ? `${project.retainer_duration_months} month${project.retainer_duration_months !== 1 ? 's' : ''}`
-                    : 'Open-ended — billed monthly until the project is completed or archived'}
+                    : 'Not set — monthly billing won\u2019t auto-generate'}
                 </div>
               </div>
             )}
@@ -2086,7 +2086,9 @@ function FlagSource({ flagId, open, onToggle }: { flagId: string; open: boolean;
 // 'exception' case for the backend half of this fix. Every exception
 // granted before now recorded $0 and an empty reason because nothing ever
 // asked for either.
-function ExceptionModal({ flag, onClose, onSubmit }: any) {
+// `valueHint` lets the CO call site describe its own default: the CO exception route records the change
+// order's total when this is left blank, whereas the flag-side action records $0.
+function ExceptionModal({ flag, onClose, onSubmit, valueHint }: any) {
   const [grantedWhat, setGrantedWhat] = useState(flag.description || '')
   const [estimatedValue, setEstimatedValue] = useState('')
   const [exceptionReason, setExceptionReason] = useState('')
@@ -2112,7 +2114,7 @@ function ExceptionModal({ flag, onClose, onSubmit }: any) {
         <label className="form-label">What&rsquo;s being granted</label>
         <textarea className="form-input" rows={2} value={grantedWhat} onChange={(e) => setGrantedWhat(e.target.value)}
           style={{ marginBottom: 12 }} />
-        <label className="form-label">Estimated value <span className="fhint">— optional, defaults to $0</span></label>
+        <label className="form-label">Estimated value <span className="fhint">— optional, {valueHint || 'defaults to $0'}</span></label>
         <input type="number" min="0" step="0.01" className="form-input" value={estimatedValue}
           onChange={(e) => setEstimatedValue(e.target.value)} placeholder="0.00" style={{ marginBottom: 12 }} />
         <label className="form-label">Reason</label>
@@ -2307,6 +2309,9 @@ function EscalateCoModal({ co, team, onClose, onDone }: any) {
     </div>
   )
 }
+
+// Must stay in sync with the status guard in app/api/co/[id]/escalate/route.ts.
+const ESCALATE_BLOCKED_STATUSES = ['draft', 'accepted', 'closed', 'withdrawn', 'exception_granted', 'expired']
 
 function CoCard({ co, currency, permissions, projectId, pendingApproval, team }: any) {
   const router = useRouter()
@@ -2595,12 +2600,10 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
           {['draft','awaiting_response','declined','countered','stalled','awaiting_countersignature','expired'].includes(co.status) && permissions.grantExceptions && (
             <button className="btn btn-ghost btn-xs" onClick={() => setShowException(true)} disabled={acting}>Exception</button>
           )}
-          {/* FIX (section-10 audit, feature gap — CO expiry): 'expired'
-              excluded — there's nothing left to escalate on a dead,
-              already-terminal link; escalation is for an open
-              negotiation, same reasoning the escalate route's own status
-              guard already applies. */}
-          {permissions.sendCo && !['closed', 'accepted', 'withdrawn', 'expired'].includes(co.status) && (
+          {/* Hidden for exactly the statuses the escalate route refuses (ESCALATE_BLOCKED_STATUSES): escalation is
+              for an open negotiation. A draft has nothing sent to escalate and 'exception_granted' is terminal, so
+              showing the icon there only led to a 400 ("nothing open to escalate"). */}
+          {permissions.sendCo && !ESCALATE_BLOCKED_STATUSES.includes(co.status) && (
             <button className="btn-icon" title="Escalate" onClick={() => setEscalating(true)}>
               <i className="ti ti-alert-triangle" style={{ fontSize: 13 }} />
             </button>
@@ -2664,6 +2667,7 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
       {showException && (
         <ExceptionModal
           flag={{ description: co.title }}
+          valueHint={co.is_credit ? 'defaults to $0 for a credit change order' : 'defaults to this change order\u2019s total'}
           onClose={() => setShowException(false)}
           onSubmit={async (fields: any) => {
             const ok = await doException(fields)

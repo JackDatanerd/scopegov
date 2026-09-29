@@ -211,6 +211,7 @@ export async function sendCoDocument(service: any, params: {
     portalUrl,
     brandColour: workspace.brand_colour,
     note:        co.note,
+    isCredit:    !!co.is_credit,
     replyTo,
     log:         { workspaceId, kind: 'co.send', entityType: 'change_order', entityId: coId, projectId: project.id, actorId },
   }), 'CO send email')

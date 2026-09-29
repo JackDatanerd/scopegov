@@ -82,7 +82,14 @@ export function rescaleLineItemsToTotal(
     ? round2(newTotal / (1 + safeTaxRate / 100))
     : roundedSubtotal
 
-  const oldSubtotal = round2(lineItems.reduce((s, li) => s + (li.quantity * li.rate), 0))
+  // Sum what each row PRINTS (its stored, already-rounded `total`), not qty × rate re-multiplied: co-totals.ts rounds
+  // every row's total to the cent, so with a fractional quantity (1.33 × 10.05 = 13.3665 -> 13.37) the re-multiplied sum
+  // can sit a cent away from the rows the client reads, leaving the negotiated-adjustment line a cent off and the
+  // document's rows not summing to its subtotal. Rows without a usable total fall back to qty × rate.
+  const rowAmount = (li: RescaleLineItem) => Number.isFinite(Number(li.total)) && li.total !== null && (li as any).total !== undefined
+    ? Number(li.total)
+    : li.quantity * li.rate
+  const oldSubtotal = round2(lineItems.reduce((s, li) => s + rowAmount(li), 0))
 
   // Nothing priced yet (e.g. an AI draft that was never priced before
   // being sent) — one clearly-labelled line rather than a $0 item next to

@@ -366,8 +366,8 @@ export default function CoEditor({ projId, coId }: Props) {
   async function draftWithAi() {
     if (!aiText.trim()) { setAiError('Describe what the client is asking for first.'); return }
     // The draft REPLACES the title, note and every line item. Priced rows were silently reset to 0.
-    const hasWork = title.trim() || note.trim() || lineItems.some(l => l.description.trim() || l.rate > 0)
-    if (hasWork && !confirm('AI drafting will replace your current title, notes and line items (rates reset to 0). Continue?')) return
+    const hasWork = title.trim() || note.trim() || scopeImpactNote.trim() || timelineImpactDays.trim() || lineItems.some(l => l.description.trim() || l.rate > 0)
+    if (hasWork && !confirm('AI drafting will replace your current title, notes, impact analysis and line items (rates reset to 0). Continue?')) return
     setAiDrafting(true); setAiError('')
     try {
       const res  = await fetch('/api/co/draft', {
@@ -378,8 +378,11 @@ export default function CoEditor({ projId, coId }: Props) {
       if (!res.ok) throw new Error(json.error)
       if (json.title) setTitle(json.title)
       if (json.note)  setNote(json.note)
-      if (json.scopeImpact) setScopeImpactNote(json.scopeImpact)
-      if (json.timelineImpactDays != null) setTimelineImpactDays(String(json.timelineImpactDays))
+      // The draft is a fresh reading of THIS request, so the impact fields are replaced too — when the AI can't tell
+      // (null), clear them rather than leave the previous request's timeline/scope note in place, where they would
+      // be sent to the client as a claim about this change order.
+      setScopeImpactNote(json.scopeImpact || '')
+      setTimelineImpactDays(json.timelineImpactDays != null ? String(json.timelineImpactDays) : '')
       if (json.lineItems?.length) {
         setLineItems(json.lineItems.map((li: any) => ({
           id: nanoid(), description: li.description, quantity: li.quantity || 1, rate: 0, total: 0,

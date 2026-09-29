@@ -1,0 +1,34 @@
+CO logic (api/co/*, components/co, api/pdf/co) — independent pass 1 fixes
+
+BUGS
+1. co/draft: null/blank timelineImpactDays no longer coerced by Number(null) to 0 ("0 days — no change to the
+   timeline" was shown to the client for an unknown impact). CoEditor now also clears stale scope/timeline notes on
+   re-draft when the AI returns none.
+2. Exception modal copy said "defaults to $0" but the CO exception route records the CO total; modal now says so
+   (credit COs: $0). Route no longer turns a credit CO's negative total into a validation error. project page selects
+   is_credit so the CoCard can tell.
+3. CoCard hid Escalate for only 4 of the 6 statuses the route refuses (draft, exception_granted showed a dead
+   button). Shared ESCALATE_BLOCKED_STATUSES constant, guarded by a test.
+4. Client send email escaped the rich-text note, so clients received literal "<p>...</p>". Now re-sanitised and
+   rendered as HTML (same allowlist as portal/PDF).
+5. Credit COs: send email and reminder said "scope additions" and printed a negative Total. Now credit wording and
+   absolute credit amount (send-co passes isCredit; remind selects is_credit).
+6. Exception route emailed the agency's INTERNAL exception reason (audit rationale) to the client as
+   "Note from <agency>". No longer sent.
+7. Counter-offer rescale summed qty x rate instead of each row's stored (rounded) total; with several
+   fractional-quantity rows the accepted total drifted a cent and a phantom "Negotiated increase (0.01)" line was
+   added. Now sums the printed row totals.
+
+FEATURE GAP
+8. Revising a CO carried nothing forward for attachments. co-version.ts now copies co_attachments rows onto the
+   new draft (same storage_path); the attachment DELETE route only removes the Storage object when no other row
+   references it (mirrors SOW).
+
+TESTS
+tests/co-section-pass-fixes.test.ts
+
+NOTED, NOT CHANGED (low)
+- accept-co-counter.ts / CoEditor use raw JSON.parse on legacy string line_items instead of parseStoredLineItems.
+- Ticking "credit" on a revised CO that carries a negotiation adjustment line makes autosave fail (error tells the
+  user to delete the line).
+- Two simultaneous Revise clicks can create two sibling drafts (send-side live-sibling check prevents both going live).

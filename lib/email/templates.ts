@@ -1,6 +1,6 @@
 export const runtime = 'nodejs'
 
-import { escapeHtml } from '@/lib/utils/sanitize'
+import { escapeHtml, sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
 import { sendEmail, type EmailPayload, type EmailLogContext, type SendResult } from '@/lib/email/send'
 import { formatFrom, systemFrom } from '@/lib/email/from'
 import { formatMoney } from '@/lib/utils/money'
@@ -799,14 +799,19 @@ export async function sendCoEmail(params: {
   to: string; cc?: string[]; clientName: string; agencyName: string
   projectName: string; coTitle: string; total: number; currency: string
   portalUrl: string; brandColour?: string; note?: string
+  /** Credit / descope change order: `total` is negative and the document removes scope. */
+  isCredit?: boolean
 }) {
   const { to, cc, clientName: clientNameRaw, agencyName: agencyNameRaw, projectName: projectNameRaw, coTitle: coTitleRaw, total, currency,
-    portalUrl, brandColour, note: noteRaw } = params
+    portalUrl, brandColour, note: noteRaw, isCredit } = params
   const clientName  = escapeHtml(clientNameRaw)
   const agencyName  = escapeHtml(agencyNameRaw)
   const projectName = escapeHtml(projectNameRaw)
   const coTitle     = escapeHtml(coTitleRaw)
-  const note        = escapeHtml(noteRaw)
+  // co.note is the RICH-TEXT (TipTap) note — stored as sanitized HTML like `<p>…</p>`, and rendered as HTML by the
+  // portal and the PDF. escapeHtml() here printed the markup itself ("<p>Brief explanation…</p>") in the client's
+  // email. Re-apply the same allowlist at render time and emit it as HTML, inside a <div> (a <p> can't nest a <p>).
+  const note        = sanitizeRichTextOrNull(noteRaw)
 
   const html = baseTemplate({
     agencyName,
@@ -816,22 +821,22 @@ export async function sendCoEmail(params: {
     body: `
       <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${clientName},</p>
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
-        <strong>${agencyName}</strong> has sent a change order for <strong>${projectName}</strong>.
-        Please review the scope additions and respond.
+        <strong>${agencyName}</strong> has sent ${isCredit ? 'a credit change order' : 'a change order'} for <strong>${projectName}</strong>.
+        ${isCredit ? 'Please review the scope being removed and the credit, and respond.' : 'Please review the scope additions and respond.'}
       </p>
       ${note ? `
       <div style="background:${C.bg};border:1px solid ${C.border};border-radius:6px;padding:14px 16px;margin:16px 0;">
-        <p style="font-size:13px;color:${C.text2};margin:0;line-height:1.6;">${note}</p>
+        <div style="font-size:13px;color:${C.text2};margin:0;line-height:1.6;">${note}</div>
       </div>
       ` : ''}
       <div style="background:${C.bg};border:1px solid ${C.border};border-radius:6px;padding:14px 16px;margin:16px 0;">
         <div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0;">
           <span style="color:${C.text2};">${coTitle}</span>
-          <span style="font-weight:600;color:${brandColour || C.green};">${money(total, currency)}</span>
+          <span style="font-weight:600;color:${brandColour || C.green};">${isCredit ? `Credit ${money(Math.abs(Number(total) || 0), currency)}` : money(total, currency)}</span>
         </div>
       </div>
     `,
-    cta: 'Review & respond to change order →',
+    cta: isCredit ? 'Review & respond to credit change order →' : 'Review & respond to change order →',
     ctaUrl: portalUrl,
   })
 

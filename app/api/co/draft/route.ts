@@ -181,7 +181,11 @@ Rules:
         rate: 0,
       }
     }).filter(l => l.description)
-    const days = Number(parsed.timelineImpactDays)
+    // The tool schema tells the model to return null when it can't tell. Number(null) is 0, which would pass the
+    // integer check and turn "unknown" into a "0 days — no change to the timeline" claim to the client, so null /
+    // undefined / blank are mapped to null before any coercion.
+    const rawDays = parsed.timelineImpactDays
+    const days = rawDays === null || rawDays === undefined || (typeof rawDays === 'string' && rawDays.trim() === '') ? NaN : Number(rawDays)
 
     return NextResponse.json({
       title:              sanitizePlainText(String(parsed.title ?? '')).slice(0, 200),

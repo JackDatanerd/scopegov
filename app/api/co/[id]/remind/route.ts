@@ -28,7 +28,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const service = createServiceClient()
     const { data: co } = await (service as any)
       .from('change_orders')
-      .select(`id, title, status, token, total, counter_amount, expires_at, project_id,
+      .select(`id, title, status, token, total, counter_amount, expires_at, project_id, is_credit,
         projects(id, name, currency, client_id,
           clients(name, email, cc_emails),
           workspaces(agency_name, brand_colour))`)
@@ -160,8 +160,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           <p style="font-size:14px;color:#555;line-height:1.7;margin:0 0 20px;">
             ${isCountersign
               ? `The agency has accepted your proposed amount for <strong>${projectHtml}</strong> and it's ready for you to confirm.`
-              : `A change order for <strong>${projectHtml}</strong> is awaiting your response.`}
-            Total: <strong>${escapeHtml(formatMoney(reminderTotal, currency))}</strong>
+              : co.is_credit
+                ? `A credit change order for <strong>${projectHtml}</strong> is awaiting your response.`
+                : `A change order for <strong>${projectHtml}</strong> is awaiting your response.`}
+            ${co.is_credit ? 'Credit' : 'Total'}: <strong>${escapeHtml(formatMoney(co.is_credit ? Math.abs(Number(reminderTotal) || 0) : reminderTotal, currency))}</strong>
           </p>
           <a href="${portalUrl}" style="display:inline-block;background:${accent};color:#FFF;padding:12px 24px;border-radius:5px;font-size:13px;font-weight:600;text-decoration:none;">
             ${isCountersign ? 'Review &amp; Confirm →' : 'Review &amp; Respond →'}

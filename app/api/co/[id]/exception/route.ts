@@ -73,7 +73,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // action: strict finite, non-negative, bounded (rejects "12abc"→12 coercion and Infinity/1e999).
     let estimatedValue: number
     const rawValue = body?.estimatedValue
-    if (rawValue === undefined || rawValue === null || rawValue === '') estimatedValue = Number(co.total) || 0
+    if (rawValue === undefined || rawValue === null || rawValue === '') estimatedValue = Math.max(0, Number(co.total) || 0)  // a credit CO's total is negative — the value given away is then $0, not a validation error on a field the user never touched
     else if (typeof rawValue === 'number') estimatedValue = rawValue
     else if (typeof rawValue === 'string' && /^\s*\d+(\.\d+)?\s*$/.test(rawValue)) estimatedValue = Number(rawValue)
     else estimatedValue = NaN
@@ -179,7 +179,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       const delivery = await checkedSend(() => sendCoExceptionGrantedEmail({
         replyTo, to: client.email, cc,
         clientName: client.name, agencyName: co.projects?.workspaces?.agency_name,
-        projectName: co.projects?.name, coTitle: co.title, note: reasonText,
+        projectName: co.projects?.name, coTitle: co.title,
+        // Deliberately NO note: `reason` is the agency's internal audit rationale (the modal describes it as the audit
+        // trail, and its own example reads "one-time goodwill, not worth a CO for $200"). It used to be emailed to the
+        // client verbatim as "Note from <agency>".
         brandColour: co.projects?.workspaces?.brand_colour,
         log: { workspaceId: session.workspaceId, kind: 'co.exception_notice', entityType: 'change_order', entityId: id, projectId: co.project_id, actorId: session.id },
       }), 'CO exception granted (client) email')
