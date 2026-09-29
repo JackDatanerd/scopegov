@@ -579,6 +579,7 @@ export async function recordApprovalDecision(service: any, params: DecisionParam
         requestedBy: { id: requester.id, name: requester.name, email: requester.email },
         totalSteps: request.total_steps,
         allowSelfApproval: request.allow_self_approval === true,
+        requireDistinctApprovers: request.require_distinct_approvers === true,
       })
     }
     // FIX (section-11 audit, pass 2 — feature gap): a multi-step chain used to
@@ -854,7 +855,7 @@ export async function sendApprovalReminder(
 ): Promise<'sent' | 'no_recipients' | 'not_found'> {
   const { data: request } = await service
     .from('approval_requests')
-    .select('id, workspace_id, document_type, current_step, total_steps, context, requested_by, project_id, allow_self_approval')
+    .select('id, workspace_id, document_type, current_step, total_steps, context, requested_by, project_id, allow_self_approval, require_distinct_approvers')
     .eq('id', requestId).eq('status', 'pending').single()
   if (!request) return 'not_found'
 
@@ -868,7 +869,9 @@ export async function sendApprovalReminder(
     .from('users').select('id, name, email').eq('id', request.requested_by).maybeSingle()
   if (!requester) return 'not_found'
 
-  const notifiedCount = await notifyStepApprovers(service, {
+  // Throwing core on purpose (see notifyStepApprovers): a failed recipient lookup must surface as a cron row
+  // error, not be reported as 'no_recipients' (which raises the "no reachable approver" alert).
+  const notifiedCount = await notifyStepApproversOrThrow(service, {
     workspaceId: request.workspace_id, requestId: request.id, step,
     documentType: request.document_type, documentTitle: request.context?.title || '',
     projectId: request.project_id, projectName: request.context?.project_name || '', amount: request.context?.amount || 0,
@@ -876,6 +879,7 @@ export async function sendApprovalReminder(
     requestedBy: { id: requester.id, name: requester.name, email: requester.email },
     totalSteps: request.total_steps,
     allowSelfApproval: request.allow_self_approval === true,
+    requireDistinctApprovers: request.require_distinct_approvers === true,
   })
   return notifiedCount > 0 ? 'sent' : 'no_recipients'
 }
@@ -1115,7 +1119,7 @@ export async function reassignApprovalStep(service: any, params: {
 
   const now = new Date().toISOString()
   await service.from('approval_requests')
-    .update({ updated_at: now, reminder_count: 0, escalated_at: null })
+    .update({ updated_at: now, step_started_at: now, reminder_count: 0, escalated_at: null })
     .eq('id', request.id).eq('status', 'pending')
 
   await logAudit(service, {
@@ -1196,6 +1200,7 @@ export async function reassignApprovalStep(service: any, params: {
       amount: request.context?.amount || 0, currency: request.context?.currency || 'USD',
       requestedBy: { id: requester.id, name: requester.name, email: requester.email },
       totalSteps: request.total_steps, allowSelfApproval: request.allow_self_approval === true,
+      requireDistinctApprovers: request.require_distinct_approvers === true,
     })
   }
   return { ok: true }
@@ -1228,7 +1233,37 @@ export async function getPendingApprovalForDocument(
 }
 
 // ── NOTIFICATION HELPERS ─────────────────────────────────────────
-async function notifyStepApprovers(service: any, args: {
+// FIX (section-11 audit, pass 1+2 — B2): every caller except the stall-cron reminder runs this AFTER its
+// database change has already committed (request + steps created, decide_approval_step advanced, step
+// reassigned). getMembersWithRole/fetchAll THROW on a DB error, so a transient failure here escaped to the
+// route as a 500 for something that had actually succeeded — and, worse, meant the next approver was never
+// told. The safe wrapper below swallows and logs it (returning 0 reached); the reminder path calls the
+// throwing core directly so a failed lookup is reported as a row error by the cron instead of being
+// misread as "no reachable approver".
+async function notifyStepApprovers(service: any, args: NotifyStepArgs): Promise<number> {
+  try {
+    return await notifyStepApproversOrThrow(service, args)
+  } catch (e) {
+    console.error('notifyStepApprovers failed after the approval change committed:', e)
+    return 0
+  }
+}
+
+type NotifyStepArgs = {
+  workspaceId: string; requestId: string; step: WorkflowStepRow
+  documentType: ApprovalDocumentType; documentTitle: string
+  projectId: string; projectName: string; amount: number; currency: string
+  requestedBy: { id: string; name: string; email: string }
+  totalSteps: number
+  allowSelfApproval?: boolean
+  // FIX (section-11 audit, B3): when the workflow requires distinct approvers, anyone who already approved an
+  // earlier step of this request can never decide this one (decide_approval_step / recordApprovalDecision
+  // reject them). They used to be told "awaiting your approval" anyway — a 403 on click — and counted as
+  // reached, which also silenced the stall cron's "no reachable approver" alert.
+  requireDistinctApprovers?: boolean
+}
+
+async function notifyStepApproversOrThrow(service: any, args: {
   workspaceId: string; requestId: string; step: WorkflowStepRow
   documentType: ApprovalDocumentType; documentTitle: string
   projectId: string; projectName: string; amount: number; currency: string
@@ -1238,8 +1273,16 @@ async function notifyStepApprovers(service: any, args: {
   // they can't decide their own request, so telling them it's "awaiting your
   // approval" is noise, and counting them as reachable hid stalled chains.
   allowSelfApproval?: boolean
+  requireDistinctApprovers?: boolean
 }): Promise<number> {
   const excludeId = args.allowSelfApproval ? undefined : args.requestedBy.id
+  let earlierApprovers = new Set<string>()
+  if (args.requireDistinctApprovers) {
+    const { data: done, error: doneErr } = await service
+      .from('approval_steps').select('decided_by').eq('request_id', args.requestId).eq('status', 'approved')
+    if (doneErr) throw new Error(`approval_steps lookup failed: ${doneErr.message}`)
+    earlierApprovers = new Set((done || []).map((d: any) => d.decided_by).filter(Boolean))
+  }
   // FIX (deep audit, notifications+search section): the role branch used
   // to build one shared `recipients` list via getMembersWithRole (capped
   // to 25 BEFORE preference filtering — see that function's fix comment),
@@ -1271,7 +1314,7 @@ async function notifyStepApprovers(service: any, args: {
     // getMembersWithRole, but a specific-user assignment never did, so they kept getting
     // "awaiting your approval" reminders that 403'd on click, and the stall cron counted them as
     // a reachable approver, silencing its "no reachable approver" alert.
-    if (m?.users && m.users.id !== excludeId && m.effective_permissions?.APPROVE_DOCUMENTS === true) {
+    if (m?.users && m.users.id !== excludeId && !earlierApprovers.has(m.users.id) && m.effective_permissions?.APPROVE_DOCUMENTS === true) {
       recipients = [{ id: m.users.id, name: m.users.name, email: m.users.email }]
       // FIX (deep audit, RLS+permissions re-pass): same project-visibility
       // rule as the role-based branch below and as getMembersWithPermission
@@ -1286,8 +1329,13 @@ async function notifyStepApprovers(service: any, args: {
       )
     }
   } else if (args.step.approver_role_id) {
-    inAppRecipients = await getMembersWithRole(service, args.workspaceId, args.step.approver_role_id, 25, args.projectId, 'approval_requested', 'in_app', excludeId)
-    emailRecipients = await getMembersWithRole(service, args.workspaceId, args.step.approver_role_id, 25, args.projectId, 'approval_requested', 'email', excludeId)
+    // Over-fetch by the number of excluded earlier approvers so dropping them can't push a real approver
+    // past the 25 cap, then trim back to 25.
+    const cap = 25 + earlierApprovers.size
+    inAppRecipients = (await getMembersWithRole(service, args.workspaceId, args.step.approver_role_id, cap, args.projectId, 'approval_requested', 'in_app', excludeId))
+      .filter(r => !earlierApprovers.has(r.id)).slice(0, 25)
+    emailRecipients = (await getMembersWithRole(service, args.workspaceId, args.step.approver_role_id, cap, args.projectId, 'approval_requested', 'email', excludeId))
+      .filter(r => !earlierApprovers.has(r.id)).slice(0, 25)
   }
   if (args.step.approver_user_id) {
     // FIX (re-audit, notifications section): a single filterByNotificationPreference

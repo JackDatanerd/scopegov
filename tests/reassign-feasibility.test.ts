@@ -25,6 +25,15 @@ vi.mock('@/lib/email/templates', () => ({
   sendApprovalDecisionEmail: async () => ({ ok: true }),
 }))
 
+// FIX (section-11 audit, B1b): the engine statically imports the four document-send helpers, and send-invoice
+// pulls in lib/pdf/renderer.tsx — which vitest's transform can't parse (JSX in a .tsx it isn't configured
+// for), so this whole file failed to load and its assertions never ran. Reassignment never sends anything;
+// stub the senders like every other side-effecting import above.
+vi.mock('@/lib/documents/send-sow', () => ({ sendSowDocument: async () => ({ ok: true }) }))
+vi.mock('@/lib/documents/send-co', () => ({ sendCoDocument: async () => ({ ok: true }) }))
+vi.mock('@/lib/documents/send-invoice', () => ({ sendInvoiceDocument: async () => ({ ok: true }) }))
+vi.mock('@/lib/documents/accept-co-counter', () => ({ acceptCoCounter: async () => ({ ok: true }) }))
+
 import { reassignApprovalStep } from '@/lib/approvals/engine'
 
 const member = (id: string, name: string) =>
@@ -64,7 +73,7 @@ describe('reassignApprovalStep — distinct-approver feasibility for later steps
       expect(result.error).toMatch(/strand a later step/i)
     }
     // Nothing was written — step 1 is still assigned to alice.
-    expect(tables.approval_steps.find((s: any) => s.id === 's1').approver_user_id).toBe('alice')
+    expect(tables.approval_steps!.find((s: any) => s.id === 's1')!.approver_user_id).toBe('alice')
   })
 
   it('still allows reassigning step 1 to a third person who does not collide with step 2', async () => {
@@ -75,7 +84,7 @@ describe('reassignApprovalStep — distinct-approver feasibility for later steps
       target: { userId: 'carol' },
     })
     expect(result.ok).toBe(true)
-    expect(tables.approval_steps.find((s: any) => s.id === 's1').approver_user_id).toBe('carol')
+    expect(tables.approval_steps!.find((s: any) => s.id === 's1')!.approver_user_id).toBe('carol')
   })
 
   it('does not run the later-step check (and does not block) when require_distinct_approvers is off', async () => {
@@ -99,7 +108,7 @@ describe('reassignApprovalStep — distinct-approver feasibility for later steps
       target: { userId: 'bob' },
     })
     expect(result.ok).toBe(true)
-    expect(tables.approval_steps.find((s: any) => s.id === 's1').approver_user_id).toBe('bob')
+    expect(tables.approval_steps!.find((s: any) => s.id === 's1')!.approver_user_id).toBe('bob')
   })
 
   it('a person who already approved step 1 is excluded from step 2\'s later-step check too', async () => {

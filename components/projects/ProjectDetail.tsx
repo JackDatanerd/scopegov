@@ -2349,7 +2349,12 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
   }
   // Release an approved-but-unsent request so the document is editable again (section-11 audit, pass 2).
   async function cancelApproval(approvalRequestId: string) {
-    if (!confirm('Cancel this approved request? The document goes back to being an editable draft, and sending it again will need a fresh approval.')) return
+    // FIX (section-11 audit, B6): a counter-offer approval leaves the CO in 'countered', not 'draft' — the
+    // "back to an editable draft" wording was wrong for it.
+    const isCounter = co.status === 'countered'
+    if (!confirm(isCounter
+      ? 'Cancel this approved request? The counter-offer stays open for you to accept or counter back, and accepting it will need a fresh approval.'
+      : 'Cancel this approved request? The document goes back to being an editable draft, and sending it again will need a fresh approval.')) return
     setRetrying(true); setActionError('')
     try {
       const res  = await fetch(`/api/approvals/${approvalRequestId}/cancel`, { method: 'POST' })
@@ -2484,7 +2489,11 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
           {co.status === 'draft' && permissions.sendCo && !pendingApproval && (
             <button className="btn btn-primary btn-xs" onClick={() => doAction('send')} disabled={acting}>Send</button>
           )}
-          {co.status === 'draft' && pendingApproval && pendingApproval.sendFailed && permissions.sendCo && (
+          {/* FIX (section-11 audit, B6): only 'draft' got the retry/cancel buttons, so an APPROVED counter-offer
+              (CO stays 'countered'; approval type co_counter) whose auto-send failed showed a red pill and an
+              "Awaiting approval" link and nothing else on this card. The /approvals page still had them, but
+              the comment above claimed this card covered the CO-counter case and it didn't. */}
+          {(co.status === 'draft' || co.status === 'countered') && pendingApproval && pendingApproval.sendFailed && permissions.sendCo && (
             <>
               <button className="btn btn-ghost btn-xs" onClick={() => cancelApproval(pendingApproval.id)} disabled={retrying}>Cancel request</button>
               <button className="btn btn-primary btn-xs" onClick={() => retrySend(pendingApproval.id)} disabled={retrying}>
@@ -2540,7 +2549,7 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
           {co.status === 'countered' && permissions.sendCo && !pendingApproval && (
             <button className="btn btn-primary btn-xs" onClick={() => doAction('accept-counter')} disabled={acting}>Accept counter</button>
           )}
-          {co.status === 'countered' && pendingApproval && (
+          {co.status === 'countered' && pendingApproval && !pendingApproval.sendFailed && (
             <Link href="/approvals"><button className="btn btn-ghost btn-xs">Awaiting approval</button></Link>
           )}
           {co.status === 'countered' && permissions.createCo && (

@@ -48,8 +48,10 @@ export async function POST(request: NextRequest) {
   })
 
   // Step 1 — pending decisions that have gone quiet.
-  // updated_at doubles as "last activity on this request": it moves on step-advance and is bumped
-  // here after a reminder, so a request only comes back after a full quiet window.
+  // updated_at is this cron's quiet-window marker: it moves on step-advance and is bumped here after a
+  // reminder, so a request only comes back after a full quiet window. It is NOT the "how long has this
+  // step been waiting" clock — that is step_started_at (migration 110), which the dashboard/projects
+  // attention flags read so a reminder doesn't hide a still-stuck request.
   // (A request with no reachable approver is deliberately NOT bumped so it keeps surfacing; the
   // old unpaginated query let those rows fill the first page forever and starve everything after
   // them — fetchAll pages through all of them.)

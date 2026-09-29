@@ -80,7 +80,7 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
   // A separate query rather than an embed: an embedded filter would inner-join away projects with none.
   let pendingApprovalsQuery = (service as any)
     .from('approval_requests')
-    .select('project_id, created_at, updated_at, send_failed_at')
+    .select('project_id, created_at, updated_at, step_started_at, send_failed_at')
     .eq('workspace_id', session.workspaceId)
     .or('status.eq.pending,and(status.eq.approved,send_failed_at.not.is.null)')
   if (!canViewAll) pendingApprovalsQuery = pendingApprovalsQuery.in('project_id', projects.map((p: any) => p.id))
@@ -88,8 +88,9 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
   const pendingApprovalsByProject = new Map<string, Array<{ createdAt: string; sendFailed: boolean }>>()
   for (const r of (pendingApprovalRows || [])) {
     const list = pendingApprovalsByProject.get(r.project_id) || []
-    // Last activity, not creation time — same clock the approval-stall cron uses.
-    list.push({ createdAt: r.updated_at || r.created_at, sendFailed: !!r.send_failed_at })
+    // When the current step became active (step_started_at) — not creation time, and not updated_at,
+    // which the stall cron bumps after every reminder (see the dashboard's note on B5).
+    list.push({ createdAt: r.step_started_at || r.updated_at || r.created_at, sendFailed: !!r.send_failed_at })
     pendingApprovalsByProject.set(r.project_id, list)
   }
 

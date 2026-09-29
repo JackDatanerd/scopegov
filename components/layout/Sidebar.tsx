@@ -100,7 +100,10 @@ export default function Sidebar({ session }: { session: SessionUser }) {
     const requests: Promise<number>[] = []
     if (canSeeApprovalCount) {
       requests.push(
-        fetch(`/api/approvals?scope=${approvalScope}`)
+        // FIX (section-11 audit, B7): scope=all is the oversight view — every request in the workspace, any
+        // status, ever. This badge only counts pending ones, so filter server-side instead of paging the whole
+        // history down on every navigation. (scope=mine is already pending-only by construction.)
+        fetch(`/api/approvals?scope=${approvalScope}${approvalScope === 'all' ? '&status=pending' : ''}`)
           .then(r => r.json())
           .then(json => (json.requests || []).filter((r: any) => r.status === 'pending').length)
           .catch(() => 0)

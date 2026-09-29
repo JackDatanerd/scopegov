@@ -103,7 +103,7 @@ describe.skipIf(!URL_)('Postgres replay (migrations 001..latest on a real databa
         SELECT p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
         WHERE n.nspname = 'public' AND p.prokind = 'f' AND p.prorettype <> 'trigger'::regtype
           AND (has_function_privilege('anon', p.oid, 'EXECUTE') OR has_function_privilege('authenticated', p.oid, 'EXECUTE'))`)
-      expect(rows.map(r => r.proname).sort()).toEqual(['immutable_unaccent', 'is_active_workspace_member', 'middleware_gate_state'])
+      expect(rows.map(r => r.proname).sort()).toEqual(['immutable_unaccent', 'is_active_workspace_member', 'is_current_user_platform_admin', 'middleware_gate_state'])
     })
 
     it('every function added by migration 068 (and its hooks) is closed to the API roles', async () => {
@@ -417,6 +417,92 @@ describe.skipIf(!URL_)('Postgres replay (migrations 001..latest on a real databa
       expect(rows.map(r => r.id)).toEqual(['flag-evidence', 'logos'])
       for (const r of rows) { expect(Number(r.file_size_limit)).toBeGreaterThan(0); expect(r.allowed_mime_types.length).toBeGreaterThan(0) }
       expect(rows.find(r => r.id === 'logos')!.allowed_mime_types).toEqual(['image/png', 'image/jpeg'])
+    })
+  })
+
+  // ── approval RPCs (migrations 069 / 095 / 103 / 110) ────────────────────
+  // Section-11 audit (B8): nothing exercised decide_approval_step against a real database, which is how the
+  // 7-argument overload shipped executable by anon/authenticated until migration 103.
+  describe('approval RPCs (decide_approval_step)', () => {
+    async function makeChain(opts: { steps?: number; distinct?: boolean } = {}) {
+      const steps = opts.steps ?? 2
+      const [wf] = await sql(`INSERT INTO public.approval_workflows (workspace_id, document_type, name, created_by) VALUES ($1,'sow','wf',$2) RETURNING id`, [W(190), U(190)])
+      const [rq] = await sql(
+        `INSERT INTO public.approval_requests (workspace_id, workflow_id, document_type, document_id, requested_by, total_steps, require_distinct_approvers)
+         VALUES ($1,$2,'sow',gen_random_uuid(),$3,$4,$5) RETURNING id, step_started_at`,
+        [W(190), wf.id, U(190), steps, opts.distinct ?? true])
+      const stepIds: string[] = []
+      for (let i = 1; i <= steps; i++) {
+        const [st] = await sql(`INSERT INTO public.approval_steps (request_id, step_order, approver_user_id) VALUES ($1,$2,$3) RETURNING id`, [rq.id, i, U(190 + i)])
+        stepIds.push(st.id)
+      }
+      return { requestId: rq.id as string, stepIds, startedAt: rq.step_started_at as Date }
+    }
+    const decide = (c: PoolClient, requestId: string, stepId: string, decision: string, actor: number, expectedUser: number | null) =>
+      c.query(`SELECT public.decide_approval_step($1::uuid,$2::uuid,$3,$4::uuid,NULL,$5::uuid,NULL::uuid) AS r`,
+        [requestId, stepId, decision, U(actor), expectedUser == null ? null : U(expectedUser)]).then(r => r.rows[0].r as string)
+
+    beforeAll(async () => {
+      await makeUser(190); await makeUser(191); await makeUser(192)
+      await makeWorkspace(190, 190)
+    })
+
+    it('is not executable by anon or authenticated (the 7-argument overload)', async () => {
+      const { requestId, stepIds } = await makeChain()
+      const call = `SELECT public.decide_approval_step('${requestId}'::uuid,'${stepIds[0]}'::uuid,'approved','${U(191)}'::uuid,NULL,'${U(191)}'::uuid,NULL::uuid)`
+      expect(await asRole('anon', null, c => denied(c, call))).toBe(true)
+      expect(await asRole('authenticated', U(191), c => denied(c, call))).toBe(true)
+      // …and only one overload exists (069's 5-argument version was dropped by 095).
+      const fns = await sql(`SELECT pg_get_function_identity_arguments(oid) a FROM pg_proc WHERE proname = 'decide_approval_step' AND pronamespace = 'public'::regnamespace`)
+      expect(fns).toHaveLength(1)
+    })
+
+    it('step_started_at is NOT NULL, defaults on insert, and advances only when the step advances', async () => {
+      const { requestId, stepIds, startedAt } = await makeChain()
+      expect(startedAt).toBeInstanceOf(Date)
+      // A cron-style reminder bump moves updated_at but must leave step_started_at alone.
+      await sql(`UPDATE public.approval_requests SET updated_at = now() + interval '1 hour' WHERE id = $1`, [requestId])
+      expect((await sql(`SELECT step_started_at FROM public.approval_requests WHERE id = $1`, [requestId]))[0].step_started_at).toEqual(startedAt)
+      await asRole('service_role', null, async c => {
+        expect(await decide(c, requestId, stepIds[0], 'approved', 191, 191)).toBe('advanced')
+        const { rows: [r] } = await c.query(`SELECT current_step, step_started_at FROM public.approval_requests WHERE id = $1`, [requestId])
+        expect(r.current_step).toBe(2)
+        expect(r.step_started_at.getTime()).toBeGreaterThan(startedAt.getTime())
+      })
+    })
+
+    it('the last approval returns final and claims the send; a rejection skips the remaining steps', async () => {
+      const a = await makeChain({ steps: 1 })
+      await asRole('service_role', null, async c => {
+        expect(await decide(c, a.requestId, a.stepIds[0], 'approved', 191, 191)).toBe('final')
+        const { rows: [r] } = await c.query(`SELECT status, sending_started_at FROM public.approval_requests WHERE id = $1`, [a.requestId])
+        expect(r.status).toBe('pending'); expect(r.sending_started_at).not.toBeNull()
+      })
+      const b = await makeChain({ steps: 2 })
+      await asRole('service_role', null, async c => {
+        expect(await decide(c, b.requestId, b.stepIds[0], 'rejected', 191, 191)).toBe('rejected')
+        const { rows } = await c.query(`SELECT status FROM public.approval_steps WHERE request_id = $1 ORDER BY step_order`, [b.requestId])
+        expect(rows.map((x: any) => x.status)).toEqual(['rejected', 'skipped'])
+        expect((await c.query(`SELECT status FROM public.approval_requests WHERE id = $1`, [b.requestId])).rows[0].status).toBe('rejected')
+      })
+    })
+
+    it("returns 'reassigned' when the step was reassigned away from the actor mid-flight", async () => {
+      const { requestId, stepIds } = await makeChain()
+      await asRole('service_role', null, async c => {
+        // actor 191 validated against user 191, then the step is reassigned to 192 before the RPC runs
+        await c.query(`UPDATE public.approval_steps SET approver_user_id = $2 WHERE id = $1`, [stepIds[0], U(192)])
+        expect(await decide(c, requestId, stepIds[0], 'approved', 191, 191)).toBe('reassigned')
+        expect((await c.query(`SELECT status FROM public.approval_steps WHERE id = $1`, [stepIds[0]])).rows[0].status).toBe('pending')
+      })
+    })
+
+    it('two concurrent approvals of the same step: exactly one wins, the other gets conflict', async () => {
+      const { requestId, stepIds } = await makeChain()
+      const run = () => pool.query(`SELECT public.decide_approval_step($1::uuid,$2::uuid,'approved',$3::uuid,NULL,$3::uuid,NULL::uuid) AS r`, [requestId, stepIds[0], U(191)]).then(r => r.rows[0].r as string)
+      const out = (await Promise.all([run(), run()])).sort()
+      expect(out).toEqual(['advanced', 'conflict'])
+      expect((await sql(`SELECT count(*)::int n FROM public.approval_steps WHERE request_id = $1 AND status = 'approved'`, [requestId]))[0].n).toBe(1)
     })
   })
 

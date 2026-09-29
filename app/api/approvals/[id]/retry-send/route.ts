@@ -1,4 +1,9 @@
 export const runtime = 'nodejs'
+// FIX (section-11 audit, B4): the FINAL approval / a retry runs the whole document send inside this request
+// (invoice: PDF render + client email + internal notifications). Without a maxDuration the platform default
+// can cut it off mid-send — the document may already have gone out while the request is left mid-flight for
+// healStuckSends to sweep 10 minutes later. Matches the other long-running send/cron routes.
+export const maxDuration = 60
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
