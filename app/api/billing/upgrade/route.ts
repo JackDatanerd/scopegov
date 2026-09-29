@@ -52,12 +52,22 @@ export async function POST(request: NextRequest) {
 
     // Already on exactly this plan + interval with a healthy, renewing
     // subscription: nothing to buy.
-    const [{ data: ws }, { data: billing }] = await Promise.all([
+    const [{ data: ws, error: wsError }, { data: billing, error: billingError }] = await Promise.all([
       (service as any).from('workspaces').select('plan_tier').eq('id', session.workspaceId).maybeSingle(),
       (service as any).from('billing')
         .select('paystack_subscription_code, plan_interval, cancels_at_period_end, grace_period_started_at')
         .eq('workspace_id', session.workspaceId).maybeSingle(),
     ])
+    // FIX (Billing independent audit, round 6 — B2, LOW): this used to destructure
+    // only `data`, silently dropping `error`. A failed read here isn't harmless —
+    // it means the "already on this exact plan" guard below can't see the real
+    // state and gets skipped, letting an unnecessary duplicate checkout be
+    // created. `status/route.ts` already treats the identical query shape as
+    // fatal; do the same here instead of quietly proceeding on stale/empty data.
+    if (wsError || billingError) {
+      console.error('[BILLING] upgrade: failed to read workspace/billing state', wsError || billingError)
+      return NextResponse.json({ error: 'Could not verify current plan. Please try again.' }, { status: 500 })
+    }
     if (
       ws?.plan_tier === planKey && billing?.paystack_subscription_code &&
       billing.plan_interval === interval && !billing.cancels_at_period_end && !billing.grace_period_started_at

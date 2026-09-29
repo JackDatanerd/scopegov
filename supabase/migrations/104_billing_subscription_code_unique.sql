@@ -1,0 +1,49 @@
+-- 104_billing_subscription_code_unique.sql
+--
+-- Section 16 (Billing — api/billing/cancel, upgrade, webhook) independent
+-- audit. Every prior FIX comment in this file's history was treated as if
+-- it didn't exist for this pass; re-derived from scratch, then checked
+-- against what's actually on disk.
+--
+-- FIX (HIGH — undocumented invariant with no enforcement):
+-- lib/billing/resolve.ts's own header comment describes billing rows as
+-- keyed by "the billing row that owns it (unique)" when talking about
+-- paystack_subscription_code, and both resolveWorkspace() and the webhook's
+-- subscription.create "already applied" fast-path
+-- (app/api/billing/webhook/route.ts) rely on that by querying
+--   .eq('paystack_subscription_code', subCode).maybeSingle()
+-- and assuming at most one row comes back.
+--
+-- 001_initial_schema.sql never backed that assumption at the database
+-- level — paystack_subscription_code is a plain nullable text column with
+-- no unique index anywhere in the migration history. Nothing has ever
+-- stopped two billing rows (two different workspaces) from ending up with
+-- the same subscription code — a bad migration, a manual UPDATE during an
+-- incident, or a future code path none of the many prior billing audits
+-- happened to touch.
+--
+-- The failure mode if that ever happened is worse than anything else in
+-- this file: every other ambiguous/unexpected state in the webhook is
+-- routed through alertBillingOps() so a human gets paged. But
+-- .maybeSingle() against a column with duplicate values doesn't return an
+-- ambiguous result to branch on — PostgREST errors out ("multiple (or no)
+-- rows returned"). That throws before any of the webhook's own
+-- ambiguity-handling code ever runs, so it never reaches
+-- alertBillingOps(). It just 500s, Paystack retries the delivery, and the
+-- exact same exception repeats forever for that subscription, silently.
+--
+-- Enforce the invariant the code already assumes. Partial index (WHERE NOT
+-- NULL) because a workspace on trial with no subscription yet legitimately
+-- has paystack_subscription_code = NULL, and multiple such rows must stay
+-- allowed.
+--
+-- Guard against a failed deploy: if duplicate subscription codes already
+-- exist in a given environment (which would mean this bug already bit
+-- someone), CREATE UNIQUE INDEX fails loudly with a clear Postgres error
+-- instead of silently corrupting data — that's the correct outcome here.
+-- We don't attempt to silently pick a "winner" and null out the other
+-- row's code; that's a billing-data decision for a human, not a migration.
+
+CREATE UNIQUE INDEX IF NOT EXISTS billing_subscription_code_uniq
+  ON public.billing (paystack_subscription_code)
+  WHERE paystack_subscription_code IS NOT NULL;
