@@ -1,0 +1,26 @@
+Section 12 — Invoicing: independent pass 9 (audit round on fresh live repo)
+
+Bugs fixed
+1. app/(app)/projects/[id]/page.tsx — Billing tab Contracted / Invoiced / Paid figures froze after ~90 days
+   and lagged up to a day. The page read contract_reconciliation_snapshots ordered ASCENDING with
+   .limit(90) (the OLDEST 90 rows) and BillingTab treats the last row as latest. Now computed live with
+   computeContractPosition() (same function the invoice PDFs / send path / over-contract check use) and
+   passed as a single snapshot-shaped row. BillingTab itself is unchanged for this (its live fallback still
+   applies if the computation returns null).
+2. app/(app)/invoices/page.tsx — "Portfolio reconciliation" strip read every snapshot row unpaged
+   (PostgREST 1,000-row cap silently dropped the newest snapshots after ~1000/N days) and kept counting
+   trashed/archived projects. Now computed live over paginated live, non-archived projects with
+   computeContractPositions(), grouped by project currency.
+3. supabase/migrations/114_milestone_paid_regression_order.sql — sync_milestone_from_invoice(): the
+   paid->regressed branch sat behind the "sent" branch, so paid -> sent (deleting the only payment) never
+   reached it and the milestone stayed 'paid'. Regression branch now tested first. Includes a one-off
+   repair of milestones already stuck on 'paid' with a live unpaid invoice and no paid invoice.
+   >>> RUN THIS MIGRATION against Supabase (SQL editor / supabase db push). <<<
+4. components/invoices/BillingTab.tsx — voided invoices had no PDF link on the Billing tab (registry had
+   one). Now shown for paid and void.
+
+Tests: tests/invoicing-section12-independent-pass.test.ts (source-shape guards for all four).
+
+Noted, not changed: milestone picker still lists milestones that already have a draft invoice (API
+returns 409); registry text search builds one large project_id.in.(...) filter; GET /api/invoices has
+no in-repo callers.

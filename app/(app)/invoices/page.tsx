@@ -8,6 +8,7 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { formatDate, formatCurrency, formatCurrencyExact, invoiceStatusLabel, invoicePill } from '@/lib/utils/format'
 import { fetchAll } from '@/lib/utils/fetch-all'
+import { computeContractPositions } from '@/lib/reports/contract-position'
 import {
   REGISTRY_STATUS_FILTERS, AGING_BUCKETS, agingBucket,
   parseRegistryFilters, projectIdsMatching, applyRegistryFilters, isPaymentClaimOpen,
@@ -173,22 +174,32 @@ export default async function InvoicesPage({ searchParams }: {
   // the blended total under one currency label. Join each snapshot's
   // project currency and group the rollup by it.
   let portfolioByCurrency = new Map<string, { contractedValue: number; invoicedToDate: number; paidToDate: number; atRiskValue: number }>()
+  // FIX (section-12 independent pass, bug): this read EVERY snapshot row (one per project per night,
+  // oldest first, no paging) and kept the last per project. PostgREST silently caps a response at 1,000
+  // rows, so with N projects the newest snapshots stopped loading after ~1000/N days — the strip froze
+  // and later dropped newly created projects. It also kept counting the final snapshot of trashed and
+  // archived projects, which every other figure on this page excludes. Compute it live over the same set
+  // the nightly rollup snapshots (live, non-archived projects), paginated, grouped by project currency.
   if (hasPermission(session, 'VIEW_ALL_PROJECTS')) {
-    const { data: rows } = await (service as any)
-      .from('contract_reconciliation_snapshots')
-      .select('project_id, contracted_value, invoiced_to_date, paid_to_date, at_risk_value, snapshot_date, projects(currency)')
-      .eq('workspace_id', session.workspaceId)
-      .order('snapshot_date', { ascending: true })
-    const latestByProject = new Map<string, any>()
-    for (const r of (rows || [])) latestByProject.set(r.project_id, r)
-    for (const r of Array.from(latestByProject.values())) {
-      const cur = r.projects?.currency || wsCurrency
+    const liveProjects = await fetchAll<any>('invoice registry portfolio projects', (fromRow, toRow) =>
+      (service as any).from('projects')
+        .select('id, contract_value, type, retainer_duration_months, currency')
+        .eq('workspace_id', session.workspaceId)
+        .is('deleted_at', null)
+        .neq('status', 'Archived')
+        .order('id')
+        .range(fromRow, toRow))
+    const positions = await computeContractPositions(service, liveProjects)
+    for (const p of liveProjects) {
+      const pos = positions.get(p.id)
+      if (!pos) continue
+      const cur = p.currency || wsCurrency
       const acc = portfolioByCurrency.get(cur) || { contractedValue: 0, invoicedToDate: 0, paidToDate: 0, atRiskValue: 0 }
       portfolioByCurrency.set(cur, {
-        contractedValue: acc.contractedValue + (r.contracted_value || 0),
-        invoicedToDate:  acc.invoicedToDate + (r.invoiced_to_date || 0),
-        paidToDate:      acc.paidToDate + (r.paid_to_date || 0),
-        atRiskValue:     acc.atRiskValue + (r.at_risk_value || 0),
+        contractedValue: acc.contractedValue + pos.contractedValue,
+        invoicedToDate:  acc.invoicedToDate + pos.invoicedToDate,
+        paidToDate:      acc.paidToDate + pos.paidToDate,
+        atRiskValue:     acc.atRiskValue + pos.atRiskValue,
       })
     }
   }

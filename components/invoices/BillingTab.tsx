@@ -505,7 +505,11 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
                       {busyId === inv.id ? <span className="spin spin-dark" /> : <><i className="ti ti-circle-check" style={{ fontSize: 11 }} /> Resolve dispute</>}
                     </button>
                   )}
-                  {inv.status === 'paid' && (
+                  {/* FIX (section-12 independent pass, bug): paid only. A voided invoice keeps its payment
+                      records on file (see the void route) and the registry links its PDF, but this row had no
+                      PDF link for void — the one place a part-paid-then-voided invoice's record was
+                      unreachable. Sent/part-paid/overdue get theirs in the block above. */}
+                  {(inv.status === 'paid' || inv.status === 'void') && (
                     <a href={`/api/pdf/invoice/${inv.id}`} className="btn btn-ghost btn-sm" target="_blank" rel="noreferrer">
                       <i className="ti ti-download" style={{ fontSize: 11 }} /> PDF
                     </a>

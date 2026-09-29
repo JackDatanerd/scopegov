@@ -1,6 +1,7 @@
 import { loadProjectActivity } from '@/lib/utils/project-activity'
 import { canReadProject } from '@/lib/utils/project-access'
 import { amendmentImpact, baseContractValue } from '@/lib/utils/contract-value'
+import { computeContractPosition } from '@/lib/reports/contract-position'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect, notFound } from 'next/navigation'
@@ -222,15 +223,25 @@ export default async function ProjectPage({ params, searchParams }: Props) {
     ? invoices
     : (invoices || []).map((inv: any) => ({ ...inv, token: null }))
 
-  // ── Fetch reconciliation snapshot history (Phase 4) ──────────────────
-  const { data: reconciliation = [] } = viewFinancials
-    ? await (service as any)
-        .from('contract_reconciliation_snapshots')
-        .select('contracted_value, invoiced_to_date, paid_to_date, at_risk_value, snapshot_date')
-        .eq('project_id', id)
-        .order('snapshot_date', { ascending: true })
-        .limit(90)
-    : { data: [] }
+  // ── Contract position for the Billing tab (Phase 4) ───────────────────
+  // FIX (section-12 independent pass, bug): this read the nightly snapshot history with
+  // .order('snapshot_date', ascending).limit(90), and BillingTab takes the LAST row as "latest". Ascending +
+  // limit returns the OLDEST 90 rows, so once a project was ~90 days old the tab froze on its day-90
+  // figures forever. Even before that the figures lagged by up to a day (a payment recorded now did not
+  // move "Paid to date" until the cron ran) while every PDF of the same invoice showed live numbers.
+  // Compute it live (lib/reports/contract-position.ts — the function the invoice PDFs, send path and
+  // over-contract check already use) and hand BillingTab one row in the snapshot shape it already reads.
+  // If the live computation fails it returns null and BillingTab falls back to summing the invoices it has.
+  const livePosition = viewFinancials ? await computeContractPosition(service, id) : null
+  const reconciliation = livePosition
+    ? [{
+        contracted_value: livePosition.contractedValue,
+        invoiced_to_date: livePosition.invoicedToDate,
+        paid_to_date:     livePosition.paidToDate,
+        at_risk_value:    livePosition.atRiskValue,
+        snapshot_date:    new Date().toISOString().slice(0, 10),
+      }]
+    : []
 
   // Effective contract value — the shared definition (lib/utils/contract-value.ts): base (monthly rate ×
   // term for retainers) + amendments, minus retainer-renewal amendments (a renewal replaces the rate; it
