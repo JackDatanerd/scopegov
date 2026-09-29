@@ -59,6 +59,12 @@ export default async function ProjectPage({ params, searchParams }: Props) {
   // against this CO" picker had no way to carry an accepted CO's own tax
   // terms onto the invoice, even if it wanted to — see the matching fix
   // in components/invoices/BillingTab.tsx's pickSource().
+  // FIX (section-9 audit, feature gap): sow_documents.metadata is selected so
+  // ProjectDetail's "Regenerate from brief" action can prefill GenerateSowModal
+  // from metadata.brief/paymentStructure/revisionRounds. Small jsonb object,
+  // already readable by anyone who can read the SOW itself.
+  // NEVER put // comments inside the select template literal below: they are
+  // sent to PostgREST verbatim, the query fails, and every project 404s.
   const { data: project } = await (service as any)
     .from('projects')
     .select(`
@@ -70,12 +76,6 @@ export default async function ProjectPage({ params, searchParams }: Props) {
       exceptions_log(id, deliverable, granted_what, granted_by, estimated_value, reason, flag_id, created_at, updated_at),
       change_orders(id, title, status, total, subtotal, sent_at, accepted_at, version, document_number,
         counter_amount, counter_note, declined_reason, close_reason, tax_rate, tax_inclusive, is_retainer_renewal),
-      // FIX (section-9 audit, fresh independent pass — feature gap): metadata
-      // added so ProjectDetail's new "Regenerate from brief" action can
-      // prefill GenerateSowModal from metadata.brief/paymentStructure/
-      // revisionRounds instead of opening blank — see that modal's own
-      // comment. Small jsonb object (brief text + a few settings), already
-      // readable by anyone who can read the SOW itself.
       sow_documents(id, version, status, sent_at, signed_at, created_at, document_number, metadata),
       project_scope_snapshot(id, deliverables, out_of_scope, last_updated_at)
     `)
