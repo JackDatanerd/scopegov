@@ -298,7 +298,7 @@ function PortfolioReportDocument({ report }: { report: PortfolioReportData }) {
             <Text style={s.td}>
               {c.exceptionsCount} scope item{c.exceptionsCount === 1 ? '' : 's'} waived across the portfolio
               {canViewFinancials && c.exceptionsValueTotal !== null
-                ? ` — representing ${fmtMoney(c.exceptionsValueTotal, data.currency)} in scope given away outside a change order.`
+                ? ` — representing ${fmtMoney(c.exceptionsValueTotal, data.currency)} in scope given away outside a change order${c.byCurrency.length > 1 ? ` (${data.currency} only; see “By currency”)` : ''}.`
                 : '.'}
             </Text>
             {data.exceptions.length > 0 && (

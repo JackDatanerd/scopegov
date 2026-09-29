@@ -180,3 +180,58 @@ describe('portfolio data', () => {
     expect(d.riskModel).toEqual({ openFlagRate: 0.05, severityMultipliers: { high: 1, medium: 0.5, low: 0.2 } })
   })
 })
+
+// ── Portfolio pass (section 8) regressions ───────────────────────────────────
+describe('portfolio pass — section 8 regressions', () => {
+  it('a failed retainer-months read THROWS in scope health instead of persisting a 1-month figure', async () => {
+    const base = fakeService({
+      ...empty,
+      projects: [proj('open', { type: 'retainer', contract_value: 1000, retainer_duration_months: null })],
+    })
+    const svc = {
+      from(name: string) {
+        if (name !== 'payment_milestones') return base.from(name)
+        const b: any = {}
+        for (const m of ['select', 'eq', 'is', 'in', 'order', 'neq', 'gte', 'lt']) b[m] = () => b
+        b.range = () => Promise.resolve({ data: null, error: { message: 'boom' }, count: null })
+        return b
+      },
+    }
+    await expect(computeScopeHealth(svc, 'w')).rejects.toThrow(/retainer months lookup failed/)
+  })
+
+  it('the lenient default still degrades to one month (display pages must not break)', async () => {
+    const { loadRetainerMonthsBilled } = await import('@/lib/utils/contract-value')
+    const svc = { from: () => { const b: any = {}; for (const m of ['select', 'eq', 'in', 'order']) b[m] = () => b
+      b.range = () => Promise.resolve({ data: null, error: { message: 'boom' } }); return b } }
+    const months = await loadRetainerMonthsBilled(svc, [{ id: 'x', contract_value: 1, type: 'retainer', retainer_duration_months: null }])
+    expect(months.size).toBe(0)
+  })
+
+  it('with no in-progress project the dominant currency follows the all-time exceptions, not a hard-coded USD', async () => {
+    const svc = fakeService({
+      ...empty,
+      projects: [proj('done', { status: 'Complete', currency: 'EUR' })],
+      exceptions_log: [{ id: 'x', project_id: 'done', estimated_value: 900, guardian_flags: null, deliverable: 'd', granted_what: 'g', reason: 'r', created_at: '2026-09-03T00:00:00Z' }],
+    })
+    const h = await computeScopeHealth(svc, 'w')
+    expect(h.currency).toBe('EUR')
+    expect(h.exceptionsCount).toBe(1)
+    expect(h.exceptionsValueTotal).toBe(900)          // used to be 0 under 'USD'
+  })
+
+  it('an empty workspace still defaults to USD', async () => {
+    const h = await computeScopeHealth(fakeService({ ...empty, projects: [] }), 'w')
+    expect(h.currency).toBe('USD')
+  })
+
+  it('the trend names the snapshot it is compared against', async () => {
+    const svc = fakeService({
+      ...empty,
+      projects: [proj('a')],
+      scope_health_snapshots: [{ snapshot_date: '2020-01-05', open_flags_count: 2, exceptions_count: 0, contract_value_at_risk: 100, currency: 'USD' }],
+    })
+    const d = await getPortfolioData(svc, 'w', 'all', true, true)
+    expect(d.trend).toMatchObject({ baselineDate: '2020-01-05', openFlagsDelta: -2 })
+  })
+})

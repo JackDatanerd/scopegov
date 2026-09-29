@@ -67,7 +67,7 @@ export interface PortfolioData {
     currency: string
   }>
   /** Live figures vs the first snapshot inside the period (null when there is no comparable snapshot). */
-  trend: { openFlagsDelta: number; atRiskDelta: number | null } | null
+  trend: { openFlagsDelta: number; atRiskDelta: number | null; baselineDate: string } | null
   /** Exact number of open flags (the list below is capped per severity). */
   openFlagsTotal: number
   /**
@@ -241,7 +241,11 @@ export async function getPortfolioData(
   }
 
   const comparable = earliest && earliest.snapshot_date < today
+  // FIX (Portfolio pass, section 8): the baseline is the first snapshot INSIDE the period, which is later than the
+  // period start for a workspace with less history than the period. Carry its date so the UI can say what the
+  // comparison is really against instead of "vs period start".
   const trend = comparable ? {
+    baselineDate: earliest.snapshot_date as string,
     openFlagsDelta: health.openFlagsCount - earliest.open_flags_count,
     // Money deltas only make sense within one currency.
     atRiskDelta: canViewFinancials && earliest.currency === health.currency

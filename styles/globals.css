@@ -552,6 +552,16 @@ p, h1, h2, h3, h4, h5 { margin: 0; }
 .editor-body ul, .editor-body ol { padding-left: 20px; margin: 8px 0; }
 .editor-body .is-empty::before { content: attr(data-placeholder); color: var(--text-4); pointer-events: none; float: left; height: 0; }
 
+/* ── PORTFOLIO LAYOUT (collapses in the responsive block below) ─────── */
+.pf-grid-side { display: grid; grid-template-columns: 1fr 320px; gap: 24px; align-items: start; margin-bottom: 24px; }
+.pf-grid-2    { display: grid; grid-template-columns: 1fr 1fr;   gap: 24px; align-items: start; margin-bottom: 24px; }
+.pf-grid-side > *, .pf-grid-2 > * { min-width: 0; }
+.pf-scroll    { overflow-x: auto; }
+.pf-scroll > table { min-width: 560px; }
+.pf-head-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+/* Only rows that actually go somewhere look clickable. */
+.gov-table tbody tr.no-link { cursor: default; }
+
 /* ── RESPONSIVE ──────────────────────────────────────────────── */
 @media (max-width: 900px) {
   .sb { display: none; }
@@ -562,5 +572,7 @@ p, h1, h2, h3, h4, h5 { margin: 0; }
   .auth-panel { display: none; }
   .auth-form-side { padding: 32px 24px; }
   .settings-layout { grid-template-columns: 1fr; }
+  .pf-grid-side, .pf-grid-2 { grid-template-columns: 1fr; }
+  .page-hd:has(.pf-head-actions) { flex-direction: column; gap: 12px; }
   .tier-cards { grid-template-columns: 1fr 1fr; }
 }

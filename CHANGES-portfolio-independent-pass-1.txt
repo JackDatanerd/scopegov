@@ -1,0 +1,38 @@
+PORTFOLIO (section 8) — independent pass 1, fix round
+Files: lib/utils/contract-value.ts, lib/reports/scope-health.ts, lib/reports/portfolio-data.ts,
+       components/portfolio/PortfolioDashboard.tsx, lib/pdf/portfolio-report.tsx, styles/globals.css,
+       tests/portfolio-risk.test.ts
+
+No feature gaps. Five bugs, all fixed.
+
+1. (medium) A failed retainer-months read was persisted into the daily snapshot.
+   scope-health.ts promises every failed read throws, but loadRetainerMonthsBilled logged and degraded an
+   open-ended retainer to 1 month, and the cron then upserted the understated figure over the day's row.
+   loadRetainerMonthsBilled now takes { strict }; computeScopeHealth passes strict:true (a failed read or a
+   hit safety cap throws; the cron records the workspace as failed and writes nothing). The lenient default
+   is unchanged for the Dashboard / Projects / contract-position pages.
+
+2. (low-medium) "N exceptions · $0 total value".
+   With no in-progress project the dominant currency was a hard-coded 'USD', so a workspace whose exceptions
+   sat on completed EUR projects reported a $0 value against a non-zero count. The fallback now follows the
+   all-time exceptions' currency, then the most common project currency, then USD. Because the count spans all
+   currencies while the value is dominant-currency only, the tile, the Exceptions panel and the PDF now say
+   "(USD only)" when more than one currency exists.
+
+3. (medium) Layout did not adapt to narrow screens.
+   Inline grids (1fr 320px, 1fr 1fr) could not be overridden by the <=900px responsive block, and tables sat
+   in overflow:hidden so columns were clipped. Replaced with .pf-grid-side / .pf-grid-2 classes that collapse
+   at 900px, .pf-scroll wrappers (horizontal scroll) on the three tables, and a wrapping header action row.
+
+4. (low) "Projects by risk" rows were click-only; non-clickable rows looked clickable.
+   The project name is now a real <Link> (keyboard focus, middle-click, open in new tab); the row onClick stays
+   as a larger hit area. Rows that go nowhere (currency table, client view, and rows for people without
+   VIEW_ALL_PROJECTS) get .no-link so the global pointer cursor no longer applies.
+
+5. (low) "vs period start" was inaccurate.
+   The baseline is the first snapshot inside the period, which is later than the period start for a workspace
+   with less history than the period. getPortfolioData now returns trend.baselineDate and the tiles read
+   "vs 24 Sep 2026".
+
+Tests: 5 new cases in tests/portfolio-risk.test.ts (strict throw, lenient default, currency fallback,
+empty-workspace default, trend baseline date). Not run here: the sandbox has no node_modules / network.

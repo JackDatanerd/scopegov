@@ -235,7 +235,7 @@ export async function computeScopeHealth(
 
   // An OPEN-ENDED retainer (no term) has no fixed total: its contract is the months committed so far.
   const retainerMonths = await loadRetainerMonthsBilled(
-    service, projectsP.rows.filter((p: any) => isInProgressStatus(p.status)),
+    service, projectsP.rows.filter((p: any) => isInProgressStatus(p.status)), { strict: true },
   )
 
   const projectById: Record<string, ScopeHealthProject> = {}
@@ -265,9 +265,24 @@ export async function computeScopeHealth(
     const t = (tally[p.currency] ||= { count: 0, value: 0 })
     t.count++; t.value += p.effectiveValue
   }
-  const currency = Object.keys(tally).sort((a, b) =>
+  let currency = Object.keys(tally).sort((a, b) =>
     tally[b].count - tally[a].count || tally[b].value - tally[a].value || a.localeCompare(b),
-  )[0] || 'USD'
+  )[0]
+  // FIX (Portfolio pass, section 8): with NO in-progress project the dominant currency used to be a hard-coded
+  // 'USD', so a workspace whose remaining history is (say) EUR showed "N exceptions · $0 total value" — the
+  // all-time exceptions count spans every currency but the value only covered the (arbitrary) 'USD' bucket.
+  // Fall back to the currency the all-time exceptions are actually in, then the most common project currency.
+  if (!currency) {
+    const fallback: Record<string, number> = {}
+    for (const e of exceptionsP.rows) {
+      const p = projectById[e.project_id]
+      if (p) fallback[p.currency] = (fallback[p.currency] || 0) + 1
+    }
+    if (!Object.keys(fallback).length) {
+      for (const p of Object.values(projectById)) fallback[p.currency] = (fallback[p.currency] || 0) + 1
+    }
+    currency = Object.keys(fallback).sort((a, b) => fallback[b] - fallback[a] || a.localeCompare(b))[0] || 'USD'
+  }
 
   const roll: Record<string, CurrencyRollup> = {}
   const bucket = (c: string) => (roll[c] ||= {

@@ -75,7 +75,14 @@ const RETAINER_MONTHS_PAGE_SIZE = 1000
 // rather than no cap at all.
 const RETAINER_MONTHS_SAFETY_CAP = 50000
 
-export async function loadRetainerMonthsBilled(service: any, projects: ValueProject[]): Promise<Map<string, number>> {
+// FIX (Portfolio pass, section 8): `strict` makes a failed read (or a hit safety cap) THROW instead of degrading
+// to "1 month". Display pages keep the lenient default — a flaky read must not break them — but
+// computeScopeHealth (which the daily snapshot cron persists) passes strict: a degraded figure written into
+// scope_health_snapshots would overwrite the day's good row and step the history chart with a wrong number.
+export async function loadRetainerMonthsBilled(
+  service: any, projects: ValueProject[], opts: { strict?: boolean } = {},
+): Promise<Map<string, number>> {
+  const strict = !!opts.strict
   const out = new Map<string, number>()
   const ids = projects.filter(p => p.id && isOpenEndedRetainer(p)).map(p => p.id as string)
   for (let i = 0; i < ids.length; i += 100) {
@@ -86,12 +93,16 @@ export async function loadRetainerMonthsBilled(service: any, projects: ValueProj
         .in('project_id', chunk).eq('type', 'retainer_monthly')
         .order('id')
         .range(offset, offset + RETAINER_MONTHS_PAGE_SIZE - 1)
-      if (error) { console.error('[contract-value] retainer months lookup failed:', error.message); break }
+      if (error) {
+        if (strict) throw new Error(`retainer months lookup failed: ${error.message}`)
+        console.error('[contract-value] retainer months lookup failed:', error.message); break
+      }
       const batch = data || []
       for (const r of batch) out.set(r.project_id, (out.get(r.project_id) || 0) + 1)
       if (batch.length < RETAINER_MONTHS_PAGE_SIZE) break
       offset += RETAINER_MONTHS_PAGE_SIZE
       if (offset >= RETAINER_MONTHS_SAFETY_CAP) {
+        if (strict) throw new Error(`retainer months lookup hit its safety cap (${RETAINER_MONTHS_SAFETY_CAP})`)
         console.error(`[contract-value] retainer months lookup hit its safety cap (${RETAINER_MONTHS_SAFETY_CAP}) for a project chunk — counts for these projects may be undercounted`)
         break
       }

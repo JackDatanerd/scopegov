@@ -62,7 +62,7 @@ interface PortfolioData {
   history: HistoryPoint[]
   // FIX (deep audit, section 8): atRiskDelta is now null when the viewer
   // lacks VIEW_FINANCIALS — see api/reports/portfolio/route.ts.
-  trend: { openFlagsDelta: number; atRiskDelta: number | null } | null
+  trend: { openFlagsDelta: number; atRiskDelta: number | null; baselineDate?: string } | null
   openFlagsTotal?: number
   openFlags: OpenFlag[]
   stuckDocs: StuckDoc[]
@@ -179,7 +179,7 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName, canO
             Scope-governance rollup across every project · {agencyName}
           </p>
         </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div className="pf-head-actions">
           <select className="finp" style={{ width: 'auto' }} value={period}
             onChange={e => setPeriod(e.target.value as Period)}>
             {PERIODS.map(p => <option key={p.key} value={p.key}>{p.label}</option>)}
@@ -214,7 +214,7 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName, canO
         <>
           <MetricStrip data={data} canViewFinancials={canViewFinancials} />
           <p style={{ fontSize: 11.5, color: 'var(--text-3)', margin: '-14px 0 20px' }}>
-            Live as of {formatRelative(data.current.asOf)}. The chart and “vs period start” figures use daily snapshots.
+            Live as of {formatRelative(data.current.asOf)}. The chart and the “vs” comparison figures use daily snapshots.
             {data.current.borderlineFlagsCount > 0 && ` ${data.current.borderlineFlagsCount} Guardian flag${data.current.borderlineFlagsCount === 1 ? '' : 's'} awaiting human review ${data.current.borderlineFlagsCount === 1 ? 'is' : 'are'} not counted as open.`}
           </p>
           {canViewFinancials && <RiskExplainer model={data.riskModel} />}
@@ -226,6 +226,7 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName, canO
               <p style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 10 }}>
                 Money can&apos;t be summed across currencies, so the headline value is {data.currency}. Counts above include every currency.
               </p>
+              <div className="pf-scroll">
               <table className="gov-table" style={{ width: '100%' }}>
                 <thead>
                   <tr>
@@ -242,7 +243,7 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName, canO
                 </thead>
                 <tbody>
                   {data.current.byCurrency.map(row => (
-                    <tr key={row.currency}>
+                    <tr key={row.currency} className="no-link">
                       <td className="td-primary">{row.currency}</td>
                       <td>{row.activeProjectCount}</td>
                       <td>{row.openFlagsCount}</td>
@@ -252,10 +253,11 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName, canO
                   ))}
                 </tbody>
               </table>
+              </div>
             </div>
           )}
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 24, alignItems: 'start', marginBottom: 24 }}>
+          <div className="pf-grid-side">
             <div className="surface surface-p">
               <div className="sec-hd" style={{ marginBottom: 16 }}>
                 <div className="sec-title">
@@ -292,7 +294,7 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName, canO
             </div>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24, alignItems: 'start', marginBottom: 24 }}>
+          <div className="pf-grid-2">
             <StalledPanel docs={data.stuckDocs} total={data.stuckDocsTotal ?? data.stuckDocs.length} canViewFinancials={canViewFinancials} canOpenProjects={canOpenProjects} />
             <ExceptionsPanel
               count={data.current.exceptionsCount}
@@ -302,6 +304,7 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName, canO
               canViewFinancials={canViewFinancials}
               canOpenProjects={canOpenProjects}
               currency={data.currency}
+              multiCurrency={data.current.byCurrency.length > 1}
             />
           </div>
 
@@ -333,7 +336,7 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName, canO
                 </div>
               </div>
             ) : (
-              <div className="surface" style={{ overflow: 'hidden' }}>
+              <div className="surface pf-scroll">
                 <table className="gov-table" style={{ width: '100%' }}>
                   <thead>
                     <tr>
@@ -347,7 +350,7 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName, canO
                   <tbody>
                     {filteredFlags.map(f => (
                       <tr key={f.id}
-                        style={canOpenProjects ? { cursor: 'pointer' } : undefined}
+                        className={canOpenProjects ? undefined : 'no-link'}
                         onClick={canOpenProjects ? () => router.push(`/projects/${f.projectId}?tab=guardian`) : undefined}>
                         <td>
                           <div className="td-primary">
@@ -395,6 +398,9 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName, canO
 function MetricStrip({ data, canViewFinancials }: { data: PortfolioData; canViewFinancials: boolean }) {
   const c = data.current
   const trend = data.trend
+  // The comparison is against the first daily snapshot inside the period — name its date rather than claiming
+  // it is the period start (a workspace with 5 days of history on "12 months" is compared with 5 days ago).
+  const vs = trend?.baselineDate ? `vs ${fmtSnapshotDate(trend.baselineDate)}` : 'vs period start'
   return (
     <div className="mstrip" style={{ marginBottom: 24 }}>
       <div className="mc">
@@ -402,7 +408,7 @@ function MetricStrip({ data, canViewFinancials }: { data: PortfolioData; canView
         <div className={`mc-val${c.openFlagsCount > 0 ? ' red' : ''}`}>{c.openFlagsCount}</div>
         <div className="mc-sub">
           {trend && trend.openFlagsDelta !== 0
-            ? `${trend.openFlagsDelta > 0 ? '+' : ''}${trend.openFlagsDelta} vs period start`
+            ? `${trend.openFlagsDelta > 0 ? '+' : ''}${trend.openFlagsDelta} ${vs}`
             : `Across ${c.activeProjectCount} active projects`}
         </div>
       </div>
@@ -413,7 +419,7 @@ function MetricStrip({ data, canViewFinancials }: { data: PortfolioData; canView
         </div>
         <div className="mc-sub">
           {canViewFinancials && trend && trend.atRiskDelta !== null
-            ? `${trend.atRiskDelta >= 0 ? '+' : ''}${formatCurrency(trend.atRiskDelta, data.currency, true)} vs period start`
+            ? `${trend.atRiskDelta >= 0 ? '+' : ''}${formatCurrency(trend.atRiskDelta, data.currency, true)} ${vs}`
             : 'Severity-weighted estimate'}
         </div>
       </div>
@@ -422,7 +428,7 @@ function MetricStrip({ data, canViewFinancials }: { data: PortfolioData; canView
         <div className="mc-val">{c.exceptionsCount}</div>
         <div className="mc-sub">
           {canViewFinancials && c.exceptionsValueTotal !== null
-            ? `${formatCurrency(c.exceptionsValueTotal, data.currency, true)} total value`
+            ? `${formatCurrency(c.exceptionsValueTotal, data.currency, true)} total value${c.byCurrency.length > 1 ? ` (${data.currency} only)` : ''}`
             : 'All-time, this workspace'}
         </div>
       </div>
@@ -691,9 +697,9 @@ function StalledPanel({ docs, total, canViewFinancials, canOpenProjects }: { doc
 // viewer doesn't have — a dead end for exactly the people this page is for — and (b) is a top-8 table, not a
 // log. The newest exceptions are listed here now; the link is only shown to people who can use it.
 const EXC_PREVIEW = 5
-function ExceptionsPanel({ count, value, items, total, canViewFinancials, canOpenProjects, currency }: {
+function ExceptionsPanel({ count, value, items, total, canViewFinancials, canOpenProjects, currency, multiCurrency }: {
   count: number; value: number | null; items: ExceptionItem[]; total: number
-  canViewFinancials: boolean; canOpenProjects: boolean; currency: string
+  canViewFinancials: boolean; canOpenProjects: boolean; currency: string; multiCurrency: boolean
 }) {
   const [expanded, setExpanded] = useState(false)
   const visible = expanded ? items : items.slice(0, EXC_PREVIEW)
@@ -710,6 +716,7 @@ function ExceptionsPanel({ count, value, items, total, canViewFinancials, canOpe
         <p style={{ fontSize: 12.5, color: 'var(--text-2)' }}>
           Representing <strong>{formatCurrency(value, currency, true)}</strong> in scope given away
           outside a change order — worth reviewing if this trends upward.
+          {multiCurrency && <> This is the {currency} total only; other currencies are in the “By currency” table above.</>}
         </p>
       )}
       {visible.length > 0 && (
@@ -825,7 +832,7 @@ function ProjectsByRisk({ rows, canViewFinancials, canOpenProjects }: { rows: Ri
           </div>
         </div>
       ) : (
-        <div className="surface" style={{ overflow: 'hidden' }}>
+        <div className="surface pf-scroll">
           <table className="gov-table" style={{ width: '100%' }}>
             <thead>
               <tr>
@@ -840,10 +847,15 @@ function ProjectsByRisk({ rows, canViewFinancials, canOpenProjects }: { rows: Ri
               {view === 'project'
                 ? rows.slice(0, visibleCount).map(r => (
                     <tr key={r.projectId}
-                      style={canOpenProjects ? { cursor: 'pointer' } : undefined}
+                      className={canOpenProjects ? undefined : 'no-link'}
                       onClick={canOpenProjects ? () => router.push(`/projects/${r.projectId}?tab=guardian`) : undefined}>
                       <td>
-                        <div className="td-primary">{r.projectName}</div>
+                        {/* A real link (keyboard focus, middle-click / open-in-new-tab); the row onClick is just a bigger hit area. */}
+                        <div className="td-primary">
+                          {canOpenProjects
+                            ? <Link href={`/projects/${r.projectId}?tab=guardian`} onClick={e => e.stopPropagation()} style={{ color: 'inherit', textDecoration: 'none' }}>{r.projectName}</Link>
+                            : r.projectName}
+                        </div>
                         {r.clientName && <div className="td-sub">{r.clientName}</div>}
                       </td>
                       <td>
@@ -860,7 +872,7 @@ function ProjectsByRisk({ rows, canViewFinancials, canOpenProjects }: { rows: Ri
                     </tr>
                   ))
                 : clientRows.slice(0, visibleCount).map(g => (
-                    <tr key={g.client}>
+                    <tr key={g.client} className="no-link">
                       <td className="td-primary">{g.client}</td>
                       <td>{g.projects}</td>
                       <td>{g.openFlags}{g.highFlags > 0 && <span style={{ color: 'var(--red)', fontSize: 11.5 }}> ({g.highFlags} high)</span>}</td>
