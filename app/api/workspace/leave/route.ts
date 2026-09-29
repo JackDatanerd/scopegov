@@ -18,12 +18,27 @@ export async function POST(request: NextRequest) {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+    const service = createServiceClient()
+
+    // FIX (Workspace lifecycle independent pass, round 20): same gap as
+    // workspace/create's own already-fixed finding — this route authenticates with
+    // getUser() alone, with no users.deleted_at check, and middleware.ts explicitly
+    // never checks it for API routes ("API routes enforce their own workspace
+    // checks via getSession()"). Self-service account/delete already leaves every
+    // workspace before marking deleted_at, so it's self-defended here in practice —
+    // but admin_suspend deliberately leaves workspace_members untouched while
+    // banning the auth user, so a suspended person could otherwise still call this
+    // and leave a workspace (and trigger its "member left" notification/audit
+    // trail) for as long as their already-issued access token stays valid. Checked
+    // explicitly rather than relying on that side effect.
+    const { data: deletedCheck } = await (service as any)
+      .from('users').select('deleted_at').eq('id', user.id).maybeSingle()
+    if (deletedCheck?.deleted_at) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
     // FIX (workspace lifecycle independent pass, W2): an unparseable / non-object body threw into the 500 catch-all.
     const reqBody = await request.json().catch(() => null)
     const workspaceId = typeof reqBody?.workspaceId === 'string' ? reqBody.workspaceId : ''
     if (!workspaceId) return NextResponse.json({ error: 'workspaceId is required' }, { status: 400 })
-
-    const service = createServiceClient()
 
     const { data: member } = await (service as any)
       .from('workspace_members')

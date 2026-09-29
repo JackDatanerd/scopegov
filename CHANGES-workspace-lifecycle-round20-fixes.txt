@@ -1,0 +1,90 @@
+scopegov — Workspace lifecycle (section 3) independent re-pass, round 20
+2 bugs fixed, no feature gaps found
+=====================================================================
+
+Fresh, independent audit of api/workspace/create, complete-onboarding,
+delete, leave, list, switch, and profile (+ avatar), treating every
+existing "FIX" comment as unverified until independently re-derived.
+create, delete, profile, and profile/avatar all held up clean on this
+pass — every finding below lives in the other four routes. No feature
+gaps found; this section is already built out.
+
+MODIFIED FILES (4)
+-------------------
+
+  app/api/workspace/complete-onboarding/route.ts
+  app/api/workspace/leave/route.ts
+  app/api/workspace/switch/route.ts
+
+    FIX 1 — stale-account bypass. All three authenticate with a bare
+    supabase.auth.getUser(), with no check on users.deleted_at —
+    exactly the gap workspace/create's own comment already documents
+    fixing for itself ("a soft-deleted account could still create a
+    workspace and carry on"), just never propagated to these three
+    siblings. middleware.ts deliberately never checks deleted_at for
+    API routes at all (its own comment: "API routes enforce their own
+    workspace checks via getSession()"), so nothing else stood between
+    a deleted/suspended account and these writes.
+
+    Self-service account/delete happens to be self-defended here in
+    practice — it walks the user out of every active membership via
+    leave_workspace_atomic BEFORE marking deleted_at, so each route's
+    own membership check already fails afterward. But
+    app/api/admin/users/[id]/suspend deliberately does NOT touch
+    workspace_members (by its own design comment — an admin suspension
+    must not be blocked by the same admin-floor guards a voluntary
+    leave is), while still banning the auth user and setting
+    deleted_at. A platform-admin-suspended user — the one case where
+    instant lockout matters most (abuse/fraud/support escalation) —
+    could otherwise, for as long as their already-issued access token
+    stayed valid, still switch their active workspace, leave one
+    (triggering its member-left notification/audit trail), or complete
+    onboarding on a workspace they created (unblocking other members
+    still waiting on it).
+
+    Fix: added the same explicit users.deleted_at check
+    workspace/create already has, refusing with 401 before any of the
+    three do their real work.
+
+  app/api/workspace/list/route.ts
+
+    Same FIX 1 as above, applied here too — this route had the
+    identical getUser()-only gap (a suspended user could otherwise
+    still see their real workspace list).
+
+    FIX 2 — stale `active` flag in the workspace switcher. This route
+    computed `active: w.id === userRow?.active_workspace_id` directly
+    off the raw column. deactivate_member_atomic (migration 070,
+    called by DELETE /api/team/[id] — a Team & Invites route, traced
+    into this section) never reassigns a removed member's
+    active_workspace_id the way leave_workspace_atomic and
+    workspace/delete's own reassignment loop do.
+    onboarding-status/route.ts already hit this exact staleness and
+    works around it there (using pickFallbackMembership instead of the
+    raw column) — this route was the one place missed.
+
+    Net effect: someone removed from what was their active workspace
+    saw NO workspace marked active in the switcher
+    (components/layout/Sidebar.tsx), even though they still have other
+    perfectly good active memberships. Worse: the sidebar's "Leave"
+    button is gated on `!active`, so their REAL current workspace
+    (correctly resolved server-side via getSession's own fallback)
+    showed up in the switcher indistinguishable from the others, with
+    a Leave button right next to it — someone who didn't read the
+    confirm dialog's workspace name carefully could self-remove from
+    the workspace they were actually using.
+
+    Fix: resolve `active` the same way getSession()/onboarding-status
+    do — order memberships by created_at, prefer active_workspace_id
+    when it resolves within the user's own alive memberships, else
+    fall back to pickFallbackMembership (lib/auth/session.ts, already
+    shared by every other call site with this exact resolution need).
+
+VERIFICATION DONE
+-----------------
+  Brace balance check clean on all 4 modified files (depth 0).
+  Isolated tsc --noEmit syntax check clean — only the expected
+  module-resolution/JSX-intrinsics noise from no node_modules in this
+  sandbox, same as every prior round's verification note.
+  Please run `npm ci && npx tsc --noEmit && npx vitest run` before
+  pushing, same as every prior round.

@@ -8,11 +8,32 @@ export async function POST(request: NextRequest) {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+    const service = createServiceClient()
+
+    // FIX (Workspace lifecycle independent pass, round 20): this route authenticates
+    // with getUser() alone, the same shape workspace/create's own comment already
+    // flagged and fixed for itself ("a soft-deleted account could still create a
+    // workspace and carry on") — missed here. middleware.ts deliberately never
+    // checks users.deleted_at for API routes at all (its own comment: "API routes
+    // enforce their own workspace checks via getSession()"), so nothing else stood
+    // between a deleted/suspended account and this write. Self-service account
+    // deletion happens to be self-defended in practice (it leaves every workspace
+    // via leave_workspace_atomic BEFORE marking deleted_at, so the active-membership
+    // check below already fails afterward) — but admin_suspend (api/admin/users/
+    // [id]/suspend) deliberately does NOT touch workspace_members, by its own
+    // design comment, while still banning the auth user and setting deleted_at. A
+    // platform-admin-suspended user could otherwise complete onboarding on a
+    // workspace they created, unblocking other members still waiting on it — the
+    // one case where instant lockout matters most. Checked explicitly here rather
+    // than relying on that only-sometimes-true side effect.
+    const { data: deletedCheck } = await (service as any)
+      .from('users').select('deleted_at').eq('id', user.id).maybeSingle()
+    if (deletedCheck?.deleted_at) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
     // FIX (workspace lifecycle independent pass, W2): an unparseable / non-object body threw into the 500 catch-all.
     const reqBody = await request.json().catch(() => null)
     const workspaceId = typeof reqBody?.workspaceId === 'string' ? reqBody.workspaceId : ''
     if (!workspaceId) return NextResponse.json({ error: 'workspaceId is required' }, { status: 400 })
-    const service = createServiceClient()
 
     // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): this
     // route only ever checked `created_by = user.id` — no active-
