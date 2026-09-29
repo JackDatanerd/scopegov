@@ -2313,6 +2313,13 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
   const [acting, setActing] = useState(false)
   const [reminded, setReminded] = useState(false)
   const [escalating, setEscalating] = useState(false)
+  // FEATURE (section-10 audit, closing pass): app/api/co/[id]/exception has
+  // existed, fully permission-gated and hardened, since the cron/portal
+  // audit round that built it — but nothing in this card ever rendered a
+  // button for it. Only the flag-side exception (on FlagCard, above) was
+  // reachable, so a CO already drafted/sent/countered/stalled could never
+  // actually be granted away for free through this UI.
+  const [showException, setShowException] = useState(false)
 
   // FIX (section-10 audit, 10-B5): `res.ok` was never checked. Withdraw,
   // close and accept-counter all fell through to router.refresh()
@@ -2377,6 +2384,29 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
     } finally { setActing(false) }
   }
 
+  // FEATURE (section-10 audit, closing pass): mirrors FlagCard's handleAction('exception') —
+  // reuses the same ExceptionModal (its onSubmit fields are {grantedWhat, estimatedValue,
+  // exceptionReason}) but this route's body key is `reason`, not `exceptionReason`, so the
+  // fields are translated here rather than renaming the shared modal's contract.
+  async function doException(fields: any) {
+    setActing(true); setActionError(''); setActionNotice('')
+    try {
+      const res  = await fetch(`/api/co/${co.id}/exception`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: fields.exceptionReason, grantedWhat: fields.grantedWhat, estimatedValue: fields.estimatedValue }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) { setActionError(json?.error || 'Could not grant this exception.'); return false }
+      if (json?.clientNotified === false)
+        setActionNotice('Done, but the notification email to the client could not be delivered — you may want to let them know directly.')
+      router.refresh()
+      return true
+    } catch {
+      setActionError('Could not grant this exception.')
+      return false
+    } finally { setActing(false) }
+  }
+
   async function copyLink() {
     setActionError(''); setActionNotice('')
     try {
@@ -2396,6 +2426,13 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
       const res  = await fetch(`/api/co/${co.id}/revise`, { method: 'POST' })
       const json = await res.json().catch(() => ({}))
       if (!res.ok) { setActionError(json?.error || 'Could not create a revision.'); return }
+      // FIX (section-10 audit): this used to navigate straight to the new draft with no
+      // check of the response at all — doAction() (the handler every sibling action goes
+      // through) surfaces clientNotified === false as a warning, but revise() has its own
+      // handler and silently dropped it. When superseding a 'countered' CO, a failed
+      // "your offer was superseded" email to the client vanished with zero indication.
+      if (json?.clientNotified === false)
+        alert('A new draft was created, but the client could not be notified that their previous offer was superseded — you may want to let them know directly.')
       router.push(`/projects/${projectId}/co/${json.coId}`)
     } catch {
       setActionError('Could not create a revision.')
@@ -2458,8 +2495,13 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
           {co.status === 'draft' && pendingApproval && !pendingApproval.sendFailed && (
             <Link href={`/approvals?highlight=${pendingApproval.id}`}><button className="btn btn-ghost btn-xs">Awaiting approval</button></Link>
           )}
-          {/* 'stalled' is a live, sent CO (no reply for 5 days) and could previously only be Closed. */}
-          {(co.status === 'awaiting_response' || co.status === 'stalled') && (
+          {/* 'stalled' is a live, sent CO (no reply for 5 days) and could previously only be Closed.
+              FIX (section-10 audit, closing pass): permissions.sendCo added — every sibling action
+              button on this card is gated on a permission (Send, Copy link, Accept counter, Counter
+              back, Remind, Close, Escalate); this one and the awaiting_countersignature Withdraw
+              below weren't, so a member without SEND_CHANGE_ORDERS saw a live Withdraw button that
+              did nothing but 403 on click. Same class of gap already found and fixed for Close. */}
+          {(co.status === 'awaiting_response' || co.status === 'stalled') && permissions.sendCo && (
             <button className="btn btn-ghost btn-xs" onClick={() => doAction('withdraw')} disabled={acting}>Withdraw</button>
           )}
           {['awaiting_response', 'stalled', 'awaiting_countersignature'].includes(co.status) && permissions.sendCo && (
@@ -2470,7 +2512,7 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
           {/* FIX (doc-completeness audit, migration 014): CO is waiting on
               the client's countersignature at the negotiated total — the
               agency can still withdraw it, same as awaiting_response. */}
-          {co.status === 'awaiting_countersignature' && (
+          {co.status === 'awaiting_countersignature' && permissions.sendCo && (
             <button className="btn btn-ghost btn-xs" onClick={() => doAction('withdraw')} disabled={acting}>Withdraw</button>
           )}
           {/* FIX (section-10 audit, 10-G3): "Negotiate" linked straight to
@@ -2535,6 +2577,14 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
               permission — the UI just never matched it. */}
           {['countered','stalled','declined','expired','draft'].includes(co.status) && permissions.sendCo && (
             <button className="btn btn-ghost btn-xs" onClick={() => doAction('close')} disabled={acting}>Close</button>
+          )}
+          {/* FEATURE (section-10 audit, closing pass): same source set the exception route's own
+              EXCEPTION_FROM allows — anything short of already-accepted (binding, can't retroactively
+              become free) or already-terminal-as-exception/closed/withdrawn. Distinct permission from
+              Close/Send (GRANT_EXCEPTIONS, not SEND_CHANGE_ORDERS): giving scope away for free is a
+              separate authority, not a lesser version of being able to send a CO. */}
+          {['draft','awaiting_response','declined','countered','stalled','awaiting_countersignature','expired'].includes(co.status) && permissions.grantExceptions && (
+            <button className="btn btn-ghost btn-xs" onClick={() => setShowException(true)} disabled={acting}>Exception</button>
           )}
           {/* FIX (section-10 audit, feature gap — CO expiry): 'expired'
               excluded — there's nothing left to escalate on a dead,
@@ -2601,6 +2651,17 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
       {escalating && (
         <EscalateCoModal co={co} team={team} onClose={() => setEscalating(false)}
           onDone={() => { setEscalating(false); router.refresh() }} />
+      )}
+      {showException && (
+        <ExceptionModal
+          flag={{ description: co.title }}
+          onClose={() => setShowException(false)}
+          onSubmit={async (fields: any) => {
+            const ok = await doException(fields)
+            if (ok) setShowException(false)
+            return ok
+          }}
+        />
       )}
     </div>
   )

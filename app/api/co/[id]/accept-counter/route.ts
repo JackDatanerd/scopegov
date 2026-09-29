@@ -6,6 +6,7 @@ import { evaluateApprovalGate } from '@/lib/approvals/engine'
 import { sendBlockedReason } from '@/lib/documents/preflight'
 import { acceptCoCounter } from '@/lib/documents/accept-co-counter'
 import { coGateAmount } from '@/lib/approvals/gate-amount'
+import { isTerminalStatus } from '@/lib/utils/project-status'
 
 // FIX (doc-completeness audit, decision: require re-sign): this route used
 // to finalize the CO as 'accepted' the moment the agency accepted the
@@ -40,7 +41,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { data: co } = await (service as any)
       .from('change_orders')
       .select(`id,title,status,flag_id,counter_amount,total,project_id,workspace_id,is_retainer_renewal,renewal_term_months,
-        projects(id,name,currency,type)`)
+        projects(id,name,status,currency,type)`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!co) return NextResponse.json({ error: 'CO not found' }, { status: 404 })
@@ -51,6 +52,16 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'CO is not in countered status' }, { status: 400 })
 
     const project = co.projects
+    // FIX (section-10 audit, closing pass): checked here too (not just inside
+    // acceptCoCounter) so a terminal project fails fast, before an approval gate
+    // even creates a request for a counter-acceptance that could never actually
+    // go through — same reasoning as the identical hoist in send/route.ts
+    // ("Projects & Dashboard deep audit, flagship finding").
+    if (isTerminalStatus(project?.status || ''))
+      return NextResponse.json({
+        error: `This project is ${(project?.status || '').toLowerCase()} — a change order can no longer be accepted. Reopen the project first.`,
+      }, { status: 409 })
+
     // FIX (section-10 audit, 10-B2): `||` sent a legitimate 0 counter
     // through to the original total. Matches lib/documents/accept-co-counter.ts.
     const negotiatedTotal = co.counter_amount ?? co.total
