@@ -513,7 +513,7 @@ export default async function ClientDetailPage({ params }: Props) {
           <ClientDangerZone
             clientId={client.id} clientName={client.name} visibleProjectCount={(projectsRaw || []).length}
             totalProjectCount={totalProjectCount || 0}
-            canMerge={canMergeClients} canDelete={canDeleteClients}
+            canMerge={canMergeClients} canDelete={canDeleteClients} canSeeAllProjects={canViewAllProjects}
           />
         </div>
       </div>

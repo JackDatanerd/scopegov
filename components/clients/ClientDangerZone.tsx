@@ -37,10 +37,10 @@ interface Other { id: string; name: string; email: string | null; status: string
 const MAX_OPTIONS_SHOWN = 300
 
 export default function ClientDangerZone({
-  clientId, clientName, visibleProjectCount, totalProjectCount, canMerge, canDelete,
+  clientId, clientName, visibleProjectCount, totalProjectCount, canMerge, canDelete, canSeeAllProjects = true,
 }: {
   clientId: string; clientName: string; visibleProjectCount: number; totalProjectCount: number
-  canMerge: boolean; canDelete: boolean
+  canMerge: boolean; canDelete: boolean; canSeeAllProjects?: boolean
 }) {
   const router = useRouter()
   const [merging, setMerging] = useState(false)
@@ -204,8 +204,10 @@ export default function ClientDangerZone({
         {canDelete && totalProjectCount > 0 && visibleProjectCount === 0 && (
           <div style={{ marginTop: canMerge ? 12 : 0 }}>
             <p style={{ fontSize: 11, color: 'var(--text-4)', margin: 0 }}>
-              This client can&apos;t be deleted — it still has {totalProjectCount} project{totalProjectCount === 1 ? '' : 's'} on
-              record (including deleted ones). Archive it, or merge it into another client, instead.
+              {canSeeAllProjects
+                ? <>This client can&apos;t be deleted — it still has {totalProjectCount} project{totalProjectCount === 1 ? '' : 's'} on
+                    record (including deleted ones). Archive it, or merge it into another client, instead.</>
+                : <>This client can&apos;t be deleted — it still has projects on record. Archive it instead.</>}
             </p>
           </div>
         )}

@@ -107,4 +107,10 @@ describe('PATCH /api/clients/[id] — email-change goes through update_client_ch
     expect((await call({ name: 'X' })).status).toBe(404)
     expect(h.rpcCalls).toHaveLength(0)
   })
+  it('404s (no success, no audit row) when the client vanished between the read and the RPC write', async () => {
+    h.rpcResult = { data: { ok: true, updated: false }, error: null }
+    const res = await call({ name: 'Renamed' })
+    expect(res.status).toBe(404)
+    expect(h.audits).toHaveLength(0)
+  })
 })

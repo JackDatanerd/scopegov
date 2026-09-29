@@ -14,14 +14,17 @@ import { EMAIL_RE, CLIENT_LIMITS, CONTACT_ROLE_TYPES } from '@/lib/utils/client-
 import { escapeLike } from '@/lib/utils/escape-like'
 
 async function loadContact(service: any, workspaceId: string, clientId: string, contactId: string) {
-  const { data: client } = await service
+  // Read failures throw (→ 500) rather than reading as "not found".
+  const { data: client, error: clientErr } = await service
     .from('clients').select('id,name')
-    .eq('id', clientId).eq('workspace_id', workspaceId).single()
+    .eq('id', clientId).eq('workspace_id', workspaceId).maybeSingle()
+  if (clientErr) throw new Error(clientErr.message)
   if (!client) return { client: null, contact: null }
 
-  const { data: contact } = await service
+  const { data: contact, error: contactErr } = await service
     .from('client_contacts').select('id,name,email,role,role_type,is_primary')
-    .eq('id', contactId).eq('client_id', clientId).single()
+    .eq('id', contactId).eq('client_id', clientId).maybeSingle()
+  if (contactErr) throw new Error(contactErr.message)
   return { client, contact }
 }
 

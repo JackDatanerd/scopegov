@@ -32,9 +32,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     const service = createServiceClient()
 
-    const { data: existing } = await (service as any)
+    // A read failure must surface as a 500, not masquerade as "not found" (maybeSingle: no row → null, no error).
+    const { data: existing, error: existingErr } = await (service as any)
       .from('clients').select('*')
-      .eq('id', id).eq('workspace_id', session.workspaceId).single()
+      .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
+    if (existingErr) throw new Error(existingErr.message)
     if (!existing) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     let body: any
@@ -96,6 +98,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (error) throw new Error(error.message)
     if (!result?.ok)
       return NextResponse.json({ error: 'A client with this email already exists', existingClientId: result?.existing_id }, { status: 409 })
+    // The client can be deleted or merged away between the read above and the RPC; the RPC then matches no row
+    // and reports updated:false. That is a 404 — not a success, and nothing to audit.
+    if (result.updated === false) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     // FIX (independent pass, section 14): the audit row recorded only Object.keys(body) — which
     // fields were SENT, not what changed (and it listed a field as updated even when the route
@@ -138,19 +143,26 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
       return NextResponse.json({ error: 'Missing permission: DELETE_PROJECTS' }, { status: 403 })
 
     const service = createServiceClient()
-    const { data: client } = await (service as any)
+    const { data: client, error: clientErr } = await (service as any)
       .from('clients').select('id, name, email, company_name')
-      .eq('id', id).eq('workspace_id', session.workspaceId).single()
+      .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
+    if (clientErr) throw new Error(clientErr.message)
     if (!client) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     const { count: projectCount, error: countErr } = await (service as any)
       .from('projects').select('id', { count: 'exact', head: true })
       .eq('workspace_id', session.workspaceId).eq('client_id', id)
     if (countErr) throw new Error(countErr.message)
-    if ((projectCount || 0) > 0)
+    if ((projectCount || 0) > 0) {
+      // The true count includes projects (and deleted ones) this member may not be allowed to see, and
+      // "merge instead" is only open to members with VIEW_ALL_PROJECTS — so those members get no number
+      // and no merge suggestion.
+      if (!hasPermission(session, 'VIEW_ALL_PROJECTS'))
+        return NextResponse.json({ error: `${client.name} still has projects on record, so it can't be deleted. Archive it instead.` }, { status: 409 })
       return NextResponse.json({
         error: `${client.name} has ${projectCount} project${projectCount === 1 ? '' : 's'} on record (including deleted ones), so it can't be deleted. Archive it, or merge it into another client.`,
       }, { status: 409 })
+    }
 
     const { error } = await (service as any).from('clients').delete().eq('id', id).eq('workspace_id', session.workspaceId)
     if (error?.code === '23503')

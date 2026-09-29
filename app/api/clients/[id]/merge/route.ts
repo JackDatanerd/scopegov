@@ -48,8 +48,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (targetId === sourceId) return NextResponse.json({ error: 'Choose a different client to merge into.' }, { status: 400 })
 
     const service = createServiceClient()
-    const { data: rows } = await (service as any).from('clients')
+    const { data: rows, error: rowsErr } = await (service as any).from('clients')
       .select('id, name, email').eq('workspace_id', session.workspaceId).in('id', [sourceId, targetId])
+    if (rowsErr) throw new Error(rowsErr.message)
     const source = rows?.find((c: any) => c.id === sourceId)
     const target = rows?.find((c: any) => c.id === targetId)
     if (!source || !target) return NextResponse.json({ error: 'Client not found' }, { status: 404 })

@@ -41,9 +41,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       return NextResponse.json({ error: 'Missing permission: VIEW_CLIENT_DATA' }, { status: 403 })
 
     const service = createServiceClient()
-    const { data: client } = await (service as any)
+    const { data: client, error: clientErr } = await (service as any)
       .from('clients').select('id')
-      .eq('id', id).eq('workspace_id', session.workspaceId).single()
+      .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
+    if (clientErr) throw new Error(clientErr.message)
     if (!client) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     const { data: contacts, error } = await (service as any)
@@ -70,9 +71,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
 
     const service = createServiceClient()
-    const { data: client } = await (service as any)
+    const { data: client, error: clientErr } = await (service as any)
       .from('clients').select('id,name')
-      .eq('id', id).eq('workspace_id', session.workspaceId).single()
+      .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
+    if (clientErr) throw new Error(clientErr.message)
     if (!client) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     let body: any

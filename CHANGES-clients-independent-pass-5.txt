@@ -1,0 +1,15 @@
+Clients (section 14) — independent pass 5: 3 low-severity bugs fixed, no feature gaps.
+
+1. PATCH /api/clients/[id]: update_client_checked reports updated:false when the client was deleted/merged
+   between the route's read and the write; the route answered { ok: true } and wrote a client.updated audit
+   row for a client that no longer exists. Now 404, no audit.
+2. Read errors read as "not found": PATCH/DELETE clients/[id], POST clients/[id]/merge, GET/POST
+   clients/[id]/contacts and loadContact (contacts/[contactId]) discarded `error` from .single() reads, so a DB
+   outage 404'd. Now maybeSingle() + throw on error (→ 500), matching the list/detail pages.
+3. Project-count disclosure: DELETE clients/[id]'s 409 and the Danger Zone text gave the true project count
+   (incl. projects and soft-deleted ones the member can't see) and advised "merge instead" to members who lack
+   VIEW_ALL_PROJECTS (merge requires it). Those members now get a count-free "archive it instead" message.
+
+Files: app/api/clients/[id]/route.ts, [id]/merge/route.ts, [id]/contacts/route.ts,
+[id]/contacts/[contactId]/route.ts, components/clients/ClientDangerZone.tsx,
+app/(app)/clients/[id]/page.tsx, tests/client-update-route.test.ts (new 404 case).
