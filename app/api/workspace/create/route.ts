@@ -3,7 +3,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { nanoid } from 'nanoid'
 import crypto from 'crypto'
 import { sanitizeDisplayName } from '@/lib/utils/sanitize'
-import { INDUSTRIES, CURRENCIES, TIMEZONES } from '@/lib/constants/workspace-options'
+import { INDUSTRIES, CURRENCIES, TIMEZONES, DEFAULT_TIMEZONE, DEFAULT_CURRENCY } from '@/lib/constants/workspace-options'
 import { sendWorkspaceCreatedEmail } from '@/lib/email/templates'
 
 function generateSlug(name: string): string {
@@ -72,8 +72,8 @@ export async function POST(request: NextRequest) {
       p_slug: slug,
       p_agency_name: agencyName,
       p_industry: industry,
-      p_currency: currency || 'USD',
-      p_timezone: timezone || 'Africa/Nairobi',
+      p_currency: currency || DEFAULT_CURRENCY,
+      p_timezone: timezone || DEFAULT_TIMEZONE,
       p_jwt_secret: jwtSecret,
     })
 

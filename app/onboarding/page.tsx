@@ -7,7 +7,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 // api/workspace/create and api/workspace/settings, which never validated
 // against them — importing the one shared list means the dropdown and
 // the server-side validation literally cannot drift apart again.
-import { INDUSTRIES, CURRENCIES, TIMEZONES, SOW_LANGUAGES } from '@/lib/constants/workspace-options'
+import { INDUSTRIES, CURRENCIES, TIMEZONES, SOW_LANGUAGES, DEFAULT_TIMEZONE, DEFAULT_CURRENCY } from '@/lib/constants/workspace-options'
 // FIX (fresh independent audit, section 4): see discardWorkspace() and app/onboarding/layout.tsx.
 import { fetchWithStepUp } from '@/lib/client/step-up'
 // FIX (fresh independent audit, section 4 — feature gap): see the brand-colour hint on step 1.
@@ -57,8 +57,8 @@ function OnboardingWizard() {
   // Step 0
   const [agencyName, setAgencyName] = useState('')
   const [industry,   setIndustry]   = useState('')
-  const [currency,   setCurrency]   = useState('USD')
-  const [timezone,   setTimezone]   = useState('America/New_York')
+  const [currency,   setCurrency]   = useState<string>(DEFAULT_CURRENCY)
+  const [timezone,   setTimezone]   = useState<string>(DEFAULT_TIMEZONE)
 
   // Step 1
   const [brandColour,  setBrandColour]  = useState('#1A5C3A')
@@ -249,8 +249,8 @@ function OnboardingWizard() {
         const userName = user.user_metadata?.name || ''
         setAgencyName(userName ? `${userName.split(' ')[0]}'s Agency` : '')
         setIndustry('')
-        setCurrency('USD')
-        setTimezone('America/New_York')
+        setCurrency(DEFAULT_CURRENCY)
+        setTimezone(DEFAULT_TIMEZONE)
         setBrandColour('#1A5C3A')
         setLogoFile(null)
         setLogoPreview(null)

@@ -1,0 +1,6 @@
+Onboarding (section 4) independent pass
+- Bug: wizard defaulted timezone to America/New_York while TIMEZONES leads with Africa/Nairobi and
+  workspace/create's fallback is Africa/Nairobi. Added DEFAULT_TIMEZONE/DEFAULT_CURRENCY to
+  lib/constants/workspace-options.ts; used by page.tsx (initial state + ?new=1 reset) and create route fallbacks.
+- Test: tests/onboarding-defaults.test.ts
+- workspace/list ordering finding: already fixed in live repo (order by created_at + pickFallbackMembership); no change.

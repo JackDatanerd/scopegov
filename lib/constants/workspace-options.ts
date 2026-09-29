@@ -42,3 +42,11 @@ export const TIMEZONES = [
   'Europe/London', 'Europe/Paris', 'America/New_York', 'America/Los_Angeles',
   'Asia/Dubai', 'Asia/Kolkata', 'Australia/Sydney',
 ] as const
+
+// FIX (Onboarding independent audit): the wizard hardcoded 'America/New_York' as its
+// starting timezone while this list leads with Africa/Nairobi and workspace/create's own
+// fallback (no timezone sent) is Africa/Nairobi too — three places, two answers, so anyone
+// who didn't touch the dropdown got US Eastern time. One constant, read by the wizard's
+// initial state, its ?new=1 reset, and the create route's fallback, so they can't drift.
+export const DEFAULT_TIMEZONE: typeof TIMEZONES[number] = TIMEZONES[0]
+export const DEFAULT_CURRENCY: typeof CURRENCIES[number] = CURRENCIES[0]
