@@ -195,7 +195,12 @@ export default async function ProjectPage({ params, searchParams }: Props) {
         // a SOW/CO (the cumulative over-billing fix), disputed_at/dispute_note
         // so a client's portal dispute is actually visible somewhere in the
         // agency's own UI instead of only firing a one-time notification.
-        .select('id, milestone_id, sow_id, co_id, invoice_number, title, amount, amount_paid, subtotal, currency, status, due_date, sent_at, paid_at, voided_at, disputed_at, dispute_note, dispute_resolved_at, dispute_resolution_note, token, created_at')
+        // FIX (section-12 re-audit — feature gap): payment_claimed_at/
+        // payment_claim_reference/payment_claim_cleared_at added for the exact same
+        // reason disputed_at/dispute_note were — api/portal/invoice/[token]/paid's
+        // "I've paid this" claim fired one notification and then had zero trace
+        // anywhere in this UI, unlike a dispute right next to it in the same table.
+        .select('id, milestone_id, sow_id, co_id, invoice_number, title, amount, amount_paid, subtotal, currency, status, due_date, sent_at, paid_at, voided_at, disputed_at, dispute_note, dispute_resolved_at, dispute_resolution_note, payment_claimed_at, payment_claim_reference, payment_claim_cleared_at, token, created_at')
         .eq('project_id', id)
         .order('created_at', { ascending: false })
     : { data: [] }
@@ -281,7 +286,7 @@ export default async function ProjectPage({ params, searchParams }: Props) {
   // FEATURE (Settings & Team round): workspace billing defaults (migration 076) — read separately and
   // tolerantly, like the client-reminder columns in Settings, so a deploy that runs ahead of the
   // migration shows a plain invoice form instead of failing the whole project page.
-  let billingDefaults = { taxRate: 0, taxInclusive: true, paymentTermsDays: null as number | null }
+  let billingDefaults = { taxRate: 0, taxInclusive: false, paymentTermsDays: null as number | null }
   {
     const { data: bd, error: bdErr } = await (service as any)
       .from('workspaces')
@@ -289,9 +294,20 @@ export default async function ProjectPage({ params, searchParams }: Props) {
       .eq('id', session.workspaceId)
       .maybeSingle()
     if (!bdErr && bd) {
+      // FIX (section-12 re-audit — bug): default_tax_rate defaults to 0 and
+      // default_tax_inclusive defaults to true INDEPENDENTLY (migration 076), so a
+      // workspace that has never visited Settings → Billing defaults fed BillingTab's
+      // CreateInvoiceModal a taxInclusive:true default alongside a 0% rate — a
+      // combination invoices.tax_inclusive's own column default (false) rejects, and
+      // that lib/documents/tax-defaults.ts's workspaceTaxDefaults() (this same
+      // setting's other consumer) already refuses to return, on the explicit rule
+      // that only a configured, POSITIVE rate carries an inclusive flag. Mirrors the
+      // matching fix in app/api/workspace/billing-defaults/route.ts (used by the CO
+      // editor's own client-side fetch of the same setting).
+      const rate = Number(bd.default_tax_rate) || 0
       billingDefaults = {
-        taxRate: Number(bd.default_tax_rate) || 0,
-        taxInclusive: bd.default_tax_inclusive ?? true,
+        taxRate: rate,
+        taxInclusive: rate > 0 ? (bd.default_tax_inclusive ?? true) : false,
         paymentTermsDays: bd.default_payment_terms_days ?? null,
       }
     }

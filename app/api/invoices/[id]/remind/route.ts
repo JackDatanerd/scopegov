@@ -11,6 +11,7 @@ import { renewInvoiceTokenIfExpired } from '@/lib/documents/renew-invoice-token'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
 import { resolveReplyTo } from '@/lib/email/reply-to'
 import { checkedSend } from '@/lib/email/delivery'
+import { isPaymentClaimOpen } from '@/lib/utils/invoice-registry'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -24,7 +25,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { data: invoice } = await (service as any)
       .from('invoices')
       .select(`id, title, amount, amount_paid, currency, status, due_date, token, expires_at, invoice_number, project_id, payment_instructions,
-        disputed_at, dispute_resolved_at,
+        disputed_at, dispute_resolved_at, payment_claimed_at, payment_claim_cleared_at,
         projects(id, name, client_id, clients(name, email, cc_emails), workspaces(agency_name, brand_colour))`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
@@ -55,6 +56,18 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({
         error: 'The client has an open dispute on this invoice. Answer or resolve it before chasing payment — or confirm to send the reminder anyway.',
         code: 'disputed',
+      }, { status: 409 })
+
+    // FIX (section-12 re-audit — bug): the automatic reminders already skip an invoice
+    // with an open "I've paid this" claim (cron/client-reminders' own hasOpenPaymentClaim)
+    // on the same reasoning as the dispute check above — chasing payment on money the
+    // client just said they sent is the wrong move — but this manual button had no
+    // equivalent check, so one click could still nag a client who'd just told the agency
+    // they'd paid. Same ask-first shape as the dispute check; `force` covers both.
+    if (isPaymentClaimOpen(invoice) && body?.force !== true)
+      return NextResponse.json({
+        error: 'The client has already told you they paid this invoice. Check for the payment before chasing them again — or confirm to send the reminder anyway.',
+        code: 'payment_claimed',
       }, { status: 409 })
 
     // FIX (re-audit): no cooldown existed at all — an agency user could
@@ -92,20 +105,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       metadata: { type: 'invoice', client_email: client?.email, balance_due: balanceDue },
     })
 
-    // FIX (Notifications & email fix round): a client with no email on file used to be reminded with
-    // `to: undefined`, and the whole send sat in a try/catch that could never fire (Resend's SDK
-    // resolves `{ error }` instead of throwing) — so a rejected reminder returned ok. Same claim-then-send
-    // shape as the SOW and CO reminders: the cooldown claim above stands, and a rejection logs
-    // 'reminder.failed', which checkReminderCooldown treats as "nothing went out" (no lockout).
-    if (!client?.email) {
-      await logAudit(service, {
-        workspaceId: session.workspaceId, actorId: session.id,
-        actorEmail: session.email, actorName: session.name,
-        eventType: 'reminder.failed', entityType: 'invoice', entityId: id, entityName: invoice.title,
-        metadata: { type: 'invoice', error: 'no client email' },
-      })
-      return NextResponse.json({ error: 'This client has no email address on file.' }, { status: 400 })
-    }
+    // NOTE (section-12 re-audit — cosmetic): a `!client?.email` re-check + 'reminder.failed'
+    // audit log used to sit here, left over from an earlier version of this route. It was
+    // dead code — `client` is the same `invoice.projects.clients` object already confirmed
+    // truthy-email at the top of this function (nothing re-fetches it in between), so the
+    // branch could never fire. Removed rather than left as a misleading guard.
     const cc = await withPrimaryContactCc(service, project?.client_id, client.email, client.cc_emails, 'invoice')
     const replyTo = await resolveReplyTo(service, session.workspaceId, session.email)
     const delivery = await checkedSend(() => sendInvoiceReminderEmail({

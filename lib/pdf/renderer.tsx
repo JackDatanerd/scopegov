@@ -863,6 +863,9 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
   const invSubtotal = r2(data.subtotal ?? data.amount)
   const hasTax = (data.taxRate || 0) > 0
   const invTaxAmount = hasTax ? r2(invAmount - invSubtotal) : 0
+  // FIX (section-12 re-audit): the Subtotal / Amount-due rows below key off hasTax as well as
+  // taxInclusive — a legacy row stored as tax_rate 0 + tax_inclusive true must not print a
+  // duplicate Subtotal/Amount due pair with no tax line between them.
   const invTax = hasTax && !data.taxInclusive ? invTaxAmount : 0
 
   const s = StyleSheet.create({
@@ -977,7 +980,7 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
 
         <View style={s.totals}>
           <View style={s.totalRow}>
-            <Text style={{ color: '#909090' }}>{invTax > 0 || data.taxInclusive ? 'Subtotal' : 'Amount due'}</Text>
+            <Text style={{ color: '#909090' }}>{invTax > 0 || (data.taxInclusive && hasTax) ? 'Subtotal' : 'Amount due'}</Text>
             <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtInv(invSubtotal)}</Text>
           </View>
           {invTax > 0 && (
@@ -992,7 +995,7 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
               <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtInv(invTaxAmount)}</Text>
             </View>
           )}
-          {(invTax > 0 || data.taxInclusive) && (
+          {(invTax > 0 || (data.taxInclusive && hasTax)) && (
             <View style={s.totalRow}>
               <Text style={{ color: '#909090' }}>Amount due</Text>
               <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtInv(invAmount)}</Text>

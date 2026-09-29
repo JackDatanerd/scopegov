@@ -101,7 +101,23 @@ export function computeInvoiceTotals(input: {
   }
   const isItemized = lineItems.length > 0
 
-  const taxInclusive = isItemized
+  // FIX (section-12 re-audit — bug): "tax inclusive" is meaningless when there is no
+  // tax to include — invoices.tax_inclusive's own column default is `false`, and the
+  // established convention elsewhere in this codebase (lib/documents/tax-defaults.ts's
+  // workspaceTaxDefaults, used for change orders) is explicit that "only a configured,
+  // POSITIVE rate" ever carries an inclusive/exclusive flag with it. This function never
+  // enforced that: workspaces.default_tax_inclusive defaults to true (migration 076)
+  // independently of default_tax_rate defaulting to 0, so a workspace that has never
+  // touched its billing settings, and an invoice created without touching the tax
+  // fields, stored tax_rate: 0, tax_inclusive: true. The figures were never wrong
+  // (grossing-up is skipped whenever taxRate is 0 regardless of this flag), but
+  // lib/pdf/renderer.tsx's InvoiceDocument keys its "Subtotal" row and a duplicate
+  // "Amount due" row off taxInclusive alone, with no hasTax gate — so every untaxed
+  // invoice printed a confusing "Subtotal: $X" immediately followed by "Amount due: $X"
+  // with no tax line between them to explain the duplication. Forcing this the same way
+  // the isItemized case already does closes it at the source for every caller (create
+  // and edit both route through here) rather than patching each renderer separately.
+  const taxInclusive = isItemized || !(taxRate > 0)
     ? false
     : input.taxInclusive !== undefined ? !!input.taxInclusive : !!input.inherited?.taxInclusive
 

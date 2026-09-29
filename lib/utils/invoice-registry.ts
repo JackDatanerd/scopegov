@@ -61,6 +61,17 @@ export function applyRegistryFilters(query: any, filters: RegistryFilters, textP
   return query
 }
 
+// FEATURE (section-12 re-audit — feature gap): whether a client's "I've paid this" claim
+// (api/portal/invoice/[token]/paid) is still open, i.e. not yet answered by a recorded
+// payment (which clears it — see api/invoices/[id]/payments). Same "a stale clear from a
+// PREVIOUS claim cycle doesn't count" comparison used server-side by that route, the
+// portal GET route, and cron/client-reminders' own local copy of this exact check — the
+// one place it was missing was anywhere in the agency's own UI, which is what this is for.
+export function isPaymentClaimOpen(inv: { payment_claimed_at?: string | null; payment_claim_cleared_at?: string | null }): boolean {
+  if (!inv.payment_claimed_at) return false
+  return !inv.payment_claim_cleared_at || new Date(inv.payment_claim_cleared_at) < new Date(inv.payment_claimed_at)
+}
+
 export const AGING_BUCKETS = ['Not yet due', '1–30 days', '31–60 days', '61–90 days', '90+ days'] as const
 
 /** Which aging bucket an unpaid invoice falls in, by whole days past its due date (no due date = not yet due). */

@@ -11,6 +11,7 @@ import { formatCurrency, formatCurrencyExact, roundCurrency, formatDate, invoice
 import RichTextField from '@/components/ui/RichTextField'
 import { baseContractValue } from '@/lib/reports/contract-position'
 import { isOpenEndedRetainer } from '@/lib/utils/contract-value'
+import { isPaymentClaimOpen } from '@/lib/utils/invoice-registry'
 
 const METHOD_LABELS: Record<string, string> = {
   bank_transfer: 'Bank transfer', stripe: 'Stripe', check: 'Check', cash: 'Cash', other: 'Other',
@@ -195,10 +196,11 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
     setBusyId(id); setError('')
     try {
       let res = await fetch(`/api/invoices/${id}/remind`, { method: 'POST' })
-      // The client has an open dispute — the server asks before chasing them anyway.
+      // The client has an open dispute, or already told the agency they've paid —
+      // the server asks before chasing them anyway either way.
       if (res.status === 409) {
         const j = await res.clone().json().catch(() => ({}))
-        if (j.code === 'disputed') {
+        if (j.code === 'disputed' || j.code === 'payment_claimed') {
           if (!confirm(`${j.error}\n\nSend the reminder anyway?`)) return
           res = await fetch(`/api/invoices/${id}/remind`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ force: true }),
@@ -366,6 +368,16 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
                       {inv.disputed_at && inv.dispute_resolved_at && (
                         <span className="pill pill-green" title={inv.dispute_resolution_note || undefined}>
                           <i className="ti ti-circle-check" style={{ fontSize: 10 }} /> Dispute resolved {formatDate(inv.dispute_resolved_at)}
+                        </span>
+                      )}
+                      {/* FIX (section-12 re-audit — feature gap): a client's "I've paid this" claim
+                          (api/portal/invoice/[token]/paid) previously fired one notification and then
+                          had no trace anywhere in this UI — unlike the dispute pill right above it,
+                          which exists for exactly this reason. Clears the moment a payment is recorded
+                          against the invoice (payment_claim_cleared_at), same as the portal page. */}
+                      {isPaymentClaimOpen(inv) && (
+                        <span className="pill pill-amber" title={inv.payment_claim_reference ? `Reference: ${inv.payment_claim_reference}` : undefined}>
+                          <i className="ti ti-cash" style={{ fontSize: 10 }} /> Client says paid {formatDate(inv.payment_claimed_at)}
                         </span>
                       )}
                     </div>

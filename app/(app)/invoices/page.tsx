@@ -10,7 +10,7 @@ import { formatDate, formatCurrency, formatCurrencyExact, invoiceStatusLabel, in
 import { fetchAll } from '@/lib/utils/fetch-all'
 import {
   REGISTRY_STATUS_FILTERS, AGING_BUCKETS, agingBucket,
-  parseRegistryFilters, projectIdsMatching, applyRegistryFilters,
+  parseRegistryFilters, projectIdsMatching, applyRegistryFilters, isPaymentClaimOpen,
 } from '@/lib/utils/invoice-registry'
 
 export const metadata = { title: 'Invoices' }
@@ -65,7 +65,11 @@ export default async function InvoicesPage({ searchParams }: {
   const from = isSoloCapped ? 0 : (page - 1) * pageSize
   let invoicesQuery = (service as any)
     .from('invoices')
-    .select(`id, invoice_number, title, amount, amount_paid, currency, status, due_date, sent_at, paid_at, created_at, disputed_at, dispute_resolved_at,
+    // FIX (section-12 re-audit — feature gap): payment_claimed_at/payment_claim_cleared_at
+    // added so a client's "I've paid this" claim (api/portal/invoice/[token]/paid) is
+    // visible on this workspace-wide list, the same way disputed_at/dispute_resolved_at
+    // already are — see the matching pill below and in BillingTab.tsx.
+    .select(`id, invoice_number, title, amount, amount_paid, currency, status, due_date, sent_at, paid_at, created_at, disputed_at, dispute_resolved_at, payment_claimed_at, payment_claim_cleared_at,
       projects!inner(id, name, deleted_at, clients(name))`, { count: 'exact' })
     .eq('workspace_id', session.workspaceId)
     .is('projects.deleted_at', null)
@@ -365,6 +369,14 @@ export default async function InvoicesPage({ searchParams }: {
                     {inv.disputed_at && !inv.dispute_resolved_at && (
                       <span className="pill pill-red pill-sm" style={{ marginLeft: 4 }} title={`Disputed ${formatDate(inv.disputed_at)}`}>
                         Disputed
+                      </span>
+                    )}
+                    {/* FIX (section-12 re-audit — feature gap): same visibility fix as the Disputed
+                        pill above, applied to the other client portal response that previously had
+                        no trace here — see components/invoices/BillingTab.tsx for the matching pill. */}
+                    {isPaymentClaimOpen(inv) && (
+                      <span className="pill pill-amber pill-sm" style={{ marginLeft: 4 }} title={`Client says paid ${formatDate(inv.payment_claimed_at)}`}>
+                        Says paid
                       </span>
                     )}
                   </td>

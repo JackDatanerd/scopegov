@@ -85,7 +85,8 @@ describe("POST /api/portal/invoice/[token]/paid — the client's \"I've paid\" n
 
   it("a claim the agency already answered (a payment was recorded after it) can be raised again for the remaining balance", async () => {
     h.invoice = inv({ payment_claimed_at: '2026-01-01T00:00:00.000Z', payment_claim_cleared_at: '2026-01-05T00:00:00.000Z', status: 'partially_paid' })
-    h.db = createFakeSupabase({ invoices: [{ id: 'i1', status: 'partially_paid' }] })
+    // the row must carry the claim the route's compare-and-set matches on (see the CAS in paid/route.ts)
+    h.db = createFakeSupabase({ invoices: [{ id: 'i1', status: 'partially_paid', payment_claimed_at: '2026-01-01T00:00:00.000Z', payment_claim_cleared_at: '2026-01-05T00:00:00.000Z' }] })
     const { body } = await run(paid, {})
     expect(body.duplicate).toBeUndefined(); expect(h.notified).toHaveLength(1)
   })

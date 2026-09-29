@@ -1,0 +1,9 @@
+Invoicing (section 12) — independent pass fixes
+1. BUG: tax_rate 0 + tax_inclusive true stored on untaxed invoices -> duplicate Subtotal/Amount due on PDF.
+   lib/documents/invoice-totals.ts forces taxInclusive=false when rate isn't positive; billing-defaults route and
+   projects/[id]/page.tsx no longer default inclusive without a rate; PDF rows gated on hasTax; migration 106 backfills.
+2. FEATURE GAP: client "I've paid" claim now visible (pill) in BillingTab and the /invoices registry
+   (isPaymentClaimOpen in lib/utils/invoice-registry.ts; claim fields added to both selects).
+3. BUG: manual Remind now asks first (409 code payment_claimed, same force flag) when a claim is open.
+4. Cosmetic: removed unreachable no-client-email block in remind route.
+5. Test: stale portal-routes paid fixture fixed (row lacked payment_claimed_at for the route's CAS).
