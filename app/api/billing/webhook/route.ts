@@ -619,8 +619,33 @@ async function handleEvent(service: any, event: any): Promise<void> {
       // (subscription.create) can land and replace the code; an unconditional
       // write would then flag the NEW, paid subscription as cancelling and
       // the period-end sweep would downgrade a paying customer.
+      //
+      // FIX (Billing independent pass 9 — B1, MEDIUM): billing/cancel already refuses to flag a cancellation
+      // against a missing or already-elapsed current_period_end (pass 7/8), but this handler — the route a
+      // cancellation made through Paystack's own manage link / email arrives by — wrote the flag and left the
+      // date alone. Right after a renewal the stored date can still be the one that just elapsed, and
+      // cron/payment-overdue step 5 (cancelling rows whose period end has passed) then downgraded a customer
+      // who had just paid another period; a NULL date is never selected by step 5 at all, so that customer kept
+      // a paid plan indefinitely. Take a future date from the event, else from Paystack, and write it with the
+      // flag. Only ever a future date, only when the stored one is missing/elapsed, best-effort (a failed read
+      // leaves the old behaviour — the daily billing-reconcile cron fills it in once it is in the future).
+      let refreshedPeriodEnd: string | null = null
+      const storedEndMs = res.billing.current_period_end ? Date.parse(res.billing.current_period_end) : NaN
+      if (isNaN(storedEndMs) || storedEndMs <= Date.now()) {
+        const fromEvent = typeof data?.next_payment_date === 'string' ? data.next_payment_date : null
+        if (fromEvent && !isNaN(Date.parse(fromEvent)) && Date.parse(fromEvent) > Date.now()) {
+          refreshedPeriodEnd = fromEvent
+        } else {
+          try {
+            const fetched = await fetchPaystackNextPaymentDate(res.billing.paystack_subscription_code)
+            if (fetched && !isNaN(Date.parse(fetched)) && Date.parse(fetched) > Date.now()) refreshedPeriodEnd = fetched
+          } catch (e) { console.error(`[BILLING] ${event.event}: could not refresh current_period_end`, e) }
+        }
+      }
+
       const marked = must(await service.from('billing').update({
         cancels_at_period_end: true, updated_at: new Date().toISOString(),
+        ...(refreshedPeriodEnd ? { current_period_end: refreshedPeriodEnd } : {}),
       }).eq('workspace_id', res.workspaceId)
         .eq('paystack_subscription_code', res.billing.paystack_subscription_code)
         .select('workspace_id'), 'mark cancellation').data
@@ -631,7 +656,7 @@ async function handleEvent(service: any, event: any): Promise<void> {
 
       await audit(service, res.workspaceId, 'billing.plan_changed', data?.customer?.email, {
         action: event.event === 'subscription.not_renew' ? 'subscription_not_renewing' : 'subscription_disabled',
-        ends_at: res.billing?.current_period_end ?? undefined,
+        ends_at: refreshedPeriodEnd ?? res.billing?.current_period_end ?? undefined,
       })
       return
     }

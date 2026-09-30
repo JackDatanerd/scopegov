@@ -1,0 +1,14 @@
+Billing independent pass 9 (section 16: api/billing/cancel, upgrade, webhook) — bugs only. No migration.
+
+B1 (MEDIUM) app/api/billing/webhook/route.ts  (subscription.not_renew / subscription.disable)
+   billing/cancel refuses to flag a cancellation against a missing or already-elapsed current_period_end
+   (passes 7/8), but the webhook handler — the path a cancellation made through Paystack's own manage
+   link/email arrives by — set cancels_at_period_end and left the date alone. An elapsed date (renewal not
+   yet refreshed) let cron/payment-overdue step 5 downgrade a customer who had just paid another period; a
+   NULL date is never selected by step 5, so the customer kept a paid plan indefinitely. The handler now
+   takes a FUTURE next_payment_date from the event, else from Paystack (best-effort), and writes it in the
+   same compare-and-set update as the flag, only when the stored date is missing/elapsed. The audit row's
+   ends_at uses the refreshed date.
+
+Tests added: tests/billing-pass9-webhook.test.ts
+(not executed in the audit sandbox — no node_modules/network; run `npx vitest run` and `npx tsc --noEmit` locally.)
