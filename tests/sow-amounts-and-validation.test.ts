@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { parseTableAmount as p } from '@/lib/sow/table-schema'
 import { validateSowForSend, amountsMentioned } from '@/lib/sow/validate-send'
+import { sowWatermarkLabel } from '@/lib/pdf/sow-watermark'
 
 describe('parseTableAmount', () => {
   it('reads US and European number formats', () => {
@@ -115,5 +116,41 @@ describe('validateSowForSend', () => {
   })
   it('amountsMentioned finds every figure in prose', () => {
     expect(amountsMentioned('pay 50% of 1,500.50 by 30 June')).toContain(1500.5)
+  })
+})
+
+describe('amountsMentioned tokenizer (SOW lifecycle pass, B1)', () => {
+  it('does not fuse a sentence-ending figure with the next number', () => {
+    expect(amountsMentioned('The total fee is USD 12,500.00. 50% is due upfront.')).toEqual([12500, 50])
+    expect(amountsMentioned('Total fee: USD 12,500. 50% due upfront.')).toEqual([12500, 50])
+    expect(amountsMentioned('The total fee is $12,500 50% due at kickoff')).toEqual([12500, 50])
+  })
+  it('still reads grouped and decimal formats', () => {
+    expect(amountsMentioned('Fee 1.500,00 EUR, then 12 500,50 EUR')).toEqual([1500, 12500.5])
+    expect(amountsMentioned("CHF 1'250.00 due")).toEqual([1250])
+    expect(amountsMentioned('Total USD 1,250,000.00.')).toEqual([1250000])
+  })
+  it('does not raise a false contract-value warning when the value is followed by a percentage', () => {
+    const s: any[] = good().map(x => x.id === 'payment'
+      ? { ...x, content: '<p>Total USD 10,000.00. 50% due upfront, 50% on delivery.</p>' } : x)
+    const r = validateSowForSend({ sections: s, metadata: {}, contractValue: 10000 })
+    expect(r.errors).toHaveLength(0)
+    expect(r.warnings).toHaveLength(0)
+  })
+})
+
+describe('sowWatermarkLabel', () => {
+  it('labels a sent-but-unsigned SOW UNSIGNED, not DRAFT', () => {
+    expect(sowWatermarkLabel('awaiting_signature')).toBe('UNSIGNED')
+    expect(sowWatermarkLabel('changes_requested')).toBe('UNSIGNED')
+  })
+  it('labels withdrawn, declined and expired distinctly', () => {
+    expect(sowWatermarkLabel('withdrawn')).toBe('WITHDRAWN')
+    expect(sowWatermarkLabel('declined')).toBe('DECLINED')
+    expect(sowWatermarkLabel('expired')).toBe('EXPIRED')
+  })
+  it('a signed SOW gets no watermark, a true draft reads DRAFT', () => {
+    expect(sowWatermarkLabel('signed')).toBeNull()
+    expect(sowWatermarkLabel('draft')).toBe('DRAFT')
   })
 })

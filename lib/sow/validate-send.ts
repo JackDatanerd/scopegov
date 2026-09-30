@@ -25,8 +25,21 @@ function textOf(html: unknown): string {
 }
 
 /** Every numeric amount mentioned in a block of prose. */
+// FIX (SOW lifecycle independent pass, B1): the old tokenizer, /\d[\d.,' ...]*\d/, allowed dots and
+// plain spaces ANYWHERE inside a number, so a sentence-ending figure and the next number fused into one
+// token: "USD 12,500.00. 50% due upfront" became "12,500.00. 50" (parsed as 50 — the contract value was
+// missed), "12,500. 50%" became 12500.5, and "$12,500 50% due" became 12.5005. Both callers then
+// misfired: ensureContractValueStated appended a redundant bold value paragraph to a Payment Terms
+// section that already stated it, and validateSowForSend raised a false "does not state the contract
+// value" warning the sender had to confirm. Numbers are now tokenized the way they are written:
+// thousands groups (exactly three digits after a separator) with an optional 1-2 digit decimal, or a
+// plain integer with an optional decimal. A regular space only groups thousands when the whole number
+// is space-grouped ("12 500,00"), so "12,500 100% upfront" can never merge.
+const AMOUNT_TOKEN_RE =
+  /\d{1,3}(?:[,.'\u2019\u00a0\u202f]\d{3})+(?:[.,]\d{1,2})?(?!\d)|\d{1,3}(?: \d{3})+(?:[.,]\d{1,2})?(?!\d)|\d+(?:[.,]\d+)?/g
+
 export function amountsMentioned(text: string): number[] {
-  const tokens = text.match(/\d[\d.,'\u2019\u00a0\u202f ]*\d|\d/g) || []
+  const tokens = text.match(AMOUNT_TOKEN_RE) || []
   const out: number[] = []
   for (const t of tokens) {
     const n = parseTableAmount(t)

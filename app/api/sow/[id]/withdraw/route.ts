@@ -79,21 +79,36 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       if (revokeErr) console.error('SOW withdraw: token revoke insert failed (non-fatal):', revokeErr.message)
     }
 
-    // Revert project to Intake
-    await (service as any).from('projects')
-      .update({ status: 'Intake', updated_at: now })
-      .eq('id', sow.projects?.id)
-      .in('status', ['Awaiting Signature','Changes Requested'])
-    // FIX (cron/portal audit round 3): sow-stall flips a project whose SOW sat unsigned for 7 days to
-    // 'Stalled' / stall_reason 'sow_unsigned'. This revert only listed Awaiting Signature / Changes
-    // Requested, so withdrawing a SOW that had gone stale — the most natural time to withdraw one — left the
-    // project on 'Stalled' with a "SOW unsigned" reason and no SOW out at all. send, reopen, request-changes,
-    // sign, decline and sow-expiry all reconcile that exact state; this was the odd one out. Same guard they
-    // use: only undo the auto-stall THIS SOW caused; a project stalled for any other reason is left alone.
-    await (service as any).from('projects')
-      .update({ status: 'Intake', stall_reason: null, updated_at: now })
-      .eq('id', sow.projects?.id)
-      .eq('status', 'Stalled').eq('stall_reason', 'sow_unsigned')
+    // FIX (SOW lifecycle independent pass, B2): this reverted the project unconditionally, but the SOW
+    // being withdrawn is not always the project's live one. A client's request-changes flips v1 to
+    // 'changes_requested' and spawns v2; once v2 is sent the project is 'Awaiting Signature' on v2's account,
+    // yet v1 keeps a Withdraw button in the version history (SOW-G1). Withdrawing v1 then dragged the project
+    // back to Intake while v2 was still out for signature: sow-stall (which only watches
+    // 'Awaiting Signature' projects) stopped tracking v2, dashboards showed the wrong stage, and only a
+    // signature put it right. Only undo the project state when NO other version is out for signature.
+    // (If the lookup itself fails, fall back to the previous behaviour rather than skip the revert.)
+    const { data: otherLive, error: otherLiveErr } = await (service as any).from('sow_documents')
+      .select('id').eq('project_id', sow.project_id).neq('id', id).eq('status', 'awaiting_signature').limit(1)
+    if (otherLiveErr) console.error('SOW withdraw: could not check for another live SOW (reverting project anyway):', otherLiveErr.message)
+    const anotherSowIsLive = !otherLiveErr && Array.isArray(otherLive) && otherLive.length > 0
+
+    if (!anotherSowIsLive) {
+      // Revert project to Intake
+      await (service as any).from('projects')
+        .update({ status: 'Intake', updated_at: now })
+        .eq('id', sow.projects?.id)
+        .in('status', ['Awaiting Signature','Changes Requested'])
+      // FIX (cron/portal audit round 3): sow-stall flips a project whose SOW sat unsigned for 7 days to
+      // 'Stalled' / stall_reason 'sow_unsigned'. This revert only listed Awaiting Signature / Changes
+      // Requested, so withdrawing a SOW that had gone stale — the most natural time to withdraw one — left the
+      // project on 'Stalled' with a "SOW unsigned" reason and no SOW out at all. send, reopen, request-changes,
+      // sign, decline and sow-expiry all reconcile that exact state; this was the odd one out. Same guard they
+      // use: only undo the auto-stall THIS SOW caused; a project stalled for any other reason is left alone.
+      await (service as any).from('projects')
+        .update({ status: 'Intake', stall_reason: null, updated_at: now })
+        .eq('id', sow.projects?.id)
+        .eq('status', 'Stalled').eq('stall_reason', 'sow_unsigned')
+    }
 
     await logAudit(service, {
       workspaceId: session.workspaceId,

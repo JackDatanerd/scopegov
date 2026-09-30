@@ -1002,14 +1002,16 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
                       <button className="btn btn-ghost btn-sm"><i className="ti ti-shield-check" style={{ fontSize: 12 }} /> Awaiting approval</button>
                     </Link>
                   )}
-                  {currentSow.status === 'awaiting_signature' && (
+                  {/* FIX (SOW lifecycle independent pass, B3): Remind and Withdraw rendered for anyone who could
+                      open the tab, but POST /api/sow/[id]/remind and .../withdraw both require SEND_SOW — an
+                      EDIT_SOW-only member saw two live-looking buttons that just 403'd. Copy signing link and
+                      Send were already gated; the whole awaiting-signature action group now is too. */}
+                  {currentSow.status === 'awaiting_signature' && permissions.sendSow && (
                     <>
                       <button className="btn btn-ghost btn-sm" onClick={handleRemind} disabled={reminding}>
                         {reminding ? <span className="spin" /> : <><i className="ti ti-refresh" style={{ fontSize: 12 }} /> Remind</>}
                       </button>
-                      {permissions.sendSow && (
-                        <button className="btn btn-ghost btn-sm" onClick={handleCopyLink}><i className="ti ti-link" style={{ fontSize: 12 }} /> Copy signing link</button>
-                      )}
+                      <button className="btn btn-ghost btn-sm" onClick={handleCopyLink}><i className="ti ti-link" style={{ fontSize: 12 }} /> Copy signing link</button>
                       <button className="btn btn-ghost btn-sm" onClick={() => handleWithdraw()}><i className="ti ti-x" style={{ fontSize: 12 }} /> Withdraw</button>
                     </>
                   )}

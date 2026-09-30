@@ -58,6 +58,8 @@ export interface SowPdfData {
   clientSignatureData?: string | null
   version:       number
   isWatermarked?: boolean
+  // Word stamped across a watermarked page (see lib/pdf/sow-watermark.ts). Defaults to DRAFT.
+  watermarkText?: string
   documentNumber?: string | null
   // Optional one-line cross-reference to a governing Master Service
   // Agreement, e.g. "Issued under the Master Service Agreement dated
@@ -355,7 +357,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
   return (
     <Document>
       <Page size="A4" style={s.page}>
-        {data.isWatermarked && <Text style={s.watermark}>DRAFT</Text>}
+        {data.isWatermarked && <Text style={s.watermark}>{data.watermarkText || 'DRAFT'}</Text>}
 
         {/* Running masthead — fixed, only renders on page 2+ so a
             multi-page SOW never loses its identity after the first page,

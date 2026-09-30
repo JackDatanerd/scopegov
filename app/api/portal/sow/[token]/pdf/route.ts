@@ -6,6 +6,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { jwtVerify } from 'jose'
 import { renderSowPdf } from '@/lib/pdf/renderer'
+import { sowWatermarkLabel } from '@/lib/pdf/sow-watermark'
 import { getWorkspaceJwtSecret, isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
 import { fetchExecutedPdf } from '@/lib/documents/executed-pdf'
 import { hydrateSections } from '@/lib/sow/sections'
@@ -169,6 +170,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       clientSignatureData: isSigned ? (sow.client_signature_data || null) : null,
       version:       sow.version,
       isWatermarked: !isSigned,
+      watermarkText: sowWatermarkLabel(sow.status) ?? undefined,
       documentNumber: sow.document_number || null,
     })
 

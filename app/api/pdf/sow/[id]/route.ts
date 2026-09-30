@@ -7,6 +7,7 @@ import { renderSowPdf, resolveLogoDataUri } from '@/lib/pdf/renderer'
 import { canReadProject } from '@/lib/utils/project-access'
 import { fetchExecutedPdf } from '@/lib/documents/executed-pdf'
 import { hydrateSections } from '@/lib/sow/sections'
+import { sowWatermarkLabel } from '@/lib/pdf/sow-watermark'
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -124,6 +125,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       // final, signed document if forwarded externally. Watermark anything
       // that isn't yet signed.
       isWatermarked: sow.status !== 'signed',
+      watermarkText: sowWatermarkLabel(sow.status) ?? undefined,
       documentNumber: sow.document_number || null,
     })
 

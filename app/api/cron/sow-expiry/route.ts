@@ -108,10 +108,20 @@ export async function POST(request: NextRequest) {
           // an unrelated reason, is left alone. A no-op for a 'changes_requested' expiry, whose project is
           // already at 'Changes Requested', not 'Stalled'.
           // (Round 3: the write's error is now read — a failure is a row error, not a silent skip.)
-          const { error: projErr } = await (service as any).from('projects').update({
-            status: 'Awaiting Signature', stall_reason: null, updated_at: now,
-          }).eq('id', sow.project_id).eq('status', 'Stalled').eq('stall_reason', 'sow_unsigned')
-          if (projErr) run.rowError(`sow ${sow.id} project status reconcile`, projErr)
+          // (SOW lifecycle independent pass, B2: skipped when ANOTHER version is still out for signature. A
+          // superseded 'changes_requested' v1 expiring while v2 is the live, stalled one used to un-stall the
+          // project here; sow-stall then re-stalled it on its next run and notified the team a second time.
+          // The stall belongs to v2, so only v2's own expiry may undo it.)
+          const { data: otherLive, error: otherLiveErr } = await (service as any).from('sow_documents')
+            .select('id').eq('project_id', sow.project_id).neq('id', sow.id).eq('status', 'awaiting_signature').limit(1)
+          if (otherLiveErr) run.rowError(`sow ${sow.id} live-sibling check`, otherLiveErr)
+          const anotherSowIsLive = !otherLiveErr && Array.isArray(otherLive) && otherLive.length > 0
+          if (!anotherSowIsLive) {
+            const { error: projErr } = await (service as any).from('projects').update({
+              status: 'Awaiting Signature', stall_reason: null, updated_at: now,
+            }).eq('id', sow.project_id).eq('status', 'Stalled').eq('stall_reason', 'sow_unsigned')
+            if (projErr) run.rowError(`sow ${sow.id} project status reconcile`, projErr)
+          }
 
           // A 'changes_requested' version was already answered by the client and superseded by a newer
           // draft — its link expiring is bookkeeping, not news. Announcing "signing link expired, start
