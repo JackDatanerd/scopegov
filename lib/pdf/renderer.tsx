@@ -16,6 +16,7 @@ import { formatAddressLines, type LegalAddress } from '@/lib/utils/format'
 import { PDF_FONT, sanitizeForPdf } from '@/lib/pdf/fonts'
 import { mapPdfSymbols } from '@/lib/pdf/pdf-symbols'
 import { coWatermarkLabel } from '@/lib/pdf/co-watermark'
+import { invoiceSingleLineAmount } from '@/lib/pdf/invoice-line'
 
 // Phase 11: the ScopeGov credit in the footer of every document is a real
 // hyperlink now, not plain text — same URL everywhere so it's one place to
@@ -977,7 +978,7 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
                 <Text style={s.lineDesc}>{data.title}</Text>
                 {data.milestoneTrigger && <Text style={s.lineSub}>{data.milestoneTrigger}</Text>}
               </View>
-              <Text style={s.lineAmt}>{data.currency} {fmtInv(invAmount)}</Text>
+              <Text style={s.lineAmt}>{data.currency} {fmtInv(invoiceSingleLineAmount({ amount: data.amount, subtotal: data.subtotal, taxRate: data.taxRate, taxInclusive: data.taxInclusive }))}</Text>
             </View>
           </View>
         )}
