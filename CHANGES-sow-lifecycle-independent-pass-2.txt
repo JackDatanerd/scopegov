@@ -1,0 +1,19 @@
+SOW lifecycle — independent pass 2 (section 9)
+
+B1 (High)  lib/pdf/rich-text.tsx — Tiptap saves list items and blockquote bodies as <li><p>…</p></li> /
+           <blockquote><p>…</p></blockquote>. The PDF inline scanner dropped the "<" of unknown tags and printed the
+           rest as text ("p>Homepage design/p>") on the preview PDF, the portal PDF and the executed PDF frozen at
+           signing. Unknown tags are now swallowed whole, <p> inside <li> becomes line breaks, blockquote bodies
+           render as blocks, empty <p></p> draws nothing.
+           NOTE: SOWs signed BEFORE this fix with an edited list/quote have the bad text in their frozen pdf_path copy.
+B2 (Low)   api/sow/[id]/reopen — un-paused a project stalled by hand. Now only clears Stalled + 'sow_unsigned'.
+B3 (Low)   api/sow/regenerate-section — empty model reply now counts against the AI rate limit;
+           api/sow/parse-brief — projectType capped at 120 chars.
+B4 (Low)   lib/pdf/renderer.tsx + app/portal/sow/[token]/page.tsx — visible prose sections with no text are omitted
+           (no heading over blank space, no wasted section number).
+B5 (Low)   lib/utils/file-signature.ts resolveAttachmentType — .eml (and other) uploads with an empty browser
+           File.type no longer rejected; applied to SOW, CO and Guardian evidence attachment routes.
+B6 (Cosmetic) app/(app)/sow/page.tsx — solo "10 most recent" banner only when rows are actually hidden.
+
+Tests: tests/sow-pass1-fixes.test.ts (new). vitest.config.ts now transforms JSX (oxc automatic runtime) so tests can
+execute .tsx modules; tests/sow-attachments-integrity.test.ts mocks updated (approvals engine, resolveAttachmentType).

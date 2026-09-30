@@ -10,7 +10,7 @@ import { resolveEntity, canReadProject, canWriteGovernance, isValidEntityType } 
 // FIX (independent pass round 2, section 13): the allowlist + magic-byte check used to live only
 // here, hand-typed; guardian/inbound's saved email attachments now need the exact same validation,
 // so it's factored out into one shared implementation (see lib/utils/file-signature.ts for why).
-import { ALLOWED_ATTACHMENT_TYPES as ALLOWED_TYPES, matchesDeclaredType } from '@/lib/utils/file-signature'
+import { ALLOWED_ATTACHMENT_TYPES as ALLOWED_TYPES, matchesDeclaredType, resolveAttachmentType } from '@/lib/utils/file-signature'
 
 // Private bucket, created manually in the Supabase dashboard (same as the
 // existing `pdfs` bucket) — see README §1.2 for setup. Never public: this
@@ -91,10 +91,12 @@ export async function POST(
     const formData = await request.formData()
     const file = formData.get('file')
     if (!(file instanceof File)) return NextResponse.json({ error: 'No file provided' }, { status: 400 })
+    // Browsers send an empty File.type for some extensions (.eml on Chrome/Windows) — see resolveAttachmentType.
+    const fileType = resolveAttachmentType(file.name, file.type)
     if (file.size > MAX_FILE_BYTES)
       return NextResponse.json({ error: 'File exceeds 10 MB limit' }, { status: 400 })
-    if (!ALLOWED_TYPES.has(file.type))
-      return NextResponse.json({ error: `Unsupported file type: ${file.type || 'unknown'}` }, { status: 400 })
+    if (!ALLOWED_TYPES.has(fileType))
+      return NextResponse.json({ error: `Unsupported file type: ${fileType || 'unknown'}` }, { status: 400 })
 
     // FIX (independent pass, section 13): the extension came straight from the client's filename
     // (and a name with no dot returned the WHOLE name), so slashes/spaces/unicode/'?'/'#' ended up
@@ -106,11 +108,11 @@ export async function POST(
     const storagePath = `${session.workspaceId}/${entityType}/${entityId}/${randomUUID()}.${ext}`
 
     const buffer = Buffer.from(await file.arrayBuffer())
-    if (!matchesDeclaredType(file.type, buffer)) {
+    if (!matchesDeclaredType(fileType, buffer)) {
       return NextResponse.json({ error: 'File content does not match its declared type' }, { status: 400 })
     }
     const { error: uploadError } = await service.storage.from(BUCKET).upload(storagePath, buffer, {
-      contentType: file.type, upsert: false,
+      contentType: fileType, upsert: false,
     })
     if (uploadError) throw new Error(uploadError.message)
 
@@ -123,7 +125,7 @@ export async function POST(
         entity_id: entityId,
         file_name: displayName,
         file_size: file.size,
-        mime_type: file.type,
+        mime_type: fileType,
         storage_path: storagePath,
         uploaded_by: session.id,
       })
@@ -158,7 +160,7 @@ export async function POST(
 
     return NextResponse.json({
       attachment: {
-        id: attachment.id, fileName: displayName, fileSize: file.size, mimeType: file.type,
+        id: attachment.id, fileName: displayName, fileSize: file.size, mimeType: fileType,
         uploadedAt: attachment.uploaded_at, uploadedByName: session.name,
         downloadUrl: signed?.signedUrl || null,
       },

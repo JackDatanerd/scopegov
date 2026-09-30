@@ -24,12 +24,15 @@ vi.mock('@/lib/auth/session', () => ({
   getSession: async () => h.session,
   hasPermission: (s: any, p: string) => (s?.permissions || []).includes(p),
 }))
+// The routes also refuse while an approval request is outstanding (section-11 B1); no request here.
+vi.mock('@/lib/approvals/engine', () => ({ getPendingApprovalForDocument: async () => null }))
 vi.mock('@/lib/utils/project-access', () => ({ canReadProject: async () => true }))
 vi.mock('@/lib/utils/request-ip', () => ({ getClientIp: () => '1.2.3.4' }))
 vi.mock('@/lib/utils/audit', () => ({ logAudit: async () => true }))
 vi.mock('@/lib/utils/file-signature', () => ({
   ALLOWED_ATTACHMENT_TYPES: new Set(['application/pdf']),
   matchesDeclaredType: () => true,
+  resolveAttachmentType: (_name: string, declared: string) => declared,
 }))
 vi.mock('@/lib/supabase/server', () => ({
   createServiceClient: () => ({

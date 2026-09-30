@@ -129,10 +129,18 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // Bring the project back to a working state. Only move it out of the
     // statuses this SOW's own terminal state put it in — a project
     // stalled or paused for an unrelated reason stays as it is.
+    // FIX (SOW lifecycle pass, B2): 'Stalled' used to be listed unconditionally, so reopening a SOW also
+    // un-paused a project the agency had stalled BY HAND (stall_reason 'manual'). withdraw / decline /
+    // sow-expiry all guard on stall_reason 'sow_unsigned' — only undo the auto-stall THIS lifecycle caused.
+    const reopenedAt = new Date().toISOString()
     await (service as any).from('projects')
-      .update({ status: 'Intake', stall_reason: null, updated_at: new Date().toISOString() })
+      .update({ status: 'Intake', stall_reason: null, updated_at: reopenedAt })
       .eq('id', sow.project_id)
-      .in('status', ['Awaiting Signature', 'Changes Requested', 'Stalled'])
+      .in('status', ['Awaiting Signature', 'Changes Requested'])
+    await (service as any).from('projects')
+      .update({ status: 'Intake', stall_reason: null, updated_at: reopenedAt })
+      .eq('id', sow.project_id)
+      .eq('status', 'Stalled').eq('stall_reason', 'sow_unsigned')
 
     await logAudit(service, {
       workspaceId: session.workspaceId,

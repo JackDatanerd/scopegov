@@ -46,6 +46,23 @@ const MAGIC_BYTES: Record<string, (buf: Buffer) => boolean> = {
     buf => buf.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04])),
 }
 
+// FIX (SOW lifecycle pass, B5): browsers often send an EMPTY (or generic application/octet-stream) File.type
+// for extensions they have no registered handler for — notably `.eml` on Chrome/Windows — so an upload the
+// picker explicitly offers was rejected as "Unsupported file type: unknown". Resolve the type from the
+// extension ONLY when the browser gave none; a declared, recognised type is never overridden, and binary
+// types still have to pass the magic-byte check afterwards.
+const EXT_TO_TYPE: Record<string, string> = {
+  eml: 'message/rfc822', txt: 'text/plain', pdf: 'application/pdf',
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+}
+export function resolveAttachmentType(fileName: string, declared: string | null | undefined): string {
+  const t = (declared || '').trim().toLowerCase()
+  if (t && t !== 'application/octet-stream') return t
+  const ext = fileName.includes('.') ? (fileName.split('.').pop() || '').toLowerCase() : ''
+  return EXT_TO_TYPE[ext] || t
+}
+
 export function matchesDeclaredType(mimeType: string, buf: Buffer): boolean {
   const check = MAGIC_BYTES[mimeType]
   return check ? check(buf) : true // text/plain, message/rfc822 — no reliable signature to check

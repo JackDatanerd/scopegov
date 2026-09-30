@@ -49,7 +49,11 @@ function decodeEntities(s: string): string {
 }
 
 // Capture the whole opening tag so an <a>'s href survives into the run.
-const INLINE_TAG_RE = /<(\/?)(strong|b|em|i|u|s|strike|code|br|a)((?:\s[^>]*)?)>|([^<]+)/gi
+// FIX (SOW lifecycle pass, B1): any tag NOT in the first alternative used to be skipped one character at a
+// time — the `<` was dropped and the rest of the tag (`p>`, `/p>`) came out as literal text on the PDF. Tiptap
+// wraps every list item and blockquote body in <p>, so an edited list printed "p>Homepage design/p>". Unknown
+// tags are now swallowed whole (second alternative, no capture groups, so `text` stays group 4).
+const INLINE_TAG_RE = /<(\/?)(strong|b|em|i|u|s|strike|code|br|a)((?:\s[^>]*)?)>|<[^>]*>|([^<]+)/gi
 const HREF_RE = /href\s*=\s*("([^"]*)"|'([^']*)')/i
 
 function collectInlineRuns(html: string): InlineRun[] {
@@ -262,6 +266,16 @@ function renderRuns(runs: InlineRun[]) {
  */
 const NESTED_BULLETS = ['\u2022', '\u25E6', '\u25AA']
 
+// FIX (SOW lifecycle pass, B1): Tiptap emits <li><p>text</p></li> (and one <p> per paragraph when an item
+// holds several). Paragraph/heading wrappers inside an item become line breaks between them; the wrappers
+// themselves never reach the inline scanner.
+function listItemInline(html: string): string {
+  return html
+    .replace(/<\/(p|h[1-4]|blockquote|pre)\s*>\s*<(p|h[1-4]|blockquote|pre)(?:\s[^>]*)?>/gi, '<br>')
+    .replace(/<\/?(p|h[1-4]|blockquote|pre)(?:\s[^>]*)?>/gi, '')
+    .replace(/^(?:\s*<br\s*\/?>)+|(?:<br\s*\/?>\s*)+$/gi, '')
+}
+
 function ListBlock({ tag, inner, style, depth }: { tag: string; inner: string; style: any; depth: number }) {
   const items = splitListItems(inner)
   return (
@@ -274,7 +288,7 @@ function ListBlock({ tag, inner, style, depth }: { tag: string; inner: string; s
               <Text style={[style, { width: 16 }]}>
                 {tag === 'ol' ? `${j + 1}.` : NESTED_BULLETS[Math.min(depth, NESTED_BULLETS.length - 1)]}
               </Text>
-              <Text style={[style, { flex: 1 }]}>{renderRuns(collectInlineRuns(text))}</Text>
+              <Text style={[style, { flex: 1 }]}>{renderRuns(collectInlineRuns(listItemInline(text)))}</Text>
             </View>
             {nested.map((n, k) => (
               <ListBlock key={k} tag={n.tag} inner={n.inner} style={style} depth={depth + 1} />
@@ -284,6 +298,55 @@ function ListBlock({ tag, inner, style, depth }: { tag: string; inner: string; s
       })}
     </View>
   )
+}
+
+/** True when a fragment carries no visible text (an empty <p></p> from a cleared editor line). */
+const isBlank = (html: string) => !/\S/.test(html.replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' '))
+
+function renderBlocks(html: string, style: any): React.ReactNode[] {
+  return splitBlocks(html).map((b, i) => {
+    if (b.tag === 'ul' || b.tag === 'ol') {
+      return <ListBlock key={i} tag={b.tag} inner={b.inner} style={style} depth={0} />
+    }
+    if (b.tag === 'pre') {
+      // Literal/verbatim content — strip a wrapping <code> tag if
+      // present (StarterKit emits <pre><code>...</code></pre>) and
+      // render one line per literal newline, rather than running it
+      // through collectInlineRuns (which would also happily apply
+      // bold/italic marks inside a code block, which isn't the
+      // intent here).
+      const codeText = decodeEntities(
+        b.inner.replace(/^<code(?:\s[^>]*)?>/i, '').replace(/<\/code>\s*$/i, '')
+      )
+      return (
+        <View key={i} style={{
+          backgroundColor: '#F9F8F5', border: '1 solid #E5E1D8', borderRadius: 4,
+          paddingTop: 8, paddingBottom: 8, paddingLeft: 10, paddingRight: 10, marginBottom: 6,
+        }}>
+          {codeText.split('\n').map((line, j) => (
+            <Text key={j} style={[style, { fontFamily: 'Courier', fontSize: 9 }]}>{line || ' '}</Text>
+          ))}
+        </View>
+      )
+    }
+    if (b.tag === 'blockquote') {
+      // FIX (SOW lifecycle pass, B1): Tiptap's blockquote holds <p> children, which were run through the
+      // inline scanner as text. Render its body as blocks, indented and italic.
+      if (isBlank(b.inner)) return null
+      return (
+        <View key={i} style={{ paddingLeft: 10, borderLeft: '2 solid #E5E1D8', marginBottom: 6 }}>
+          {renderBlocks(b.inner, [style, { fontFamily: PDF_FONT.italic }])}
+        </View>
+      )
+    }
+    // An empty paragraph (blank line in the editor) has no content to draw.
+    if (isBlank(b.inner)) return null
+    const headingSize: Record<string, number> = { h1: 14, h2: 13, h3: 12, h4: 11 }
+    const blockStyle = headingSize[b.tag]
+      ? [style, { fontFamily: PDF_FONT.bold, fontSize: headingSize[b.tag] }]
+      : style
+    return <Text key={i} style={[blockStyle, { marginBottom: 6 }]}>{renderRuns(collectInlineRuns(b.inner))}</Text>
+  })
 }
 
 /** Renders sanitized section HTML as react-pdf blocks, preserving bold/italic/underline/strike and rendering <ol> with real numbers instead of collapsing to bullets. */
@@ -299,41 +362,5 @@ export function RichText({ html, style }: { html: string | null | undefined; sty
     return <Text style={[style, { marginBottom: 6 }]}>{renderRuns(collectInlineRuns(html))}</Text>
   }
 
-  return (
-    <>
-      {blocks.map((b, i) => {
-        if (b.tag === 'ul' || b.tag === 'ol') {
-          return <ListBlock key={i} tag={b.tag} inner={b.inner} style={style} depth={0} />
-        }
-        if (b.tag === 'pre') {
-          // Literal/verbatim content — strip a wrapping <code> tag if
-          // present (StarterKit emits <pre><code>...</code></pre>) and
-          // render one line per literal newline, rather than running it
-          // through collectInlineRuns (which would also happily apply
-          // bold/italic marks inside a code block, which isn't the
-          // intent here).
-          const codeText = decodeEntities(
-            b.inner.replace(/^<code(?:\s[^>]*)?>/i, '').replace(/<\/code>\s*$/i, '')
-          )
-          return (
-            <View key={i} style={{
-              backgroundColor: '#F9F8F5', border: '1 solid #E5E1D8', borderRadius: 4,
-              paddingTop: 8, paddingBottom: 8, paddingLeft: 10, paddingRight: 10, marginBottom: 6,
-            }}>
-              {codeText.split('\n').map((line, j) => (
-                <Text key={j} style={[style, { fontFamily: 'Courier', fontSize: 9 }]}>{line || ' '}</Text>
-              ))}
-            </View>
-          )
-        }
-        const headingSize: Record<string, number> = { h1: 14, h2: 13, h3: 12, h4: 11 }
-        const blockStyle = headingSize[b.tag]
-          ? [style, { fontFamily: PDF_FONT.bold, fontSize: headingSize[b.tag] }]
-          : b.tag === 'blockquote'
-            ? [style, { fontFamily: PDF_FONT.italic, paddingLeft: 10, borderLeft: '2 solid #E5E1D8' }]
-            : style
-        return <Text key={i} style={[blockStyle, { marginBottom: 6 }]}>{renderRuns(collectInlineRuns(b.inner))}</Text>
-      })}
-    </>
-  )
+  return <>{renderBlocks(html, style)}</>
 }

@@ -31,7 +31,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { canReadProject } from '@/lib/utils/project-access'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
-import { ALLOWED_ATTACHMENT_TYPES as ALLOWED_TYPES, matchesDeclaredType } from '@/lib/utils/file-signature'
+import { ALLOWED_ATTACHMENT_TYPES as ALLOWED_TYPES, matchesDeclaredType, resolveAttachmentType } from '@/lib/utils/file-signature'
 import { EVIDENCE_BUCKET } from '@/lib/utils/storage-cleanup'
 import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
 
@@ -117,10 +117,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const formData = await request.formData()
     const file = formData.get('file')
     if (!(file instanceof File)) return NextResponse.json({ error: 'No file provided' }, { status: 400 })
+    // Browsers send an empty File.type for some extensions (.eml on Chrome/Windows) — see resolveAttachmentType.
+    const fileType = resolveAttachmentType(file.name, file.type)
     if (file.size > MAX_FILE_BYTES)
       return NextResponse.json({ error: 'File exceeds 10 MB limit' }, { status: 400 })
-    if (!ALLOWED_TYPES.has(file.type))
-      return NextResponse.json({ error: `Unsupported file type: ${file.type || 'unknown'}` }, { status: 400 })
+    if (!ALLOWED_TYPES.has(fileType))
+      return NextResponse.json({ error: `Unsupported file type: ${fileType || 'unknown'}` }, { status: 400 })
 
     const rawExt = file.name.includes('.') ? (file.name.split('.').pop() || '') : ''
     const ext = rawExt.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 10) || 'bin'
@@ -128,11 +130,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const storagePath = `${session.workspaceId}/sow/${id}/${randomUUID()}.${ext}`
 
     const buffer = Buffer.from(await file.arrayBuffer())
-    if (!matchesDeclaredType(file.type, buffer)) {
+    if (!matchesDeclaredType(fileType, buffer)) {
       return NextResponse.json({ error: 'File content does not match its declared type' }, { status: 400 })
     }
     const { error: uploadError } = await service.storage.from(EVIDENCE_BUCKET).upload(storagePath, buffer, {
-      contentType: file.type, upsert: false,
+      contentType: fileType, upsert: false,
     })
     if (uploadError) throw new Error(uploadError.message)
 
@@ -143,7 +145,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       p_sow_id: id,
       p_file_name: displayName,
       p_file_size: file.size,
-      p_mime_type: file.type,
+      p_mime_type: fileType,
       p_storage_path: storagePath,
       p_uploaded_by: session.id,
     })
@@ -177,7 +179,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     return NextResponse.json({
       attachment: {
-        id: attachment.id, fileName: displayName, fileSize: file.size, mimeType: file.type,
+        id: attachment.id, fileName: displayName, fileSize: file.size, mimeType: fileType,
         uploadedAt: attachment.uploaded_at, uploadedByName: session.name,
         downloadUrl: signed?.signedUrl || null,
       },

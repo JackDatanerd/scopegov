@@ -133,7 +133,8 @@ export default async function SowPage() {
         </div>
       </div>
 
-      {isSoloCapped && (
+      {/* FIX (SOW lifecycle pass, B6): only when older SOWs are actually hidden. */}
+      {isSoloCapped && stats.total > safeSows.length && (
         <div className="banner banner-info" style={{ marginBottom: 20 }}>
           <span>Showing the 10 most recent SOWs. <strong>Upgrade to Starter or above</strong> to see the full history.</span>
           <Link href="/settings?tab=billing">

@@ -159,14 +159,17 @@ export default function SowPortalPage() {
   // exclusion, so the 'parties' section's boilerplate text ("This SOW is
   // entered into between Agency and Client") printed a second time,
   // restating the info box directly above it.
+  const hasText = (html?: string) => !!html && html.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim().length > 0
+  // FIX (SOW lifecycle pass, B4): same rule as the PDF — a visible prose section with no text is omitted
+  // instead of showing a heading over nothing (tables keep their own "To be defined" placeholder).
   const visibleSections = sow?.sections
     .filter(s => s.visible && !['parties', 'signature'].includes(s.id))
+    .filter(s => isTableSection(s.id) || hasText(s.content))
     .sort((a, b) => a.order - b.order) || []
   // The Parties and Signature sections are excluded from the generic loop (their data-driven blocks
   // replace the boilerplate heading), but the TEXT the agency wrote in them — the "entered into
   // between…" preamble and the "by signing below, both parties agree…" clause — is part of the
   // agreement and must reach the signer. Rendered once, in place. Content is sanitised server-side.
-  const hasText = (html?: string) => !!html && html.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim().length > 0
   const partiesProse   = sow?.sections.find(s => s.id === 'parties' && s.visible && hasText(s.content))?.content || ''
   const signatureProse = sow?.sections.find(s => s.id === 'signature' && s.visible && hasText(s.content))?.content || ''
 

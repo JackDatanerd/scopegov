@@ -341,6 +341,10 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
   const hasMilestoneBlock = !!(data.paymentSchedule && data.paymentSchedule.length > 0) && scheduleSectionVisible
   const sections = data.sections
     .filter(sec => sec.visible && !['parties','signature'].includes(sec.id))
+    // FIX (SOW lifecycle pass, B4): a visible prose section with no text (e.g. Assumptions cleared in the
+    // editor) printed its numbered heading over blank space and used up a section number. Tables keep their
+    // own "To be defined" placeholder; empty prose is simply omitted so numbering stays contiguous.
+    .filter(sec => isTableSection(sec.id) || hasRichText(sec.content))
     .filter(sec => !(hasMilestoneBlock && sec.id === 'payment_schedule'))
     .sort((a, b) => a.order - b.order)
 

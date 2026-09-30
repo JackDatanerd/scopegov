@@ -15,6 +15,8 @@ import path from 'node:path'
 // mocked) Postgres/PostgREST, not unit tests against a hand-rolled
 // client mock.
 export default defineConfig({
+  // tsconfig has jsx:'preserve' (Next compiles JSX itself); tests that execute .tsx modules need it transformed.
+  oxc: { jsx: { runtime: 'automatic' } },
   test: {
     environment: 'node',
     include: ['tests/**/*.{test,spec}.ts'],

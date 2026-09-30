@@ -30,7 +30,7 @@ export async function POST(request: NextRequest) {
 
     const reqBody = await request.json().catch(() => null)
     const briefText   = typeof reqBody?.briefText === 'string' ? reqBody.briefText : ''
-    const projectType = typeof reqBody?.projectType === 'string' ? reqBody.projectType : undefined
+    const projectType = typeof reqBody?.projectType === 'string' ? reqBody.projectType.slice(0, 120) : undefined
     if (!briefText.trim()) return NextResponse.json({ error: 'briefText required' }, { status: 400 })
 
     // FIX (audit round 3): no rate limiting existed on this or any other

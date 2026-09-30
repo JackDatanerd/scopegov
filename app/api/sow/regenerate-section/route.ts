@@ -131,6 +131,9 @@ No preamble, no explanation, no markdown fences. Just the HTML content.`
 
     // Validate it's not empty
     if (!raw || stripHtml(raw).length < 10) {
+      // FIX (SOW lifecycle pass, B3): the model call already happened — count it, like every other
+      // post-call exit in this route, so empty replies can't be retried past the rate limit for free.
+      await recordAiUsage(service, session.workspaceId, session.id, 'sow.regenerateSection')
       return NextResponse.json({ error: 'Regeneration produced empty content' }, { status: 500 })
     }
 
