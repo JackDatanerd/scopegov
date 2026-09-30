@@ -123,7 +123,14 @@ export default function ResetPasswordPage() {
           router.push('/mfa-challenge?next=' + encodeURIComponent('/reset-password'))
           return
         }
-        if (body.code === 'no_session' || body.code === 'stale_session') setLinkInvalid(true)
+        // FIX (Auth+MFA independent pass 6): with no valid session at all, middleware answers
+        // /api/* with a bare 401 { error: 'Unauthorized' } and NO `code`, so this route's own
+        // `no_session` was unreachable and the page printed "Unauthorized" instead of the
+        // "Reset link expired" screen. A code-less 401 here means the same thing.
+        if (body.code === 'no_session' || body.code === 'stale_session' || (res.status === 401 && !body.code)) {
+          setLinkInvalid(true)
+          return
+        }
         setError(body.error || 'Could not reset your password.')
         return
       }

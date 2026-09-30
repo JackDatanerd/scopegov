@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { safeRedirectPath } from '@/lib/utils/safe-redirect'
 import { resolveLoginMessage } from '@/lib/auth/login-messages'
+import { TERMS_VERSION } from '@/lib/auth/terms'
 
 export default function LoginForm() {
   const router = useRouter()
@@ -106,7 +107,11 @@ export default function LoginForm() {
     try {
       const { error: err } = await supabase.auth.signInWithOAuth({
         provider: 'google',
-        options: { redirectTo: `${window.location.origin}/api/auth/callback?next=${encodeURIComponent(next)}` },
+        // FIX (Auth+MFA pass): Google sign-in on this page can CREATE an account, but only
+        // /signup passed `terms`, so those accounts never had terms_accepted_at recorded.
+        // The notice under the button states the terms; the callback stamps the version
+        // shown (only when none is recorded yet).
+        options: { redirectTo: `${window.location.origin}/api/auth/callback?next=${encodeURIComponent(next)}&terms=${encodeURIComponent(TERMS_VERSION)}` },
       })
       if (err) { setError(err.message); setGoogleLoading(false) }
     } catch { setError('Google sign-in failed.'); setGoogleLoading(false) }
@@ -167,6 +172,11 @@ export default function LoginForm() {
             )}
             Continue with Google
           </button>
+          <p style={{ fontSize: 11, color: 'var(--text-3)', textAlign: 'center', margin: '-8px 0 16px', lineHeight: 1.6 }}>
+            By continuing with Google you agree to our{' '}
+            <a href="/legal/terms" target="_blank" className="auth-link">Terms</a> and{' '}
+            <a href="/legal/privacy" target="_blank" className="auth-link">Privacy Policy</a>.
+          </p>
           <div className="auth-divider">
             <div className="auth-divider-line" />
             <span className="auth-divider-text">or continue with email</span>

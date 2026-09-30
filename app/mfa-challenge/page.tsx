@@ -52,7 +52,8 @@ function MfaChallengeInner() {
         verified = data?.totp?.find(f => f.status === 'verified')
       }
       if (cancelled) return
-      if (!verified) { router.replace(next); return }
+      // A crafted ?next=/mfa-challenge would replace this page with itself and hang here.
+      if (!verified) { router.replace(next.startsWith('/mfa-challenge') ? '/dashboard' : next); return }
       setFactorId(verified.id)
       setLoadingFactor(false)
     }

@@ -106,6 +106,16 @@ export async function DELETE(request: Request) {
     const { factorId } = body as { factorId?: string }
     if (!factorId) return NextResponse.json({ error: 'factorId is required' }, { status: 400 })
 
+    // FIX (Auth+MFA pass): only a VERIFIED factor of this account may be removed here.
+    // listFactors().totp holds verified factors only. Unenrolling anything else (e.g. a
+    // half-finished factor created straight against GoTrue) succeeded, and the code below
+    // then retired every backup code and logged "MFA disabled" while MFA stayed ON —
+    // leaving the account with two-factor active and no recovery codes.
+    const { data: factorList } = await supabase.auth.mfa.listFactors()
+    if (!(factorList?.totp || []).some(f => f.id === factorId)) {
+      return NextResponse.json({ error: 'That is not an active two-factor factor on your account.' }, { status: 400 })
+    }
+
     const { error } = await supabase.auth.mfa.unenroll({ factorId })
     if (error) return NextResponse.json({ error: error.message }, { status: 400 })
 

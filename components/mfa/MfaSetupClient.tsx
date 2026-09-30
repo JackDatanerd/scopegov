@@ -88,7 +88,7 @@ export default function MfaSetupClient({ mandatory, next, recovered, userName }:
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ factorId, code }),
       })
-      const json = await res.json()
+      const json = await res.json().catch(() => ({} as { error?: string; backupCodes?: string[] }))
       if (!res.ok) throw new Error(json.error || 'Verification failed')
       // Never let an empty response (e.g. a login-challenge branch, or a
       // stray retry after codes were already issued) clobber codes we've

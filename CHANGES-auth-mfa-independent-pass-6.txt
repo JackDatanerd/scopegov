@@ -1,0 +1,29 @@
+Auth + MFA — independent pass 6 (fix round)
+===========================================
+Audited from the uploaded scopegov-full tar. No migration. No new env vars.
+
+B1  Pass-5 delivery landed at the wrong paths (MEDIUM)
+    The last Auth+MFA tar was extracted one level too deep, so its fixes sit in stray root-level
+    copies ((auth)/, (app)/, api/, mfa/, mfa-challenge/, auth-mfa-independent-pass-5.test.ts)
+    while the real files under app/ and components/ lacked them. Fixes now applied at the real paths
+    (B2-B5 below) and the stray copies removed (see git rm in the commands). The pass-5 test moved
+    into tests/ so vitest actually runs it.
+B2  Settings hid "current password" for Google-first accounts that set a password
+    app/(app)/settings/page.tsx asks user_has_password (same source as /api/auth/change-password).
+B3  Google sign-in from /login never recorded terms acceptance
+    LoginForm.tsx sends &terms=<TERMS_VERSION> to /api/auth/callback and shows the notice.
+B4  DELETE /api/auth/mfa/factors accepted any factorId
+    Now only a VERIFIED factor of the caller can be unenrolled (else 400) — stops "MFA disabled"
+    audit/email + backup-code retirement while MFA is still on.
+B5  MfaSetupClient.handleVerify tolerated no non-JSON body; /mfa-challenge?next=/mfa-challenge
+    could replace the page with itself and hang. Both fixed.
+B6  middleware matcher 307'd /site.webmanifest and /browserconfig.xml to /login (NEW)
+    Both are linked from app/layout.tsx and fetched without credentials. Matcher now excludes
+    .webmanifest files and /browserconfig.xml.
+B7  reset-password page printed a bare "Unauthorized" for a dead session (NEW)
+    Middleware answers /api/* with 401 and no `code`, so the route's no_session was unreachable.
+    A code-less 401 now shows the "Reset link expired" screen.
+
+Tests: tests/auth-mfa-independent-pass-5.test.ts (moved), tests/auth-mfa-independent-pass-6.test.ts (new).
+Could not run npm test / tsc in the assistant sandbox (no node_modules) — run `npm test` and
+`npx tsc --noEmit` locally before pushing.

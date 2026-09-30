@@ -14,7 +14,7 @@ const read = (p: string) => readFileSync(join(process.cwd(), p), 'utf8')
 
 describe('Auth+MFA pass 5', () => {
   it('B1: settings page asks user_has_password and passes the result to SettingsClient', () => {
-    const src = read('app/(app)/settings/page.tsx')
+    const src = read("app/(app)/settings/page.tsx")
     expect(src).toContain("rpc('user_has_password', { p_user: session.id })")
     expect(src).toContain('session={{ ...session, hasPasswordIdentity }}')
   })

@@ -17,6 +17,19 @@ export default async function SettingsPage() {
 
   const service = createServiceClient()
 
+  // FIX (Auth+MFA pass — Google-first accounts): getSession() infers "has a
+  // password" from an 'email' identity, but GoTrue does not necessarily add one
+  // when an OAuth-first person sets a password. /api/auth/change-password asks
+  // the source of truth (auth.users.encrypted_password) and then DEMANDS the
+  // current password — while this screen, trusting the heuristic, hid the field.
+  // Result: after setting a first password the person could never change it again
+  // from Settings. Ask the same source here, only when the heuristic says "none".
+  let hasPasswordIdentity = session.hasPasswordIdentity
+  if (!hasPasswordIdentity) {
+    const { data: hasPw, error: hasPwErr } = await (service as any).rpc('user_has_password', { p_user: session.id })
+    if (!hasPwErr && hasPw === true) hasPasswordIdentity = true
+  }
+
   const [wsRes, billingRes, defaultsRes] = await Promise.all([
     (service as any)
       .from('workspaces')
@@ -177,7 +190,7 @@ export default async function SettingsPage() {
       billing={billing}
       defaults={canManageWorkspace ? (defaultsRes.data?.[0] ?? null) : null}
       logoUrl={logoUrl}
-      session={session}
+      session={{ ...session, hasPasswordIdentity }}
       mfaMandatory={mfaMandatory}
       permissions={{
         manageWorkspace: canManageWorkspace,

@@ -387,7 +387,13 @@ export const config = {
      * - _next/static, _next/image (Next.js internals)
      * - favicon.ico, robots.txt
      * - Public assets
+     *
+     * FIX (Auth+MFA independent pass 6): /site.webmanifest and /browserconfig.xml
+     * (both linked from app/layout.tsx and fetched by the browser WITHOUT credentials)
+     * were not excluded, so every signed-out fetch was 307'd to the HTML /login page —
+     * the manifest failed to parse and PWA install / tile metadata broke. Both are
+     * static public files; exclude them like the images.
      */
-    '/((?!_next/static|_next/image|favicon.ico|robots.txt|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+    '/((?!_next/static|_next/image|favicon.ico|robots.txt|.*\\.(?:svg|png|jpg|jpeg|gif|webp|webmanifest)$|browserconfig\\.xml$).*)',
   ],
 }
