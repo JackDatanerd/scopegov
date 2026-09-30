@@ -1,0 +1,5 @@
+Onboarding independent pass 6 — three minor fixes, all in app/onboarding/page.tsx
+M1 offline-restored progress no longer shows the "add a governing law" warning (server value unknown)
+M2 discarding a workspace clears the stale "recently deleted" list immediately
+M3 waiting screen reloads if the fallback moves to a different waiting workspace
+Test: tests/onboarding-independent-pass-6.test.ts

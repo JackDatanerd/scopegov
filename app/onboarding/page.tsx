@@ -178,6 +178,10 @@ function OnboardingWizard() {
   // whatever is currently typed in the field, which "Skip" leaves unsaved. SOW generation
   // hard-blocks without it, so step 4 says so when it's still empty.
   const [savedGoverningLaw, setSavedGoverningLaw] = useState('')
+  // Onboarding independent pass 6: true only when progress was restored from localStorage because the
+  // status fetch failed, so what the server holds for governing law is unknown. The step-4 warning
+  // ("you'll need to add a governing law") is a claim about the server, so it stays quiet then.
+  const [savedLawUnknown, setSavedLawUnknown] = useState(false)
 
   // FEATURE (deep audit, Workspace lifecycle + Onboarding re-pass —
   // feature gap): see restore_workspace_atomic's own comment (migration
@@ -322,6 +326,7 @@ function OnboardingWizard() {
         setTrialConflictWorkspaceId(null)
         setInviteFailedEmails([])
         setSavedGoverningLaw('')
+        setSavedLawUnknown(false)
         setError('')
         setShowExit(false)
         setStep(0)
@@ -481,6 +486,7 @@ function OnboardingWizard() {
               if (s.paymentStructure) setPaymentStructure(s.paymentStructure)
               if (s.governingLaw)     setGoverningLaw(s.governingLaw)
               if (s.sowLanguage)      setSowLanguage(s.sowLanguage)
+              setSavedLawUnknown(true)
               setRestored(true)
               setGate('create')
               return
@@ -725,6 +731,7 @@ function OnboardingWizard() {
       // mount effect's own already-hardened per-status handling decide,
       // rather than re-deciding a subset of it here a second time.
       setOtherWorkspaces([])
+      setRestorable([])
       try {
         const res  = await fetch('/api/workspace/onboarding-status')
         const json = await res.json().catch(() => ({}))
@@ -974,6 +981,7 @@ function OnboardingWizard() {
           return
         }
         setSavedGoverningLaw(governingLaw.trim())
+        setSavedLawUnknown(false)
       } catch {
         setError('Could not save your defaults — try again, or skip this step.')
         return
@@ -1114,11 +1122,15 @@ function OnboardingWizard() {
         const json = await res.json().catch(() => ({}))
         if (!res.ok) return
         if (json.status === 'complete') { router.push('/dashboard'); return }
-        if (json.status && json.status !== 'waiting') window.location.reload()
+        if (json.status && json.status !== 'waiting') { window.location.reload(); return }
+        // Onboarding independent pass 6: still 'waiting', but on a different workspace (the one on
+        // screen was deleted or left and the fallback moved on) — the name and Leave button would
+        // otherwise keep pointing at the old one.
+        if (json.workspaceId && waitingFor?.workspaceId && json.workspaceId !== waitingFor.workspaceId) window.location.reload()
       } catch { /* transient — try again next tick */ }
     }, 15000)
     return () => clearInterval(interval)
-  }, [gate])
+  }, [gate, waitingFor?.workspaceId])
 
   // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — feature
   // gap): the 'create' gate got a whole exit panel ("switch to a
@@ -1673,7 +1685,7 @@ function OnboardingWizard() {
             )}
             {/* FIX (fresh independent audit, section 4 — feature gap): see savedGoverningLaw and
                 the step-2 hint — /api/sow/generate refuses to run without this saved. */}
-            {!savedGoverningLaw.trim() && (
+            {!savedGoverningLaw.trim() && !savedLawUnknown && (
               <p style={{ fontSize: 12, color: 'var(--amber, #B45309)', textAlign: 'center', marginBottom: 16 }}>
                 <i className="ti ti-alert-triangle" style={{ fontSize: 12, marginRight: 4 }} />
                 You&rsquo;ll need to add a governing law in Settings before you can generate a SOW.
