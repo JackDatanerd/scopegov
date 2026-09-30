@@ -2,6 +2,7 @@ export const runtime = 'nodejs'
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
+import { escapeIlike } from '@/lib/audit/search'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import {
   foldedTokens, plainTokens, likePattern, prefixLike, isSearchable, rankBy, searchRateLimited,
@@ -53,6 +54,15 @@ import {
 //   • Member results linked to bare /team with no way to tell which of potentially many rows matched —
 //     every other category deep-links to the specific thing (a client id, ?tab=co, ...). /team now
 //     honours the same `?highlight=` convention ApprovalsClient/ProjectDetail/BillingTab already use.
+
+// Round 5 (Search section, independent pass) — what this pass found and fixes:
+//   • Every start-of-text (`term%`) fetch had no ORDER BY, and none of the blocks had an EXACT-match fetch: in
+//     a workspace with more than FETCH rows sharing a prefix ("Acme", "Acme Labs", "Acme Corp" …) the row
+//     whose name IS what was typed could fall outside every fetch. Prefix fetches are now ordered newest-first
+//     and clients/projects/change orders/invoices also run a case-insensitive whole-name equality fetch.
+//   • Contacts were ranked and cut to three BEFORE the ones belonging to an already-listed client were dropped,
+//     so a client's own contacts could use up the slots (and the row limit) and crowd out real matches at other
+//     clients. Those clients are now excluded in the query, ahead of the limit.
 
 type Result = { type: string; id: string; title: string; sub: string; href: string }
 
@@ -122,14 +132,24 @@ export async function GET(request: NextRequest) {
         .eq('workspace_id', wsId)
       let cq = base()
       for (const t of folded) cq = cq.ilike('search_text', likePattern(t))
-      const [a, b] = await Promise.all([
+      const [a, b, c] = await Promise.all([
         cq.order('created_at', NEWEST).limit(FETCH),
-        base().ilike('search_text', prefixLike(wholeFolded)).limit(FETCH),
+        base().ilike('search_text', prefixLike(wholeFolded)).order('created_at', NEWEST).limit(FETCH),
+        // Whole-name equality (no wildcards → case-insensitive `=`): the client whose name IS the query.
+        base().ilike('name', escapeIlike(wholePlain)).limit(FETCH),
       ])
-      return dedupe([...must<any[]>(a), ...must<any[]>(b)])
+      return dedupe([...must<any[]>(a), ...must<any[]>(b), ...must<any[]>(c)])
     })
     const clientMatches = rankBy(clientRows, folded, c => `${c.name} ${c.company_name || ''}`)
     const clientIds = clientMatches.slice(0, FETCH).map(c => c.id)
+    const clientResults: Result[] = clientMatches.slice(0, 4).map(c => ({
+      type: 'client', id: c.id, title: c.name,
+      sub: [c.company_name || (canViewClientData ? c.email : ''), c.status === 'archived' ? 'Archived' : null]
+        .filter(Boolean).join(' · '),
+      href: `/clients/${c.id}`,
+    }))
+    // A contact whose client is already listed adds nothing — excluded in the query (ahead of the row limit).
+    const listedClientIds = clientResults.map(c => c.id)
     // Documents/flags of a matching client (the document's project belongs to that client).
     const byClientIds = (q: any) => q.in('projects.client_id', clientIds)
 
@@ -146,14 +166,16 @@ export async function GET(request: NextRequest) {
         // three siblings in this same query and every byClientIds fetch below.
         const byClient = clientIds.length ? base().in('client_id', clientIds).order('created_at', NEWEST).limit(FETCH) : null
         const none = Promise.resolve({ data: [], error: null })
-        const [a, b, c, d] = await Promise.all([
+        const [a, b, c, d, e] = await Promise.all([
           own.order('created_at', NEWEST).limit(FETCH),
           byClient ?? none,
-          base().ilike('search_text', prefixLike(wholeFolded)).limit(FETCH),
+          base().ilike('search_text', prefixLike(wholeFolded)).order('created_at', NEWEST).limit(FETCH),
           // The reference number people file a project under (shown on the project header).
-          base().ilike('internal_ref', likePattern(wholePlain)).limit(FETCH),
+          base().ilike('internal_ref', likePattern(wholePlain)).order('created_at', NEWEST).limit(FETCH),
+          // The project whose name IS the query (see the round-5 note at the top).
+          base().ilike('name', escapeIlike(wholePlain)).limit(FETCH),
         ])
-        const rows = dedupe([...must<any[]>(a), ...must<any[]>(b), ...must<any[]>(c), ...must<any[]>(d)])
+        const rows = dedupe([...must<any[]>(a), ...must<any[]>(b), ...must<any[]>(c), ...must<any[]>(d), ...must<any[]>(e)])
         return rankBy(rows, folded, p => `${p.name} ${p.disc || ''} ${p.internal_ref || ''} ${p.clients?.name || ''}`).slice(0, 5).map(p => ({
           type: 'project', id: p.id,
           title: p.name + (p.disc ? ` — ${p.disc}` : ''),
@@ -169,7 +191,11 @@ export async function GET(request: NextRequest) {
           .select('id, name, email, role, client_id, clients!inner(id, name, workspace_id)')
           .eq('clients.workspace_id', wsId)
         for (const t of folded) cq = cq.ilike('search_text', likePattern(t))
+        if (listedClientIds.length) cq = cq.not('client_id', 'in', `(${listedClientIds.join(',')})`)
+        // The query already excludes them; filtering again here is what guarantees a listed client's contacts can never
+        // take one of the three slots, whatever the database returned.
         const rows = dedupe(must<any[]>(await cq.order('created_at', NEWEST).limit(FETCH)))
+          .filter(c => !listedClientIds.includes(c.client_id))
         return rankBy(rows, folded, c => `${c.name} ${c.email || ''}`).slice(0, 3).map(c => ({
           type: 'contact', id: c.id,
           title: c.name,
@@ -217,14 +243,15 @@ export async function GET(request: NextRequest) {
         let byProject = base()
         for (const t of folded) byProject = byProject.ilike('projects.search_text', likePattern(t))
         const none = Promise.resolve({ data: [], error: null })
-        const [a, b, c, d, e] = await Promise.all([
+        const [a, b, c, d, e, f] = await Promise.all([
           byTitle.order('created_at', NEWEST).limit(FETCH),
-          base().ilike('document_number', likePattern(wholePlain)).limit(FETCH),
+          base().ilike('document_number', likePattern(wholePlain)).order('created_at', NEWEST).limit(FETCH),
           byProject.order('created_at', NEWEST).limit(FETCH),
-          base().ilike('title', prefixLike(wholePlain)).limit(FETCH),
+          base().ilike('title', prefixLike(wholePlain)).order('created_at', NEWEST).limit(FETCH),
           clientIds.length ? byClientIds(base()).order('created_at', NEWEST).limit(FETCH) : none,
+          base().ilike('title', escapeIlike(wholePlain)).limit(FETCH),
         ])
-        const rows = dedupe([...must<any[]>(a), ...must<any[]>(b), ...must<any[]>(c), ...must<any[]>(d), ...must<any[]>(e)])
+        const rows = dedupe([...must<any[]>(a), ...must<any[]>(b), ...must<any[]>(c), ...must<any[]>(d), ...must<any[]>(e), ...must<any[]>(f)])
         // Ranked with `folded` (not `plain`): a row can now be here purely because it matched the
         // *project's* search_text via a folded token, and plain tokens keep accents SOW's own
         // ranking already avoids for the same reason — see that block below.
@@ -247,7 +274,7 @@ export async function GET(request: NextRequest) {
         const none = Promise.resolve({ data: [], error: null })
         const [a, b, c] = await Promise.all([
           byProject.order('created_at', NEWEST).limit(FETCH),
-          base().ilike('document_number', likePattern(wholePlain)).limit(FETCH),
+          base().ilike('document_number', likePattern(wholePlain)).order('created_at', NEWEST).limit(FETCH),
           clientIds.length ? byClientIds(base()).order('created_at', NEWEST).limit(FETCH) : none,
         ])
         const rows = dedupe([...must<any[]>(a), ...must<any[]>(b), ...must<any[]>(c)])
@@ -271,14 +298,15 @@ export async function GET(request: NextRequest) {
         let byProject = base()
         for (const t of folded) byProject = byProject.ilike('projects.search_text', likePattern(t))
         const none = Promise.resolve({ data: [], error: null })
-        const [a, b, c, d, e] = await Promise.all([
+        const [a, b, c, d, e, f] = await Promise.all([
           byTitle.order('created_at', NEWEST).limit(FETCH),
-          base().ilike('invoice_number', likePattern(wholePlain)).limit(FETCH),
+          base().ilike('invoice_number', likePattern(wholePlain)).order('created_at', NEWEST).limit(FETCH),
           byProject.order('created_at', NEWEST).limit(FETCH),
-          base().ilike('title', prefixLike(wholePlain)).limit(FETCH),
+          base().ilike('title', prefixLike(wholePlain)).order('created_at', NEWEST).limit(FETCH),
           clientIds.length ? byClientIds(base()).order('created_at', NEWEST).limit(FETCH) : none,
+          base().ilike('title', escapeIlike(wholePlain)).limit(FETCH),
         ])
-        const rows = dedupe([...must<any[]>(a), ...must<any[]>(b), ...must<any[]>(c), ...must<any[]>(d), ...must<any[]>(e)])
+        const rows = dedupe([...must<any[]>(a), ...must<any[]>(b), ...must<any[]>(c), ...must<any[]>(d), ...must<any[]>(e), ...must<any[]>(f)])
         // Ranked with `folded` — see the change-orders block above for why.
         return rankBy(rows, folded, inv => `${inv.invoice_number || ''} ${inv.title} ${inv.projects?.name || ''}`).slice(0, 4).map(inv => ({
           type: 'invoice', id: inv.id,
@@ -319,18 +347,7 @@ export async function GET(request: NextRequest) {
       }),
     ])
 
-    const clientResults: Result[] = clientMatches.slice(0, 4).map(c => ({
-      type: 'client', id: c.id, title: c.name,
-      sub: [c.company_name || (canViewClientData ? c.email : ''), c.status === 'archived' ? 'Archived' : null]
-        .filter(Boolean).join(' · '),
-      href: `/clients/${c.id}`,
-    }))
-
-    // A contact whose client is already listed adds nothing.
-    const listedClients = new Set(clientResults.map(c => c.id))
-    const contacts = contactRes.filter(c => !listedClients.has(c.href.replace('/clients/', '')))
-
-    const results: Result[] = [...projectRes, ...clientResults, ...contacts, ...memberRes, ...coRes, ...sowRes, ...invoiceRes, ...flagRes]
+    const results: Result[] = [...projectRes, ...clientResults, ...contactRes, ...memberRes, ...coRes, ...sowRes, ...invoiceRes, ...flagRes]
 
     // Every block failing is an outage, not "no matches".
     if (failed.length > 0 && failed.length >= blocksRun)

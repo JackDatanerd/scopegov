@@ -4,7 +4,7 @@
 
 'use client'
 import { useState, useEffect } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import type { SessionUser } from '@/lib/supabase/types'
 import type { ShapedActivity } from '@/lib/utils/activity-format'
@@ -108,6 +108,25 @@ export default function ProjectDetail({
 }: Props) {
   const router = useRouter()
   const [tab,        setTab]        = useState(initialTab)
+  // FIX (Search section, round 5): `tab` was seeded from the server's `initialTab` once and never followed the URL
+  // again, and the tab buttons never wrote to it. Picking this project's own SOW / change order / invoice / flag in
+  // the command palette is a push to the SAME route with a different ?tab= — the component stays mounted, so
+  // nothing happened. The URL is now the source of truth both ways: a ?tab= change (palette, back/forward) moves
+  // the tab, and clicking a tab updates ?tab= (history.replaceState — no server round trip) so a palette jump to
+  // the tab you're already viewing is a no-op and to any other tab always differs from the current URL.
+  const searchParams = useSearchParams()
+  const urlTab = searchParams.get('tab')
+  useEffect(() => {
+    if (urlTab && TABS.some(t => t.key === urlTab)) setTab(urlTab)
+  }, [urlTab])
+  function selectTab(key: string) {
+    setTab(key)
+    try {
+      const u = new URL(window.location.href)
+      u.searchParams.set('tab', key)
+      window.history.replaceState(window.history.state, '', u)
+    } catch { /* URL sync is best-effort; the tab itself already changed */ }
+  }
   const [completing, setCompleting] = useState(false)
   const [archiving,  setArchiving]  = useState(false)
   const [error,      setError]      = useState('')
@@ -422,7 +441,7 @@ export default function ProjectDetail({
 
         <div className="tabbar">
           {TABS.map(t => (
-            <button key={t.key} className={`tabi${tab === t.key ? ' act' : ''}`} onClick={() => setTab(t.key)}>
+            <button key={t.key} className={`tabi${tab === t.key ? ' act' : ''}`} onClick={() => selectTab(t.key)}>
               <i className={`ti ${t.icon}`} style={{ fontSize: 12, marginRight: 5 }} />
               {t.label}
               {t.key === 'guardian' && openFlagCount > 0 && <span className="tabi-badge">{openFlagCount}</span>}

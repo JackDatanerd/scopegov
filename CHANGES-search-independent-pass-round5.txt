@@ -1,0 +1,25 @@
+Search (section 20) — independent pass, round 5
+Base: 9c388ea
+
+S1 (Medium, crosses into Projects) components/projects/ProjectDetail.tsx
+  Picking a SOW / change order / invoice / Guardian flag of the project you are ALREADY on in the command palette
+  pushed the same route with a different ?tab=, but the tab was useState(initialTab) — seeded once, never re-synced —
+  so nothing happened. The URL is now the source of truth both ways: ?tab= changes move the tab; tab clicks write
+  ?tab= via history.replaceState (no server round trip), so a later palette jump always differs from the current URL.
+
+S2 (Low-Medium) app/api/search/route.ts
+  Contacts were ranked and cut to 3 (and row-limited to 15) BEFORE contacts of an already-listed client were dropped,
+  so that client's own contacts could fill the slots and crowd out real matches at other clients. Listed clients are
+  now excluded in the query (client_id NOT IN) and again in JS before ranking.
+
+S3 (Low, cosmetic) components/layout/CommandPalette.tsx
+  During the 200ms debounce the previous query's verdict stayed on screen, so after a zero-result or failed search
+  the next keystroke read "No results for <new query>" / "Search is unavailable" before any request existed. Status
+  is reset to idle when a new query is scheduled (results on screen are kept — no flicker).
+
+S4 (Low) app/api/search/route.ts
+  Start-of-text / number fetches had no ORDER BY and there was no exact-match fetch, so with >15 rows sharing a prefix
+  the row whose name IS the query could fall outside every fetch. Prefix and document-number fetches are ordered
+  newest-first; clients, projects, change orders and invoices also run a case-insensitive whole-name equality fetch.
+
+Tests: tests/search-section-pass-round5.test.ts (9). Full suite: 136 files / 1410 tests pass. tsc clean.

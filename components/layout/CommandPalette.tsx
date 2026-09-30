@@ -98,6 +98,11 @@ export default function CommandPalette({ permissions = [] }: Props) {
       setResults([]); setLoading(false); setStatus('idle'); setPartial(false); resultsFor.current = ''
       return
     }
+    // FIX (Search section, round 5): `status` still described the PREVIOUS query while this one waited out the
+    // debounce, so after a zero-result or failed search the next keystroke immediately read "No results for
+    // <new query>" / "Search is unavailable" before any request for it existed. Results already on screen stay
+    // (no flicker); only the verdict about them is withheld until this query's response arrives.
+    setStatus('idle')
     debounce.current = setTimeout(async () => {
       setLoading(true)
       try {
