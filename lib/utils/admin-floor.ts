@@ -153,6 +153,14 @@ export function approvalPermissionOrphanedBy(
   activeMembers: ActiveMemberSnapshot[],
   simulated: Map<string, Record<string, unknown> | null>
 ): boolean {
+  // FIX (Team & Invites independent pass): the comment above promises this only fires for "the edit that
+  // would remove the LAST holder", but the body only checked that nobody holds it AFTER the change — so in
+  // a workspace where no active member held it to begin with (which is legitimate, see above), every edit
+  // to a pending invite, deactivated member or holder-less role that merely carried APPROVE_DOCUMENTS was
+  // refused with "would leave the workspace with no one who can approve documents", though nothing about
+  // who can approve changes. The SQL mirrors already guard on there being a holder first; this now does too.
+  const hadHolder = activeMembers.some(m => m.effectivePermissions?.['APPROVE_DOCUMENTS'] === true)
+  if (!hadHolder) return false
   return !activeMembers.some(m => {
     const perms = simulated.has(m.id) ? simulated.get(m.id) : m.effectivePermissions
     return perms?.['APPROVE_DOCUMENTS'] === true

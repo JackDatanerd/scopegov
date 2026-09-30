@@ -1,0 +1,69 @@
+scopegov — Section 6 (Team & Invites) independent pass 3 — 5 fixes
+====================================================================
+
+Fresh independent audit of Section 6 that ignored every prior "FIX" comment.
+Bugs only. Code-only: no migration required.
+
+MODIFIED FILES (7) + NEW TEST (1)
+---------------------------------
+
+  app/api/team/[id]/resend/route.ts
+      Resend could turn a just-accepted member back into a pending invite.
+      accept/signup deliberately leave invite_token on the row when they set
+      status='active', so the token-only compare-and-swap still matched an
+      accept that landed between Resend's SELECT and UPDATE: the member went
+      back to status 'invited' with a new token and new invited_by, lost access,
+      and a "resent" email went out. The UPDATE is now also gated on
+      status IN ('invited','expired'), and both rollback writes on status
+      'invited' (the link route and role-change re-attribution already had it).
+      Also: an invite with no role_id is now checked against the workspace
+      default role (what accept actually assigns) instead of skipping the
+      permission ceiling.
+
+  app/api/team/[id]/link/route.ts
+      Same null-role ceiling gap as Resend: Copy link re-attributes an invite to
+      the caller, and a role-less invite was never checked against the default
+      role it will really get, producing an invite that 410s at accept.
+
+  app/api/team/[id]/route.ts  (PATCH)
+      Clearing the role on a pending/expired invite ("No role") now checks the
+      workspace default role against the actor's ceiling before making them the
+      inviter of record. Previously that check was skipped and the invite became
+      a guaranteed 410 dead end.
+
+  app/api/team/invite/route.ts  (POST)
+      Inviting the address of a self-deleted account is refused up front (409,
+      neutral wording). The account keeps its email and is banned for the 30-day
+      erasure window, so the invite could never be accepted or re-registered,
+      yet it held a seat for 7 days and the page showed a sign-in screen that
+      could not work. Checked before the related-row analysis so a deleted former
+      member no longer gets a "Reactivate them instead" pointer to a
+      reactivation that itself refuses.
+
+  lib/utils/invite-authority.ts
+      New roleGrantedAtAcceptance(): the role an invite really grants (its own
+      role_id, else the workspace default). Used by PATCH, Resend and Copy link.
+
+  lib/utils/admin-floor.ts
+      approvalPermissionOrphanedBy() only checked "nobody holds APPROVE_DOCUMENTS
+      after the change", contradicting its own comment ("removes the LAST
+      holder"). In a workspace with no active holder it refused every edit to a
+      pending invite, deactivated member or holder-less role that merely carried
+      the permission. It now requires a holder to exist before the change, as the
+      SQL mirrors already do.
+
+  components/team/TeamClient.tsx
+      (a) The selected tab is derived: Roles only counts while canManageRoles.
+      Removing MANAGE_ROLES from yourself while on Roles (or opening ?tab=roles
+      without it) left both panels unrendered — a blank page under the header.
+      (b) Change-role modal, pending invites: the "No role — removes all
+      role-based permissions" option and the "no permissions at all" warning
+      described an active member. For an invite the option now reads "Workspace
+      default role (<name>) — given when they accept", is disabled when the
+      viewer couldn't grant that role, and the warning is not shown.
+
+  tests/team-invites-independent-pass-3.test.ts  (new)
+      Resend CAS carries the status guard (and the 409 / rollback paths),
+      role-less invites vs the default role (PATCH, Resend, Copy link; active
+      members unaffected), deleted-account invite refused and live account
+      unaffected, and approvalPermissionOrphanedBy holder semantics.

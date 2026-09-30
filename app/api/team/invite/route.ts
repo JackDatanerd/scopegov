@@ -85,7 +85,22 @@ export async function POST(request: NextRequest) {
 
     const normalizedEmail = email.toLowerCase().trim()
     const { data: existingUser } = await (service as any)
-      .from('users').select('id').eq('email', normalizedEmail).maybeSingle()
+      .from('users').select('id, deleted_at').eq('email', normalizedEmail).maybeSingle()
+
+    // FIX (Team & Invites independent pass — invite to a deleted account): a self-deleted account keeps its
+    // email (and is banned) for the 30-day erasure window, so this lookup finds it. The invite was created
+    // anyway — with that dead account's user_id — and held a seat for 7 days that nobody could ever use:
+    // accept refuses a deleted account (403), and signup can't recreate the address while the banned auth
+    // user still owns it, yet the invite page showed a plain "sign in" screen. PATCH reactivation already
+    // refuses a deleted account; the invite path never did. Checked before the related-row analysis so a
+    // deleted former member gets this message rather than a "Reactivate them instead" pointer to a
+    // reactivation that would itself refuse. The wording stays neutral rather than announcing that an
+    // account was deleted, since this endpoint would otherwise confirm that to anyone probing addresses.
+    if (existingUser?.deleted_at) {
+      return NextResponse.json({
+        error: 'This address can\u2019t be invited right now. If the person recently closed their ScopeGov account, they can be invited again once it has been fully removed (up to 30 days), or you can invite a different address.',
+      }, { status: 409 })
+    }
 
     // Every membership row in this workspace that already belongs to this
     // person: matched by account AND by invited address, because an invite

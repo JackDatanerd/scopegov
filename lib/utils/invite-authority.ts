@@ -52,3 +52,22 @@ export function inviterGrantAllowed(inviterPerms: unknown, rolePerms: unknown): 
   if (!rolePerms) return true
   return roleWithinCeiling({ permissions: held } as any, { permissions: rolePerms as Record<string, unknown> })
 }
+
+/**
+ * The role an invite will actually hand out when it is accepted: its own `role_id`, or — for an invite
+ * with no role recorded — the workspace's default role (that is exactly what the accept and signup
+ * routes assign, and what inviterMayStillGrant checks the inviter against). Callers that gate an
+ * action on "the role this invite grants must sit within the actor's own permissions" must check THIS
+ * role, not merely `member.roles`: a null role_id used to skip the ceiling entirely, so an admin could
+ * re-attribute (or clear the role of) an invite whose implicit default role they could never have
+ * issued, leaving it a guaranteed 410 dead end for the invitee. Null when there is no such role.
+ */
+export async function roleGrantedAtAcceptance(
+  service: any, workspaceId: string, roleId: string | null | undefined
+): Promise<{ id: string; name: string; permissions: Record<string, unknown> } | null> {
+  const base = service.from('roles').select('id,name,permissions').eq('workspace_id', workspaceId)
+  const { data } = roleId
+    ? await base.eq('id', roleId).maybeSingle()
+    : await base.eq('is_default', true).maybeSingle()
+  return data ?? null
+}

@@ -7,7 +7,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { nanoid } from 'nanoid'
 import { checkSeatLimit, seatLimitBreachedAfterWrite } from '@/lib/utils/seat-limit'
 import { roleWithinCeiling } from '@/lib/utils/permission-ceiling'
-import { inviterMayStillGrant } from '@/lib/utils/invite-authority'
+import { inviterMayStillGrant, roleGrantedAtAcceptance } from '@/lib/utils/invite-authority'
 
 // "Copy invite link": hands an admin the invite URL so it can be shared over WhatsApp/Slack when the
 // email bounced or landed in spam. A still-live invite returns its EXISTING link (nothing rotates, so
@@ -33,7 +33,9 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
     if (!member) return NextResponse.json({ error: 'Invite not found' }, { status: 404 })
     if (member.status !== 'invited' && member.status !== 'expired')
       return NextResponse.json({ error: 'There is no pending invite for this member.' }, { status: 409 })
-    if (member.roles && !roleWithinCeiling(session, member.roles))
+    // An invite with no role is given the workspace default at acceptance, so THAT is the role checked.
+    const grantedRole = member.roles ?? (member.role_id ? null : await roleGrantedAtAcceptance(service, session.workspaceId, null))
+    if (grantedRole && !roleWithinCeiling(session, grantedRole))
       return NextResponse.json({ error: 'Cannot share an invite for a role with permissions you don\u2019t hold yourself' }, { status: 403 })
 
     const email = member.invited_email || member.users?.email

@@ -10,6 +10,7 @@ import { nanoid } from 'nanoid'
 import { checkInviteRateLimit } from '@/lib/utils/rate-limit'
 import { checkSeatLimit, seatLimitBreachedAfterWrite } from '@/lib/utils/seat-limit'
 import { roleWithinCeiling } from '@/lib/utils/permission-ceiling'
+import { roleGrantedAtAcceptance } from '@/lib/utils/invite-authority'
 
 // FIX (deep audit, Team & Invites section — HIGH, destructive): "Resend"
 // in components/team/TeamClient.tsx was implemented as DELETE-then-POST:
@@ -67,7 +68,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const { data: member } = await (service as any)
       .from('workspace_members')
-      .select('id,status,invited_email,user_id,invited_by,invite_token,invite_token_expires_at,roles(name,permissions),users!workspace_members_user_id_fkey(email)')
+      .select('id,status,role_id,invited_email,user_id,invited_by,invite_token,invite_token_expires_at,roles(name,permissions),users!workspace_members_user_id_fkey(email)')
       .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
 
     if (!member) return NextResponse.json({ error: 'Invite not found' }, { status: 404 })
@@ -82,7 +83,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // same "only hand out a role you already hold" ceiling as creating one — otherwise
     // any INVITE_MEMBERS holder could keep alive (and re-attribute to themselves) an
     // invite for a role they could never have issued.
-    if (member.roles && !roleWithinCeiling(session, member.roles))
+    // An invite with no role is given the workspace default at acceptance, so THAT is the role checked.
+    const grantedRole = member.roles ?? (member.role_id ? null : await roleGrantedAtAcceptance(service, session.workspaceId, null))
+    if (grantedRole && !roleWithinCeiling(session, grantedRole))
       return NextResponse.json({ error: 'Cannot resend an invite for a role with permissions you don\u2019t hold yourself' }, { status: 403 })
 
     const email = member.invited_email || member.users?.email
@@ -131,6 +134,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // if it's no longer there, someone else already resent (or accepted, or
     // revoked) this invite between our read and our write, and we say so
     // instead of silently overwriting whatever they just did.
+    //
+    // FIX (Team & Invites independent pass — resend resurrects an accepted member): the token alone is NOT
+    // a usable CAS against an accept. accept/signup deliberately leave `invite_token` on the row when they
+    // flip it to 'active', so an accept landing between our SELECT and this UPDATE still matched the old
+    // token — and this write then set the freshly-activated member back to status 'invited' with a new
+    // token and a new invited_by (joined_at/user_id stayed set): the person lost access the moment they
+    // got it, and a "resent" email went out for a member who was already in. Only a row that is STILL
+    // pending (invited/expired) may be re-issued, so the status is part of the compare-and-swap too — the
+    // same guard the link route and the role-change re-attribution already carry.
     let updateQuery = (service as any)
       .from('workspace_members')
       .update({
@@ -140,6 +152,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         invited_by:              session.id,
       })
       .eq('id', id).eq('workspace_id', session.workspaceId)
+      .in('status', ['invited', 'expired'])
     if (member.invite_token) updateQuery = updateQuery.eq('invite_token', member.invite_token)
     const { data: updatedRows, error: updateErr } = await updateQuery.select('id')
 
@@ -162,7 +175,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         await (service as any).from('workspace_members').update({
           invite_token: previous.invite_token, invite_token_expires_at: previous.invite_token_expires_at,
           status: previous.status, invited_by: previous.invited_by,
-        }).eq('id', id).eq('invite_token', inviteToken)
+        }).eq('id', id).eq('invite_token', inviteToken).eq('status', 'invited')
         return NextResponse.json({ error: postSeat.message, upgradeRequired: true }, { status: 403 })
       }
     }
@@ -196,7 +209,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!emailSent) {
       const { error: restoreErr } = await (service as any)
         .from('workspace_members').update(previous)
-        .eq('id', id).eq('workspace_id', session.workspaceId).eq('invite_token', inviteToken)
+        .eq('id', id).eq('workspace_id', session.workspaceId).eq('invite_token', inviteToken).eq('status', 'invited')
       if (restoreErr) console.error('Invite resend: could not restore previous token:', restoreErr)
     }
 

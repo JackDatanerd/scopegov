@@ -13,6 +13,7 @@ import { parsePermissionMap } from '@/lib/utils/permission-map'
 import { mergePermissions, protectedPermissionsOrphanedBy, describeProtectedPermission, PROTECTED_PERMISSIONS, approvalPermissionOrphanedBy, APPROVE_DOCUMENTS_ORPHAN_MESSAGE } from '@/lib/utils/admin-floor'
 import { checkSeatLimit, seatLimitBreachedAfterWrite } from '@/lib/utils/seat-limit'
 import { diffOverrides } from '@/lib/utils/permission-diff'
+import { roleGrantedAtAcceptance } from '@/lib/utils/invite-authority'
 
 const namesOf = (rows: any[] | null | undefined, pick: (r: any) => string | undefined) =>
   Array.from(new Set((rows || []).map(pick).filter(Boolean))) as string[]
@@ -376,6 +377,21 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         newRoleName = role.name || null
       } else {
         newRolePermissions = null
+        // FIX (Team & Invites independent pass — "No role" on a pending invite): for an ACTIVE member a
+        // null role really is "no role-based permissions", but a pending/expired invite with no role is
+        // handed the workspace DEFAULT role at acceptance. That role was never checked against the
+        // actor's ceiling here, yet this change makes the actor the inviter of record (re-attribution
+        // below) — so accept's inviterMayStillGrant would refuse it with a 410: an invite this admin
+        // could not have issued, silently dead on arrival. Same rule as creating one without a role.
+        const clearingInviteRole = (targetMember.status === 'invited' || targetMember.status === 'expired')
+          && !!targetMember.role_id
+        if (clearingInviteRole) {
+          const defaultRole = await roleGrantedAtAcceptance(service, session.workspaceId, null)
+          if (defaultRole && !roleWithinCeiling(session, defaultRole))
+            return NextResponse.json({
+              error: `An invite with no role is given the workspace\u2019s default role (${defaultRole.name}) when it is accepted, and that role holds permissions you don\u2019t hold yourself. Pick a role you can assign instead.`,
+            }, { status: 403 })
+        }
       }
     }
 

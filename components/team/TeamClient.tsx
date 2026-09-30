@@ -69,7 +69,15 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
   // Settings despite the wiring implying one was intended. Support the
   // same `?tab=` deep-link pattern SettingsClient already uses so a link
   // elsewhere in the app can open straight to Roles.
-  const [tab,   setTab]   = useState<'members' | 'roles'>(searchParams.get('tab') === 'roles' ? 'roles' : 'members')
+  const [tabState, setTab] = useState<'members' | 'roles'>(searchParams.get('tab') === 'roles' ? 'roles' : 'members')
+  // FIX (Team & Invites independent pass — blank page after losing MANAGE_ROLES): the Roles tab button and
+  // panel are both gated on canManageRoles, but the selected tab lives in state. An admin who removes
+  // MANAGE_ROLES from themselves while on the Roles tab (allowed when someone else still holds it) gets a
+  // router.refresh() with canManageRoles now false — the Roles button disappears, the Roles panel needs
+  // canManageRoles, and the Members panel needs tab === 'members', so nothing rendered under the header
+  // until they noticed and clicked Members. The same blank state was reachable by typing ?tab=roles as a
+  // viewer without the permission. The tab is now derived: Roles only ever counts while it is permitted.
+  const tab: 'members' | 'roles' = tabState === 'roles' && !canManageRoles ? 'members' : tabState
   // FIX (deep audit, Search section — feature gap): /api/search's "members"
   // block has always returned a real workspace_members.id for each match,
   // but every other search category deep-links to the exact thing that
@@ -1038,7 +1046,22 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
               <label className="flbl">Role</label>
               <select className="finp" value={roleEditRoleId}
                 onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setRoleEditRoleId(e.target.value)}>
-                <option value="">No role — removes all role-based permissions</option>
+                {/* FIX (Team & Invites independent pass): for a PENDING invite a cleared role is not "no
+                    permissions" — accept/signup hand the invitee the workspace default role
+                    (`member.role_id || defaultRole?.id`). The label and the no-permissions warning below
+                    described an active member only; for an invite the option is offered (and disabled when
+                    the viewer couldn't grant that default role, which the server would refuse) as what it
+                    really does. */}
+                {(roleEditMember.status === 'invited' || roleEditMember.status === 'expired') ? (() => {
+                  const dr = roles.find((r: any) => r.is_default)
+                  return (
+                    <option value="" disabled={!!dr && !!assignable && !assignable.has(dr.id)}>
+                      {dr ? `Workspace default role (${dr.name}) — given when they accept` : 'No role — no default role is set, so they will join with none'}
+                    </option>
+                  )
+                })() : (
+                  <option value="">No role — removes all role-based permissions</option>
+                )}
                 {roles.map((r: any) => (
                   <option key={r.id} value={r.id} disabled={!!assignable && !assignable.has(r.id)}>
                     {roleOptionLabel(r, r.is_default ? ' (default)' : '')}
@@ -1052,7 +1075,8 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
                   <> This person hasn&apos;t joined yet: changing the role of a pending invite makes you the person who invited them, and needs the invite permission.</>
                 )}
               </span>
-              {roleEditRoleId === '' && !Object.values(roleEditMember.permission_overrides || {}).some(v => v === true) && (
+              {roleEditRoleId === '' && roleEditMember.status !== 'invited' && roleEditMember.status !== 'expired'
+                && !Object.values(roleEditMember.permission_overrides || {}).some(v => v === true) && (
                 <p className="ferr" style={{ marginTop: 8 }}>
                   This person has no individual permission overrides, so removing their role will leave them
                   with no permissions at all — not the workspace&rsquo;s default role. If you want to reset them
