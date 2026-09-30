@@ -141,17 +141,22 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
   // permissions had no way to see, track or cancel their own pending request —
   // the "submitted" list only ever fed the send-failed banner. Everyone now gets
   // a "My requests" tab.
+  // FIX (section-11 audit, independent pass — B1): "My queue" is only ever non-empty for someone who can
+  // actually decide (the server's canDecideRequest requires APPROVE_DOCUMENTS), but it was also offered —
+  // and made the landing tab — for oversight-only members. They saw the sidebar badge count every pending
+  // request in the workspace, then landed on a permanently empty "Nothing waiting on you". Oversight-only
+  // members now land on "All requests", pre-filtered to pending so the page matches the badge.
   const tabs: Array<{ id: Tab; label: string }> = []
-  if (canApprove || canViewAll) tabs.push({ id: 'mine', label: 'My queue' })
+  if (canApprove) tabs.push({ id: 'mine', label: 'My queue' })
   tabs.push({ id: 'submitted', label: 'My requests' })
   if (canViewAll) tabs.push({ id: 'all', label: 'All requests' })
 
-  const [tab, setTab] = useState<Tab>(canApprove || canViewAll ? 'mine' : 'submitted')
+  const [tab, setTab] = useState<Tab>(canApprove ? 'mine' : canViewAll ? 'all' : 'submitted')
   const [items, setItems] = useState<ApprovalRequest[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [selected, setSelected] = useState<ApprovalRequest | null>(null)
-  const [statusFilter, setStatusFilter] = useState('')
+  const [statusFilter, setStatusFilter] = useState(!canApprove && canViewAll ? 'pending' : '')
   const [typeFilter, setTypeFilter] = useState('')
   // Requests the caller submitted that were approved but not sent — fetched
   // independently of the tabs, since they belong to the ORIGINAL REQUESTER who
@@ -172,16 +177,23 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
     } catch { /* non-fatal — the button just shows no count */ }
   }, [])
 
+  // FIX (section-11 audit, independent pass — B2): responses could land out of order — switch tabs while
+  // a slower request was in flight and its result overwrote the newer tab's list (the "All requests" rows
+  // under "My queue"). Only the most recent load may write state.
+  const loadSeq = useRef(0)
   const load = useCallback(async (scope: Tab) => {
+    const seq = ++loadSeq.current
     setLoading(true); setError('')
     try {
       const res  = await fetch(`/api/approvals?scope=${scope}`)
       const json = await res.json()
+      if (seq !== loadSeq.current) return
       if (!res.ok) throw new Error(json.error || 'Failed to load approvals')
       setItems(json.requests || [])
     } catch (err) {
+      if (seq !== loadSeq.current) return
       setError(err instanceof Error ? err.message : 'Failed to load approvals')
-    } finally { setLoading(false) }
+    } finally { if (seq === loadSeq.current) setLoading(false) }
   }, [])
 
   const loadNeedsRetry = useCallback(async () => {
@@ -197,7 +209,7 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
 
   useEffect(() => { load(tab) }, [tab, load])
   useEffect(() => { loadNeedsRetry() }, [loadNeedsRetry])
-  useEffect(() => { if (canApprove || canViewAll) loadMineCount() }, [canApprove, canViewAll, loadMineCount])
+  useEffect(() => { if (canApprove) loadMineCount() }, [canApprove, loadMineCount])
 
   async function post(id: string, action: 'retry-send' | 'cancel') {
     setBusyId(id); setError('')

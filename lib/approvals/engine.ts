@@ -761,10 +761,24 @@ export async function cancelApprovalRequest(service: any, params: {
   // 'pending' for a live chain, or 'approved' for the send-failure limbo
   // case (guarded further by re-checking send_failed_at isn't null, so a
   // concurrent successful retry-send can't be clobbered back to cancelled).
+  // FIX (section-11 audit, independent pass — B3): the write is ALSO guarded on there being no live
+  // send claim. The read above saw no claim, but the last approver can clear the final step in between:
+  // decide_approval_step then returns 'final' and stamps sending_started_at while the request is still
+  // status='pending', so the status-only guard still matched and this flipped a request whose send was
+  // already running to 'cancelled' — the client got the document while the audit log and the Approvals
+  // page said it was cancelled, and finalize_approval_send could no longer record the outcome. A stale
+  // claim (older than SEND_CLAIM_WINDOW_MS) stays cancellable, matching the pre-read above. Written as a
+  // single OR of AND-groups so PostgREST evaluates it as one (status) x (claim) condition.
+  const staleBefore = new Date(Date.now() - SEND_CLAIM_WINDOW_MS).toISOString()
   const { data: cancelled } = await service.from('approval_requests').update({
     status: 'cancelled', decided_at: now, updated_at: now,
   }).eq('id', request.id)
-    .or('status.eq.pending,and(status.eq.approved,send_failed_at.not.is.null)')
+    .or([
+      'and(status.eq.pending,sending_started_at.is.null)',
+      `and(status.eq.pending,sending_started_at.lt.${staleBefore})`,
+      'and(status.eq.approved,send_failed_at.not.is.null,sending_started_at.is.null)',
+      `and(status.eq.approved,send_failed_at.not.is.null,sending_started_at.lt.${staleBefore})`,
+    ].join(','))
     .select('id').maybeSingle()
   if (!cancelled) return
 

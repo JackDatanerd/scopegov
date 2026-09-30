@@ -152,7 +152,9 @@ export async function POST(request: NextRequest) {
             eventType: 'approval_no_reachable_approver', type: 'approval_no_reachable_approver',
             title: 'Approval step has no reachable approver',
             body: `A pending approval has been stalled for ${threshold}+ days and its assigned approver (role or user) can't be reached — check the approval workflow's assignment.`,
-            entityType: 'approval_request', entityId: r.id,
+            // FIX (section-11 audit, independent pass — B4): projectId was omitted here while the other two
+            // alerts in this file pass it, so the recipients weren't scoped to people who can open the request.
+            entityType: 'approval_request', entityId: r.id, projectId: r.project_id,
           })
           escalated++
         }

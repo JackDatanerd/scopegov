@@ -34,7 +34,7 @@ interface Props {
   // approval" rather than just sitting untouched, same reasoning as the
   // sow:<id>/co:<id> map ProjectDetail.tsx already threads to the SOW/CO
   // tabs. Keyed "invoice:<id>".
-  pendingApprovals?: Record<string, { id: string; current_step: number; total_steps: number; sendFailed?: boolean; sendFailedReason?: string | null }>
+  pendingApprovals?: Record<string, { id: string; current_step: number; total_steps: number; sendFailed?: boolean; sendFailedReason?: string | null; canManage?: boolean }>
 }
 
 export default function BillingTab({ project, milestones, invoices, reconciliation, permissions, currency, router, defaultPaymentInstructions = '', billingDefaults, pendingApprovals = {} }: Props) {
@@ -448,7 +448,7 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
                       now reject with "cancel it first" (matching SOW/CO) —
                       this button routes there instead of leaving the
                       invoice with no visible next step. */}
-                  {inv.status === 'draft' && pendingApproval && pendingApproval.sendFailed && permissions.sendInvoices && (
+                  {inv.status === 'draft' && pendingApproval && pendingApproval.sendFailed && pendingApproval.canManage && permissions.sendInvoices && (
                     <>
                       <button className="btn btn-ghost btn-sm" disabled={busyId === inv.id} onClick={() => cancelApprovalFor(pendingApproval.id, inv.id)}>
                         Cancel request

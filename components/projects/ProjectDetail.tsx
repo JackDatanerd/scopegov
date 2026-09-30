@@ -98,7 +98,7 @@ interface Props {
   permissions: Permissions
   // Phase 3 — Approval Chains: keyed by "sow:<id>" / "co:<id>", present
   // only for documents currently held on a pending approval chain.
-  pendingApprovals?: Record<string, { id: string; current_step: number; total_steps: number; sendFailed?: boolean; sendFailedReason?: string | null }>
+  pendingApprovals?: Record<string, { id: string; current_step: number; total_steps: number; sendFailed?: boolean; sendFailedReason?: string | null; canManage?: boolean }>
 }
 
 export default function ProjectDetail({
@@ -1009,7 +1009,7 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
                       {sending ? <span className="spin" /> : <><i className="ti ti-send" style={{ fontSize: 12 }} /> Send to client</>}
                     </button>
                   )}
-                  {currentSow.status === 'draft' && pendingApproval && pendingApproval.sendFailed && permissions.sendSow && (
+                  {currentSow.status === 'draft' && pendingApproval && pendingApproval.sendFailed && pendingApproval.canManage && permissions.sendSow && (
                     <>
                       <button className="btn btn-ghost btn-sm" onClick={() => handleCancelApproval(pendingApproval.id)} disabled={retrying}>
                         Cancel request
@@ -2527,7 +2527,7 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
               (CO stays 'countered'; approval type co_counter) whose auto-send failed showed a red pill and an
               "Awaiting approval" link and nothing else on this card. The /approvals page still had them, but
               the comment above claimed this card covered the CO-counter case and it didn't. */}
-          {(co.status === 'draft' || co.status === 'countered') && pendingApproval && pendingApproval.sendFailed && permissions.sendCo && (
+          {(co.status === 'draft' || co.status === 'countered') && pendingApproval && pendingApproval.sendFailed && pendingApproval.canManage && permissions.sendCo && (
             <>
               <button className="btn btn-ghost btn-xs" onClick={() => cancelApproval(pendingApproval.id)} disabled={retrying}>Cancel request</button>
               <button className="btn btn-primary btn-xs" onClick={() => retrySend(pendingApproval.id)} disabled={retrying}>

@@ -512,6 +512,27 @@ describe.skipIf(!URL_)('Postgres replay (migrations 001..latest on a real databa
       })
     })
 
+    it('cancel\'s guarded write (B3) cannot flip a request whose final-approval send has started', async () => {
+      const { requestId, stepIds } = await makeChain({ steps: 1, distinct: false })
+      // the exact predicate cancelApprovalRequest sends (engine.ts), evaluated as PostgREST would
+      const cancel = (stale: string) => sql(
+        `UPDATE public.approval_requests SET status = 'cancelled' WHERE id = $1 AND (
+           (status = 'pending' AND sending_started_at IS NULL)
+        OR (status = 'pending' AND sending_started_at < $2)
+        OR (status = 'approved' AND send_failed_at IS NOT NULL AND sending_started_at IS NULL)
+        OR (status = 'approved' AND send_failed_at IS NOT NULL AND sending_started_at < $2)) RETURNING id`,
+        [requestId, stale])
+      const stale = new Date(Date.now() - 2 * 60 * 1000).toISOString()
+      // cancel read the request (no claim) ... then the last approver lands and claims the send
+      const outcome = await pool.query(`SELECT public.decide_approval_step($1::uuid,$2::uuid,'approved',$3::uuid,NULL,$3::uuid,NULL::uuid) AS r`, [requestId, stepIds[0], U(191)]).then(r => r.rows[0].r)
+      expect(outcome).toBe('final')
+      expect(await cancel(stale)).toHaveLength(0)
+      expect((await sql(`SELECT status FROM public.approval_requests WHERE id = $1`, [requestId]))[0].status).toBe('pending')
+      // a claim that has gone stale (crashed send) is still cancellable
+      await sql(`UPDATE public.approval_requests SET sending_started_at = now() - interval '5 minutes' WHERE id = $1`, [requestId])
+      expect(await cancel(stale)).toHaveLength(1)
+    })
+
     it('two concurrent approvals of the same step: exactly one wins, the other gets conflict', async () => {
       const { requestId, stepIds } = await makeChain()
       const run = () => pool.query(`SELECT public.decide_approval_step($1::uuid,$2::uuid,'approved',$3::uuid,NULL,$3::uuid,NULL::uuid) AS r`, [requestId, stepIds[0], U(191)]).then(r => r.rows[0].r as string)

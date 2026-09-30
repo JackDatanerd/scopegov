@@ -273,15 +273,19 @@ export default async function ProjectPage({ params, searchParams }: Props) {
   // "awaiting approval" one.
   const { data: pendingApprovalRows = [] } = await (service as any)
     .from('approval_requests')
-    .select('id, document_type, document_id, current_step, total_steps, send_failed_at, send_failed_reason')
+    .select('id, document_type, document_id, current_step, total_steps, send_failed_at, send_failed_reason, requested_by')
     .eq('project_id', id)
     .or('status.eq.pending,and(status.eq.approved,send_failed_at.not.is.null)')
 
-  const pendingApprovals: Record<string, { id: string; current_step: number; total_steps: number; sendFailed: boolean; sendFailedReason: string | null }> = {}
+  const pendingApprovals: Record<string, { id: string; current_step: number; total_steps: number; sendFailed: boolean; sendFailedReason: string | null; canManage: boolean }> = {}
   for (const r of pendingApprovalRows || []) {
     pendingApprovals[`${r.document_type}:${r.document_id}`] = {
       id: r.id, current_step: r.current_step, total_steps: r.total_steps,
       sendFailed: !!r.send_failed_at, sendFailedReason: r.send_failed_reason || null,
+      // FIX (section-11 audit, independent pass — B5): retry-send and cancel are requester-or-admin on the
+      // server (403 otherwise). The project tabs offered those buttons to anyone holding the send
+      // permission, so everyone else got a refusal after clicking. Computed here so the buttons match.
+      canManage: r.requested_by === session.id || hasPermission(session, 'MANAGE_WORKSPACE_SETTINGS'),
     }
   }
 
