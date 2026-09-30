@@ -196,14 +196,21 @@ export default function ClientsClient({ clients, canCreate, canViewFinancials, c
         <div className="surface">
           <div className="empty-state">
             <i className="ti ti-users empty-state-icon" />
-            <p className="empty-state-title">{search ? `No results for "${search}"` : 'No clients yet'}</p>
+            {/* FIX (clients pass 8): a roster whose clients are ALL archived used to read "No clients yet" (and the
+                "created automatically" hint) under a header saying "0 active clients · N archived". */}
+            <p className="empty-state-title">{search ? `No results for "${search}"` : archivedCount > 0 ? 'All clients are archived' : 'No clients yet'}</p>
+            {!search && archivedCount > 0 && !showArchived && (
+              <p className="empty-state-sub">
+                <button className="btn btn-ghost btn-xs" onClick={() => setShowArchived(true)}>Show archived ({archivedCount})</button>
+              </p>
+            )}
             {hiddenArchivedMatches > 0 && (
               <p className="empty-state-sub">
                 {hiddenArchivedMatches} archived client{hiddenArchivedMatches !== 1 ? 's match' : ' matches'} —{' '}
                 <button className="btn btn-ghost btn-xs" onClick={() => setShowArchived(true)}>show archived</button>
               </p>
             )}
-            {!search && <p className="empty-state-sub">Clients are created automatically when you create a project, or you can add them here.</p>}
+            {!search && archivedCount === 0 && <p className="empty-state-sub">Clients are created automatically when you create a project, or you can add them here.</p>}
             {canCreate && !search && (
               <button className="btn btn-primary" onClick={() => setModal(true)}>
                 <i className="ti ti-plus" style={{ fontSize: 13 }} /> New client

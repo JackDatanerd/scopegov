@@ -1,0 +1,21 @@
+CLIENTS — independent pass 8 (bugs only)
+========================================
+
+B1  Client Money block rounded invoice amounts to whole units
+      app/(app)/clients/[id]/page.tsx   Invoiced / Paid / Outstanding / Overdue / CO awaiting reply now use
+                                        formatCurrencyExact (a $0.29 balance no longer reads "$0" under an amber
+                                        warning; $386.66 no longer reads "$387"). Contracted stays whole units.
+
+B2  All-archived roster said "No clients yet"
+      components/clients/ClientsClient.tsx   Empty state now reads "All clients are archived" with a
+                                        "Show archived (N)" button; the "created automatically" hint is only shown
+                                        when there are no archived clients at all.
+
+B3  Contact activity name broken by parentheses in the client's name
+      app/(app)/clients/[id]/page.tsx   contactNameFromEntity(): strips the exact " (<client name>)" suffix, else the
+                                        trailing balanced (...) group, instead of /\([^)]*\)$/.
+
+B4  timezone not covered by the VIEW_CLIENT_DATA write gate
+      app/api/clients/[id]/route.ts     'timezone' added to contactFields.
+
+Tests: tests/clients-pass8-fixes.test.ts

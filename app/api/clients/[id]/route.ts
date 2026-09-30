@@ -49,7 +49,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     // (audit round 6) Contact-visibility fields require VIEW_CLIENT_DATA as well — a role that can't SEE
     // a client's email must not be able to blindly overwrite the address every invoice/SOW/CO goes to.
-    const contactFields = ['email', 'phone', 'notes', 'paymentTermsNote', 'ccEmails']
+    // (clients pass 8) `timezone` is displayed only inside the VIEW_CLIENT_DATA-gated Contact card and drives when this
+    // client's invoice reminders fire, so it is gated the same way.
+    const contactFields = ['email', 'phone', 'notes', 'paymentTermsNote', 'ccEmails', 'timezone']
     if (contactFields.some(f => body[f] !== undefined) && !hasPermission(session, 'VIEW_CLIENT_DATA')) {
       return NextResponse.json({ error: 'Missing permission: VIEW_CLIENT_DATA' }, { status: 403 })
     }

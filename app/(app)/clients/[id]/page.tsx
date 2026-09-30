@@ -2,7 +2,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect, notFound } from 'next/navigation'
 import Link from 'next/link'
-import { formatCurrency, formatCurrencyGroups, formatDate, projectStatusLabel } from '@/lib/utils/format'
+import { formatCurrency, formatCurrencyExact, formatCurrencyGroups, formatDate, projectStatusLabel } from '@/lib/utils/format'
 import BillingDetailsCard from '@/components/clients/BillingDetailsCard'
 import ClientContactCard from '@/components/clients/ClientContactCard'
 import ClientContactsCard from '@/components/clients/ClientContactsCard'
@@ -15,6 +15,21 @@ import { fetchAll } from '@/lib/utils/fetch-all'
 import { isUuidString } from '@/lib/utils/uuid'
 
 interface Props { params: Promise<{ id: string }> }
+
+// FIX (clients pass 8): contact audit rows store entity_name as `${contactName} (${clientName})`. The old
+// /\([^)]*\)$/ strip broke on a client name containing parentheses ("Acme (Kenya)") and left half of it showing.
+// Strip the client's current name if it is the suffix, else the trailing balanced (...) group (client renamed since).
+function contactNameFromEntity(entityName: string, clientName: string): string {
+  const suffix = ` (${clientName})`
+  if (clientName && entityName.endsWith(suffix) && entityName.length > suffix.length) return entityName.slice(0, -suffix.length)
+  if (!entityName.endsWith(')')) return entityName
+  let depth = 0
+  for (let i = entityName.length - 1; i >= 0; i--) {
+    if (entityName[i] === ')') depth++
+    else if (entityName[i] === '(') { depth--; if (depth === 0) return i > 0 ? entityName.slice(0, i).trimEnd() || entityName : entityName }
+  }
+  return entityName
+}
 
 export default async function ClientDetailPage({ params }: Props) {
   const { id }  = await params
@@ -373,7 +388,9 @@ export default async function ClientDetailPage({ params }: Props) {
                     <div key={label} className="surface surface-p" style={{ padding: '10px 12px' }}>
                       <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 3 }}>{label}{moneyByCurrency.size > 1 ? ` · ${currency}` : ''}</div>
                       <div style={{ fontSize: 15, fontWeight: 500, fontFamily: 'IBM Plex Mono, monospace', color: label === 'Overdue' && warn ? 'var(--red)' : label === 'Outstanding' && warn ? 'var(--amber)' : undefined }}>
-                        {formatCurrency(value, currency)}
+                        {/* FIX (clients pass 8): invoice-derived figures keep their cents (formatCurrency rounds to
+                            whole units: a $0.29 balance read "$0" under an amber warning). Contracted stays whole. */}
+                        {label === 'Contracted' ? formatCurrency(value, currency) : formatCurrencyExact(value, currency)}
                       </div>
                     </div>
                   ))}
@@ -522,7 +539,7 @@ export default async function ClientDetailPage({ params }: Props) {
                 {(activity || []).map((a: any) => (
                   <div key={a.id} className="settings-row" style={{ alignItems: 'flex-start' }}>
                     <div>
-                      <div style={{ fontSize: 12.5 }}>{ACTIVITY_LABEL[a.event_type] || a.event_type}{String(a.event_type).startsWith('client_contact.') && a.entity_name ? ` — ${String(a.entity_name).replace(/ \([^)]*\)$/, '')}` : ''}</div>
+                      <div style={{ fontSize: 12.5 }}>{ACTIVITY_LABEL[a.event_type] || a.event_type}{String(a.event_type).startsWith('client_contact.') && a.entity_name ? ` — ${contactNameFromEntity(String(a.entity_name), client.name)}` : ''}</div>
                       {Array.isArray(a.metadata?.fields) && a.metadata.fields.length > 0 && (
                         <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{a.metadata.fields.join(', ')}</div>
                       )}
