@@ -346,7 +346,11 @@ export async function reclassifyCheck(service: any, checkId: string, opts: {
     const duplicateOfId = await findDuplicateCheck(service, check.project_id, embedding)
     if (duplicateOfId) {
       const { error: dupErr } = await service.from('guardian_checks')
-        .update({ is_duplicate: true, duplicate_of_id: duplicateOfId, embedding: null })
+        // FIX (independent pass, section 13): also clear classification_failed. A check that failed classification
+        // and is later found to duplicate an already-classified one stayed classification_failed:true — the history
+        // row then showed BOTH "duplicate" and a "Retry classification" button that could only ever 400, and the
+        // guardian-health "unresolved failures >24h" alert kept firing on it every run until someone deleted it.
+        .update({ is_duplicate: true, duplicate_of_id: duplicateOfId, embedding: null, classification_failed: false })
         .eq('id', check.id)
       if (dupErr) console.error('Could not mark backlog check as duplicate:', dupErr.message)
       await logAudit(service, {

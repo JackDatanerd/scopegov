@@ -46,10 +46,15 @@ export function toPlainText(content: string): string {
   return text.replace(/\r\n?/g, '\n').replace(/[ \t\f\v]+/g, ' ').replace(/ ?\n ?/g, '\n').replace(/\n{3,}/g, '\n\n').trim()
 }
 
-/** Max characters of a submission the classifier sees (was a silent 2,000). */
-export const MAX_CLASSIFY_CHARS = 6000
 /** Hard cap on a stored submission — bounds DB size and AI cost. */
 export const MAX_CHECK_CONTENT_CHARS = 20000
+/**
+ * Max characters of a submission the classifier sees. FIX (independent pass, section 13): this was 6,000 while
+ * submissions are accepted up to MAX_CHECK_CONTENT_CHARS (20,000) — anything past char 6,000 was silently never
+ * read, so a scope-creep request buried late in a long paste/email came back `in_scope` on text the model never
+ * saw. The classifier now reads everything that can be stored (~5k tokens at the cap).
+ */
+export const MAX_CLASSIFY_CHARS = MAX_CHECK_CONTENT_CHARS
 
 export type Sensitivity = 'conservative' | 'medium' | 'aggressive'
 

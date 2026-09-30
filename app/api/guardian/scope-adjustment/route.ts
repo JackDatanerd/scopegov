@@ -45,9 +45,11 @@ export async function POST(request: NextRequest) {
     const service = createServiceClient()
 
     // Verify project
-    const { data: project } = await (service as any)
+    const { data: project, error: projectErr } = await (service as any)
       .from('projects').select('id,name').eq('id', projectId)
       .eq('workspace_id', session.workspaceId).is('deleted_at', null).single()
+    // FIX (independent pass, section 13): a real read error (outage, timeout) used to look like a missing row — a 404 "Project not found". Only PGRST116 (no rows) is a genuine not-found.
+    if (projectErr && projectErr.code !== 'PGRST116') return NextResponse.json({ error: 'Could not load the project' }, { status: 500 })
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
     if (!(await canReadProject(service, session, projectId)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
@@ -71,8 +73,10 @@ export async function POST(request: NextRequest) {
     // concurrency version column (project_scope_snapshot.version) in place
     // of a real row lock, since supabase-js can't take one or wrap this in
     // a transaction.
-    const { data: snap } = await (service as any)
+    const { data: snap, error: snapLoadErr } = await (service as any)
       .from('project_scope_snapshot').select('id,deliverables,out_of_scope,version').eq('project_id', projectId).single()
+    // FIX (independent pass, section 13): a real read error (outage, timeout) used to look like a missing row — a false "no signed SOW yet" refusal. Only PGRST116 (no rows) is a genuine not-found.
+    if (snapLoadErr && snapLoadErr.code !== 'PGRST116') return NextResponse.json({ error: 'Could not load the scope snapshot' }, { status: 500 })
 
     // FIX (deep audit, section 13): this route's own comment above claims
     // the "record a change that didn't really land" class of bug was

@@ -38,8 +38,10 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
 
     const service = createServiceClient()
-    const { data: flag } = await (service as any).from('guardian_flags')
+    const { data: flag, error: flagErr } = await (service as any).from('guardian_flags')
       .select('id, project_id, check_id').eq('id', id).eq('workspace_id', session.workspaceId).single()
+    // FIX (independent pass, section 13): a real read error (outage, timeout) used to look like a missing row — a 404 "Flag not found". Only PGRST116 (no rows) is a genuine not-found.
+    if (flagErr && flagErr.code !== 'PGRST116') return NextResponse.json({ error: 'Could not load the flag' }, { status: 500 })
     if (!flag) return NextResponse.json({ error: 'Flag not found' }, { status: 404 })
     if (!(await canReadProject(service, session, flag.project_id)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
@@ -94,13 +96,15 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // confidence so 'confirm_out_of_scope' below can give the flag a real
     // severity instead of leaving it at the placeholder 'info' forever —
     // see that case for the full note.
-    const { data: flag } = await (service as any)
+    const { data: flag, error: flagLoadErr } = await (service as any)
       .from('guardian_flags')
       .select('id,status,project_id,description,severity,sow_reference,change_order_id,check_id,escalated_to,escalation_note,resolution,updated_at,projects(name,status),guardian_checks!fk_flag_check(creep_confidence)')
       .eq('id', id)
       .eq('workspace_id', session.workspaceId)
       .single()
 
+    // FIX (independent pass, section 13): a real read error (outage, timeout) used to look like a missing row — a 404 "Flag not found". Only PGRST116 (no rows) is a genuine not-found.
+    if (flagLoadErr && flagLoadErr.code !== 'PGRST116') return NextResponse.json({ error: 'Could not load the flag' }, { status: 500 })
     if (!flag) return NextResponse.json({ error: 'Flag not found' }, { status: 404 })
     // FIX (audit round 3): see lib/utils/project-access.ts.
     if (!(await canReadProject(service, session, flag.project_id)))

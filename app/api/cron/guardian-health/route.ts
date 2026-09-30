@@ -207,10 +207,17 @@ export async function POST(request: NextRequest) {
     // Alert on failures that are still unresolved after 24h (auto-retries included — a check
     // only stays here once the sweep has exhausted its attempts, or the outage is ongoing).
     const since24h = new Date(Date.now() - 24 * 3600000).toISOString()
-    const { count: unresolvedCount, error: unresolvedErr } = await liveOnly((service as any)
+    // FIX (independent pass, section 13): this alert counted rows the sweep and manual retry can never resolve —
+    // duplicates (is_duplicate:true, which have nothing left to classify) and checks on Complete/Archived projects
+    // (the sweep excludes them and retry answers 409 "inactive"). Those rows made the alert fire every 6h with no
+    // possible remedy. Count only unresolved failures on a live, active project.
+    const activeOnly = (q: any) => liveOnly(q).not('projects.status', 'in', '(Complete,Archived)')
+    const unresolvedSel = 'id, projects!inner(deleted_at, status, workspaces!inner(deleted_at))'
+    const { count: unresolvedCount, error: unresolvedErr } = await activeOnly((service as any)
       .from('guardian_checks')
-      .select(liveSel, { count: 'exact', head: true }))
+      .select(unresolvedSel, { count: 'exact', head: true }))
       .eq('classification_failed', true)
+      .eq('is_duplicate', false)
       .lt('created_at', since24h)
       .eq('outcome', 'pending')
     // FIX (cron/portal audit round 3): the error was never read, so a failed count looked like "0
@@ -219,9 +226,9 @@ export async function POST(request: NextRequest) {
     if (unresolvedErr) throw new Error(`guardian-health unresolved-failures count: ${unresolvedErr.message}`)
 
     if ((unresolvedCount || 0) > 0) {
-      const { data: stuckRows } = await liveOnly(service.from('guardian_checks')
-        .select('workspace_id, projects!inner(deleted_at, workspaces!inner(deleted_at))'))
-        .eq('classification_failed', true).eq('outcome', 'pending').lt('created_at', since24h).limit(500)
+      const { data: stuckRows } = await activeOnly(service.from('guardian_checks')
+        .select('workspace_id, projects!inner(deleted_at, status, workspaces!inner(deleted_at))'))
+        .eq('classification_failed', true).eq('is_duplicate', false).eq('outcome', 'pending').lt('created_at', since24h).limit(500)
       const msg = `${unresolvedCount} unresolved classification failures older than 24h`
       console.error(`[GUARDIAN ALERT] ${msg}`)
       if (!(await isOnCooldown(service, 'guardian_health:unresolved_failures', 6 * 3600000))) {

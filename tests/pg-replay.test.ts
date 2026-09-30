@@ -896,4 +896,59 @@ describe.skipIf(!URL_)('Postgres replay (migrations 001..latest on a real databa
     })
   })
 
+
+  // ── Guardian / scope governance (migration 120) ───────────────────────────
+  describe('Guardian scope snapshot append + repairs (migration 120)', () => {
+    const P = 'a0000000-0000-4000-8000-00000000000a'
+    const WS = 'b0000000-0000-4000-8000-00000000000b'
+    const titles = async (c: PoolClient, project: string) =>
+      (await c.query(`SELECT (SELECT array_agg(d->>'title') FROM unnest(deliverables) d) AS t, version FROM public.project_scope_snapshot WHERE project_id = $1`, [project])).rows[0]
+    async function tx(fn: (c: PoolClient) => Promise<void>) {
+      const c = await pool.connect()
+      try { await c.query('BEGIN'); await c.query('SET LOCAL session_replication_role = replica'); await fn(c) }
+      finally { await c.query('ROLLBACK').catch(() => {}); c.release() }
+    }
+    const amend = (c: PoolClient, project: string, n: number, added: string[], removed: string[], at: string) =>
+      c.query(`INSERT INTO public.amendments (project_id, workspace_id, change_order_id, signed_sow_id, title, added_deliverables, removed_deliverables, financial_impact, effective_at, created_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,0,now(),$8)`, [project, WS, `c0000000-0000-4000-8000-${String(n).padStart(12, '0')}`, 'd0000000-0000-4000-8000-000000000001', `CO${n}`, added, removed, at])
+
+    it('append_scope_deliverables appends to the jsonb[] baseline and bumps version (077 had re-broken it)', async () => {
+      await tx(async c => {
+        await c.query(`INSERT INTO public.project_scope_snapshot (project_id, deliverables, out_of_scope, last_updated_by, version) VALUES ($1, ARRAY['{"title":"Homepage"}'::jsonb], '{}', 'signing', 1)`, [P])
+        await c.query(`SELECT public.append_scope_deliverables($1, '[{"title":"Spanish translation"}]'::jsonb, now())`, [P])
+        const r = await titles(c, P)
+        expect(r.t).toEqual(['Homepage', 'Spanish translation'])
+        expect(Number(r.version)).toBe(2)
+      })
+    })
+
+    it('re-applying 120 repairs deliverables lost to the broken function, without resurrecting removed ones or touching re-signed baselines', async () => {
+      await tx(async c => {
+        await c.query(`INSERT INTO public.project_scope_snapshot (project_id, deliverables, out_of_scope, last_updated_by, last_updated_at, version) VALUES ($1, ARRAY['{"title":"Homepage"}'::jsonb], '{}', 'signing', '2026-01-01', 1)`, [P])
+        await amend(c, P, 1, ['Spanish translation', 'Dark mode', 'homepage'], [], '2026-02-01')
+        await amend(c, P, 2, [], ['dark mode'], '2026-03-01')
+        const P2 = 'a0000000-0000-4000-8000-00000000000c'
+        await c.query(`INSERT INTO public.project_scope_snapshot (project_id, deliverables, out_of_scope, last_updated_by, last_updated_at, version) VALUES ($1, ARRAY['{"title":"New SOW item"}'::jsonb], '{}', 'signing', '2026-06-01', 3)`, [P2])
+        await amend(c, P2, 3, ['Old CO item'], [], '2026-03-01')
+        await c.query(fs.readFileSync(path.join(MIGRATIONS, fs.readdirSync(MIGRATIONS).find(x => x.startsWith('120_'))!), 'utf8'))
+        expect((await titles(c, P)).t).toEqual(['Homepage', 'Spanish translation'])
+        expect((await titles(c, P2)).t).toEqual(['New SOW item'])
+        // idempotent: a second run appends nothing further
+        const v = Number((await titles(c, P)).version)
+        await c.query(fs.readFileSync(path.join(MIGRATIONS, fs.readdirSync(MIGRATIONS).find(x => x.startsWith('120_'))!), 'utf8'))
+        expect(Number((await titles(c, P)).version)).toBe(v)
+      })
+    })
+
+    it('120 clears classification_failed on duplicate checks', async () => {
+      await tx(async c => {
+        await c.query(`INSERT INTO public.guardian_checks (id, project_id, workspace_id, content, is_duplicate, outcome, classification_failed, source)
+                       VALUES ('e0000000-0000-4000-8000-000000000001', $1, $2, 'x', true, 'pending', true, 'paste')`, [P, WS])
+        await c.query(fs.readFileSync(path.join(MIGRATIONS, fs.readdirSync(MIGRATIONS).find(x => x.startsWith('120_'))!), 'utf8'))
+        const r = await c.query(`SELECT classification_failed FROM public.guardian_checks WHERE id = 'e0000000-0000-4000-8000-000000000001'`)
+        expect(r.rows[0].classification_failed).toBe(false)
+      })
+    })
+  })
+
 })

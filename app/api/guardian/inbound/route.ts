@@ -228,9 +228,28 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // FIX (independent pass, section 13): the two "keep the mail, classify later" branches below (no signed SOW /
+    // rate-limited) stored EVERY email — content up to 20k chars plus up to 10 MB per attachment — with no bound.
+    // The project address is unauthenticated (sender recognition is informational, by design), so anyone who knows
+    // or guesses it could grow the table and the evidence bucket without limit once the rate limit tripped. Cap the
+    // unclassified backlog per project; past the cap the mail is dropped with a 200 (a 5xx would only make Postmark
+    // redeliver the flood) and logged. Legitimate volume never comes near it: the sweep drains the queue.
+    const MAX_QUEUED_PER_PROJECT = 200
+    const queueFull = async (): Promise<boolean> => {
+      const { count, error } = await (service as any).from('guardian_checks')
+        .select('id', { count: 'exact', head: true })
+        .eq('project_id', project.id).eq('source', 'email').eq('outcome', 'pending').eq('is_duplicate', false)
+      if (error) return false // fail open — better to keep a mail than to drop one on a count error
+      return (count || 0) >= MAX_QUEUED_PER_PROJECT
+    }
+
     // ── No signed SOW yet: keep the mail, spend nothing ───────
     // Re-classified automatically by the guardian-health sweep after the SOW is signed.
     if (!snapshot) {
+      if (await queueFull()) {
+        console.warn(`Guardian inbound backlog full for project ${project.id} — email dropped`)
+        return NextResponse.json({ ok: true, outcome: 'dropped', reason: 'backlog_full' })
+      }
       const r = await insertCheck({ source_metadata: sourceMetadata, is_duplicate: false, outcome: 'pending' })
       if (r.id) await saveCheckAttachments(r.id)
       return NextResponse.json({ ok: true, outcome: 'pending', checkId: r.id })
@@ -240,6 +259,10 @@ export async function POST(request: NextRequest) {
     const limited = await checkAiRateLimitByProject(service, project.id, 'guardian.inbound')
     if (!limited.allowed) {
       console.warn(`Guardian inbound rate limit hit for project ${project.id} — queued for sweep`)
+      if (await queueFull()) {
+        console.warn(`Guardian inbound backlog full for project ${project.id} — email dropped`)
+        return NextResponse.json({ ok: true, outcome: 'dropped', reason: 'backlog_full' })
+      }
       const r = await insertCheck({ source_metadata: { ...sourceMetadata, rate_limited: true }, is_duplicate: false, outcome: 'pending' })
       if (r.id) await saveCheckAttachments(r.id)
       return NextResponse.json({ ok: true, outcome: 'pending', queued: true, checkId: r.id })
