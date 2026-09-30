@@ -1514,7 +1514,7 @@ function GuardianTab({ project, flags, exceptions = [], permissions, router, tea
               <div className="surface surface-p" style={{ marginTop: 10, display: 'flex', alignItems: 'flex-start', gap: 10, background: v.bg, border: `1px solid ${v.color}40` }}>
                 <i className={`ti ${v.icon}`} style={{ fontSize: 16, color: v.color, marginTop: 1 }} />
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 13, fontWeight: 500, color: v.color }}>{v.title}</div>
+                  <div style={{ fontSize: 13, fontWeight: 500, color: v.color }}>{lastResult.flagSuppressed ? `${v.title.replace(/ — flag created below$/, '').replace(/ — flagged for human review$/, '')} — recorded only` : v.title}</div>
                   {lastResult.message && (
                     <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>{lastResult.message}</div>
                   )}

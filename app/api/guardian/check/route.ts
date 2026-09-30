@@ -8,6 +8,7 @@ import { getClientIp } from '@/lib/utils/request-ip'
 import { MAX_CHECK_CONTENT_CHARS, type Sensitivity } from '@/lib/ai/guardian'
 import { classifyAndRecord, findDuplicateCheck, tryEmbedding } from '@/lib/ai/guardian-pipeline'
 import { canReadProject } from '@/lib/utils/project-access'
+import { isTerminalStatus } from '@/lib/utils/project-status'
 import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
 
 const SOURCES = ['email', 'paste', 'slack', 'webhook']
@@ -140,6 +141,9 @@ export async function POST(request: NextRequest) {
       snapshot, sensitivity, actor,
       auditEvent: 'check.classified', emailPath: source,
       flagMeta: { source }, excludeUserId: session.id,
+      // FIX (independent pass 3, section 13 - B3): a retroactive check on a Complete/Archived project is for the
+      // record only - no live flag, no team email (see classifyAndRecord's recordOnly).
+      recordOnly: isTerminalStatus(project.status),
     })
 
     if (res.status === 'failed') {
@@ -152,7 +156,13 @@ export async function POST(request: NextRequest) {
     }
 
     const { classification, flagId } = res
+    const flagSuppressed = isTerminalStatus(project.status)
+      && (classification.outcome === 'out_of_scope' || classification.outcome === 'borderline')
     return NextResponse.json({
+      ...(flagSuppressed ? {
+        flagSuppressed: true,
+        message: `This project is ${String(project.status).toLowerCase()}, so the verdict was recorded in the check history but no flag was raised and nobody was notified.`,
+      } : {}),
       checkId:          checkRow.id,
       outcome:          classification.outcome,
       matchConfidence:  classification.matchConfidence,

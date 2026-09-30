@@ -38,9 +38,21 @@ export interface GuardianActor {
 }
 export const GUARDIAN_SYSTEM_ACTOR: GuardianActor = { id: null, email: 'guardian@scopegov.app', name: 'Guardian', ip: null }
 
-/** The text the embedding (and therefore dedup) is computed over. */
+/**
+ * The text the embedding (and therefore dedup) is computed over.
+ *
+ * FIX (independent pass 3, section 13 - B1): this used to be the first 500 characters only. Two submissions that
+ * share their first 500 characters embed identically, so a chronological chat/thread that was checked once and then
+ * re-pasted with a NEW client request appended at the bottom was marked a duplicate of itself and never classified -
+ * a silent scope-creep miss. The embedding input now covers up to EMBED_TEXT_MAX characters (what getEmbedding
+ * itself accepts); anything longer keeps its first and last halves, so text appended to the END still moves the vector.
+ */
+export const EMBED_TEXT_MAX = 2000
 export function embeddingText(content: string): string {
-  return toPlainText(content).slice(0, 500) // spec §1.6.4
+  const text = toPlainText(content)
+  if (text.length <= EMBED_TEXT_MAX) return text
+  const half = Math.floor((EMBED_TEXT_MAX - 1) / 2) // the joining newline takes the last character of the budget
+  return `${text.slice(0, half)}\n${text.slice(-half)}`
 }
 
 // ── Duplicate detection ───────────────────────────────────────
@@ -109,6 +121,13 @@ export async function classifyAndRecord(service: any, p: {
   /** flag-source metadata merged into the flag audit row */
   flagMeta?:    Record<string, unknown>
   excludeUserId?: string
+  /**
+   * FIX (independent pass 3, section 13 - B3): record the verdict but raise no flag and notify nobody. Used for a
+   * retroactive "log a past check" against a Complete/Archived project, which the UI promises only records the
+   * content and never changes live monitoring - a live open flag (and a team email) on a finished project is the
+   * opposite, and PATCH /api/projects/[id]/complete exists precisely to leave no open flags on one.
+   */
+  recordOnly?:  boolean
 }): Promise<PipelineResult> {
   const { check, project, snapshot, sensitivity, actor } = p
   const auditBase = {
@@ -170,6 +189,7 @@ export async function classifyAndRecord(service: any, p: {
   if (classification.outcome !== 'out_of_scope' && classification.outcome !== 'borderline') {
     return { status: 'classified', classification, flagId: null }
   }
+  if (p.recordOnly) return { status: 'classified', classification, flagId: null }
 
   // ── raise the flag ────────────────────────────────────────
   // 'borderline' is a deliberate lower-key tier: a 'borderline_review' flag, an

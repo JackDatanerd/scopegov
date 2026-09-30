@@ -289,6 +289,7 @@ Rules:
 - matchedAgainst: "amendment" if matched a CO deliverable, "sow" if matched original scope, null if no match.
 - matchedReference: the specific deliverable name matched, or null.
 - reasoning: factual, one sentence. Do not interpret intent. Describe what matched or didn't match.
+- An item that appears under explicitly excluded clauses AND is also listed under ACCEPTED CHANGE ORDERS has since been bought by the client: treat it as covered by the change order (matchedAgainst \"amendment\"), never as out of scope.
 - When in doubt, lean BORDERLINE rather than OUT_OF_SCOPE to minimise false positives.`
 
   const msg = await anthropicClient().messages.create({
