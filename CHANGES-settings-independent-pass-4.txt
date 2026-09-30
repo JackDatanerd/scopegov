@@ -1,0 +1,30 @@
+CHANGES — Settings, independent re-audit (pass 4)
+=================================================
+
+Scope: app/(app)/settings (+ settings/approvals, settings/audit),
+api/workspace/settings, api/workspace/defaults, api/workspace/branding.
+Audit-only first; fixes applied on a fresh clone. No migration required.
+
+Audit done cold (prior comments not trusted). No unbuilt features found.
+
+1. Settings: "Can be changed again on …" used the browser's locale/zone
+   Files: components/settings/SettingsClient.tsx
+   The locked-handle hint called toLocaleDateString(), so it could name a
+   different day than the API's own 409 message (which formats in the
+   workspace's saved zone) and rendered differently on the server and in the
+   browser (hydration mismatch while the handle is locked). It now uses
+   formatDateInZone with the workspace's saved timezone (passed down as
+   savedTimezone; empty/invalid falls back to UTC).
+
+Found and already resolved upstream
+-----------------------------------
+The audit copy showed five Auth+MFA round-5 files stranded at the repo root
+(wrong extraction path) with the real files unfixed. The fresh repo has those
+fixes at the correct paths and no root-level strays; nothing further needed.
+
+Tests
+-----
+  tests/settings-pass-handle-date.test.ts   new (3 cases)
+Formatter outputs were checked with tsx; vitest/tsc were not run (no
+node_modules in the audit sandbox) — run `npx tsc --noEmit` and `npx vitest run`
+after extracting.

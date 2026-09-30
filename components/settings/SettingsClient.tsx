@@ -37,7 +37,7 @@ import ChangeEmailSection from '@/components/settings/ChangeEmailSection'
 import { CURRENCIES, INDUSTRIES } from '@/lib/constants/workspace-options'
 import DocumentNumberingSection from '@/components/settings/DocumentNumberingSection'
 import { GRACE_DAYS } from '@/lib/billing/plans'
-import { isValidTimeZone } from '@/lib/utils/timezone'
+import { isValidTimeZone, formatDateInZone } from '@/lib/utils/timezone'
 import { sameValue } from '@/lib/utils/audit-diff'
 
 type SettingsTab = 'account' | 'workspace' | 'branding' | 'defaults' | 'guardian' | 'billing' | 'notifications' | 'integrations' | 'danger'
@@ -486,7 +486,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
 
         {tab === 'workspace' && (
           <WorkspaceTab form={wsForm} setForm={setWsForm} permissions={permissions} onSave={patchWorkspace} saving={saving}
-            slugChangedAt={workspace?.slug_changed_at || null} />
+            slugChangedAt={workspace?.slug_changed_at || null} savedTimezone={workspace?.timezone || null} />
         )}
 
         {tab === 'branding' && (
@@ -789,7 +789,7 @@ function AccountTab({ session, supabase, router, mfaMandatory }: any) {
 }
 
 // ── WORKSPACE ─────────────────────────────────────────────────
-function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedAt }: any) {
+function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedAt, savedTimezone }: any) {
   // Full runtime timezone list, read after mount (see runtimeTimezones).
   const [zones, setZones] = useState<string[]>(FALLBACK_TIMEZONES)
   useEffect(() => { setZones(runtimeTimezones()) }, [])
@@ -895,7 +895,9 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedA
             placeholder="acme-studio" />
           <span className="fhint">
             {slugLocked
-              ? `Can be changed again on ${nextSlugChangeAt!.toLocaleDateString()}. Lowercase letters, numbers, and hyphens only.`
+              // FIX (Settings pass, B5): toLocaleDateString() used the browser's locale and zone (and differs between the server
+              // render and the browser, a hydration mismatch). The API states this same date in the workspace's saved zone.
+              ? `Can be changed again on ${formatDateInZone(nextSlugChangeAt!, savedTimezone)}. Lowercase letters, numbers, and hyphens only.`
               : 'Lowercase letters, numbers, and hyphens only. Changing it can be done again after 30 days, and takes effect on the next report you export.'}
           </span>
         </div>
