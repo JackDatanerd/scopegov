@@ -78,6 +78,13 @@ const SWEEP_BATCH = 10               // AI calls per run (cost + duration bound)
 const SWEEP_BUDGET_MS = 90_000       // stop starting new work after this
 const SWEEP_MAX_AGE_DAYS = 90        // don't resurrect very old backlog
 const BACKOFF_BASE_MS = 15 * 60000   // 15m, 30m, 60m, … per failed attempt
+// FIX (independent pass 2, section 13 - G2): guardian/check and guardian/inbound INSERT the row as `pending`
+// (attempts 0, last_attempt_at null) and classify it without claiming it - inbound uploads up to 10 attachments
+// first. `due()` used to treat "never attempted" as due immediately, so a sweep firing inside that window picked the
+// row up, won reclassifyCheck's compare-and-swap (attempts still 0) and classified it in parallel with the request
+// that owned it: two flags and two emails for one check. A row younger than this is left to its live request; a
+// request that died mid-flight (function timeout) is still swept, just this much later.
+const LIVE_PATH_GRACE_MS = 10 * 60000
 
 function groupByWorkspace(rows: Array<{ workspace_id: string }>): string {
   const counts = new Map<string, number>()
@@ -120,7 +127,7 @@ async function sweepUnclassified(service: any) {
   if (backlogErr) throw new Error(`guardian sweep (backlog): ${backlogErr.message}`)
 
   const due = (r: any) => {
-    if (!r.last_attempt_at) return true
+    if (!r.last_attempt_at) return now - new Date(r.created_at).getTime() >= LIVE_PATH_GRACE_MS
     const wait = BACKOFF_BASE_MS * Math.pow(2, Number(r.classification_attempts || 0))
     return now - new Date(r.last_attempt_at).getTime() >= wait
   }
@@ -236,6 +243,14 @@ export async function POST(request: NextRequest) {
           await markAlerted(service, 'guardian_health:unresolved_failures')
       }
     }
+
+    // FIX (independent pass 2, section 13 - G3): a sweep that THREW (schema drift, PostgREST error, ...) was folded into
+    // `{ error }` and the run still recorded a healthy heartbeat and returned ok:true - nothing paged. The failed-check
+    // alerts above only see rows the sweep already failed on; the never-classified backlog (no signed SOW yet,
+    // rate-limited inbound) has no alert of its own, so a permanently broken sweep stranded it silently. Same rule as
+    // the unresolved-failures count above: fail the run (alertCronFailure + no heartbeat). Placed AFTER the alerts so
+    // they still run on a broken sweep.
+    if ('error' in sweep) throw new Error(`guardian sweep failed: ${sweep.error}`)
 
     await recordCronHeartbeat(service, 'guardian-health', { total, failed, sweep })
     return NextResponse.json({ ok: true, total, failed, rate: rate.toFixed(3), sweep })

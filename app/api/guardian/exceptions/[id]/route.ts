@@ -27,9 +27,12 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     try { body = await request.json() } catch { return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 }) }
 
     const service = createServiceClient()
-    const { data: exc } = await (service as any).from('exceptions_log')
+    const { data: exc, error: excErr } = await (service as any).from('exceptions_log')
       .select('id, project_id, estimated_value, reason, granted_what, projects(name)')
-      .eq('id', id).eq('workspace_id', session.workspaceId).single()
+      .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
+    // FIX (independent pass 2, section 13 - G4): a read error (outage, timeout) used to look like "Exception not found"
+    // (404). Only a missing row - or a malformed id (22P02) - is a genuine not-found.
+    if (excErr && excErr.code !== '22P02') return NextResponse.json({ error: 'Could not load the exception' }, { status: 500 })
     if (!exc) return NextResponse.json({ error: 'Exception not found' }, { status: 404 })
     if (!(await canReadProject(service, session, exc.project_id)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })

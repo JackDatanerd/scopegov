@@ -1,0 +1,38 @@
+Guardian / Scope governance (section 13) — independent pass 2
+Base: f0d08af.  tsc clean; tests/guardian-section13-pass2-fixes.test.ts (41 tests) passes.
+Apply migration 123 in Supabase (see G2).
+
+G1  lib/ai/guardian.ts
+    toPlainText ran three backtracking regexes (style/script strip, HTML_TAG_HINT, ANY_TAG) over the WHOLE inbound
+    email body before the 20k cap. Each unclosed "<a x " / "<style>" start rescanned to the end of the input: O(n^2)
+    (~7s at 200 KB), reachable by anyone who can email a project's Guardian address, and Postmark's redelivery
+    after the timeout hangs again. Replaced by a linear tag scanner (same grammar, output identical on ordinary
+    input - the test compares against the old implementation) plus a 1,000,000-char input bound.
+    4 MB of hostile input now ~0.2s.
+
+G2  supabase/migrations/123_guardian_section13_pass2_fixes.sql, lib/ai/guardian-pipeline.ts,
+    app/api/cron/guardian-health/route.ts
+    guardian/check and guardian/inbound insert the check as pending (attempts 0, last_attempt_at null) and classify
+    without claiming it; the sweep treated "never attempted" as due immediately, won reclassifyCheck's CAS and
+    classified it in parallel -> two guardian_flags rows + two emails for one check (no uniqueness on check_id).
+      - sweep: a never-attempted row is not due until 10 minutes old (LIVE_PATH_GRACE_MS)
+      - 123: partial unique index guardian_flags(check_id) WHERE check_id IS NOT NULL (skipped with a NOTICE if a
+        check already has two flags - merge them, then re-run the CREATE INDEX)
+      - classifyAndRecord: a 23505 on that insert links + returns the existing flag (no 2nd email, no retry loop)
+
+G3  app/api/cron/guardian-health/route.ts
+    A sweep that threw was folded into { error } and the run still wrote a healthy heartbeat and returned ok:true.
+    Now throws after the failed-check alerts (=> alertCronFailure, 500, no heartbeat) - same rule as the
+    unresolved-failures count.
+
+G4  lib/utils/flag-governance.ts (resolveEntity), scope-governance comments GET + attachments GET/DELETE,
+    guardian/exceptions/[id] PATCH, guardian/checks GET, guardian/checks/[id]/attachments GET, guardian/flags/[id]
+    GET + PATCH
+    Read errors answered as "empty list" (comments/attachments GET), "no original request" (flag GET) or 404
+    (everything using .single() without checking error). Now 500; a missing row or a malformed id (22P02) is still 404.
+
+G5  app/api/guardian/flags/[id]/route.ts, app/api/guardian/scope-adjustment/route.ts
+    Only draft_co refused a Complete/Archived project, although completing a project closes every open flag and the
+    project route is read-only when finished. exception / escalate / confirm_out_of_scope / reopen and scope
+    adjustments now answer 409 "Reopen the project first". resolve / close / dismiss_borderline stay allowed so a
+    stray open flag can still be cleared. (Exception EDITS stay allowed - correcting a recorded value has no live effect.)

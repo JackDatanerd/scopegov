@@ -35,12 +35,15 @@ export async function GET(
     if (!(await canReadProject(service, session, entity.projectId)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
-    const { data: attachments } = await (service as any)
+    const { data: attachments, error: attachmentsErr } = await (service as any)
       .from('flag_attachments')
       .select('id, file_name, file_size, mime_type, storage_path, uploaded_at, uploaded_by, users!flag_attachments_uploaded_by_fkey(name)')
       .eq('entity_type', entityType)
       .eq('entity_id', entityId)
       .order('uploaded_at', { ascending: false })
+    // FIX (independent pass 2, section 13 - G4): a failed read answered 200 with no attachments - evidence looked
+    // missing/deleted. Fail loudly instead.
+    if (attachmentsErr) throw new Error(`flag_attachments read failed: ${attachmentsErr.message}`)
 
     // Bucket is private — hand back short-lived signed URLs rather than
     // public ones, resolved in parallel.

@@ -30,16 +30,111 @@ function openaiClient(): OpenAI {
 // contains HTML tags gets tag-stripped; everything else is just whitespace
 // normalised. Tag names must be letters/digits/hyphens directly after `<`, so
 // `<jane@acme.com>`, `< 2s` and `<3` are never mistaken for markup.
-const HTML_TAG_HINT = /<\/?(?:html|body|head|div|p|br|span|a|table|tbody|thead|tr|td|th|ul|ol|li|h[1-6]|strong|em|b|i|u|img|blockquote|pre|code|style|script|font|center)(?:\s[^>]*)?\/?>/i
-const ANY_TAG = /<\/?[a-zA-Z][a-zA-Z0-9-]*(?:\s[^>]*)?\/?>/g
+// Names that mark a submission as "really HTML" (see the note above). Anything else needs at least one of these.
+const HTML_HINT_TAGS = new Set([
+  'html', 'body', 'head', 'div', 'p', 'br', 'span', 'a', 'table', 'tbody', 'thead', 'tr', 'td', 'th', 'ul', 'ol', 'li',
+  'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'strong', 'em', 'b', 'i', 'u', 'img', 'blockquote', 'pre', 'code', 'style',
+  'script', 'font', 'center',
+])
+
+/**
+ * FIX (independent pass 2, section 13 - G1): the three regexes that used to live here (`<(style|script)[^>]*>[\s\S]*?</\1>`,
+ * HTML_TAG_HINT and ANY_TAG) all backtrack to the END of the input for every `<tag ` start that has no closing `>`
+ * (or, for style/script, no closing tag) - O(n^2). toPlainText runs on the WHOLE inbound email body BEFORE the 20k cap,
+ * so a body of `<a x <a x <a x ...` (or `<style><style>...`) from anyone who can email a project address pinned a
+ * function for seconds at ~100-200 KB (and Postmark redelivers after the timeout, so the retry hangs again).
+ * The scanner below is linear for every input: a tag start either consumes text up to its `>` (so that text is never
+ * rescanned) or proves there is no `>` left at all (remembered, so no later start searches again).
+ */
+export const MAX_PLAINTEXT_INPUT_CHARS = 1_000_000
+
+/** Same grammar as the old ANY_TAG: `<` `/`? letter [letter|digit|-]* then `>`, `/>`, or whitespace + anything + `>`. */
+function tagAt(text: string, i: number, lastGt: { pos: number }): { end: number; name: string; closing: boolean } | null {
+  let j = i + 1
+  let closing = false
+  if (text.charCodeAt(j) === 47 /* / */) { closing = true; j++ }
+  const c0 = text.charCodeAt(j)
+  const isLetter = (c: number) => (c >= 65 && c <= 90) || (c >= 97 && c <= 122)
+  if (!isLetter(c0)) return null
+  const nameStart = j
+  j++
+  for (; j < text.length; j++) {
+    const c = text.charCodeAt(j)
+    if (isLetter(c) || (c >= 48 && c <= 57) || c === 45) continue
+    break
+  }
+  const name = text.slice(nameStart, j).toLowerCase()
+  const ch = text[j]
+  if (ch === '>') return { end: j + 1, name, closing }
+  if (ch === '/' && text[j + 1] === '>') return { end: j + 2, name, closing }
+  if (ch !== undefined && /\s/.test(ch)) {
+    if (lastGt.pos === -1) return null           // no '>' anywhere after an earlier start => none after this one either
+    if (lastGt.pos < j) {
+      lastGt.pos = text.indexOf('>', j)          // first '>' at/after j (a cached one at/after j is still the first)
+      if (lastGt.pos === -1) return null
+    }
+    return { end: lastGt.pos + 1, name, closing }
+  }
+  return null
+}
+
+function hasHtmlTag(text: string): boolean {
+  const lastGt = { pos: -2 }
+  let i = text.indexOf('<')
+  while (i !== -1) {
+    const t = tagAt(text, i, lastGt)
+    if (t) { if (HTML_HINT_TAGS.has(t.name)) return true; i = text.indexOf('<', t.end) }
+    else i = text.indexOf('<', i + 1)
+  }
+  return false
+}
+
+/** Drops `<style>...</style>` / `<script>...</script>` blocks (contents included). An unclosed one is left for the tag strip. */
+function stripRawTextBlocks(text: string): string {
+  const lastGt = { pos: -2 }
+  const noClose: Record<string, boolean> = {}
+  let out = ''
+  let copyFrom = 0
+  let i = text.indexOf('<')
+  while (i !== -1) {
+    const t = tagAt(text, i, lastGt)
+    if (t && !t.closing && (t.name === 'style' || t.name === 'script') && !noClose[t.name]) {
+      const closeRe = new RegExp('</' + t.name + '\\s*>', 'gi')
+      closeRe.lastIndex = t.end
+      const m = closeRe.exec(text)
+      if (m) {
+        out += text.slice(copyFrom, i) + ' '
+        copyFrom = m.index + m[0].length
+        i = text.indexOf('<', copyFrom)
+        continue
+      }
+      noClose[t.name] = true                     // no closing tag after this one => none after any later one either
+    }
+    i = text.indexOf('<', t ? t.end : i + 1)
+  }
+  return out + text.slice(copyFrom)
+}
+
+function stripAllTags(text: string): string {
+  const lastGt = { pos: -2 }
+  let out = ''
+  let copyFrom = 0
+  let i = text.indexOf('<')
+  while (i !== -1) {
+    const t = tagAt(text, i, lastGt)
+    if (t) {
+      out += text.slice(copyFrom, i) + ' '
+      copyFrom = t.end
+      i = text.indexOf('<', copyFrom)
+    } else i = text.indexOf('<', i + 1)
+  }
+  return out + text.slice(copyFrom)
+}
 
 export function toPlainText(content: string): string {
-  let text = String(content ?? '')
-  if (HTML_TAG_HINT.test(text)) {
-    text = text
-      .replace(/<(style|script)[^>]*>[\s\S]*?<\/\1>/gi, ' ')
-      .replace(/<br\s*\/?>|<\/(p|div|li|tr|h[1-6]|blockquote)>/gi, '\n')
-      .replace(ANY_TAG, ' ')
+  let text = String(content ?? '').slice(0, MAX_PLAINTEXT_INPUT_CHARS)
+  if (hasHtmlTag(text)) {
+    text = stripAllTags(stripRawTextBlocks(text).replace(/<br\s*\/?>|<\/(p|div|li|tr|h[1-6]|blockquote)>/gi, '\n'))
       .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
       .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
   }

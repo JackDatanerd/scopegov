@@ -27,8 +27,11 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
 
     const service = createServiceClient()
-    const { data: check } = await (service as any).from('guardian_checks')
-      .select('id, project_id').eq('id', checkId).eq('workspace_id', session.workspaceId).single()
+    const { data: check, error: checkErr } = await (service as any).from('guardian_checks')
+      .select('id, project_id').eq('id', checkId).eq('workspace_id', session.workspaceId).maybeSingle()
+    // FIX (independent pass 2, section 13 - G4): a read error used to look like "Check not found" (404). Only a missing
+    // row - or a malformed id (22P02) - is a genuine not-found.
+    if (checkErr && checkErr.code !== '22P02') throw new Error(`guardian_checks lookup failed: ${checkErr.message}`)
     if (!check) return NextResponse.json({ error: 'Check not found' }, { status: 404 })
     if (!(await canReadProject(service, session, check.project_id)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })

@@ -23,6 +23,10 @@ export interface ResolvedEntity {
   severity: string | null // only present for 'flag'; 'exception' borrows nothing by default
 }
 
+// FIX (independent pass 2, section 13 - G4): both lookups used `.single()` and ignored `error`, so ANY failure (outage,
+// timeout, statement error) came back as null - which every caller turns into a 404 "Not found" for a flag or exception
+// that exists. Only "no such row" (and a malformed id, Postgres 22P02 - the path param is not UUID-checked) is a genuine
+// not-found; anything else now throws so the route's catch answers 500 instead.
 export async function resolveEntity(
   service: any,
   workspaceId: string,
@@ -30,22 +34,24 @@ export async function resolveEntity(
   entityId: string
 ): Promise<ResolvedEntity | null> {
   if (entityType === 'flag') {
-    const { data } = await service
+    const { data, error } = await service
       .from('guardian_flags')
       .select('id, project_id, severity')
       .eq('id', entityId)
       .eq('workspace_id', workspaceId)
-      .single()
+      .maybeSingle()
+    if (error && error.code !== '22P02') throw new Error(`resolveEntity(flag): ${error.message}`)
     if (!data) return null
     return { projectId: data.project_id, severity: data.severity }
   }
 
-  const { data } = await service
+  const { data, error } = await service
     .from('exceptions_log')
     .select('id, project_id, guardian_flags(severity)')
     .eq('id', entityId)
     .eq('workspace_id', workspaceId)
-    .single()
+    .maybeSingle()
+  if (error && error.code !== '22P02') throw new Error(`resolveEntity(exception): ${error.message}`)
   if (!data) return null
   return { projectId: data.project_id, severity: data.guardian_flags?.severity || null }
 }

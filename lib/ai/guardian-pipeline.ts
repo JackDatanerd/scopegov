@@ -189,6 +189,19 @@ export async function classifyAndRecord(service: any, p: {
     status:        isBorderline ? 'borderline_review' : 'open',
   }).select('id').single()
 
+  // FIX (independent pass 2, section 13 - G2): guardian_flags_check_id_unique (migration 123) means a check can own at most
+  // one flag. If two runs ever classify the same check concurrently (a live request and a sweep/retry that both got
+  // past their claims), the loser lands here: the flag already exists and its winner already notified the team, so
+  // link it and return it - no second flag, no second email, and not a "flag creation failed" retry loop.
+  if (flagErr && (flagErr as any).code === '23505') {
+    const { data: existingFlag } = await service.from('guardian_flags').select('id').eq('check_id', check.id).limit(1).maybeSingle()
+    if (existingFlag?.id) {
+      const { error: relinkErr } = await service.from('guardian_checks').update({ flag_id: existingFlag.id }).eq('id', check.id)
+      if (relinkErr) console.error('Could not link check → existing flag:', relinkErr.message)
+      return { status: 'classified', classification, flagId: existingFlag.id }
+    }
+  }
+
   if (flagErr || !flag) {
     // Previously ignored: the check kept its out_of_scope verdict with no flag and
     // nobody was ever told. Put it back into the retryable state instead.

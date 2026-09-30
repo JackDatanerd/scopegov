@@ -36,14 +36,17 @@ export async function DELETE(
     // Scope strictly by workspace_id + entity_type + entity_id — not just
     // the attachment id — so an id belonging to a different workspace's
     // (or a different entity's) attachment can never be targeted here.
-    const { data: attachment } = await (service as any)
+    const { data: attachment, error: attachmentErr } = await (service as any)
       .from('flag_attachments')
       .select('id, storage_path, file_name')
       .eq('id', attachmentId)
       .eq('workspace_id', session.workspaceId)
       .eq('entity_type', entityType)
       .eq('entity_id', entityId)
-      .single()
+      .maybeSingle()
+    // FIX (independent pass 2, section 13 - G4): a read error used to look like "Attachment not found" (404). Only a
+    // missing row - or a malformed id (22P02) - is a genuine not-found.
+    if (attachmentErr && attachmentErr.code !== '22P02') throw new Error(`flag_attachments lookup failed: ${attachmentErr.message}`)
 
     if (!attachment) return NextResponse.json({ error: 'Attachment not found' }, { status: 404 })
 

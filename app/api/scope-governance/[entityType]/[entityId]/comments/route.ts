@@ -24,12 +24,15 @@ export async function GET(
     if (!(await canReadProject(service, session, entity.projectId)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
-    const { data: comments } = await (service as any)
+    const { data: comments, error: commentsErr } = await (service as any)
       .from('flag_comments')
       .select('id, body, created_at, author_id, users!flag_comments_author_id_fkey(name, avatar_url)')
       .eq('entity_type', entityType)
       .eq('entity_id', entityId)
       .order('created_at', { ascending: true })
+    // FIX (independent pass 2, section 13 - G4): the error was never read, so a failed read answered 200 with an empty
+    // list - the thread looked like it had no comments (and the next comment looked like the first).
+    if (commentsErr) throw new Error(`flag_comments read failed: ${commentsErr.message}`)
 
     return NextResponse.json({
       comments: (comments || []).map((c: any) => ({

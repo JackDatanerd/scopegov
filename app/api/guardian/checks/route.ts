@@ -36,9 +36,12 @@ export async function GET(request: NextRequest) {
 
     // Scope to workspace before anything else — same pattern as every
     // other Guardian route (check, scope-adjustment).
-    const { data: project } = await (service as any)
+    const { data: project, error: projectErr } = await (service as any)
       .from('projects').select('id').eq('id', projectId).eq('workspace_id', session.workspaceId)
-      .is('deleted_at', null).single()
+      .is('deleted_at', null).maybeSingle()
+    // FIX (independent pass 2, section 13 - G4): a read error used to look like "Project not found" (404). Only a
+    // missing row - or a malformed projectId (22P02) - is a genuine not-found.
+    if (projectErr && projectErr.code !== '22P02') throw new Error(`project lookup failed: ${projectErr.message}`)
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
     if (!(await canReadProject(service, session, projectId)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })

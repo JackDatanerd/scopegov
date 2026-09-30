@@ -41,15 +41,18 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     const { data: flag, error: flagErr } = await (service as any).from('guardian_flags')
       .select('id, project_id, check_id').eq('id', id).eq('workspace_id', session.workspaceId).single()
     // FIX (independent pass, section 13): a real read error (outage, timeout) used to look like a missing row — a 404 "Flag not found". Only PGRST116 (no rows) is a genuine not-found.
-    if (flagErr && flagErr.code !== 'PGRST116') return NextResponse.json({ error: 'Could not load the flag' }, { status: 500 })
+    if (flagErr && flagErr.code !== 'PGRST116' && flagErr.code !== '22P02') return NextResponse.json({ error: 'Could not load the flag' }, { status: 500 })
     if (!flag) return NextResponse.json({ error: 'Flag not found' }, { status: 404 })
     if (!(await canReadProject(service, session, flag.project_id)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     if (!flag.check_id) return NextResponse.json({ source: null })
 
-    const { data: check } = await (service as any).from('guardian_checks')
+    const { data: check, error: checkErr } = await (service as any).from('guardian_checks')
       .select('id, content, source, source_metadata, submitted_at, is_retroactive, users!guardian_checks_submitted_by_fkey(name)')
       .eq('id', flag.check_id).eq('workspace_id', session.workspaceId).maybeSingle()
+    // FIX (independent pass 2, section 13 - G4): a read error here answered `{ source: null }` - the panel then told the
+    // reviewer there was no original request behind the flag. Fail loudly instead.
+    if (checkErr) throw new Error(`guardian_checks read failed: ${checkErr.message}`)
     if (!check) return NextResponse.json({ source: null })
 
     const meta = check.source_metadata || {}
@@ -68,6 +71,9 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ error: 'Could not load the original request' }, { status: 500 })
   }
 }
+
+/** Flag actions that revive or advance a flag - refused on a Complete/Archived project (see the guard in PATCH). */
+const TERMINAL_BLOCKED_FLAG_ACTIONS = new Set(['exception', 'escalate', 'confirm_out_of_scope', 'reopen'])
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -104,7 +110,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       .single()
 
     // FIX (independent pass, section 13): a real read error (outage, timeout) used to look like a missing row — a 404 "Flag not found". Only PGRST116 (no rows) is a genuine not-found.
-    if (flagLoadErr && flagLoadErr.code !== 'PGRST116') return NextResponse.json({ error: 'Could not load the flag' }, { status: 500 })
+    if (flagLoadErr && flagLoadErr.code !== 'PGRST116' && flagLoadErr.code !== '22P02') return NextResponse.json({ error: 'Could not load the flag' }, { status: 500 })
     if (!flag) return NextResponse.json({ error: 'Flag not found' }, { status: 404 })
     // FIX (audit round 3): see lib/utils/project-access.ts.
     if (!(await canReadProject(service, session, flag.project_id)))
@@ -116,6 +122,20 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // scope-adjustment) logs the readable name. Made the audit log/CSV
     // export show a UUID for every flag action instead of a project name.
     const projectName = flag.projects?.name || flag.project_id
+
+    // FIX (independent pass 2, section 13 - G5): only draft_co refused a Complete/Archived project. Completing a project
+    // CLOSES every open flag ("rather than leave a Complete project with live flags" - projects/[id]/complete), and
+    // PATCH /api/projects/[id] treats a finished project as read-only, yet reopen, confirm_out_of_scope, escalate and
+    // exception all worked on one: a flag could be reopened or escalated (and the team notified) on a project that is
+    // finished, or scope "granted" as an exception on an Archived one. Those four make a flag live again or advance it,
+    // so they are refused here. resolve / close / dismiss_borderline only END a flag, so they stay available - that is
+    // how a stray open flag on a finished project gets cleared.
+    const flagProjectRow = Array.isArray(flag.projects) ? flag.projects[0] : flag.projects
+    if (TERMINAL_BLOCKED_FLAG_ACTIONS.has(action) && isTerminalStatus(flagProjectRow?.status || '')) {
+      return NextResponse.json({
+        error: `This project is ${String(flagProjectRow?.status).toLowerCase()} — its scope flags are read-only apart from closing or resolving them. Reopen the project first.`,
+      }, { status: 409 })
+    }
 
     switch (action) {
       case 'resolve': {

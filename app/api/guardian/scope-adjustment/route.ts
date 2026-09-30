@@ -5,6 +5,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { canReadProject } from '@/lib/utils/project-access'
 import { sanitizePlainText } from '@/lib/utils/sanitize'
+import { isTerminalStatus } from '@/lib/utils/project-status'
 
 export async function POST(request: NextRequest) {
   try {
@@ -46,13 +47,18 @@ export async function POST(request: NextRequest) {
 
     // Verify project
     const { data: project, error: projectErr } = await (service as any)
-      .from('projects').select('id,name').eq('id', projectId)
+      .from('projects').select('id,name,status').eq('id', projectId)
       .eq('workspace_id', session.workspaceId).is('deleted_at', null).single()
     // FIX (independent pass, section 13): a real read error (outage, timeout) used to look like a missing row — a 404 "Project not found". Only PGRST116 (no rows) is a genuine not-found.
     if (projectErr && projectErr.code !== 'PGRST116') return NextResponse.json({ error: 'Could not load the project' }, { status: 500 })
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
     if (!(await canReadProject(service, session, projectId)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    // FIX (independent pass 2, section 13 - G5): the scope snapshot is the scope-of-record Guardian classifies against;
+    // a Complete/Archived project is read-only everywhere else (PATCH /api/projects/[id], draft_co, POST /api/co), but
+    // this route would still rewrite its deliverable / excluded-item titles.
+    if (isTerminalStatus(project.status))
+      return NextResponse.json({ error: `This project is ${String(project.status).toLowerCase()} — its scope can no longer be adjusted. Reopen the project first.` }, { status: 409 })
 
     const now = new Date().toISOString()
 
