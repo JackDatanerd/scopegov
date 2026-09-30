@@ -55,3 +55,25 @@ export async function isOverLimit(service: any, workspaceId: string, planTier: s
   if (limit == null) return false
   return (await countLimitedProjects(service, workspaceId)) > limit
 }
+
+/**
+ * Post-INSERT race check for project CREATE (Projects & Dashboard pass 2, B4).
+ *
+ * `isOverLimit` rolls back EVERY writer when a race pushes the count past the allowance, so two concurrent creates
+ * for the last free slot both failed although one should have won. Here the counted projects are ranked by
+ * (created_at, id) and only a project that falls outside the first `limit` of them is the loser: exactly one of two
+ * racers is rolled back, deterministically. (Reopen keeps `isOverLimit` — a reopened project is old, so ranking by
+ * creation time does not identify the loser there.)
+ */
+export async function isProjectBeyondLimit(service: any, workspaceId: string, planTier: string, projectId: string): Promise<boolean> {
+  const limit = projectLimitFor(planTier)
+  if (limit == null) return false
+  const { data, error } = await service
+    .from('projects').select('id')
+    .eq('workspace_id', workspaceId).is('deleted_at', null)
+    .in('status', [...LIMIT_COUNTED_STATUSES])
+    .order('created_at', { ascending: true }).order('id', { ascending: true })
+    .limit(limit)
+  if (error) throw new Error(`plan limit check failed: ${error.message}`)
+  return !(data || []).some((r: any) => r.id === projectId)
+}

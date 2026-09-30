@@ -273,6 +273,17 @@ export function requirePermission(session: SessionUser, permission: Permission):
   }
 }
 
+/**
+ * True for a workspace whose free trial has run out. getSession() reports an expired trial as `solo` straight away
+ * (effectivePlanTier) and the payment-overdue cron leaves trial_ends_at in place when it makes that stored; the billing
+ * webhook nulls trial_ends_at on any paid plan, so "solo + a trial_ends_at in the past" means exactly "trial expired".
+ */
+export function trialExpired(session: SessionUser, now: number = Date.now()): boolean {
+  if (session.planTier !== 'solo' || !session.trialEndsAt) return false
+  const ends = Date.parse(session.trialEndsAt)
+  return !Number.isNaN(ends) && ends < now
+}
+
 export function trialDaysLeft(session: SessionUser): number | null {
   if (session.planTier !== 'trial' || !session.trialEndsAt) return null
   const diff = new Date(session.trialEndsAt).getTime() - Date.now()

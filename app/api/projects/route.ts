@@ -1,7 +1,7 @@
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
-import { wouldExceedLimit, isOverLimit, projectLimitMessage } from '@/lib/utils/project-limit'
+import { wouldExceedLimit, isProjectBeyondLimit, projectLimitMessage } from '@/lib/utils/project-limit'
 import { insertAuditRow } from '@/lib/utils/audit'
 import { fetchPaged } from '@/lib/utils/paginate'
 import { parseClientInput } from '@/lib/utils/client-input'
@@ -83,6 +83,10 @@ export async function POST(request: NextRequest) {
     }
 
     let resolvedClientId = clientId
+    // FIX (Projects & Dashboard pass 2, B4): an archived client picked for this project used to be reactivated BEFORE the
+    // project existed, so a failed insert or a lost plan-limit race left a reactivated client with no project. It is
+    // now recorded here and reactivated only once the project has been created and kept.
+    let clientToReactivate: { id: string; name: string } | null = null
 
     // ── Create client if new ──────────────────────────────────
     // api/clients POST/PATCH require VIEW_CLIENT_DATA before writing a client's
@@ -135,16 +139,7 @@ export async function POST(request: NextRequest) {
         resolvedClientId = existingClient.id
         // Re-using an archived client's email reactivates it (not doing so
         // left the client invisible on the Clients page).
-        if (existingClient.status === 'archived') {
-          await (service as any).from('clients').update({ status: 'active' }).eq('id', existingClient.id)
-          await insertAuditRow(service, {
-            workspace_id: session.workspaceId, actor_id: session.id,
-            actor_email: session.email, actor_name: session.name,
-            event_type: 'client.reactivated', entity_type: 'client',
-            entity_id: existingClient.id, entity_name: existingClient.name,
-            metadata: { reason: 'new_project' },
-          })
-        }
+        if (existingClient.status === 'archived') clientToReactivate = { id: existingClient.id, name: existingClient.name }
       }
     }
 
@@ -159,16 +154,7 @@ export async function POST(request: NextRequest) {
       const { data: client } = await (service as any)
         .from('clients').select('id, name, status').eq('id', clientId).eq('workspace_id', session.workspaceId).maybeSingle()
       if (!client) return NextResponse.json({ error: 'Client not found' }, { status: 404 })
-      if (client.status === 'archived') {
-        await (service as any).from('clients').update({ status: 'active' }).eq('id', client.id)
-        await insertAuditRow(service, {
-          workspace_id: session.workspaceId, actor_id: session.id,
-          actor_email: session.email, actor_name: session.name,
-          event_type: 'client.reactivated', entity_type: 'client',
-          entity_id: client.id, entity_name: client.name,
-          metadata: { reason: 'new_project' },
-        })
-      }
+      if (client.status === 'archived') clientToReactivate = { id: client.id, name: client.name }
     }
 
     // ── Create project ────────────────────────────────────────
@@ -195,7 +181,7 @@ export async function POST(request: NextRequest) {
 
     // Lost the count-then-insert race (a concurrent create took the last slot)? Undo — the project
     // has no children yet, same as the member-insert rollback below.
-    if (await isOverLimit(service, session.workspaceId, session.planTier)) {
+    if (await isProjectBeyondLimit(service, session.workspaceId, session.planTier, project.id)) {
       await (service as any).from('projects').delete().eq('id', project.id)
       return NextResponse.json({ error: projectLimitMessage(session.planTier, 'create') }, { status: 403 })
     }
@@ -224,6 +210,20 @@ export async function POST(request: NextRequest) {
         await (service as any).from('projects').delete().eq('id', project.id)
         return NextResponse.json({ error: 'Could not create the project. Please try again.' }, { status: 500 })
       }
+    }
+
+    // The project exists and is kept: now (and only now) bring an archived client back.
+    if (clientToReactivate) {
+      const { error: reactErr } = await (service as any).from('clients')
+        .update({ status: 'active' }).eq('id', clientToReactivate.id).eq('workspace_id', session.workspaceId).eq('status', 'archived')
+      if (reactErr) console.error('Project create: could not reactivate archived client (non-fatal):', reactErr.message)
+      else await insertAuditRow(service, {
+        workspace_id: session.workspaceId, actor_id: session.id,
+        actor_email: session.email, actor_name: session.name,
+        event_type: 'client.reactivated', entity_type: 'client',
+        entity_id: clientToReactivate.id, entity_name: clientToReactivate.name,
+        metadata: { reason: 'new_project' },
+      })
     }
 
     await insertAuditRow(service, {

@@ -393,9 +393,15 @@ function NewProjectPageInner() {
                         </div>
                       ) : (
                         filteredClients.map(c => (
-                          <button key={c.id} type="button"
-                            style={{ display: 'block', width: '100%', textAlign: 'left', padding: '10px 12px', background: 'none', border: 'none', cursor: 'pointer', borderBottom: '1px solid var(--surface-2)' }}
-                            onClick={() => { setClientId(c.id); setClientName(c.name); setClientSearch(c.name) }}>
+                          // FIX (Projects & Dashboard pass 2, B3): before the project exists an archived client is fine (creation
+                          // reactivates it). After "← Back" the wizard EDITS the project, and PATCH refuses an archived client
+                          // ("restore it first") — so it is shown but not selectable at that point.
+                          <button key={c.id} type="button" disabled={c.status === 'archived' && !!projectId}
+                            title={c.status === 'archived' && projectId ? 'Archived — restore this client from the Clients page first' : undefined}
+                            style={{ display: 'block', width: '100%', textAlign: 'left', padding: '10px 12px', background: 'none', border: 'none',
+                              cursor: c.status === 'archived' && projectId ? 'not-allowed' : 'pointer', opacity: c.status === 'archived' && projectId ? 0.55 : 1,
+                              borderBottom: '1px solid var(--surface-2)' }}
+                            onClick={() => { if (c.status === 'archived' && projectId) return; setClientId(c.id); setClientName(c.name); setClientSearch(c.name) }}>
                             <div style={{ fontSize: 13, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 6 }}>
                               {c.name}
                               {/* FIX (re-audit, Clients section): this list showed archived
@@ -404,7 +410,7 @@ function NewProjectPageInner() {
                                   warning. (The server now reactivates them on creation;
                                   this at least tells the person that's what's about to
                                   happen instead of it being invisible.) */}
-                              {c.status === 'archived' && <span className="pill pill-slate pill-sm">Archived</span>}
+                              {c.status === 'archived' && <span className="pill pill-slate pill-sm">{projectId ? 'Archived — restore first' : 'Archived'}</span>}
                             </div>
                             <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{c.email}</div>
                           </button>

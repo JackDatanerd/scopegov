@@ -588,7 +588,7 @@ function OverviewTab({ project, milestones, amendments, permissions, currency, r
                 <div>
                   {project.retainer_duration_months
                     ? `${project.retainer_duration_months} month${project.retainer_duration_months !== 1 ? 's' : ''}`
-                    : 'Not set — monthly billing won\u2019t auto-generate'}
+                    : 'Open-ended — billed monthly until the project is completed or archived'}
                 </div>
               </div>
             )}

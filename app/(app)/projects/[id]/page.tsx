@@ -1,6 +1,7 @@
 import { loadProjectActivity } from '@/lib/utils/project-activity'
 import { canReadProject } from '@/lib/utils/project-access'
 import { amendmentImpact, baseContractValue } from '@/lib/utils/contract-value'
+import { computeContractPosition } from '@/lib/reports/contract-position'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect, notFound } from 'next/navigation'
@@ -22,6 +23,9 @@ export async function generateMetadata({ params }: Props) {
   const session = await getSession()
   if (!session) return { title: 'Project' }
   const service = createServiceClient()
+  // FIX (Projects & Dashboard pass 2, B5): workspace scoping alone still let a limited-access member (VIEW_OWN_PROJECTS,
+  // not on this project) read its name from the tab title while the page body 404s. Same visibility rule as the page.
+  if (!(await canReadProject(service, session, id))) return { title: 'Project' }
   const { data: p } = await (service as any)
     .from('projects').select('name').eq('id', id).eq('workspace_id', session.workspaceId).is('deleted_at', null).maybeSingle()
   return { title: p?.name || 'Project' }
@@ -222,15 +226,22 @@ export default async function ProjectPage({ params, searchParams }: Props) {
     ? invoices
     : (invoices || []).map((inv: any) => ({ ...inv, token: null }))
 
-  // ── Fetch reconciliation snapshot history (Phase 4) ──────────────────
-  const { data: reconciliation = [] } = viewFinancials
-    ? await (service as any)
-        .from('contract_reconciliation_snapshots')
-        .select('contracted_value, invoiced_to_date, paid_to_date, at_risk_value, snapshot_date')
-        .eq('project_id', id)
-        .order('snapshot_date', { ascending: true })
-        .limit(90)
-    : { data: [] }
+  // ── Contract position for the Billing tab (Phase 4) ───────────────────
+  // Computed live (lib/reports/contract-position.ts — the function the invoice PDFs, send path and
+  // over-contract check use) and handed to BillingTab as one row in the snapshot shape it already reads.
+  // The nightly snapshot history must NOT be read here: ascending + limit(90) returns the OLDEST 90 rows, so
+  // a project older than ~90 days froze on its day-90 figures, and every figure lagged by up to a day.
+  // If the live computation fails it returns null and BillingTab falls back to summing the invoices it has.
+  const livePosition = viewFinancials ? await computeContractPosition(service, id) : null
+  const reconciliation = livePosition
+    ? [{
+        contracted_value: livePosition.contractedValue,
+        invoiced_to_date: livePosition.invoicedToDate,
+        paid_to_date:     livePosition.paidToDate,
+        at_risk_value:    livePosition.atRiskValue,
+        snapshot_date:    new Date().toISOString().slice(0, 10),
+      }]
+    : []
 
   // Effective contract value — the shared definition (lib/utils/contract-value.ts): base (monthly rate ×
   // term for retainers) + amendments, minus retainer-renewal amendments (a renewal replaces the rate; it

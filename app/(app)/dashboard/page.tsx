@@ -1,8 +1,8 @@
-import { getSession, hasPermission } from '@/lib/auth/session'
+import { getSession, hasPermission, trialExpired } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
-import { formatCurrency, formatCurrencyGroups, formatRelative, projectStatusLabel, PLAN_LABELS } from '@/lib/utils/format'
+import { formatCurrency, formatCurrencyGroups, formatRelative, projectStatusLabel, PLAN_LABELS, PLAN_LIMITS } from '@/lib/utils/format'
 import { isAttentionWorthy, attentionReason } from '@/lib/utils/attention'
 import { IN_PROGRESS_STATUSES } from '@/lib/utils/project-status'
 import { effectiveContractValue, monthlyRetainerRate, loadRetainerMonthsBilled } from '@/lib/utils/contract-value'
@@ -236,18 +236,7 @@ export default async function DashboardPage() {
 
   return (
     <div className="page" style={{ maxWidth: 980 }}>
-      {/* Trial banner */}
-      {session.planTier === 'trial' && daysLeft !== null && daysLeft <= 5 && (
-        <div className={`banner ${daysLeft <= 1 ? 'banner-danger' : 'banner-warn'}`}>
-          <span>
-            <strong>{daysLeft === 0 ? 'Trial expired.' : `${daysLeft} trial day${daysLeft !== 1 ? 's' : ''} remaining.`}</strong>
-            {' '}{daysLeft === 0 ? 'Upgrade to restore full access.' : 'Upgrade to continue uninterrupted.'}
-          </span>
-          <Link href="/settings?tab=billing">
-            <button className="btn btn-primary btn-sm">Upgrade now</button>
-          </Link>
-        </div>
-      )}
+      <TrialBanner session={session} daysLeft={daysLeft} />
 
       {/* Header */}
       <div className="page-hd">
@@ -445,17 +434,45 @@ export default async function DashboardPage() {
   )
 }
 
+// Trial / expired-trial notice, shared by the dashboard and its empty state.
+// FIX (Projects & Dashboard pass 2, B1): the old inline banner only rendered while session.planTier === 'trial', but an
+// expired trial is reported as 'solo' the instant it expires — so its "Trial expired" branch could never show, and a
+// workspace silently dropped to Solo's project cap with nothing on the dashboard saying why.
+function TrialBanner({ session, daysLeft }: { session: SessionUser; daysLeft: number | null }) {
+  if (trialExpired(session)) {
+    const cap = PLAN_LIMITS.solo.projects
+    return (
+      <div className="banner banner-danger">
+        <span>
+          <strong>Your trial has ended.</strong>
+          {' '}This workspace is now on the Solo plan{cap != null ? ` (limited to ${cap} active projects)` : ''}. Your projects and data are untouched — upgrade to restore full access.
+        </span>
+        <Link href="/settings?tab=billing">
+          <button className="btn btn-primary btn-sm">Upgrade now</button>
+        </Link>
+      </div>
+    )
+  }
+  if (session.planTier === 'trial' && daysLeft !== null && daysLeft <= 5) {
+    return (
+      <div className={`banner ${daysLeft <= 1 ? 'banner-danger' : 'banner-warn'}`}>
+        <span>
+          <strong>{daysLeft === 0 ? 'Trial ends today.' : `${daysLeft} trial day${daysLeft !== 1 ? 's' : ''} remaining.`}</strong>
+          {' '}Upgrade to continue uninterrupted.
+        </span>
+        <Link href="/settings?tab=billing">
+          <button className="btn btn-primary btn-sm">Upgrade now</button>
+        </Link>
+      </div>
+    )
+  }
+  return null
+}
+
 function EmptyDash({ session, canCreate, daysLeft, greetingText }: { session: SessionUser; canCreate: boolean; daysLeft: number | null; greetingText: string }) {
   return (
     <div className="page" style={{ maxWidth: 980 }}>
-      {session.planTier === 'trial' && daysLeft !== null && daysLeft <= 5 && (
-        <div className="banner banner-warn">
-          <span><strong>{daysLeft} trial days remaining.</strong> Upgrade to keep access.</span>
-          <Link href="/settings?tab=billing">
-            <button className="btn btn-primary btn-sm">Upgrade</button>
-          </Link>
-        </div>
-      )}
+      <TrialBanner session={session} daysLeft={daysLeft} />
       <div className="page-hd">
         <div>
           <h1 className="page-title">{greetingText}, {session.name.split(' ')[0]}</h1>

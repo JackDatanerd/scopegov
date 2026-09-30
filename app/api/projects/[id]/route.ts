@@ -144,7 +144,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     // Client / type / currency define what the SOW is *about*: only editable
     // while no SOW document exists (i.e. before the SOW step of the wizard).
-    const structuralEdit = body.clientId !== undefined || body.type !== undefined || body.currency !== undefined
+    // FIX (Projects & Dashboard pass 2, B2): the lock used to fire on the field merely being PRESENT, so a client that
+    // echoes the current client/type/currency back unchanged (the new-project wizard does, on Back-and-resubmit) got a
+    // 409 once any SOW existed. It now fires only when one of them would actually change.
+    const structuralEdit =
+      (body.clientId !== undefined && body.clientId !== project.client_id) ||
+      (body.type !== undefined && body.type !== project.type) ||
+      (body.currency !== undefined && !(typeof body.currency === 'string' && body.currency.trim().toUpperCase() === project.currency))
     if (structuralEdit && sows.length > 0)
       return NextResponse.json({
         error: 'The client, project type and currency can no longer be changed because a SOW already exists for this project.',

@@ -1,0 +1,8 @@
+Projects & Dashboard — independent pass 2 (base 93a8dc5)
+B1 dashboard: reachable expired-trial banner (trialExpired helper; shared TrialBanner for dashboard + empty state)
+B2 PATCH /api/projects/[id]: structural lock fires only on a real client/type/currency change
+B3 new-project wizard: archived clients not selectable once the project exists
+B4 POST /api/projects: archived-client reactivation deferred until project is kept; race loser chosen deterministically (isProjectBeyondLimit)
+B5 project page title: canReadProject before reading the name
+B6 (cross-section regression from 942fab6): restored live Billing-tab position + open-ended retainer copy
+Tests: tests/projects-dashboard-pass2.test.ts
