@@ -15,6 +15,10 @@ interface AuditParams {
   entityName?: string
   metadata?: Record<string, unknown>
   ipAddress?: string
+  // FIX (Billing independent pass 11 — B2): set by callers whose "request" is a machine talking to us (the
+  // Paystack webhook), so the ambient x-forwarded-for — the provider's egress IP — is not recorded as if it were
+  // the IP of whoever the row is about. An explicit `ipAddress` still wins.
+  omitClientIp?: boolean
   // Optional explicit project association. When omitted, a BEFORE INSERT
   // trigger (migration 056) derives it from entityType/entityId (and then
   // metadata.project_id), so most call sites never need to pass it. Pass it
@@ -54,7 +58,7 @@ function getAmbientClientIp(): string | undefined {
 export async function logAudit(service: any, params: AuditParams): Promise<boolean> {
   try {
     const ipAddress = params.ipAddress
-      ?? (SYSTEM_ACTOR_EMAILS.has(params.actorEmail) ? undefined : getAmbientClientIp())
+      ?? (params.omitClientIp || SYSTEM_ACTOR_EMAILS.has(params.actorEmail) ? undefined : getAmbientClientIp())
     const row: Record<string, unknown> = {
       workspace_id: params.workspaceId,
       actor_id:     params.actorId,

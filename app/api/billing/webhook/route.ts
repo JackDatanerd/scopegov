@@ -181,13 +181,28 @@ function isFuture(iso: string | null | undefined): iso is string {
 //    ops with everything needed to add the entry by hand instead.
 async function audit(
   service: any, workspaceId: string, eventType: string, customerEmail: string | undefined,
-  metadata: Record<string, unknown>, opts: { redeliverable?: boolean } = {},
+  metadata: Record<string, unknown>, opts: { redeliverable?: boolean; dedupeByReference?: boolean } = {},
 ) {
+  // FIX (Billing independent pass 11 — B3): handlers are re-run when a claim goes stale (the work finished but
+  // completeWebhookEvent could not record it, so a redelivery takes the claim over after STALE_CLAIM_MS). Every
+  // write here is idempotent EXCEPT the audit insert, which is append-only: the customer's Payment history showed
+  // the same charge twice. A charge reference is unique per charge, so a row already carrying it for this
+  // workspace + event type means this is a re-run — skip. A failed lookup falls through to writing (a duplicate
+  // line is better than a missing one).
+  const ref = typeof metadata.reference === 'string' && metadata.reference ? metadata.reference : null
+  if (opts.dedupeByReference && ref) {
+    const { data: dup, error: dupErr } = await service.from('audit_log').select('id')
+      .eq('workspace_id', workspaceId).eq('event_type', eventType).eq('metadata->>reference', ref).limit(1)
+    if (dupErr) console.error('[BILLING] audit duplicate check failed (writing anyway):', dupErr.message)
+    else if (dup && dup.length > 0) { console.log(`[BILLING] ${eventType} for reference ${ref} already recorded — not duplicating`); return }
+  }
+  // FIX (Billing independent pass 11 — B2): the request is Paystack's server, not the customer — never stamp
+  // its egress IP on a row that the settings audit table, CSV and PDF present as the actor's IP.
   const write = () => logAudit(service, {
     workspaceId, actorId: null,
     actorEmail: customerEmail || 'billing@paystack', actorName: 'Paystack',
     eventType, entityType: 'workspace', entityId: workspaceId, entityName: customerEmail,
-    metadata,
+    metadata, omitClientIp: true,
   })
   if (await write()) return
   await new Promise(r => setTimeout(r, 250))
@@ -484,7 +499,7 @@ async function handleEvent(service: any, event: any): Promise<void> {
         reference: data?.reference, channel: data?.channel, plan_code: planCode,
         interval: planCodeToInterval(planCode) ?? undefined,
         paid_at: data?.paid_at ?? data?.paidAt,
-      }, { redeliverable: true })
+      }, { redeliverable: true, dedupeByReference: true })
       return
     }
 

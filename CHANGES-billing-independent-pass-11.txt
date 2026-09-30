@@ -1,0 +1,37 @@
+scopegov — Section 16 (Billing: cancel / upgrade / webhook) independent pass 11
+===============================================================================
+Cold pass on the fresh clone taken after pass 10 landed. Earlier FIX comments treated as if absent. NO migration.
+Bugs only.
+
+Pass 10's own changes (period-end estimate, cancel status re-check, paystackFetch body timeout, limits.ts,
+over-limit reporting) were re-read and held up; the stale-period-end cancellation bug this pass first found
+(its B1) was already closed by pass 10.
+
+B2  LOW-MED  Webhook audit rows recorded Paystack's IP as the actor's IP.
+    logAudit() fills audit_log.ip_address from the ambient request's x-forwarded-for unless the actor is one of
+    three hard-coded system emails. The webhook's audit() passes the CUSTOMER's email as actor, so every
+    Paystack-driven row (payment_succeeded, payment_failed_*, plan_changed, refund/dispute, card_expiring) stored
+    the provider's egress IP — a value the settings audit table, CSV and PDF present as the actor's IP and that
+    request-ip.ts calls the field most likely to matter in a security investigation. Wrong is worse than empty.
+    -> lib/utils/audit.ts: new optional `omitClientIp` param; an explicit ipAddress still wins; all other
+       callers unchanged (portal routes legitimately record the external signer's IP).
+    -> billing/webhook audit() sets omitClientIp: true.
+
+B3  LOW  A re-run of charge.success could write a second "payment succeeded" line in Payment history.
+    When completeWebhookEvent fails to record a finished event the claim stays 'processing'; a redelivery takes it
+    over after STALE_CLAIM_MS and re-runs the handler. Every write is idempotent except the append-only audit
+    insert (billing/history is built only from audit_log), so the same charge showed twice.
+    -> webhook audit() takes `dedupeByReference`: before inserting, skip if a row with the same workspace, event
+       type and metadata.reference already exists. Used for charge.success only (a charge reference is unique;
+       refund.processed can legitimately repeat a reference for partial refunds, and invoice.payment_failed
+       payloads carry no reliable reference). A failed lookup writes anyway.
+
+FILES
+  M lib/utils/audit.ts
+  M app/api/billing/webhook/route.ts
+TESTS
+  A tests/billing-pass11-webhook.test.ts     (omitClientIp on webhook rows; duplicate / distinct / cross-workspace /
+                                               lookup-error cases for the charge reference dedupe)
+  A tests/billing-pass11-audit-ip.test.ts    (real logAudit: ambient IP, omitClientIp, explicit IP, system actor)
+VERIFIED: changed files parse (node --experimental-strip-types --check). The vitest suite was NOT run in the
+authoring environment (no node_modules, no network) — run `npm test` before pushing.
