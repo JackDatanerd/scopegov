@@ -21,11 +21,18 @@
 // Requires an authenticated session (redirect('/login') mirrors every
 // other page in this route group) but deliberately does NOT require the
 // CURRENT active workspace to be onboarding-complete the way the rest of
-// this group's layout might otherwise assume — a workspace that was live
-// enough to be deleted and restored has already finished onboarding by
-// definition, but the user's own currently-active fallback workspace is
-// what /api/workspace/switch itself checks membership against, not this
-// page.
+// this group's layout might otherwise assume — the user's own currently-
+// active fallback workspace is what /api/workspace/switch itself checks
+// membership against, not this page.
+//
+// (Onboarding independent pass 7: this comment used to claim a restorable
+// workspace "has already finished onboarding by definition". It hasn't
+// necessarily — the onboarding wizard's own "Discard this workspace" deletes
+// an UNFINISHED one, and that can be restored too. Restoring such a
+// workspace for a member who isn't the restorer is still fine: the switch
+// lands them on /dashboard, which sends them on to /onboarding, where
+// onboarding-status resumes it (creator) or shows the waiting screen
+// (everyone else). Nothing here needs to know which case it is.)
 
 import { getSession } from '@/lib/auth/session'
 import { redirect } from 'next/navigation'

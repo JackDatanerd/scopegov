@@ -1,0 +1,22 @@
+Onboarding (section 4) independent pass 7
+- Bug B1: a finished owner who landed back on /onboarding (browser Back from /mfa-setup, a bookmark) got the
+  "Couldn't load your setup" retry screen. Once the workspace is complete, middleware answers
+  GET /api/workspace/onboarding-status with 401 { code: 'mfa_enrollment_required' } for every MFA-mandatory
+  account with no factor yet (every new owner), and the mount effect read any non-OK reply as a failed lookup.
+  "Try again" reloaded into the same 401; Sign out was the only exit. Added isMfaGateResponse() to
+  app/onboarding/page.tsx; the mount effect now sends that 401 to /dashboard (middleware forwards on to
+  /mfa-setup or /mfa-challenge) and drops stale saved progress when enrolment is owed. Genuine failures
+  (5xx / network) still reach the retry gate.
+- Bug B2 (same root cause): the 'waiting' and 'suspended' polls did `if (!res.ok) return`, so an invitee on a
+  default role (Account Manager, MFA-mandatory) stayed on the "waiting for the creator" screen forever after
+  the creator finished setup - the gated 401 was swallowed. Both polls now route it to /dashboard.
+- Bug B3 (same root cause): discardWorkspace's post-delete status re-check ignored the gated 401, so when the
+  server's fallback workspace was a completed one (stale otherWorkspaces snapshot) it fell through to
+  '/onboarding?new=1' and started a needless new workspace. Now routed to /dashboard.
+- Comment: app/(app)/workspace-open/page.tsx claimed a restorable workspace "has already finished onboarding
+  by definition". False - the wizard's own Discard deletes unfinished workspaces, and those can be restored.
+  Corrected; behaviour unchanged (restore -> /dashboard -> /onboarding resume/waiting already works).
+- Test: tests/onboarding-independent-pass-7.test.ts (pins the middleware premise + every status-route caller).
+- Not changed (product decisions, flagged): discarding in the wizard after the 24h trial window makes a
+  replacement workspace fail with TRIAL_ALREADY_USED; the Restore list is still offered, but the discard
+  confirm doesn't warn about it.

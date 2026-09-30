@@ -16,6 +16,19 @@ import { fetchWithStepUp } from '@/lib/client/step-up'
 // FIX (fresh independent audit, section 4 — feature gap): see the brand-colour hint on step 1.
 import { isLowContrastForWhiteText } from '@/lib/utils/colour-contrast'
 
+// FIX (Onboarding independent pass 7 — B1/B2): middleware.ts keeps /api/workspace/* reachable for a
+// forced-MFA account only WHILE onboarding is unfinished (`isOnboardingApi && !onboarding_complete`).
+// Once the workspace this person lands in IS complete, the same call is answered 401
+// { code: 'mfa_enrollment_required' } (or 'mfa_challenge_required') before onboarding-status ever runs —
+// and every owner (and every invitee on a default role) is MFA-mandatory with no factor yet. That 401 is
+// the gate speaking, not a failed lookup, and it means "you are past onboarding": the right move is
+// /dashboard, where the page-level middleware forwards to /mfa-setup or /mfa-challenge. Treating it as a
+// generic failure left Back-button / bookmark visits on a retry screen that could only 401 again, and a
+// waiting invitee's poll ignoring it forever after the creator finished setup.
+function isMfaGateResponse(status: number, json: any): boolean {
+  return status === 401 && (json?.code === 'mfa_enrollment_required' || json?.code === 'mfa_challenge_required')
+}
+
 const STEPS = [
   { label: 'Your agency',   sub: 'Identity & locale' },
   { label: 'Branding',      sub: 'Logo & colour' },
@@ -354,6 +367,16 @@ function OnboardingWizard() {
       try {
         const res  = await fetch('/api/workspace/onboarding-status')
         const json = await res.json().catch(() => ({}))
+        // FIX (Onboarding independent pass 7 — B1): see isMfaGateResponse above. A gated 401 is an
+        // answer ("already onboarded"), not a failed lookup — sending it to the retry gate made
+        // a finished owner who pressed Back from /mfa-setup unable to leave except by signing out.
+        if (isMfaGateResponse(res.status, json)) {
+          if (json?.code === 'mfa_enrollment_required') {
+            try { localStorage.removeItem(STORAGE_KEY_PREFIX + user.id) } catch { /* ignore */ }
+          }
+          router.push('/dashboard')
+          return
+        }
         if (res.ok) status = json
         else statusFetchFailed = true
       } catch { statusFetchFailed = true }
@@ -735,6 +758,12 @@ function OnboardingWizard() {
       try {
         const res  = await fetch('/api/workspace/onboarding-status')
         const json = await res.json().catch(() => ({}))
+        // FIX (Onboarding independent pass 7): otherWorkspaces is a snapshot, so the fallback the
+        // server just picked can be a COMPLETED workspace after all. For an MFA-mandatory account
+        // that arrives as the middleware's gated 401, never as { status: 'complete' } — which the
+        // check below would skip, dropping through to '?new=1' and starting a needless new
+        // workspace. The server already repointed the active workspace; just go in.
+        if (isMfaGateResponse(res.status, json)) { router.push('/dashboard'); return }
         if (res.ok && json.workspaceId &&
             (json.status === 'resume' || json.status === 'waiting' || json.status === 'complete')) {
           // Best-effort switch, then a full reload so the mount effect's
@@ -1120,6 +1149,11 @@ function OnboardingWizard() {
       try {
         const res  = await fetch('/api/workspace/onboarding-status')
         const json = await res.json().catch(() => ({}))
+        // FIX (Onboarding independent pass 7 — B2): the moment the creator finishes setup, an invitee
+        // on a default role (MFA-mandatory, no factor yet) is answered with the middleware's gated
+        // 401 instead of 'complete' — which `!res.ok` below swallowed, so the screen promising
+        // "you'll get full access automatically" never moved. See isMfaGateResponse.
+        if (isMfaGateResponse(res.status, json)) { router.push('/dashboard'); return }
         if (!res.ok) return
         if (json.status === 'complete') { router.push('/dashboard'); return }
         if (json.status && json.status !== 'waiting') { window.location.reload(); return }
@@ -1178,6 +1212,8 @@ function OnboardingWizard() {
       try {
         const res  = await fetch('/api/workspace/onboarding-status')
         const json = await res.json().catch(() => ({}))
+        // Same gated-401 case as the waiting poll above (access restored, MFA still to enrol).
+        if (isMfaGateResponse(res.status, json)) { router.push('/dashboard'); return }
         if (!res.ok) return
         if (json.status === 'complete') { router.push('/dashboard'); return }
         if (json.status && json.status !== 'suspended') window.location.reload()
