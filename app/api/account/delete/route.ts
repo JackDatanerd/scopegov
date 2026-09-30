@@ -56,6 +56,11 @@ const LEAVE_ERROR_MESSAGES: Record<string, string> = {
   last_member: "you're the only member of this workspace — delete it instead (Settings > Danger Zone)",
   sole_admin: 'you\u2019re the only member who can manage workspace settings there — assign that ability to someone else first (Team > Roles), or delete the workspace',
   sole_roles_admin: 'you\u2019re the only member who can manage roles and permissions there — assign that ability to someone else first (Team > Roles), or delete the workspace',
+  // FIX (Workspace lifecycle independent pass 3): migration 080's owner_must_transfer (creator of a
+  // non-trial workspace with other members) was handled by workspace/leave but never added here, so
+  // a creator deleting their account got the generic "could not leave this workspace" with no
+  // guidance — this table's own comment says it is kept in sync with that route.
+  owner_must_transfer: 'you created this workspace, so you need to transfer ownership to another admin first (Settings > Danger Zone > Transfer ownership), or delete the workspace',
   trial_creator: 'you created this trial workspace, so leaving would lock you out of starting another trial with no way back in to delete it — delete it instead, or upgrade it off the trial plan first',
 }
 

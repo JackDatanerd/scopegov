@@ -6,6 +6,7 @@ import { sanitizeDisplayName } from '@/lib/utils/sanitize'
 import { INDUSTRIES, CURRENCIES, DEFAULT_TIMEZONE, DEFAULT_CURRENCY } from '@/lib/constants/workspace-options'
 import { isValidTimeZone } from '@/lib/utils/timezone'
 import { sendWorkspaceCreatedEmail } from '@/lib/email/templates'
+import { logAudit } from '@/lib/utils/audit'
 
 // FIX (Onboarding independent pass 3 — B5): the suffix used nanoid's default alphabet
 // (A-Za-z0-9_-), so slugs came out like 'foo--Ab_9x', '-Ab_9x' (non-Latin names strip to an
@@ -201,20 +202,17 @@ export async function POST(request: NextRequest) {
     // sources actorName from the current users.name/session.name; this
     // was the one place in workspace/create that didn't, even though
     // it's the very first line in a new workspace's trail.
-    try {
-      const { error: auditError } = await (service as any).from('audit_log').insert({
-        workspace_id: workspaceId,
-        actor_id: user.id,
-        actor_email: user.email,
-        actor_name: userRow?.name || user.user_metadata?.name || user.email,
-        event_type: 'workspace.created',
-        entity_type: 'workspace',
-        entity_id: workspaceId,
-        entity_name: agencyName,
-        metadata: { plan: 'trial' },
-      })
-      if (auditError) console.error('workspace.created audit log insert failed (non-fatal):', auditError)
-    } catch (e) { console.error('workspace.created audit log insert threw (non-fatal):', e) }
+    // FIX (Workspace lifecycle independent pass 3): this was the only audit_log write in the app
+    // that bypassed logAudit() with a raw insert, so the first line of every workspace's trail
+    // was the one row with no ip_address (logAudit fills it from the request). logAudit also
+    // checks the insert's error and never throws, so the outer try/catch is no longer needed.
+    await logAudit(service, {
+      workspaceId, actorId: user.id, actorEmail: user.email || '',
+      actorName: userRow?.name || user.user_metadata?.name || user.email || '',
+      eventType: 'workspace.created', entityType: 'workspace',
+      entityId: workspaceId, entityName: agencyName,
+      metadata: { plan: 'trial' },
+    })
 
     // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — feature
     // gap): see sendWorkspaceCreatedEmail's own comment in
