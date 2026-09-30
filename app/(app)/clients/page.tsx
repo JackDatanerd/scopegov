@@ -3,6 +3,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import ClientsClient from '@/components/clients/ClientsClient'
 import { fetchPaged } from '@/lib/utils/paginate'
+import { getWorkspaceTimeZone } from '@/lib/utils/workspace-time'
 import { effectiveContractValue, monthlyRetainerRate, loadRetainerMonthsBilled } from '@/lib/utils/contract-value'
 
 const MAX_CLIENTS = 5000
@@ -28,6 +29,11 @@ export default async function ClientsPage() {
       .order('name').order('id')
       .range(from, to),
     { maxRows: MAX_CLIENTS })
+
+  // FIX (independent pass, section 14 — B2): dates on this page were formatted in whatever zone the runtime
+  // had (UTC on the server, the browser's zone after hydration), so the "Since" column could mismatch the
+  // server-rendered HTML, the detail page and the CSV. One zone — the workspace's — is passed down.
+  const timeZone = await getWorkspaceTimeZone(service, session.workspaceId)
 
   const canViewFinancials = hasPermission(session, 'VIEW_FINANCIALS')
   const canViewClientData = hasPermission(session, 'VIEW_CLIENT_DATA')
@@ -109,6 +115,7 @@ export default async function ClientsPage() {
       canViewFinancials={canViewFinancials}
       canViewClientData={canViewClientData}
       truncated={truncated}
+      timeZone={timeZone}
     />
   )
 }

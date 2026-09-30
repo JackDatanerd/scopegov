@@ -70,6 +70,18 @@ describe('POST /api/clients/[id]/merge', () => {
     })
   })
 
+  it('records in the audit row when merge_clients reactivated an archived target (126)', async () => {
+    h.rpcResult = { data: { projects_moved: 1, contacts_moved: 0, contacts_dropped: 0, cc_dropped: 0, fields_carried: [], notes_truncated: false, target_reactivated: true }, error: null }
+    const json = await (await call({ targetId: '7a7a7a7a-7a7a-47a7-87a7-7a7a7a7a7a7a' })).json()
+    expect(json.target_reactivated).toBe(true)
+    expect(h.audits[0].metadata.target_reactivated).toBe(true)
+  })
+
+  it('records target_reactivated: false when an older RPC result omits the key', async () => {
+    await call({ targetId: '7a7a7a7a-7a7a-47a7-87a7-7a7a7a7a7a7a' })
+    expect(h.audits[0].metadata.target_reactivated).toBe(false)
+  })
+
   it('refuses to merge a client into itself and 404s a client outside the workspace', async () => {
     expect((await call({ targetId: '5c5c5c5c-5c5c-45c5-85c5-5c5c5c5c5c5c' })).status).toBe(400)
     h.clients = [{ id: '5c5c5c5c-5c5c-45c5-85c5-5c5c5c5c5c5c', name: 'Acme Ltd', email: 'old@acme.test' }]

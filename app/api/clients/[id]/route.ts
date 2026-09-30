@@ -58,7 +58,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     // Shared, type-checked parser (see lib/utils/client-input.ts) — replaces the per-route field
     // handling that let non-strings 500, blanked NOT NULL columns and stored arbitrary JSON.
-    const parsed = parseClientInput(body, 'update', { currentEmail: existing.email })
+    const parsed = parseClientInput(body, 'update', { currentEmail: existing.email, currentBillingAddress: existing.billing_address })
     if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 })
     const updates: Record<string, unknown> = { ...parsed.updates, updated_at: new Date().toISOString() }
 

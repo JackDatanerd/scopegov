@@ -2,7 +2,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect, notFound } from 'next/navigation'
 import Link from 'next/link'
-import { formatCurrency, formatCurrencyExact, formatCurrencyGroups, formatDate, projectStatusLabel } from '@/lib/utils/format'
+import { formatCurrency, formatCurrencyExact, formatCurrencyGroups, projectStatusLabel } from '@/lib/utils/format'
 import BillingDetailsCard from '@/components/clients/BillingDetailsCard'
 import ClientContactCard from '@/components/clients/ClientContactCard'
 import ClientContactsCard from '@/components/clients/ClientContactsCard'
@@ -13,6 +13,8 @@ import { computeContractPositions } from '@/lib/reports/contract-position'
 import { effectiveContractValue, monthlyRetainerRate, loadRetainerMonthsBilled } from '@/lib/utils/contract-value'
 import { fetchAll } from '@/lib/utils/fetch-all'
 import { isUuidString } from '@/lib/utils/uuid'
+import { getWorkspaceTimeZone } from '@/lib/utils/workspace-time'
+import { formatDateInZone } from '@/lib/utils/timezone'
 
 interface Props { params: Promise<{ id: string }> }
 
@@ -41,6 +43,9 @@ export default async function ClientDetailPage({ params }: Props) {
   if (!isUuidString(id)) notFound()
 
   const service = createServiceClient()
+  // FIX (independent pass, section 14 — B2): every date below used the server's zone while the list page and the
+  // CSV used another; all three now use the workspace's zone.
+  const timeZone = await getWorkspaceTimeZone(service, session.workspaceId)
   const canViewClientData = hasPermission(session, 'VIEW_CLIENT_DATA')
   const canViewFinancials = hasPermission(session, 'VIEW_FINANCIALS')
 
@@ -466,7 +471,7 @@ export default async function ClientDetailPage({ params }: Props) {
                           {p.monthly_rate > 0 && <div className="td-sub">{formatCurrency(p.monthly_rate, p.currency)}/mo</div>}
                         </td>
                       )}
-                      <td style={{ color: 'var(--text-3)', fontSize: 12 }}>{formatDate(p.created_at)}</td>
+                      <td style={{ color: 'var(--text-3)', fontSize: 12 }}>{formatDateInZone(p.created_at, timeZone)}</td>
                     </tr>
                     )
                   })}
@@ -528,7 +533,7 @@ export default async function ClientDetailPage({ params }: Props) {
           <div style={{ marginTop: 20 }}>
             <div className="sec-hd" style={{ marginBottom: 12 }}><div className="sec-title">Client since</div></div>
             <div className="surface surface-p">
-              <p style={{ fontSize: 13, color: 'var(--text-2)', margin: 0 }}>{formatDate(client.created_at)}</p>
+              <p style={{ fontSize: 13, color: 'var(--text-2)', margin: 0 }}>{formatDateInZone(client.created_at, timeZone)}</p>
             </div>
           </div>
 
@@ -543,7 +548,7 @@ export default async function ClientDetailPage({ params }: Props) {
                       {Array.isArray(a.metadata?.fields) && a.metadata.fields.length > 0 && (
                         <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{a.metadata.fields.join(', ')}</div>
                       )}
-                      <div style={{ fontSize: 11, color: 'var(--text-4)' }}>{a.actor_name} · {formatDate(a.created_at)}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-4)' }}>{a.actor_name} · {formatDateInZone(a.created_at, timeZone)}</div>
                     </div>
                   </div>
                 ))}

@@ -70,6 +70,21 @@ export function formatDateInZone(
   }).format(d)
 }
 
+/** Calendar date of an instant in the given zone as YYYY-MM-DD (CSV exports); '' when unusable. */
+export function isoDateInZone(
+  value: string | number | Date | null | undefined,
+  tz: string | null | undefined,
+): string {
+  if (value === null || value === undefined || value === '') return ''
+  const d = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(d.getTime())) return ''
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: resolveTimeZone(tz), year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(d)
+  const get = (t: string) => parts.find(p => p.type === t)?.value || ''
+  return `${get('year')}-${get('month')}-${get('day')}`
+}
+
 /**
  * The IANA zones this runtime knows, with 'UTC' first (Intl.supportedValuesOf omits it).
  * Client-side only in practice: read it AFTER mount so server and first client render match.

@@ -19,6 +19,14 @@ describe('csvCell (clients export)', () => {
     expect(csvCell('-5 555 5555', true)).toBe(`"'-5 555 5555"`)
   })
 
+  it('guards a hyphen-only phone, which a spreadsheet would compute as arithmetic', () => {
+    expect(csvCell('+1-555-123-4567', true)).toBe(`"'+1-555-123-4567"`)
+    expect(csvCell('+44-20-7946-0958', true)).toBe(`"'+44-20-7946-0958"`)
+    // spaced / bracketed / dotted forms are not valid formulas and stay untouched
+    expect(csvCell('+1 555-123-4567', true)).toBe('"+1 555-123-4567"')
+    expect(csvCell('+44.20.7946.0958', true)).toBe('"+44.20.7946.0958"')
+  })
+
   it('the exemption applies only to the Phone column', () => {
     expect(csvCell('+254 712 345 678')).toBe(`"'+254 712 345 678"`)
   })

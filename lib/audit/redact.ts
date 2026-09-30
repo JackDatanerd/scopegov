@@ -98,7 +98,7 @@ const CLIENT_EVENT_PREFIXES = ['client.', 'client_contact.']
 
 const CLIENT_EVENT_SAFE_KEYS = new Set([
   'fields', 'client_id', 'role_type', 'is_primary', 'was_primary', 'company_name',
-  'projects_moved', 'contacts_moved', 'contacts_dropped', 'cc_dropped', 'notes_truncated',
+  'projects_moved', 'contacts_moved', 'contacts_dropped', 'cc_dropped', 'notes_truncated', 'target_reactivated',
   'merged_from',
 ])
 

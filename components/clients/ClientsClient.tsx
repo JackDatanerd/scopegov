@@ -2,14 +2,15 @@
 import { useState, useMemo } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { formatCurrencyGroups, formatDate } from '@/lib/utils/format'
+import { formatCurrencyGroups } from '@/lib/utils/format'
 import { IN_PROGRESS_STATUSES } from '@/lib/utils/project-status'
 import { csvCell } from '@/lib/utils/client-csv'
+import { formatDateInZone, isoDateInZone } from '@/lib/utils/timezone'
 
 type SortKey = 'name' | 'projects' | 'since'
 
-export default function ClientsClient({ clients, canCreate, canViewFinancials, canViewClientData, truncated = false }: {
-  clients: any[]; canCreate: boolean; canViewFinancials: boolean; canViewClientData: boolean; truncated?: boolean
+export default function ClientsClient({ clients, canCreate, canViewFinancials, canViewClientData, truncated = false, timeZone = 'UTC' }: {
+  clients: any[]; canCreate: boolean; canViewFinancials: boolean; canViewClientData: boolean; truncated?: boolean; timeZone?: string
 }) {
   const router  = useRouter()
   const [search,  setSearch]  = useState('')
@@ -74,7 +75,7 @@ export default function ClientsClient({ clients, canCreate, canViewFinancials, c
       lines.push([
         csvCell(c.name), csvCell(c.company_name || ''),
         ...(canViewClientData ? [csvCell(c.email || ''), csvCell(c.phone || '', true)] : []),
-        csvCell(c.status || 'active'), csvCell(st.total), csvCell(st.active), csvCell(String(c.created_at || '').slice(0, 10)),
+        csvCell(c.status || 'active'), csvCell(st.total), csvCell(st.active), csvCell(isoDateInZone(c.created_at, timeZone)),
       ].join(','))
     }
     const blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' })
@@ -270,7 +271,7 @@ export default function ClientsClient({ clients, canCreate, canViewFinancials, c
                         {stats.hasValue ? stats.valueDisplay : '—'}
                       </td>
                     )}
-                    <td style={{ color: 'var(--text-3)', fontSize: 12 }}>{formatDate(c.created_at)}</td>
+                    <td style={{ color: 'var(--text-3)', fontSize: 12 }}>{formatDateInZone(c.created_at, timeZone)}</td>
                   </tr>
                 )
               })}

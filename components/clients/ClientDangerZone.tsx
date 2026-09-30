@@ -81,7 +81,7 @@ export default function ClientDangerZone({
     const target = (others || []).find(o => o.id === targetId)
     if (!target) return
     if (!window.confirm(
-      `Merge “${clientName}” into “${target.name}”?\n\nAll of ${clientName}'s projects, and as many of its contacts and CC addresses as fit under ${target.name}'s limits, move to ${target.name}; ${clientName} is then removed. ${target.name}'s own details always win — ${clientName}'s billing address, VAT number, phone, timezone, payment terms, company and notes are only copied across where ${target.name} has none. This can't be undone.`,
+      `Merge “${clientName}” into “${target.name}”?\n\nAll of ${clientName}'s projects, and as many of its contacts and CC addresses as fit under ${target.name}'s limits, move to ${target.name}; ${clientName} is then removed. ${target.name}'s own details always win — ${clientName}'s billing address, VAT number, phone, timezone, payment terms, company and notes are only copied across where ${target.name} has none. ${target.status === 'archived' ? `${target.name} is archived — it will be reactivated if any of these projects are still in progress. ` : ''}This can't be undone.`,
     )) return
     setBusy('merge'); setError('')
     try {

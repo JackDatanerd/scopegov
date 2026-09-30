@@ -45,7 +45,13 @@ function optionalText(v: unknown, label: string, max: number): { ok: true; value
   return { ok: true, value: t || null }
 }
 
-export function normalizeBillingAddress(v: unknown): { ok: true; value: NormalizedBillingAddress | null } | { ok: false; error: string } {
+// FIX (independent pass, section 14 — B4): the address is replaced as a whole, so the edit card has to send every part
+// whenever any one changed. A legacy row (stored before these limits existed) with an over-long part then failed a save
+// that only touched a different part, with an error about a field the person never edited. A part that is byte-for-byte
+// what is already stored is accepted as-is — the cap applies to what the person writes, not to what is already there.
+export function normalizeBillingAddress(
+  v: unknown, existing?: unknown,
+): { ok: true; value: NormalizedBillingAddress | null } | { ok: false; error: string } {
   if (v === null) return { ok: true, value: null }
   if (typeof v !== 'object' || Array.isArray(v)) return { ok: false, error: 'Billing address must be an object' }
   const out: NormalizedBillingAddress = {}
@@ -54,7 +60,9 @@ export function normalizeBillingAddress(v: unknown): { ok: true; value: Normaliz
     if (raw === undefined || raw === null || raw === '') continue
     if (typeof raw !== 'string') return { ok: false, error: `Billing address ${key} must be text` }
     const t = raw.trim()
-    if (t.length > CLIENT_LIMITS.addressPart) return { ok: false, error: `Billing address ${key} is too long (${CLIENT_LIMITS.addressPart} characters max)` }
+    const unchanged = !!existing && typeof existing === 'object' && !Array.isArray(existing)
+      && typeof (existing as any)[key] === 'string' && (existing as any)[key].trim() === t
+    if (t.length > CLIENT_LIMITS.addressPart && !unchanged) return { ok: false, error: `Billing address ${key} is too long (${CLIENT_LIMITS.addressPart} characters max)` }
     if (t) out[key] = t
   }
   // An all-empty address is "no address" — store NULL, not {line1:'', …}.
@@ -84,7 +92,7 @@ export function normalizeCcEmails(v: unknown, primaryEmail?: string | null): { o
 export function parseClientInput(
   body: any,
   mode: 'create' | 'update',
-  ctx: { currentEmail?: string | null } = {},
+  ctx: { currentEmail?: string | null; currentBillingAddress?: unknown } = {},
 ): ParsedClientInput {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return fail('Invalid request body')
   const updates: Record<string, unknown> = {}
@@ -128,7 +136,7 @@ export function parseClientInput(
   }
 
   if (body.billingAddress !== undefined) {
-    const r = normalizeBillingAddress(body.billingAddress)
+    const r = normalizeBillingAddress(body.billingAddress, ctx.currentBillingAddress)
     if (!r.ok) return fail(r.error)
     updates.billing_address = r.value
   }

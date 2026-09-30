@@ -1,0 +1,41 @@
+CLIENTS — independent pass 9 (bugs only)
+========================================
+
+B1  Merging into an ARCHIVED client stranded live projects under it
+      supabase/migrations/126_merge_clients_reactivate_archived_target.sql   merge_clients() (101's body verbatim) now
+                                        counts the source's live projects (not deleted, not Complete/Archived) and, when
+                                        any move into an archived target, sets the target back to 'active' — the same
+                                        rule project creation applies. Returns `target_reactivated`.
+                                        (PATCH /api/projects/[id] refuses an archived client; merge had no check at all,
+                                        so the moved projects' client stayed hidden from the default Clients list.)
+      app/api/clients/[id]/merge/route.ts   `target_reactivated` recorded in the client.merged audit row + response.
+      lib/audit/redact.ts               `target_reactivated` added to the structural keys kept for viewers without
+                                        VIEW_CLIENT_DATA.
+      components/clients/ClientDangerZone.tsx   Confirm text says an archived target will be reactivated.
+
+B2  Client dates rendered in three different zones (and could mismatch on hydration)
+      lib/utils/timezone.ts             New isoDateInZone() (YYYY-MM-DD in a zone).
+      app/(app)/clients/page.tsx        Reads the workspace timezone and passes it down.
+      components/clients/ClientsClient.tsx   "Since" column and the CSV "Client since" both use that zone (the table
+                                        used the browser's zone after hydration, the CSV used UTC).
+      app/(app)/clients/[id]/page.tsx   Project "Started", "Client since" and activity dates use the workspace zone
+                                        (were the server's zone).
+
+B3  Hyphen-only phone numbers were computed by spreadsheets in the CSV export
+      lib/utils/client-csv.ts           "+1-555-123-4567" is valid arithmetic; it kept the formula guard's exemption and
+                                        would open as a number. A + followed by digit groups joined only by hyphens now
+                                        keeps the apostrophe guard. Spaced / bracketed / dotted forms stay exempt.
+                                        (Not verified in Excel itself — please open one export to confirm.)
+
+B4  Editing one billing-address part failed on an untouched legacy over-long part
+      lib/utils/client-input.ts         normalizeBillingAddress(v, existing) / parseClientInput ctx.currentBillingAddress:
+                                        a part identical to what is already stored is accepted; new or changed
+                                        over-long parts are still rejected.
+      app/api/clients/[id]/route.ts     Passes existing.billing_address.
+
+Tests: tests/clients-pass9-fixes.test.ts, tests/client-csv.test.ts, tests/client-merge-route.test.ts
+Apply
+-----
+  tar -xzf ~/Downloads/scopegov-clients-fixes.tar.gz --strip-components=1 -C .
+  Run migration 126 in the Supabase SQL editor.
+  git add -A && git commit -m "Clients: independent pass 9 fixes" && git push

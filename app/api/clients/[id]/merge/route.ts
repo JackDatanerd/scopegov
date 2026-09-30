@@ -77,6 +77,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         contacts_dropped: result?.contacts_dropped ?? null, cc_dropped: result?.cc_dropped ?? null,
         fields: Array.isArray(result?.fields_carried) ? result.fields_carried : [],
         notes_truncated: result?.notes_truncated === true,
+        // FIX (independent pass, section 14 — B1): merge_clients (126) reactivates an archived target that
+        // receives live projects, so the audit row says the target's status changed.
+        target_reactivated: result?.target_reactivated === true,
       },
     })
     return NextResponse.json({ ok: true, targetId, ...result })
