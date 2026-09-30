@@ -53,7 +53,7 @@ export async function POST(request: NextRequest) {
     const service = createServiceClient() as any
     const { data: row, error } = await service
       .from('email_log')
-      .select('id, workspace_id, kind, entity_type, entity_id, project_id, actor_id, to_emails, status')
+      .select('id, workspace_id, kind, entity_type, entity_id, project_id, actor_id, to_emails, status, created_at')
       .eq('provider_id', emailId).maybeSingle()
     if (error) throw new Error(error.message)
     if (!row) {
@@ -69,6 +69,18 @@ export async function POST(request: NextRequest) {
       // A delivery to THIS address proves it works even when the message-level status did not advance (another
       // recipient's event landed first). Clearing is idempotent and address-scoped, so it is always safe.
       if (type === 'email.delivered') await trackClientEmailHealth(service, row, 'delivered', address)
+      // FIX (Notifications & email independent pass, bug 1): Resend sends one bounce/complaint event PER RECIPIENT,
+      // but the message-level status only moves forward. Once one recipient's bounce had moved it to 'bounced', every
+      // later bounce of the same email (a CC first, then the client's own address — the normal shape of a SOW, CO or
+      // invoice) came back as "not an advance", so that recipient raised no alert and never marked the client record.
+      // The alert and the marker are per address, so they run regardless of whether the message status moved; the
+      // alert is deduplicated so a redelivered event cannot raise it twice.
+      if (type === 'email.bounced' || type === 'email.complained') {
+        const failure = type === 'email.complained' ? 'complained' : 'bounced'
+        const alerted = await alertSender(service, row, failure, address, { dedupe: true })
+        if (!alerted) throw new Error('bounce alert could not be written') // → 500, Resend retries
+        await trackClientEmailHealth(service, row, failure, address)
+      }
       return NextResponse.json({ ok: true, unchanged: true })
     }
 
@@ -111,7 +123,9 @@ function eventAgeMs(event: any): number {
 }
 
 /** Resolves true when the alert was written (or no one was eligible to receive it). */
-async function alertSender(service: any, row: any, status: 'bounced' | 'complained', address: string): Promise<boolean> {
+async function alertSender(
+  service: any, row: any, status: 'bounced' | 'complained', address: string, opts: { dedupe?: boolean } = {},
+): Promise<boolean> {
   const { docKind, role } = classifyEmailKind(row.kind)
   const doc = DOC_BY_KIND[docKind]
   const to = address || (row.to_emails || [])[0] || 'the client'
@@ -133,6 +147,17 @@ async function alertSender(service: any, row: any, status: 'bounced' | 'complain
     projectId: row.project_id || undefined,
   }
   const type = doc ? `${doc.prefix}_email_${status}` : `email_${status}`
+
+  // Already alerted for this address on this email (a redelivered event)? The title names the address, and only an
+  // alert raised after the email was logged can belong to it — an older one is about an earlier email.
+  if (opts.dedupe) {
+    let q = service.from('notifications').select('id')
+      .eq('workspace_id', row.workspace_id).eq('type', type).eq('title', title)
+    if (row.created_at) q = q.gte('created_at', row.created_at)
+    const { data: existing, error } = await q.limit(1)
+    if (error) { console.error('[resend-webhook] could not check for an existing alert:', error.message); return false }
+    if (existing && existing.length > 0) return true
+  }
 
   // The person who triggered the send is the one who can fix it; fall back to whoever manages that
   // kind of document (e.g. an automatic send after approval has no single actor).
@@ -157,11 +182,24 @@ async function trackClientEmailHealth(service: any, row: any, status: string, ad
   try {
     const to = (address || String((row.to_emails || [])[0] || '')).trim().toLowerCase()
     if (!to || !row.workspace_id) return
-    if (status === 'bounced' || status === 'complained') {
+    if (status === 'complained') {
       const { error } = await service.from('clients')
-        .update({ email_bounced_at: new Date().toISOString(), email_bounce_kind: status === 'complained' ? 'complaint' : 'bounce' })
+        .update({ email_bounced_at: new Date().toISOString(), email_bounce_kind: 'complaint' })
         .eq('workspace_id', row.workspace_id).ilike('email', escapeLike(to))
-      if (error) console.error('[resend-webhook] could not mark client email bounce:', error.message)
+      if (error) console.error('[resend-webhook] could not mark client email complaint:', error.message)
+    } else if (status === 'bounced') {
+      // A spam complaint outranks a bounce ("stays until the address is changed"). Bounce events for an address are
+      // now processed even when the message status did not advance, so one arriving after a complaint must not turn
+      // the marker back into a plain bounce — which the next successful delivery would then clear.
+      const { data: hits, error: selErr } = await service.from('clients').select('id, email_bounce_kind')
+        .eq('workspace_id', row.workspace_id).ilike('email', escapeLike(to))
+      if (selErr) { console.error('[resend-webhook] could not look up client for email bounce:', selErr.message); return }
+      const ids = (hits || []).filter((c: any) => c.email_bounce_kind !== 'complaint').map((c: any) => c.id)
+      if (ids.length) {
+        const { error } = await service.from('clients')
+          .update({ email_bounced_at: new Date().toISOString(), email_bounce_kind: 'bounce' }).in('id', ids)
+        if (error) console.error('[resend-webhook] could not mark client email bounce:', error.message)
+      }
     } else if (status === 'delivered') {
       // Only a plain bounce clears on delivery — a spam complaint stays until the address is changed.
       const { error } = await service.from('clients')

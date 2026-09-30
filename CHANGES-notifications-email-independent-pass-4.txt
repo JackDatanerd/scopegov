@@ -1,0 +1,25 @@
+Section 19 — Notifications & email — independent pass (fix round)
+
+BUG (medium): a bounce or spam complaint was dropped unless it was the first one for that email.
+  Resend sends one event per recipient, but email_log.status only moves forward, so once one recipient's bounce had
+  moved it to 'bounced', every later bounce/complaint of the same email was treated as "unchanged": no in-app alert
+  for the sender and no email_bounced_at marker on the client. SOWs/COs/invoices go out with the client's primary
+  contact in CC, so "CC bounces, then the client's own address bounces" left the dead client address unflagged and
+  reminders kept going to it.
+
+FIX (app/api/webhooks/resend/route.ts)
+  - Bounce/complaint events now raise the alert and mark the client per ADDRESS even when the message status did not
+    advance. The alert is deduplicated (same workspace + type + title, created after the email was logged) so a
+    redelivered event cannot alert twice; a later, separate email to the same address still alerts.
+  - A failure to write or check the alert returns 500 so Resend retries (same contract as the first-bounce path).
+  - A bounce can no longer downgrade a 'complaint' marker to 'bounce' (which the next delivery would have cleared);
+    that downgrade became reachable once repeated bounce events started being processed.
+  - email_log select now includes created_at (used by the dedupe).
+
+TESTS (tests/resend-webhook-route.test.ts): 7 added — CC-then-primary bounce alerts both and marks the client;
+  redelivery is idempotent; separate later email re-alerts; complaint after bounce; bounce never downgrades a
+  complaint; alert-write failure retries (first-bounce and repeated-bounce paths).
+  Full suite: 1417 passed. tsc --noEmit clean.
+
+Audited and clean: notifications GET/PATCH/DELETE, preferences, workspace defaults, notification-cleanup cron,
+  Resend signature verification, send.ts/from.ts/reply-to.ts/delivery.ts, all templates, bell + inbox UI, link routing.
