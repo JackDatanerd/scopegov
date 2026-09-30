@@ -50,7 +50,14 @@ export function parseContractValue(raw: unknown): Parsed<number> {
   let n: number
   if (typeof raw === 'number') n = raw
   else if (typeof raw === 'string') {
-    const cleaned = raw.trim().replace(/,/g, '')
+    const t = raw.trim()
+    // Commas are only ever thousands separators (1,234 / 1,234,567.50, or Indian 12,34,567). Stripping them
+    // blindly turned a comma-decimal entry — "1,5" or "1.500,50" — into 15 / 1.5 with no error.
+    const sign = t.startsWith('-') ? '-' : ''
+    const body = sign ? t.slice(1) : t
+    if (body.includes(',') && !/^(\d{1,3}(,\d{3})+|\d{1,2}(,\d{2})*,\d{3})(\.\d+)?$/.test(body))
+      return fail('Contract value has misplaced commas — use a format like 12,500.50')
+    const cleaned = sign + body.replace(/,/g, '')
     if (!/^-?\d+(\.\d+)?$/.test(cleaned)) return fail('Contract value must be a number')
     n = Number(cleaned)
   } else return fail('Contract value must be a number')
@@ -73,6 +80,9 @@ export function parseStartDate(raw: unknown): Parsed<string | null> {
   if (typeof raw !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(raw)) return fail('Start date must be a valid date')
   const d = new Date(`${raw}T00:00:00Z`)
   if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== raw) return fail('Start date must be a valid date')
+  // Postgres has no year 0 ('0000-01-01' is a 500 at insert), and nothing before 1900 or far past 2100 is a real project start.
+  const year = d.getUTCFullYear()
+  if (year < 1900 || year > 2100) return fail('Start date must be between 1900 and 2100')
   return { ok: true, value: raw }
 }
 

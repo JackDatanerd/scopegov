@@ -161,7 +161,10 @@ export function displayToTokens(text: string, picked: Record<string, string>): s
   for (const name of Object.keys(picked).sort((a, b) => b.length - a.length)) {
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     // NB: a plain string with an escaped backslash — inside a template literal `\p` would be swallowed.
-    out = out.replace(new RegExp('@' + escaped + '(?![\\p{L}\\p{N}_])', 'gu'), () => `@[${name}](${picked[name]})`)
+    // Left boundary: an '@' glued to a preceding word character is an email address ("bob@Ann.com"), not a mention.
+    // A captured prefix rather than a lookbehind — older Safari throws a SyntaxError on (?<!…), which would break
+    // every mention. The prefix is re-emitted, and is never consumed by the previous match (lookahead only).
+    out = out.replace(new RegExp('(^|[^\\p{L}\\p{N}_])@' + escaped + '(?![\\p{L}\\p{N}_])', 'gu'), (_m, pre: string) => `${pre}@[${name}](${picked[name]})`)
   }
   return out
 }

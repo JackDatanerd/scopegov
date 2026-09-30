@@ -78,7 +78,7 @@ export default async function ProjectPage({ params, searchParams }: Props) {
       clients(id, name, company_name, email, cc_emails, phone, notes),
       guardian_flags(id, status, severity, description, sow_reference, type, created_at, change_order_id, escalated_to, resolution),
       exceptions_log(id, deliverable, granted_what, granted_by, estimated_value, reason, flag_id, created_at, updated_at),
-      change_orders(id, title, status, total, subtotal, sent_at, accepted_at, version, document_number,
+      change_orders(id, title, status, parent_co_id, total, subtotal, sent_at, accepted_at, version, document_number,
         counter_amount, counter_note, declined_reason, close_reason, tax_rate, tax_inclusive, is_retainer_renewal, is_credit),
       sow_documents(id, version, status, sent_at, signed_at, created_at, document_number, metadata),
       project_scope_snapshot(id, deliverables, out_of_scope, last_updated_at)

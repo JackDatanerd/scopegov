@@ -12,6 +12,7 @@ import BillingTab from '@/components/invoices/BillingTab'
 import FlagCollaboration from './FlagCollaboration'
 import ProjectDiscussion from './ProjectDiscussion'
 import EditProjectModal from './EditProjectModal'
+import { liveChangeOrders } from '@/lib/utils/attention'
 import {
   formatCurrency, formatDate, formatRelative,
   projectStatusLabel, sowStatusLabel, coStatusLabel, flagStatusLabel,
@@ -154,13 +155,14 @@ export default function ProjectDetail({
   // FIX (doc-completeness audit, migration 014)
   // 'stalled' = sent, unanswered: still exposure. contract-position (reconciliation) and the Portfolio
   // both count it; this header didn't, so the three disagreed about the same change orders.
-  // FIX (Projects & Dashboard independent pass): 'expired' was still missing here even though this
-  // same file's handleMarkComplete (below), the complete route's BLOCKING_CO_STATUSES, and
-  // lib/utils/attention.ts's actionableCoStatuses all already treat an expired CO — its signing link
-  // died with no answer given — as exactly as unresolved as a stalled one. Left out, this tile silently
-  // undercounted "at risk" the moment a CO's link expired, and disagreed with every other screen that
-  // already got this right.
-  const openCos       = (project.change_orders || []).filter((co: any) => ['awaiting_response','countered','stalled','awaiting_countersignature','expired'].includes(co.status))
+  // FIX (Projects & Dashboard fresh pass): this tile counted 'expired' COs, which contract-position (the Billing tab
+  // on this same page) and the Portfolio's CO grid both treat as closed — so the header and Billing disagreed, and
+  // a CO that was expired then revised & accepted (POST /api/co/[id]/revise leaves the parent 'expired' forever)
+  // showed as "at risk" permanently alongside its own accepted revision. At-risk money = live, sent, unanswered
+  // COs only; superseded parents are history. (Completion is stricter — see handleMarkComplete — because an
+  // expired CO is still an unresolved decision, just not live exposure.)
+  const liveCos       = liveChangeOrders(project.change_orders)
+  const openCos       = liveCos.filter((co: any) => ['awaiting_response','countered','stalled','awaiting_countersignature'].includes(co.status))
   const atRiskAmt     = openCos.reduce((s: number, co: any) => s + (co.total || 0), 0)
   const baseValue     = baseContractValueProp ?? 0
   // FIX (re-audit, Guardian ghost-feature finding): this badge only ever
@@ -177,7 +179,8 @@ export default function ProjectDetail({
     // (neither accepted nor closed out), so it should block "mark
     // complete" the same way, not silently let a project close out with
     // a dead, unresolved change order sitting on it.
-    const blockingCos = (project.change_orders || []).filter((co: any) =>
+    // Superseded parents (revised & re-sent) are history, not blockers — see liveCos above.
+    const blockingCos = liveCos.filter((co: any) =>
       ['awaiting_response','countered','stalled','awaiting_countersignature','expired'].includes(co.status)
     )
     if (blockingCos.length > 0) {

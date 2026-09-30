@@ -330,7 +330,7 @@ describe('S-16 fix: workflow creation forces a failed rollback inactive rather t
     session = mkSession(['MANAGE_WORKSPACE_SETTINGS'])
     let deactivateCalled = false
     resolver = (t, ops) => {
-      if (t === 'roles') return { data: [{ id: 'r1', name: 'Finance', permissions: { APPROVE_DOCUMENTS: true } }], error: null }
+      if (t === 'roles') return { data: [{ id: '3f3f3f3f-3f3f-43f3-83f3-3f3f3f3f3f3f', name: 'Finance', permissions: { APPROVE_DOCUMENTS: true } }], error: null }
       if (t === 'approval_workflows' && has(ops, 'insert')) return { data: { id: 'wf-new' }, error: null }
       if (t === 'approval_workflows' && first(ops) === 'delete') return { error: { message: 'delete failed' } }
       if (t === 'approval_workflows' && first(ops) === 'update') { deactivateCalled = true; return { error: null } }
@@ -339,7 +339,7 @@ describe('S-16 fix: workflow creation forces a failed rollback inactive rather t
       return { data: null, error: null }
     }
     const { POST } = await import('@/app/api/approval-workflows/route')
-    const res = await POST(req('/api/approval-workflows', 'POST', { documentType: 'sow', name: 'X', steps: [{ approverRoleId: 'r1' }] }))
+    const res = await POST(req('/api/approval-workflows', 'POST', { documentType: 'sow', name: 'X', steps: [{ approverRoleId: '3f3f3f3f-3f3f-43f3-83f3-3f3f3f3f3f3f' }] }))
     expect(res.status).toBe(500)
     expect(deactivateCalled).toBe(true)
   })

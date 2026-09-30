@@ -39,11 +39,11 @@ import { PATCH } from '@/app/api/clients/[id]/route'
 
 const ALL = ['CREATE_PROJECTS', 'VIEW_CLIENT_DATA']
 const req = (body: any) => ({ json: async () => body, headers: new Headers() }) as any
-const call = (body: any) => PATCH(req(body), { params: Promise.resolve({ id: 'c1' }) })
+const call = (body: any) => PATCH(req(body), { params: Promise.resolve({ id: 'c1c1c1c1-c1c1-4c1c-8c1c-c1c1c1c1c1c1' }) })
 
 beforeEach(() => {
   h.session = { id: 'u1', email: 'a@b.co', name: 'A', workspaceId: 'w1', permissions: ALL }
-  h.existing = { id: 'c1', name: 'Acme', email: 'old@acme.test', cc_emails: [], workspace_id: 'w1' }
+  h.existing = { id: 'c1c1c1c1-c1c1-4c1c-8c1c-c1c1c1c1c1c1', name: 'Acme', email: 'old@acme.test', cc_emails: [], workspace_id: 'w1' }
   h.rpcResult = { data: { ok: true, updated: true }, error: null }
   h.rpcCalls.length = 0; h.audits.length = 0
   vi.spyOn(console, 'error').mockImplementation(() => {})
@@ -55,16 +55,16 @@ describe('PATCH /api/clients/[id] — email-change goes through update_client_ch
     expect(res.status).toBe(200)
     expect(h.rpcCalls).toHaveLength(1)
     expect(h.rpcCalls[0].name).toBe('update_client_checked')
-    expect(h.rpcCalls[0].args).toMatchObject({ p_client_id: 'c1', p_workspace_id: 'w1' })
+    expect(h.rpcCalls[0].args).toMatchObject({ p_client_id: 'c1c1c1c1-c1c1-4c1c-8c1c-c1c1c1c1c1c1', p_workspace_id: 'w1' })
     expect(h.rpcCalls[0].args.p_patch).toMatchObject({ email: 'new@acme.test', email_bounced_at: null, email_bounce_kind: null })
   })
 
   it('surfaces a conflict reported by the RPC as 409 with the existing client id, without any local dupe query', async () => {
-    h.rpcResult = { data: { ok: false, existing_id: 'other-client' }, error: null }
+    h.rpcResult = { data: { ok: false, existing_id: '0a0a0a0a-0a0a-40a0-80a0-0a0a0a0a0a0a' }, error: null }
     const res = await call({ email: 'taken@acme.test' })
     expect(res.status).toBe(409)
     const json = await res.json()
-    expect(json).toMatchObject({ existingClientId: 'other-client' })
+    expect(json).toMatchObject({ existingClientId: '0a0a0a0a-0a0a-40a0-80a0-0a0a0a0a0a0a' })
     // Exactly one call into the database layer for the write path — the RPC itself did the check.
     expect(h.rpcCalls).toHaveLength(1)
   })
@@ -85,7 +85,7 @@ describe('PATCH /api/clients/[id] — email-change goes through update_client_ch
   it('records a real before → after audit row using the pre-update snapshot', async () => {
     await call({ email: 'new@acme.test' })
     expect(h.audits[0]).toMatchObject({
-      eventType: 'client.updated', entityId: 'c1',
+      eventType: 'client.updated', entityId: 'c1c1c1c1-c1c1-4c1c-8c1c-c1c1c1c1c1c1',
       metadata: { changes: { email: { from: 'old@acme.test', to: 'new@acme.test' } } },
     })
   })

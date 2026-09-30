@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
+import { liveChangeOrders } from '@/lib/utils/attention'
 import { cancelApprovalRequest, projectApprovalSendInFlight, SEND_IN_FLIGHT_MESSAGE } from '@/lib/approvals/engine'
 
 // FIX (Projects & Dashboard deep audit, flagship finding): SOW/CO sends and
@@ -26,6 +27,8 @@ const SCOPE_CHANGE_DOCUMENT_TYPES = ['sow', 'co', 'co_counter']
 // match the Complete button in ProjectDetail, which already refused to
 // complete over an expired CO — the API let it through.
 const BLOCKING_CO_STATUSES = ['awaiting_response', 'countered', 'stalled', 'awaiting_countersignature', 'expired']
+// A CO that was revised and re-sent is history (the revision carries the decision), so it never blocks —
+// revise leaves an expired/declined parent at that status forever. Same definition as attention.ts.
 
 // Guardian flags that are still open work. borderline_review (a flag waiting
 // for a human to confirm/dismiss) used to be left behind on a completed
@@ -47,13 +50,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const { data: project } = await (service as any)
       .from('projects')
-      .select('id,name,status,change_orders(id,title,status),guardian_flags(id,status)')
+      .select('id,name,status,change_orders(id,title,status,parent_co_id,sent_at),guardian_flags(id,status)')
       .eq('id', id).eq('workspace_id', session.workspaceId).is('deleted_at', null).maybeSingle()
     if (!project) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (project.status !== 'Active')
       return NextResponse.json({ error: 'Only Active projects can be marked complete' }, { status: 400 })
 
-    const blockingCos = (project.change_orders || []).filter((co: any) => BLOCKING_CO_STATUSES.includes(co.status))
+    const blockingCos = liveChangeOrders(project.change_orders).filter((co: any) => BLOCKING_CO_STATUSES.includes(co.status))
     if (blockingCos.length > 0) {
       return NextResponse.json({
         error: `${blockingCos.length} change order${blockingCos.length !== 1 ? 's' : ''} must be resolved before marking complete`,
