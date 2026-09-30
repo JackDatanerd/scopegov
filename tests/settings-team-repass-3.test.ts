@@ -149,6 +149,9 @@ describe('R3-2: POST /api/workspace/branding/logo echoes updatedAt', () => {
   })
 })
 
+// The handler's first argument is a required NextRequest (Next 14's route-type check rejects an optional one and fails the build).
+const deleteReq = (qs = '') => new Request(`http://x.test/api/workspace/branding/logo${qs}`, { method: 'DELETE' }) as any
+
 describe('R3-3: DELETE /api/workspace/branding/logo echoes updatedAt', () => {
   it('returns the fresh updatedAt when a logo is actually removed', async () => {
     resolver = (table, ops) => {
@@ -157,7 +160,7 @@ describe('R3-3: DELETE /api/workspace/branding/logo echoes updatedAt', () => {
       return { data: null, error: null }
     }
     const { DELETE } = await import('@/app/api/workspace/branding/logo/route')
-    const res = await DELETE()
+    const res = await DELETE(deleteReq())
     const json = await res.json()
     expect(res.status).toBe(200)
     expect(json.ok).toBe(true)
@@ -170,7 +173,7 @@ describe('R3-3: DELETE /api/workspace/branding/logo echoes updatedAt', () => {
       return { data: null, error: null }
     }
     const { DELETE } = await import('@/app/api/workspace/branding/logo/route')
-    const res = await DELETE()
+    const res = await DELETE(deleteReq())
     const json = await res.json()
     expect(res.status).toBe(200)
     expect(json.ok).toBe(true)

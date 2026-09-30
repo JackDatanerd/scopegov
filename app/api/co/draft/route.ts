@@ -164,7 +164,9 @@ Rules:
 
     const parsed = toolUse.input as {
       title: string; note: string; scopeImpact?: string | null
-      timelineImpactDays?: number | null
+      // FIX (build): declared `number | null`, so the `typeof rawDays === 'string'` guard below narrowed to `never`
+      // and `.trim()` failed type-checking. The model can return a string here (that is exactly what the guard is for).
+      timelineImpactDays?: number | string | null
       lineItems: Array<{ description: string; quantity: number }>
     }
 

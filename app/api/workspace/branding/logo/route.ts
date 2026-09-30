@@ -207,7 +207,10 @@ export async function POST(request: NextRequest) {
 // A dedicated DELETE here (rather than overloading PATCH) keeps the
 // Storage removal and the DB column update in the same request, same
 // reasoning as POST's own upload+link-in-one-request fix above.
-export async function DELETE(request?: NextRequest) {
+// FIX (build): `request` was declared optional (`request?: NextRequest`). Next 14's generated route-type check
+// rejects that — a route handler's first argument must be exactly Request | NextRequest — and it failed the whole
+// Vercel build. Next always supplies the request, so it is required here.
+export async function DELETE(request: NextRequest) {
   try {
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -216,7 +219,7 @@ export async function DELETE(request?: NextRequest) {
     }
 
     // FIX (Onboarding independent pass 3 — B3): same stale-tab guard as the upload above.
-    const expectedWorkspaceId = request ? new URL(request.url).searchParams.get('workspaceId') : null
+    const expectedWorkspaceId = new URL(request.url).searchParams.get('workspaceId')
     if (expectedWorkspaceId && expectedWorkspaceId !== session.workspaceId) {
       return NextResponse.json({
         error: 'You\u2019re no longer working on that workspace. Reload the page and try again.',

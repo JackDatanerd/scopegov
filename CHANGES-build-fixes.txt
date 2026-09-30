@@ -1,0 +1,11 @@
+Vercel build fixes (build on 4c9f18d failed). Next reports ONE type error at a time, so three were stacked:
+1. app/api/workspace/branding/logo/route.ts  DELETE(request?: NextRequest) -> DELETE(request: NextRequest).
+   Next 14's generated route-type check rejects an optional first argument. (tests/settings-team-repass-3.test.ts
+   called DELETE() with no argument, which is why it was optional; the tests now pass a request.)
+2. app/api/co/draft/route.ts  timelineImpactDays typed number|null, so the `typeof === 'string'` guard narrowed to
+   never and .trim() failed. Type is now number | string | null (the model can return a string; that is what the guard is for).
+3. tsconfig.json  no "target" -> the u-flag / \p{Cf} regex in lib/utils/sanitize.ts (workspace-lifecycle commit 7eee5bb)
+   failed type-checking. Added "target": "ES2020" (noEmit; SWC compiles, so runtime is unchanged).
+Verified: `next build` completes locally (with dummy Supabase env vars) — compile, lint/type-check and all 130 static pages.
+Not changed: ESLint warnings (react-hooks/exhaustive-deps, no-img-element, jsx-a11y/alt-text) and the themeColor->viewport
+metadata notices — they do not fail the build.
