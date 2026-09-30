@@ -527,16 +527,34 @@ async function handleEvent(service: any, event: any): Promise<void> {
       // would never be sent. The redelivered row is then recorded as a retry failure
       // (the history line still shows the failed charge and its amount).
       if (newlyStarted) {
-        const ws = must(await service.from('workspaces').select('agency_name').eq('id', workspaceId).maybeSingle(), 'read workspace').data
+        // FIX (Billing independent pass 8): the grace window is already written above, and on redelivery
+        // newlyStarted is false — so this is the ONLY chance to send the first-failure email. Two things
+        // used to lose it silently: (1) a transient error on this cosmetic agency-name read threw, Paystack
+        // redelivered, and the redelivery skipped the email; the name has a fallback, so the read is now
+        // non-fatal; (2) sendPaymentFailedEmail resolves { ok: false } instead of throwing, and that result
+        // was ignored (the card-expiring handler below already checks it). If nobody was reached, ops is
+        // paged rather than the event being failed (a retry could not re-send it anyway).
+        const wsRes = await service.from('workspaces').select('agency_name').eq('id', workspaceId).maybeSingle()
+        if (wsRes.error) console.error('invoice.payment_failed: could not read agency name (using fallback):', wsRes.error.message)
+        const ws = wsRes.error ? null : wsRes.data
         const recipients = await getBillingRecipients(service, workspaceId, [{ email: customerEmail }])
+        let anySent = false
         for (const r of recipients) {
           try {
-            await sendPaymentFailedEmail({
+            const delivery = await sendPaymentFailedEmail({
               to: r.email, name: r.name, agencyName: ws?.agency_name || 'your workspace',
               upgradeUrl: `${process.env.NEXT_PUBLIC_APP_URL}/settings?tab=billing`,
               graceDaysLeft: GRACE_DAYS,
             })
+            if (delivery.ok) anySent = true
+            else console.error('Payment failed email rejected:', delivery.error)
           } catch (e) { console.error('Payment failed email error:', e) }
+        }
+        if (recipients.length > 0 && !anySent) {
+          await alertBillingOps(service, `billing:payment-failed-email:${workspaceId}`, 'Payment-failed email was not delivered', [
+            `Workspace ${workspaceId} entered its payment grace period but no billing recipient could be emailed.`,
+            'The billing banner and the payment-overdue cron reminder still apply; the first-failure email will not be re-sent.',
+          ]).catch(() => {})
         }
       }
 

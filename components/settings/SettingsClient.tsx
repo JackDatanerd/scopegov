@@ -1830,7 +1830,11 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
   // subscription.create clears on success, so a transition from "was set" to
   // "now null" is an equally valid, additional success signal alongside the
   // existing plan/interval check.
-  async function confirmPayment(before: { planTier: string | null; planInterval: string | null; graceStartedAt: string | null }) {
+  // FIX (Billing independent pass 8): buying the SAME plan+interval while a cancellation is pending
+  // (cancels_at_period_end = true) changes neither tier, interval nor grace — the only thing the webhook
+  // flips is the cancel flag (a new subscription replaces the cancelling one). Without watching it, the
+  // "confirming" screen ran the full 90 seconds for what is a few-second round trip.
+  async function confirmPayment(before: { planTier: string | null; planInterval: string | null; graceStartedAt: string | null; cancelsAtPeriodEnd?: boolean }) {
     setConfirming(true)
     const deadline = Date.now() + 90_000
     while (Date.now() < deadline) {
@@ -1842,7 +1846,8 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
           if (
             st.planTier !== before.planTier ||
             st.planInterval !== before.planInterval ||
-            (before.graceStartedAt !== null && st.graceStartedAt === null)
+            (before.graceStartedAt !== null && st.graceStartedAt === null) ||
+            (before.cancelsAtPeriodEnd === true && st.cancelsAtPeriodEnd === false)
           ) break
         }
       } catch { /* keep polling */ }
@@ -1897,6 +1902,7 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
         planTier: planTier as string | null,
         planInterval: (billing?.plan_interval ?? null) as string | null,
         graceStartedAt: (billing?.grace_period_started_at ?? null) as string | null,
+        cancelsAtPeriodEnd: !!billing?.cancels_at_period_end,
       }
       const handler = (window as any).PaystackPop.setup({
         key:      json.publicKey,

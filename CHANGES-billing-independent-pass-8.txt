@@ -1,0 +1,23 @@
+Billing independent pass 8 (section 16: api/billing/cancel, upgrade, webhook) — bugs only. No migration.
+
+B1 (LOW-MEDIUM) app/api/billing/cancel/route.ts
+   A stored current_period_end that was present but already elapsed (a renewal the webhook had not
+   refreshed yet) was trusted. cancels_at_period_end was then set against a past date, so
+   cron/payment-overdue step 5 could downgrade a customer who had just paid another period, and the
+   cancellation email showed a past date. A missing OR elapsed date is now refreshed from Paystack before
+   the claim (best-effort; a failed/empty read leaves the old behaviour).
+
+B2 (LOW) app/api/billing/webhook/route.ts  (invoice.payment_failed)
+   The grace window is written before the dunning email, and on redelivery newlyStarted is false, so the
+   email could never be re-sent. It was lost when (a) the cosmetic agency-name read failed (must() threw,
+   Paystack redelivered, the redelivery skipped the email) or (b) sendPaymentFailedEmail returned
+   { ok: false } (ignored). The name read is now non-fatal (existing fallback string) and the send result is
+   checked; if no recipient was reached ops is paged (billing:payment-failed-email:<workspace>).
+
+B3 (LOW, UX) components/settings/SettingsClient.tsx
+   Re-buying the same plan+interval while cancels_at_period_end was true changed nothing the confirm loop
+   watched, so "confirming your plan" ran the full 90s. The snapshot now carries cancelsAtPeriodEnd and the
+   loop exits when it flips true -> false (/api/billing/status already returns it).
+
+Tests added: tests/billing-pass8-cancel.test.ts, tests/billing-pass8-webhook.test.ts
+(not executed in the audit sandbox — no node_modules/network; run `npx vitest run` and `npx tsc --noEmit` locally.)

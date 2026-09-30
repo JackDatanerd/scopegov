@@ -102,8 +102,16 @@ export async function POST(request: NextRequest) {
     // cancelled here and then never be downgraded at period end (paid plan kept free indefinitely). When the
     // date is missing, take it from Paystack now and store it with the claim. Best-effort: a failed read just
     // leaves the old behaviour (the daily billing-reconcile cron also fills it in once it is in the future).
+    //
+    // FIX (Billing independent pass 8): a date that is PRESENT but already in the past is just as unsafe. Right
+    // after a renewal the stored current_period_end can still be the one that just elapsed (the webhook
+    // refreshes it a moment later). Flagging cancels_at_period_end against a past date lets payment-overdue
+    // step 5 (which selects cancelling rows whose period end has passed) downgrade a customer who has just
+    // paid for another period, and the email would show a past date. So a missing OR elapsed date is refreshed
+    // from Paystack first — before the claim, because a disabled subscription reports no next payment date.
     let backfilledPeriodEnd: string | null = null
-    if (!billing.current_period_end) {
+    const storedEndMs = billing.current_period_end ? Date.parse(billing.current_period_end) : NaN
+    if (!billing.current_period_end || isNaN(storedEndMs) || storedEndMs <= Date.now()) {
       try {
         const fetched = await fetchPaystackNextPaymentDate(code)
         if (fetched && !isNaN(Date.parse(fetched)) && Date.parse(fetched) > Date.now()) backfilledPeriodEnd = fetched
