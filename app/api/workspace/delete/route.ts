@@ -277,11 +277,16 @@ export async function DELETE(request: Request) {
     // (previously only the embedded user's email/name) and include the
     // ACTOR too — needed below to reassign active_workspace_id for every
     // affected member, not just to email the others.
-    const { data: allMembers } = await (service as any)
+    // FIX (Workspace lifecycle independent pass 2 — B1): workspace_members has TWO FKs to users
+    // (user_id, invited_by), so the embed must name the constraint — an unqualified `users(...)`
+    // is ambiguous in PostgREST. The read's error was also ignored, so the failure was silent:
+    // allMembers came back null and NOBODY was ever told their workspace had been deleted.
+    const { data: allMembers, error: membersReadErr } = await (service as any)
       .from('workspace_members')
-      .select('user_id, user:users(email, name)')
+      .select('user_id, user:users!workspace_members_user_id_fkey(email, name)')
       .eq('workspace_id', session.workspaceId)
       .eq('status', 'active')
+    if (membersReadErr) console.error('Workspace delete: could not read members to notify (non-fatal):', membersReadErr.message)
     const otherMembers = (allMembers || []).filter((m: any) => m.user_id !== session.id)
 
     // FIX (Workspace lifecycle independent pass — B2/B9): soft-delete, member
@@ -312,7 +317,27 @@ export async function DELETE(request: Request) {
       let billingRestored = true
       if (billing?.paystack_subscription_code && !cancelResult.alreadyCancelled) {
         const resumed = await resumePaystackSubscription(billing).catch((e: unknown) => ({ ok: false, error: String(e) }))
-        if (!resumed.ok) {
+        if (resumed.ok) {
+          // FIX (Workspace lifecycle independent pass 2 — B3): the cancel above makes Paystack fire
+          // subscription.disable, and the webhook marks billing.cancels_at_period_end = true. There
+          // is no "subscription.enable" handler to undo that, so after a rolled-back delete a
+          // still-charged customer was left flagged as cancelling and the period-end sweep would
+          // downgrade them. Clear it, mirroring workspace/restore and billing/resume. Unconditional
+          // (not gated on the value we read before the cancel) because the webhook may already have
+          // landed by now.
+          const clearFlag = () => (service as any).from('billing').update({
+            cancels_at_period_end: false, updated_at: new Date().toISOString(),
+          }).eq('workspace_id', session.workspaceId).eq('paystack_subscription_code', billing.paystack_subscription_code)
+          let upd = await clearFlag()
+          if (upd.error) upd = await clearFlag()
+          if (upd.error) {
+            await alertBillingOps(service, `billing:delete-rollback-flag:${session.workspaceId}`, 'Delete rollback: cancels_at_period_end not cleared', [
+              `workspace: ${session.workspaceId}`,
+              `Paystack subscription was RE-ENABLED after a failed delete but billing.cancels_at_period_end could not be cleared: ${upd.error.message}`,
+              'Left as-is, the period-end sweep would downgrade a customer who is still being charged.',
+            ]).catch(() => {})
+          }
+        } else {
           billingRestored = false
           await alertBillingOps(service, `billing:delete-rollback-resume:${session.workspaceId}`, 'Workspace delete failed after Paystack cancel — subscription NOT resumed', [
             `workspace: ${session.workspaceId}`,

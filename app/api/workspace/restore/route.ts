@@ -219,10 +219,11 @@ export async function POST(request: NextRequest) {
           to: user.email, name: restorerName, agencyName, restoredByName: restorerName, isRestorer: true, workspaceId,
         }).catch(e => console.error('Workspace restored email (restorer) failed (non-fatal):', e))
       }
-      const { data: reactivated } = await (service as any)
+      const { data: reactivated, error: reactivatedErr } = await (service as any)
         .from('workspace_members')
-        .select('user_id, user:users(email, name)')
+        .select('user_id, user:users!workspace_members_user_id_fkey(email, name)')
         .eq('workspace_id', workspaceId).eq('status', 'active')
+      if (reactivatedErr) console.error('Workspace restore: could not read members to notify (non-fatal):', reactivatedErr.message)
       for (const m of (reactivated || [])) {
         if (m.user_id === user.id || !m.user?.email) continue
         await sendWorkspaceRestoredEmail({

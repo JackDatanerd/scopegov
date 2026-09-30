@@ -56,7 +56,12 @@ export async function POST(request: NextRequest) {
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-    const formData = await request.formData()
+    // FIX (Workspace lifecycle independent pass 2 — B5): formData() throws on a body that is not
+    // multipart/form-data, which fell through to the catch-all as a 500. It is a client error.
+    let formData: FormData
+    try { formData = await request.formData() } catch {
+      return NextResponse.json({ error: 'Expected a multipart file upload.' }, { status: 400 })
+    }
     const file = formData.get('file')
     if (!(file instanceof File)) {
       return NextResponse.json({ error: 'No file provided' }, { status: 400 })
@@ -102,17 +107,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Upload failed' }, { status: 500 })
     }
 
-    // Same stale-object lesson as workspace/branding/logo/route.ts (round-5
-    // fix there): if the user's new file is a different type than their
-    // last one (JPG replacing a PNG, say), the two live at different paths
-    // and `upsert: true` only overwrites an exact path match — clean up
-    // the other possible extension so it isn't left behind forever.
-    const otherPath = possiblePaths(session.id).find(p => p !== path)
-    if (otherPath) {
-      const { error: removeErr } = await (service as any).storage.from(AVATAR_BUCKET).remove([otherPath])
-      if (removeErr) console.error('Stale avatar cleanup failed (non-fatal):', removeErr)
-    }
-
     const { data: pub } = (service as any).storage.from(AVATAR_BUCKET).getPublicUrl(path)
     // Cache-bust: the path is stable per user, so an unchanged URL string
     // would otherwise keep serving a browser's cached copy of the old image
@@ -125,6 +119,18 @@ export async function POST(request: NextRequest) {
     if (dbError) {
       console.error('Avatar URL save failed:', dbError)
       return NextResponse.json({ error: 'Failed to save avatar' }, { status: 500 })
+    }
+
+    // FIX (Workspace lifecycle independent pass 2 — B6): this cleanup used to run BEFORE the
+    // users.avatar_url write. When that write then failed, the column still pointed at the file
+    // just deleted (a broken avatar everywhere) while the new one sat unreferenced. Same
+    // stale-object lesson as workspace/branding/logo: a JPG replacing a PNG lives at a different
+    // path and `upsert: true` only overwrites an exact match, so the other extension is removed —
+    // now only once the new avatar is recorded.
+    const otherPath = possiblePaths(session.id).find(p => p !== path)
+    if (otherPath) {
+      const { error: removeErr } = await (service as any).storage.from(AVATAR_BUCKET).remove([otherPath])
+      if (removeErr) console.error('Stale avatar cleanup failed (non-fatal):', removeErr)
     }
 
     return NextResponse.json({ avatarUrl })

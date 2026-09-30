@@ -63,6 +63,44 @@ export function buildOrientationApp1(orientation: number): Buffer {
   return Buffer.concat([seg, payload])
 }
 
+/**
+ * FIX (Workspace lifecycle independent pass 2 — B2): after the first SOS the old code copied
+ * "the rest verbatim", i.e. EVERYTHING to the end of the file — including whatever follows the
+ * image's own EOI. Phone JPEGs routinely carry exactly that: Ultra HDR / MPF secondary images
+ * (with their own EXIF), motion-photo video, vendor trailers. So GPS and device data survived
+ * the strip into a public bucket. This walks the entropy-coded data and any later scan segments
+ * (progressive files) to the FIRST real EOI, drops metadata segments found between scans, and
+ * discards everything after. Returns null if no EOI is reached.
+ */
+function copyScansThroughEoi(buf: Buffer, start: number, out: Buffer[]): boolean {
+  let i = start
+  let copyFrom = start
+  while (i < buf.length) {
+    if (buf[i] !== 0xff) { i++; continue }               // entropy-coded byte
+    if (i + 1 >= buf.length) return false
+    const m = buf[i + 1]
+    if (m === 0x00 || (m >= 0xd0 && m <= 0xd7)) { i += 2; continue }   // stuffed 0xFF / RSTn
+    if (m === 0xff) { i++; continue }                    // fill byte
+    if (m === 0xd9) { out.push(buf.subarray(copyFrom, i + 2)); return true }   // EOI
+    if (i + 4 > buf.length) return false
+    const len = buf.readUInt16BE(i + 2)
+    if (len < 2 || i + 2 + len > buf.length) return false
+    if (JPEG_DROP.has(m) || isMpfSegment(buf, m, i + 4, i + 2 + len)) {
+      out.push(buf.subarray(copyFrom, i))                // metadata between scans: skip it
+      copyFrom = i + 2 + len
+    }
+    i += 2 + len
+  }
+  return false
+}
+
+// APP2 'MPF\0' (Multi-Picture Format) holds byte offsets to secondary images. Those images are
+// removed with the trailing data and the offsets would be wrong after any earlier segment is
+// dropped, so the index goes too. (ICC_PROFILE lives in APP2 as well and is kept.)
+function isMpfSegment(buf: Buffer, marker: number, payloadStart: number, segEnd: number): boolean {
+  return marker === 0xe2 && segEnd - payloadStart >= 4 && buf.toString('latin1', payloadStart, payloadStart + 4) === 'MPF\0'
+}
+
 export function stripJpegMetadata(buf: Buffer): Buffer | null {
   if (buf.length < 4 || buf[0] !== 0xff || buf[1] !== 0xd8) return null
   const out: Buffer[] = [buf.subarray(0, 2)]
@@ -84,16 +122,18 @@ export function stripJpegMetadata(buf: Buffer): Buffer | null {
     const len = buf.readUInt16BE(i)
     if (len < 2 || i + len > buf.length) return null
     const seg = buf.subarray(i - 2, i + len)                 // includes FF + marker + length + payload
-    if (marker === 0xda) {                                   // SOS: entropy-coded data follows; copy the rest verbatim
+    if (marker === 0xda) {                                   // SOS: copy scan data up to the first EOI, discard anything after
       insertOrientation()
-      out.push(seg, buf.subarray(i + len))
-      return Buffer.concat(out)
+      out.push(seg)
+      return copyScansThroughEoi(buf, i + len, out) ? Buffer.concat(out) : null
     }
     if (marker === 0xe1) {
       const o = readExifOrientation(buf.subarray(i + 2, i + len))
       if (o && orientation === null) orientation = o
     }
-    if (JPEG_DROP.has(marker)) {
+    if (isMpfSegment(buf, marker, i + 2, i + len)) {
+      // dropped — see isMpfSegment
+    } else if (JPEG_DROP.has(marker)) {
       // Keep the Adobe colour-transform marker: without it CMYK/YCCK files decode with wrong colours.
       if (marker === 0xee && buf.toString('latin1', i + 2, i + 7) === 'Adobe') out.push(seg)
     } else {

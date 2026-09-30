@@ -9,7 +9,11 @@ export async function PATCH(request: NextRequest) {
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-    const { name: nameRaw } = await request.json().catch(() => ({ name: '' })) as { name?: unknown }
+    // FIX (Workspace lifecycle independent pass 2 — B4): `.catch()` only covers a body that fails
+    // to parse. A body that parses to JSON `null` made the destructuring throw and came back as a
+    // 500 instead of the 400 below. Read into a variable and use optional access.
+    const reqBody = await request.json().catch(() => null) as { name?: unknown } | null
+    const nameRaw = reqBody?.name
     if (typeof nameRaw !== 'string' || !nameRaw.trim()) return NextResponse.json({ error: 'Name required' }, { status: 400 })
     // FIX (deep audit, Workspace lifecycle section): was a bare .trim() —
     // no length cap, no control-character stripping — unlike the sibling

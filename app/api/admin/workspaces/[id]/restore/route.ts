@@ -35,10 +35,11 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   const agencyLabel = workspace.agency_name || workspace.name
   let notified = 0
   try {
-    const { data: reactivated } = await (service as any)
+    const { data: reactivated, error: reactivatedErr } = await (service as any)
       .from('workspace_members')
-      .select('user_id, user:users(email, name)')
+      .select('user_id, user:users!workspace_members_user_id_fkey(email, name)')
       .eq('workspace_id', params.id).eq('status', 'active')
+    if (reactivatedErr) console.error('[admin] restore: could not read members to notify (non-fatal):', reactivatedErr.message)
     for (const m of (reactivated || [])) {
       if (!m?.user?.email) continue
       try {

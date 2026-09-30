@@ -24,10 +24,13 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   // because admin_suspend_workspace flips every active member to
   // 'deactivated' in the same transaction — reading it afterwards can't
   // tell "was active when suspended" from "left months ago".
-  const { data: activeMembers } = await (service as any)
+  // workspace_members has two FKs to users — the embed must name the constraint or PostgREST
+  // rejects it as ambiguous (and, with the error ignored, nobody was ever notified).
+  const { data: activeMembers, error: membersReadErr } = await (service as any)
     .from('workspace_members')
-    .select('user_id, user:users(email, name)')
+    .select('user_id, user:users!workspace_members_user_id_fkey(email, name)')
     .eq('workspace_id', params.id).eq('status', 'active')
+  if (membersReadErr) console.error('[admin] suspend: could not read members to notify (non-fatal):', membersReadErr.message)
 
   const { error } = await (service as any).rpc('admin_suspend_workspace', { p_workspace_id: params.id })
   if (error) {
