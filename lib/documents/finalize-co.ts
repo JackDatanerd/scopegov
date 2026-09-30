@@ -381,7 +381,7 @@ export async function finalizeCoAcceptance(service: any, params: {
     const revisedContractValue = isRenewal ? Number(co.total) : null
     const contractValueBefore = isRenewal
       ? previousContractValue
-      : await getContractValueBefore(service, co.project_id, co.id, project.contract_value != null ? Number(project.contract_value) : null)
+      : await getContractValueBefore(service, co.project_id, co.id, project.contract_value != null ? Number(project.contract_value) : null, { project })
     pdfBuffer = await renderCoPdf({
       agencyName:    ws.agency_name,
       logoUrl,

@@ -30,7 +30,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       .select(`id, title, note, version, status, document_number, pdf_path, is_retainer_renewal, is_credit, line_items, subtotal, tax_rate, tax_inclusive, total,
         timeline_impact_days, scope_impact_note,
         accepted_at, accepted_by, client_signature_data, project_id,
-        projects(id, name, type, currency, contract_value,
+        projects(id, name, type, currency, contract_value, retainer_duration_months,
           clients(name, company_name, billing_address, vat_number),
           workspaces(agency_name, brand_colour, logo_storage_path, agency_signature_data,
             legal_address, tax_id, phone, website))`)
@@ -90,7 +90,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     // this understated both the before AND revised value on every accepted
     // CO's PDF, not just the multi-CO case the old comment disclosed.
     const contractValueBefore = await getContractValueBefore(
-      service, co.project_id, co.id, co.projects?.contract_value ?? null, { isRenewal: isRenewalCo }
+      service, co.project_id, co.id, co.projects?.contract_value ?? null, { isRenewal: isRenewalCo, project: co.projects }
     )
 
     const pdfBuffer = await renderCoPdf({

@@ -81,6 +81,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         { status: 400 }
       )
 
+    // FIX (CO logic independent pass, CO-2): revising a 'countered' CO is not just "make a new draft" - it CLOSES
+    // the countered original, cancels its co_counter approval, reverts the linked flag and emails the client that
+    // their offer was superseded. That is exactly what close/route.ts does, and close requires
+    // SEND_CHANGE_ORDERS; this route only required CREATE_CHANGE_ORDERS, so a create-only member could close a
+    // live negotiation and mail the client through the back door. Revising a dead CO (declined/withdrawn/closed/
+    // expired) touches nothing client-facing, so CREATE_CHANGE_ORDERS stays enough there.
+    if (co.status === 'countered' && !hasPermission(session, 'SEND_CHANGE_ORDERS'))
+      return NextResponse.json({ error: 'Missing permission: SEND_CHANGE_ORDERS (revising a countered change order closes it and notifies the client)' }, { status: 403 })
+
     // FIX (section-11 audit, pass 1 — B4): revising a 'countered' CO supersedes (closes) it and cancels its
     // co_counter approval — refuse while that request's final-approval auto-send is running right now.
     if (co.status === 'countered' && await approvalSendInFlight(service, session.workspaceId, ['co_counter'], co.id))
@@ -237,7 +246,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         // closed — they'd just see the same link go dead with no explanation until a new one
         // arrived (if it ever did).
         const client = co.projects?.clients
-        if (client?.email) {
+        // CO-2: an unverified member never triggers outbound client email (same rule as send/close/withdraw) - the
+        // supersede itself still goes through and the UI is told the client was not notified.
+        if (client?.email && !session.emailVerifiedAt) clientNotified = false
+        else if (client?.email) {
           const cc = await withPrimaryContactCc(service, co.projects?.client_id, client.email, client.cc_emails, 'co')
           const replyTo = await resolveReplyTo(service, session.workspaceId, session.email)
           const delivery = await checkedSend(() => sendDocumentCancelledEmail({

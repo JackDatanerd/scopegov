@@ -70,7 +70,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { data: withdrawnCo } = await (service as any).from('change_orders')
       .update({ status: 'withdrawn', token: null, updated_at: now })
       .eq('id', id)
-      .in('status', WITHDRAWABLE_FROM)
+      // CO-3: guard on the exact status that was READ, not on "any withdrawable status". The rest of this handler
+      // (wasSentToClient, the token to revoke, the client email) is derived from that read: a draft that a
+      // concurrent send moved to awaiting_response still matched the wider list, so it was withdrawn with the
+      // freshly-issued token never revoked and the client never told - their link just died silently.
+      .eq('status', co.status)
       .select('id')
 
     if (!withdrawnCo || withdrawnCo.length === 0)

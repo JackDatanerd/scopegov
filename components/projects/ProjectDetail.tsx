@@ -2564,7 +2564,8 @@ function CoCard({ co, currency, permissions, projectId, pendingApproval, team }:
           {co.status === 'countered' && pendingApproval && !pendingApproval.sendFailed && (
             <Link href="/approvals"><button className="btn btn-ghost btn-xs">Awaiting approval</button></Link>
           )}
-          {co.status === 'countered' && permissions.createCo && (
+          {/* CO-2: the server requires SEND_CHANGE_ORDERS too for a countered CO (revising it closes it and emails the client). */}
+          {co.status === 'countered' && permissions.createCo && permissions.sendCo && (
             <button className="btn btn-ghost btn-xs" onClick={revise} disabled={acting}>
               Counter back
             </button>

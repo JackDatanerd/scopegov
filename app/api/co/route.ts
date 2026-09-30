@@ -38,6 +38,18 @@ export async function POST(request: NextRequest) {
     if (lineItems !== undefined && !Array.isArray(lineItems))
       return NextResponse.json({ error: 'lineItems must be a list' }, { status: 400 })
 
+    // CO-5: PATCH refuses any pricing change from a member without VIEW_FINANCIALS (they are shown a locked,
+    // hidden-pricing editor for exactly that reason), but this create route accepted a fully priced CO from the
+    // same member - who then lost the ability to see or fix the prices they had just entered. Same rule on both
+    // routes: an unpriced shell (what a financials-blind member can legitimately start) is fine, pricing is not.
+    if (!hasPermission(session, 'VIEW_FINANCIALS')) {
+      const priced = Array.isArray(lineItems) && lineItems.some((l: any) => Number(l?.rate) > 0)
+      // Tax terms alone are not pricing (the editor pre-fills the workspace default tax rate onto a blank CO, and with
+      // no priced line the total stays 0), so they don't trip this.
+      if (priced || isCredit === true)
+        return NextResponse.json({ error: 'Missing permission: VIEW_FINANCIALS' }, { status: 403 })
+    }
+
     const service = createServiceClient()
 
     // FIX (audit round 3): projectId was never verified against the

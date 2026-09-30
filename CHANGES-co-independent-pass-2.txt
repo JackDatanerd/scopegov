@@ -1,0 +1,15 @@
+CO logic - independent pass 2 (base ef5a5f9)
+
+CO-1  lib/documents/co-contract-value.ts (+ callers: api/pdf/co/[id], api/portal/co/[token]/pdf,
+      api/portal/co/[token]/accept, .../countersign, lib/documents/finalize-co.ts)
+      "Original Contract Value" on a CO PDF used the raw projects.contract_value. For a retainer that is the
+      MONTHLY fee. Now starts from the app-wide definition (monthly x term, open-ended = months billed), excludes
+      retainer-renewal amendments on retainers, floors at 0. Callers pass the project and select
+      retainer_duration_months. PDFs already frozen at acceptance are unchanged.
+CO-2  api/co/[id]/revise, components/projects/ProjectDetail.tsx
+      Revising a COUNTERED CO closes it and emails the client; now requires SEND_CHANGE_ORDERS (like close) and
+      skips the email for an unverified member (clientNotified:false). "Counter back" button matches.
+CO-3  api/co/[id]/withdraw  CAS now .eq('status', co.status) instead of any withdrawable status.
+CO-4  components/co/CoEditor.tsx  failed load (non-OK or network) locks the editor and disables autosave.
+CO-5  api/co (POST)  priced lines or a credit require VIEW_FINANCIALS (PATCH already did).
+Tests: tests/co-independent-pass-2.test.ts (14). Full suite: same 9 pre-existing failures as base, no new ones.

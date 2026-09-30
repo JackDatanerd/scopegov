@@ -55,7 +55,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const CO_PDF_COLUMNS = `id,title,note,status,version,is_credit,line_items,subtotal,tax_rate,tax_inclusive,total,
         timeline_impact_days,scope_impact_note,
         document_number,accepted_by,accepted_at,client_signature_data,workspace_id,project_id,pdf_path,is_retainer_renewal,
-        projects(id,name,type,currency,contract_value,clients(name,email,company_name,billing_address,vat_number),
+        projects(id,name,type,currency,contract_value,retainer_duration_months,clients(name,email,company_name,billing_address,vat_number),
           workspaces(id,agency_name,brand_colour,logo_storage_path,agency_signature_data,
             legal_address,tax_id,phone,website))`
 
@@ -144,7 +144,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       .maybeSingle()
 
     const contractValueBefore = await getContractValueBefore(
-      service, co.project_id, co.id, project?.contract_value ?? null, { isRenewal: isRenewalCo }
+      service, co.project_id, co.id, project?.contract_value ?? null, { isRenewal: isRenewalCo, project }
     )
 
     const pdfBuffer = await renderCoPdf({

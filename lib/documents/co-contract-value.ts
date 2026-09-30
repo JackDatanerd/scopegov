@@ -27,16 +27,28 @@
 // this CO's own amendment row (so a CO accepted out of chronological order
 // relative to another still reports the value as it stood at the moment
 // THIS one was accepted, not a value influenced by COs that came later).
+import { baseContractValue as projectBaseValue, amendmentImpact, loadRetainerMonthsBilled } from '@/lib/utils/contract-value'
+
+// FIX (CO logic independent pass, CO-1): the comment above describes the ADDITIVE ledger correctly, but the
+// starting point was still the raw projects.contract_value. For a retainer that column is the MONTHLY fee, and
+// the app-wide definition of a retainer's contract (lib/utils/contract-value.ts - project page, dashboard,
+// reports, invoice PDFs) is monthly rate x term, with retainer-renewal amendments excluded (a renewal overwrites
+// the rate; older rows still carry the renewal's full total) and the result floored at 0. This function did none
+// of that, so a $2,000/month, 12-month retainer with a $3,000 one-off CO printed "Original Contract Value 2,000 /
+// Revised 5,000" on the CO PDF - and that figure is frozen into the executed copy at signing. The renewal branch
+// is unchanged: there the number is the monthly rate, not a contract total.
+export interface CoValueProject { type?: string | null; retainer_duration_months?: number | null }
+
 export async function getContractValueBefore(
   service: any, projectId: string, coId: string, baseContractValue: number | null,
   // A retainer-renewal CO REPLACES the monthly rate. For one that is not yet accepted, `baseContractValue` IS the
-  // current monthly rate (finalize-co overwrites contract_value on acceptance) — adding the project's other
+  // current monthly rate (finalize-co overwrites contract_value on acceptance) - adding the project's other
   // amendments on top, as for an ordinary CO, printed a "Current Monthly Rate" that was not the rate at all.
-  opts: { isRenewal?: boolean } = {}
+  opts: { isRenewal?: boolean; project?: CoValueProject | null } = {}
 ): Promise<number | null> {
   if (baseContractValue == null) return null
 
-  // previous_contract_value (migration 061) is the monthly rate a retainer-renewal CO replaced — it can
+  // previous_contract_value (migration 061) is the monthly rate a retainer-renewal CO replaced - it can
   // no longer be recomputed once projects.contract_value has been overwritten. Older deployments
   // without the column fall back to the plain select.
   let ownAmendment: any = null
@@ -51,39 +63,28 @@ export async function getContractValueBefore(
   }
   if (ownAmendment?.previous_contract_value != null) return Number(ownAmendment.previous_contract_value)
 
-  // FIX (section-10 audit, 10-B1): this returned the bare base value for
-  // any CO without an amendment row — which is EVERY CO the client is
-  // currently reading, since the amendment is only written at acceptance.
-  // That is wrong for exactly the reason this whole file exists: nothing
-  // ever increments projects.contract_value, so the base is the value at
-  // SOW signing, not the current one. The second CO an agency ever sends
-  // printed "Original Contract Value: 50,000 / Revised: 55,000" in the
-  // client-facing Impact Analysis block when the true current value was
-  // 60,000 — understated by every previously-accepted CO. A pending CO's
-  // "before" is the base plus every amendment accepted to date.
+  // A pending renewal has no amendment yet; its "before" is simply the current monthly rate.
   if (!ownAmendment && opts.isRenewal) return baseContractValue
-  if (!ownAmendment) {
-    const { data: allAmendments } = await service
-      .from('amendments')
-      .select('financial_impact')
-      .eq('project_id', projectId)
-      .neq('change_order_id', coId)
 
-    const acceptedTotal = (allAmendments || []).reduce(
-      (sum: number, a: any) => sum + (a.financial_impact || 0), 0
-    )
-    return baseContractValue + acceptedTotal
+  // Starting point: the project's contract as the rest of the app defines it (retainer = monthly x term).
+  const projectShape = { contract_value: baseContractValue, type: opts.project?.type ?? null, retainer_duration_months: opts.project?.retainer_duration_months ?? null }
+  let billedMonths: number | undefined
+  if (projectShape.type === 'retainer' && !((projectShape.retainer_duration_months || 0) > 0)) {
+    // Open-ended retainer: the "contract" is the months committed so far. Degrades to one month on a failed read.
+    try { billedMonths = (await loadRetainerMonthsBilled(service, [{ id: projectId, ...projectShape }])).get(projectId) } catch { billedMonths = undefined }
   }
+  const start = projectBaseValue(projectShape, billedMonths)
 
-  const { data: priorAmendments } = await service
+  // FIX (section-10 audit, 10-B1): a pending CO's "before" is the base plus every amendment accepted to date
+  // (nothing ever increments projects.contract_value). A CO already accepted reports the value as it stood at
+  // the moment ITS amendment landed, so COs accepted later don't leak into it.
+  let q = service
     .from('amendments')
-    .select('financial_impact')
+    .select('financial_impact, change_orders(is_retainer_renewal)')
     .eq('project_id', projectId)
     .neq('change_order_id', coId)
-    .lt('created_at', ownAmendment.created_at)
+  if (ownAmendment) q = q.lt('created_at', ownAmendment.created_at)
+  const { data: amendments } = await q
 
-  const priorTotal = (priorAmendments || []).reduce(
-    (sum: number, a: any) => sum + (a.financial_impact || 0), 0
-  )
-  return baseContractValue + priorTotal
+  return Math.max(0, start + amendmentImpact(amendments, projectShape.type))
 }

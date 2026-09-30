@@ -41,6 +41,11 @@ export default function CoEditor({ projId, coId }: Props) {
   // any. Defaults false: a brand-new CO (no coId, nothing fetched yet)
   // has nothing to redact and is never in this state.
   const [financialsHidden, setFinancialsHidden] = useState(false)
+  // CO-4: the CO could not be loaded (non-OK response, network error, unreadable body). Without this the editor
+  // stayed in its default "editable blank draft" state with autosave armed: typing a title made the next
+  // autosave PATCH the REAL change order with the blank stub line items. A failed load must be a locked,
+  // non-saving state, not a blank form.
+  const [loadFailed, setLoadFailed] = useState(false)
   const [saveError,   setSaveError]    = useState('')
   const [isRetainerRenewal, setIsRetainerRenewal] = useState(false)
   // Credit / descope change order (migration 100): the agency enters positive amounts; the server stores them as a
@@ -124,7 +129,7 @@ export default function CoEditor({ projId, coId }: Props) {
         // rendered as a silent, untouched blank form. No error, no sign
         // anything had gone wrong — indistinguishable from a fresh CO.
         // Surface it instead.
-        if (!r.ok) { setError(json.error || 'Failed to load this change order.'); return }
+        if (!r.ok) { setLoadFailed(true); setError(json.error || 'Failed to load this change order.'); return }
         if (json.co) {
           const co = json.co
           setTitle(co.title || '')
@@ -153,7 +158,7 @@ export default function CoEditor({ projId, coId }: Props) {
           setFlagRequestText(co.flagRequestText || null)
         }
       })
-      .catch(() => {})
+      .catch(() => { setLoadFailed(true); setError('Could not load this change order — check your connection and reload the page.') })
       .finally(() => setLoading(false))
   }, [coId, projId])
 
@@ -224,7 +229,7 @@ export default function CoEditor({ projId, coId }: Props) {
     if (loading) return
     // Never write (and never leave a timer armed) for a CO the server would refuse to edit or that the viewer can't
     // see the pricing of. Clearing matters: the timer used to survive these early returns.
-    if (pendingApproval || financialsHidden || (savedCoId.current && status !== 'draft')) {
+    if (loadFailed || pendingApproval || financialsHidden || (savedCoId.current && status !== 'draft')) {
       if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null }
       pendingSave.current = false
       if (awaitingBaseline.current) { awaitingBaseline.current = false }
@@ -265,7 +270,7 @@ export default function CoEditor({ projId, coId }: Props) {
       }
     }, 1500)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [snapshot, financialsHidden, pendingApproval, status, loading])
+  }, [snapshot, financialsHidden, pendingApproval, status, loading, loadFailed])
 
   // FIX (CO send "not found" on a brand-new CO): doSave() used to always
   // call router.replace() to the new CO's own URL immediately after
@@ -361,7 +366,7 @@ export default function CoEditor({ projId, coId }: Props) {
   // is no sensible "edit a price you can't see" state, and PATCH would
   // reject their save anyway; this just tells them why up front instead
   // of letting them type into fields backed by redacted data.
-  const isLocked = status !== 'draft' || pendingApproval || financialsHidden
+  const isLocked = status !== 'draft' || pendingApproval || financialsHidden || loadFailed
 
   async function draftWithAi() {
     if (!aiText.trim()) { setAiError('Describe what the client is asking for first.'); return }
@@ -432,7 +437,7 @@ export default function CoEditor({ projId, coId }: Props) {
             its "Negotiate" button) withdraw isn't even a permitted
             transition. Tell the truth, and point at the action that
             actually works: Revise & resend, on the project's CO tab. */}
-        {isLocked && (
+        {isLocked && !loadFailed && (
           <div className="banner banner-info" style={{ marginBottom: 14 }}>
             {financialsHidden
               ? <>You don&rsquo;t have permission to view this change order&rsquo;s pricing, so it&rsquo;s shown read-only. Ask an admin for financial access if you need to edit it.</>
