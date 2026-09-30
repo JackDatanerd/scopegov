@@ -131,9 +131,12 @@ export async function POST(request: NextRequest) {
     // A purge that fails (an unexpected FK, a storage error) used to surface only as a 207 body that
     // nobody reads, then retry silently every day. Page ops instead (cooldown-limited by alertCronFailure).
     if (failures.length > 0) {
+      // FIX (cron section 17, independent pass): history:false — this run is recorded once, by the heartbeat
+      // below (with `failed` in its result). The alert used to append its own ok:false cron_run_history row first,
+      // so one partially-failed run showed up as BOTH a failure and a success (same reason CronRun.finish passes it).
       await alertCronFailure(service, 'workspace-purge', new Error(
         `Workspace purge: ${failures.length} item(s) failed — ` + failures.slice(0, 10).map(f => `${f.id}: ${f.error}`).join(' | '),
-      )).catch(() => {})
+      ), undefined, { history: false }).catch(() => {})
     }
     await recordCronHeartbeat(service, 'workspace-purge', { purged: purgedCount, failed: failures.length })
     return NextResponse.json({

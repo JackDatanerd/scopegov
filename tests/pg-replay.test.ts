@@ -555,6 +555,20 @@ describe.skipIf(!URL_)('Postgres replay (migrations 001..latest on a real databa
       expect(again.audit_actor_rows).toBe(0)
     })
 
+    // Migration 121: the address a person was invited at survives on their accepted member rows and must go too.
+    it('erase_user_pii clears invited_email on the erased user\'s member rows only', async () => {
+      await makeUser(92, 'erase.two@test.dev'); await makeUser(93, 'keeper@test.dev')
+      await makeWorkspace(92, 92); await makeWorkspace(93, 93)
+      await sql(`UPDATE public.workspace_members SET invited_email = 'erase.two@test.dev' WHERE workspace_id = $1 AND user_id = $2`, [W(92), U(92)])
+      await sql(`UPDATE public.workspace_members SET invited_email = 'keeper@test.dev' WHERE workspace_id = $1 AND user_id = $2`, [W(93), U(93)])
+      const [{ r }] = await sql(`SELECT public.erase_user_pii($1, 'erase.two@test.dev') AS r`, [U(92)])
+      expect(r.invited_emails).toBe(1)
+      expect((await sql(`SELECT invited_email FROM public.workspace_members WHERE user_id = $1`, [U(92)]))[0].invited_email).toBeNull()
+      expect((await sql(`SELECT invited_email FROM public.workspace_members WHERE user_id = $1`, [U(93)]))[0].invited_email).toBe('keeper@test.dev')
+      const [{ r: again }] = await sql(`SELECT public.erase_user_pii($1, 'erase.two@test.dev') AS r`, [U(92)])
+      expect(again.invited_emails).toBe(0)
+    })
+
     it('erase_user_pii and prune_snapshot_history are service-role only', async () => {
       await asRole('authenticated', U(90), async c => {
         expect(await denied(c, `SELECT public.erase_user_pii('${U(91)}'::uuid, NULL)`)).toBe(true)

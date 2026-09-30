@@ -1,0 +1,6 @@
+Cron section 17 — independent pass 3
+B1 (medium): erase_user_pii now also NULLs workspace_members.invited_email for the erased user (migration 121, with a
+    one-time backfill for already-erased accounts). Run migration 121 in the Supabase SQL editor.
+B2 (low): project-purge / workspace-purge no longer write an ok:false cron_run_history row on top of the heartbeat's ok:true
+    row for a partially-failed run (alertCronFailure ... { history: false }).
+Tests: tests/cron-section17-pass3.test.ts, plus a case in tests/pg-replay.test.ts (needs PG_REPLAY_URL).
