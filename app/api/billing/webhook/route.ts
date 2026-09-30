@@ -24,6 +24,8 @@ import { consumeCheckoutGroup, stampCheckoutCharged } from '@/lib/billing/checko
 import { claimWebhookEvent, completeWebhookEvent, releaseWebhookEvent } from '@/lib/billing/webhook-claims'
 import { getBillingRecipients } from '@/lib/billing/recipients'
 import { alertBillingOps } from '@/lib/billing/ops-alert'
+import { estimatePeriodEnd } from '@/lib/billing/period-end'
+import { measurePlanFit } from '@/lib/billing/limits'
 
 // Billing re-pass #3 — what this file does differently from the version it
 // replaces (each point is a bug that shipped real money problems):
@@ -370,8 +372,29 @@ async function handleEvent(service: any, event: any): Promise<void> {
 
       if (res.checkout) await consumeCheckoutGroup(service, res.checkout)
 
+      // FIX (Billing independent pass 10 — B5): api/billing/upgrade checks seats and projects when checkout STARTS,
+      // but the plan is applied whenever payment completes (up to 24h later). Members or projects added in between
+      // leave a workspace over the allowance of the plan it just paid for. The customer has already paid, so nothing
+      // is refused or reverted — the overage is recorded in the history row and ops is told, so it is a decision
+      // rather than a silent state. Best-effort: a failed read must never fail (and re-run) an applied payment.
+      let overLimit: Record<string, number> | undefined
+      try {
+        const fit = await measurePlanFit(service, workspaceId, newTier)
+        if (fit.ok && (fit.fit.seats.over || fit.fit.projects.over)) {
+          overLimit = {
+            ...(fit.fit.seats.over ? { active_members: fit.fit.seats.count, seat_limit: fit.fit.seats.limit! } : {}),
+            ...(fit.fit.projects.over ? { active_projects: fit.fit.projects.count, project_limit: fit.fit.projects.limit! } : {}),
+          }
+          await alertBillingOps(service, `billing:over-limit:${workspaceId}:${subCode}`, 'Workspace is over its new plan\'s limits', [
+            `workspace: ${workspaceId}`, `new plan: ${newTier}`, `usage vs limits: ${JSON.stringify(overLimit)}`,
+            'Usage grew during the checkout window, after api/billing/upgrade\'s check. The payment was applied as normal.',
+          ]).catch(() => {})
+        }
+      } catch (e) { console.error('[BILLING] post-switch limit check failed (non-fatal):', e) }
+
       await audit(service, workspaceId, 'billing.plan_changed', customerEmail, {
         action: 'subscription_created',
+        ...(overLimit ? { over_limit: overLimit } : {}),
         from: prevWs?.plan_tier, to: newTier,
         from_interval: prevBilling?.plan_interval ?? undefined, to_interval: newInterval,
         plan_code: planCode,
@@ -643,6 +666,19 @@ async function handleEvent(service: any, event: any): Promise<void> {
         }
       }
 
+      // FIX (Billing independent pass 10 — B1): when neither the event nor Paystack has a future date (a
+      // disabled subscription reports none; a just-renewed one can still show the elapsed date), fall back to
+      // what this app recorded — see lib/billing/period-end.ts. Without it the flag was written against an
+      // elapsed date (step 5 downgraded a customer who had just paid) or a NULL one (never ended at all).
+      let periodEndEstimated = false
+      if (!refreshedPeriodEnd && (isNaN(storedEndMs) || storedEndMs <= Date.now())) {
+        const est = await estimatePeriodEnd(service, {
+          workspaceId: res.workspaceId, storedEnd: res.billing.current_period_end,
+          interval: res.billing.plan_interval, graceStartedAt: res.billing.grace_period_started_at,
+        })
+        if (est) { refreshedPeriodEnd = est; periodEndEstimated = true }
+      }
+
       const marked = must(await service.from('billing').update({
         cancels_at_period_end: true, updated_at: new Date().toISOString(),
         ...(refreshedPeriodEnd ? { current_period_end: refreshedPeriodEnd } : {}),
@@ -657,6 +693,7 @@ async function handleEvent(service: any, event: any): Promise<void> {
       await audit(service, res.workspaceId, 'billing.plan_changed', data?.customer?.email, {
         action: event.event === 'subscription.not_renew' ? 'subscription_not_renewing' : 'subscription_disabled',
         ends_at: refreshedPeriodEnd ?? res.billing?.current_period_end ?? undefined,
+        ...(periodEndEstimated ? { period_end_estimated: true } : {}),
       })
       return
     }

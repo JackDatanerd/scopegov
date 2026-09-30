@@ -20,7 +20,9 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logBillingAuditWithRetry } from '@/lib/billing/audit-retry'
 import { requireStepUpForCurrentUser } from '@/lib/auth/step-up'
 import { getClientIp } from '@/lib/utils/request-ip'
-import { cancelPaystackSubscription, fetchPaystackNextPaymentDate } from '@/lib/integrations/paystack'
+import { cancelPaystackSubscription, fetchPaystackNextPaymentDate, fetchPaystackSubscription } from '@/lib/integrations/paystack'
+import { UPSTREAM_ENDED_STATUSES } from '@/lib/billing/plans'
+import { estimatePeriodEnd } from '@/lib/billing/period-end'
 import { getBillingRecipients } from '@/lib/billing/recipients'
 import { alertBillingOps } from '@/lib/billing/ops-alert'
 import { sendSubscriptionCancelScheduledEmail } from '@/lib/email/templates'
@@ -47,7 +49,7 @@ export async function POST(request: NextRequest) {
     // pattern is spelled differently for the same known condition.
     const { data: billing, error: billingErr } = await (service as any)
       .from('billing')
-      .select('paystack_subscription_code, paystack_email_token, cancels_at_period_end, current_period_end')
+      .select('paystack_subscription_code, paystack_email_token, cancels_at_period_end, current_period_end, plan_interval, grace_period_started_at')
       .eq('workspace_id', session.workspaceId)
       .maybeSingle()
     // FIX (Billing independent pass): a failed read used to fall into the
@@ -117,6 +119,20 @@ export async function POST(request: NextRequest) {
         if (fetched && !isNaN(Date.parse(fetched)) && Date.parse(fetched) > Date.now()) backfilledPeriodEnd = fetched
       } catch (e) { console.error('[BILLING] cancel: could not backfill current_period_end', e) }
     }
+    // FIX (Billing independent pass 10 — B1): Paystack can still show the date that JUST elapsed right after a
+    // renewal, and a failed read leaves nothing at all. Falling through to "flag it anyway" is what let step 5
+    // downgrade a customer who had just paid (elapsed date) or never end the plan (missing date). Use what this
+    // app recorded instead — see lib/billing/period-end.ts for when it refuses to guess. If it still has
+    // nothing the cancel goes through unchanged (a customer must always be able to cancel) and ops is told below.
+    let periodEndEstimated = false
+    const needsDate = !billing.current_period_end || isNaN(storedEndMs) || storedEndMs <= Date.now()
+    if (!backfilledPeriodEnd && needsDate) {
+      const est = await estimatePeriodEnd(service, {
+        workspaceId: session.workspaceId, storedEnd: billing.current_period_end,
+        interval: billing.plan_interval, graceStartedAt: billing.grace_period_started_at,
+      })
+      if (est) { backfilledPeriodEnd = est; periodEndEstimated = true }
+    }
     if (backfilledPeriodEnd) billing.current_period_end = backfilledPeriodEnd
 
     const claim = await (service as any).from('billing')
@@ -157,7 +173,18 @@ export async function POST(request: NextRequest) {
     //
     // FIX (audit round 6): only report success when Paystack actually agrees
     // the subscription won't renew — the helper returns a real result.
-    const result = await cancelPaystackSubscription(billing)
+    let result = await cancelPaystackSubscription(billing)
+    // FIX (Billing independent pass 10 — B2): a timeout or a lost response after Paystack ACCEPTED the disable
+    // looks exactly like a refusal. Rolling the claim back then leaves our row saying "renewing" for a
+    // subscription Paystack has already stopped (the not_renew webhook that could have told us arrived while
+    // the claim was held, so it deliberately did nothing) until the daily reconciliation notices. Ask Paystack
+    // what state it is really in before giving the claim back.
+    if (!result.ok) {
+      const check = await fetchPaystackSubscription(code)
+      if (check.ok && check.sub.status && UPSTREAM_ENDED_STATUSES.has(check.sub.status)) {
+        result = { ok: true, alreadyCancelled: true }
+      }
+    }
     if (!result.ok) {
       // Give the claim back, but only if the row still holds OUR subscription
       // and OUR flag: a plan switch that landed meanwhile has already reset it
@@ -204,8 +231,22 @@ export async function POST(request: NextRequest) {
       actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
       eventType: 'billing.plan_changed', entityType: 'workspace',
       entityId: session.workspaceId, entityName: session.agencyName,
-      metadata: { action: 'cancellation_requested', ends_at: billing.current_period_end, was_already_non_renewing_upstream: result.alreadyCancelled },
+      metadata: {
+        action: 'cancellation_requested', ends_at: billing.current_period_end, was_already_non_renewing_upstream: result.alreadyCancelled,
+        ...(periodEndEstimated ? { period_end_estimated: true } : {}),
+      },
     })
+
+    // A cancellation with no period end at all is never picked up by the period-end sweep — the plan would
+    // outlive the subscription. The reconciliation cron also tries to repair it; this makes sure a human sees it
+    // if that cannot either. (A grace-period workspace is handled by grace enforcement instead.)
+    if (!billing.current_period_end && !billing.grace_period_started_at) {
+      await alertBillingOps(service, `billing:cancel-no-period-end:${session.workspaceId}`, 'Cancellation recorded without a period end', [
+        `workspace: ${session.workspaceId}`,
+        `subscription: ${code}`,
+        'The subscription was disabled on Paystack but no period end could be determined, so the period-end sweep cannot end the paid plan. Set billing.current_period_end by hand.',
+      ]).catch(() => {})
+    }
 
     // FEATURE (Billing re-pass #3): tell every billing admin (not just the
     // person who clicked) that the subscription is set to end, and when.
@@ -214,13 +255,23 @@ export async function POST(request: NextRequest) {
         ? new Date(billing.current_period_end).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })
         : 'the end of your current billing period'
       const recipients = await getBillingRecipients(service, session.workspaceId, [{ name: session.name, email: session.email }])
+      // FIX (Billing independent pass 10 — B4): sendEmail-backed helpers resolve { ok: false } instead of
+      // throwing, and that result was discarded — a rejected notification left no trace anywhere.
+      let anySent = false
       for (const r of recipients) {
         try {
-          await sendSubscriptionCancelScheduledEmail({
+          const delivery = await sendSubscriptionCancelScheduledEmail({
             to: r.email, name: r.name, agencyName: session.agencyName, endsAtLabel, actorName: session.name,
             manageUrl: `${process.env.NEXT_PUBLIC_APP_URL}/settings?tab=billing`,
           })
+          if (delivery && !delivery.ok) console.error('Cancellation email rejected for', r.email, delivery.error)
+          else anySent = true
         } catch (e) { console.error('Cancellation email failed for', r.email, e) }
+      }
+      if (recipients.length > 0 && !anySent) {
+        await alertBillingOps(service, `billing:cancel-email:${session.workspaceId}`, 'Cancellation email was not delivered', [
+          `Workspace ${session.workspaceId} scheduled a cancellation but no billing recipient could be emailed.`,
+        ]).catch(() => {})
       }
     } catch (e) { console.error('Cancellation notification failed:', e) }
 

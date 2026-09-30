@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { cancelPaystackSubscription, resumePaystackSubscription } from '@/lib/integrations/paystack'
+import { cancelPaystackSubscription, resumePaystackSubscription, fetchPaystackSubscription } from '@/lib/integrations/paystack'
 
 // Billing re-pass, independent redo #3 — B5 / email-token fallback.
 type Call = { url: string; method: string; body: any }
@@ -61,5 +61,30 @@ describe('cancelPaystackSubscription', () => {
     const r = await withFetch(() => ({ status: 500, json: {} }),
       () => cancelPaystackSubscription({ paystack_subscription_code: 'SUB_1', paystack_email_token: null }))
     expect(r.ok).toBe(false)
+  })
+})
+
+// Billing independent pass 10 — B3: the timeout used to be cleared when the response HEADERS arrived, so a
+// connection that sent headers and then stalled on the body was never aborted.
+describe('paystackFetch — body read is bounded by the request timeout', () => {
+  it('a body that never arrives is aborted and reported as a failed read (not a hang)', async () => {
+    const original = globalThis.fetch
+    const realSetTimeout = globalThis.setTimeout
+    // Shorten only the library's 12s timer so the test does not wait for it.
+    globalThis.setTimeout = ((fn: any, ms?: number, ...a: any[]) => realSetTimeout(fn, ms === 12_000 ? 20 : ms, ...a)) as any
+    globalThis.fetch = (async (_u: any, init: any) => ({
+      ok: true, status: 200, statusText: 'OK', headers: new Headers(),
+      text: () => new Promise((_res, rej) => init.signal.addEventListener('abort', () => rej(new Error('aborted')))),
+    })) as any
+    try {
+      const r = await fetchPaystackSubscription('SUB_X')
+      expect(r.ok).toBe(false)
+    } finally { globalThis.fetch = original; globalThis.setTimeout = realSetTimeout }
+  })
+  it('an ordinary response is passed through unchanged (status, json body)', async () => {
+    const r = await withFetch(() => ({ json: { data: { status: 'active', next_payment_date: '2030-01-01T00:00:00.000Z', email_token: 't' } } }),
+      () => fetchPaystackSubscription('SUB_X'))
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.sub.status).toBe('active')
   })
 })

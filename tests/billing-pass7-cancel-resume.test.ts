@@ -17,6 +17,7 @@ vi.mock('@/lib/email/templates', () => ({
   sendSubscriptionCancelScheduledEmail: async () => {}, sendSubscriptionResumedEmail: async () => {},
 }))
 vi.mock('@/lib/integrations/paystack', () => ({
+  fetchPaystackSubscription: async () => ({ ok: false, notFound: false, error: 'unreachable' }),
   cancelPaystackSubscription: async () => ({ ok: true, alreadyCancelled: false }),
   resumePaystackSubscription: async () => ({ ok: true }),
   fetchPaystackNextPaymentDate: async () => h.fetched,

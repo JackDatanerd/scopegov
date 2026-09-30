@@ -1,0 +1,55 @@
+scopegov — Section 16 (Billing: cancel / upgrade / webhook) independent pass 10
+===============================================================================
+Cold pass (earlier FIX comments treated as if absent; revisited only where one did not hold). Applied on the
+fresh clone taken after the repo went quiet. NO migration. Bugs only.
+
+B1  MEDIUM  A cancellation could be recorded against an elapsed or missing current_period_end.
+    billing/cancel and the webhook's subscription.disable / not_renew handler refreshed the date from the event or
+    Paystack and, when neither had a FUTURE date (Paystack can still show the date that just elapsed right after a
+    renewal; a disabled subscription reports none), wrote the flag anyway. payment-overdue step 5 then downgraded a
+    customer who had just paid (elapsed date), or never selected the row at all (NULL date: paid plan kept forever).
+    Both existing tests pinned that "old behaviour".
+    -> lib/billing/period-end.ts (new): estimatePeriodEnd() — rolls a just-elapsed date forward one interval, or
+       anchors a missing one on the newest billing.payment_succeeded; refuses (null) while a grace period is running,
+       when the stored date lapsed > 3 days ago, or when the interval is unknown. Never throws.
+    -> billing/cancel + webhook use it after the event/Paystack sources; audit metadata gets period_end_estimated.
+       A customer can still always cancel: with no date and no estimate the cancel goes through and ops is paged.
+    -> cron/billing-reconcile: a cancelling row with NULL current_period_end is repaired from the estimate, else
+       reported as an anomaly (Paystack never supplies a date for a cancelled subscription, so the forward-only
+       repair could not fill it).
+
+B2  LOW-MED  billing/cancel rolled back a disable that Paystack had actually applied (timeout / lost response).
+    The not_renew webhook exits early while the claim is held, so nothing corrected the local "renewing" state until
+    the daily reconcile. Before rolling back, the route now re-reads the subscription; non-renewing / cancelled /
+    complete(d) is treated as success. The status list (UPSTREAM_ENDED_STATUSES) now lives in lib/billing/plans.ts,
+    shared with billing-reconcile. Worst-case route time is 4 x 12s = 48s (maxDuration stays 60).
+
+B3  LOW  lib/integrations/paystack.ts paystackFetch cleared its timer when HEADERS arrived, so a stalled body was
+    never aborted. The body is now read inside the same timeout and returned as a buffered Response.
+
+B4  LOW  billing/cancel and billing/resume discarded the { ok:false } result of the email helpers. A rejection is
+    now logged, and ops is paged when no recipient was reached (as the webhook handlers already do).
+
+B5  LOW  (two parts)
+    a) api/billing/upgrade treated a FAILED member/project count as 0, so the downgrade guard passed exactly when
+       it could not see real usage. Counts moved to lib/billing/limits.ts (measurePlanFit), which reports read
+       errors; the route now answers 500 instead. Messages and status codes for real over-limit usage are unchanged.
+    b) The same guard only runs when checkout STARTS; usage can grow before payment completes. The webhook's
+       subscription.create now measures after applying the plan and, if over the new limits, records over_limit in
+       the history row and pages ops. Nothing is refused or reverted (the customer has paid); a failed read is
+       non-fatal.
+
+FILES
+  M app/api/billing/cancel/route.ts          M app/api/billing/resume/route.ts
+  M app/api/billing/upgrade/route.ts         M app/api/billing/webhook/route.ts
+  M app/api/cron/billing-reconcile/route.ts  M lib/billing/plans.ts
+  M lib/integrations/paystack.ts             A lib/billing/period-end.ts
+  A lib/billing/limits.ts
+TESTS
+  A tests/billing-pass10-{period-end,cancel,webhook,upgrade-paystack}.test.ts
+  M tests/paystack-integration.test.ts (+2: body-read timeout, passthrough)
+  M tests/billing-cancel-claim.test.ts, billing-pass8-cancel.test.ts, billing-pass7-cancel-resume.test.ts
+    (their paystack mocks gain fetchPaystackSubscription for the new status read)
+
+NOT CHANGED (known limit, design): one login owning two LIVE workspaces on the same plan + interval still makes
+every renewal charge.success ambiguous (ops alert, no payment-history row); invoice.update keeps dates/grace right.

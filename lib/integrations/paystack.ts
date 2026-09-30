@@ -31,11 +31,18 @@
 // platform killed it — mid-webhook, that means a half-applied payment event.
 const PAYSTACK_TIMEOUT_MS = 12_000
 
+// FIX (Billing independent pass 10 — B3): the timer used to be cleared the moment the response HEADERS arrived,
+// so a connection that sent headers and then stalled on the body held the caller until the platform killed the
+// function — past the 60s the cancel/resume routes budget for, and mid-write. The body is now read inside the
+// same timeout and handed back as an ordinary (already buffered) Response, so callers are unchanged.
 async function paystackFetch(url: string, init: RequestInit = {}): Promise<Response> {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), PAYSTACK_TIMEOUT_MS)
   try {
-    return await fetch(url, { ...init, signal: ctrl.signal })
+    const resp = await fetch(url, { ...init, signal: ctrl.signal })
+    const bodyless = resp.status === 204 || resp.status === 205 || resp.status === 304
+    const body = bodyless ? null : await resp.text()
+    return new Response(body, { status: resp.status, statusText: resp.statusText, headers: resp.headers })
   } finally {
     clearTimeout(timer)
   }

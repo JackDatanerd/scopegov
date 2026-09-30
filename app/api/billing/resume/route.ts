@@ -123,13 +123,22 @@ export async function POST(request: NextRequest) {
 
     try {
       const recipients = await getBillingRecipients(service, session.workspaceId, [{ name: session.name, email: session.email }])
+      // FIX (Billing independent pass 10 — B4): the { ok: false } result of the email helper was discarded.
+      let anySent = false
       for (const r of recipients) {
         try {
-          await sendSubscriptionResumedEmail({
+          const delivery = await sendSubscriptionResumedEmail({
             to: r.email, name: r.name, agencyName: session.agencyName, actorName: session.name,
             manageUrl: `${process.env.NEXT_PUBLIC_APP_URL}/settings?tab=billing`,
           })
+          if (delivery && !delivery.ok) console.error('Resume email rejected for', r.email, delivery.error)
+          else anySent = true
         } catch (e) { console.error('Resume email failed for', r.email, e) }
+      }
+      if (recipients.length > 0 && !anySent) {
+        await alertBillingOps(service, `billing:resume-email:${session.workspaceId}`, 'Resume email was not delivered', [
+          `Workspace ${session.workspaceId} resumed its subscription but no billing recipient could be emailed.`,
+        ]).catch(() => {})
       }
     } catch (e) { console.error('Resume notification failed:', e) }
 

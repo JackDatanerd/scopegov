@@ -29,12 +29,14 @@ import { verifyCronSecret } from '@/lib/utils/verify-cron'
 import { alertCronFailure } from '@/lib/utils/cron-alert'
 import { CronRun } from '@/lib/utils/cron-run'
 import { fetchPaystackSubscription } from '@/lib/integrations/paystack'
-import { planCodeToTier } from '@/lib/billing/plans'
+import { planCodeToTier, UPSTREAM_ENDED_STATUSES } from '@/lib/billing/plans'
+import { estimatePeriodEnd } from '@/lib/billing/period-end'
 import { alertBillingOps } from '@/lib/billing/ops-alert'
 import { insertAuditRow } from '@/lib/utils/audit'
 
 const BATCH = 200
-const CANCELLED_STATES = new Set(['cancelled', 'non-renewing', 'completed', 'complete'])
+// Shared with billing/cancel (Billing independent pass 10 — B2) so the two lists cannot drift.
+const CANCELLED_STATES = UPSTREAM_ENDED_STATUSES
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
@@ -60,7 +62,7 @@ export async function POST(request: NextRequest) {
     // (migration 072) is bumped on every check regardless of outcome, so this rotates through the whole
     // table; nullsFirst picks up rows that have never been checked before anything already-checked.
     const { data: rows, error } = await (service as any).from('billing')
-      .select('workspace_id, paystack_subscription_code, current_period_end, cancels_at_period_end, grace_period_started_at, workspaces!inner(id, agency_name, deleted_at, plan_tier)')
+      .select('workspace_id, paystack_subscription_code, current_period_end, cancels_at_period_end, grace_period_started_at, plan_interval, workspaces!inner(id, agency_name, deleted_at, plan_tier)')
       .not('paystack_subscription_code', 'is', null)
       .is('workspaces.deleted_at', null)
       .order('last_reconciled_at', { ascending: true, nullsFirst: true })
@@ -106,6 +108,24 @@ export async function POST(request: NextRequest) {
           if (Date.parse(nextPaymentDate) > local + 3600_000) {
             updates.current_period_end = nextPaymentDate
             changes.current_period_end = { from: b.current_period_end, to: nextPaymentDate }
+          }
+        }
+
+        // FIX (Billing independent pass 10 — B1): a cancelling row with NO period end is never selected by the
+        // period-end sweep (payment-overdue step 5), and Paystack reports no next payment date for a cancelled
+        // subscription, so the forward-only repair above can never fill it: the paid plan would outlive the
+        // subscription indefinitely. Estimate one from the newest recorded payment (lib/billing/period-end.ts);
+        // when even that is impossible, say so instead of leaving it silent.
+        const cancelling = !!b.cancels_at_period_end || updates.cancels_at_period_end === true
+        if (cancelling && !b.current_period_end && !updates.current_period_end && !b.grace_period_started_at) {
+          const est = await estimatePeriodEnd(service, {
+            workspaceId: b.workspace_id, storedEnd: null, interval: b.plan_interval, graceStartedAt: b.grace_period_started_at,
+          })
+          if (est) {
+            updates.current_period_end = est
+            changes.current_period_end = { from: null, to: est, estimated: true }
+          } else {
+            anomalies.push(`workspace ${b.workspace_id}: a cancellation is recorded with NO current_period_end, so the period-end sweep cannot end it (${b.paystack_subscription_code})`)
           }
         }
 

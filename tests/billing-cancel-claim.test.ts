@@ -15,6 +15,8 @@ import { createFakeSupabase, type Row } from './helpers/fake-supabase'
 const h = vi.hoisted(() => ({
   db: null as any, cancelImpl: null as any,
   cancelCalls: 0, audits: [] as any[], emails: [] as any[], alerts: [] as any[],
+  // Billing pass 10 (B2): billing/cancel re-reads the subscription before rolling back a failed disable.
+  statusImpl: (() => ({ ok: false, notFound: false, error: 'unreachable' })) as any,
 }))
 
 vi.mock('@/lib/supabase/server', () => ({ createServiceClient: () => h.db.client }))
@@ -32,6 +34,7 @@ vi.mock('@/lib/billing/ops-alert', () => ({
 vi.mock('@/lib/email/templates', () => ({ sendSubscriptionCancelScheduledEmail: async (p: any) => { h.emails.push(p) } }))
 vi.mock('@/lib/integrations/paystack', () => ({
   cancelPaystackSubscription: async (b: any) => { h.cancelCalls++; return h.cancelImpl(b) },
+  fetchPaystackSubscription: async () => h.statusImpl(),
 }))
 
 import { POST } from '@/app/api/billing/cancel/route'
@@ -46,6 +49,7 @@ const call = async () => { const res: any = await POST({} as any); return { stat
 beforeEach(() => {
   h.cancelCalls = 0; h.audits.length = 0; h.emails.length = 0; h.alerts.length = 0
   h.cancelImpl = async () => ({ ok: true, alreadyCancelled: false })
+  h.statusImpl = () => ({ ok: false, notFound: false, error: 'unreachable' })
   vi.spyOn(console, 'error').mockImplementation(() => {})
   vi.spyOn(console, 'log').mockImplementation(() => {})
 })

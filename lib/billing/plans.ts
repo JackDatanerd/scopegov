@@ -24,6 +24,11 @@ export type BillingInterval = (typeof BILLING_INTERVALS)[number]
 export const GRACE_DAYS = 5
 export const GRACE_REMINDER_DAYS_LEFT = 3
 
+// Paystack subscription statuses that mean "this subscription will not charge again". One list for the
+// reconciliation cron and billing/cancel's ambiguous-failure check (Billing independent pass 10 — B2), so the
+// two cannot drift apart.
+export const UPSTREAM_ENDED_STATUSES: ReadonlySet<string> = new Set(['cancelled', 'non-renewing', 'completed', 'complete'])
+
 type Env = Record<string, string | undefined>
 
 export type PlanRequest =

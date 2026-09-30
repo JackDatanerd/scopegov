@@ -24,6 +24,7 @@ vi.mock('@/lib/billing/recipients', () => ({ getBillingRecipients: async (_s: an
 vi.mock('@/lib/billing/ops-alert', () => ({ alertBillingOps: async () => true }))
 vi.mock('@/lib/email/templates', () => ({ sendSubscriptionCancelScheduledEmail: async (p: any) => { h.emails.push(p); return { ok: true } } }))
 vi.mock('@/lib/integrations/paystack', () => ({
+  fetchPaystackSubscription: async () => ({ ok: false, notFound: false, error: 'unreachable' }),
   cancelPaystackSubscription: async () => ({ ok: true, alreadyCancelled: false }),
   fetchPaystackNextPaymentDate: async () => { h.fetchCalls++; if (h.fetchThrows) throw new Error('paystack down'); return h.nextDate },
 }))

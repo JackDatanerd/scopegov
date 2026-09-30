@@ -2,9 +2,9 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { PLAN_LIMITS } from '@/lib/utils/format'
-import { LIMIT_COUNTED_STATUSES } from '@/lib/utils/project-status'
 import { parsePlanRequest, planCodeFor } from '@/lib/billing/plans'
 import { createPendingCheckout } from '@/lib/billing/checkouts'
+import { measurePlanFit } from '@/lib/billing/limits'
 
 // Billing re-pass #3:
 //  - planKey / interval are parsed once against an allowlist and normalised
@@ -90,42 +90,30 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: `This workspace is already on the ${PLAN_LIMITS[planKey]?.name} plan (${interval}).`, alreadyOnPlan: true }, { status: 409 })
     }
 
-    // FIX (deep audit, Settings re-pass): seat limit checked server-side,
-    // authoritatively, before money changes hands.
-    const targetSeats = PLAN_LIMITS[planKey]?.seats
-    if (targetSeats != null) {
-      const { count: activeMembers } = await (service as any)
-        .from('workspace_members')
-        .select('id', { count: 'exact', head: true })
-        .eq('workspace_id', session.workspaceId)
-        .eq('status', 'active')
-      if ((activeMembers || 0) > targetSeats) {
-        return NextResponse.json({
-          error: `This workspace has ${activeMembers} active member${activeMembers === 1 ? '' : 's'}, more than the ${targetSeats}-seat limit on ${PLAN_LIMITS[planKey]?.name || planKey}. Deactivate members down to the new limit first, then switch plans.`,
-          seatLimitExceeded: true,
-        }, { status: 409 })
-      }
+    // FIX (deep audit, Settings re-pass): seat limit checked server-side, authoritatively, before money changes
+    // hands — and the same for the project limit (Billing re-pass). Both counts now come from
+    // lib/billing/limits.ts, which reports a failed read as an error instead of counting it as 0.
+    //
+    // FIX (Billing independent pass 10 — B5): a failed count used to be treated as zero, so the guard passed
+    // silently exactly when it could not see the real usage — the same class of bug as the workspace/billing
+    // reads above (round 6). Refuse instead of guessing.
+    const planFit = await measurePlanFit(service, session.workspaceId, planKey)
+    if (!planFit.ok) {
+      console.error('[BILLING] upgrade: failed to measure usage against the target plan', planFit.error)
+      return NextResponse.json({ error: 'Could not verify current plan. Please try again.' }, { status: 500 })
     }
-
-    // FIX (deep audit, Billing re-pass): same for the project limit.
-    const targetProjects = PLAN_LIMITS[planKey]?.projects
-    if (targetProjects != null) {
-      const { count: activeProjects } = await (service as any)
-        .from('projects')
-        .select('id', { count: 'exact', head: true })
-        .eq('workspace_id', session.workspaceId)
-        .is('deleted_at', null)
-        // Same rule as POST /api/projects: only live projects count toward the
-        // allowance ("Active projects" on the pricing table). Complete/Archived
-        // used to count here, so the advice below could never get anyone under
-        // the limit (archiving didn't change the number).
-        .in('status', [...LIMIT_COUNTED_STATUSES])
-      if ((activeProjects || 0) > targetProjects) {
-        return NextResponse.json({
-          error: `This workspace has ${activeProjects} active project${activeProjects === 1 ? '' : 's'}, more than the ${targetProjects}-project limit on ${PLAN_LIMITS[planKey]?.name || planKey}. Complete, archive or delete projects down to the new limit first, then switch plans.`,
-          projectLimitExceeded: true,
-        }, { status: 409 })
-      }
+    const { seats, projects } = planFit.fit
+    if (seats.over) {
+      return NextResponse.json({
+        error: `This workspace has ${seats.count} active member${seats.count === 1 ? '' : 's'}, more than the ${seats.limit}-seat limit on ${PLAN_LIMITS[planKey]?.name || planKey}. Deactivate members down to the new limit first, then switch plans.`,
+        seatLimitExceeded: true,
+      }, { status: 409 })
+    }
+    if (projects.over) {
+      return NextResponse.json({
+        error: `This workspace has ${projects.count} active project${projects.count === 1 ? '' : 's'}, more than the ${projects.limit}-project limit on ${PLAN_LIMITS[planKey]?.name || planKey}. Complete, archive or delete projects down to the new limit first, then switch plans.`,
+        projectLimitExceeded: true,
+      }, { status: 409 })
     }
 
     const { data: user } = await (service as any)
