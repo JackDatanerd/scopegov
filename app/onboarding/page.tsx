@@ -2,6 +2,7 @@
 import { useState, useEffect, useRef, Suspense } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter, useSearchParams } from 'next/navigation'
+import { isAuthRetryableFetchError } from '@supabase/supabase-js'
 // FIX (Workspace lifecycle + Onboarding, round 4): these were defined
 // locally and duplicated (not just similarly, but re-typed) in
 // api/workspace/create and api/workspace/settings, which never validated
@@ -137,7 +138,11 @@ function OnboardingWizard() {
   // exact 'create' response a brand-new signup gets, and this page showed
   // them a blank new-agency wizard with no mention of their real (suspended)
   // workspace.
-  const [gate, setGate] = useState<'loading' | 'create' | 'waiting' | 'switch_error' | 'suspended'>('loading')
+  // FIX (Onboarding independent pass 5 — B2/B3): 'status_error' added — see the mount effect. When
+  // the server can't tell us where this person stands (status lookup failed and there is no saved
+  // local progress to fall back on, or the auth check itself failed), the wizard must not guess
+  // 'create' and show a blank new-agency form; it shows a retry state instead.
+  const [gate, setGate] = useState<'loading' | 'create' | 'waiting' | 'switch_error' | 'suspended' | 'status_error'>('loading')
   const [suspendedWorkspace, setSuspendedWorkspace] = useState<{ workspaceId: string; agencyName: string } | null>(null)
   // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): workspaceId
   // added so the 'waiting' screen can offer a self-service "Leave this
@@ -232,8 +237,20 @@ function OnboardingWizard() {
   }
 
   useEffect(() => {
-    supabase.auth.getUser().then(async ({ data: { user } }) => {
-      if (!user) { router.push('/login'); return }
+    // FIX (Onboarding independent pass 5 — B3): this chain had no rejection handler and read only
+    // `data.user`. A rejected getUser() left the gate on 'loading' forever (a blank card, no way
+    // out), and an auth-service outage (which resolves with an error and no user) was treated as
+    // "signed out" and bounced a signed-in person to /login — the same distinction middleware.ts
+    // already draws. A retryable/5xx failure now lands on the retry state; a genuinely missing
+    // session still goes to /login.
+    supabase.auth.getUser().then(async ({ data: { user }, error: authError }) => {
+      if (!user) {
+        if (authError && (isAuthRetryableFetchError(authError) || ((authError as any).status ?? 0) >= 500)) {
+          setGate('status_error'); setRestored(true)
+          return
+        }
+        router.push('/login'); return
+      }
       userIdRef.current = user.id
 
       // FIX (Onboarding independent pass 3 — B2): submitIdentity() strips ?new=1 from the URL once
@@ -470,6 +487,15 @@ function OnboardingWizard() {
             }
           }
         } catch { /* corrupt/unavailable storage too — just start fresh below */ }
+
+        // FIX (Onboarding independent pass 5 — B2): reaching here means the server could not answer
+        // AND there is no saved progress to resume from. This used to fall straight through to the
+        // blank 'create' wizard below and — worse — wipe whatever storage held. Someone who already
+        // owns a workspace (new device, cleared storage) would fill in step 0 only to hit the
+        // trial-conflict / TRIAL_ALREADY_USED dead end. "We couldn't check" is not "you're new".
+        setGate('status_error')
+        setRestored(true)
+        return
       }
 
       try { localStorage.removeItem(STORAGE_KEY_PREFIX + user.id) } catch { /* ignore */ }
@@ -480,6 +506,11 @@ function OnboardingWizard() {
       if (detectedTz) setTimezone(detectedTz)
       setRestored(true)
       setGate('create')
+    }).catch(() => {
+      // Anything that escapes the chain above (a rejected getUser(), an unexpected throw) must not
+      // leave the page on its blank 'loading' card. Only when nothing else has claimed the gate.
+      setGate(g => (g === 'loading' ? 'status_error' : g))
+      setRestored(true)
     })
   }, [explicitNew])
 
@@ -768,7 +799,11 @@ function OnboardingWizard() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ agencyName, industry, currency, timezone }),
       })
-      const json = await res.json()
+      // FIX (Onboarding independent pass 5 — B4): a bare `await res.json()` threw a SyntaxError on
+      // any non-JSON reply (an HTML 502/504 from the platform) and the catch below put its raw
+      // "Unexpected token '<'…" text in front of the user. Every other handler in this file uses
+      // .catch(() => ({})); this was the one that didn't.
+      const json: any = await res.json().catch(() => ({}))
       if (!res.ok) {
         // FIX (deep audit, Workspace lifecycle + Onboarding re-pass —
         // feature gap): explicitNew deliberately skips resume-detection
@@ -786,6 +821,7 @@ function OnboardingWizard() {
         throw new Error(json.error || 'Failed to create workspace')
       }
       const newId: string = json.workspaceId
+      if (!newId) throw new Error('Failed to create workspace')
       workspaceIdRef.current = newId
       setWorkspaceId(newId)
       // FIX (Onboarding independent pass 3 — B2): ?new=1 means "start a blank wizard", which is
@@ -812,7 +848,11 @@ function OnboardingWizard() {
       }
       setStep(1)
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Something went wrong')
+      // fetch() rejects with a TypeError ("Failed to fetch" / "Load failed" depending on browser)
+      // on a network-level failure — say what happened instead of showing the engine's wording.
+      setError(err instanceof TypeError
+        ? 'Could not reach the server — check your connection and try again.'
+        : err instanceof Error ? err.message : 'Something went wrong')
     } finally { setLoading(false) }
   }
 
@@ -1214,6 +1254,35 @@ function OnboardingWizard() {
                 "sign out" click here has no reason to be that aggressive. */}
             <button className="ob-skip" style={{ width: '100%', justifyContent: 'center', display: 'flex' }}
               disabled={leavingWait}
+              onClick={() => supabase.auth.signOut({ scope: 'local' }).then(() => router.push('/login'))}>
+              Sign out
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // FIX (Onboarding independent pass 5 — B2/B3): see the mount effect. A dead-end-with-a-retry
+  // rather than a guess: nothing here creates, switches or writes anything.
+  if (gate === 'status_error') {
+    return (
+      <div className="ob-root">
+        <div className="ob-card" style={{ textAlign: 'center', padding: '8px 0' }}>
+          <div style={{ width: 64, height: 64, background: 'var(--red-lt, #fdecea)', border: '1px solid var(--red-mid, #f5c6c2)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px' }}>
+            <i className="ti ti-alert-triangle" style={{ fontSize: 28, color: 'var(--red, #c0392b)' }} />
+          </div>
+          <h2 className="ob-title" style={{ textAlign: 'center' }}>Couldn&rsquo;t load your setup</h2>
+          <p className="ob-sub" style={{ textAlign: 'center', marginBottom: 28 }}>
+            We couldn&rsquo;t check where you left off just now. Nothing has been changed &mdash; try again
+            in a moment rather than starting over, so you don&rsquo;t end up with a duplicate workspace.
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 280, margin: '0 auto' }}>
+            <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', padding: '11px' }}
+              onClick={() => window.location.reload()}>
+              Try again
+            </button>
+            <button className="ob-skip" style={{ width: '100%', justifyContent: 'center', display: 'flex' }}
               onClick={() => supabase.auth.signOut({ scope: 'local' }).then(() => router.push('/login'))}>
               Sign out
             </button>

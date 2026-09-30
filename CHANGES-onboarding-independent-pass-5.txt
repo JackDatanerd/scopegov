@@ -1,0 +1,27 @@
+Onboarding (section 4) — independent pass 5
+Files: app/api/workspace/onboarding-status/route.ts, app/onboarding/page.tsx,
+       tests/onboarding-independent-pass-5.test.ts
+
+B1  onboarding-status never read `error` on its queries (users, workspace_members, the suspended-
+    workspace lookup, and the workspace_defaults read inside buildResumePayload). A failed membership
+    lookup left the result null, every branch saw "no workspaces", and the route answered 'create' —
+    the same answer a brand-new signup gets — for someone who already owns or is waiting on a
+    workspace. A failed defaults read on resume fell back to '2' / '50_50', the exact silent overwrite
+    buildResumePayload exists to prevent. Every lookup error is now a 500 with a generic message
+    (raw database text stays in the server log).
+B2  When the status fetch failed and there was no saved local progress (new device, cleared storage),
+    the page fell through to the blank 'create' wizard and wiped storage. The person would fill in
+    step 0 only to hit the trial-conflict / TRIAL_ALREADY_USED dead end. New 'status_error' gate: a
+    retry state that writes nothing. Offline restore from saved progress is unchanged.
+B3  The mount effect's getUser() chain had no rejection handler (a rejected call left the page on its
+    blank 'loading' card forever) and read only `data.user`, so an auth-service outage looked like
+    "signed out" and sent a signed-in person to /login. Retryable/5xx auth errors now land on the
+    retry state (same distinction middleware.ts draws); a genuinely missing session still goes to
+    /login; a catch-all only claims a gate that is still 'loading'.
+B4  submitIdentity used a bare `await res.json()`, so an HTML 502/504 surfaced the raw "Unexpected
+    token '<'…" text. Now `.catch(() => ({}))` like every other handler, a 2xx with no workspaceId is
+    refused rather than continuing with undefined, and a network-level TypeError gets a plain
+    "Could not reach the server" message.
+
+Not changed (product decision, flagged): the Sidebar's "Create new workspace" link is shown to every
+user, but create_workspace_atomic refuses anyone whose first trial began more than 24h ago.

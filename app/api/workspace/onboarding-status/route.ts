@@ -55,11 +55,16 @@ async function buildResumePayload(service: any, w: any) {
   // submitBranding/submitDefaults always PATCH/POST whatever's currently
   // in state. Fetch and return what's already saved so the wizard can
   // rehydrate its fields instead of reintroducing the defaults.
-  const { data: defaultsRows } = await service
+  const { data: defaultsRows, error: defaultsErr } = await service
     .from('workspace_defaults')
     .select('revision_rounds, payment_structure')
     .eq('workspace_id', w.id).is('project_type', null)
     .order('updated_at', { ascending: false }).limit(1)
+  // FIX (Onboarding independent pass 5 — B1): this read's error was never looked at, so a failed
+  // query looked exactly like "no defaults saved yet" and the payload fell back to '2' / '50_50' —
+  // the very silent-overwrite the comment above describes (Continue on step 2 then PATCHes those
+  // fallbacks over the real saved values). Fail the request instead; the page shows a retry state.
+  if (defaultsErr) throw new Error(`workspace_defaults lookup failed: ${defaultsErr.message}`)
   const defaultsRow = defaultsRows?.[0] ?? null
 
   return {
@@ -90,7 +95,7 @@ export async function GET() {
 
     const service = createServiceClient()
 
-    const [{ data: userRow }, { data: memberships }] = await Promise.all([
+    const [{ data: userRow, error: userErr }, { data: memberships, error: membershipsErr }] = await Promise.all([
       (service as any).from('users').select('active_workspace_id').eq('id', user.id).maybeSingle(),
       (service as any)
         .from('workspace_members')
@@ -110,6 +115,17 @@ export async function GET() {
         // lib/auth/session.ts and leave_workspace_atomic already use.
         .order('created_at', { ascending: true }),
     ])
+
+    // FIX (Onboarding independent pass 5 — B1): neither query's `error` was ever read. A failed
+    // membership lookup left `memberships` null, every branch below saw "no workspaces", and the
+    // route answered 'create' — exactly what a brand-new signup gets — for someone who already
+    // owns (or is waiting on) a workspace. The wizard then showed them a blank new-agency form
+    // that could only end in the trial-conflict / TRIAL_ALREADY_USED dead end. A lookup failure is
+    // a 500 (retryable), never an answer about the user's state.
+    if (userErr || membershipsErr) {
+      console.error('onboarding-status lookup failed:', userErr || membershipsErr)
+      return NextResponse.json({ error: 'Could not check your workspace setup' }, { status: 500 })
+    }
 
     // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — defense
     // in depth): also exclude a soft-deleted workspace here, same gap as
@@ -255,13 +271,19 @@ export async function GET() {
     // Self-service deletes are deliberately NOT matched here
     // (suspended_by_admin = false) — those keep going through the existing
     // restore panel flow.
-    const { data: suspendedRows } = await (service as any)
+    const { data: suspendedRows, error: suspendedErr } = await (service as any)
       .from('workspace_members')
       .select(`workspace_id, deactivated_at,
         workspaces!inner(id, name, agency_name, deleted_at, suspended_by_admin)`)
       .eq('user_id', user.id).eq('status', 'deactivated')
       .eq('workspaces.suspended_by_admin', true)
       .not('workspaces.deleted_at', 'is', null)
+    // FIX (Onboarding independent pass 5 — B1): same fail-open — an errored lookup fell through
+    // to 'create' below, hiding the suspension notice behind a blank new-agency form.
+    if (suspendedErr) {
+      console.error('onboarding-status suspended lookup failed:', suspendedErr)
+      return NextResponse.json({ error: 'Could not check your workspace setup' }, { status: 500 })
+    }
     const suspended = (suspendedRows || [])
       .filter((m: any) => m.workspaces && m.deactivated_at && m.workspaces.deleted_at
         && new Date(m.deactivated_at).getTime() === new Date(m.workspaces.deleted_at).getTime())
