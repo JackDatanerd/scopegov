@@ -21,6 +21,7 @@
 // decimals with roundCurrency (the same helper CO totals use).
 
 import { roundCurrency } from '@/lib/utils/format'
+import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
 
 export interface InvoiceLineItem {
   description: string
@@ -45,8 +46,8 @@ export type InvoiceTotalsResult =
   | { ok: false; error: string }
 
 export const MAX_INVOICE_LINE_ITEMS = 50
-const MAX_DESCRIPTION_LEN = 500
-const MAX_QUANTITY = 1_000_000
+export const MAX_DESCRIPTION_LEN = 500
+export const MAX_QUANTITY = 1_000_000
 const MAX_RATE = 1_000_000_000
 const MAX_AMOUNT = 1_000_000_000_000
 
@@ -157,6 +158,26 @@ export function computeInvoiceTotals(input: {
   }
 
   return { ok: true, totals: { amount, subtotal, taxRate, taxInclusive, lineItems, isItemized } }
+}
+
+// FIX (section-12 independent pass 11 — bug): `paymentInstructions` was the only free-text invoice
+// field with no type check and no length cap (title / PO number / notes all have both). A number or
+// object went straight into sanitize-html, and an arbitrarily long value was stored and then embedded
+// in every send email, PDF and portal page for that invoice. The cap is on the raw rich-text HTML
+// (TipTap markup included), so it sits well above the 2,000-character plain-text default in Settings.
+export const MAX_PAYMENT_INSTRUCTIONS_LEN = 10_000
+
+export type PaymentInstructionsResult =
+  | { ok: true; value: string | null }
+  | { ok: false; error: string }
+
+/** Validate + sanitise the rich-text payment instructions from a request body. `undefined`/`null`/'' -> null. */
+export function parsePaymentInstructions(value: unknown): PaymentInstructionsResult {
+  if (value === undefined || value === null) return { ok: true, value: null }
+  if (typeof value !== 'string') return { ok: false, error: 'Payment instructions must be text' }
+  if (value.length > MAX_PAYMENT_INSTRUCTIONS_LEN)
+    return { ok: false, error: `Payment instructions must be under ${MAX_PAYMENT_INSTRUCTIONS_LEN.toLocaleString('en-US')} characters` }
+  return { ok: true, value: sanitizeRichTextOrNull(value) }
 }
 
 /** The figure to feed back into computeInvoiceTotals as `entered` for an EXISTING invoice. */

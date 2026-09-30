@@ -5,8 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
-import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
-import { computeInvoiceTotals, enteredAmountOf, parseDateOnly } from '@/lib/documents/invoice-totals'
+import { computeInvoiceTotals, enteredAmountOf, parseDateOnly, parsePaymentInstructions } from '@/lib/documents/invoice-totals'
 import { baseContractValue, computeContractPosition } from '@/lib/reports/contract-position'
 import { getPendingApprovalForDocument, cancelApprovalRequest } from '@/lib/approvals/engine'
 import { isSendClaimLive } from '@/lib/approvals/send-claim'
@@ -132,7 +131,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         return NextResponse.json({ error: 'PO number must be text' }, { status: 400 })
       update.po_number = body.poNumber?.trim().slice(0, 100) || null
     }
-    if (body.paymentInstructions !== undefined) update.payment_instructions = sanitizeRichTextOrNull(body.paymentInstructions)
+    if (body.paymentInstructions !== undefined) {
+      const pi = parsePaymentInstructions(body.paymentInstructions)
+      if (!pi.ok) return NextResponse.json({ error: pi.error }, { status: 400 })
+      update.payment_instructions = pi.value
+    }
     if (body.notes !== undefined) {
       if (body.notes !== null && typeof body.notes !== 'string')
         return NextResponse.json({ error: 'Notes must be text' }, { status: 400 })
@@ -160,7 +163,18 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       // the STORED amount — the gross total — and then, for a tax-exclusive invoice,
       // grossed it up AGAIN (tax on tax). The figure to fall back to is the one the
       // agency originally typed: the net when tax is exclusive, the gross when inclusive.
-      const entered = body.amount !== undefined ? body.amount : enteredAmountOf(invoice)
+      //
+      // FIX (section-12 independent pass 11 — bug): that stored-figure fallback was ALSO applied when the
+      // request replaced the line items without an `amount`. An itemized invoice's amount is the line sum
+      // and computeInvoiceTotals cross-checks any `entered` against it, so the OLD stored amount was
+      // compared with the NEW line total and a perfectly valid line-item-only edit came back as
+      // "Line items total X does not match the invoice amount Y". When the request brings its own
+      // non-blank line items, there is no typed amount to fall back to — the line sum is the amount.
+      const bodyHasItems = Array.isArray(body.lineItems)
+        && body.lineItems.some((l: any) => typeof l?.description === 'string' && l.description.trim() !== '')
+      const entered = body.amount !== undefined
+        ? body.amount
+        : (bodyHasItems ? undefined : enteredAmountOf(invoice))
       const computed = computeInvoiceTotals({
         entered,
         taxRate: body.taxRate !== undefined ? body.taxRate : Number(invoice.tax_rate || 0),

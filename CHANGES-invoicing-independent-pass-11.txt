@@ -1,0 +1,26 @@
+Invoicing (section 12) — independent pass 11: bug fixes only
+
+1. PATCH /api/invoices/[id] — a line-items-only edit (no `amount`) failed with "Line items total X does not
+   match the invoice amount Y". The route fell back to the stored amount and computeInvoiceTotals cross-checked
+   that stale figure against the NEW line sum. When the request brings non-blank line items and no amount, the
+   route now passes entered: undefined so the line sum is the amount. (Un-itemizing with lineItems: [] and no
+   amount still falls back to the stored figure.)
+   files: app/api/invoices/[id]/route.ts
+
+2. paymentInstructions had no type check and no length cap on POST /api/invoices or PATCH /api/invoices/[id]
+   (title / PO / notes all have both). New parsePaymentInstructions(): must be text, <= 10,000 chars of raw
+   rich-text HTML, sanitised, blank -> null. Shared by both routes.
+   files: lib/documents/invoice-totals.ts, app/api/invoices/route.ts, app/api/invoices/[id]/route.ts
+
+3. /invoices — a stale ?page=N past the last page hit an out-of-range PostgREST window and rendered a misleading
+   "No invoices yet". Now redirects to page 1 of the same filters (target carries no `page`, cannot loop).
+   files: app/(app)/invoices/page.tsx
+
+4. POST /api/invoices/draft — AI output was passed through unvalidated. Now normalised: description trimmed and
+   capped, quantity coerced to a finite value in (0, MAX_QUANTITY] else 1, blank rows dropped, at most 50 rows,
+   rate forced to 0, title string-checked and capped at 200. Only the constants are newly exported from
+   invoice-totals.ts (MAX_DESCRIPTION_LEN, MAX_QUANTITY).
+   files: app/api/invoices/draft/route.ts, lib/documents/invoice-totals.ts
+
+Tests: tests/invoicing-pass-11.test.ts (new).
+Not changed: GET /api/invoices .limit(500) — latent, no in-repo caller.

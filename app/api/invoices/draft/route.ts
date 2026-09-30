@@ -18,6 +18,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { canReadProject } from '@/lib/utils/project-access'
 import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
 import Anthropic from '@anthropic-ai/sdk'
+import { MAX_INVOICE_LINE_ITEMS, MAX_DESCRIPTION_LEN, MAX_QUANTITY } from '@/lib/documents/invoice-totals'
 
 let _client: Anthropic | null = null
 function anthropicClient(): Anthropic {
@@ -146,15 +147,30 @@ Rules:
       return NextResponse.json({ error: 'AI returned an unusable draft. Please try again or write it manually.' }, { status: 500 })
     }
 
-    const parsed = toolUse.input as { title: string; lineItems: Array<{ description: string; quantity: number }> }
+    const parsed = toolUse.input as { title?: unknown; lineItems?: unknown }
 
     // Defensive: force every rate to 0 regardless of what the model
     // returned — same rule as CO drafting, pricing must always come from
     // the agency, never be silently invented on a client-facing invoice.
-    const lineItems = (parsed.lineItems || []).map(l => ({ ...l, rate: 0 }))
+    //
+    // FIX (section-12 independent pass 11 — bug): the model's output was passed through unvalidated
+    // (`{ ...l, rate: 0 }`): a zero/negative/huge/non-numeric quantity, a blank or over-long description, or
+    // more rows than an invoice may have all landed in the form and only failed at save time with an error
+    // the person couldn't trace to the AI draft. Normalised here to exactly what computeInvoiceTotals accepts.
+    const rawItems = Array.isArray(parsed.lineItems) ? parsed.lineItems : []
+    const lineItems = rawItems
+      .map((l: any) => {
+        const description = typeof l?.description === 'string' ? l.description.trim().slice(0, MAX_DESCRIPTION_LEN) : ''
+        const q = Number(l?.quantity)
+        const quantity = Number.isFinite(q) && q > 0 && q <= MAX_QUANTITY ? q : 1
+        return { description, quantity, rate: 0 }
+      })
+      .filter(l => l.description)
+      .slice(0, MAX_INVOICE_LINE_ITEMS)
+    const title = typeof parsed.title === 'string' ? parsed.title.trim().slice(0, 200) : ''
 
     await recordAiUsage(service, session.workspaceId, session.id, 'invoice.draft')
-    return NextResponse.json({ title: parsed.title || '', lineItems })
+    return NextResponse.json({ title, lineItems })
   } catch (err) {
     console.error('Invoice draft error:', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

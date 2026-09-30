@@ -84,6 +84,14 @@ export default async function InvoicesPage({ searchParams }: {
 
   if (invErr) console.error('Invoices registry error:', invErr)
   const safeInvoices = invoices || []
+  // FIX (section-12 independent pass 11 — bug): a stale/bookmarked ?page=N past the last page (invoices were
+  // deleted or a filter narrowed the list) made PostgREST reject the out-of-range window (416), leaving the
+  // page on a misleading "No invoices yet". Nothing lives on a page past the end, so send the person to
+  // page 1 of the same filters (the redirect target carries no `page`, so it cannot loop).
+  if (!isSoloCapped && page > 1 && (invErr || safeInvoices.length === 0)) {
+    const back = new URLSearchParams({ ...(filters.status ? { status: filters.status } : {}), ...(filters.q ? { q: filters.q } : {}) }).toString()
+    redirect(back ? `/invoices?${back}` : '/invoices')
+  }
   const hasNextPage = !isSoloCapped && (filteredCount ?? 0) > from + pageSize
   const exportQuery = new URLSearchParams()
   if (filters.status) exportQuery.set('status', filters.status)

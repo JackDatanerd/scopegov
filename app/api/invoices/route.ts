@@ -5,8 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
-import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
-import { computeInvoiceTotals, parseDateOnly } from '@/lib/documents/invoice-totals'
+import { computeInvoiceTotals, parseDateOnly, parsePaymentInstructions } from '@/lib/documents/invoice-totals'
 import { computeContractPosition, baseContractValue } from '@/lib/reports/contract-position'
 
 // GET /api/invoices?projectId=&status= — workspace-wide (or project-scoped) list
@@ -107,6 +106,9 @@ export async function POST(request: NextRequest) {
     if (poNumber != null && typeof poNumber !== 'string') return NextResponse.json({ error: 'PO number must be text' }, { status: 400 })
     if (notes != null && typeof notes !== 'string') return NextResponse.json({ error: 'Notes must be text' }, { status: 400 })
     if (typeof notes === 'string' && notes.length > 5000) return NextResponse.json({ error: 'Notes must be under 5,000 characters' }, { status: 400 })
+    // FIX (section-12 independent pass 11 — bug): paymentInstructions had no type check or length cap.
+    const paymentInstructionsP = parsePaymentInstructions(paymentInstructions)
+    if (!paymentInstructionsP.ok) return NextResponse.json({ error: paymentInstructionsP.error }, { status: 400 })
     if (!milestoneId && !sowId && !coId)
       return NextResponse.json({ error: 'An invoice must bill against a milestone, SOW, or change order' }, { status: 400 })
     // FIX (section-12 re-audit — bug): only "at least one" was ever checked.
@@ -310,7 +312,7 @@ export async function POST(request: NextRequest) {
       p_due_date:      due,
       // po_number (migration 011): a short client-issued reference.
       p_po_number:     poNumber?.trim().slice(0, 100) || null,
-      p_payment_instructions: sanitizeRichTextOrNull(paymentInstructions),
+      p_payment_instructions: paymentInstructionsP.value,
       p_notes:         notes?.trim() || null,
       p_created_by:    session.id,
     })
