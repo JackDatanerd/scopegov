@@ -1,0 +1,36 @@
+CLIENTS — independent pass 7 (bugs only)
+=========================================
+
+B1  Audit log leaked client contact data to roles without VIEW_CLIENT_DATA   (spans Reports & Audit)
+    The clients routes log real contact data into audit_log.metadata (client.updated before/after email,
+    phone, CC list, VAT, billing address, payment terms; client.deleted / client.merged emails;
+    client_contact.* name, email, job title) and the reminder events log client_email. redactMetadata only
+    strips money-shaped keys, so VIEW_AUDIT_LOG without VIEW_CLIENT_DATA could read all of it through
+    /api/reports/audit-export (JSON, CSV, PDF).
+      lib/audit/redact.ts        + redactClientDataRow(): client.* / client_contact.* events keep an allowlist of
+                                   structural keys (everything else -> [redacted]); client_contact.* entity names
+                                   are withheld; on every other event, email / client_email / guardian_email /
+                                   phone / cc_emails / vat / billing / payment-terms keys are redacted at any depth.
+      lib/audit/search.ts        + hideContactNames option: client_contact rows no longer match on entity_name,
+                                   so the search can't confirm a name the table hides.
+      api/reports/audit-export   applies the rule once, right after the rows are read, so json / csv / pdf agree.
+    redactMetadata() itself is unchanged (existing contract kept).
+
+B2  Retainer value wrong on the Clients screens
+    List "Total value" and the detail page's Projects "Value" / "total" summed the stored contract_value: a
+    retainer's monthly fee, without accepted change orders, added to one-off values with no label. The Money
+    block on the same page and the Projects list showed the real figure.
+      app/(app)/clients/page.tsx        loads type, term, amendments; effective_value + monthly_rate via
+                                        lib/utils/contract-value.ts (same as the Projects list); stripped without
+                                        VIEW_FINANCIALS.
+      components/clients/ClientsClient  clientStats sums effective_value.
+      app/(app)/clients/[id]/page.tsx   same values; per-row Value shows a "/mo" line for retainers.
+
+B3  Failed saves showed a JSON-parser error or nothing
+    ClientsClient.handleCreate, ClientContactCard.save, BillingDetailsCard.save, ContactForm.save called
+    res.json() unguarded (HTML from a 502/timeout -> "Unexpected token '<'"), and every handler threw
+    json.error which can be undefined (empty message -> the create banner, hidden when empty, showed nothing).
+    ClientContactsCard's remove / set-primary threw the bare json.error too. All now guard the parse and fall back
+    to a specific message.
+
+Tests: tests/clients-pass7-fixes.test.ts (21 cases).

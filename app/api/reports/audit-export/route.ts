@@ -12,7 +12,7 @@ import { csvRow, CSV_BOM } from '@/lib/utils/csv'
 import { fetchPaged } from '@/lib/utils/paginate'
 import { buildAuditSearchFilter } from '@/lib/audit/search'
 import { AUDIT_CATEGORIES, categoryFilter } from '@/lib/audit/categories'
-import { redactMetadata } from '@/lib/audit/redact'
+import { redactMetadata, redactClientDataRow } from '@/lib/audit/redact'
 
 // GET /api/reports/audit-export
 //   ?format=json|csv|pdf   (default json — powers the filtered table view)
@@ -75,6 +75,9 @@ export async function GET(request: Request) {
     // role, so audit access without financial visibility is realistic —
     // dollar figures are redacted out of metadata for those viewers.
     const canViewFinancials = hasPermission(session, 'VIEW_FINANCIALS')
+    // Same independence for client contact data: the log carries client emails / phones / CC lists / VAT and
+    // billing details in metadata, which VIEW_CLIENT_DATA gates everywhere else in the app.
+    const canViewClientData = hasPermission(session, 'VIEW_CLIENT_DATA')
 
     const url = new URL(request.url)
     const sp = url.searchParams
@@ -184,7 +187,7 @@ export async function GET(request: Request) {
       }
     }
 
-    const searchFilter = buildAuditSearchFilter(q)
+    const searchFilter = buildAuditSearchFilter(q, { hideContactNames: !canViewClientData })
     const categoryOr = categoryFilter(category)
 
     const buildQuery = () => {
@@ -236,6 +239,9 @@ export async function GET(request: Request) {
       totalCount = res.total
       truncated = res.truncated
     }
+
+    // Client contact data is stripped once, here, so JSON, CSV and PDF can never disagree about it.
+    pageRows = pageRows.map(r => redactClientDataRow(r, canViewClientData))
 
     if (format === 'json') {
       return NextResponse.json({

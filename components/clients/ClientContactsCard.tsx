@@ -51,8 +51,8 @@ export default function ClientContactsCard({
     setBusyId(contactId); setError('')
     try {
       const res  = await fetch(`/api/clients/${clientId}/contacts/${contactId}`, { method: 'DELETE' })
-      const json = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(json.error)
+      const json = await res.json().catch(() => ({} as Record<string, any>))
+      if (!res.ok) throw new Error(json.error || 'Failed to remove contact')
       router.refresh()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to remove contact')
@@ -66,8 +66,8 @@ export default function ClientContactsCard({
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ isPrimary: true }),
       })
-      const json = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(json.error)
+      const json = await res.json().catch(() => ({} as Record<string, any>))
+      if (!res.ok) throw new Error(json.error || 'Failed to update contact')
       router.refresh()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to update contact')
@@ -201,8 +201,8 @@ function ContactForm({ clientId, initial, onDone, onCancel }: {
           body: JSON.stringify(payload),
         }
       )
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error)
+      const json = await res.json().catch(() => ({} as Record<string, any>))
+      if (!res.ok) throw new Error(json.error || 'Failed to save contact')
       onDone()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to save contact')

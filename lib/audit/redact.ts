@@ -78,3 +78,83 @@ export function redactMetadata(
   if (!metadata || !Object.keys(metadata).length) return null
   return canViewFinancials ? metadata : redactObject(metadata)
 }
+
+// ── Client data (VIEW_CLIENT_DATA) ───────────────────────────────────────────────────────────────
+// VIEW_AUDIT_LOG, VIEW_FINANCIALS and VIEW_CLIENT_DATA are independent toggles on a custom role. The
+// clients routes write real contact data into the log (client.updated before/after values for email, phone,
+// CC list, VAT number, billing address and payment terms; client.deleted / client.merged carry the client's
+// email; client_contact.* carry a contact's name, email and job title), and the reminder events carry
+// `client_email`. Without this, a role that can read the audit log but not client data could read every one
+// of those values back out of the log — the exact gate the Clients pages enforce everywhere else.
+//
+// Two rules, both fail-closed:
+//   1. client.* / client_contact.* events keep only an allowlist of structural keys; every other key is
+//      replaced with REDACTED (so the reader still sees that something was recorded, never what).
+//      client_contact.* rows also lose their entity name, which is "<contact name> (<client name>)".
+//   2. Every other event: any key that names a client's contact detail (email, client_email, guardian_email,
+//      phone, cc_emails, ...) is redacted at any depth.
+
+const CLIENT_EVENT_PREFIXES = ['client.', 'client_contact.']
+
+const CLIENT_EVENT_SAFE_KEYS = new Set([
+  'fields', 'client_id', 'role_type', 'is_primary', 'was_primary', 'company_name',
+  'projects_moved', 'contacts_moved', 'contacts_dropped', 'cc_dropped', 'notes_truncated',
+  'merged_from',
+])
+
+const CLIENT_DATA_KEYS = new Set([
+  'email', 'clientemail', 'guardianemail', 'phone', 'ccemails', 'cc', 'paymenttermsnote',
+  'vatnumber', 'billingaddress', 'contactemail',
+])
+
+function normalizeKey(key: string): string {
+  return key.replace(/[^A-Za-z0-9]+/g, '').toLowerCase()
+}
+
+export function isClientDataKey(key: string): boolean {
+  return CLIENT_DATA_KEYS.has(normalizeKey(key))
+}
+
+function redactClientKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(v => redactClientKeys(v))
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
+      if (isClientDataKey(key)) { out[key] = REDACTED; continue }
+      out[key] = redactClientKeys(v)
+    }
+    return out
+  }
+  return value
+}
+
+export function isClientEvent(eventType: string | null | undefined): boolean {
+  const t = String(eventType || '')
+  return CLIENT_EVENT_PREFIXES.some(p => t.startsWith(p))
+}
+
+/**
+ * Applies the VIEW_CLIENT_DATA rules to one audit_log row (snake_case, as read from the table).
+ * Returns the row untouched for viewers who hold the permission.
+ */
+export function redactClientDataRow<T extends { event_type?: string | null; entity_name?: string | null; metadata?: any }>(
+  row: T, canViewClientData: boolean,
+): T {
+  if (canViewClientData) return row
+  const eventType = String(row.event_type || '')
+  const md = row.metadata
+  let metadata = md
+  if (md && typeof md === 'object' && !Array.isArray(md)) {
+    if (isClientEvent(eventType)) {
+      const out: Record<string, unknown> = {}
+      for (const [key, v] of Object.entries(md as Record<string, unknown>)) {
+        out[key] = CLIENT_EVENT_SAFE_KEYS.has(key) ? redactClientKeys(v) : REDACTED
+      }
+      metadata = out
+    } else {
+      metadata = redactClientKeys(md)
+    }
+  }
+  const entityName = eventType.startsWith('client_contact.') ? (row.entity_name ? REDACTED : row.entity_name) : row.entity_name
+  return { ...row, metadata, entity_name: entityName }
+}

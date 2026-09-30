@@ -10,6 +10,7 @@ import ArchiveClientButton from '@/components/clients/ArchiveClientButton'
 import ClientDangerZone from '@/components/clients/ClientDangerZone'
 import { IN_PROGRESS_STATUSES } from '@/lib/utils/project-status'
 import { computeContractPositions } from '@/lib/reports/contract-position'
+import { effectiveContractValue, monthlyRetainerRate, loadRetainerMonthsBilled } from '@/lib/utils/contract-value'
 import { fetchAll } from '@/lib/utils/fetch-all'
 import { isUuidString } from '@/lib/utils/uuid'
 
@@ -118,20 +119,37 @@ export default async function ClientDetailPage({ params }: Props) {
 
   const { data: projectsAll = [], error: projectsErr } = await (service as any)
     .from('projects')
-    .select('id,name,disc,type,status,contract_value,currency,retainer_duration_months,created_at,guardian_flags(status),change_orders(status),sow_documents(status)')
+    .select('id,name,disc,type,status,contract_value,currency,retainer_duration_months,created_at,guardian_flags(status),change_orders(status),sow_documents(status),amendments(financial_impact,change_orders(is_retainer_renewal))')
     .eq('client_id', id).eq('workspace_id', session.workspaceId).is('deleted_at', null)
     .order('created_at', { ascending: false })
   if (projectsErr) throw new Error(projectsErr.message)
 
-  const projectsRaw = canViewAllProjects
+  const projectsVisible = canViewAllProjects
     ? (projectsAll || [])
     : (projectsAll || []).filter((p: any) => accessibleProjectIds!.has(p.id))
+
+  // FIX (independent pass, section 14 — value): the Value column and "total" used the stored contract_value,
+  // which for a retainer is ONE month's fee and never includes accepted change orders — while the Money block
+  // further up this same page (Contracted) and the Projects list showed the real figure. effective_value is
+  // the shared definition (lib/utils/contract-value.ts): retainer rate x term, or months billed for an
+  // open-ended retainer, plus amendments. monthly_rate lets the row say "/mo" like the Projects list does.
+  const retainerMonths = canViewFinancials
+    ? await loadRetainerMonthsBilled(service, projectsVisible)
+    : new Map<string, number>()
+  const projectsRaw = projectsVisible.map((p: any) => {
+    const { amendments, ...rest } = p
+    return {
+      ...rest,
+      effective_value: canViewFinancials ? effectiveContractValue(p, amendments, retainerMonths.get(p.id)) : null,
+      monthly_rate: canViewFinancials ? monthlyRetainerRate(p) : null,
+    }
+  })
 
   // Same fix for contract_value — was shipped unconditionally, only the
   // "Value" column and total below were ever gated in the UI.
   const projects = canViewFinancials
     ? projectsRaw
-    : (projectsRaw || []).map((p: any) => ({ ...p, contract_value: null }))
+    : (projectsRaw || []).map((p: any) => ({ ...p, contract_value: null, effective_value: null, monthly_rate: null }))
 
   // FIX (deep audit, section 14 — flagship finding): this used to reduce()
   // contract_value across every one of the client's projects regardless
@@ -141,8 +159,9 @@ export default async function ClientDetailPage({ params }: Props) {
   // but never applied to this page. A client with projects in more than
   // one currency got a single wrongly-labelled combined total. Group by
   // currency instead of picking one.
-  const totalValueDisplay = canViewFinancials ? formatCurrencyGroups(projectsRaw || []) : ''
-  const hasTotalValue = canViewFinancials && (projectsRaw || []).some((p: any) => (p.contract_value || 0) > 0)
+  const valuedProjects = (projectsRaw || []).map((p: any) => ({ contract_value: p.effective_value, currency: p.currency }))
+  const totalValueDisplay = canViewFinancials ? formatCurrencyGroups(valuedProjects) : ''
+  const hasTotalValue = canViewFinancials && valuedProjects.some((p: any) => (p.contract_value || 0) > 0)
 
   // FEATURE (deep audit, section 14): guardian_flags/change_orders/
   // sow_documents were already being joined into this exact query, but
@@ -426,7 +445,8 @@ export default async function ClientDetailPage({ params }: Props) {
                       </td>
                       {canViewFinancials && (
                         <td className="td-mono" style={{ textAlign: 'right', fontSize: 12 }}>
-                          {p.contract_value ? formatCurrency(p.contract_value, p.currency) : '—'}
+                          {p.effective_value ? formatCurrency(p.effective_value, p.currency) : '—'}
+                          {p.monthly_rate > 0 && <div className="td-sub">{formatCurrency(p.monthly_rate, p.currency)}/mo</div>}
                         </td>
                       )}
                       <td style={{ color: 'var(--text-3)', fontSize: 12 }}>{formatDate(p.created_at)}</td>

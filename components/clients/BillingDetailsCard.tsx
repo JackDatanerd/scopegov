@@ -89,8 +89,8 @@ export default function BillingDetailsCard({ clientId, vatNumber, billingAddress
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(changed),
       })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error)
+      const json = await res.json().catch(() => ({} as Record<string, any>))
+      if (!res.ok) throw new Error(json.error || 'Failed to save')
       setEditing(false)
       router.refresh()
     } catch (err: unknown) {

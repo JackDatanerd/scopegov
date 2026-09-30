@@ -29,9 +29,15 @@ export function quotePostgrestValue(text: string): string {
 
 export const MAX_SEARCH_LENGTH = 100
 
-export function buildAuditSearchFilter(rawQuery: string): string | null {
+export function buildAuditSearchFilter(rawQuery: string, opts: { hideContactNames?: boolean } = {}): string | null {
   const q = rawQuery.trim().slice(0, MAX_SEARCH_LENGTH)
   if (!q) return null
   const pattern = quotePostgrestValue(`%${escapeIlike(q)}%`)
-  return AUDIT_SEARCH_COLUMNS.map(col => `${col}.ilike.${pattern}`).join(',')
+  return AUDIT_SEARCH_COLUMNS.map(col => {
+    // client_contact.* rows carry "<contact name> (<client name>)" in entity_name, which is withheld from
+    // viewers without VIEW_CLIENT_DATA — so those rows must not match on it either, or a search would still
+    // confirm a contact's name that the table refuses to show.
+    if (col === 'entity_name' && opts.hideContactNames) return `and(entity_type.neq.client_contact,entity_name.ilike.${pattern})`
+    return `${col}.ilike.${pattern}`
+  }).join(',')
 }

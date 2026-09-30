@@ -3,6 +3,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import ClientsClient from '@/components/clients/ClientsClient'
 import { fetchPaged } from '@/lib/utils/paginate'
+import { effectiveContractValue, monthlyRetainerRate, loadRetainerMonthsBilled } from '@/lib/utils/contract-value'
 
 const MAX_CLIENTS = 5000
 
@@ -21,7 +22,8 @@ export default async function ClientsPage() {
     (service as any)
       .from('clients')
       .select(`id, name, company_name, email, phone, status, created_at, email_bounced_at,
-        projects(id, status, contract_value, currency, deleted_at)`, { count: 'exact' })
+        projects(id, type, status, contract_value, retainer_duration_months, currency, deleted_at,
+          amendments(financial_impact, change_orders(is_retainer_renewal)))`, { count: 'exact' })
       .eq('workspace_id', session.workspaceId)
       .order('name').order('id')
       .range(from, to),
@@ -59,6 +61,19 @@ export default async function ClientsPage() {
   // rendered DOM (`canViewClientData ? show : hide`), so the raw data
   // sat in the page source regardless of permission. Same fix already
   // applied to clients/[id]/page.tsx; redact at the source here too.
+  // FIX (independent pass, section 14 — value): "Total value" summed the STORED contract_value, which for a
+  // retainer is one month's fee and never includes accepted change orders — so a 12 x $2,000 retainer read as
+  // $2,000 here while the Projects list and this client's own Money block said $24,000, and the two kinds of
+  // project were added together with no hint of which was which. Values now come from the one shared
+  // definition (lib/utils/contract-value.ts) the Projects list uses: retainer rate x term (or months billed
+  // for an open-ended one) plus amendments. Computed for the projects this viewer may see, then stripped.
+  const visibleProjectsOf = (c: any) => (c.projects || [])
+    .filter((p: any) => !p.deleted_at)
+    .filter((p: any) => canViewAllProjects || accessibleProjectIds!.has(p.id))
+  const retainerMonths = canViewFinancials
+    ? await loadRetainerMonthsBilled(service, (clients || []).flatMap(visibleProjectsOf))
+    : new Map<string, number>()
+
   const redacted = (clients || []).map((c: any) => ({
     ...c,
     email: canViewClientData ? c.email : null,
@@ -69,9 +84,12 @@ export default async function ClientsPage() {
     // the client detail page (which does filter .is('deleted_at', null))
     // correctly excludes them — the same client's project count/total
     // value could disagree between the two screens.
-    projects: (canViewFinancials ? c.projects : (c.projects || []).map((p: any) => ({ ...p, contract_value: null })))
-      .filter((p: any) => !p.deleted_at)
-      .filter((p: any) => canViewAllProjects || accessibleProjectIds!.has(p.id)),
+    projects: visibleProjectsOf(c).map((p: any) => {
+      const { amendments, ...rest } = p
+      return canViewFinancials
+        ? { ...rest, effective_value: effectiveContractValue(p, amendments, retainerMonths.get(p.id)), monthly_rate: monthlyRetainerRate(p) }
+        : { ...rest, contract_value: null, effective_value: null, monthly_rate: null }
+    }),
   }))
 
   // FIX (deep audit, section 14 — bug): POST /api/clients requires BOTH

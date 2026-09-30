@@ -104,8 +104,11 @@ export default function ClientsClient({ clients, canCreate, canViewFinancials, c
     const projects  = c.projects || []
     const active    = projects.filter((p: any) => ACTIVE_STATUSES.includes(p.status)).length
     const total     = projects.length
-    const hasValue  = projects.some((p: any) => (p.contract_value || 0) > 0)
-    const valueDisplay = formatCurrencyGroups(projects)
+    // effective_value = the shared project value (retainer rate x term, plus accepted change orders) — the
+    // same number the Projects list shows. Summing the stored contract_value counted a retainer as one month.
+    const valued    = projects.map((p: any) => ({ contract_value: p.effective_value, currency: p.currency }))
+    const hasValue  = valued.some((p: any) => (p.contract_value || 0) > 0)
+    const valueDisplay = formatCurrencyGroups(valued)
     return { active, total, hasValue, valueDisplay }
   }
 
@@ -128,10 +131,12 @@ export default function ClientsClient({ clients, canCreate, canViewFinancials, c
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, companyName: company, email, phone, ccEmails }),
       })
-      const json = await res.json()
+      // A gateway timeout / 502 answers with HTML, and an error body can lack `error`: never surface the JSON
+      // parser's own message, and never throw an empty one (the banner is hidden when the message is empty).
+      const json = await res.json().catch(() => ({} as Record<string, any>))
       if (!res.ok) {
         if (res.status === 409 && json.existingClientId) setExisting({ id: json.existingClientId, name: json.existingClientName || 'the existing client' })
-        throw new Error(json.error)
+        throw new Error(json.error || 'Failed to create client')
       }
       resetModal()
       router.refresh()
