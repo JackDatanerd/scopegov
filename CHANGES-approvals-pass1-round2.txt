@@ -1,0 +1,16 @@
+Section 11 (Approvals engine) - independent pass, round 1 fixes
+Base: f414f49
+
+B1  decide_approval_step() reassign guard was NULL-unsafe (migration 129)
+    A step reassigned between a ROLE and a PERSON made the guard evaluate to NULL, so the stale
+    approver's in-flight decision was still recorded. Now IS DISTINCT FROM on both columns.
+    >>> RUN migration 129 in Supabase (SQL editor). No code depends on ordering; same signature.
+    Verified on Postgres (PGlite): role<->person reassign -> 'reassigned'; unchanged approve/final/reject paths unchanged.
+
+B2  app/api/sow/[id]/send/route.ts: projects select lacked `status`, so the terminal-project check never
+    fired; a Complete/Archived project went through the approval gate and failed only after approval.
+
+B3  components/approvals/ApprovalsClient.tsx: banner "Retry send" now alerts on deliveryWarning
+    (client email bounced) like the detail modal does.
+
+Tests: tests/approvals-pass1-round2-fixes.test.ts (7). tsc clean; full suite 1526 passed.

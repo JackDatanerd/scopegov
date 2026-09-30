@@ -217,6 +217,9 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
       const res  = await fetch(`/api/approvals/${id}/${action}`, { method: 'POST' })
       const json = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(json.error || (action === 'retry-send' ? 'Retry failed' : 'Could not cancel'))
+      // FIX (section-11 pass 1, B3): the banner's Retry send used to drop this — the retry worked but the
+      // client email bounced, and the banner simply vanished. Same alert the detail modal raises.
+      if (action === 'retry-send' && json.deliveryWarning) alert(json.deliveryWarning)
       await Promise.all([load(tab), loadNeedsRetry(), loadMineCount()])
       window.dispatchEvent(new Event('scopegov:approvals-changed'))
     } catch (err) {

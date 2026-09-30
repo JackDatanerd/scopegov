@@ -31,7 +31,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { data: sow } = await (service as any)
       .from('sow_documents')
       .select(`id, version, status, project_id, sections, metadata,
-        projects(id, name, disc, contract_value, currency, type, retainer_duration_months)`)
+        projects(id, name, disc, status, contract_value, currency, type, retainer_duration_months)`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
     if (!sow) return NextResponse.json({ error: 'SOW not found' }, { status: 404 })
@@ -43,6 +43,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const project = sow.projects
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
 
+    // FIX (section-11 pass 1, B2): `status` was missing from the projects select above, so
+    // project.status was always undefined and this check could never fire — a Complete/Archived
+    // project went through the approval gate and only failed after the chain cleared.
     // FIX (SOW lifecycle deep audit, round 4): checked here too (not just inside
     // sendSowDocument), matching api/co/[id]/send/route.ts's own fix for this exact
     // gap — otherwise a terminal project only fails once the approval chain clears
