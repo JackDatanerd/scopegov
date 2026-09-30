@@ -6,7 +6,7 @@ import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
 import { isAdjustmentLine } from '@/lib/utils/rescale-line-items'
 import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
-import { computeCoTotals, parseStoredLineItems } from '@/lib/documents/co-totals'
+import { computeCoTotals, parseStoredLineItems, stripAdjustmentLines } from '@/lib/documents/co-totals'
 import { parseCoFields } from '@/lib/documents/co-input'
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -202,8 +202,14 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       // stored rather than from the request, feed them back in as the positive amounts the editor works in.
       const storedItems: any[] = parseStoredLineItems(co.line_items)
       const baseItems = co.is_credit ? storedItems.map((l: any) => ({ ...l, rate: Math.abs(Number(l?.rate) || 0) })) : storedItems
+      // CO-1: a credit CO carries no negotiation lines, and computeCoTotals does not strip them itself (in credit mode
+      // it treats every line as ordinary). So a draft revised from a counter-negotiated CO and then switched to credit
+      // either failed on the negative "Negotiated discount" line or silently turned a "Negotiated increase" into a
+      // credit. Shed the system-written lines here, whether they came from the request or from what is stored.
+      const candidateItems: any[] = (lineItems ?? baseItems) as any[]
+      const itemsForTotals = effIsCredit ? stripAdjustmentLines(candidateItems, existingAdjustmentIds) : candidateItems
       const totals = computeCoTotals(
-        lineItems ?? baseItems,
+        itemsForTotals,
         taxRate ?? co.tax_rate ?? 0,
         taxInclusive ?? co.tax_inclusive,
         // Credit COs have no negotiation lines; an ordinary CO switched to credit sheds any it carried.

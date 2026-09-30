@@ -157,6 +157,23 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const revision = { id: result.id!, version: result.version! }
     let clientNotified = true
 
+    // CO-3: the open-draft check above and the insert are separate statements, so two concurrent revises (two tabs, a
+    // double click) both passed it and left two sibling drafts (v2 and v3). insertNextCoVersion already gives them
+    // distinct versions; settle the tie deterministically here — the LOWEST-versioned open draft wins and any later one
+    // withdraws itself and hands back the winner, exactly like the early "existing" return. A draft sibling that lost
+    // the race is deleted before it can be sent, so it never becomes a second live version of the same change.
+    const { data: earlierDrafts } = await (service as any)
+      .from('change_orders').select('id, version')
+      .or(`id.eq.${rootId},root_co_id.eq.${rootId}`)
+      .eq('status', 'draft').neq('id', revision.id).lt('version', revision.version)
+      .order('version', { ascending: true }).limit(1)
+    if (earlierDrafts && earlierDrafts.length > 0) {
+      await (service as any).from('co_attachments').delete().eq('co_id', revision.id)
+      const { error: dropErr } = await (service as any).from('change_orders').delete().eq('id', revision.id).eq('status', 'draft')
+      if (dropErr) console.error('CO revise: could not drop duplicate draft', dropErr.message)
+      else return NextResponse.json({ coId: earlierDrafts[0].id, version: earlierDrafts[0].version, existing: true })
+    }
+
     // A 'countered' CO is still live from the client's point of view —
     // superseding it with a revision means closing out the old one so it
     // stops showing as an open negotiation (and so its linked Guardian

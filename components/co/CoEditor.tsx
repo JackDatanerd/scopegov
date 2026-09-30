@@ -46,6 +46,11 @@ export default function CoEditor({ projId, coId }: Props) {
   // autosave PATCH the REAL change order with the blank stub line items. A failed load must be a locked,
   // non-saving state, not a blank form.
   const [loadFailed, setLoadFailed] = useState(false)
+  // CO-2: a NEW change order started by a member without VIEW_FINANCIALS. POST /api/co refuses any priced line or credit
+  // from them (they may only start an unpriced shell), so the pricing controls are locked up front instead of letting
+  // them type prices that are rejected at Save/Send. Unlike `financialsHidden` (an existing CO whose money is redacted)
+  // the rest of the form stays editable.
+  const [pricingLocked, setPricingLocked] = useState(false)
   const [saveError,   setSaveError]    = useState('')
   const [isRetainerRenewal, setIsRetainerRenewal] = useState(false)
   // Credit / descope change order (migration 100): the agency enters positive amounts; the server stores them as a
@@ -105,6 +110,7 @@ export default function CoEditor({ projId, coId }: Props) {
           if (json.project?.currency) setCurrency(json.project.currency)
           setProjectType(json.project?.type ?? null)
           setRetainerOpenEnded(json.project?.type === 'retainer' && !(Number(json.project?.retainer_duration_months) > 0))
+          if (json.canViewFinancials === false) setPricingLocked(true)
         })
         .catch(() => {})
       // Workspace billing defaults (Settings → Workspace → Billing defaults) pre-fill a new CO's tax
@@ -537,6 +543,12 @@ export default function CoEditor({ projId, coId }: Props) {
           </div>
         ) : (
         <div className="surface surface-p" style={{ marginBottom: 14 }}>
+          {pricingLocked && (
+            <p style={{ fontSize: 12, color: 'var(--text-3)', margin: '0 0 10px' }}>
+              <i className="ti ti-lock" style={{ fontSize: 12, marginRight: 6 }} />
+              You don&rsquo;t have financial access, so you can describe the change here but someone with financial access needs to add the pricing.
+            </p>
+          )}
           <div style={{ display: 'flex', fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
             letterSpacing: '.07em', color: 'var(--text-3)', paddingBottom: 8,
             borderBottom: '1px solid var(--border)', marginBottom: 8 }}>
@@ -561,7 +573,7 @@ export default function CoEditor({ projId, coId }: Props) {
                 // immediately rather than at save time.
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateLineItem(item.id, 'quantity', Math.max(0, parseFloat(e.target.value) || 0))} />
               <input type="number" className="finp" style={{ width: 100, fontSize: 12, textAlign: 'right' }}
-                value={item.rate} min={item.kind === 'adjustment' ? undefined : 0} step="0.01" disabled={isLocked}
+                value={item.rate} min={item.kind === 'adjustment' ? undefined : 0} step="0.01" disabled={isLocked || pricingLocked}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
                   const v = parseFloat(e.target.value) || 0
                   // Only a system-written negotiation line may go negative.
@@ -595,10 +607,10 @@ export default function CoEditor({ projId, coId }: Props) {
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0' }}>
               <span style={{ fontSize: 12, color: 'var(--text-3)', flex: 1 }}>Tax rate (%)</span>
               <input type="number" className="finp" style={{ width: 80, fontSize: 12, padding: '4px 8px' }}
-                value={taxRate} min={0} max={100} step="0.01" disabled={isLocked}
+                value={taxRate} min={0} max={100} step="0.01" disabled={isLocked || pricingLocked}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTaxRate(e.target.value)} />
               <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, cursor: 'pointer' }}>
-                <input type="checkbox" checked={taxInclusive} disabled={isLocked}
+                <input type="checkbox" checked={taxInclusive} disabled={isLocked || pricingLocked}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTaxInclusive(e.target.checked)}
                   style={{ accentColor: 'var(--green)' }} />
                 Tax inclusive
@@ -620,8 +632,17 @@ export default function CoEditor({ projId, coId }: Props) {
 
         {/* Credit / descope: the change order reduces scope and money instead of adding it. */}
         <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: isRetainerRenewal ? 'not-allowed' : 'pointer', fontSize: 13, color: 'var(--text-2)', marginBottom: 8, opacity: isRetainerRenewal ? 0.5 : 1 }}>
-          <input type="checkbox" checked={isCredit} disabled={isLocked || isRetainerRenewal}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setIsCredit(e.target.checked)}
+          <input type="checkbox" checked={isCredit} disabled={isLocked || isRetainerRenewal || pricingLocked}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+              const on = e.target.checked
+              setIsCredit(on)
+              // CO-1: a credit carries no system-written negotiation lines (the server sheds them too); drop them here
+              // so the totals on screen are the ones that get saved.
+              if (on) setLineItems(prev => {
+                const kept = prev.filter(l => l.kind !== 'adjustment')
+                return kept.length ? kept : [{ id: nanoid(), description: '', quantity: 1, rate: 0, total: 0 }]
+              })
+            }}
             style={{ accentColor: 'var(--green)' }} />
           This is a credit / scope reduction
         </label>

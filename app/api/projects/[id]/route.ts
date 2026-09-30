@@ -435,7 +435,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const service = createServiceClient()
     const { data: project } = await (service as any)
       .from('projects')
-      .select('id,name,type,status,contract_value,currency,start_date,clients(id,name,email)')
+      .select('id,name,type,status,contract_value,currency,start_date,retainer_duration_months,clients(id,name,email)')
       .eq('id', id).eq('workspace_id', session.workspaceId).is('deleted_at', null).maybeSingle()
     if (!project) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (!(await canReadProject(service, session, id)))
@@ -446,7 +446,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const safe = { ...project }
     if (!hasPermission(session, 'VIEW_FINANCIALS')) safe.contract_value = null
     if (!hasPermission(session, 'VIEW_CLIENT_DATA') && safe.clients) safe.clients = { ...safe.clients, email: null }
-    return NextResponse.json({ project: safe })
+    // canViewFinancials lets CoEditor lock its pricing controls for a new change order instead of offering fields
+    // the create route would refuse (CO-2); retainer_duration_months tells it whether a retainer has a term to extend (CO-4).
+    return NextResponse.json({ project: safe, canViewFinancials: hasPermission(session, 'VIEW_FINANCIALS') })
   } catch (err) {
     console.error('Project fetch error:', err)
     return NextResponse.json({ error: 'Error' }, { status: 500 })

@@ -1,0 +1,12 @@
+Section 10 (CO logic) — independent pass fixes
+CO-1  PATCH /api/co/[id]: switching a negotiated draft to credit now sheds the system-written "Negotiated discount/increase"
+      lines (stripAdjustmentLines in lib/documents/co-totals.ts). Before: negative line -> 400, positive line -> silently a credit line.
+      CoEditor drops those lines from its own state when the credit box is ticked.
+CO-2  CoEditor: a NEW change order by a member without VIEW_FINANCIALS locks rate / tax / credit controls up front
+      (GET /api/projects/[id] now returns canViewFinancials). POST /api/co already refused priced lines from them.
+CO-3  POST /api/co/[id]/revise: concurrent revises no longer leave two sibling drafts — the lowest-versioned open draft wins,
+      the later one deletes itself (and its copied attachment rows) and returns the winner with existing:true.
+CO-4  (found while fixing CO-2) GET /api/projects/[id] did not select retainer_duration_months, so a NEW CO on a fixed-term
+      retainer was treated as open-ended: the renewal-term input was hidden and Send was then refused for a missing term.
+Files: app/api/co/[id]/route.ts, app/api/co/[id]/revise/route.ts, app/api/projects/[id]/route.ts,
+       components/co/CoEditor.tsx, lib/documents/co-totals.ts, tests/co-section-10-pass-fixes.test.ts

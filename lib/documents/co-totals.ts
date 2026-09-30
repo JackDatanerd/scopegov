@@ -85,6 +85,18 @@ export interface CoTotalsOptions {
   credit?: boolean
 }
 
+/**
+ * CO-1: a credit CO carries no system-written negotiation lines, but computeCoTotals (in credit mode) treats every
+ * line as ordinary — so a negative "Negotiated discount" line fails validation and a positive "Negotiated increase"
+ * line is silently turned into a credit. Callers switching a CO to credit drop those lines first. Only lines whose id
+ * is in `existingAdjustmentIds` (ids already flagged on THIS CO) are dropped; anything else is left for
+ * computeCoTotals to validate like any other line.
+ */
+export function stripAdjustmentLines(items: unknown, existingAdjustmentIds: ReadonlySet<string>): any[] {
+  if (!Array.isArray(items)) return items as any
+  return items.filter((l: any) => !(isAdjustmentLine(l) && typeof l?.id === 'string' && existingAdjustmentIds.has(l.id)))
+}
+
 export function computeCoTotals(
   rawItems: unknown, rawTaxRate: unknown, rawTaxInclusive: unknown,
   allowedAdjustmentIds?: ReadonlySet<string> | readonly string[],
