@@ -32,7 +32,9 @@ export interface AttentionContext {
     // When the project entered Stalled (projects.stalled_at, migration 075).
     stalledAt?: string | null
     guardianFlags?: Array<{ status: string }>
-    changeOrders?: Array<{ status: string }>
+    // id / parent_co_id / sent_at are optional so callers that only select `status` keep working — but a caller that
+    // wants a superseded CO (one with a sent revision) ignored must select them (see liveChangeOrders below).
+    changeOrders?: Array<{ status: string; id?: string; parent_co_id?: string | null; sent_at?: string | null }>
     sowDocuments?: Array<{ status: string }>
     // FIX (section-11/12 audit — feature gap): pending approval_requests
     // for this project, so a document stuck in an approval chain can be
@@ -52,6 +54,20 @@ export interface AttentionContext {
     proactiveRiskThreshold?: number
     currency?: string
   }
+}
+
+// FIX (Portfolio deep audit, pass 5): a declined/expired CO that was revised and re-sent is history, not an action
+// item — POST /api/co/[id]/revise leaves the parent at 'declined'/'expired' forever (only a 'countered' parent is closed
+// inline), so without this a project with declined v1 + accepted v2 showed "Change order declined" under Needs
+// attention indefinitely. Same definition of "superseded" as buildCoGrid (lib/reports/scope-financial-data.ts) and
+// the Portfolio rollup (lib/reports/scope-health.ts): a CO that is the parent of any SENT CO.
+export function liveChangeOrders<T extends { id?: string; parent_co_id?: string | null; sent_at?: string | null }>(
+  cos: T[] | undefined | null,
+): T[] {
+  const list = cos || []
+  const superseded = new Set<string>()
+  for (const c of list) if (c.sent_at && c.parent_co_id) superseded.add(c.parent_co_id)
+  return superseded.size ? list.filter(c => !(c.id && superseded.has(c.id))) : list
 }
 
 export function isAttentionWorthy({ project, workspace, now = Date.now() }: AttentionContext): boolean {
@@ -77,7 +93,7 @@ export function isAttentionWorthy({ project, workspace, now = Date.now() }: Atte
   // whose signing link has died needs the agency's attention (revise and
   // resend) exactly as much as a declined or stalled one does.
   const actionableCoStatuses = ['declined', 'countered', 'stalled', 'expired']
-  if (project.changeOrders?.some(co => actionableCoStatuses.includes(co.status))) return true
+  if (liveChangeOrders(project.changeOrders).some(co => actionableCoStatuses.includes(co.status))) return true
 
   // 4. Any SOW requiring attention
   // FIX (v2): 'highest version number' is wrong — the moment a client
@@ -175,10 +191,10 @@ export function attentionReason({ project, now = Date.now() }: AttentionContext)
     const count = project.guardianFlags.filter(f => f.status === 'borderline_review').length
     return `${count} Guardian flag${count !== 1 ? 's' : ''} awaiting your review`
   }
-  if (project.changeOrders?.some(co => co.status === 'declined')) return 'Change order declined'
-  if (project.changeOrders?.some(co => co.status === 'countered')) return 'Counter offer received'
-  if (project.changeOrders?.some(co => co.status === 'stalled')) return 'Change order stalled'
-  if (project.changeOrders?.some(co => co.status === 'expired')) return 'Change order link expired — revise and resend'
+  if (liveChangeOrders(project.changeOrders).some(co => co.status === 'declined')) return 'Change order declined'
+  if (liveChangeOrders(project.changeOrders).some(co => co.status === 'countered')) return 'Counter offer received'
+  if (liveChangeOrders(project.changeOrders).some(co => co.status === 'stalled')) return 'Change order stalled'
+  if (liveChangeOrders(project.changeOrders).some(co => co.status === 'expired')) return 'Change order link expired — revise and resend'
   const sentSowVersions = (project.sowDocuments || []).filter((s: any) => s.status !== 'draft')
   const currentSow = sentSowVersions.length
     ? [...sentSowVersions].sort((a: any, b: any) => (b.version ?? 0) - (a.version ?? 0))[0]

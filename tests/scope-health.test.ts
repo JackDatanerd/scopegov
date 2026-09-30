@@ -8,7 +8,7 @@ function fakeService(tables: Record<string, any[] | { error: string }>) {
     from(name: string) {
       const t = tables[name]
       const b: any = {}
-      for (const m of ['select', 'eq', 'is', 'in', 'order', 'neq', 'gte', 'lt']) b[m] = () => b
+      for (const m of ['select', 'eq', 'is', 'in', 'not', 'order', 'neq', 'gte', 'lt']) b[m] = () => b
       b.range = (from: number, to: number) => {
         if (t && !Array.isArray(t)) return Promise.resolve({ data: null, error: { message: t.error } })
         const rows = (t as any[]) || []

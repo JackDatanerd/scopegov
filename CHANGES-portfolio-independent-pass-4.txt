@@ -1,0 +1,38 @@
+CHANGES — Portfolio (section 8), fresh independent pass 4
+=========================================================
+
+B1  Superseded declined/expired change orders stayed in "Documents needing action" forever
+    POST /api/co/[id]/revise clones a CO forward with parent_co_id set, but only retires the parent when it was
+    'countered' (closed inline). A 'declined' / 'expired' parent keeps that status permanently, and nothing later
+    (send, accept) retires it. lib/reports/scope-health.ts listed every declined/expired CO with no lineage check, so:
+      - "CO · Declined/Expired" rows for already-resolved matters stayed in the stuck list (dashboard, CSV, PDF)
+      - the "+N declined/expired" subtext on the Stalled tile was overstated
+      - projectRisk.stuckDocs was inflated, keeping quiet projects in "Projects by risk"
+    The SOW branch already kept "current version only" and buildCoGrid (scope-financial-data.ts) already treats a CO with
+    a SENT child as superseded; the CO branch never got the same rule.
+    Fix: withDetail now also reads (paged, truncation-guarded) every sent revision's parent_co_id and skips any CO that
+    is the parent of a sent CO. Headline counts are unaffected (only 'stalled' feeds them, and a stalled CO can never be
+    revised — REVISABLE excludes it).
+
+B1b Same bug traced outside Portfolio: lib/utils/attention.ts (Dashboard + Projects "Needs attention")
+    A project with declined v1 + accepted v2 showed "Change order declined" indefinitely. The pages selected only
+    change_orders(status), so the predicate could not tell. New liveChangeOrders() helper (same definition of
+    "superseded") is used by isAttentionWorthy and attentionReason; dashboard/page.tsx and projects/page.tsx now select
+    id, parent_co_id, sent_at. Callers that pass only {status} behave exactly as before.
+
+B2  Stuck CO "since" used updated_at
+    POST /api/co/[id]/escalate is allowed on declined + countered COs and rewrites updated_at, so chasing a CO declined
+    60 days ago relabelled it "2d ago" and re-sorted it out of the oldest-first order (and the 100-row cap). Now uses
+    declined_at / responded_at (countered) / expires_at (expired) / stalled_at, falling back to updated_at — the same
+    approach the SOW branch already used.
+
+Files
+-----
+  lib/reports/scope-health.ts
+  lib/utils/attention.ts
+  app/(app)/dashboard/page.tsx        (select only)
+  app/(app)/projects/page.tsx         (select only)
+  tests/portfolio-risk.test.ts        (+3 tests; fake gains .not())
+  tests/scope-health.test.ts          (fake gains .not())
+  tests/attention.test.ts             (+3 tests)
+No migration. No behaviour change for callers that don't carry parent_co_id / sent_at.

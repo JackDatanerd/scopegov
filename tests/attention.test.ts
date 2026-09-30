@@ -59,4 +59,28 @@ describe('attention — manual pause', () => {
     expect(isAttentionWorthy(c)).toBe(true)
     expect(attentionReason(c)).toBe('SOW unsigned — project stalled')
   })
+
+  it('a declined/expired CO that has a sent revision is history, not attention', () => {
+    const c = ctx({ changeOrders: [
+      { id: 'v1', status: 'declined', parent_co_id: null, sent_at: '2026-08-01T00:00:00Z' },
+      { id: 'v2', status: 'accepted', parent_co_id: 'v1', sent_at: '2026-08-10T00:00:00Z' },
+    ] })
+    expect(isAttentionWorthy(c)).toBe(false)
+    expect(attentionReason(c) ?? '').not.toMatch(/change order/i)
+  })
+  it('an UNSENT draft revision does not retire the declined parent', () => {
+    const c = ctx({ changeOrders: [
+      { id: 'v1', status: 'declined', parent_co_id: null, sent_at: '2026-08-01T00:00:00Z' },
+      { id: 'v2', status: 'draft', parent_co_id: 'v1', sent_at: null },
+    ] })
+    expect(isAttentionWorthy(c)).toBe(true)
+    expect(attentionReason(c)).toBe('Change order declined')
+  })
+  it('the declined revision itself still surfaces after its parent is retired', () => {
+    const c = ctx({ changeOrders: [
+      { id: 'v1', status: 'declined', parent_co_id: null, sent_at: '2026-08-01T00:00:00Z' },
+      { id: 'v2', status: 'declined', parent_co_id: 'v1', sent_at: '2026-08-10T00:00:00Z' },
+    ] })
+    expect(isAttentionWorthy(c)).toBe(true)
+  })
 })

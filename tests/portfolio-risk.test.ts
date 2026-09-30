@@ -9,7 +9,7 @@ function fakeService(tables: Record<string, any[]>) {
     from(name: string) {
       const rows = tables[name] || []
       const b: any = {}
-      for (const m of ['select', 'eq', 'is', 'in', 'order', 'neq', 'gte', 'lt']) b[m] = () => b
+      for (const m of ['select', 'eq', 'is', 'in', 'not', 'order', 'neq', 'gte', 'lt']) b[m] = () => b
       b.range = (from: number, to: number) => Promise.resolve({ data: rows.slice(from, to + 1), error: null, count: rows.length })
       b.limit = () => Promise.resolve({ data: rows, error: null })
       return b
@@ -122,6 +122,52 @@ describe('scope health — documents needing action', () => {
     expect(h.stuckDocs.find(d => d.projectId === 'p2')!.since).toBe('2026-08-01T00:00:00Z')
     // and it is oldest-first
     expect(h.stuckDocs.map(d => d.since)).toEqual([...h.stuckDocs.map(d => d.since)].sort())
+  })
+
+  it('drops a declined/expired CO that has a SENT revision (superseded), keeps the revision-less one', async () => {
+    const svc = fakeService({
+      ...empty,
+      projects: [proj('p1'), proj('p2')],
+      change_orders: [
+        // p1: v1 declined, revised into v2 which was sent and is now declined itself -> only v2 is stuck.
+        { id: 'v1', project_id: 'p1', status: 'declined', title: 'v1', total: 100, updated_at: '2026-08-01T00:00:00Z', declined_at: '2026-08-01T00:00:00Z', parent_co_id: null, sent_at: '2026-07-20T00:00:00Z' },
+        { id: 'v2', project_id: 'p1', status: 'declined', title: 'v2', total: 100, updated_at: '2026-09-01T00:00:00Z', declined_at: '2026-09-01T00:00:00Z', parent_co_id: 'v1', sent_at: '2026-08-10T00:00:00Z' },
+        // p2: expired, never revised -> still stuck.
+        { id: 'x1', project_id: 'p2', status: 'expired', title: 'x', total: 50, updated_at: '2026-08-20T00:00:00Z', expires_at: '2026-08-19T00:00:00Z', parent_co_id: null, sent_at: '2026-07-01T00:00:00Z' },
+      ],
+    })
+    const h = await computeScopeHealth(svc, 'w', { withDetail: true })
+    expect(h.stuckDocs.map(d => d.docId).sort()).toEqual(['v2', 'x1'])
+    expect(h.stuckDocs.filter(d => d.projectId === 'p1')).toHaveLength(1)
+  })
+
+  it('a project whose only stuck CO was superseded drops out of the stuck-doc count entirely', async () => {
+    const svc = fakeService({
+      ...empty,
+      projects: [proj('p1')],
+      change_orders: [
+        { id: 'v1', project_id: 'p1', status: 'declined', title: 'v1', total: 100, updated_at: '2026-08-01T00:00:00Z', parent_co_id: null, sent_at: '2026-07-20T00:00:00Z' },
+        // v2 was accepted, so it is not in the stuck-status read the real query makes; the revisions read still sees it.
+        { id: 'v2', project_id: 'p1', status: 'accepted', title: 'v2', total: 100, updated_at: '2026-09-01T00:00:00Z', parent_co_id: 'v1', sent_at: '2026-08-10T00:00:00Z' },
+      ],
+    })
+    const h = await computeScopeHealth(svc, 'w', { withDetail: true })
+    expect(h.stuckDocs.map(d => d.docId)).not.toContain('v1')
+  })
+
+  it("stuck CO 'since' is the real event time, not updated_at (escalate rewrites updated_at)", async () => {
+    const svc = fakeService({
+      ...empty,
+      projects: [proj('p1')],
+      change_orders: [
+        { id: 'd', project_id: 'p1', status: 'declined', title: 'd', total: 1, updated_at: '2026-09-28T00:00:00Z', declined_at: '2026-08-01T00:00:00Z', responded_at: null, expires_at: null, stalled_at: null },
+        { id: 'c', project_id: 'p1', status: 'countered', title: 'c', total: 1, updated_at: '2026-09-28T00:00:00Z', declined_at: null, responded_at: '2026-08-05T00:00:00Z', expires_at: '2026-09-01T00:00:00Z', stalled_at: null },
+        { id: 'e', project_id: 'p1', status: 'expired', title: 'e', total: 1, updated_at: '2026-09-28T00:00:00Z', declined_at: null, responded_at: null, expires_at: '2026-08-10T00:00:00Z', stalled_at: null },
+      ],
+    })
+    const h = await computeScopeHealth(svc, 'w', { withDetail: true })
+    const since = Object.fromEntries(h.stuckDocs.map(d => [d.docId, d.since]))
+    expect(since).toEqual({ d: '2026-08-01T00:00:00Z', c: '2026-08-05T00:00:00Z', e: '2026-08-10T00:00:00Z' })
   })
 
   it('falls back to updated_at when a row has no stalled_at yet (pre-migration data)', async () => {

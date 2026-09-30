@@ -168,7 +168,7 @@ export async function computeScopeHealth(
 ): Promise<ScopeHealth> {
   const withDetail = !!opts.withDetail
 
-  const [projectsP, flagsP, exceptionsP, amendmentsP, cosP, sowsP] = await Promise.all([
+  const [projectsP, flagsP, exceptionsP, amendmentsP, cosP, sowsP, coRevisionsP] = await Promise.all([
     fetchPaged<any>((from, to) => service.from('projects')
       .select('id, name, type, status, stall_reason, stalled_at, contract_value, retainer_duration_months, currency, updated_at, clients(name)', { count: 'exact' })
       .eq('workspace_id', workspaceId)
@@ -198,7 +198,7 @@ export async function computeScopeHealth(
     // The headline only needs stalled change orders; the detail view also lists the other stuck states
     // (declined / expired / countered) the Dashboard's Needs-attention already treats as action items.
     fetchPaged<any>((from, to) => service.from('change_orders')
-      .select(withDetail ? 'id, project_id, status, title, total, updated_at, stalled_at' : 'id, project_id, status', { count: 'exact' })
+      .select(withDetail ? 'id, project_id, status, title, total, updated_at, stalled_at, declined_at, responded_at, expires_at' : 'id, project_id, status', { count: 'exact' })
       .eq('workspace_id', workspaceId)
       .in('status', withDetail ? ['stalled', 'declined', 'expired', 'countered'] : ['stalled'])
       .order('id', { ascending: true })
@@ -208,6 +208,20 @@ export async function computeScopeHealth(
           .select('id, project_id, version, status, updated_at, declined_at, expires_at', { count: 'exact' })
           .eq('workspace_id', workspaceId)
           .neq('status', 'draft')
+          .order('id', { ascending: true })
+          .range(from, to), { maxRows: MAX_ROWS })
+      : Promise.resolve({ rows: [] as any[], truncated: false }),
+    // FIX (Portfolio deep audit, pass 5): every SENT revision's parent link. A declined/expired CO that was revised and
+    // re-sent is history, not an action item — the SOW branch below already keeps "current version only", and
+    // buildCoGrid (scope-financial-data.ts) already treats a CO with a sent child as superseded. The stuck-CO read above
+    // only fetches stalled/declined/expired/countered rows, so the (awaiting / accepted) child is never in it and this
+    // module could not tell — the parent stayed in "Documents needing action" forever.
+    withDetail
+      ? fetchPaged<any>((from, to) => service.from('change_orders')
+          .select('id, parent_co_id', { count: 'exact' })
+          .eq('workspace_id', workspaceId)
+          .not('parent_co_id', 'is', null)
+          .not('sent_at', 'is', null)
           .order('id', { ascending: true })
           .range(from, to), { maxRows: MAX_ROWS })
       : Promise.resolve({ rows: [] as any[], truncated: false }),
@@ -224,6 +238,7 @@ export async function computeScopeHealth(
   const truncatedSource = [
     ['projects', projectsP], ['guardian_flags', flagsP], ['exceptions_log', exceptionsP],
     ['amendments', amendmentsP], ['change_orders', cosP], ['sow_documents', sowsP],
+    ['change_orders (revisions)', coRevisionsP],
   ].find(([, p]: any) => p.truncated)
   if (truncatedSource) {
     throw new Error(`Scope health computation truncated: ${truncatedSource[0]} exceeded ${MAX_ROWS} rows for this workspace`)
@@ -377,15 +392,28 @@ export async function computeScopeHealth(
         })
       }
     }
+    // A CO that has a sent revision is superseded (see coRevisionsP above) — never stuck.
+    const supersededCoIds = new Set<string>(
+      coRevisionsP.rows.map((r: any) => r.parent_co_id).filter(Boolean) as string[],
+    )
     for (const c of cosP.rows) {
       const p = projectById[c.project_id]
       if (!inProgress(p)) continue
+      if (supersededCoIds.has(c.id)) continue
       const reason = c.status === 'stalled' ? 'Stalled' : c.status === 'declined' ? 'Declined'
         : c.status === 'expired' ? 'Expired' : 'Counter-offer'
+      // FIX (Portfolio deep audit, pass 5): `since` used updated_at for every non-stalled state, but
+      // POST /api/co/[id]/escalate is allowed on declined + countered COs and rewrites updated_at — so chasing a
+      // CO declined 60 days ago relabelled it "2d ago", re-sorted it out of the oldest-first order (and the list cap).
+      // Use the real event timestamp, exactly as the SOW branch below does; updated_at only as a fallback.
+      const eventAt = c.status === 'stalled' ? c.stalled_at
+        : c.status === 'declined' ? (c.declined_at || c.responded_at)
+        : c.status === 'expired' ? c.expires_at
+        : c.responded_at
       stuckDocs.push({
         kind: 'CO', reason, stalled: c.status === 'stalled', docId: c.id, title: c.title || 'Change order',
         total: c.total != null ? Number(c.total) : null, projectId: c.project_id,
-        since: (c.status === 'stalled' ? c.stalled_at : null) || c.updated_at,
+        since: eventAt || c.updated_at,
       })
     }
     // A project's CURRENT SOW is its highest non-draft version; only that one can be stuck (an older

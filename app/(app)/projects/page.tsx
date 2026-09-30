@@ -50,7 +50,7 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
         start_date, created_at, updated_at, internal_ref,
         clients(id, name, company_name),
         guardian_flags(status, severity),
-        change_orders(id, status, title, total),
+        change_orders(id, status, parent_co_id, sent_at, title, total),
         sow_documents(id, status, version, sent_at, signed_at),
         amendments(financial_impact, change_orders(is_retainer_renewal))
       `, { count: 'exact' })

@@ -111,7 +111,7 @@ export default async function DashboardPage() {
     let q = (service as any)
       .from('projects')
       .select(`id,name,disc,type,status,stall_reason,stalled_at,contract_value,retainer_duration_months,currency,updated_at,
-        clients(id,name),guardian_flags(status),change_orders(status),sow_documents(id,status,version),
+        clients(id,name),guardian_flags(status),change_orders(id,status,parent_co_id,sent_at),sow_documents(id,status,version),
         amendments(financial_impact,change_orders(is_retainer_renewal))`, { count: 'exact' })
       .eq('workspace_id', session.workspaceId)
       .is('deleted_at', null)
