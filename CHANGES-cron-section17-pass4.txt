@@ -1,0 +1,26 @@
+CRON SECTION 17 — INDEPENDENT PASS 4 (bugs only)
+Base: 184b9fe. Migration added: 127.
+
+B1  lib/utils/cron-alert.ts, project-purge, workspace-purge
+    alertCronFailure did String(err); a PostgREST error is a plain object -> "[object Object]" in the ops email, console and
+    cron_run_history.error. New describeError() (message/code/details/hint); both purge crons wrap findErr in an Error.
+B2  trial-warning + migration 127
+    billing.trial_ending_soon audit rows stored the recipient's email (metadata.sent_to) as the dedupe key; audit_log is
+    append-only and erase_user_pii never reached metadata, so erased users' addresses persisted. Now keyed on metadata.user_id.
+    Migration 127 adds user_id to existing rows, then strips sent_to (audit bypass flag on/off inside one DO block).
+B3  lib/utils/cron-run.ts, payment-overdue, trial-warning
+    Step/row failure text (cron_heartbeats.last_result, cron_run_history, ops email) embedded recipient addresses. CronRun now
+    masks email addresses centrally (redactEmails); trial-warning labels by user id; grace-reminder errors no longer prefix the address.
+B4  co-stall, sow-stall, retainer-milestones, approval-stall, payment-overdue (steps 1, 1b)
+    notifyMembersWithPermission never throws (returns false). A lost bell after an irreversible state change is now a row error.
+    approval-stall step 2 throws BEFORE bumping updated_at when nothing was notified, so it retries next run.
+B5  trial-warning
+    Bell and per-person dedupe lookups now read their error instead of treating a failed read as "not sent yet".
+B6  lib/reports/contract-position.ts, reconciliation-rollup
+    computeContractPositions gains { strict } (rollup passes it) so a failed open-ended-retainer months lookup fails the run instead of
+    upserting a degraded snapshot; contractedValue floored at 0 like effectiveContractValue.
+B7  workspace-purge
+    7-year cutoff used 7*365 days (ignores leap days); now setUTCFullYear(-7).
+
+Tests: tests/cron-section17-pass4.test.ts (20; 15 fail on the old code). Four existing cron tests' notify mocks now resolve true
+(the real function returns a boolean). Full suite 145 files / 1510 tests passing; tsc clean.

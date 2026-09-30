@@ -65,11 +65,28 @@ async function sendOpsAlert(
   }
 }
 
+// FIX (cron section 17, pass 4 — B1): supabase-js reports a failed query as a PLAIN object
+// ({ message, code, details, hint }), not an Error. project-purge / workspace-purge hand their
+// candidate-lookup `findErr` straight to alertCronFailure, and String({...}) is "[object Object]" — so
+// the one failure that means the purge did nothing all day reached ops (email, console and
+// cron_run_history.error) with no information at all.
+export function describeError(err: unknown): string {
+  if (err instanceof Error) return err.stack || err.message
+  if (typeof err === 'string') return err
+  if (err && typeof err === 'object') {
+    const e = err as Record<string, unknown>
+    const parts = [e.message, e.code && `code ${e.code}`, e.details, e.hint].filter(p => typeof p === 'string' || typeof p === 'number')
+    if (parts.length) return parts.join(' — ')
+    try { return JSON.stringify(err) } catch { /* fall through */ }
+  }
+  return String(err)
+}
+
 export async function alertCronFailure(
   service: any, cronName: string, err: unknown, cooldownMs = 60 * 60_000,
   opts?: { history?: boolean; durationMs?: number; result?: Record<string, unknown> },
 ): Promise<boolean> {
-  const message = err instanceof Error ? (err.stack || err.message) : String(err)
+  const message = describeError(err)
   // Every failed run lands in cron_run_history (the ops email below is cooldown-limited; the history is not).
   if (opts?.history !== false) {
     await recordCronRunHistory(service, cronName, { ok: false, durationMs: opts?.durationMs, result: opts?.result ?? null, error: message })

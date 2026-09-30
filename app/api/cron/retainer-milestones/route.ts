@@ -165,12 +165,14 @@ export async function POST(request: NextRequest) {
           })
           if (!marked) throw new Error(`could not record retainer.ended for project ${p.id}`)
 
-          await notifyMembersWithPermission(service, {
+          const notified = await notifyMembersWithPermission(service, {
             workspaceId: p.workspace_id, permission: 'VIEW_FINANCIALS', eventType: 'retainer_ending',
             type: 'retainer_ending', title: `Retainer term ended — ${p.name}`,
             body: `The ${termMonths}-month retainer for ${p.clients?.name || 'this client'} on ${p.name} has run its course. No further monthly milestones will be generated unless the term is extended (a retainer-renewal change order extends it automatically).`,
             entityType: 'project', entityId: p.id, projectId: p.id,
           })
+          // FIX (cron section 17, pass 4 — B4): the retainer.ended marker above is one-shot, so a lost bell is never retried.
+          if (!notified) run.rowError(`retainer ${p.id}`, new Error('retainer.ended recorded but the team bell notification failed to write'))
 
           try {
             const emails = await getMemberEmailsWithPermission(service, p.workspace_id, 'VIEW_FINANCIALS', 10, 'retainer_ending', p.id)

@@ -13,7 +13,7 @@ const h = vi.hoisted(() => ({
 vi.mock('@/lib/utils/verify-cron', () => ({ verifyCronSecret: () => true }))
 vi.mock('@/lib/supabase/server', () => ({ createServiceClient: () => h.db.client }))
 vi.mock('@/lib/utils/audit', () => ({ insertAuditRow: async (_s: any, row: any) => { h.audits.push(row); return true } }))
-vi.mock('@/lib/utils/notify', () => ({ notifyMembersWithPermission: async (_s: any, p: any) => { h.notified.push(p) } }))
+vi.mock('@/lib/utils/notify', () => ({ notifyMembersWithPermission: async (_s: any, p: any) => { h.notified.push(p); return true } }))
 vi.mock('@/lib/utils/permissions-query', () => ({ getMemberEmailsWithPermission: async () => ['ops@agency.test'] }))
 vi.mock('@/lib/email/templates', () => ({
   sendSowExpiredEmail: async (p: any) => { h.emails.push(['sow', p]) },

@@ -78,9 +78,12 @@ export async function POST(request: NextRequest) {
         // an in-app row for it, so the toggle did nothing. Once per workspace per calendar day (the
         // audit row is the dedupe key, like the emails below); each person's in-app preference and
         // the workspace default are applied by notifyUsers.
-        const { data: bellSent } = await (service as any).from('audit_log').select('id')
+        // FIX (cron section 17, pass 4 — B5): a failed lookup used to read as "not sent yet" (only `data` was
+        // destructured) and duplicated the bell / email on every run while audit_log kept failing.
+        const { data: bellSent, error: bellErr } = await (service as any).from('audit_log').select('id')
           .eq('workspace_id', ws.id).eq('event_type', 'billing.trial_ending_bell')
           .eq('metadata->>day', today).limit(1).maybeSingle()
+        if (bellErr) throw new Error(`bell dedupe lookup failed: ${bellErr.message}`)
         if (!bellSent) {
           const res = await notifyUsers(service, {
             workspaceId: ws.id,
@@ -106,12 +109,17 @@ export async function POST(request: NextRequest) {
           try {
             // One warning per person per CALENDAR DAY (a manual re-run must not double-send). A rolling 24h
             // window made a run at 08:00:10 skip someone whose row was written at 08:00:40 yesterday.
-            const { data: alreadySent } = await (service as any).from('audit_log').select('id')
+            // FIX (cron section 17, pass 4 — B2): this dedupe key was the recipient's EMAIL, stored in the audit
+            // row's metadata (`sent_to`). audit_log is append-only and erase_user_pii never reached metadata, so
+            // an erased person's real address stayed in the log for the life of the workspace. The key is now the
+            // user id (migration 127 rewrites the rows already written).
+            const { data: alreadySent, error: sentErr } = await (service as any).from('audit_log').select('id')
               .eq('workspace_id', ws.id)
               .eq('event_type', 'billing.trial_ending_soon')
-              .eq('metadata->>sent_to', person.email)
+              .eq('metadata->>user_id', person.id)
               .eq('metadata->>day', today)
               .limit(1).maybeSingle()
+            if (sentErr) throw new Error(`warning dedupe lookup failed: ${sentErr.message}`)
             if (alreadySent) continue
 
             const delivery = await sendTrialWarningEmail({
@@ -128,10 +136,10 @@ export async function POST(request: NextRequest) {
               actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
               event_type: 'billing.trial_ending_soon', entity_type: 'workspace',
               entity_id: ws.id, entity_name: ws.agency_name,
-              metadata: { days_left: daysLeft, sent_to: person.email, day: today },
+              metadata: { days_left: daysLeft, user_id: person.id, day: today },
             })
             sent++
-          } catch (e) { run.rowError(`trial warning ${ws.id} → ${person.email}`, e) }
+          } catch (e) { run.rowError(`trial warning ${ws.id} → user ${person.id}`, e) }
         }
       } catch (e) { run.rowError(`trial workspace ${ws.id}`, e) }
     }

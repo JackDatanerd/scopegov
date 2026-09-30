@@ -113,12 +113,14 @@ export async function POST(request: NextRequest) {
           metadata: { project_id: project.id, amount: m.amount },
         })
 
-        await notifyMembersWithPermission(service, {
+        const msNotified = await notifyMembersWithPermission(service, {
           workspaceId: project.workspace_id, permission: 'VIEW_FINANCIALS', eventType: 'payment_milestone_overdue',
           type: 'payment_milestone_overdue', title: `Milestone overdue — ${project.name}`,
           body: `"${m.title}" (${formatMoney(m.amount, project.currency)}) for ${project.clients?.name || 'the client'} is now overdue.`,
           entityType: 'project', entityId: project.id, projectId: project.id,
         })
+        // FIX (cron section 17, pass 4 — B4): the milestone is already 'overdue' (never re-selected), so a lost bell is surfaced, not retried.
+        if (!msNotified) run.rowError(`milestone ${m.id}`, new Error('marked overdue but the team bell notification failed to write'))
 
         try {
           const emails = await getMemberEmailsWithPermission(service, project.workspace_id, 'VIEW_FINANCIALS', 10, 'payment_milestone_overdue', project.id)
@@ -182,7 +184,7 @@ export async function POST(request: NextRequest) {
           entity_id: inv.id, entity_name: inv.title, metadata: { balance_due: balanceDue, under_dispute: underDispute },
         })
 
-        await notifyMembersWithPermission(service, {
+        const invNotified = await notifyMembersWithPermission(service, {
           workspaceId: inv.workspace_id, permission: 'VIEW_FINANCIALS',
           eventType: 'invoice_overdue', type: 'invoice_overdue',
           title: `Invoice overdue — ${inv.projects?.name}`,
@@ -190,6 +192,7 @@ export async function POST(request: NextRequest) {
           body: `${inv.projects?.clients?.name || 'Client'} has ${formatMoney(balanceDue, inv.currency)} overdue on "${inv.title}"${underDispute ? ' — the client has disputed this invoice' : ''}`,
           entityType: 'project', entityId: inv.projects?.id, projectId: inv.projects?.id,
         })
+        if (!invNotified) run.rowError(`invoice ${inv.id}`, new Error('marked overdue but the team bell notification failed to write'))
 
         try {
           const emails = await getMemberEmailsWithPermission(service, inv.workspace_id, 'VIEW_FINANCIALS', 10, 'invoice_overdue', inv.projects?.id)
@@ -329,8 +332,8 @@ export async function POST(request: NextRequest) {
               graceDaysLeft: actualDaysLeft,
             }), 'Grace reminder email')
             if (delivery.ok) anySent = true
-            else sendErrors.push(`${r.email}: ${delivery.error}`)
-          } catch (e) { sendErrors.push(`${r.email}: ${e instanceof Error ? e.message : String(e)}`) }
+            else sendErrors.push(`recipient: ${delivery.error}`)
+          } catch (e) { sendErrors.push(`recipient: ${e instanceof Error ? e.message : String(e)}`) }
         }
         if (recipients.length > 0 && !anySent) {
           run.rowError(`grace reminder ${b.workspace_id}`, new Error(

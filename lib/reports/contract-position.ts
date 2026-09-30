@@ -36,8 +36,12 @@ export interface ContractPosition {
 
 const CHUNK = 100 // ids per .in() — keeps the request URL well under proxy limits
 
+// FIX (cron section 17, pass 4 — B6): `strict` makes a failed open-ended-retainer months lookup THROW instead of
+// degrading to "1 month". The display paths keep the lenient default (a flaky read must not break an invoice
+// page); the nightly rollup passes strict so a degraded figure is never upserted over the day's good snapshot
+// (same reasoning as computeScopeHealth / scope_health_snapshots).
 export async function computeContractPositions(
-  service: any, projects: PositionProject[],
+  service: any, projects: PositionProject[], opts: { strict?: boolean } = {},
 ): Promise<Map<string, ContractPosition>> {
   const out = new Map<string, ContractPosition>()
   const byId = new Map(projects.map(p => [p.id, p]))
@@ -59,7 +63,7 @@ export async function computeContractPositions(
     ])
 
     // Open-ended retainers (no term): their contracted value is the months committed so far.
-    const monthsBilled = await loadRetainerMonthsBilled(service, chunk.map(id => byId.get(id)!))
+    const monthsBilled = await loadRetainerMonthsBilled(service, chunk.map(id => byId.get(id)!), { strict: !!opts.strict })
 
     for (const id of chunk) {
       const project = byId.get(id)!
@@ -83,7 +87,8 @@ export async function computeContractPositions(
       // void doesn't erase cash that already came in.
       const paidEligible = invoices.filter((inv: any) => inv.project_id === id && inv.status !== 'draft')
       out.set(id, {
-        contractedValue: baseContractValue(project, monthsBilled.get(id)) + amendmentTotal,
+        // Floored at zero like effectiveContractValue (contract-value.ts) — the two are documented as one definition.
+        contractedValue: Math.max(0, baseContractValue(project, monthsBilled.get(id)) + amendmentTotal),
         invoicedToDate:  billed.reduce((s: number, inv: any) => s + (Number(inv.subtotal ?? inv.amount) || 0), 0),
         paidToDate:      paidEligible.reduce((s: number, inv: any) => s + (Number(inv.amount_paid) || 0), 0),
         atRiskValue:     openCos.filter((c: any) => c.project_id === id).reduce((s: number, c: any) => s + (Number(c.total) || 0), 0),

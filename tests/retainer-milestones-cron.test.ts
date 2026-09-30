@@ -7,7 +7,7 @@ const state: { projects: any[]; milestones: any[]; audit: any[]; insertError: an
 vi.mock('@/lib/utils/verify-cron', () => ({ verifyCronSecret: () => true }))
 vi.mock('@/lib/utils/cron-heartbeat', () => ({ recordCronHeartbeat: vi.fn(async () => {}) }))
 vi.mock('@/lib/utils/cron-alert', () => ({ alertCronFailure: vi.fn(async () => {}) }))
-vi.mock('@/lib/utils/notify', () => ({ notifyMembersWithPermission: vi.fn(async (_s: any, p: any) => { state.notified.push(p) }) }))
+vi.mock('@/lib/utils/notify', () => ({ notifyMembersWithPermission: vi.fn(async (_s: any, p: any) => { state.notified.push(p); return true }) }))
 vi.mock('@/lib/utils/permissions-query', () => ({ getMemberEmailsWithPermission: vi.fn(async () => []) }))
 vi.mock('@/lib/email/templates', () => ({ sendRetainerEndingEmail: vi.fn(async () => ({ ok: true })) }))
 vi.mock('@/lib/utils/audit', () => ({ insertAuditRow: vi.fn(async (_s: any, row: any) => { state.audit.push(row); return true }) }))

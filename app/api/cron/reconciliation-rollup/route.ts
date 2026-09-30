@@ -39,7 +39,7 @@ export async function POST(request: NextRequest) {
         .range(from, to))
     processed = projects.length
 
-    const positions = await computeContractPositions(service, projects)
+    const positions = await computeContractPositions(service, projects, { strict: true })
 
     // Upsert in batches — one bad row must not lose the batch's neighbours, so fall back per row on error.
     const rows = projects.map((p: any) => {

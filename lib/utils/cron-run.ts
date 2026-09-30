@@ -33,6 +33,13 @@ export function mustData<T>(label: string, res: { data: T | null; error: { messa
 
 export { fetchAll }
 
+// FIX (cron section 17, pass 4 — B3): step / row failure text is persisted (cron_heartbeats.last_result,
+// cron_run_history for 60 days) and emailed to ops, and it is NOT covered by erase_user_pii. Labels and
+// provider error messages routinely embed a recipient address ("trial warning w1 → a@b.c", "a@b.c: 422 …"),
+// so an erased person's real address lived on in cron history. Addresses are masked centrally here.
+const EMAIL_RE = /[A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g
+export function redactEmails(s: string): string { return s.replace(EMAIL_RE, '[email]') }
+
 export class CronRun {
   private failures: string[] = []
   private rowFailures: string[] = []
@@ -47,7 +54,7 @@ export class CronRun {
     try {
       await fn()
     } catch (e: any) {
-      const msg = `${label}: ${e?.message || String(e)}`
+      const msg = redactEmails(`${label}: ${e?.message || String(e)}`)
       console.error(`[cron:${this.name}] step failed — ${msg}`)
       this.failures.push(msg)
     }
@@ -59,7 +66,7 @@ export class CronRun {
    * one poison row must not permanently withhold the heartbeat for everything else.
    */
   rowError(label: string, e: unknown): void {
-    const msg = `${label}: ${(e as any)?.message || String(e)}`
+    const msg = redactEmails(`${label}: ${(e as any)?.message || String(e)}`)
     console.error(`[cron:${this.name}] row failed — ${msg}`)
     if (this.rowFailures.length < 20) this.rowFailures.push(msg)
   }

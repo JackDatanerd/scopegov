@@ -103,13 +103,16 @@ export async function POST(request: NextRequest) {
               .update({ escalated_at: now.toISOString() }).eq('id', r.id).is('escalated_at', null).select('id')
             if (claimErr) throw new Error(`escalation claim failed: ${claimErr.message}`)
             if (claimed?.length) {
-              await notifyMembersWithPermission(service, {
+              const escNotified = await notifyMembersWithPermission(service, {
                 workspaceId: r.workspace_id, permission: 'MANAGE_WORKSPACE_SETTINGS',
                 eventType: 'approval_no_reachable_approver', type: 'approval_unresponsive',
                 title: 'An approval is still waiting on its approver',
                 body: `A ${documentLabelFor(r.document_type)} approval has been waiting through ${reminderCount} reminders. You can reassign the step from the Approvals page.`,
                 entityType: 'approval_request', entityId: r.id, projectId: r.project_id,
               })
+              // FIX (cron section 17, pass 4 — B4): the escalation was claimed (escalated_at) before notifying, so a lost
+              // bell is never retried — surface it.
+              if (!escNotified) run.rowError(`approval ${r.id}`, new Error('escalation recorded but the admin bell notification failed to write'))
               await insertAuditRow(service, {
                 workspace_id: r.workspace_id, actor_id: null, project_id: r.project_id,
                 actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
@@ -141,7 +144,7 @@ export async function POST(request: NextRequest) {
             metadata: { days_pending: threshold },
           })
           if (!marked) throw new Error('could not record approval.no_reachable_approver (dedupe marker) — alert withheld, will retry next run')
-          await notifyMembersWithPermission(service, {
+          const noApproverNotified = await notifyMembersWithPermission(service, {
             // FIX (Notifications & email fix round): this went to MANAGE_ROLES holders, but the fix
             // it asks for ("check the approval workflow's assignment") needs MANAGE_WORKSPACE_SETTINGS —
             // that is what gates the workflow editor and its API, and what lets someone open this
@@ -156,6 +159,8 @@ export async function POST(request: NextRequest) {
             // alerts in this file pass it, so the recipients weren't scoped to people who can open the request.
             entityType: 'approval_request', entityId: r.id, projectId: r.project_id,
           })
+          // FIX (cron section 17, pass 4 — B4): the dedupe marker above is already written (weekly re-alert), so surface a lost bell.
+          if (!noApproverNotified) run.rowError(`approval ${r.id}`, new Error('no-reachable-approver recorded but the admin bell notification failed to write'))
           escalated++
         }
         // 'not_found': already-resolved row race, or an orphan (current step missing). Counted in the
@@ -179,13 +184,16 @@ export async function POST(request: NextRequest) {
 
     for (const r of staleSendFailures) {
       try {
-        await notifyMembersWithPermission(service, {
+        const sendFailNotified = await notifyMembersWithPermission(service, {
           workspaceId: r.workspace_id, permission: 'MANAGE_WORKSPACE_SETTINGS',
           eventType: 'approval_no_reachable_approver', type: 'approval_send_failed_stale',
           title: 'An approved document still hasn\u2019t been sent',
           body: `A ${documentLabelFor(r.document_type)} was approved ${threshold}+ days ago but couldn't be sent automatically (${r.send_failed_reason || 'send failed'}) and hasn't been retried.`,
           entityType: 'approval_request', entityId: r.id, projectId: r.project_id,
         })
+        // FIX (cron section 17, pass 4 — B4): nothing has been recorded yet, so a failed write is simply retried next run
+        // (the request is not bumped out of the window) rather than counted as "escalated".
+        if (!sendFailNotified) throw new Error('admin bell notification failed to write — will retry next run')
         const { error: bumpErr } = await (service as any).from('approval_requests')
           .update({ updated_at: now.toISOString() }).eq('id', r.id)
         if (bumpErr) throw new Error(`send-failure bookkeeping failed (admins WERE notified): ${bumpErr.message}`)

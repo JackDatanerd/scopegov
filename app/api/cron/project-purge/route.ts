@@ -39,7 +39,8 @@ export async function POST(request: NextRequest) {
       // candidate-lookup failure — the one failure mode that means this
       // cron did nothing at all that day — was invisible outside Vercel
       // logs, same gap as every other bare console.error this pass closes.
-      await alertCronFailure(service, 'project-purge', findErr).catch(() => {})
+      const lookupError = new Error(`candidate lookup failed: ${findErr.message}${findErr.code ? ` (code ${findErr.code})` : ''}`)
+      await alertCronFailure(service, 'project-purge', lookupError).catch(() => {})
       return NextResponse.json({ error: 'Cron failed' }, { status: 500 })
     }
 

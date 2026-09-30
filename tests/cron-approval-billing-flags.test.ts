@@ -13,7 +13,7 @@ vi.mock('@/lib/utils/cron-heartbeat', () => ({ recordCronHeartbeat: async (_s: a
 vi.mock('@/lib/utils/audit', () => ({
   insertAuditRow: async (_s: any, row: any) => { h.db.tables.audit_log ||= []; h.db.tables.audit_log.push({ id: `a${h.db.tables.audit_log.length}`, created_at: new Date().toISOString(), ...row }); h.audits.push(row); return true },
 }))
-vi.mock('@/lib/utils/notify', () => ({ notifyMembersWithPermission: async (_s: any, p: any) => { h.notified.push(p) } }))
+vi.mock('@/lib/utils/notify', () => ({ notifyMembersWithPermission: async (_s: any, p: any) => { h.notified.push(p); return true } }))
 vi.mock('@/lib/utils/permissions-query', () => ({ getMemberEmailsWithPermission: async () => ['a@b.test'] }))
 vi.mock('@/lib/email/templates', () => ({ sendGuardianFlagStalledEmail: async (p: any) => { h.emails.push(p) } }))
 vi.mock('@/lib/approvals/engine', () => ({

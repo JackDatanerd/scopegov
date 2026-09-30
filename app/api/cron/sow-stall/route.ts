@@ -73,12 +73,16 @@ export async function POST(request: NextRequest) {
         const projectUrl  = `${process.env.NEXT_PUBLIC_APP_URL}/projects/${sow.project_id}?tab=sow`
         const seen        = viewedNote(sow.first_viewed_at)
 
-        await notifyMembersWithPermission(service, {
+        // FIX (cron section 17, pass 4 — B4): notifyMembersWithPermission never throws — it returns false when the bell rows
+        // could not be written. The state change above already happened and cannot be retried, so a failure is surfaced
+        // (ops alert + cron history) instead of vanishing.
+        const notified = await notifyMembersWithPermission(service, {
           workspaceId: sow.workspace_id, permission: 'SEND_SOW', eventType: 'sow_stalled',
           type: 'sow_stalled', title: `SOW stalled — ${projectName}`,
           body: `${clientName} hasn't signed the SOW for ${projectName} in ${threshold}+ days. ${seen}`.trim(),
           entityType: 'project', entityId: sow.project_id, projectId: sow.project_id,
         })
+        if (!notified) run.rowError(`sow ${sow.id}`, new Error('marked stalled but the team bell notification failed to write'))
 
         try {
           const emails = await getMemberEmailsWithPermission(service, sow.workspace_id, 'SEND_SOW', 25, 'sow_stalled', sow.project_id)

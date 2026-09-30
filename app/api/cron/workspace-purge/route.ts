@@ -27,7 +27,10 @@ export async function POST(request: NextRequest) {
 
   const service = createServiceClient()
   try {
-    const cutoff7yr = new Date(Date.now() - 7 * 365 * 86400000).toISOString()
+    // FIX (cron section 17, pass 4 — B7): 7 * 365 days ignores leap days, so a workspace was purged 1–2 days
+    // before it had been soft-deleted for seven full calendar years. Subtract seven calendar years instead.
+    const cutoff7 = new Date(); cutoff7.setUTCFullYear(cutoff7.getUTCFullYear() - 7)
+    const cutoff7yr = cutoff7.toISOString()
 
     // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — traced
     // through from onboarding's logo-upload path): fetch logo_storage_path
@@ -56,7 +59,8 @@ export async function POST(request: NextRequest) {
       // FEATURE (cron audit, section 17 — feature gap, closing pass): same
       // fix as project-purge's identical early return — this bypassed the
       // outer catch, so this failure mode was invisible outside Vercel logs.
-      await alertCronFailure(service, 'workspace-purge', findErr).catch(() => {})
+      const lookupError = new Error(`candidate lookup failed: ${findErr.message}${findErr.code ? ` (code ${findErr.code})` : ''}`)
+      await alertCronFailure(service, 'workspace-purge', lookupError).catch(() => {})
       return NextResponse.json({ error: 'Cron failed' }, { status: 500 })
     }
 
