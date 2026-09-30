@@ -266,15 +266,24 @@ async function saveDefaults(workspaceId: string, body: any, actor: SessionUser) 
   // jurisdiction instead of hard-blocking, exactly the silently-wrong-
   // jurisdiction failure this hard-block exists to prevent. Gate on the
   // field having been provided at all (`!== undefined`), not on it being
-  // non-empty, and write through null exactly like the workspace_defaults
-  // row already does two lines above this block.
+  // non-empty, and write the cleared value through ('' on the NOT NULL
+  // workspaces column, null on the workspace_defaults row two lines above).
   let previousGoverningLaw: string | null = null
   let governingLawChanged = false
   if (!scope && governingLawValue !== undefined) {
     const { data: ws } = await service.from('workspaces').select('governing_law').eq('id', workspaceId).single()
-    previousGoverningLaw = ws?.governing_law ?? null
-    const nextGoverningLaw = governingLawValue || null
-    if (previousGoverningLaw !== nextGoverningLaw) {
+    // FIX (Settings independent pass, bug 1): workspaces.governing_law is NOT NULL (migration 001), so
+    // "unset" on that row is the empty string — exactly what api/workspace/settings already writes when
+    // the field is cleared and what sow/generate hard-blocks on (`?.trim() || null`). This used to write
+    // null, which Postgres rejects (23502): a fresh onboarding wizard whose governing-law field was left
+    // blank (the DB default was 'Republic of Kenya', so the previous value always differed from null)
+    // failed step 2 with "governing law could not be updated". Migration 124 also removes the Kenya
+    // default so a workspace that never set one really is blank and the SOW hard-block can fire.
+    // (The workspace_defaults.governing_law column is nullable and keeps using null above.)
+    const previousRaw = (ws?.governing_law ?? '').trim()
+    previousGoverningLaw = previousRaw || null
+    const nextGoverningLaw = governingLawValue
+    if (previousRaw !== nextGoverningLaw) {
       const { error: wsError } = await service
         .from('workspaces').update({ governing_law: nextGoverningLaw, updated_at: new Date().toISOString() }).eq('id', workspaceId)
       if (wsError) {

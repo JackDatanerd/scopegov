@@ -7,7 +7,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { sanitizeDisplayName } from '@/lib/utils/sanitize'
 import { INDUSTRIES, CURRENCIES } from '@/lib/constants/workspace-options'
-import { isValidTimeZone } from '@/lib/utils/timezone'
+import { isValidTimeZone, formatDateInZone } from '@/lib/utils/timezone'
 import { diffFields, sameValue } from '@/lib/utils/audit-diff'
 
 // FEATURE (deep audit, Settings independent re-pass — feature gap):
@@ -310,8 +310,11 @@ export async function PATCH(request: NextRequest) {
     if (changedKeys.includes('slug') && current.slug_changed_at) {
       const nextAllowed = new Date(current.slug_changed_at).getTime() + SLUG_MIN_DAYS_BETWEEN_CHANGES * 24 * 60 * 60 * 1000
       if (nextAllowed > Date.now()) {
+        // FIX (Settings independent pass, minor): this used the server process's locale and timezone
+        // (the runtime default locale formatter), so the date could be a day off and in the wrong format for the agency.
+        // Format it in the workspace's own timezone like every other date in the app.
         return NextResponse.json({
-          error: `The workspace handle can be changed once every ${SLUG_MIN_DAYS_BETWEEN_CHANGES} days. It can next be changed on ${new Date(nextAllowed).toLocaleDateString()}.`,
+          error: `The workspace handle can be changed once every ${SLUG_MIN_DAYS_BETWEEN_CHANGES} days. It can next be changed on ${formatDateInZone(nextAllowed, current.timezone)}.`,
         }, { status: 409 })
       }
     }

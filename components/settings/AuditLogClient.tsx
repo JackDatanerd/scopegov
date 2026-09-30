@@ -131,6 +131,25 @@ export default function AuditLogClient({ projects, members, timeZone }: { projec
     }
   }
 
+  // FIX (Settings independent pass, minor): a preset range ("Last 90 days") was resolved once at mount, so a tab left
+  // open past local midnight kept filtering with yesterday as its end date and silently hid every newer event
+  // until the preset was re-picked. Re-resolve the preset when the tab regains focus on a new day.
+  useEffect(() => {
+    function refreshRange() {
+      if (document.visibilityState !== 'visible') return
+      const p = RANGE_PRESETS.find(r => r.key === preset)
+      if (!p || p.days <= 0) return
+      const today = localDate(new Date())
+      if (today !== to) { setFrom(daysAgoLocal(p.days)); setTo(today) }
+    }
+    document.addEventListener('visibilitychange', refreshRange)
+    window.addEventListener('focus', refreshRange)
+    return () => {
+      document.removeEventListener('visibilitychange', refreshRange)
+      window.removeEventListener('focus', refreshRange)
+    }
+  }, [preset, to])
+
   const dateError = useMemo(() => {
     const f = startOfLocalDay(from), t = endOfLocalDay(to)
     if (!f || !t) return 'Choose both a start and an end date.'

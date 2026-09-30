@@ -1,0 +1,22 @@
+-- ============================================================
+-- ScopeGov — Migration 124: workspaces.governing_law no longer defaults to 'Republic of Kenya'
+--
+-- FIX (Settings independent pass, bug 1): migration 001 declared
+--   governing_law text NOT NULL DEFAULT 'Republic of Kenya'
+-- and create_workspace_atomic never sets the column, so EVERY new workspace silently got Kenya as its
+-- governing law. sow/generate hard-blocks when governing_law is empty ("Set your workspace's governing
+-- law in Settings → Workspace…"), but with that default the guard could never fire for a workspace that
+-- never chose one — an agency anywhere in the world got SOWs governed by the Republic of Kenya without
+-- ever being told. It also made api/workspace/defaults try to write NULL when the onboarding field was
+-- left blank (fixed in the route, which now writes '').
+--
+-- The column stays NOT NULL; "unset" is the empty string (what api/workspace/settings writes when the
+-- field is cleared, and what every reader already treats as unset via `?.trim() || null`).
+--
+-- Existing rows are deliberately NOT touched: a stored 'Republic of Kenya' can't be told apart from a
+-- deliberate choice here. To blank the workspaces that never actually chose it, review first, e.g.:
+--   SELECT id, name FROM public.workspaces WHERE governing_law = 'Republic of Kenya';
+-- then UPDATE only the ones you decide were never set on purpose.
+-- ============================================================
+
+ALTER TABLE public.workspaces ALTER COLUMN governing_law SET DEFAULT '';

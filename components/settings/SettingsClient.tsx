@@ -360,6 +360,11 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
   }
   const [brandColour, setBrandColour] = useState(() => workspace?.brand_colour || '#1A5C3A')
   const [logoPreview, setLogoPreview] = useState<string | null>(logoUrl)
+  // FIX (Settings independent pass, bug 2): the picked-but-unsaved File lives here next to its preview. It used to be
+  // BrandingTab-local while the preview was lifted, so leaving the tab and coming back kept a preview of a logo whose
+  // file was gone — 'Save branding' silently uploaded nothing and 'Remove logo' (shown because !logoFile) deleted the
+  // saved logo instead.
+  const [logoFile, setLogoFile] = useState<File | null>(null)
 
   const [defaultsForm, setDefaultsForm] = useState(() => ({
     revRounds:      String(defaults?.revision_rounds ?? 2),
@@ -489,6 +494,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
             workspaceId={workspace?.id}
             colour={brandColour} setColour={setBrandColour}
             preview={logoPreview} setPreview={setLogoPreview}
+            logoFile={logoFile} setLogoFile={setLogoFile}
             savedSignature={workspace?.agency_signature_data || null}
             expectedUpdatedAt={workspace?.updated_at || null}
             lastPatchJson={lastPatchJson}
@@ -1021,8 +1027,7 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedA
 }
 
 // ── BRANDING ──────────────────────────────────────────────────
-function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, savedSignature, expectedUpdatedAt, lastPatchJson, permissions, onSave, saving }: any) {
-  const [logoFile,  setLogoFile]  = useState<File | null>(null)
+function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, logoFile, setLogoFile, savedSignature, expectedUpdatedAt, lastPatchJson, permissions, onSave, saving }: any) {
   const [uploading, setUploading] = useState(false)
   const [fileError, setFileError] = useState('')
   const [removingLogo, setRemovingLogo] = useState(false)
@@ -1613,6 +1618,12 @@ function GuardianTab({ form, setForm, permissions, onSave, saving, currency }: a
             // unparseable (blank/garbage), not when it parses to a valid 0.
             const parsed = parseFloat(form.riskThreshold)
             const threshold = Number.isFinite(parsed) && parsed >= 0 ? parsed : 10000
+            // FIX (Settings independent pass, minor): the blank/garbage fallback used to be saved while the
+            // input stayed empty — the same on-screen-vs-persisted mismatch as the 0 case above. Show what
+            // was actually saved.
+            if (String(form.riskThreshold) !== String(threshold) && !(Number.isFinite(parsed) && parsed >= 0)) {
+              set('riskThreshold', String(threshold))
+            }
             onSave('/api/workspace/settings', {
               guardianSensitivityTier: form.sensitivity,
               proactiveRiskAlertsEnabled: form.riskEnabled,
