@@ -1,0 +1,22 @@
+Notifications & email (section 19) — independent pass 3, fix round
+Base: c74b436.  Verified: tsc clean; vitest 1160 passed (9 failures pre-existing on the untouched base, in
+client-merge-route, client-update-route, settings-team-repass-2, sow-attachments-integrity — none in this section).
+MIGRATION REQUIRED: 122_notifications_read_at_index.sql (index only; safe to apply before or after deploy).
+
+B1  Credit change orders: sendCoAcceptedEmail / sendCoAcceptedClientEmail printed the negative total as
+    "+USD -300.00" / "additional value locked in" / "for an additional USD -300.00". finalize-co now passes isCredit;
+    both emails and the bell row word it as a credit / reduction.
+B2  In-app bodies hand-formatted money (payment-overdue x2 bare toLocaleString, invoices/[id]/payments hardcoded 2dp,
+    finalize-co raw ${co.total}). All use formatMoney now.
+B3  Resend webhook blamed to_emails[0] for every event. Resend emits one event per recipient with that recipient in
+    data.to, so a bounced CC flagged the client's primary address (suppressing its auto reminders) and named the wrong
+    person in the alert. The event's own address is used; a delivery to an address always clears that address's marker.
+B4  notification-cleanup pruned READ notifications by created_at: one left unread 100 days and opened today was deleted
+    that night. Read rows now expire 90 days after read_at (legacy rows with no read_at fall back to created_at); the
+    180-day sweep applies only to never-opened rows. Migration 122 adds the supporting partial index.
+B5  Bounce alert could be lost for good: status advanced first, then a failed alert insert was swallowed and the retry
+    saw "unchanged". notifyMembersWithPermission now reports success; on alert failure the status is restored and the
+    webhook returns 500 so Resend retries. An event that beats the email_log insert returns 503 (retried) for 2 minutes
+    instead of being dropped as "untracked".
+
+Tests: tests/resend-webhook-route.test.ts (new), tests/email-templates-money.test.ts (+credit), tests/cron-infra.test.ts (+read_at).

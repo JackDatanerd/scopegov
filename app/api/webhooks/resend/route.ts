@@ -44,6 +44,10 @@ export async function POST(request: NextRequest) {
   const type: string = event?.type || ''
   const emailId: string | undefined = event?.data?.email_id
   if (!emailId) return NextResponse.json({ ok: true, ignored: true })
+  // Resend emits one event PER RECIPIENT, and `data.to` carries only the address that event is about (a CC's
+  // bounce arrives with the CC's address). Reading the log row's first address instead blamed the client's
+  // primary address for a bounced CC.
+  const impacted = firstAddress(event?.data?.to)
 
   try {
     const service = createServiceClient() as any
@@ -52,10 +56,21 @@ export async function POST(request: NextRequest) {
       .select('id, workspace_id, kind, entity_type, entity_id, project_id, actor_id, to_emails, status')
       .eq('provider_id', emailId).maybeSingle()
     if (error) throw new Error(error.message)
-    if (!row) return NextResponse.json({ ok: true, untracked: true }) // an email we didn't log
+    if (!row) {
+      // The log row is written right AFTER the send returns, so an event can beat it. Fail (Resend retries after a
+      // few seconds) while the event is fresh; an old event for an email we never logged is simply not ours.
+      if (eventAgeMs(event) < UNLOGGED_RETRY_WINDOW_MS) return NextResponse.json({ error: 'Email not logged yet' }, { status: 503 })
+      return NextResponse.json({ ok: true, untracked: true })
+    }
+    const address = impacted || firstAddress(row.to_emails)
 
     const next = nextEmailStatus(row.status, type)
-    if (!next) return NextResponse.json({ ok: true, unchanged: true })
+    if (!next) {
+      // A delivery to THIS address proves it works even when the message-level status did not advance (another
+      // recipient's event landed first). Clearing is idempotent and address-scoped, so it is always safe.
+      if (type === 'email.delivered') await trackClientEmailHealth(service, row, 'delivered', address)
+      return NextResponse.json({ ok: true, unchanged: true })
+    }
 
     // Guarded on the status we read, so a concurrent/retried delivery of the same event is a no-op
     // and — importantly — can't raise the alert twice.
@@ -65,8 +80,16 @@ export async function POST(request: NextRequest) {
     if (upErr) throw new Error(upErr.message)
     if (!updated || updated.length === 0) return NextResponse.json({ ok: true, unchanged: true })
 
-    if (next === 'bounced' || next === 'complained') await alertSender(service, row, next)
-    await trackClientEmailHealth(service, row, next)
+    if (next === 'bounced' || next === 'complained') {
+      const alerted = await alertSender(service, row, next, address)
+      if (!alerted) {
+        // The status already moved, so a retry would see "unchanged" and the alert would be lost for good. Put the
+        // status back (guarded on what we wrote) and fail, so Resend redelivers the event and the alert is retried.
+        await service.from('email_log').update({ status: row.status }).eq('id', row.id).eq('status', next)
+        throw new Error('bounce alert could not be written')
+      }
+    }
+    await trackClientEmailHealth(service, row, next, address)
     return NextResponse.json({ ok: true, status: next })
   } catch (err) {
     console.error('[resend-webhook] processing failed:', err)
@@ -75,10 +98,23 @@ export async function POST(request: NextRequest) {
   }
 }
 
-async function alertSender(service: any, row: any, status: 'bounced' | 'complained') {
+const UNLOGGED_RETRY_WINDOW_MS = 2 * 60 * 1000
+
+function firstAddress(v: unknown): string {
+  const first = Array.isArray(v) ? v[0] : v
+  return typeof first === 'string' ? first.trim().toLowerCase() : ''
+}
+
+function eventAgeMs(event: any): number {
+  const t = Date.parse(event?.created_at || event?.data?.created_at || '')
+  return Number.isFinite(t) ? Date.now() - t : Infinity
+}
+
+/** Resolves true when the alert was written (or no one was eligible to receive it). */
+async function alertSender(service: any, row: any, status: 'bounced' | 'complained', address: string): Promise<boolean> {
   const { docKind, role } = classifyEmailKind(row.kind)
   const doc = DOC_BY_KIND[docKind]
-  const to = (row.to_emails || [])[0] || 'the client'
+  const to = address || (row.to_emails || [])[0] || 'the client'
   const what = doc ? doc.label : 'email'
 
   const title = status === 'bounced'
@@ -102,9 +138,9 @@ async function alertSender(service: any, row: any, status: 'bounced' | 'complain
   // kind of document (e.g. an automatic send after approval has no single actor).
   if (row.actor_id) {
     const r = await notifyUsers(service, { ...shared, type, recipientIds: [row.actor_id] })
-    if (r.recipients.length > 0) return
+    if (r.recipients.length > 0) return r.inserted
   }
-  await notifyMembersWithPermission(service, {
+  return notifyMembersWithPermission(service, {
     ...shared, type, permission: doc?.permission || 'MANAGE_WORKSPACE_SETTINGS', eventType: '',
   })
 }
@@ -117,9 +153,9 @@ async function alertSender(service: any, row: any, status: 'bounced' | 'complain
 // FIX (independent pass 2, section 14): the client is matched case-INSENSITIVELY. `to` is lower-cased here, but a
 // client row whose email was stored with capitals (legacy rows, and workspaces that predate the lower(email)
 // unique index) never matched an exact `.eq('email', to)`, so its bounce marker was silently never written.
-async function trackClientEmailHealth(service: any, row: any, status: string) {
+async function trackClientEmailHealth(service: any, row: any, status: string, address?: string) {
   try {
-    const to = String((row.to_emails || [])[0] || '').trim().toLowerCase()
+    const to = (address || String((row.to_emails || [])[0] || '')).trim().toLowerCase()
     if (!to || !row.workspace_id) return
     if (status === 'bounced' || status === 'complained') {
       const { error } = await service.from('clients')

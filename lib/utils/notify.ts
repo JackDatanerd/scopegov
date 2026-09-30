@@ -28,7 +28,8 @@ interface NotifyParams {
   projectId?: string
 }
 
-export async function notifyMembersWithPermission(service: any, params: NotifyParams) {
+/** Resolves true when the rows were written (or there was nobody eligible to write them for); false on failure. */
+export async function notifyMembersWithPermission(service: any, params: NotifyParams): Promise<boolean> {
   try {
     // FIX (cron audit, section 17): eventType now passed into
     // getMembersWithPermission itself so the notification-preference
@@ -49,7 +50,7 @@ export async function notifyMembersWithPermission(service: any, params: NotifyPa
     const recipients = await getMembersWithPermission(
       service, params.workspaceId, params.permission, 25, params.projectId, params.eventType, 'in_app', params.excludeUserId
     )
-    if (recipients.length === 0) return
+    if (recipients.length === 0) return true
 
     const rows = recipients.map(r => ({
       workspace_id: params.workspaceId,
@@ -76,9 +77,11 @@ export async function notifyMembersWithPermission(service: any, params: NotifyPa
     // behavior when things work, but means a future bad-data bug in this
     // choke point leaves a trace instead of repeating that history.
     const { error } = await service.from('notifications').insert(rows)
-    if (error) console.error('notifyMembersWithPermission: notifications insert failed:', error)
+    if (error) { console.error('notifyMembersWithPermission: notifications insert failed:', error); return false }
+    return true
   } catch (err) {
     console.error('notifyMembersWithPermission failed:', err)
+    return false
   }
 }
 

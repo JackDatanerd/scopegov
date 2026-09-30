@@ -995,8 +995,10 @@ export async function sendCoAcceptedEmail(params: {
   projectName: string; coTitle: string; total: number
   currency: string; acceptedBy: string; projectUrl: string
   attachments?: Array<{ filename: string; content: string }>
+  /** Credit / descope CO: `total` is stored NEGATIVE. Worded as a reduction, never as "additional value". */
+  isCredit?: boolean
 }) {
-  const { to, clientName: clientNameRaw, projectName: projectNameRaw, coTitle: coTitleRaw, total, currency, acceptedBy: acceptedByRaw, projectUrl, attachments } = params
+  const { to, clientName: clientNameRaw, projectName: projectNameRaw, coTitle: coTitleRaw, total, currency, acceptedBy: acceptedByRaw, projectUrl, attachments, isCredit } = params
   const clientName  = escapeHtml(clientNameRaw)
   const projectName = escapeHtml(projectNameRaw)
   const coTitle     = escapeHtml(coTitleRaw)
@@ -1005,17 +1007,17 @@ export async function sendCoAcceptedEmail(params: {
   const html = baseTemplate({
     agencyName: 'ScopeGov',
     headerColour: C.green,
-    label: 'Change order accepted',
-    headline: `${clientName} accepted the change order`,
+    label: isCredit ? 'Credit change order accepted' : 'Change order accepted',
+    headline: isCredit ? `${clientName} accepted the credit change order` : `${clientName} accepted the change order`,
     body: `
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
-        Great news — <strong>${clientName}</strong> has accepted the change order
+        ${isCredit ? '' : 'Great news — '}<strong>${clientName}</strong> has accepted the ${isCredit ? 'credit ' : ''}change order
         <strong>${coTitle}</strong> on <strong>${projectName}</strong>.
       </p>
       <div style="background:${C.greenLt};border:1px solid #B7DCC8;border-radius:6px;padding:14px 16px;margin:16px 0;font-size:13px;">
         <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
-          <span style="color:${C.green};">Additional value locked in</span>
-          <strong style="color:${C.green};">${money(total, currency)}</strong>
+          <span style="color:${C.green};">${isCredit ? 'Contract value reduced by' : 'Additional value locked in'}</span>
+          <strong style="color:${C.green};">${isCredit ? money(Math.abs(Number(total) || 0), currency) : money(total, currency)}</strong>
         </div>
         <div style="font-size:12px;color:${C.text3};">Signed by: ${acceptedBy}</div>
       </div>
@@ -1031,7 +1033,9 @@ export async function sendCoAcceptedEmail(params: {
   return deliver({
     from:    systemFrom(),
     to,
-    subject: `✓ Change order accepted — ${projectNameRaw} +${money(total, currency)}`,
+    subject: isCredit
+      ? `✓ Credit change order accepted — ${projectNameRaw} (credit ${money(Math.abs(Number(total) || 0), currency)})`
+      : `✓ Change order accepted — ${projectNameRaw} +${money(total, currency)}`,
     html,
     ...(attachments?.length ? { attachments } : {}),
   })
@@ -1047,9 +1051,11 @@ export async function sendCoAcceptedClientEmail(params: {
   projectName: string; coTitle: string; total: number; currency: string
   portalUrl: string
   attachments?: Array<{ filename: string; content: string }>
+  /** Credit / descope CO: `total` is stored NEGATIVE — say "a credit of", never "an additional -X". */
+  isCredit?: boolean
 }) {
   const { to, cc, clientName: clientNameRaw, agencyName: agencyNameRaw, projectName: projectNameRaw,
-    coTitle: coTitleRaw, total, currency, portalUrl, attachments } = params
+    coTitle: coTitleRaw, total, currency, portalUrl, attachments, isCredit } = params
   const clientName  = escapeHtml(clientNameRaw)
   const agencyName  = escapeHtml(agencyNameRaw)
   const projectName = escapeHtml(projectNameRaw)
@@ -1064,7 +1070,9 @@ export async function sendCoAcceptedClientEmail(params: {
       <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${clientName},</p>
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
         This confirms the change order <strong>${coTitle}</strong> for <strong>${projectName}</strong>
-        with <strong>${agencyName}</strong>, for an additional <strong>${money(total, currency)}</strong>.
+        with <strong>${agencyName}</strong>, ${isCredit
+          ? `as a credit of <strong>${money(Math.abs(Number(total) || 0), currency)}</strong>`
+          : `for an additional <strong>${money(total, currency)}</strong>`}.
         A PDF copy is attached for your records.
       </p>
       <p style="font-size:13px;color:${C.text2};">

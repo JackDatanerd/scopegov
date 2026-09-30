@@ -52,13 +52,18 @@ export async function POST(request: NextRequest) {
     const iso = (days: number) => new Date(now - days * 86400000).toISOString()
     const remaining: string[] = []
 
+    // FIX (Notifications & email independent pass): the read window counted from CREATION, so a notification that sat
+    // unread for 100 days and was marked read this afternoon was deleted tonight — the "kept 90 days after you read it"
+    // promise never held. It counts from read_at now; a read row with no read_at (legacy) falls back to created_at.
     await run.step('prune read notifications', async () => {
-      const r = await pruneInBatches(service, 'notifications', q => q.eq('read', true).lt('created_at', iso(READ_RETENTION_DAYS)))
-      run.result.readPurged = r.deleted
-      if (r.truncated) remaining.push('notifications(read)')
+      const a = await pruneInBatches(service, 'notifications', q => q.eq('read', true).lt('read_at', iso(READ_RETENTION_DAYS)))
+      const b = await pruneInBatches(service, 'notifications', q => q.eq('read', true).is('read_at', null).lt('created_at', iso(READ_RETENTION_DAYS)))
+      run.result.readPurged = a.deleted + b.deleted
+      if (a.truncated || b.truncated) remaining.push('notifications(read)')
     })
+    // Only rows never opened: a row read recently is governed by the read window above, not by its age.
     await run.step('prune old notifications', async () => {
-      const r = await pruneInBatches(service, 'notifications', q => q.lt('created_at', iso(ANY_RETENTION_DAYS)))
+      const r = await pruneInBatches(service, 'notifications', q => q.eq('read', false).lt('created_at', iso(ANY_RETENTION_DAYS)))
       run.result.oldPurged = r.deleted
       if (r.truncated) remaining.push('notifications(old)')
     })

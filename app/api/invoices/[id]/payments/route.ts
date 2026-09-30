@@ -1,6 +1,7 @@
 export const runtime = 'nodejs'
 
 import { createServiceClient } from '@/lib/supabase/server'
+import { formatMoney } from '@/lib/utils/money'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
@@ -167,7 +168,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       eventType: 'invoice_payment_received',
       type: isFullyPaid ? 'invoice_paid' : 'invoice_payment_received',
       title: isFullyPaid ? `Invoice paid in full — ${invoice.projects?.name}` : `Payment received — ${invoice.projects?.name}`,
-      body: `${invoice.projects?.clients?.name || 'Client'} paid ${invoice.currency} ${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} on "${invoice.title}"`,
+      body: `${invoice.projects?.clients?.name || 'Client'} paid ${formatMoney(amount, invoice.currency)} on "${invoice.title}"`,
       // FIX (audit): entity_type was 'invoice' with entityId = invoice id, but
       // NotificationBell's entityHref() only resolves 'project' / 'project_message'
       // / 'approval_request' — clicking these notifications did nothing. Point at

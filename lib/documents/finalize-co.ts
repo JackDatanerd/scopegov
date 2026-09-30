@@ -14,6 +14,7 @@ import { resolveReplyTo } from '@/lib/email/reply-to'
 import { logAudit } from '@/lib/utils/audit'
 import { renderCoPdf } from '@/lib/pdf/renderer'
 import { sendCoAcceptedEmail, sendCoAcceptedClientEmail } from '@/lib/email/templates'
+import { formatMoney } from '@/lib/utils/money'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { getWorkspaceJwtSecret } from '@/lib/utils/workspace-secret'
@@ -441,6 +442,7 @@ export async function finalizeCoAcceptance(service: any, params: {
       acceptedBy: signerName.trim(),
       projectUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects/${co.project_id}?tab=co`,
       attachments: pdfAttachment ? [pdfAttachment] : undefined,
+      isCredit,
     }), 'CO accepted (agency) email')
   }
 
@@ -457,6 +459,7 @@ export async function finalizeCoAcceptance(service: any, params: {
       total: co.total, currency: project.currency || 'USD',
       portalUrl,
       attachments: pdfAttachment ? [pdfAttachment] : undefined,
+      isCredit,
       log: { workspaceId: co.workspace_id, kind: 'co.accepted_confirmation', entityType: 'change_order', entityId: co.id, projectId: co.project_id },
     }), 'CO accepted (client) email')
   }
@@ -464,7 +467,9 @@ export async function finalizeCoAcceptance(service: any, params: {
   await notifyMembersWithPermission(service, {
     workspaceId: co.workspace_id, permission: 'SEND_CHANGE_ORDERS', eventType: 'co_accepted',
     type: 'co_accepted', title: `CO accepted — ${co.title}`,
-    body: `${signerName.trim()} accepted ${project.currency || 'USD'} ${co.total} for ${project.name}.`,
+    body: isCredit
+      ? `${signerName.trim()} accepted a credit of ${formatMoney(Math.abs(Number(co.total) || 0), project.currency)} for ${project.name}.`
+      : `${signerName.trim()} accepted ${formatMoney(co.total, project.currency)} for ${project.name}.`,
     entityType: 'project', entityId: co.project_id, projectId: co.project_id,
   })
 

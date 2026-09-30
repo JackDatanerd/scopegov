@@ -4,6 +4,7 @@ export const runtime = 'nodejs'
 export const maxDuration = 300
 
 import { createServiceClient } from '@/lib/supabase/server'
+import { formatMoney } from '@/lib/utils/money'
 import { NextResponse, type NextRequest } from 'next/server'
 import { sendTrialWarningEmail, sendPaymentFailedEmail, sendInvoiceOverdueInternalEmail, sendPaymentMilestoneOverdueEmail, sendSubscriptionEndedEmail } from '@/lib/email/templates'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
@@ -115,7 +116,7 @@ export async function POST(request: NextRequest) {
         await notifyMembersWithPermission(service, {
           workspaceId: project.workspace_id, permission: 'VIEW_FINANCIALS', eventType: 'payment_milestone_overdue',
           type: 'payment_milestone_overdue', title: `Milestone overdue — ${project.name}`,
-          body: `"${m.title}" (${project.currency || 'USD'} ${Number(m.amount).toLocaleString()}) for ${project.clients?.name || 'the client'} is now overdue.`,
+          body: `"${m.title}" (${formatMoney(m.amount, project.currency)}) for ${project.clients?.name || 'the client'} is now overdue.`,
           entityType: 'project', entityId: project.id, projectId: project.id,
         })
 
@@ -186,7 +187,7 @@ export async function POST(request: NextRequest) {
           eventType: 'invoice_overdue', type: 'invoice_overdue',
           title: `Invoice overdue — ${inv.projects?.name}`,
           // A disputed invoice is a conversation to have, not just a chase — say so.
-          body: `${inv.projects?.clients?.name || 'Client'} has ${inv.currency} ${balanceDue.toLocaleString()} overdue on "${inv.title}"${underDispute ? ' — the client has disputed this invoice' : ''}`,
+          body: `${inv.projects?.clients?.name || 'Client'} has ${formatMoney(balanceDue, inv.currency)} overdue on "${inv.title}"${underDispute ? ' — the client has disputed this invoice' : ''}`,
           entityType: 'project', entityId: inv.projects?.id, projectId: inv.projects?.id,
         })
 

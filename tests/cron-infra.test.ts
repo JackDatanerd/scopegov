@@ -161,6 +161,23 @@ describe('cron/notification-cleanup', () => {
     expect(h.heartbeats).toHaveLength(1)
   })
 
+  it('a notification is kept 90 days from when it was READ, not from when it was created', async () => {
+    const recent = new Date().toISOString(), longAgo = '2020-01-01T00:00:00.000Z'
+    h.db = createFakeSupabase({
+      notifications: [
+        { id: 'oldUnreadJustRead', read: true, read_at: recent, created_at: longAgo },   // opened today: must survive
+        { id: 'readLongAgo', read: true, read_at: longAgo, created_at: longAgo },        // read >90d ago: pruned
+        { id: 'legacyRead', read: true, read_at: null, created_at: longAgo },            // no read_at: falls back to created_at
+        { id: 'unreadAncient', read: false, read_at: null, created_at: longAgo },        // never opened, >180d: pruned
+        { id: 'unreadFresh', read: false, read_at: null, created_at: recent },
+      ], email_log: [], ai_usage_log: [], cron_run_history: [],
+    }, { rpc: { prune_snapshot_history: () => ({ data: {} }) } })
+    const { status, body } = await call(notificationCleanup)
+    expect(status).toBe(200)
+    expect(body).toMatchObject({ readPurged: 2, oldPurged: 1 })
+    expect(h.db.tables.notifications.map((r: Row) => r.id).sort()).toEqual(['oldUnreadJustRead', 'unreadFresh'])
+  })
+
   it('a failing step alerts IMMEDIATELY (it used to return 207 and wait ~27h for the watchdog) and withholds the heartbeat; sibling steps still run', async () => {
     h.db = createFakeSupabase(tablesFor(), { rpc: { prune_snapshot_history: () => ({ data: {} }) }, errors: [{ table: 'email_log', op: 'delete', message: 'timeout' }] })
     const { status, body } = await call(notificationCleanup)
