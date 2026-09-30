@@ -243,9 +243,14 @@ export default function CommandPalette({ permissions = [] }: Props) {
           </div>
         )}
 
+        {/* FIX (Search section, round 4): the "some results couldn't be loaded" notice above only rendered when
+            something else matched, so a failed block plus zero matches — searching an invoice number while the
+            invoices query is down — read as a definitive "No results". */}
         {status === 'ok' && !loading && results.length === 0 && (
-          <div style={{ padding: '24px 16px', textAlign: 'center', fontSize: 13, color: 'var(--text-3)' }}>
-            No results for &ldquo;{query}&rdquo;
+          <div role={partial ? 'alert' : undefined} style={{ padding: '24px 16px', textAlign: 'center', fontSize: 13, color: 'var(--text-3)' }}>
+            {partial
+              ? <>No results for &ldquo;{query}&rdquo;, but some results couldn&apos;t be loaded — try again in a moment.</>
+              : <>No results for &ldquo;{query}&rdquo;</>}
           </div>
         )}
 

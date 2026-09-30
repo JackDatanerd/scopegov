@@ -1,0 +1,26 @@
+Search (section 20) — independent pass, round 4. Bugs only, no migrations.
+
+B1  lib/search/query.ts + NEW lib/search/unaccent-map.ts (+ scripts/gen-unaccent-map.mjs)
+    normalizeSearchText did NFD + strip U+0300-036F + 8 letters, which is not what Postgres unaccent()
+    (used by the generated search_text columns, migrations 062/073/111) does. Compared over every code point:
+      - unaccent() folds curly apostrophes/quotes, en/em dashes, ellipsis, dotless i, ligatures, ij/eng/h-bar,
+        fullwidth forms, (c)/(r)/1/2 ... which the old code left alone -> "O'Brien" (curly) and
+        "Acme - Website" (dash copied from the palette's own title format) never matched.
+      - NFD decomposed characters unaccent() leaves whole (all Hangul syllables, kana with dakuten) ->
+        those names could never be found.
+    Now: unaccent() applied per code point from a table generated from Postgres itself, lower-cased per
+    code point. Fuzzed against live lower(unaccent(x)): 29,914 random strings, 0 mismatches.
+    Also: a fold can yield a literal "*" (x, fullwidth *), which PostgREST reads as a wildcard it cannot
+    escape -> foldedTokens strips "*" after folding too; isSearchable now measures the folded tokens.
+B2  components/layout/CommandPalette.tsx
+    "some results couldn't be loaded" only showed when other results existed; a failed block + zero matches
+    read as a definitive "No results". The empty state now says so when `partial`.
+B3  components/team/TeamClient.tsx
+    flashId was seeded from ?highlight= only by useState's initial value: searching for a member while already
+    on /team scrolled but never flashed. The effect now sets it.
+B4  styles/globals.css
+    The 2.4s fade was a transition on the flash class itself: faded IN slowly, snapped OFF on removal.
+    Now a keyframe animation that settles into the normal card style.
+Tests: tests/search-query.test.ts (+8 cases).
+Known, not changed: choosing the SAME member again from search while already on /team?highlight=<same id>
+does not re-flash (URL unchanged). Rare; would need a nonce in the href.

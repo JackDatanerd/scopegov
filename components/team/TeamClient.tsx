@@ -85,6 +85,11 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
     if (!highlightId || tab !== 'members') return
     const el = document.getElementById(`member-${highlightId}`)
     if (!el) return
+    // FIX (Search section, round 4): flashId was only ever seeded from the URL by useState's initial
+    // value, so it flashed on the first arrival and never again — searching for a member while already
+    // on /team (the component stays mounted, only ?highlight= changes) scrolled to the card but the
+    // flash state was already null from the previous highlight.
+    setFlashId(highlightId)
     el.scrollIntoView({ behavior: 'smooth', block: 'center' })
     const t = setTimeout(() => setFlashId(null), 2600)
     return () => clearTimeout(t)

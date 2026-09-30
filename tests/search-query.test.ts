@@ -23,6 +23,50 @@ describe('normalizeSearchText — must match projects/clients.search_text (migra
   })
 })
 
+describe('normalizeSearchText — folds what Postgres unaccent() folds (Search round 4)', () => {
+  it('folds curly apostrophes and quotes — what phone keyboards type for O\u2019Brien', () => {
+    expect(normalizeSearchText('O\u2019Brien')).toBe("o'brien")
+    expect(normalizeSearchText('\u2018Acme\u2019')).toBe("'acme'")
+    expect(normalizeSearchText('\u201CAcme\u201D')).toBe('"acme"')
+    expect(foldedTokens('O\u2019Brien')).toEqual(["o'brien"])
+  })
+  it('folds en/em dashes and the ellipsis — the palette shows "name \u2014 disc", people copy it', () => {
+    expect(foldedTokens('Acme \u2014 Website')).toEqual(['acme', '-', 'website'])
+    expect(normalizeSearchText('Acme \u2013 Website')).toBe('acme - website')
+    expect(normalizeSearchText('Wait\u2026')).toBe('wait...')
+  })
+  it('folds compatibility letters and ligatures', () => {
+    expect(normalizeSearchText('K\u0131l\u0131\u00E7')).toBe('kilic')   // dotless i
+    expect(normalizeSearchText('\uFB01nance')).toBe('finance')            // \uFB01 ligature
+    expect(normalizeSearchText('\u0133')).toBe('ij')
+    expect(normalizeSearchText('\uFF21\uFF43\uFF4D\uFF45')).toBe('acme')  // fullwidth
+    expect(normalizeSearchText('\u00BD')).toBe('1/2')
+  })
+  it('does NOT decompose characters unaccent() leaves whole (Hangul, kana with dakuten)', () => {
+    expect(normalizeSearchText('\uD55C\uAD6D')).toBe('\uD55C\uAD6D')
+    expect(normalizeSearchText('\u304C')).toBe('\u304C')
+    expect(normalizeSearchText('\u3071')).toBe('\u3071')
+  })
+  it('still folds accents in precomposed AND decomposed form', () => {
+    expect(normalizeSearchText('Caf\u00E9')).toBe('cafe')
+    expect(normalizeSearchText('Cafe\u0301')).toBe('cafe')
+    expect(normalizeSearchText('\u1EC7')).toBe('e')
+  })
+  it('maps every kind of space to a single space', () => {
+    expect(normalizeSearchText('a\u00A0\u2003b\u3000c')).toBe('a b c')
+  })
+  it('folds astral characters by code point without splitting surrogates', () => {
+    expect(normalizeSearchText('\uD83C\uDD10x')).toBe('(a)x')            // U+1F110 parenthesized A
+    expect(normalizeSearchText('\uD835\uDC00')).toBe('\uD835\uDC00')     // unaccent() leaves U+1D400 alone and it has no lower-case form
+  })
+  it('a fold that produces "*" can never reach PostgREST as a wildcard', () => {
+    expect(foldedTokens('\u00D7')).toEqual([])
+    expect(foldedTokens('a\u00D7b')).toEqual(['a', 'b'])
+    expect(isSearchable('\u00D7\u00D7')).toBe(false)
+    expect(likePattern(foldedTokens('50\uFF05')[0])).toBe('%50\\%%')       // fullwidth % folds to % and is then escaped
+  })
+})
+
 describe('tokens', () => {
   it('splits on whitespace, dedupes, caps at 6', () => {
     expect(foldedTokens('acme  acme website')).toEqual(['acme', 'website'])

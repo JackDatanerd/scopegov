@@ -20,25 +20,36 @@
 // query normalised here by the same rules.
 
 import { escapeIlike } from '@/lib/audit/search'
+import { UNACCENT } from './unaccent-map'
 
 export const MAX_QUERY_LENGTH = 100
 export const MAX_TOKENS = 6
 export const MIN_QUERY_LENGTH = 2
 
-// Letters Postgres' unaccent maps that Unicode NFD does not decompose.
-const SPECIAL: Record<string, string> = {
-  'ß': 'ss', 'æ': 'ae', 'œ': 'oe', 'ø': 'o', 'đ': 'd', 'ð': 'd', 'ł': 'l', 'þ': 'th',
-}
-
-/** Fold to the form stored in projects/clients.search_text. */
+/**
+ * Fold to the form stored in projects/clients/client_contacts/users.search_text, i.e. what
+ * `lower(unaccent(x))` produces in Postgres.
+ *
+ * FIX (Search section, round 4): this used to be NFD + "strip U+0300–036F" + eight hand-picked letters,
+ * which is NOT what unaccent() does — verified by running both over every code point against Postgres 16:
+ *   • unaccent() also folds typographic punctuation and compatibility characters that NFD leaves alone
+ *     (’ ‘ “ ” – — … ı ĳ ŋ ħ ﬁ ½ © fullwidth forms …), so a query containing one never matched its own
+ *     stored text — "O’Brien" (curly apostrophe, what every phone keyboard types) was stored as
+ *     o'brien but searched as o’brien, and "Acme — Website" (copied from the palette's own title
+ *     format) could never match "acme - website";
+ *   • NFD decomposes characters unaccent() leaves intact — every precomposed Hangul syllable and Japanese
+ *     kana with a dakuten (が, ぱ …) — so those names, stored whole, were searched as jamo/base+mark and
+ *     were unfindable.
+ * The fold is now unaccent() itself, per code point (see unaccent-map.ts / scripts/gen-unaccent-map.mjs).
+ * Lower-casing is per code point, like Postgres' lower(), so a Greek final sigma is not context-shifted.
+ */
 export function normalizeSearchText(input: string): string {
-  return String(input ?? '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')  // combining marks left by NFD
-    .toLowerCase()
-    .replace(/[ßæœøđðłþ]/g, ch => SPECIAL[ch] ?? ch)
-    .replace(/\s+/g, ' ')
-    .trim()
+  let out = ''
+  for (const ch of String(input ?? '')) {
+    const cp = ch.codePointAt(0) as number
+    out += (cp < 0x80 ? ch : (UNACCENT[cp] ?? ch)).toLowerCase()
+  }
+  return out.replace(/\s+/g, ' ').trim()
 }
 
 function clean(raw: string): string {
@@ -63,7 +74,9 @@ function split(s: string): string[] {
 
 /** Accent-folded tokens — for the generated search_text columns. */
 export function foldedTokens(raw: string): string[] {
-  return split(normalizeSearchText(clean(raw)))
+  // `*` is stripped AFTER folding as well as before (clean): unaccent() maps × ⁎ ＊ to a literal `*`, which
+  // PostgREST would then read as a `%` wildcard that cannot be escaped.
+  return split(normalizeSearchText(clean(raw)).replace(/\*/g, ' '))
 }
 
 /** Lower-cased (accents kept) tokens — for plain columns such as titles. */
@@ -82,7 +95,9 @@ export function prefixLike(text: string): string {
 }
 
 export function isSearchable(raw: string | null | undefined): boolean {
-  return normalizeSearchText(clean(raw ?? '')).length >= MIN_QUERY_LENGTH
+  // Via foldedTokens so the length is that of what will actually be searched (a query made only of
+  // × or * folds to nothing and must not count as searchable).
+  return foldedTokens(raw ?? '').join(' ').length >= MIN_QUERY_LENGTH
 }
 
 /**
