@@ -1,0 +1,32 @@
+CHANGES — Invoicing (section 12), independent pass 12
+=====================================================
+Bugs only; no feature work.
+
+1. Milestone invoices under-billed when tax-inclusive (components/invoices/BillingTab.tsx, lib/documents/invoice-form.ts)
+   Picking a milestone pre-filled its PRE-TAX amount into a field that means GROSS for an inclusive invoice
+   (1,000 @ 16% inclusive -> subtotal 862.07). The milestone then flipped to 'invoiced' and the remainder
+   could never be billed. The prefill is now grossed up (amountFieldForNet), as the CO branch already was.
+
+2. Payments panel showed "No payments recorded yet" when the load failed (BillingTab.tsx PaymentsPanel)
+   A 403/500/network error fell through to the empty state, inviting duplicate payments. Now shows the
+   error with Retry; a failed re-read after editing a payment no longer blanks the list.
+
+3. Editing a draft always re-ran the money checks (BillingTab.tsx EditInvoiceModal, invoice-form.ts)
+   Every save sent amount/tax/lineItems, so a title or PO fix re-ran the per-source caps and the
+   over-contract confirmation. Save now sends only changed fields (money block only if money changed;
+   nothing changed = no request).
+
+4. invoices.paid_at was the moment of RECORDING, not the date received (migration 125)
+   recalc_invoice_paid_status() stamped now(); back-dated payments and later date corrections never
+   reached the CSV "Paid on" column or the milestone's paid_at. While paid, paid_at is now the latest
+   payment's date and is re-derived on every payment write; sync_milestone_from_invoice() uses it. Includes
+   a backfill of existing paid invoices/milestones. RUN 125 BEFORE/WITH DEPLOY (no code depends on it).
+
+5. Registry pagination had no sort tie-breaker (app/(app)/invoices/page.tsx): added .order('id').
+
+Minor, same files: res.json() guarded on delete/create/draft/record/void/dispute calls with fallback
+messages; "Copy link" only reports success if the clipboard write succeeds (falls back to a prompt);
+the live at-risk fallback now counts 'stalled' COs like computeContractPositions.
+
+Tests: tests/invoicing-independent-pass-12.test.ts (helpers). Not run here (no node_modules in the sandbox);
+logic was executed directly and all files syntax-checked. Run `npm test` before pushing.

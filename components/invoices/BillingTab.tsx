@@ -12,6 +12,7 @@ import RichTextField from '@/components/ui/RichTextField'
 import { baseContractValue } from '@/lib/reports/contract-position'
 import { isOpenEndedRetainer } from '@/lib/utils/contract-value'
 import { isPaymentClaimOpen } from '@/lib/utils/invoice-registry'
+import { amountFieldForNet, buildInvoiceEditPatch, type EditFormState } from '@/lib/documents/invoice-form'
 
 const METHOD_LABELS: Record<string, string> = {
   bank_transfer: 'Bank transfer', stripe: 'Stripe', check: 'Check', cash: 'Cash', other: 'Other',
@@ -153,7 +154,7 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
   // undercounted real open money to $0 for any project with more than
   // one CO in flight, until the daily reconciliation snapshot next runs.
   const atRiskValue      = latestSnapshot ? latestSnapshot.at_risk_value
-    : (project.change_orders || []).filter((c: any) => ['awaiting_response', 'countered', 'awaiting_countersignature'].includes(c.status)).reduce((s: number, c: any) => s + (c.total || 0), 0)
+    : (project.change_orders || []).filter((c: any) => ['awaiting_response', 'stalled', 'countered', 'awaiting_countersignature'].includes(c.status)).reduce((s: number, c: any) => s + (c.total || 0), 0)
 
   // FIX (re-audit, section-12 finding): the "Contracted" figure shown above
   // always read raw project.contract_value directly, instead of following
@@ -279,7 +280,7 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ note }),
       })
       const json = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(json.error)
+      if (!res.ok) throw new Error(json.error || 'Failed to resolve the dispute')
       // FIX (section-11/12 fix round): `emailed` now reflects an actual delivery
       // check (see the route) instead of always being true whenever the code
       // reached the send call — say so when it's false, same as Send/Void above.
@@ -295,7 +296,7 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
     setBusyId(id); setError('')
     try {
       const res = await fetch(`/api/invoices/${id}`, { method: 'DELETE' })
-      if (!res.ok) { const j = await res.json(); throw new Error(j.error) }
+      if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || 'Failed to delete invoice') }
       await refresh()
     } catch (err: unknown) { setError(err instanceof Error ? err.message : 'Failed to delete invoice') }
     finally { setBusyId(null) }
@@ -490,9 +491,10 @@ export default function BillingTab({ project, milestones, invoices, reconciliati
                           this check is belt-and-suspenders so the button doesn't render at
                           all rather than rendering and silently copying "undefined". */}
                       {inv.token && permissions.sendInvoices && (
-                        <button className="btn btn-ghost btn-sm" onClick={() => {
-                          navigator.clipboard.writeText(`${process.env.NEXT_PUBLIC_PORTAL_URL || window.location.origin}/portal/invoice/${inv.token}`)
-                          alert('Client link copied.')
+                        <button className="btn btn-ghost btn-sm" onClick={async () => {
+                          const link = `${process.env.NEXT_PUBLIC_PORTAL_URL || window.location.origin}/portal/invoice/${inv.token}`
+                          try { await navigator.clipboard.writeText(link); alert('Client link copied.') }
+                          catch { window.prompt('Copy the client link:', link) }
                         }}>
                           <i className="ti ti-link" style={{ fontSize: 11 }} /> Copy link
                         </button>
@@ -583,6 +585,9 @@ function PaymentsPanel({ invoice, currency, onChanged }: any) {
   const [loading, setLoading]   = useState(true)
   const [removingId, setRemovingId] = useState<string | null>(null)
   const [error, setError]       = useState('')
+  // FIX (independent pass 12 — bug 2): a failed load used to fall through to "No payments recorded yet".
+  const [loadError, setLoadError] = useState('')
+  const [reloadKey, setReloadKey] = useState(0)
   // FEATURE (section-12 audit, pass 2): fix a payment's amount / date / method /
   // reference in place instead of deleting and re-entering it.
   const [editId, setEditId]     = useState<string | null>(null)
@@ -601,7 +606,9 @@ function PaymentsPanel({ invoice, currency, onChanged }: any) {
       if (!res.ok) throw new Error(json.error || 'Could not update that payment.')
       const listRes = await fetch(`/api/invoices/${invoice.id}/payments`)
       const listJson = await listRes.json().catch(() => ({}))
-      setPayments(listJson.payments || [])
+      // A failed re-read must not blank the list (it would read as "no payments") — reload instead.
+      if (listRes.ok) setPayments(listJson.payments || [])
+      else setReloadKey(k => k + 1)
       setEditId(null)
       await onChanged()
     } catch (err: unknown) { setError(err instanceof Error ? err.message : 'Could not update that payment.') }
@@ -611,16 +618,19 @@ function PaymentsPanel({ invoice, currency, onChanged }: any) {
   useEffect(() => {
     let cancelled = false
     async function load() {
-      setLoading(true)
+      setLoading(true); setLoadError('')
       try {
         const res  = await fetch(`/api/invoices/${invoice.id}/payments`)
-        const json = await res.json()
+        const json = await res.json().catch(() => ({}))
+        if (!res.ok) throw new Error(json.error || 'Could not load payments.')
         if (!cancelled) setPayments(json.payments || [])
+      } catch (err: unknown) {
+        if (!cancelled) setLoadError(err instanceof Error ? err.message : 'Could not load payments.')
       } finally { if (!cancelled) setLoading(false) }
     }
     load()
     return () => { cancelled = true }
-  }, [invoice.id])
+  }, [invoice.id, reloadKey])
 
   async function remove(paymentId: string) {
     if (!confirm('Remove this payment? The invoice balance will update immediately.')) return
@@ -639,6 +649,12 @@ function PaymentsPanel({ invoice, currency, onChanged }: any) {
     <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
       {loading ? (
         <p style={{ fontSize: 12, color: 'var(--text-3)' }}>Loading payments…</p>
+      ) : loadError ? (
+        <p style={{ fontSize: 12, color: 'var(--red)' }}>
+          {loadError}{' '}
+          <button style={{ background: 'none', border: 'none', padding: 0, color: 'var(--text-3)', textDecoration: 'underline', cursor: 'pointer', fontSize: 12 }}
+            onClick={() => setReloadKey(k => k + 1)}>Retry</button>
+        </p>
       ) : !payments || payments.length === 0 ? (
         <p style={{ fontSize: 12, color: 'var(--text-3)' }}>No payments recorded yet.</p>
       ) : (
@@ -800,8 +816,8 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ projectId, request: aiText, sourceLabel, sourceContext }),
       })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error)
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json.error || 'Could not draft this — try again or fill it in manually.')
       if (json.title) setTitle(json.title)
       if (json.lineItems?.length) {
         setItemized(true)
@@ -853,7 +869,6 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
       const m = milestones.find((x: any) => x.id === id)
       if (m) {
         setTitle(m.title)
-        if (!itemized) setAmount(String(m.amount))
         // FIX (invoice-convenience audit): due_date, tax_rate, and
         // tax_inclusive are captured once on the milestone at SOW-build
         // time and were being silently discarded here — every invoice
@@ -874,7 +889,13 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
         // behind the selector, which stays visually locked to "Before
         // tax" — the same display-vs-state mismatch that effect exists
         // to prevent. Respect the same invariant here.
-        setTaxInclusive(itemized ? false : (milestoneTaxed ? (m.tax_inclusive ?? true) : (billingDefaults?.taxInclusive ?? true)))
+        const msRate = milestoneTaxed ? Number(m.tax_rate) : Number(billingDefaults?.taxRate ?? 0)
+        const msInclusive = itemized ? false : (milestoneTaxed ? (m.tax_inclusive ?? true) : (billingDefaults?.taxInclusive ?? true))
+        setTaxInclusive(msInclusive)
+        // FIX (independent pass 12 — bug 1): a milestone's amount is PRE-TAX, but for a tax-inclusive
+        // invoice this field is the GROSS — gross it up so the invoice's subtotal matches the milestone
+        // instead of silently under-billing it by the tax portion (see lib/documents/invoice-form.ts).
+        if (!itemized) setAmount(String(amountFieldForNet(Number(m.amount), msRate, msInclusive)))
       }
     } else if (type === 'sow') {
       const s = sows.find((x: any) => x.id === id)
@@ -948,14 +969,14 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
           ...(acknowledgeOverContract ? { acknowledgeOverContract: true } : {}),
         }),
       })
-      const json = await res.json()
+      const json = await res.json().catch(() => ({}))
       // FIX (section-12 audit, pass 2 — feature gap): the project-level over-invoicing check.
       if (res.status === 409 && json.code === 'over_contract') {
         setSubmitting(false)
         if (confirm(`${json.error}\n\nCreate this invoice anyway?`)) { await submitWith(true) }
         return
       }
-      if (!res.ok) throw new Error(json.error)
+      if (!res.ok) throw new Error(json.error || 'Failed to create invoice')
       onCreated()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to create invoice')
@@ -1199,6 +1220,8 @@ function EditInvoiceModal({ invoiceId, projectCurrency, onClose, onSaved }: {
 
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
+  // FIX (independent pass 12 — bug 3): the values as loaded, so save can send only what changed.
+  const [initial, setInitial] = useState<EditFormState | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -1206,7 +1229,7 @@ function EditInvoiceModal({ invoiceId, projectCurrency, onClose, onSaved }: {
       setLoading(true); setLoadError('')
       try {
         const res  = await fetch(`/api/invoices/${invoiceId}`)
-        const json = await res.json()
+        const json = await res.json().catch(() => ({}))
         if (!res.ok) throw new Error(json.error || 'Failed to load invoice')
         if (cancelled) return
         const inv = json.invoice
@@ -1243,6 +1266,19 @@ function EditInvoiceModal({ invoiceId, projectCurrency, onClose, onSaved }: {
         } else {
           setLineItems([{ id: nanoid(), description: '', quantity: 1, rate: 0, total: 0 }])
         }
+        const isItem = items.length > 0
+        setInitial({
+          title: inv.title || '',
+          amount: String((inv.tax_rate > 0 && inv.tax_inclusive === false ? inv.subtotal : inv.amount) ?? ''),
+          dueDate: inv.due_date ? String(inv.due_date).slice(0, 10) : '',
+          poNumber: inv.po_number || '',
+          paymentInstructions: inv.payment_instructions || '',
+          taxRate: inv.tax_rate != null ? String(inv.tax_rate) : '0',
+          taxInclusive: isItem ? false : (inv.tax_inclusive ?? true),
+          itemized: isItem,
+          lineItems: items.filter((li: any) => String(li.description || '').trim())
+            .map((li: any) => ({ description: String(li.description), quantity: Number(li.quantity), rate: Number(li.rate) })),
+        })
       } catch (err) {
         if (!cancelled) setLoadError(err instanceof Error ? err.message : 'Failed to load invoice')
       } finally {
@@ -1288,17 +1324,23 @@ function EditInvoiceModal({ invoiceId, projectCurrency, onClose, onSaved }: {
 
     setSubmitting(true)
     try {
+      // Only what changed (see lib/documents/invoice-form.ts) — a title/PO fix must not re-run the money checks.
+      const patch = initial ? buildInvoiceEditPatch(initial, {
+        title, amount, dueDate, poNumber, paymentInstructions, taxRate, taxInclusive, itemized,
+        lineItems: cleanItems.map(l => ({ description: l.description, quantity: l.quantity, rate: l.rate })),
+      }) : null
+      if (patch && Object.keys(patch).length === 0) { onSaved(); return }
+      const body = patch ?? {
+        title: title.trim(), amount: Number(amount),
+        dueDate: dueDate || null, poNumber: poNumber.trim() || null, paymentInstructions,
+        taxRate: Number(taxRate) || 0, taxInclusive,
+        lineItems: itemized ? cleanItems.map(({ id, ...rest }) => rest) : [],
+      }
       const res = await fetch(`/api/invoices/${invoiceId}`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: title.trim(), amount: Number(amount),
-          dueDate: dueDate || null, poNumber: poNumber.trim() || null, paymentInstructions,
-          taxRate: Number(taxRate) || 0, taxInclusive,
-          lineItems: itemized ? cleanItems.map(({ id, ...rest }) => rest) : [],
-          ...(acknowledgeOverContract ? { acknowledgeOverContract: true } : {}),
-        }),
+        body: JSON.stringify({ ...body, ...(acknowledgeOverContract ? { acknowledgeOverContract: true } : {}) }),
       })
-      const json = await res.json()
+      const json = await res.json().catch(() => ({}))
       // FIX (section-12 audit, independent pass 4 — feature gap): PATCH now runs the
       // same project-level over-contract confirmation POST already has (see the
       // route's comment) — handle it here the same way CreateInvoiceModal does.
@@ -1486,8 +1528,8 @@ function RecordPaymentModal({ invoice, onClose, onRecorded }: any) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ amount: Number(amount), paidAt, method, referenceNote: referenceNote.trim() || undefined }),
       })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error)
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json.error || 'Failed to record payment')
       onRecorded()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to record payment')
@@ -1554,8 +1596,8 @@ function VoidInvoiceModal({ invoice, onClose, onVoided }: any) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reason: reason.trim() || undefined, ...(paid > 0 ? { acknowledgePayments: true } : {}) }),
       })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error)
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json.error || 'Failed to void invoice')
       // FIX (section-11/12 fix round): the void route now reports whether the
       // "this invoice is void" email actually reached the client (the Resend
       // SDK can reject a send without the request failing) — same pattern the

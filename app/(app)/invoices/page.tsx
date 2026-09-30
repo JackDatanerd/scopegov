@@ -76,6 +76,9 @@ export default async function InvoicesPage({ searchParams }: {
     .eq('workspace_id', session.workspaceId)
     .is('projects.deleted_at', null)
     .order('created_at', { ascending: false })
+    // FIX (independent pass 12 — bug 5): created_at alone is not a total order, so rows sharing a timestamp
+    // could repeat or vanish across pages. The export route already tie-breaks on id.
+    .order('id')
     .range(from, from + pageSize - 1)
   if (allowedProjectIds !== null) invoicesQuery = invoicesQuery.in('project_id', allowedProjectIds)
   invoicesQuery = applyRegistryFilters(invoicesQuery, filters, textProjectIds)
