@@ -42,6 +42,8 @@ export default function Sidebar({ session }: { session: SessionUser }) {
 
   const [switcherOpen, setSwitcherOpen] = useState(false)
   const [workspaces,   setWorkspaces]   = useState<WorkspaceOption[]>([])
+  // Round 21: a failed /api/workspace/list used to leave the menu on "Loading workspaces…" forever.
+  const [listError,    setListError]    = useState(false)
   const [switching,    setSwitching]    = useState(false)
   const [leavingId,    setLeavingId]    = useState<string | null>(null)
   // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — feature
@@ -166,11 +168,20 @@ export default function Sidebar({ session }: { session: SessionUser }) {
     router.refresh()
   }
 
+  function loadWorkspaces() {
+    setListError(false)
+    fetch('/api/workspace/list')
+      .then(async r => {
+        const json = await r.json().catch(() => ({}))
+        if (!r.ok || !Array.isArray(json.workspaces)) { setListError(true); return }
+        setWorkspaces(json.workspaces)
+      })
+      .catch(() => setListError(true))
+  }
+
   function openSwitcher() {
     setSwitcherOpen(o => !o)
-    if (!switcherOpen && workspaces.length === 0) {
-      fetch('/api/workspace/list').then(r => r.json()).then(json => setWorkspaces(json.workspaces || [])).catch(() => {})
-    }
+    if (!switcherOpen && workspaces.length === 0) loadWorkspaces()
     // Best-effort, same as the workspace list fetch above — a failed
     // lookup just means the "recently deleted" section doesn't show,
     // never a blocker for the switcher itself.
@@ -288,8 +299,17 @@ export default function Sidebar({ session }: { session: SessionUser }) {
             boxShadow: '0 8px 24px rgba(0,0,0,0.15)', overflow: 'hidden',
           }}>
             <div style={{ maxHeight: 240, overflowY: 'auto' }}>
-              {workspaces.length === 0 && (
+              {workspaces.length === 0 && !listError && (
                 <div style={{ padding: '14px 12px', fontSize: 12, color: 'var(--text-3)' }}>Loading workspaces…</div>
+              )}
+              {workspaces.length === 0 && listError && (
+                <div style={{ padding: '14px 12px', fontSize: 12, color: 'var(--text-3)' }}>
+                  Couldn&apos;t load your workspaces.{' '}
+                  <button type="button" onClick={loadWorkspaces}
+                    style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--text-2)', textDecoration: 'underline', fontSize: 12 }}>
+                    Retry
+                  </button>
+                </div>
               )}
               {workspaces.map(ws => (
                 <div key={ws.id}

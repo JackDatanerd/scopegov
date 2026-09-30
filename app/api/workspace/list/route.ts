@@ -7,6 +7,7 @@
 
 import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/server'
 import { pickFallbackMembership } from '@/lib/auth/session'
+import { effectivePlanTier } from '@/lib/billing/plans'
 import { NextResponse } from 'next/server'
 
 export async function GET() {
@@ -25,12 +26,12 @@ export async function GET() {
     // deliberately leaves workspace_members untouched while banning the auth user —
     // a suspended person could otherwise still see their real workspace list for as
     // long as their already-issued access token stays valid.
-    const [{ data: memberships }, { data: userRow }] = await Promise.all([
+    const [{ data: memberships, error: membershipsErr }, { data: userRow, error: userRowErr }] = await Promise.all([
       (service as any)
         .from('workspace_members')
         .select(`
           workspace_id, created_at,
-          workspaces (id, name, agency_name, logo_storage_path, plan_tier, deleted_at, onboarding_completed_at)
+          workspaces (id, name, agency_name, logo_storage_path, plan_tier, trial_ends_at, deleted_at, onboarding_completed_at)
         `)
         .eq('user_id', user.id)
         .eq('status', 'active')
@@ -38,6 +39,14 @@ export async function GET() {
       (service as any)
         .from('users').select('active_workspace_id, deleted_at').eq('id', user.id).maybeSingle(),
     ])
+
+    // Round 21: a failed read used to fall through as an empty list (200 { workspaces: [] }),
+    // which the switcher showed as "Loading workspaces…" forever and the onboarding exit panel
+    // treated as "nothing to switch to". Surface it as a real error instead.
+    if (membershipsErr || userRowErr) {
+      console.error('Workspace list read failed:', membershipsErr || userRowErr)
+      return NextResponse.json({ error: 'Could not load your workspaces. Try again.' }, { status: 500 })
+    }
 
     if (userRow?.deleted_at) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
@@ -71,7 +80,9 @@ export async function GET() {
         logoUrl:    w.logo_storage_path
           ? `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/logos/${w.logo_storage_path}`
           : null,
-        planTier:   w.plan_tier,
+        // Round 21: effective tier, same as getSession() — an expired trial is Solo at once,
+        // not from the next cron run, so the switcher and the footer agree.
+        planTier:   effectivePlanTier(w.plan_tier, w.trial_ends_at),
         active:     w.id === resolvedActiveId,
         // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): this
         // list is also used by the onboarding wizard's exit panel to offer

@@ -2465,8 +2465,10 @@ function DangerTab({ workspace, permissions, session }: any) {
         method: 'DELETE', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ confirmName: confirm.trim(), workspaceId: workspace?.id }),
       })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error)
+      // Round 21: a gateway 502/504 (HTML body) made res.json() throw a raw parse error into the
+      // Danger zone, and a JSON error with no `error` field produced an empty message.
+      const json = await res.json().catch(() => ({})) as { error?: string }
+      if (!res.ok) throw new Error(json.error || 'Could not delete workspace. Try again.')
       // FIX (deep audit, Auth+MFA re-pass — signOut scope): this used to
       // call the bare, unscoped supabase.auth.signOut(), which defaults to
       // scope: 'global' — revoking every session on every device the
