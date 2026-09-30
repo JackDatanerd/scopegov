@@ -97,7 +97,13 @@ export interface PortfolioData {
   stuckDocsTotal: number
   /** "Projects by risk": in-progress projects with at least one signal, biggest exposure first. */
   projectRisk: Array<{
-    projectId: string; projectName: string; clientName: string | null; status: string; currency: string
+    projectId: string; projectName: string; clientName: string | null
+    /**
+     * The client's id (null without VIEW_CLIENT_DATA, exactly like clientName). Grouping by name alone merges two
+     * distinct clients that share one — names are not unique per workspace, only emails are.
+     */
+    clientId: string | null
+    status: string; currency: string
     effectiveValue: number | null
     openFlags: number; highFlags: number; borderlineFlags: number
     flagRisk: number | null; exceptionsCount: number; exceptionsRisk: number | null; atRisk: number | null
@@ -310,6 +316,7 @@ export async function getPortfolioData(
       return {
         projectId: r.projectId, projectName: p?.name || 'Unknown project',
         clientName: canViewClients ? (p?.clientName ?? null) : null,
+        clientId: canViewClients ? (p?.clientId ?? null) : null,
         status: p?.status || '', currency: p?.currency || 'USD',
         effectiveValue: canViewFinancials && p ? p.effectiveValue : null,
         openFlags: r.openFlags, highFlags: r.highFlags, borderlineFlags: r.borderlineFlags,

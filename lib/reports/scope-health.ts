@@ -70,6 +70,12 @@ export interface ScopeHealthProject {
   contractValue: number
   effectiveValue: number
   clientName: string | null
+  /**
+   * FIX (Portfolio independent pass 6): the client's id. clientName alone is not an identity — clients are
+   * unique per workspace by EMAIL (clients_workspace_email_lower), not by name, so two distinct "Acme"
+   * clients are legal and the "By client" roll-up (which only had the name) merged them into one row.
+   */
+  clientId: string | null
   updatedAt: string
   /** When the project entered Stalled (projects.stalled_at, migration 077); null if not stalled / unknown. */
   stalledAt: string | null
@@ -170,7 +176,7 @@ export async function computeScopeHealth(
 
   const [projectsP, flagsP, exceptionsP, amendmentsP, cosP, sowsP, coRevisionsP] = await Promise.all([
     fetchPaged<any>((from, to) => service.from('projects')
-      .select('id, name, type, status, stall_reason, stalled_at, contract_value, retainer_duration_months, currency, updated_at, clients(name)', { count: 'exact' })
+      .select('id, name, type, status, stall_reason, stalled_at, contract_value, retainer_duration_months, currency, updated_at, client_id, clients(name)', { count: 'exact' })
       .eq('workspace_id', workspaceId)
       .is('deleted_at', null)
       .order('id', { ascending: true })
@@ -266,6 +272,7 @@ export async function computeScopeHealth(
       contractValue: base,
       effectiveValue: Math.max(0, baseContractValue(p, retainerMonths.get(p.id)) + amendmentImpact(amendmentsByProject[p.id], p.type)),
       clientName: p.clients?.name || null,
+      clientId: p.client_id ?? null,
       updatedAt: p.updated_at,
       stalledAt: p.stalled_at ?? null,
     }
@@ -439,16 +446,7 @@ export async function computeScopeHealth(
     for (const d of stuckDocs) riskRow(d.projectId).stuckDocs++
   }
 
-  // Projects by risk: in-progress projects with any signal, biggest exposure first.
-  const projectRisk: ProjectRiskRow[] = withDetail
-    ? Object.values(risk)
-        .filter(r => inProgress(projectById[r.projectId]))
-        .map(r => ({ ...r, flagRisk: r2(r.flagRisk), exceptionsRisk: r2(r.exceptionsRisk), atRisk: r2(r.flagRisk + r.exceptionsRisk) }))
-        .filter(r => r.openFlags > 0 || r.borderlineFlags > 0 || r.exceptionsCount > 0 || r.stuckDocs > 0)
-        .sort((a, b) => b.atRisk - a.atRisk || b.openFlags - a.openFlags || b.stuckDocs - a.stuckDocs
-          || (projectById[a.projectId].name).localeCompare(projectById[b.projectId].name))
-    : []
-
+  // Computed before "Projects by risk" because that table's ordering needs the currency ranking.
   const byCurrency = Object.values(roll)
     .map(c => ({
       ...c,
@@ -456,6 +454,27 @@ export async function computeScopeHealth(
       exceptionsValueTotal: r2(c.exceptionsValueTotal),
     }))
     .sort((a, b) => (a.currency === currency ? -1 : b.currency === currency ? 1 : b.activeProjectCount - a.activeProjectCount))
+
+  // Projects by risk: in-progress projects with any signal, biggest exposure first WITHIN a currency.
+  //
+  // FIX (Portfolio independent pass 6): this sorted on raw `atRisk` across every project, so a KES 500,000
+  // exposure outranked a USD 20,000 one purely because the KES number is ~130x bigger — the exact
+  // cross-currency comparison the rest of this module refuses to make (money is single-currency, see the
+  // rules at the top). Ordering now follows the same currency ranking as `byCurrency` (dominant currency
+  // first, then by project count): projects are grouped by currency and ranked by exposure inside each
+  // group. A single-currency workspace sorts exactly as before. The PDF/CSV cap (top 20) and the
+  // dashboard's first 10 rows therefore lead with the headline currency instead of whichever currency
+  // happens to use the largest numbers.
+  const currencyRank = new Map<string, number>(byCurrency.map((c, i) => [c.currency, i]))
+  const rankOf = (id: string) => currencyRank.get(projectById[id].currency) ?? Number.MAX_SAFE_INTEGER
+  const projectRisk: ProjectRiskRow[] = withDetail
+    ? Object.values(risk)
+        .filter(r => inProgress(projectById[r.projectId]))
+        .map(r => ({ ...r, flagRisk: r2(r.flagRisk), exceptionsRisk: r2(r.exceptionsRisk), atRisk: r2(r.flagRisk + r.exceptionsRisk) }))
+        .filter(r => r.openFlags > 0 || r.borderlineFlags > 0 || r.exceptionsCount > 0 || r.stuckDocs > 0)
+        .sort((a, b) => rankOf(a.projectId) - rankOf(b.projectId) || b.atRisk - a.atRisk || b.openFlags - a.openFlags || b.stuckDocs - a.stuckDocs
+          || (projectById[a.projectId].name).localeCompare(projectById[b.projectId].name))
+    : []
 
   const dominant = roll[currency]
   return {

@@ -4,6 +4,7 @@ import type React from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { formatCurrency, formatDate, formatRelative } from '@/lib/utils/format'
+import { groupRiskByClient } from '@/lib/reports/portfolio-client-groups'
 
 type Period = '30d' | '90d' | '6m' | '12m' | 'all'
 
@@ -24,7 +25,10 @@ interface StuckDoc {
   projectId: string; projectName: string; clientName: string | null; since: string
 }
 interface RiskRow {
-  projectId: string; projectName: string; clientName: string | null; status: string; currency: string
+  projectId: string; projectName: string; clientName: string | null
+  // Optional: a response served by an older deploy may not carry it (the grouping then falls back to the name).
+  clientId?: string | null
+  status: string; currency: string
   effectiveValue: number | null
   openFlags: number; highFlags: number; borderlineFlags: number
   flagRisk: number | null; exceptionsCount: number; exceptionsRisk: number | null; atRisk: number | null
@@ -308,7 +312,7 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName, canO
             />
           </div>
 
-          <ProjectsByRisk rows={data.projectRisk} canViewFinancials={canViewFinancials} canOpenProjects={canOpenProjects} />
+          <ProjectsByRisk rows={data.projectRisk} currency={data.currency} canViewFinancials={canViewFinancials} canOpenProjects={canOpenProjects} />
 
           <div>
             <div className="sec-hd">
@@ -787,24 +791,14 @@ function RiskExplainer({ model }: { model: PortfolioData['riskModel'] }) {
 // already existed inside computeScopeHealth; this surfaces them, sorted by exposure, with a by-client roll-up.
 const RISK_PREVIEW = 10
 
-function ProjectsByRisk({ rows, canViewFinancials, canOpenProjects }: { rows: RiskRow[]; canViewFinancials: boolean; canOpenProjects: boolean }) {
+function ProjectsByRisk({ rows, currency, canViewFinancials, canOpenProjects }: { rows: RiskRow[]; currency: string; canViewFinancials: boolean; canOpenProjects: boolean }) {
   const router = useRouter()
   const [view, setView] = useState<'project' | 'client'>('project')
   const [expanded, setExpanded] = useState(false)
   const hasClients = rows.some(r => r.clientName)
 
-  const clientRows = useMemo(() => {
-    const map = new Map<string, { client: string; projects: number; openFlags: number; highFlags: number; stuckDocs: number; risk: Map<string, number> }>()
-    for (const r of rows) {
-      const key = r.clientName || 'No client'
-      const g = map.get(key) || { client: key, projects: 0, openFlags: 0, highFlags: 0, stuckDocs: 0, risk: new Map<string, number>() }
-      g.projects++; g.openFlags += r.openFlags; g.highFlags += r.highFlags; g.stuckDocs += r.stuckDocs
-      if (r.atRisk !== null) g.risk.set(r.currency, (g.risk.get(r.currency) || 0) + r.atRisk)
-      map.set(key, g)
-    }
-    const sum = (g: { risk: Map<string, number> }) => Array.from(g.risk.values()).reduce((a, b) => a + b, 0)
-    return Array.from(map.values()).sort((a, b) => sum(b) - sum(a) || b.openFlags - a.openFlags || a.client.localeCompare(b.client))
-  }, [rows])
+  // Grouped on the client's id and ordered by headline-currency exposure — see lib/reports/portfolio-client-groups.ts.
+  const clientRows = useMemo(() => groupRiskByClient(rows, currency), [rows, currency])
 
   const list = view === 'project' ? rows : clientRows
   const visibleCount = expanded ? list.length : Math.min(list.length, RISK_PREVIEW)
@@ -872,14 +866,14 @@ function ProjectsByRisk({ rows, canViewFinancials, canOpenProjects }: { rows: Ri
                     </tr>
                   ))
                 : clientRows.slice(0, visibleCount).map(g => (
-                    <tr key={g.client} className="no-link">
+                    <tr key={g.key} className="no-link">
                       <td className="td-primary">{g.client}</td>
                       <td>{g.projects}</td>
                       <td>{g.openFlags}{g.highFlags > 0 && <span style={{ color: 'var(--red)', fontSize: 11.5 }}> ({g.highFlags} high)</span>}</td>
                       <td>{g.stuckDocs || '—'}</td>
                       {canViewFinancials && (
                         <td className="td-mono" style={{ textAlign: 'right' }}>
-                          {g.risk.size === 0 ? '—' : Array.from(g.risk.entries()).map(([cur, v]) => formatCurrency(v, cur)).join(' · ')}
+                          {g.risk.length === 0 ? '—' : g.risk.map(([cur, v]) => formatCurrency(v, cur)).join(' · ')}
                         </td>
                       )}
                     </tr>

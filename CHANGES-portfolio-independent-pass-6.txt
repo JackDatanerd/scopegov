@@ -1,0 +1,34 @@
+CHANGES — Portfolio (section 8), fresh independent pass 6
+=========================================================
+
+B1  "Projects by risk → By client" merged different clients that share a name
+    The roll-up grouped on clientName only (the payload carried no client id). Clients are unique per workspace by
+    EMAIL (clients_workspace_email_lower), not by name, so two distinct "Acme" clients are legal — and their flags,
+    stuck documents and value at risk were summed into one row, hiding that one of them is the problem.
+    Fix: lib/reports/scope-health.ts selects projects.client_id and exposes clientId; getPortfolioData passes it on
+    (withheld without VIEW_CLIENT_DATA, exactly like clientName). The grouping now lives in a pure helper,
+    lib/reports/portfolio-client-groups.ts, keyed on the client id (name only as a fallback for a response served by
+    an older deploy). Two clients that genuinely share a display name are labelled "Acme (#1)" / "Acme (#2)" with a
+    suffix tied to the id order, so a label never changes when the exposure ranking does.
+
+B2  Cross-currency ordering (By client, and Projects by risk)
+    Same class as the rest of the module's rule "money is single-currency": the By-client groups were ordered by a sum of
+    value-at-risk ACROSS currencies, and the per-project list sorted on raw atRisk across currencies. A KES 500,000
+    exposure therefore outranked a USD 20,000 one purely because the KES number is ~130x bigger, and since the
+    dashboard shows only the first 10 rows (and the PDF/CSV summary the top 20), the headline currency's real
+    problems could be pushed below the fold.
+    Fix: projects are ordered by the same currency ranking as byCurrency (headline currency first, then by project
+    count) and by exposure within a currency; client groups by headline-currency exposure, then open flags. Money in a
+    client row is still listed per currency (headline first) and never added together. Single-currency workspaces sort
+    exactly as before.
+
+Files
+-----
+  lib/reports/scope-health.ts                (+client_id select, +clientId, byCurrency computed before projectRisk, currency-ranked sort)
+  lib/reports/portfolio-data.ts              (+clientId on projectRisk, permission-gated)
+  lib/reports/portfolio-client-groups.ts     (NEW — pure By-client grouping)
+  components/portfolio/PortfolioDashboard.tsx (uses the helper; passes the headline currency)
+  tests/portfolio-risk.test.ts               (+3 tests)
+  tests/portfolio-client-groups.test.ts      (NEW, 7 tests)
+No migration. CSV/PDF output is unchanged except that the top-20 summary now leads with the headline currency
+in a mixed-currency workspace.

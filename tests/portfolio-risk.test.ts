@@ -281,3 +281,48 @@ describe('portfolio pass — section 8 regressions', () => {
     expect(d.trend).toMatchObject({ baselineDate: '2020-01-05', openFlagsDelta: -2 })
   })
 })
+
+// ── Portfolio independent pass 6 regressions ─────────────────────────────────
+describe('portfolio pass 6 — client identity and cross-currency ordering', () => {
+  const flag = (id: string, project_id: string, severity: string) =>
+    ({ id, project_id, severity, status: 'open', description: id, sow_reference: 's', created_at: '2026-09-02T00:00:00Z' })
+
+  it('projectRisk carries the client id, and withholds it (like the name) without VIEW_CLIENT_DATA', async () => {
+    const svc = fakeService({
+      ...empty,
+      projects: [proj('a', { client_id: 'client-1' })],
+      guardian_flags: [flag('f1', 'a', 'high')],
+    })
+    const withClients = await getPortfolioData(svc, 'w', '90d', true, true)
+    expect(withClients.projectRisk[0]).toMatchObject({ clientId: 'client-1', clientName: 'Client of a' })
+    const without = await getPortfolioData(svc, 'w', '90d', true, false)
+    expect(without.projectRisk[0]).toMatchObject({ clientId: null, clientName: null })
+    expect(JSON.stringify(without)).not.toContain('client-1')
+  })
+
+  it("'Projects by risk' leads with the headline currency instead of whichever currency has the biggest numbers", async () => {
+    // 3 USD projects (dominant by count) and 1 KES project whose exposure is numerically ~130x larger.
+    const svc = fakeService({
+      ...empty,
+      projects: [
+        proj('usd1', { contract_value: 20000 }), proj('usd2', { contract_value: 10000 }), proj('usd3', { contract_value: 5000 }),
+        proj('kes', { contract_value: 5000000, currency: 'KES' }),
+      ],
+      guardian_flags: [flag('f1', 'usd1', 'high'), flag('f2', 'usd2', 'high'), flag('f3', 'usd3', 'high'), flag('f4', 'kes', 'high')],
+    })
+    const h = await computeScopeHealth(svc, 'w', { withDetail: true })
+    expect(h.currency).toBe('USD')
+    // Before: ['kes', 'usd1', 'usd2', 'usd3'] — KES 250,000 "outranked" USD 1,000.
+    expect(h.projectRisk.map(r => r.projectId)).toEqual(['usd1', 'usd2', 'usd3', 'kes'])
+  })
+
+  it('a single-currency workspace still sorts purely by exposure', async () => {
+    const svc = fakeService({
+      ...empty,
+      projects: [proj('small', { contract_value: 1000 }), proj('big', { contract_value: 90000 })],
+      guardian_flags: [flag('f1', 'small', 'high'), flag('f2', 'big', 'high')],
+    })
+    const h = await computeScopeHealth(svc, 'w', { withDetail: true })
+    expect(h.projectRisk.map(r => r.projectId)).toEqual(['big', 'small'])
+  })
+})
