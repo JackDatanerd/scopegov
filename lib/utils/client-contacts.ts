@@ -61,7 +61,16 @@ export async function withPrimaryContactCc(
     // FIX (independent pass 2, section 14): no ORDER BY, so when more matching contacts existed than the
     // MAX_CC_EMAILS cap has room for, WHICH ones were kept was whatever order Postgres returned — the client's
     // designated primary contact could be the one dropped. Primary first, then oldest first (stable).
-    const { data: rows } = await q.order('is_primary', { ascending: false }).order('created_at', { ascending: true })
+    // FIX (independent pass 11, section 14 — B2): `error` was never read. supabase-js resolves to { data: null, error }
+    // instead of throwing, so the catch below never fired for a failed read and the routed contacts (primary / billing /
+    // scope) were silently left off the document with nothing in the logs — contradicting this function's own contract
+    // that a lookup failure is logged and never blocks the send. Now logged; the send still goes out to the client's own
+    // email + cc_emails.
+    const { data: rows, error: rowsErr } = await q.order('is_primary', { ascending: false }).order('created_at', { ascending: true })
+    if (rowsErr) {
+      console.error('Contact CC lookup failed:', rowsErr.message ?? rowsErr)
+      return cc
+    }
 
     const seen = new Set([clientEmail, ...cc].map(e => (e || '').toLowerCase().trim()).filter(Boolean))
     const extra: string[] = []

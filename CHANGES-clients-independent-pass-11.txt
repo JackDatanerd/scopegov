@@ -1,0 +1,33 @@
+Clients (section 14) — independent pass 11
+==========================================
+
+B1 (Low) "Manage client record" card rendered empty for a delete-only member who could see a project
+  components/clients/ClientDangerZone.tsx
+    - The "can't be deleted — it still has N projects on record" explanation required
+      visibleProjectCount === 0 as well as totalProjectCount > 0. A member with DELETE_PROJECTS but no
+      merge rights, viewing a client with at least one project they can see, got a heading and nothing
+      under it. The explanation now shows whenever totalProjectCount > 0.
+
+B2 (Low-Med, cross-section) A failed contact-CC read was silent
+  lib/utils/client-contacts.ts
+    - withPrimaryContactCc destructured only { data }; supabase-js returns { error } instead of
+      throwing, so the catch never ran and the routed primary / billing / scope contacts were quietly
+      left off invoices, SOWs and change orders with nothing logged. The error is now read and logged;
+      the send still proceeds to the client's own email + cc_emails.
+    - Reaches every caller: send-invoice / send-sow / send-co, reminders, withdraw, void, finalize-co,
+      accept-co-counter, the portal sign/decline/dispute/paid routes and the client-reminders cron.
+
+B3 (Low) Email validator accepted malformed addresses
+  lib/utils/client-input.ts
+    - EMAIL_RE now rejects consecutive dots, a domain that starts or ends with a dot, and invisible
+      format characters (zero-width space, soft hyphen, bidi marks, word joiner, BOM). ZWNJ/ZWJ stay
+      allowed. Covers client create/edit, CC lists, both contacts routes and the inline new-client path
+      in POST /api/projects.
+
+B4 (Low) CSV filename date disagreed with the rows' time zone
+  components/clients/ClientsClient.tsx
+    - clients-<date>.csv used the UTC date; the Client since column uses the workspace zone. It now
+      uses isoDateInZone(new Date(), timeZone).
+
+Tests: tests/clients-pass11-fixes.test.ts
+No migration required.

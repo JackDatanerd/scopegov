@@ -184,6 +184,11 @@ export default function ClientDangerZone({
           )
         )}
 
+        {/* FIX (independent pass 11, section 14 — B1): the explanation below used to ALSO require
+            visibleProjectCount === 0, so a member who may delete clients but cannot merge (no CREATE_PROJECTS /
+            VIEW_CLIENT_DATA / VIEW_ALL_PROJECTS) and who could see at least one of this client's projects got a
+            "Manage client record" card with a heading and NOTHING in it — neither a Delete button (the client has
+            projects) nor a reason why. The reason is now shown whenever the client has any project on record. */}
         {/* FIX (independent pass round 2, section 14): the Delete button used to key off
             visibleProjectCount alone, so a client whose only projects were soft-deleted showed
             it as available and then always got a 409 from the API's stricter, "including deleted
@@ -201,7 +206,7 @@ export default function ClientDangerZone({
             </p>
           </div>
         )}
-        {canDelete && totalProjectCount > 0 && visibleProjectCount === 0 && (
+        {canDelete && totalProjectCount > 0 && (
           <div style={{ marginTop: canMerge ? 12 : 0 }}>
             <p style={{ fontSize: 11, color: 'var(--text-4)', margin: 0 }}>
               {canSeeAllProjects

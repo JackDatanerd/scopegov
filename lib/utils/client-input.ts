@@ -18,7 +18,12 @@ import { isValidTimeZone } from '@/lib/utils/timezone'
 // surrogates. Postgres cannot store \u0000 in text/jsonb and rejects an unpaired surrogate escape, so such an address
 // passed validation and then failed inside the RPC as a generic 500. Control characters and lone surrogates are never
 // part of a real address; the `u` flag makes `\ud800-\udfff` match ONLY unpaired surrogates (a valid pair is one code point).
-export const EMAIL_RE = /^[^\s@\u0000-\u001f\u007f\ud800-\udfff]+@[^\s@\u0000-\u001f\u007f\ud800-\udfff]+\.[^\s@\u0000-\u001f\u007f\ud800-\udfff]+$/u
+// FIX (independent pass 11, section 14 — B3): the pattern accepted `a@x..com` (consecutive dots), a domain that starts or
+// ends with a dot (`a@.x.com`, `a@x.com.`) and addresses carrying invisible format characters (zero-width space, soft
+// hyphen, bidi marks, word joiner, BOM) that survive a copy-paste from a web page or PDF. Each passed create / edit /
+// contact validation and then bounced (or failed in the mail provider) on the first send. ZWNJ/ZWJ are left alone — they
+// are real characters in some scripts' domain names.
+export const EMAIL_RE = /^(?!.*\.\.)[^\s@\u0000-\u001f\u007f\ud800-\udfff\u00ad\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\ufeff]+@(?!\.)[^\s@\u0000-\u001f\u007f\ud800-\udfff\u00ad\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\ufeff]+\.[^\s@\u0000-\u001f\u007f\ud800-\udfff\u00ad\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\ufeff]*[^\s@\u0000-\u001f\u007f\ud800-\udfff\u00ad\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\ufeff.]$/u
 
 /** True when the text holds a NUL byte or an unpaired surrogate — values Postgres refuses to store. */
 export function hasUnstorableText(s: string): boolean {

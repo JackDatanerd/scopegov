@@ -81,7 +81,7 @@ export default function ClientsClient({ clients, canCreate, canViewFinancials, c
     const blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
-    a.href = url; a.download = `clients-${new Date().toISOString().slice(0, 10)}.csv`
+    a.href = url; a.download = `clients-${isoDateInZone(new Date(), timeZone)}.csv` // workspace zone, like the Client since column
     document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url)
   }
 
