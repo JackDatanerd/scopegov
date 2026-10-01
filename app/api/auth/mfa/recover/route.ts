@@ -99,7 +99,19 @@ export async function POST(request: Request) {
     }
 
     // Remove every factor (verified or half-enrolled) via the admin API.
-    const { data: factorList } = await supabase.auth.mfa.listFactors()
+    // FIX (Auth+MFA pass 8 — MEDIUM): listFactors()'s `error` was never read, so a transient
+    // failure left `factorList` undefined, the loop below ran ZERO times, and the route
+    // carried on as if the factors were gone — spending the code, retiring every other
+    // code, signing out the other sessions, writing a `factor_removed` audit row and
+    // answering ok while the authenticator was still enrolled: a person who had lost it
+    // was left with no code and no way in. Same give-the-code-back path as a failed delete.
+    const { data: factorList, error: listErr } = await supabase.auth.mfa.listFactors()
+    if (listErr) {
+      console.error('MFA recovery: could not list factors:', listErr.message)
+      await (service as any).from('user_mfa_backup_codes').update({ used_at: null }).eq('id', match.id)
+      await releaseAuthAttempt(service, begin.attemptId)
+      return NextResponse.json({ error: 'Recovery could not be completed. Your backup code was not used — please try again.' }, { status: 502 })
+    }
     for (const f of (factorList?.all || [])) {
       const { error: delErr } = await (service as any).auth.admin.mfa.deleteFactor({ id: f.id, userId: user.id })
       if (delErr) {

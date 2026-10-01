@@ -94,6 +94,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const email = member.invited_email
     if (!email) return NextResponse.json({ error: 'Invite email missing.' }, { status: 400 })
 
+    // FIX (Auth+MFA pass 8 — LOW): the policy check at the top ran without the address (it is
+    // only known once the invite is looked up), so an invitee could set their password to
+    // their own email — the one rule every other password route enforces. Re-check with it.
+    const emailPolicyError = validatePassword(password, { email })
+    if (emailPolicyError) return NextResponse.json({ error: emailPolicyError }, { status: 400 })
+
     // FIX (deep audit, section 6 — flagship finding): same gap as
     // accept/route.ts (see its own comment for the full story) — the seat
     // limit was never re-checked at the point membership actually becomes

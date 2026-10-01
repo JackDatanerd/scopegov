@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import styles from '@/styles/admin.module.css'
+import { fetchWithStepUp } from '@/lib/client/step-up'
 
 interface Detail {
   workspace: {
@@ -46,7 +47,7 @@ export default function AdminWorkspaceDetailPage() {
     setBusy(true)
     setMessage(null)
     try {
-      const res = await fetch(`/api/admin/workspaces/${id}/${path}`, {
+      const res = await fetchWithStepUp(`/api/admin/workspaces/${id}/${path}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body || {}),

@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import styles from '@/styles/admin.module.css'
+import { fetchWithStepUp } from '@/lib/client/step-up'
 
 interface Detail {
   user: { id: string; email: string; name: string; is_platform_admin: boolean; created_at: string; deleted_at: string | null }
@@ -37,7 +38,7 @@ export default function AdminUserDetailPage() {
     setBusy(true)
     setMessage(null)
     try {
-      const res = await fetch(`/api/admin/users/${id}/${path}`, {
+      const res = await fetchWithStepUp(`/api/admin/users/${id}/${path}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}),
       })
       const json = await res.json().catch(() => ({}))

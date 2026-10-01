@@ -2,6 +2,7 @@ import { redirect } from 'next/navigation'
 import { getAdminActor, adminNeedsMfaEnrolment } from '@/lib/auth/admin'
 import styles from '@/styles/admin.module.css'
 import AdminNav from './AdminNav'
+import StepUpHost from '@/components/auth/StepUpHost'
 
 // Not found rather than a login/permission redirect for the same reason
 // requireAdmin() in the API layer returns 404: a non-admin (including one
@@ -31,6 +32,10 @@ export default async function AdminLayout({ children }: { children: React.ReactN
           <a href="/dashboard" className={styles.footerLink}>&larr; Back to app</a>
         </div>
       </aside>
+      {/* FIX (Auth+MFA pass 8 — MEDIUM): the mutating admin routes require a step-up, and this
+          is the modal that answers it (fetchWithStepUp in the detail pages). Without it a
+          lapsed 10-minute window left admins at "confirm it's you" with no way to. */}
+      <StepUpHost />
       <main className={styles.main}>{children}</main>
     </div>
   )
