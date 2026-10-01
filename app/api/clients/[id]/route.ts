@@ -118,11 +118,17 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       if (JSON.stringify(prev ?? null) === JSON.stringify(next ?? null)) continue
       changes[col] = AUDIT_REDACT.has(col) ? { changed: true } : { from: prev ?? null, to: next ?? null }
     }
+    // FIX (independent pass 12, section 14 — B2): archiving / reactivating a client is its own decision (it hides the client
+    // from the default roster), but it was recorded as a generic `client.updated` — the client's activity list read
+    // "Details updated — status". A change that is ONLY the status now gets its own event; a save that changes status
+    // together with other fields stays `client.updated` (its `fields` / `changes` still name the status).
+    const onlyStatus = Object.keys(changes).length === 1 && 'status' in changes
+    const eventType = onlyStatus ? (changes.status.to === 'archived' ? 'client.archived' : 'client.unarchived') : 'client.updated'
     if (Object.keys(changes).length > 0) {
       await logAudit(service, {
         workspaceId: session.workspaceId, actorId: session.id,
         actorEmail: session.email, actorName: session.name, ipAddress: getClientIp(request),
-        eventType: 'client.updated', entityType: 'client',
+        eventType, entityType: 'client',
         entityId: id, entityName: (updates.name as string) || existing.name,
         metadata: { fields: Object.keys(changes), changes },
       })

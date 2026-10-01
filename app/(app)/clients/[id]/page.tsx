@@ -299,6 +299,7 @@ export default async function ClientDetailPage({ params }: Props) {
   const ACTIVITY_LABEL: Record<string, string> = {
     'client.created': 'Client created', 'client.updated': 'Details updated', 'client.merged': 'Merged another client into this one',
     'client.deleted': 'Deleted', 'client.reactivated': 'Reactivated (a new project was started)',
+    'client.archived': 'Archived', 'client.unarchived': 'Reactivated',
     'client_contact.created': 'Contact added', 'client_contact.updated': 'Contact updated', 'client_contact.deleted': 'Contact removed',
   }
 

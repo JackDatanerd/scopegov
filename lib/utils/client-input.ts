@@ -23,7 +23,18 @@ import { isValidTimeZone } from '@/lib/utils/timezone'
 // hyphen, bidi marks, word joiner, BOM) that survive a copy-paste from a web page or PDF. Each passed create / edit /
 // contact validation and then bounced (or failed in the mail provider) on the first send. ZWNJ/ZWJ are left alone — they
 // are real characters in some scripts' domain names.
-export const EMAIL_RE = /^(?!.*\.\.)[^\s@\u0000-\u001f\u007f\ud800-\udfff\u00ad\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\ufeff]+@(?!\.)[^\s@\u0000-\u001f\u007f\ud800-\udfff\u00ad\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\ufeff]+\.[^\s@\u0000-\u001f\u007f\ud800-\udfff\u00ad\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\ufeff]*[^\s@\u0000-\u001f\u007f\ud800-\udfff\u00ad\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\ufeff.]$/u
+// FIX (independent pass 12, section 14 — B1): the pattern only excluded whitespace, `@`, control and invisible characters, so
+// it accepted `jane@acme.com,` (a trailing comma pasted from a list), `<jane@acme.com>` (an address copied out of a mail
+// header), `a,b@x.com`, `a;b@x.com`, `a@x.com>` and the quoted / bracketed forms (`"a b"@x.com`, `a@[1.2.3.4]`). Each passed
+// validation, was stored as the client's primary address (or a contact / CC address) and bounced on the first send. The
+// contact cards save from an onClick (not a <form> submit), so the browser's own type="email" check never ran for them.
+// RFC 5322 specials that are never part of a deliverable address as people type it — `<>()[],;:"\` — are now excluded from
+// both the local part and the domain. The apostrophe (o'brien@…) and `+` (jane+tag@…) stay valid, as do non-ASCII letters.
+const EMAIL_BAD = String.raw`\s@\u0000-\u001f\u007f\ud800-\udfff\u00ad\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\ufeff<>()\[\],;:"\\`
+export const EMAIL_RE = new RegExp(
+  String.raw`^(?!.*\.\.)[^${EMAIL_BAD}]+@(?!\.)[^${EMAIL_BAD}]+\.[^${EMAIL_BAD}]*[^${EMAIL_BAD}.]$`,
+  'u',
+)
 
 /** True when the text holds a NUL byte or an unpaired surrogate — values Postgres refuses to store. */
 export function hasUnstorableText(s: string): boolean {

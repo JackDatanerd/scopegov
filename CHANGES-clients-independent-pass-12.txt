@@ -1,0 +1,22 @@
+SECTION 14 — Clients — independent pass 12
+==========================================
+
+B1  EMAIL_RE accepted addressing characters that make an address undeliverable
+    lib/utils/client-input.ts
+    `jane@acme.com,`, `<jane@acme.com>`, `a,b@x.com`, `a;b@x.com`, `a@x.com>`, `"a b"@x.com`, `a@[1.2.3.4]` all passed
+    validation (create, edit, project-creation inline client, CC list, contact add/edit) and were stored as a recipient.
+    The contact cards save from onClick, so the browser's type="email" check never ran for them.
+    Fix: `<>()[],;:"\` are excluded from the local part and the domain. Apostrophes, `+`, `_` and non-ASCII letters stay valid.
+
+B2  Archive / reactivate recorded as a generic client.updated
+    app/api/clients/[id]/route.ts, app/(app)/clients/[id]/page.tsx
+    A status-only change now logs client.archived / client.unarchived (labelled on the client's activity list). A save that
+    changes status together with other fields stays client.updated; a no-op status write still records nothing.
+
+B3  merge_clients dropped a contact's routing role when the target already had that address
+    supabase/migrations/135_merge_clients_keep_role_type_on_duplicate.sql
+    Source contact (billing / scope / approver) + same email on the target as role_type 'other' => the target's copy now takes
+    the source's role_type, so that person keeps receiving the documents they used to. Target's own non-'other' role wins.
+    126's function body is otherwise unchanged. APPLY MIGRATION 135.
+
+Tests: tests/clients-pass12-fixes.test.ts
