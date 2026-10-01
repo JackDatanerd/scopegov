@@ -1387,6 +1387,19 @@ export async function sendClientResponseReceivedEmail(params: {
   }, params.log)
 }
 
+// Invoice payment instructions are RICH TEXT (TipTap via RichTextField in BillingTab) — stored as sanitized
+// HTML like `<p>Bank: …</p>` and rendered as HTML by the portal and the PDF. The invoice emails ran it through
+// escapeHtml(), so the client saw the literal markup ("<p>Bank…</p>") and doubled entities ("&amp;amp;") in the one
+// box that carries the bank details. Re-apply the storage allowlist and emit HTML. Rows saved before the editor was
+// rich text are plain text with newlines and no block tags: escape those and keep their line breaks.
+function paymentInstructionsHtml(raw: string | null | undefined): string {
+  if (!raw || !raw.trim()) return ''
+  if (!/<\/?(p|br|ul|ol|li|h[1-6]|blockquote|div|strong|b|em|i|u|a)\b/i.test(raw)) {
+    return escapeHtml(raw.trim()).replace(/\r?\n/g, '<br>')
+  }
+  return sanitizeRichTextOrNull(raw) ?? ''
+}
+
 export async function sendInvoiceEmail(params: {
   replyTo?: string | null; log?: EmailLogContext
   to: string; cc?: string[]; clientName: string; agencyName: string
@@ -1409,7 +1422,7 @@ export async function sendInvoiceEmail(params: {
   const agencyName           = escapeHtml(agencyNameRaw)
   const projectName          = escapeHtml(projectNameRaw)
   const title                = escapeHtml(titleRaw)
-  const paymentInstructions  = escapeHtml(paymentInstructionsRaw)
+  const paymentInstructions  = paymentInstructionsHtml(paymentInstructionsRaw)
 
   const html = baseTemplate({
     agencyName,
@@ -1431,7 +1444,7 @@ export async function sendInvoiceEmail(params: {
       ${paymentInstructions ? `
       <div style="background:${C.bg};border:1px solid ${C.border};border-radius:6px;padding:14px 16px;margin:16px 0;">
         <p style="font-size:11px;color:${C.text3};text-transform:uppercase;letter-spacing:.05em;margin:0 0 6px;">Payment instructions</p>
-        <p style="font-size:13px;color:${C.text2};margin:0;line-height:1.6;white-space:pre-line;">${paymentInstructions}</p>
+        <div style="font-size:13px;color:${C.text2};margin:0;line-height:1.6;">${paymentInstructions}</div>
       </div>
       ` : ''}
       ${paymentTerms ? `
@@ -1476,7 +1489,7 @@ export async function sendInvoiceReminderEmail(params: {
   const agencyName  = escapeHtml(agencyNameRaw)
   const projectName = escapeHtml(projectNameRaw)
   const title       = escapeHtml(titleRaw)
-  const paymentInstructions = escapeHtml(paymentInstructionsRaw)
+  const paymentInstructions = paymentInstructionsHtml(paymentInstructionsRaw)
   const paymentTerms        = escapeHtml(params.paymentTerms)
 
   const html = baseTemplate({
@@ -1495,7 +1508,7 @@ export async function sendInvoiceReminderEmail(params: {
       ${paymentInstructions ? `
       <div style="background:${C.bg};border:1px solid ${C.border};border-radius:6px;padding:14px 16px;margin:16px 0;">
         <p style="font-size:11px;color:${C.text3};text-transform:uppercase;letter-spacing:.05em;margin:0 0 6px;">Payment instructions</p>
-        <p style="font-size:13px;color:${C.text2};margin:0;line-height:1.6;white-space:pre-line;">${paymentInstructions}</p>
+        <div style="font-size:13px;color:${C.text2};margin:0;line-height:1.6;">${paymentInstructions}</div>
       </div>
       ` : ''}
       ${paymentTerms ? `

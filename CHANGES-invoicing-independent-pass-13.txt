@@ -1,0 +1,15 @@
+Invoicing (section 12) — independent pass 13
+
+BUG (1): client-facing invoice emails printed raw HTML in "Payment instructions".
+  payment_instructions is rich text (TipTap, stored as sanitized HTML such as <p>…</p>) and is rendered as
+  HTML by the portal and the PDF, but sendInvoiceEmail and sendInvoiceReminderEmail passed it through
+  escapeHtml(), so the client saw literal <p>/<ul>/<li> markup and doubled entities (&amp;amp;).
+  Affected every send path: direct send, approval auto-send, manual Remind, cron/client-reminders.
+
+FIX: lib/email/templates.ts
+  - new paymentInstructionsHtml(): re-applies the storage allowlist (sanitizeRichTextOrNull) and emits HTML,
+    same approach as the change-order note; rows saved before the rich-text editor (plain text, no block
+    tags) are escaped and keep their line breaks.
+  - both templates render it in a <div> (a <p> cannot nest the editor's <p>) without white-space:pre-line.
+
+TEST: tests/invoice-email-payment-instructions.test.ts
