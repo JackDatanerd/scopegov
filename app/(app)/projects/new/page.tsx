@@ -301,7 +301,7 @@ function NewProjectPageInner() {
       setPaymentStructure(SOW_PAYMENT_STRUCTURES.includes(brief.paymentStructure) ? brief.paymentStructure : '50_50')
       const parsedBriefRounds = Number(brief.revisionRounds)
       setRevisionRounds(
-        Number.isInteger(parsedBriefRounds) && parsedBriefRounds >= 1 && parsedBriefRounds <= 5
+        Number.isInteger(parsedBriefRounds) && parsedBriefRounds >= 1 && parsedBriefRounds <= 10
           ? String(parsedBriefRounds)
           : '2'
       )
@@ -624,7 +624,7 @@ function NewProjectPageInner() {
                   <div className="fgrp">
                     <label className="flbl">Revision rounds</label>
                     <select className="finp" value={revisionRounds} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => { setDefaultsTouched(true); setRevisionRounds(e.target.value) }}>
-                      {['1','2','3','4','5'].map(n => <option key={n} value={n}>{n} round{n !== '1' ? 's' : ''}</option>)}
+                      {['1','2','3','4','5','6','7','8','9','10'].map(n => <option key={n} value={n}>{n} round{n !== '1' ? 's' : ''}</option>)}
                     </select>
                   </div>
                 </div>

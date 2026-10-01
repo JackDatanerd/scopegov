@@ -1382,15 +1382,12 @@ function StandardsFields({ value, onChange, disabled }: { value: StandardsForm; 
   )
 }
 
-// FIX (independent re-audit, Settings section — minor): this used to stop at
-// '5', while the server (api/workspace/defaults's REVISION_ROUNDS_MAX) has
-// always accepted 0-20 — 0 meaning "no revisions included." A value outside
-// 1-5 only ever showed up here if it was set some other way (the dynamic
-// "splice the current value in" branch just below exists purely to cover
-// that). Match the server's real range so every value it accepts is
-// actually reachable from this dropdown, not just displayable once already
-// set by something else.
-const REVISION_ROUND_CHOICES = Array.from({ length: 21 }, (_, i) => String(i))
+// FIX (Settings fresh pass): 1-10, matching api/workspace/defaults and the SOW
+// generator (which replaces anything outside 1-10 with 2). The earlier 0-20
+// range let an admin save a default that every SOW then silently overrode.
+// A legacy out-of-range stored value is still spliced in below so the select
+// never shows a value that isn't what's stored.
+const REVISION_ROUND_CHOICES = Array.from({ length: 10 }, (_, i) => String(i + 1))
 
 function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab }: any) {
   function set(key: string, value: string) {

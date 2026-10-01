@@ -20,7 +20,14 @@ const PAYMENT_STRUCTURES = ['50_50', '100_upfront', 'milestones', 'monthly', 'on
 // type-checking recognizes (GET/POST/etc., runtime, config, ...) — exporting
 // an arbitrary named constant from one broke `next build` entirely for the
 // whole app. Only used within this file, so it doesn't need to be exported.
-const REVISION_ROUNDS_MAX = 20
+// FIX (Settings fresh pass): this was 0-20, but nothing downstream of the saved
+// default can carry a value outside 1-10: /api/sow/generate replaces anything
+// outside 1-10 with 2, the New Project form only offers 1-10 (and ignored a
+// falsy 0), and ProjectDetail's own input is min 1 / max 10. A default of 0 or
+// 11-20 therefore silently produced a SOW promising 2 rounds. The saved default
+// now has exactly the range the SOW pipeline can honour.
+const REVISION_ROUNDS_MIN = 1
+const REVISION_ROUNDS_MAX = 10
 const GOVERNING_LAW_MAX = 200
 
 // undefined = not specified (caller means "global"); null = explicitly global;
@@ -50,8 +57,8 @@ async function findRow(service: any, workspaceId: string, projectType: ProjectTy
 function parseRevisionRounds(value: unknown): number | undefined {
   if (value === undefined || value === null || value === '') return undefined
   const n = typeof value === 'number' ? value : Number(String(value).trim())
-  if (!Number.isInteger(n) || n < 0 || n > REVISION_ROUNDS_MAX) {
-    throw new DefaultsValidationError(`Revision rounds must be a whole number from 0 to ${REVISION_ROUNDS_MAX}`)
+  if (!Number.isInteger(n) || n < REVISION_ROUNDS_MIN || n > REVISION_ROUNDS_MAX) {
+    throw new DefaultsValidationError(`Revision rounds must be a whole number from ${REVISION_ROUNDS_MIN} to ${REVISION_ROUNDS_MAX}`)
   }
   return n
 }

@@ -1,0 +1,14 @@
+Settings (section 5) fresh independent pass — fixes
+
+BUG: Default revision rounds accepted 0-20, but nothing downstream can carry a value outside 1-10.
+  - /api/sow/generate replaces anything outside 1-10 with 2 (SOW promised 2 rounds regardless).
+  - New Project: dropdown only offered 1-5 and ignored a saved 0 (falsy check); 6-20 showed "1 round" while submitting the saved value.
+
+Fix:
+  - app/api/workspace/defaults/route.ts: validate 1-10 (was 0-20).
+  - components/settings/SettingsClient.tsx: dropdown 1-10 (was 0-20).
+  - app/(app)/projects/new/page.tsx: dropdown 1-10 (was 1-5); AI-brief clamp 1-10 (was 1-5).
+  - supabase/migrations/130_workspace_defaults_revision_rounds_range.sql: clamp legacy rows, add CHECK (1-10 or NULL).
+  - tests/settings-fresh-pass-revision-rounds.test.ts.
+
+Apply migration 130 before/with deploy. Tests/typecheck not run here (no node_modules in the sandbox): run `npm test` and `npm run typecheck`.
