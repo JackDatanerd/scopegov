@@ -100,8 +100,18 @@ export function formatCurrency(
   compact = false
 ): string {
   if (compact && Math.abs(amount) >= 1000) {
-    const val = amount / 1000
-    return `${currency} ${val % 1 === 0 ? val : val.toFixed(1)}k`
+    // The sign leads the whole string ("-USD 1.5k", matching the "+USD 1.5k" callers build for a positive delta);
+    // it used to be formatted inside the number ("USD -1.5k"). Values that round up to 1000k roll over to M
+    // ("USD 1.0M", not "USD 1000.0k"), and millions/billions get their own suffix instead of "USD 2500k".
+    const sign = amount < 0 ? '-' : ''
+    const abs = Math.abs(amount)
+    const trim = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(1))
+    const round1 = (n: number) => Math.round(n * 10) / 10
+    let text: string
+    if (round1(abs / 1000) < 1000) text = `${trim(round1(abs / 1000))}k`
+    else if (round1(abs / 1e6) < 1000) text = `${trim(round1(abs / 1e6))}M`
+    else text = `${trim(round1(abs / 1e9))}B`
+    return `${sign}${currency} ${text}`
   }
   try {
     return new Intl.NumberFormat('en-US', {

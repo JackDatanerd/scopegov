@@ -449,7 +449,8 @@ function MetricStrip({ data, canViewFinancials }: { data: PortfolioData; canView
               gives the same figure without depending on how much of the list actually arrived. */}
           {(() => {
             const other = (data.stuckDocsTotal ?? data.stuckDocs.length) - c.stalledSowCount - c.stalledCoCount
-            return other > 0 ? ` · +${other} declined/expired` : ''
+            // Not just declined/expired: this also covers SOWs with changes requested and counter-offered COs.
+            return other > 0 ? ` · +${other} more need action` : ''
           })()}
         </div>
       </div>
@@ -529,7 +530,15 @@ function TrendChart({ points: allPoints, mode, currency, hasSnapshots }: { point
     </div>
   }
 
-  const xFor = (i: number) => PADL + (i / (points.length - 1)) * (W - PADL - PAD)
+  // x is proportional to the calendar date, not the row index: a missed rollup day, or days dropped above for a
+  // currency mismatch, used to be squeezed out of the axis so a flat stretch looked like a steep slope.
+  const dayNum = (d: string) => Date.parse(`${d}T00:00:00Z`) / 86400000
+  const t0 = dayNum(points[0].date)
+  const span = dayNum(points[points.length - 1].date) - t0
+  const xFor = (i: number) => {
+    const frac = span > 0 ? (dayNum(points[i].date) - t0) / span : i / (points.length - 1)
+    return PADL + frac * (W - PADL - PAD)
+  }
   const yFor = (v: number) => H - PAD - ((v - min) / range) * (H - PAD * 2)
 
   // Three gridlines (top / middle / bottom) with their values — the chart had no axis at all, so a reader
@@ -558,10 +567,15 @@ function TrendChart({ points: allPoints, mode, currency, hasSnapshots }: { point
         ))}
         <path d={areaPath} fill="url(#portfolio-trend-fill)" />
         <path d={linePath} fill="none" stroke={colour} strokeWidth="1.75" />
-        {values.map((v, i) => (
-          <rect key={i} x={xFor(i) - (W / points.length) / 2} y={0} width={W / points.length} height={H}
-            fill="transparent" onMouseEnter={() => setHover(i)} style={{ cursor: 'pointer' }} />
-        ))}
+        {values.map((v, i) => {
+          // Each hit area spans from the midpoint to the previous point to the midpoint to the next one.
+          const left = i === 0 ? PADL : (xFor(i - 1) + xFor(i)) / 2
+          const right = i === values.length - 1 ? W - PAD : (xFor(i) + xFor(i + 1)) / 2
+          return (
+            <rect key={i} x={left} y={0} width={Math.max(right - left, 1)} height={H}
+              fill="transparent" onMouseEnter={() => setHover(i)} style={{ cursor: 'pointer' }} />
+          )
+        })}
         {hover !== null && (
           <>
             <line x1={xFor(hover)} y1={0} x2={xFor(hover)} y2={H} stroke="var(--border)" strokeWidth="1" />

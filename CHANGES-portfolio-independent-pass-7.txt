@@ -1,0 +1,21 @@
+Portfolio (section 8) — independent pass 7 (bugs only)
+
+1. lib/utils/format.ts — formatCurrency(..., compact=true)
+   - A negative amount rendered "USD -1.5k" (sign inside the number) while a positive delta is built as
+     "+USD 1.5k"; the sign now leads: "-USD 1.5k".
+   - 999,960 rendered "USD 1000.0k"; it now rolls over to "USD 1M".
+   - 2,500,000 rendered "USD 2500k"; M and B suffixes now exist ("USD 2.5M").
+   Affects every compact caller (Portfolio tiles/chart/exceptions panel, Reports page bars).
+   Test: tests/format-compact-currency.test.ts
+
+2. components/portfolio/PortfolioDashboard.tsx — Stalled tile
+   "+N declined/expired" is stuckDocsTotal minus the stalled counts, so it also included
+   "Changes requested" SOWs and "Counter-offer" COs. Label is now "+N more need action".
+
+3. components/portfolio/PortfolioDashboard.tsx — TrendChart x axis
+   x was proportional to the row index, so a missed rollup day or days dropped for a currency mismatch
+   compressed the time axis (a flat stretch read as a steep slope). x is now proportional to the calendar
+   date; hover hit areas span midpoint-to-midpoint between neighbouring points.
+
+Not changed: finding "export audit events have no activity label" was withdrawn — those rows have no
+project_id, so neither activity feed ever shows them.
