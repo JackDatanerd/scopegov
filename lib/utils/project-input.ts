@@ -9,6 +9,7 @@
 
 import type { ProjectType } from '@/lib/supabase/types'
 import { roundCurrency } from '@/lib/utils/format'
+import { hasUnstorableText, UNSTORABLE_TEXT_ERROR } from '@/lib/utils/client-input'
 
 export const PROJECT_TYPES: readonly ProjectType[] =
   ['web', 'mobile', 'brand', 'ecomm', 'marketing', 'retainer', 'video', 'other']
@@ -24,6 +25,9 @@ const fail = (error: string): { ok: false; error: string } => ({ ok: false, erro
 export function parseProjectName(raw: unknown): Parsed<string> {
   if (typeof raw !== 'string' || !raw.trim()) return fail('Project name is required')
   const v = raw.trim()
+  // FIX (section-7 independent pass, B2): NUL / lone surrogates can't be stored by Postgres — without this the
+  // insert failed as a generic 500 instead of a clean 400 (the clients routes already guard this).
+  if (hasUnstorableText(v)) return fail(UNSTORABLE_TEXT_ERROR('Project name'))
   if (v.length > MAX_PROJECT_NAME) return fail(`Project name must be ${MAX_PROJECT_NAME} characters or fewer`)
   return { ok: true, value: v }
 }
@@ -34,6 +38,7 @@ export function parseOptionalText(raw: unknown, label: string, max: number): Par
   if (typeof raw !== 'string') return fail(`${label} must be text`)
   const v = raw.trim()
   if (!v) return { ok: true, value: null }
+  if (hasUnstorableText(v)) return fail(UNSTORABLE_TEXT_ERROR(label))
   if (v.length > max) return fail(`${label} must be ${max} characters or fewer`)
   return { ok: true, value: v }
 }

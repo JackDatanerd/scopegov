@@ -65,3 +65,62 @@ export function unwrap<T>(res: { data: T[] | null; error: { message: string } | 
   if (res.error) throw new Error(`${label}: ${res.error.message}`)
   return res.data || []
 }
+
+// ── Large `.in()` filters ────────────────────────────────────────────────────
+// FIX (section-7 independent pass, B4): `.in('id', ids)` puts every id in the request URL (~37 bytes each). A
+// restricted member's project_members rows are never removed when a project completes or archives, so a long-tenured
+// member's list only grows, and past a couple of hundred projects the URL exceeds gateway limits and the Dashboard /
+// Projects list errored for that user. Large id lists are therefore split into chunks (same size contract-value.ts
+// already uses for its milestone lookup) and the per-chunk results merged.
+export const ID_FILTER_CHUNK = 100
+
+export function chunkIds<T>(ids: readonly T[], size = ID_FILTER_CHUNK): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < ids.length; i += size) out.push(ids.slice(i, i + size))
+  return out
+}
+
+/**
+ * fetchPaged over an id list: one paged fetch per chunk of ids, merged and re-sorted with `compare` (the SQL ORDER BY
+ * can only apply within a chunk). `total` is the sum of the chunks' exact counts; `truncated` is true when any chunk —
+ * or the merged result — exceeds `maxRows`.
+ */
+export async function fetchPagedIn<T = any>(
+  ids: readonly string[],
+  build: (chunk: string[], from: number, to: number) => PromiseLike<PageResult<T>>,
+  opts: { maxRows: number; pageSize?: number },
+  compare: (a: T, b: T) => number,
+): Promise<PagedRows<T>> {
+  const chunks = chunkIds(ids)
+  if (chunks.length === 0) return { rows: [], total: 0, truncated: false }
+  const rows: T[] = []
+  let total = 0
+  let truncated = false
+  for (const chunk of chunks) {
+    const page = await fetchPaged<T>((from, to) => build(chunk, from, to), opts)
+    rows.push(...page.rows)
+    total += page.total
+    if (page.truncated) truncated = true
+  }
+  rows.sort(compare)
+  if (rows.length > opts.maxRows) { rows.length = opts.maxRows; truncated = true }
+  return { rows, total, truncated }
+}
+
+/**
+ * Run a non-paged read once per chunk of ids and concatenate the rows. A chunk that errors contributes nothing, the
+ * same as the single `{ data = [] }` read it replaces; the first error is returned so a caller can still log it.
+ */
+export async function queryInChunks<T = any>(
+  ids: readonly string[],
+  run: (chunk: string[]) => PromiseLike<{ data: T[] | null; error?: { message: string } | null }>,
+): Promise<{ data: T[]; error: { message: string } | null }> {
+  const data: T[] = []
+  let error: { message: string } | null = null
+  for (const chunk of chunkIds(ids)) {
+    const res = await run(chunk)
+    if (res.error && !error) error = res.error
+    data.push(...(res.data || []))
+  }
+  return { data, error }
+}

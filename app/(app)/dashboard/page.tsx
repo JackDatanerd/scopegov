@@ -7,7 +7,7 @@ import { isAttentionWorthy, attentionReason } from '@/lib/utils/attention'
 import { IN_PROGRESS_STATUSES } from '@/lib/utils/project-status'
 import { effectiveContractValue, monthlyRetainerRate, loadRetainerMonthsBilled } from '@/lib/utils/contract-value'
 import { shapeActivityRow, DASHBOARD_NOISE_EVENT_PATTERNS } from '@/lib/utils/activity-format'
-import { fetchPaged } from '@/lib/utils/paginate'
+import { fetchPaged, fetchPagedIn, queryInChunks } from '@/lib/utils/paginate'
 import type { SessionUser } from '@/lib/supabase/types'
 
 export const metadata = { title: 'Dashboard' }
@@ -107,20 +107,22 @@ export default async function DashboardPage() {
   // whose project count exceeds PostgREST's silent 1000-row cap can't lose
   // projects off the Dashboard with no error and no signal — see the
   // matching fix (and full reasoning) in GET /api/projects.
-  const projPage = await fetchPaged<any>((from, to) => {
-    let q = (service as any)
-      .from('projects')
-      .select(`id,name,disc,type,status,stall_reason,stalled_at,contract_value,retainer_duration_months,currency,updated_at,
-        clients(id,name),guardian_flags(status),change_orders(id,status,parent_co_id,sent_at),sow_documents(id,status,version),
-        amendments(financial_impact,change_orders(is_retainer_renewal))`, { count: 'exact' })
-      .eq('workspace_id', session.workspaceId)
-      .is('deleted_at', null)
-      .order('updated_at', { ascending: false })
-      .order('id', { ascending: false })
-      .range(from, to)
-    if (accessibleProjectIds !== null) q = q.in('id', accessibleProjectIds)
-    return q
-  }, { maxRows: DASHBOARD_PROJECTS_MAX_ROWS })
+  const dashboardProjectQuery = (from: number, to: number) => (service as any)
+    .from('projects')
+    .select(`id,name,disc,type,status,stall_reason,stalled_at,contract_value,retainer_duration_months,currency,updated_at,
+      clients(id,name),guardian_flags(status),change_orders(id,status,parent_co_id,sent_at),sow_documents(id,status,version),
+      amendments(financial_impact,change_orders(is_retainer_renewal))`, { count: 'exact' })
+    .eq('workspace_id', session.workspaceId)
+    .is('deleted_at', null)
+    .order('updated_at', { ascending: false })
+    .order('id', { ascending: false })
+    .range(from, to)
+  // Restricted members: id list is chunked (B4) so a long project history can't blow the request URL.
+  const projPage = accessibleProjectIds === null
+    ? await fetchPaged<any>((from, to) => dashboardProjectQuery(from, to), { maxRows: DASHBOARD_PROJECTS_MAX_ROWS })
+    : await fetchPagedIn<any>(accessibleProjectIds, (chunk, from, to) => dashboardProjectQuery(from, to).in('id', chunk),
+        { maxRows: DASHBOARD_PROJECTS_MAX_ROWS },
+        (a, b) => String(b.updated_at).localeCompare(String(a.updated_at)) || String(b.id).localeCompare(String(a.id)))
   if (projPage.truncated)
     throw new Error(`Dashboard project list truncated: workspace exceeded ${DASHBOARD_PROJECTS_MAX_ROWS} projects`)
   const projectRows = projPage.rows
@@ -160,6 +162,8 @@ export default async function DashboardPage() {
   //     can access.
   // The window is only 14 rows, so machinery events (every Guardian classification, every "client opened
   // the link", every automated reminder) are filtered out in SQL — they used to fill the whole feed.
+  // A factory, not a shared builder: PostgREST builders are mutable, so each chunked read needs a fresh one.
+  const buildActivityQuery = () => {
   let activityQuery = (service as any)
     .from('audit_log').select('id,event_type,entity_type,entity_name,actor_name,created_at,metadata,project_id')
     .eq('workspace_id', session.workspaceId)
@@ -169,12 +173,19 @@ export default async function DashboardPage() {
   // restricted members, project_members rows pointing at deleted projects) otherwise render as name-less entries
   // linking to a page that 404s. The project's own Activity route already hides them.
   activityQuery = activityQuery.order('created_at', { ascending: false }).order('id', { ascending: false }).limit(60)
-
-  if (!canViewAll) {
-    activityQuery = activityQuery.in('project_id', accessibleProjectIds || [])
+  return activityQuery
   }
 
-  const { data: activityRaw = [] } = await activityQuery
+  let activityRaw: any[] = []
+  if (!canViewAll) {
+    // Chunked (B4): each chunk returns its newest 60; merge and keep the newest 60 overall.
+    const res = await queryInChunks<any>(accessibleProjectIds || [], chunk => buildActivityQuery().in('project_id', chunk))
+    activityRaw = res.data
+      .sort((a: any, b: any) => String(b.created_at).localeCompare(String(a.created_at)) || String(b.id).localeCompare(String(a.id)))
+      .slice(0, 60)
+  } else {
+    activityRaw = (await buildActivityQuery()).data || []
+  }
   const activity = (activityRaw || []).filter((a: any) => projectNameById.has(a.project_id)).slice(0, 14).map((a: any) =>
     shapeActivityRow(a, { viewFinancials: canViewFinances, projectName: projectNameById.get(a.project_id) ?? null }))
 
@@ -194,13 +205,14 @@ export default async function DashboardPage() {
   // is carried through so isAttentionWorthy/attentionReason (see
   // lib/utils/attention.ts) can treat it as immediately attention-worthy
   // rather than waiting out the ordinary pending-decision stall window.
-  let pendingApprovalsQuery = (service as any)
+  const buildPendingApprovalsQuery = () => (service as any)
     .from('approval_requests')
     .select('project_id, created_at, updated_at, step_started_at, send_failed_at')
     .eq('workspace_id', session.workspaceId)
     .or('status.eq.pending,and(status.eq.approved,send_failed_at.not.is.null)')
-  if (!canViewAll) pendingApprovalsQuery = pendingApprovalsQuery.in('project_id', accessibleProjectIds || [])
-  const { data: pendingApprovalRows = [] } = await pendingApprovalsQuery
+  const pendingApprovalRows: any[] = !canViewAll
+    ? (await queryInChunks<any>(accessibleProjectIds || [], chunk => buildPendingApprovalsQuery().in('project_id', chunk))).data
+    : ((await buildPendingApprovalsQuery()).data || [])
   const pendingApprovalsByProject = new Map<string, Array<{ createdAt: string; sendFailed?: boolean }>>()
   for (const r of (pendingApprovalRows || [])) {
     const list = pendingApprovalsByProject.get(r.project_id) || []

@@ -7,6 +7,7 @@
 // stray/inappropriate message doesn't require reaching for a database
 // console.
 
+import { hasUnstorableText, UNSTORABLE_TEXT_ERROR } from '@/lib/utils/client-input'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
@@ -43,6 +44,8 @@ export async function PATCH(
     const body = await request.json().catch(() => null)
     const typed = typeof body?.body === 'string' ? body.body.trim() : ''
     if (!typed) return NextResponse.json({ error: 'Message body is required' }, { status: 400 })
+    // FIX (section-7 independent pass, B2): NUL / lone surrogates can't be stored — clean 400, not a 500.
+    if (hasUnstorableText(typed)) return NextResponse.json({ error: UNSTORABLE_TEXT_ERROR('Message') }, { status: 400 })
     if (typed.length > MESSAGE_MAX_LENGTH) return NextResponse.json({ error: 'Message is too long' }, { status: 400 })
 
     const service = createServiceClient()

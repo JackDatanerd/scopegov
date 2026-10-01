@@ -7,6 +7,7 @@
 // ordinary team collaboration — if you're on the project, you can talk
 // about it.
 
+import { hasUnstorableText, UNSTORABLE_TEXT_ERROR } from '@/lib/utils/client-input'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession } from '@/lib/auth/session'
@@ -58,7 +59,11 @@ export async function GET(
     const beforeRaw = url.searchParams.get('before')
     const afterRaw = url.searchParams.get('after')
     const changedSinceRaw = url.searchParams.get('changedSince')
-    const validTs = (v: string | null) => v !== null && !Number.isNaN(new Date(v).getTime())
+    // FIX (section-7 independent pass, B3): `new Date(v)` accepts strings such as "9" or "Sep 29" that PostgREST then
+    // refuses, so a malformed cursor surfaced as a 500 instead of this 400. Require a strict ISO-8601 timestamp (what
+    // the feed itself issues) — same rule messages/read already applies.
+    const ISO_TS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})$/
+    const validTs = (v: string | null) => v !== null && ISO_TS.test(v) && !Number.isNaN(new Date(v).getTime())
     if ((beforeRaw && !validTs(beforeRaw)) || (afterRaw && !validTs(afterRaw)) || (changedSinceRaw && !validTs(changedSinceRaw)))
       return NextResponse.json({ error: 'Invalid cursor' }, { status: 400 })
     // Taken BEFORE the queries run: the client passes it back as changedSince next poll, so a change that
@@ -148,6 +153,8 @@ export async function POST(
     const body = await request.json().catch(() => null)
     const typed = typeof body?.body === 'string' ? body.body.trim() : ''
     if (!typed) return NextResponse.json({ error: 'Message body is required' }, { status: 400 })
+    // FIX (section-7 independent pass, B2): NUL / lone surrogates can't be stored — clean 400, not a 500.
+    if (hasUnstorableText(typed)) return NextResponse.json({ error: UNSTORABLE_TEXT_ERROR('Message') }, { status: 400 })
     if (typed.length > MESSAGE_MAX_LENGTH) return NextResponse.json({ error: 'Message is too long' }, { status: 400 })
 
     const service = createServiceClient()

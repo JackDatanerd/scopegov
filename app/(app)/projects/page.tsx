@@ -6,7 +6,7 @@ import ProjectsClient from '@/components/projects/ProjectsClient'
 import { isAttentionWorthy, attentionReason } from '@/lib/utils/attention'
 import { effectiveContractValue, monthlyRetainerRate, loadRetainerMonthsBilled } from '@/lib/utils/contract-value'
 import { loadUnreadMessageCounts } from '@/lib/utils/project-unread'
-import { fetchPaged } from '@/lib/utils/paginate'
+import { fetchPaged, fetchPagedIn, queryInChunks } from '@/lib/utils/paginate'
 
 export const metadata = { title: 'Projects' }
 
@@ -42,26 +42,28 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
   // BUG-058: two distinct query paths
   // FIX (Projects & Dashboard independent pass): fetchPaged so this can never
   // silently truncate — see PROJECTS_MAX_ROWS above.
-  const page = await fetchPaged<any>((from, to) => {
-    let q = (service as any)
-      .from('projects')
-      .select(`
-        id, name, disc, type, status, stall_reason, stalled_at, contract_value, retainer_duration_months, currency,
-        start_date, created_at, updated_at, internal_ref,
-        clients(id, name, company_name),
-        guardian_flags(status, severity),
-        change_orders(id, status, parent_co_id, sent_at, title, total),
-        sow_documents(id, status, version, sent_at, signed_at),
-        amendments(financial_impact, change_orders(is_retainer_renewal))
-      `, { count: 'exact' })
-      .eq('workspace_id', session.workspaceId)
-      .is('deleted_at', null)
-      .order('updated_at', { ascending: false })
-      .order('id', { ascending: false })
-      .range(from, to)
-    if (restrictedIds !== null) q = q.in('id', restrictedIds)
-    return q
-  }, { maxRows: PROJECTS_MAX_ROWS })
+  const projectsQuery = (from: number, to: number) => (service as any)
+    .from('projects')
+    .select(`
+      id, name, disc, type, status, stall_reason, stalled_at, contract_value, retainer_duration_months, currency,
+      start_date, created_at, updated_at, internal_ref,
+      clients(id, name, company_name),
+      guardian_flags(status, severity),
+      change_orders(id, status, parent_co_id, sent_at, title, total),
+      sow_documents(id, status, version, sent_at, signed_at),
+      amendments(financial_impact, change_orders(is_retainer_renewal))
+    `, { count: 'exact' })
+    .eq('workspace_id', session.workspaceId)
+    .is('deleted_at', null)
+    .order('updated_at', { ascending: false })
+    .order('id', { ascending: false })
+    .range(from, to)
+  // Restricted members: id list is chunked (B4) so a long project history can't blow the request URL.
+  const page = restrictedIds === null
+    ? await fetchPaged<any>((from, to) => projectsQuery(from, to), { maxRows: PROJECTS_MAX_ROWS })
+    : await fetchPagedIn<any>(restrictedIds, (chunk, from, to) => projectsQuery(from, to).in('id', chunk),
+        { maxRows: PROJECTS_MAX_ROWS },
+        (a, b) => String(b.updated_at).localeCompare(String(a.updated_at)) || String(b.id).localeCompare(String(a.id)))
   if (page.truncated)
     throw new Error(`Projects list truncated: workspace exceeded ${PROJECTS_MAX_ROWS} projects`)
   const projectRows = page.rows
@@ -79,13 +81,14 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
   // Pending approval requests, so a document stuck in an approval chain counts as "needs attention"
   // (same fetch and same broadened match — pending, or approved-but-send-failed — as the Dashboard).
   // A separate query rather than an embed: an embedded filter would inner-join away projects with none.
-  let pendingApprovalsQuery = (service as any)
+  const buildPendingApprovalsQuery = () => (service as any)
     .from('approval_requests')
     .select('project_id, created_at, updated_at, step_started_at, send_failed_at')
     .eq('workspace_id', session.workspaceId)
     .or('status.eq.pending,and(status.eq.approved,send_failed_at.not.is.null)')
-  if (!canViewAll) pendingApprovalsQuery = pendingApprovalsQuery.in('project_id', projects.map((p: any) => p.id))
-  const { data: pendingApprovalRows = [] } = await pendingApprovalsQuery
+  const pendingApprovalRows: any[] = !canViewAll
+    ? (await queryInChunks<any>(projects.map((p: any) => p.id), chunk => buildPendingApprovalsQuery().in('project_id', chunk))).data
+    : ((await buildPendingApprovalsQuery()).data || [])
   const pendingApprovalsByProject = new Map<string, Array<{ createdAt: string; sendFailed: boolean }>>()
   for (const r of (pendingApprovalRows || [])) {
     const list = pendingApprovalsByProject.get(r.project_id) || []

@@ -1,0 +1,25 @@
+CHANGES — Projects & Dashboard (section 7), independent pass 3
+================================================================
+Bugs only; no features.
+
+B1  formatDate printed date-only values one day early west of UTC (and mismatched the UTC server render).
+    lib/utils/format.ts — a 'YYYY-MM-DD' string is now formatted in UTC (unless the caller passes a timeZone).
+    Covers project start_date, milestone/invoice due_date, invoice_payments.paid_at everywhere formatDate is used
+    (ProjectDetail, BillingTab, invoices page). Real timestamps are unchanged.
+
+B2  NUL / lone surrogates in project text and discussion messages caused a 500 from Postgres.
+    lib/utils/project-input.ts (parseProjectName, parseOptionalText), app/api/projects/[id]/messages/route.ts (POST),
+    app/api/projects/[id]/messages/[messageId]/route.ts (PATCH) — now a clean 400, using the existing
+    hasUnstorableText / UNSTORABLE_TEXT_ERROR from client-input.ts.
+
+B3  Message feed cursors (before / after / changedSince) accepted strings PostgREST rejects ("9", "Sep 29") -> 500.
+    app/api/projects/[id]/messages/route.ts — strict ISO-8601 check (same rule as messages/read); 400 "Invalid cursor".
+
+B4  Restricted members with many projects broke the Dashboard / Projects list / GET /api/projects: the whole
+    project-id list went into one `.in()` URL.
+    lib/utils/paginate.ts — new chunkIds / fetchPagedIn / queryInChunks (chunks of 100, same as contract-value.ts).
+    app/(app)/dashboard/page.tsx (projects, activity, pending approvals), app/(app)/projects/page.tsx (projects,
+    pending approvals), app/api/projects/route.ts (GET) now chunk the id list. Query builders that are reused per
+    chunk are factories (PostgREST builders are mutable). VIEW_ALL_PROJECTS paths are unchanged.
+
+Tests: tests/projects-dashboard-pass-3.test.ts

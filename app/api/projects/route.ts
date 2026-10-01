@@ -3,7 +3,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { wouldExceedLimit, isProjectBeyondLimit, projectLimitMessage } from '@/lib/utils/project-limit'
 import { insertAuditRow } from '@/lib/utils/audit'
-import { fetchPaged } from '@/lib/utils/paginate'
+import { fetchPaged, fetchPagedIn } from '@/lib/utils/paginate'
 import { parseClientInput } from '@/lib/utils/client-input'
 import { escapeLike } from '@/lib/utils/escape-like'
 import {
@@ -273,18 +273,20 @@ export async function GET() {
     // FIX (Projects & Dashboard independent pass): fetchPaged so this can
     // never silently truncate at PostgREST's 1000-row cap — see the
     // PROJECTS_MAX_ROWS comment above.
-    const page = await fetchPaged<any>((from, to) => {
-      let q = (service as any)
-        .from('projects')
-        .select('id,name,status,type,contract_value,currency,clients(id,name)', { count: 'exact' })
-        .eq('workspace_id', session.workspaceId)
-        .is('deleted_at', null)
-        .order('name')
-        .order('id')
-        .range(from, to)
-      if (restrictedIds !== null) q = q.in('id', restrictedIds)
-      return q
-    }, { maxRows: PROJECTS_MAX_ROWS })
+    const listQuery = (from: number, to: number) => (service as any)
+      .from('projects')
+      .select('id,name,status,type,contract_value,currency,clients(id,name)', { count: 'exact' })
+      .eq('workspace_id', session.workspaceId)
+      .is('deleted_at', null)
+      .order('name')
+      .order('id')
+      .range(from, to)
+    // Restricted members: id list is chunked (section-7 B4) so a long project history can't blow the request URL.
+    const page = restrictedIds === null
+      ? await fetchPaged<any>((from, to) => listQuery(from, to), { maxRows: PROJECTS_MAX_ROWS })
+      : await fetchPagedIn<any>(restrictedIds, (chunk, from, to) => listQuery(from, to).in('id', chunk),
+          { maxRows: PROJECTS_MAX_ROWS },
+          (a, b) => String(a.name).localeCompare(String(b.name)) || String(a.id).localeCompare(String(b.id)))
     if (page.truncated)
       throw new Error(`Project list truncated: workspace exceeded ${PROJECTS_MAX_ROWS} projects`)
 
