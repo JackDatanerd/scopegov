@@ -89,6 +89,11 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
   // doesn't linger as a permanent visual oddity.
   const highlightId = searchParams.get('highlight')
   const [flashId, setFlashId] = useState<string | null>(highlightId)
+  // FIX (Search section, round 6): the effect below only scrolls/flashes while the Members tab is showing, and the
+  // tab lives in state that never followed the URL. Picking a member in the command palette while this page sat on
+  // its Roles tab pushed ?highlight=… (the component stays mounted), the effect returned early, and nothing visible
+  // happened. A new ?highlight= now switches to Members first; the effect re-runs when `tab` changes and finds the card.
+  useEffect(() => { if (highlightId) setTab('members') }, [highlightId])
   useEffect(() => {
     if (!highlightId || tab !== 'members') return
     const el = document.getElementById(`member-${highlightId}`)

@@ -1,0 +1,7 @@
+Search section (20) - independent pass 6 - fixes
+1. components/team/TeamClient.tsx: a new ?highlight= now switches to the Members tab, so picking a member in the
+   command palette while /team is on its Roles tab scrolls/flashes the card instead of doing nothing.
+2. app/api/search/route.ts: SOW / change order / invoice / flag result lines use the shared label helpers from
+   lib/utils/format.ts instead of raw DB statuses (awaiting_signature -> Sent, partially_paid -> Partially paid,
+   converted_to_co -> CO Created).
+Tests: tests/search-independent-pass-6.test.ts

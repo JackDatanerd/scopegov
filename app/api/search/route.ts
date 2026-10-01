@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { escapeIlike } from '@/lib/audit/search'
 import { getSession, hasPermission } from '@/lib/auth/session'
+import { sowStatusLabel, coStatusLabel, invoiceStatusLabel, flagStatusLabel } from '@/lib/utils/format'
 import {
   foldedTokens, plainTokens, likePattern, prefixLike, isSearchable, rankBy, searchRateLimited,
 } from '@/lib/search/query'
@@ -63,6 +64,13 @@ import {
 //   • Contacts were ranked and cut to three BEFORE the ones belonging to an already-listed client were dropped,
 //     so a client's own contacts could use up the slots (and the row limit) and crowd out real matches at other
 //     clients. Those clients are now excluded in the query, ahead of the limit.
+
+// Round 6 (Search section, independent pass) — what this pass found and fixes:
+//   • SOW / change-order / invoice / flag result lines printed the raw database status ("awaiting_signature",
+//     "awaiting_response", "partially_paid", "converted to co") while the same document everywhere else in the app
+//     shows its label ("Sent", "Partially paid", "CO Created"). They now use the shared label helpers in
+//     lib/utils/format.ts. (The palette's other round-6 fix is in components/team/TeamClient.tsx: a member result
+//     picked while the Team page was on its Roles tab navigated and then showed nothing.)
 
 type Result = { type: string; id: string; title: string; sub: string; href: string }
 
@@ -258,7 +266,7 @@ export async function GET(request: NextRequest) {
         return rankBy(rows, folded, co => `${co.document_number || ''} ${co.title} ${co.projects?.name || ''}`).slice(0, 4).map(co => ({
           type: 'change_order', id: co.id,
           title: co.document_number ? `${co.document_number} — ${co.title}` : co.title,
-          sub: `${co.projects?.name || ''} · CO · ${co.status}`,
+          sub: `${co.projects?.name || ''} · CO · ${coStatusLabel(String(co.status))}`,
           href: `/projects/${co.project_id}?tab=co`,
         }))
       }),
@@ -281,7 +289,7 @@ export async function GET(request: NextRequest) {
         return rankBy(rows, folded, s => `${s.document_number || ''} ${s.projects.name}`).slice(0, 4).map(s => ({
           type: 'sow', id: s.id,
           title: s.document_number ? `${s.document_number} — ${s.projects.name}` : `SOW — ${s.projects.name}`,
-          sub: `v${s.version} · ${s.status}`,
+          sub: `v${s.version} · ${sowStatusLabel(String(s.status))}`,
           href: `/projects/${s.project_id}?tab=sow`,
         }))
       }),
@@ -311,7 +319,7 @@ export async function GET(request: NextRequest) {
         return rankBy(rows, folded, inv => `${inv.invoice_number || ''} ${inv.title} ${inv.projects?.name || ''}`).slice(0, 4).map(inv => ({
           type: 'invoice', id: inv.id,
           title: inv.invoice_number ? `${inv.invoice_number} — ${inv.title}` : inv.title,
-          sub: `${inv.projects?.name || ''} · Invoice · ${inv.status}`,
+          sub: `${inv.projects?.name || ''} · Invoice · ${invoiceStatusLabel(String(inv.status))}`,
           href: `/projects/${inv.project_id}?tab=billing`,
         }))
       }),
@@ -341,7 +349,7 @@ export async function GET(request: NextRequest) {
         return rankBy(rows, folded, f => `${f.description} ${f.projects?.name || ''}`).slice(0, 4).map(f => ({
           type: 'guardian_flag', id: f.id,
           title: f.description.length > 80 ? `${f.description.slice(0, 80)}…` : f.description,
-          sub: `${f.projects?.name || ''} · ${f.severity} severity · ${String(f.status).replace(/_/g, ' ')}`,
+          sub: `${f.projects?.name || ''} · ${f.severity} severity · ${flagStatusLabel(String(f.status))}`,
           href: `/projects/${f.project_id}?tab=guardian`,
         }))
       }),
