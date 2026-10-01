@@ -6,6 +6,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect, notFound } from 'next/navigation'
 import ProjectDetail from '@/components/projects/ProjectDetail'
+import { plainTextToRichHtml } from '@/lib/utils/plain-to-rich'
 
 interface Props {
   params: Promise<{ id: string }>
@@ -337,7 +338,7 @@ export default async function ProjectPage({ params, searchParams }: Props) {
       activity={activity || []}
       invoices={invoicesForClient}
       reconciliation={reconciliation || []}
-      defaultPaymentInstructions={workspaceBilling?.default_payment_instructions || ''}
+      defaultPaymentInstructions={plainTextToRichHtml(workspaceBilling?.default_payment_instructions)}
       billingDefaults={billingDefaults}
       effectiveContractValue={effectiveContractValue}
       baseContractValue={baseValue}
