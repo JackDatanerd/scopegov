@@ -244,7 +244,7 @@ export default function CoEditor({ projId, coId }: Props) {
     if (loading) return
     // Never write (and never leave a timer armed) for a CO the server would refuse to edit or that the viewer can't
     // see the pricing of. Clearing matters: the timer used to survive these early returns.
-    if (loadFailed || pendingApproval || financialsHidden || !canEdit || (savedCoId.current && status !== 'draft')) {
+    if (loadFailed || pendingApproval || !canEdit || (savedCoId.current && status !== 'draft')) {
       if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null }
       pendingSave.current = false
       if (awaitingBaseline.current) { awaitingBaseline.current = false }
@@ -285,7 +285,7 @@ export default function CoEditor({ projId, coId }: Props) {
       }
     }, 1500)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [snapshot, financialsHidden, pendingApproval, status, loading, loadFailed, canEdit])
+  }, [snapshot, pendingApproval, status, loading, loadFailed, canEdit])
 
   // FIX (CO send "not found" on a brand-new CO): doSave() used to always
   // call router.replace() to the new CO's own URL immediately after
@@ -299,14 +299,20 @@ export default function CoEditor({ projId, coId }: Props) {
   async function doSave(explicit = true, navigate = true): Promise<string | null> {
     if (explicit) { setSaving(true); setError('') }
     try {
-      const body = {
-        projectId: projId,
-        title:     title.trim(),
-        note:      note.trim() || null,
+      // CO-C: a viewer without VIEW_FINANCIALS only ever holds redacted (blank) money state. Sending it would be refused
+      // (403) and, if it were not, would overwrite the real pricing — so the money fields are left out and only the
+      // non-money fields (title, note, impact, renewal) are saved.
+      const moneyFields = financialsHidden ? {} : {
         lineItems,
         taxRate:   parseFloat(taxRate) || 0,
         taxInclusive,
         isCredit,
+      }
+      const body = {
+        projectId: projId,
+        title:     title.trim(),
+        note:      note.trim() || null,
+        ...moneyFields,
         isRetainerRenewal,
         // Only a fixed-term retainer has a term to extend.
         renewalTermMonths: isRetainerRenewal && !retainerOpenEnded && renewalTermMonths.trim() !== '' ? parseInt(renewalTermMonths, 10) : null,
@@ -382,7 +388,9 @@ export default function CoEditor({ projId, coId }: Props) {
   // is no sensible "edit a price you can't see" state, and PATCH would
   // reject their save anyway; this just tells them why up front instead
   // of letting them type into fields backed by redacted data.
-  const isLocked = status !== 'draft' || pendingApproval || financialsHidden || loadFailed || !canEdit
+  // financialsHidden no longer locks the whole editor: title, note and impact fields stay editable (the server's PATCH allows
+  // them); only the money controls are locked (see the line-items panel and the credit checkbox below).
+  const isLocked = status !== 'draft' || pendingApproval || loadFailed || !canEdit
 
   async function draftWithAi() {
     if (!aiText.trim()) { setAiError('Describe what the client is asking for first.'); return }
@@ -453,12 +461,15 @@ export default function CoEditor({ projId, coId }: Props) {
             its "Negotiate" button) withdraw isn't even a permitted
             transition. Tell the truth, and point at the action that
             actually works: Revise & resend, on the project's CO tab. */}
+        {financialsHidden && !isLocked && (
+          <div className="banner banner-info" style={{ marginBottom: 14 }}>
+            You don&rsquo;t have permission to view this change order&rsquo;s pricing. You can still edit its title, notes and impact details; someone with financial access needs to change the pricing or send it.
+          </div>
+        )}
         {isLocked && !loadFailed && (
           <div className="banner banner-info" style={{ marginBottom: 14 }}>
             {!canEdit
               ? <>You don&rsquo;t have permission to edit change orders, so this one is shown read-only.</>
-              : financialsHidden
-              ? <>You don&rsquo;t have permission to view this change order&rsquo;s pricing, so it&rsquo;s shown read-only. Ask an admin for financial access if you need to edit it.</>
               : pendingApproval && status === 'draft'
               ? <>This change order is waiting on an approval request and can&rsquo;t be edited. Decide or cancel the request from <strong>Approvals</strong> to unlock it.</>
               : ['declined', 'withdrawn', 'closed', 'countered', 'expired'].includes(status)
@@ -475,7 +486,7 @@ export default function CoEditor({ projId, coId }: Props) {
           </div>
         )}
 
-        {!isLocked && !aiOpen && (
+        {!isLocked && !financialsHidden && !aiOpen && (
           <button className="btn btn-ghost btn-sm" onClick={() => {
             // Pre-fill from the flag that spawned this CO, if any — but
             // only the first time; don't clobber something the user
@@ -486,7 +497,7 @@ export default function CoEditor({ projId, coId }: Props) {
             <i className="ti ti-sparkles" style={{ fontSize: 12 }} /> Draft with AI
           </button>
         )}
-        {!isLocked && aiOpen && (
+        {!isLocked && !financialsHidden && aiOpen && (
           <div className="surface surface-p" style={{ marginBottom: 20 }}>
             <label className="flbl">Describe what the client is asking for</label>
             <textarea className="finp" style={{ minHeight: 80, resize: 'vertical', marginTop: 6 }} autoFocus
@@ -644,7 +655,7 @@ export default function CoEditor({ projId, coId }: Props) {
 
         {/* Credit / descope: the change order reduces scope and money instead of adding it. */}
         <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: isRetainerRenewal ? 'not-allowed' : 'pointer', fontSize: 13, color: 'var(--text-2)', marginBottom: 8, opacity: isRetainerRenewal ? 0.5 : 1 }}>
-          <input type="checkbox" checked={isCredit} disabled={isLocked || isRetainerRenewal || pricingLocked}
+          <input type="checkbox" checked={isCredit} disabled={isLocked || isRetainerRenewal || pricingLocked || financialsHidden}
             onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
               const on = e.target.checked
               setIsCredit(on)
@@ -691,7 +702,7 @@ export default function CoEditor({ projId, coId }: Props) {
 
         {!isLocked && (
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-            {canSend && (
+            {canSend && !financialsHidden && (
               <button className="btn btn-primary" onClick={handleSend} disabled={sending || !title.trim()}>
                 {sending ? <><span className="spin" /> Sending…</> : <><i className="ti ti-send" style={{ fontSize: 13 }} /> Send to client</>}
               </button>

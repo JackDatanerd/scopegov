@@ -93,10 +93,20 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // be written after the status flip and treated as non-fatal — a failed insert left a CO marked 'exception_granted'
     // with no ledger entry, and nothing could retry it (the CO was already terminal). Now a failed insert aborts
     // before any state changes; a lost race below removes the row again.
+    // CO-D: exceptions_log allows ONE row per flag (migration 077, exceptions_log_one_per_flag). A flag that already
+    // carries an exception row (granted on the flag side after an earlier version of this CO was declined and released
+    // it) made this insert violate the index and the whole grant failed with a 500. The CO's own grant is still a real
+    // ledger entry, so it is written without the flag link rather than refused.
+    let ledgerFlagId: string | null = co.flag_id || null
+    if (ledgerFlagId) {
+      const { data: existingExc } = await (service as any).from('exceptions_log')
+        .select('id').eq('flag_id', ledgerFlagId).limit(1)
+      if (existingExc && existingExc.length > 0) ledgerFlagId = null
+    }
     const { data: excRow, error: excErr } = await (service as any).from('exceptions_log').insert({
       project_id:      co.project_id,
       workspace_id:    session.workspaceId,
-      flag_id:         co.flag_id || null,
+      flag_id:         ledgerFlagId,
       deliverable:     co.title,
       granted_what:    grantedWhat,
       granted_by:      session.id,

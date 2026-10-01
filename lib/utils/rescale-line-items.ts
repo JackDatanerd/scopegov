@@ -40,12 +40,19 @@ export interface RescaleLineItem {
   kind?: 'adjustment'
 }
 
-const ADJUSTMENT_DESCRIPTION_RE = /^Negotiated (discount|increase|total)\b/i
+// The EXACT wordings rescaleLineItemsToTotal writes (and, for rows predating the `kind` flag, the only wordings that
+// ever existed). Matching just the prefix (`^Negotiated (discount|increase|total)\b`) also caught ordinary,
+// user-typed lines such as "Negotiated increase in support hours": a PATCH then re-labelled them as system adjustments
+// (quantity forced to 1 — a 5 x 100 line silently became 100) and finalize-co dropped them from the scope deliverables.
+const ADJUSTMENT_DESCRIPTION_RE = /^Negotiated (discount \(per counter-offer\)|increase \(per counter-offer\)|total \(per client counter-offer\))$/i
 
 /** True for a system-written negotiation line (flagged, or — for rows written before the flag existed — recognised by its fixed wording). */
-export function isAdjustmentLine(li: { kind?: string; description?: string } | null | undefined): boolean {
+export function isAdjustmentLine(li: { kind?: string; description?: string; quantity?: unknown } | null | undefined): boolean {
   if (!li) return false
-  return li.kind === 'adjustment' || ADJUSTMENT_DESCRIPTION_RE.test(String(li.description || '').trim())
+  if (li.kind === 'adjustment') return true
+  // Wording-only (legacy) match: the system always writes quantity 1, so a line with any other quantity is the user's own.
+  if (li.quantity !== undefined && li.quantity !== null && Number(li.quantity) !== 1) return false
+  return ADJUSTMENT_DESCRIPTION_RE.test(String(li.description || '').trim())
 }
 
 export interface RescaleResult {

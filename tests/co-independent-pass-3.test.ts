@@ -44,7 +44,7 @@ describe('CoEditor honours the server-reported permissions', () => {
     expect(src).toContain('json.permissions?.canEdit')
     expect(src).toContain('json.permissions?.canSend')
     expect(src).toMatch(/isLocked = [^\n]*!canEdit/)
-    expect(src).toMatch(/financialsHidden \|\| !canEdit/)
+    expect(src).toMatch(/loadFailed \|\| !canEdit/)
   })
   it('refuses to create-then-send for a member without SEND_CHANGE_ORDERS', () => {
     expect(src).toMatch(/async function handleSend\(\) \{\s*if \(!canSend\)/)

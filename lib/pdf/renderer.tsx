@@ -784,7 +784,9 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
                     <Text style={s.mono}>
                       {(() => {
                         const delta = isRenewalDoc ? revisedValue - data.contractValueBefore! : data.total
-                        return `${delta < 0 ? '−' : '+'}${data.currency} ${fmtMoney(Math.abs(delta))}`
+                        // ASCII hyphen, not U+2212: this row is Courier (WinAnsi), which has no glyph for U+2212, so the sign was dropped
+                        // and a credit / rate decrease printed as an unsigned (apparent increase) amount.
+                        return `${delta < 0 ? '-' : '+'}${data.currency} ${fmtMoney(Math.abs(delta))}`
                       })()}
                     </Text>
                   </View>
