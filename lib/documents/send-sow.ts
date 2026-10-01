@@ -52,6 +52,11 @@ export async function sendSowDocument(service: any, params: {
   enforceWarnings?: boolean
   acknowledgeWarnings?: boolean
   expiresInDays?: number
+  // FIX (SOW lifecycle independent pass 2, B4): withhold the contract value from validation messages. The
+  // interactive route passes whether the sender lacks VIEW_FINANCIALS; the unattended approval-chain
+  // auto-send leaves it unset, and its failure text is stored on the approval request for whoever can see
+  // that request — so unset means redact. Pass `false` only when the caller is known to see financials.
+  redactContractValue?: boolean
 }): Promise<SendSowResult> {
   const { sowId, workspaceId, actorId, actorEmail, actorName, approvalRequestId } = params
   const requestedDays = Number(params.expiresInDays)
@@ -95,7 +100,10 @@ export async function sendSowDocument(service: any, params: {
   // Same validation the interactive route runs — kept HERE as well because the approval
   // chain's auto-send calls this function directly, possibly days after the request was
   // made, and the contract value or schedule can have changed in between.
-  const validation = validateSowForSend({ sections: sow.sections, metadata: sow.metadata, contractValue: project.contract_value })
+  const validation = validateSowForSend({
+    sections: sow.sections, metadata: sow.metadata, contractValue: project.contract_value,
+    redactContractValue: params.redactContractValue !== false,
+  })
   if (validation.errors.length > 0)
     return { ok: false, error: validation.errors[0], status: 400 }
   if (params.enforceWarnings && !params.acknowledgeWarnings && validation.warnings.length > 0)

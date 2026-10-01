@@ -362,7 +362,10 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
   return (
     <Document>
       <Page size="A4" style={s.page}>
-        {data.isWatermarked && <Text style={s.watermark}>{data.watermarkText || 'DRAFT'}</Text>}
+        {/* FIX (SOW lifecycle independent pass 2, B5): `fixed` repeats the stamp on every page. An absolutely
+            positioned node without it is laid out once, so a multi-page unsigned/withdrawn SOW was stamped only
+            on page 1 and pages 2+ looked like a clean, final document. */}
+        {data.isWatermarked && <Text fixed style={s.watermark}>{data.watermarkText || 'DRAFT'}</Text>}
 
         {/* Running masthead — fixed, only renders on page 2+ so a
             multi-page SOW never loses its identity after the first page,
@@ -648,7 +651,8 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
   return (
     <Document>
       <Page size="A4" style={s.page}>
-        {data.isWatermarked && <Text style={s.watermark}>{data.watermarkText || 'DRAFT'}</Text>}
+        {/* Same fix as SowDocument: `fixed` so the stamp appears on every page, not only the first. */}
+        {data.isWatermarked && <Text fixed style={s.watermark}>{data.watermarkText || 'DRAFT'}</Text>}
         {/* Header */}
         <View style={s.header}>
           <View>

@@ -121,6 +121,18 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
     },
   }, [activeSection])
 
+  // FIX (SOW lifecycle independent pass 2, B3): handleRegen()/undoRegen() are plain closures — they capture
+  // `activeSection` and `editor` from the render in which the button was clicked. An AI rewrite takes several
+  // seconds, and nothing stops the person switching to another section meanwhile; useEditor's [activeSection]
+  // dep then destroys that editor and builds a new one. After the await, `sectionId === activeSection` was
+  // still true against the STALE value, so the rewrite was pushed into the destroyed editor instance (and
+  // could throw, surfacing a false "AI rewrite failed" while skipping the autosave that persists the result).
+  // Read both through refs so "is this section on screen NOW, and which editor is showing it" is always current.
+  const activeSectionRef = useRef(activeSection)
+  activeSectionRef.current = activeSection
+  const editorRef = useRef(editor)
+  editorRef.current = editor
+
   const switchSection = useCallback((sectionId: string) => {
     const target = sections.find(s => s.id === sectionId)
     if (!target) return
@@ -303,8 +315,11 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
         return
       }
       setSections(prev => prev.map(s => s.id === sectionId ? { ...s, content: json.content } : s))
-      if (sectionId === activeSection) editor?.commands.setContent(json.content)
+      // Persist first: a failure touching the editor view must never cost the person the saved rewrite.
       scheduleAutosave(sectionId, { content: json.content })
+      if (sectionId === activeSectionRef.current) {
+        try { editorRef.current?.commands.setContent(json.content) } catch (e) { console.error('SowEditor: could not refresh editor after AI rewrite', e) }
+      }
       setRegenUndo({ sectionId, content: before })
       setShowRegen(null); setRegenInstruction('')
     } catch (err) {
@@ -316,28 +331,35 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
     if (!regenUndo) return
     const { sectionId, content } = regenUndo
     setSections(prev => prev.map(s => s.id === sectionId ? { ...s, content } : s))
-    if (sectionId === activeSection) editor?.commands.setContent(content)
     scheduleAutosave(sectionId, { content })
+    if (sectionId === activeSectionRef.current) {
+      try { editorRef.current?.commands.setContent(content) } catch (e) { console.error('SowEditor: could not refresh editor after undo', e) }
+    }
     setRegenUndo(null)
   }
 
   async function toggleVisibility(sectionId: string) {
     if (REQUIRED_SECTIONS.includes(sectionId)) return
-    const previous = sections
-    const next = sections.map(s => s.id === sectionId ? { ...s, visible: !s.visible } : s)
-    setSections(next)
+    const wasVisible = !!sections.find(s => s.id === sectionId)?.visible
+    const nextVisible = !wasVisible
+    setSections(prev => prev.map(s => s.id === sectionId ? { ...s, visible: nextVisible } : s))
     setSaveStatus('saving')
+    // FIX (SOW lifecycle independent pass 2, B7): the failure paths restored a whole-list SNAPSHOT taken before
+    // the request, so anything typed or regenerated in any section while the request was in flight was silently
+    // reverted on screen (and the next autosave of that stale text could then overwrite the server copy). Roll
+    // back only the one flag this call changed.
+    const rollback = () => setSections(prev => prev.map(s => s.id === sectionId ? { ...s, visible: wasVisible } : s))
     try {
       const res = await fetch(`/api/sow/${sowId}`, {
         method:  'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ sectionId, visible: next.find(s => s.id === sectionId)?.visible }),
+        body:    JSON.stringify({ sectionId, visible: nextVisible }),
       })
-      if (!res.ok) { setSections(previous); setSaveStatus('error'); return }
+      if (!res.ok) { rollback(); setSaveStatus('error'); return }
       setSaveStatus('saved')
       setTimeout(() => setSaveStatus('idle'), 2000)
     } catch {
-      setSections(previous)
+      rollback()
       setSaveStatus('error')
     }
   }

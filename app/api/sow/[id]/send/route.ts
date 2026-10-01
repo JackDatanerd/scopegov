@@ -59,8 +59,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // Everything that must hold before a SOW reaches a client lives in lib/sow/validate-send.ts
     // (shared with the approval-chain auto-send, which used to skip all of it).
     const body = await request.json().catch(() => ({} as any))
+    const canSeeFinancials = hasPermission(session, 'VIEW_FINANCIALS')
     const validation = validateSowForSend({
       sections: sow.sections, metadata: sow.metadata, contractValue: project.contract_value,
+      redactContractValue: !canSeeFinancials,
     })
     if (validation.errors.length > 0)
       return NextResponse.json({ error: validation.errors[0], errors: validation.errors }, { status: 400 })
@@ -119,6 +121,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       actorId: session.id, actorEmail: session.email, actorName: session.name,
       enforceWarnings: true, acknowledgeWarnings: acknowledged,
       expiresInDays: body?.expiresInDays,
+      redactContractValue: !canSeeFinancials,
     })
 
     if (!result.ok) return NextResponse.json({ error: result.error, ...(result.warnings ? { warnings: result.warnings, needsAcknowledgement: true } : {}) }, { status: result.status })

@@ -414,8 +414,17 @@ export async function POST(request: NextRequest) {
           .filter((s: any) => s && typeof s.id === 'string')
           .map((s: any) => [s.id, s.visible])
       )
+      // FIX (SOW lifecycle independent pass 2, B2): payment_schedule's visibility is not a free
+      // editorial choice — it is derived from the payment structure (visible only for 'milestones').
+      // Carrying the old flag across a structure change left it wrong in both directions: a draft
+      // regenerated 50/50 -> milestones kept the schedule HIDDEN (Send then blocked until the agency
+      // found the toggle), and milestones -> anything else kept it VISIBLE over an empty table, which
+      // prints a numbered "Payment Schedule — To be defined" section on the client's document. Only
+      // honour the agency's manual show/hide when the structure is unchanged.
+      const structureUnchanged = existingSow.metadata?.paymentStructure === paymentStructure
       const sectionsToWrite = parsed.sections.map(sec => {
         if (REQUIRED_SECTION_IDS.includes(sec.id)) return sec
+        if (sec.id === 'payment_schedule' && !structureUnchanged) return sec
         const prior = oldVisibleById.get(sec.id)
         return typeof prior === 'boolean' ? { ...sec, visible: prior } : sec
       })

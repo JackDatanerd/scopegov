@@ -1,0 +1,53 @@
+SOW lifecycle (section 9) — independent pass, Oct 1 2026
+
+Bugs fixed (B1 from this pass was already fixed in the repo by another session — the
+projects(...status...) select in api/sow/[id]/send/route.ts — so it is not repeated here):
+
+B2  app/api/sow/generate/route.ts — regenerating an existing draft carried the old `visible`
+    flag over for payment_schedule even when the payment structure changed. 50/50 -> milestones
+    left the schedule hidden (Send blocked until un-hidden by hand); milestones -> other left it
+    visible over an empty table, printing a numbered "Payment Schedule — To be defined" section
+    on the client's document. The prior flag is now honoured only when metadata.paymentStructure
+    is unchanged.
+
+B3  components/sow/SowEditor.tsx — handleRegen/undoRegen compared against `activeSection` and
+    used `editor` captured at click time. Switching sections during an AI rewrite (useEditor
+    rebuilds the editor on [activeSection]) pushed the result into a destroyed editor instance
+    and could throw a false "AI rewrite failed" before the autosave ran. Both now read
+    activeSectionRef/editorRef, the autosave is scheduled before touching the editor, and the
+    editor refresh is wrapped so it can never lose the saved rewrite.
+
+B4  lib/sow/validate-send.ts, lib/documents/send-sow.ts, api/sow/[id]/send/route.ts — send
+    validation printed the contract value ("...does not state the contract value (12,500.00)",
+    "...but the contract value is 12,500.00") to members who hold SEND_SOW but not
+    VIEW_FINANCIALS, although GET /api/sow/[id] and the SOW PDF route withhold it from them.
+    New `redactContractValue` option: the interactive route passes !VIEW_FINANCIALS; the
+    unattended approval-chain auto-send redacts by default (its failure text is stored on the
+    approval request). Same checks, same blocking, no figure in the message.
+
+B5  lib/pdf/renderer.tsx — the DRAFT/WITHDRAWN watermark on SowDocument (and the identical one on
+    CoDocument) was not `fixed`, so only page 1 of a multi-page unsigned document was stamped.
+    Now `fixed` on both.
+
+B6  lib/ai/sow-content.ts (parseTableSections) — rows with fewer cells than columns were dropped.
+    The prompt calls the Roles "note" cell optional, so a model omitting it (no trailing "|")
+    lost every such row, and a fully affected table fell back to generic boilerplate. A row
+    missing only TRAILING free-text cells (never an enum column, never the first) is now padded.
+
+B7  lib/sow/sections.ts (sanitizeSectionList) — a section absent from both the submitted and the
+    stored list defaulted to visible for every id; payment_schedule on a non-milestone legacy
+    SOW therefore became visible/empty on a whole-list write. Now uses the same default as
+    hydrateSections. components/sow/SowEditor.tsx (toggleVisibility) — failure paths restored a
+    whole-list snapshot, reverting text typed while the request was in flight; now rolls back only
+    the one flag.
+
+Verified: all edited files transpile clean; B4/B6/B7 exercised with a stub harness (roles rows
+without a note are kept and padded, a stray prose line is still dropped, legacy non-milestone
+payment_schedule defaults hidden, redacted messages contain no contract value). B2, B3 and B5
+are covered by reading the code paths only — they need a browser/PDF check (see below).
+
+Manual checks worth doing after deploy:
+  - Generate a draft as 50/50, then regenerate it as milestones: Payment Schedule should be visible.
+  - Click the AI wand on a section, switch to another section before it finishes: the rewrite must
+    still save, and the section you switched to must keep its own text.
+  - Download the PDF of a 3+ page unsigned SOW: DRAFT on every page.

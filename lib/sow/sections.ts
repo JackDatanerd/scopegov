@@ -117,9 +117,15 @@ export function sanitizeSectionList(incoming: unknown, stored: any[], metadata?:
 
   return SOW_SECTION_DEFS.map(def => {
     const from = submitted.get(def.id) ?? previous.get(def.id) ?? {}
+    // FIX (SOW lifecycle independent pass 2, B7): a section that exists in neither the submitted list nor the
+    // stored one (an older SOW that predates payment_schedule) defaulted to visible for EVERY section. For
+    // payment_schedule that contradicts the rule hydrateSections/generate use (visible only for a milestone
+    // structure), so a whole-list write on a non-milestone legacy SOW switched on an empty "Payment Schedule —
+    // To be defined" section in the client's document. Use the same default as hydrateSections.
+    const defaultVisible = def.id === 'payment_schedule' ? metadata?.paymentStructure === 'milestones' : true
     const visible = REQUIRED_SECTION_IDS.includes(def.id)
       ? true
-      : typeof from.visible === 'boolean' ? from.visible : true
+      : typeof from.visible === 'boolean' ? from.visible : defaultVisible
     return {
       id:      def.id,
       title:   sectionTitle(def.id, metadata?.language),

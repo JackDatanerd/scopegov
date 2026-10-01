@@ -559,7 +559,18 @@ export function parseTableSections(raw: string): Record<SowTableSectionId, SowTa
     const rows: SowTableRow[] = []
     for (const line of lines) {
       const cells = line.split('|').map(c => c.trim())
-      if (cells.length < schema.columns.length) continue
+      // FIX (SOW lifecycle independent pass 2, B6): a row with fewer cells than columns was discarded outright.
+      // The prompt itself calls the Roles "note" cell optional ("Responsibility | ✓ or — | ✓ or — | Optional
+      // short note"), so a model that leaves the note off — without the trailing "|" — had every such row
+      // thrown away, and when that was every row the whole table silently fell back to generic boilerplate.
+      // A row that is only missing TRAILING free-text cells (never an enum column, never the first column) is
+      // now padded with blanks. Anything shorter than that is still dropped, since we cannot tell which
+      // column an omitted middle cell belonged to.
+      if (cells.length < schema.columns.length) {
+        const missing = schema.columns.slice(cells.length)
+        const onlyTrailingFreeText = cells.length >= 2 && missing.every(col => !col.options)
+        if (!onlyTrailingFreeText) continue
+      }
       const row: SowTableRow = {}
       schema.columns.forEach((col, i) => {
         let value = sanitizePlainText(cells[i] || '')

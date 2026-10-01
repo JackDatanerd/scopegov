@@ -52,6 +52,12 @@ export function validateSowForSend(input: {
   sections: any[]
   metadata: any
   contractValue: number | null | undefined
+  // FIX (SOW lifecycle independent pass 2, B4): GET /api/sow/[id] and the SOW PDF route both withhold the
+  // contract value from a member without VIEW_FINANCIALS (a role can hold SEND_SOW without it), yet the
+  // messages below printed it verbatim — "...does not state the contract value (12,500.00)", "...but the
+  // contract value is 12,500.00" — straight into the Send dialog. When true, the same checks run with the
+  // same blocking behaviour but the contract value is left out of every message.
+  redactContractValue?: boolean
 }): SowSendValidation {
   const errors: string[] = []
   const warnings: string[] = []
@@ -110,7 +116,7 @@ export function validateSowForSend(input: {
     const states = mentioned.some(n => Math.abs(n - contractValue) < 0.01)
     if (!states) {
       warnings.push(
-        `The Payment Terms text does not state the contract value (${contractValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}). ` +
+        `The Payment Terms text does not state the contract value${input.redactContractValue ? '' : ` (${contractValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`}. ` +
         'If the value changed after this SOW was written, update that section (or regenerate it) so the signed document agrees with itself.'
       )
     }
@@ -144,7 +150,9 @@ export function validateSowForSend(input: {
       } else if (Number.isFinite(contractValue)) {
         const sum = roundCurrency(validRows.reduce((s, r) => s + (r.amount ?? 0), 0))
         if (Math.abs(sum - contractValue) >= 0.01)
-          errors.push(`The Payment Schedule totals ${sum.toFixed(2)} but the contract value is ${contractValue.toFixed(2)} — these must match before sending.`)
+          errors.push(input.redactContractValue
+            ? `The Payment Schedule totals ${sum.toFixed(2)}, which does not match the project's contract value — these must match before sending.`
+            : `The Payment Schedule totals ${sum.toFixed(2)} but the contract value is ${contractValue.toFixed(2)} — these must match before sending.`)
       }
     }
   }
