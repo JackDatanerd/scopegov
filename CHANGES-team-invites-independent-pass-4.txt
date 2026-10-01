@@ -1,0 +1,4 @@
+Team & Invites independent pass 4
+1 LOW  role name/description sanitized (sanitizeDisplayName) on POST /api/team/roles and PATCH /api/team/roles/[id]; normalizeRoleName compares the sanitized form - zero-width/filler-character duplicate roles no longer pass uniqueness, CR/LF can no longer reach email subjects; a name with nothing visible = "Role name required"
+2 LOW  POST /api/team/invite and POST /api/team/[id]/resend refuse (500, nothing written) when NEXT_PUBLIC_APP_URL is unset instead of emailing "undefined/invite/<token>" (Resend would also have rotated the working token out)
+Tests: tests/team-invites-independent-pass-4.test.ts

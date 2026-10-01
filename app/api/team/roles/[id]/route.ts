@@ -7,7 +7,8 @@ import { permissionsBeyondCeiling, permissionsBeyondActorForTarget } from '@/lib
 import { parsePermissionMap } from '@/lib/utils/permission-map'
 import { mergePermissions, protectedPermissionsOrphanedBy, describeProtectedPermission, PROTECTED_PERMISSIONS, approvalPermissionOrphanedBy, APPROVE_DOCUMENTS_ORPHAN_MESSAGE } from '@/lib/utils/admin-floor'
 import { workspaceOwnerId } from '@/lib/utils/owner-protection'
-import { roleNameTaken } from '@/lib/utils/role-names'
+import { roleNameTaken, normalizeRoleName } from '@/lib/utils/role-names'
+import { sanitizeDisplayName } from '@/lib/utils/sanitize'
 import { diffPermissionMaps } from '@/lib/utils/permission-diff'
 import { logAudit } from '@/lib/utils/audit'
 
@@ -25,7 +26,7 @@ export async function PATCH(
     const body = await request.json().catch(() => null)
     if (!body || typeof body !== 'object' || Array.isArray(body))
       return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
-    const { permissions: rawPermissions, name, description, isDefault } = body as Record<string, any>
+    const { permissions: rawPermissions, name: rawName, description: rawDescription, isDefault } = body as Record<string, any>
 
     // Permission values must be real booleans; unknown keys are dropped.
     let permissions: Record<string, boolean> | undefined = undefined
@@ -34,15 +35,22 @@ export async function PATCH(
       if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 })
       permissions = parsed.value
     }
-    if (name !== undefined) {
-      if (typeof name !== 'string' || !name.trim())
+    // FIX (Team & Invites independent pass): sanitize like role creation does — see api/team/roles/route.ts.
+    let name: string | undefined = undefined
+    if (rawName !== undefined) {
+      if (typeof rawName !== 'string')
         return NextResponse.json({ error: 'Role name required' }, { status: 400 })
-      if (name.trim().length > 60)
+      name = sanitizeDisplayName(rawName, 1000)
+      if (!name)
+        return NextResponse.json({ error: 'Role name required' }, { status: 400 })
+      if (name.length > 60)
         return NextResponse.json({ error: 'Role name must be under 60 characters' }, { status: 400 })
     }
-    if (description !== undefined && description !== null && typeof description !== 'string')
+    if (rawDescription !== undefined && rawDescription !== null && typeof rawDescription !== 'string')
       return NextResponse.json({ error: 'Invalid description' }, { status: 400 })
-    if (typeof description === 'string' && description.trim().length > 300)
+    const description: string | null | undefined = rawDescription === undefined ? undefined
+      : rawDescription === null ? null : sanitizeDisplayName(rawDescription, 1000)
+    if (typeof description === 'string' && description.length > 300)
       return NextResponse.json({ error: 'Role description must be under 300 characters' }, { status: 400 })
     if (isDefault !== undefined && typeof isDefault !== 'boolean')
       return NextResponse.json({ error: 'isDefault must be true or false' }, { status: 400 })
@@ -79,7 +87,7 @@ export async function PATCH(
         error: `Cannot modify a role that holds permissions you don't hold yourself: ${outOfReach.join(', ')}`,
       }, { status: 403 })
 
-    if (name !== undefined && name.trim().toLowerCase() !== (existingRole.name || '').trim().toLowerCase()) {
+    if (name !== undefined && normalizeRoleName(name) !== normalizeRoleName(existingRole.name || '')) {
       const { data: others } = await service.from('roles').select('id,name').eq('workspace_id', session.workspaceId)
       if (roleNameTaken(others || [], name, id))
         return NextResponse.json({ error: 'A role with that name already exists in this workspace' }, { status: 409 })
@@ -210,10 +218,8 @@ export async function PATCH(
       }
     }
 
-    const newName = name !== undefined ? name.trim() : undefined
-    const newDescription = description !== undefined
-      ? (typeof description === 'string' ? description.trim() || null : null)
-      : undefined
+    const newName = name
+    const newDescription = description !== undefined ? (description || null) : undefined
     const otherUpdates: Record<string, unknown> = {}
     if (newName !== undefined && newName !== existingRole.name) otherUpdates.name = newName
     if (newDescription !== undefined && newDescription !== (existingRole.description ?? null)) otherUpdates.description = newDescription

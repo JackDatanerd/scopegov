@@ -146,6 +146,13 @@ export async function POST(request: NextRequest) {
 
     // Expired, never-accepted invites for this address carry nothing worth
     // keeping; clear them so the new invite is the only row.
+    // FIX (Team & Invites independent pass — invite email with a dead link): the invite URL is built from
+    // NEXT_PUBLIC_APP_URL with no check (the Copy-link route already refuses when it is unset). With the
+    // variable missing the email read "undefined/invite/<token>" and the admin was told it was sent. Refuse
+    // BEFORE anything is deleted or written, so a misconfigured deploy fails loudly instead of mailing a dead link.
+    if (!process.env.NEXT_PUBLIC_APP_URL)
+      return NextResponse.json({ error: 'The app URL is not configured, so an invite link can\u2019t be built.' }, { status: 500 })
+
     const expiredIds = related.filter(r => r.status === 'expired' || isLapsed(r) || isStaleDeactivated(r)).map(r => r.id)
     if (expiredIds.length > 0) {
       // Status-guarded like every other delete of a never-accepted row: an accept racing this can't lose its row.

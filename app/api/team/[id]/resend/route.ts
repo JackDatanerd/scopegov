@@ -91,6 +91,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const email = member.invited_email || member.users?.email
     if (!email) return NextResponse.json({ error: 'This invite has no email address on record.' }, { status: 400 })
 
+    // FIX (Team & Invites independent pass — resend replaced a working link with a dead one): the new link is
+    // built from NEXT_PUBLIC_APP_URL, unguarded. With it unset the old token was rotated out and the email said
+    // "undefined/invite/<token>". Refuse before the token is touched (same rule as the Copy-link route).
+    if (!process.env.NEXT_PUBLIC_APP_URL)
+      return NextResponse.json({ error: 'The app URL is not configured, so an invite link can\u2019t be built.' }, { status: 500 })
+
     // No seat re-check here: this row already occupies its seat under the
     // ['active','invited'] count that invite creation reserved. An
     // 'expired' row returning to 'invited' reclaims the seat it never

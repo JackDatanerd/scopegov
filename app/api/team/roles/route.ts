@@ -5,6 +5,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { permissionsBeyondCeiling } from '@/lib/utils/permission-ceiling'
 import { parsePermissionMap } from '@/lib/utils/permission-map'
 import { roleNameTaken } from '@/lib/utils/role-names'
+import { sanitizeDisplayName } from '@/lib/utils/sanitize'
 import { diffPermissionMaps } from '@/lib/utils/permission-diff'
 
 // Mirrors the same constant in components/team/TeamClient.tsx — the
@@ -29,13 +30,20 @@ export async function POST(request: NextRequest) {
     const body = await request.json().catch(() => null)
     if (!body || typeof body !== 'object' || Array.isArray(body))
       return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
-    const { name, description, permissions: rawPermissions, isDefault } = body as Record<string, any>
-    if (typeof name !== 'string' || !name.trim())
+    const { name: rawName, description: rawDescription, permissions: rawPermissions, isDefault } = body as Record<string, any>
+    // FIX (Team & Invites independent pass): role names and descriptions were only .trim()ed, so control
+    // characters (CR/LF reached the role-changed email subject) and zero-width / filler characters (visually
+    // identical duplicate roles that slip past the uniqueness check) were stored verbatim. Same single-line
+    // sanitizer every other name field uses; a value with nothing visible left counts as missing.
+    if (typeof rawName !== 'string')
+      return NextResponse.json({ error: 'Role name required' }, { status: 400 })
+    const name = sanitizeDisplayName(rawName, 1000)
+    if (!name)
       return NextResponse.json({ error: 'Role name required' }, { status: 400 })
     // FIX (deep audit, Team & Invites section): no length cap existed at
     // all, unlike every comparable field in the codebase (042 caps
     // users.name; sanitizeDisplayName caps agency/workspace names).
-    if (name.trim().length > 60)
+    if (name.length > 60)
       return NextResponse.json({ error: 'Role name must be under 60 characters' }, { status: 400 })
     // FIX (build — RLS + permissions independent audit, HIGH): the payload was only
     // checked for "is an object" and stored verbatim, so {DELETE_PROJECTS: 1}
@@ -56,9 +64,10 @@ export async function POST(request: NextRequest) {
     // reached the insert below untouched and surfaced as an opaque 500
     // instead of a clean 400; an unbounded string persisted with no limit
     // into a field the Team page renders as a single line of small text.
-    if (description !== undefined && description !== null && typeof description !== 'string')
+    if (rawDescription !== undefined && rawDescription !== null && typeof rawDescription !== 'string')
       return NextResponse.json({ error: 'Invalid description' }, { status: 400 })
-    if (typeof description === 'string' && description.trim().length > 300)
+    const description = typeof rawDescription === 'string' ? sanitizeDisplayName(rawDescription, 1000) : undefined
+    if (typeof description === 'string' && description.length > 300)
       return NextResponse.json({ error: 'Role description must be under 300 characters' }, { status: 400 })
 
     if (isDefault !== undefined && isDefault !== null && typeof isDefault !== 'boolean')
@@ -102,8 +111,8 @@ export async function POST(request: NextRequest) {
     // default — recoverable and visible, never a workspace with none.
     const { data: role, error } = await (service as any).from('roles').insert({
       workspace_id: session.workspaceId,
-      name:         name.trim(),
-      description:  description?.trim() || null,
+      name,
+      description:  description || null,
       permissions:  permissions || {},
       is_default:   false,
       created_by:   session.id,
