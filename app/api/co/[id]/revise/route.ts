@@ -289,6 +289,16 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         // approval request on that false premise (accept-counter's own
         // flow already resolved it correctly on its own).
         console.warn('CO revise: supersede lost a race, co.id =', co.id, '— original CO had already moved on from countered')
+        // CO-B2: the revision draft was inserted BEFORE this compare-and-swap. If accept-counter won, the original is
+        // now awaiting_countersignature (live), so the draft can never be sent (send-co refuses while a sibling is live)
+        // and the caller was told the revision succeeded and the client was notified. Remove the orphan and say so.
+        await (service as any).from('co_attachments').delete().eq('co_id', revision.id)
+        const { error: orphanErr } = await (service as any).from('change_orders').delete().eq('id', revision.id).eq('status', 'draft')
+        if (orphanErr) console.error('CO revise: could not remove the orphaned revision draft', orphanErr.message)
+        return NextResponse.json(
+          { error: 'This counter-offer was just acted on by someone else — refresh to see where it stands.' },
+          { status: 409 }
+        )
       }
     }
 

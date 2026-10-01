@@ -58,7 +58,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const service = createServiceClient()
     const { data: co } = await (service as any)
       .from('change_orders')
-      .select(`id,title,status,flag_id,project_id,total,
+      .select(`id,title,status,flag_id,project_id,total,version,root_co_id,
         projects(id,name,client_id,clients(name,email,cc_emails),workspaces(agency_name,brand_colour))`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
@@ -67,6 +67,19 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     if (!EXCEPTION_FROM.includes(co.status))
       return NextResponse.json({ error: `Cannot grant an exception on a CO with status "${co.status}"` }, { status: 400 })
+
+    // CO-B3: only the newest version of a lineage can be granted as an exception. Granting one on a superseded
+    // version (declined/closed/expired v1 while v2 is out) wrote a ledger row saying the work was given away free while
+    // v2 stayed billable, left the flag with the live version, and logged a flag resolution that never happened.
+    {
+      const rootId = (co as any).root_co_id || co.id
+      const { data: siblings } = await (service as any)
+        .from('change_orders').select('id, version')
+        .or(`id.eq.${rootId},root_co_id.eq.${rootId}`).neq('id', co.id)
+      const newer = (siblings || []).find((o: any) => Number(o.version) > Number((co as any).version))
+      if (newer)
+        return NextResponse.json({ error: `A newer version (v${newer.version}) of this change order exists — grant the exception on that one instead.` }, { status: 409 })
+    }
 
     // FIX (section-11 audit, pass 1 — B4): a final approval's auto-send (or counter-acceptance) is running right
     // now — granting the exception first would make it fail and leave a false "Approved — not sent" behind.
@@ -156,14 +169,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       // value twice (once as at-risk, once as an exception). 'open' is resolvable too; the change_order_id
       // filter below still refuses a flag a newer revision has re-claimed.
       if (flag && ['converted_to_co', 'open'].includes(flag.status)) {
-        const { error: flagErr } = await (service as any).from('guardian_flags').update({
+        const { data: resolvedFlag, error: flagErr } = await (service as any).from('guardian_flags').update({
           status: 'resolved', resolution: 'exception',
           resolved_by: session.id, resolved_at: now, updated_at: now,
         }).eq('id', co.flag_id).in('status', ['converted_to_co', 'open'])
           // Only resolve a flag still linked to THIS CO (or to nothing) — see app/api/co/route.ts.
           .or(`change_order_id.eq.${co.id},change_order_id.is.null`)
+          .select('id')
         if (flagErr) console.error('CO exception grant: linked flag resolution failed (non-fatal):', flagErr.message)
-        else {
+        else if (resolvedFlag && resolvedFlag.length > 0) {
           await logAudit(service, {
             workspaceId: session.workspaceId, actorId: session.id,
             actorEmail: session.email, actorName: session.name,

@@ -22,6 +22,7 @@ import { rescaleLineItemsToTotal } from '@/lib/utils/rescale-line-items'
 import { checkedSend } from '@/lib/email/delivery'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
 import { isTerminalStatus } from '@/lib/utils/project-status'
+import { parseStoredLineItems } from '@/lib/documents/co-totals'
 
 export type AcceptCoCounterResult =
   | { ok: true; awaitingCountersignature: true; emailSent: boolean; emailError?: string }
@@ -93,8 +94,7 @@ export async function acceptCoCounter(service: any, params: {
   const negotiatedTotal = co.counter_amount ?? co.total
   if (!Number.isFinite(Number(negotiatedTotal)))
     return { ok: false, error: 'This counter-offer has no amount to accept', status: 400 }
-  const existingLineItems = typeof co.line_items === 'string'
-    ? JSON.parse(co.line_items) : (co.line_items || [])
+  const existingLineItems = parseStoredLineItems(co.line_items)
   const { lineItems: rescaledLineItems, subtotal: rescaledSubtotal, total: rescaledTotal } =
     rescaleLineItemsToTotal(existingLineItems, negotiatedTotal, co.tax_rate || 0, !!co.tax_inclusive)
 

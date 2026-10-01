@@ -166,6 +166,10 @@ export function computeCoTotals(
     // 2dp but multiplying the unrounded qty showed 1.33 × 90 = 119.97.)
     const q = roundCurrency(quantity)
     const r = roundCurrency(rate)
+    // CO-B1: a row with no description and no value (the editor's stray empty "Item 2", or an API caller's padding) is
+    // not a line item. It used to be stored, then printed as an empty "USD 0" row in the PDF and the client portal.
+    // Dropped after validation so a malformed blank row is still reported, and never for a system adjustment line.
+    if (!isAdjustment && description === '' && roundCurrency(q * r) === 0) continue
     // Credit COs store the reduction as negative rate/total; quantity stays positive.
     const storedRate = credit ? -r : r
     lineItems.push({
