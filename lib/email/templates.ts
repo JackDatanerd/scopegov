@@ -1193,12 +1193,22 @@ export async function sendPaymentFailedEmail(params: {
 // cancelled-subscription enforcement step in cron/payment-overdue). Same
 // downgrade outcome, deliberately calmer tone — this isn't a payment
 // problem, it's an expected transition the person asked for.
+// FIX (Billing independent pass 12 — B1): the copy always said "As requested, ... period has now ended" — true
+// for the period-end sweep after a customer cancelled, but false for the other caller: grace enforcement, where
+// a customer whose card failed for GRACE_DAYS days was told they had asked for this. `reason` picks the wording.
 export async function sendSubscriptionEndedEmail(params: {
   to: string; name: string; agencyName: string; upgradeUrl: string
+  reason?: 'cancelled' | 'nonpayment'
 }) {
-  const { to, name: nameRaw, agencyName: agencyNameRaw, upgradeUrl } = params
+  const { to, name: nameRaw, agencyName: agencyNameRaw, upgradeUrl, reason = 'cancelled' } = params
   const name       = escapeHtml(nameRaw)
   const agencyName = escapeHtml(agencyNameRaw)
+
+  const intro = reason === 'nonpayment'
+    ? `We were not able to collect payment for <strong>${agencyName}</strong>&apos;s ScopeGov subscription during the
+        grace period, so the paid subscription has ended and your workspace has moved to the Solo plan.`
+    : `As requested, <strong>${agencyName}</strong>&apos;s paid subscription period has now ended and
+        your workspace has moved to the Solo plan.`
 
   const html = baseTemplate({
     agencyName: 'ScopeGov',
@@ -1208,8 +1218,7 @@ export async function sendSubscriptionEndedEmail(params: {
     body: `
       <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${name},</p>
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
-        As requested, <strong>${agencyName}</strong>&apos;s paid subscription period has now ended and
-        your workspace has moved to the Solo plan.
+        ${intro}
       </p>
       <p style="font-size:13px;color:${C.text2};">
         Your data hasn't gone anywhere — resubscribe any time to get your full plan's limits back.

@@ -19,7 +19,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { sendPaymentFailedEmail, sendCardExpiringEmail } from '@/lib/email/templates'
 import { cancelPaystackSubscription, fetchPaystackNextPaymentDate } from '@/lib/integrations/paystack'
 import { planCodeToTier, planCodeToInterval, fromSubunit, GRACE_DAYS } from '@/lib/billing/plans'
-import { resolveWorkspace, type Resolution } from '@/lib/billing/resolve'
+import { resolveWorkspace, eventSubscriptionCode, type Resolution } from '@/lib/billing/resolve'
 import { consumeCheckoutGroup, stampCheckoutCharged } from '@/lib/billing/checkouts'
 import { claimWebhookEvent, completeWebhookEvent, releaseWebhookEvent } from '@/lib/billing/webhook-claims'
 import { getBillingRecipients } from '@/lib/billing/recipients'
@@ -181,7 +181,7 @@ function isFuture(iso: string | null | undefined): iso is string {
 //    ops with everything needed to add the entry by hand instead.
 async function audit(
   service: any, workspaceId: string, eventType: string, customerEmail: string | undefined,
-  metadata: Record<string, unknown>, opts: { redeliverable?: boolean; dedupeByReference?: boolean } = {},
+  metadata: Record<string, unknown>, opts: { redeliverable?: boolean; dedupeByReference?: boolean; dedupeAlsoEventTypes?: string[] } = {},
 ) {
   // FIX (Billing independent pass 11 — B3): handlers are re-run when a claim goes stale (the work finished but
   // completeWebhookEvent could not record it, so a redelivery takes the claim over after STALE_CLAIM_MS). Every
@@ -189,10 +189,16 @@ async function audit(
   // the same charge twice. A charge reference is unique per charge, so a row already carrying it for this
   // workspace + event type means this is a re-run — skip. A failed lookup falls through to writing (a duplicate
   // line is better than a missing one).
+  //
+  // FIX (Billing independent pass 12 — B2): the same re-run happens for invoice.payment_failed and the dispute
+  // events, and used to append a second history line. `dedupeAlsoEventTypes` lets one logical occurrence that is
+  // recorded under two event types (a payment failure is `payment_failed_grace_started` on the first run and
+  // `payment_retry_failed` on the re-run, because grace is already running by then) count as already recorded.
   const ref = typeof metadata.reference === 'string' && metadata.reference ? metadata.reference : null
   if (opts.dedupeByReference && ref) {
     const { data: dup, error: dupErr } = await service.from('audit_log').select('id')
-      .eq('workspace_id', workspaceId).eq('event_type', eventType).eq('metadata->>reference', ref).limit(1)
+      .eq('workspace_id', workspaceId).in('event_type', [eventType, ...(opts.dedupeAlsoEventTypes ?? [])])
+      .eq('metadata->>reference', ref).limit(1)
     if (dupErr) console.error('[BILLING] audit duplicate check failed (writing anyway):', dupErr.message)
     else if (dup && dup.length > 0) { console.log(`[BILLING] ${eventType} for reference ${ref} already recorded — not duplicating`); return }
   }
@@ -353,7 +359,11 @@ async function handleEvent(service: any, event: any): Promise<void> {
         paystack_customer_code:     data.customer?.customer_code,
         paystack_subscription_code: subCode,
         paystack_email_token:       data.email_token || null,
-        current_period_end:         data.next_payment_date,
+        // FIX (Billing independent pass 12 — B4): an undefined value is dropped from an upsert payload, so a
+        // payload without next_payment_date left the PREVIOUS plan's period end on the new row (a wrong
+        // "Renews <date>", and a stale date for the cancel route / period-end sweep to act on). Write an explicit
+        // null instead — cancel, charge.success, invoice.update and the reconcile cron all fill a missing date.
+        current_period_end:         typeof data.next_payment_date === 'string' && data.next_payment_date ? data.next_payment_date : null,
         cancels_at_period_end:      false,
         grace_period_started_at:    null,
         needs_paystack_cancel:      false,
@@ -598,8 +608,14 @@ async function handleEvent(service: any, event: any): Promise<void> {
 
       await audit(service, workspaceId,
         newlyStarted ? 'billing.payment_failed_grace_started' : 'billing.payment_retry_failed',
-        customerEmail, { amount: fromSubunit(data?.amount), currency: data?.currency, reference: data?.reference },
-        { redeliverable: true })
+        // FIX (Billing independent pass 12 — B2): invoice events carry the charge reference on the embedded
+        // transaction, not at the top level (the dispute / refund handlers below already fall back the same way),
+        // so this row was recorded with no reference — which also gave the re-run guard nothing to match on.
+        customerEmail, { amount: fromSubunit(data?.amount), currency: data?.currency, reference: data?.reference ?? data?.transaction?.reference ?? data?.transaction_reference },
+        {
+          redeliverable: true, dedupeByReference: true,
+          dedupeAlsoEventTypes: ['billing.payment_failed_grace_started', 'billing.payment_retry_failed'],
+        })
       return
     }
 
@@ -630,7 +646,14 @@ async function handleEvent(service: any, event: any): Promise<void> {
       // exactly the "needs a human" case this file alerts on everywhere else.
       if (!res.workspaceId && res.superseded) { console.log(`Paystack ${event.event} for an ended subscription no workspace holds — ignoring`); return }
       if (!res.workspaceId) {
-        if (res.ambiguous) await unresolved(service, event, `A subscription was ${event.event === 'subscription.not_renew' ? 'set to not renew' : 'disabled'}, but the customer code matches more than one workspace — could not tell which one to update.`)
+        // FIX (Billing independent pass 12 — B3): resolveWorkspace tries the subscription code FIRST, so an event
+        // that names one and still comes back ambiguous names a subscription NO billing row holds — the old
+        // subscription a plan switch just disabled, whose code has been replaced. With one live workspace on the
+        // customer that case is already ignored as superseded; with several (one login, several workspaces) plan
+        // narrowing could not pick one and this paged ops for every plan switch. There is nothing to mark
+        // cancelling for a code nobody holds, so ignore it the same way.
+        if (res.ambiguous && eventSubscriptionCode(data)) console.log(`Paystack ${event.event} for a subscription no workspace holds (customer shared by several workspaces) — ignoring`)
+        else if (res.ambiguous) await unresolved(service, event, `A subscription was ${event.event === 'subscription.not_renew' ? 'set to not renew' : 'disabled'}, but the customer code matches more than one workspace — could not tell which one to update.`)
         else console.log(`Paystack ${event.event} matched no workspace — ignoring`)
         return
       }
@@ -774,7 +797,10 @@ async function handleEvent(service: any, event: any): Promise<void> {
           amount: fromSubunit(data?.amount ?? data?.refund_amount), currency: data?.currency,
           reference: data?.transaction_reference ?? data?.transaction?.reference ?? data?.reference,
           status: data?.status, resolution: data?.resolution,
-        }, { redeliverable: true })
+          // FIX (Billing independent pass 12 — B2): a dispute is opened and resolved once per transaction, so a
+          // re-run is detectable by reference. Refunds are NOT deduped this way: two partial refunds of one
+          // transaction legitimately share its reference.
+        }, { redeliverable: true, dedupeByReference: event.event.startsWith('charge.dispute.') })
       }
       return
     }

@@ -517,6 +517,7 @@ export async function POST(request: NextRequest) {
             const delivery = await checkedSend(() => sendSubscriptionEndedEmail({
               to: r.email, name: r.name, agencyName: ws.agency_name,
               upgradeUrl: `${appUrl}/settings?tab=billing`,
+              reason: 'nonpayment',
             }), 'Grace enforcement email')
             if (!delivery.ok) console.error('Grace enforcement email rejected for', r.email, delivery.error)
           } catch (e) { console.error('Grace enforcement email failed for', r.email, e) }
