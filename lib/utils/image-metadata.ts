@@ -7,8 +7,8 @@
 // embedded in emails and shared documents.
 //
 // This removes it WITHOUT re-encoding (no dependency, no quality loss):
-//   JPEG: drops APP1 (EXIF / XMP), APP12/13 (Photoshop IRB, Ducky), APP14-15 and COM segments.
-//         JFIF (APP0), ICC colour profile (APP2) and everything that affects decoding stay.
+//   JPEG: allow-list — keeps only JFIF (APP0), the ICC colour profile (APP2) and the Adobe marker
+//         (APP14) of all the APPn / COM segments, plus everything that affects decoding.
 //         The EXIF *orientation* value is kept by writing back a minimal EXIF block that
 //         contains only that one tag — dropping it would make portrait phone photos render
 //         sideways in browsers that honour it.
@@ -16,8 +16,28 @@
 // Returns null when the file isn't structurally a valid image of that type, so the caller can
 // reject it instead of storing something it couldn't inspect.
 
-const JPEG_DROP = new Set([0xe1, 0xec, 0xed, 0xee, 0xef, 0xfe]) // APP1, APP12, APP13, APP14, APP15, COM
-// Note APP14 (Adobe) carries a colour-transform flag some CMYK/YCCK JPEGs need; it is re-added below.
+// FIX (Workspace lifecycle independent pass 4): this was a deny-list (APP1, APP12-15, COM), so every
+// other application segment — APP3-APP11, which is where vendor metadata and the C2PA / content-
+// credentials block (APP11, JUMBF) live — passed straight into the public bucket. It is an allow-list
+// now: of all the APPn / COM segments only the three a decoder actually needs survive —
+//   APP0  'JFIF\0'          (density / aspect ratio)
+//   APP2  'ICC_PROFILE\0'   (colour profile). The MPF index (APP2 'MPF\0') is not a profile, so it goes: its offsets point at
+//                              secondary images that are removed with the trailing data.
+//   APP14 'Adobe'            (colour-transform flag some CMYK/YCCK JPEGs need)
+// Everything else — EXIF/XMP (APP1), Photoshop IRB (APP13), vendor APP3-APP11, APP15 and COM — is removed.
+// The EXIF orientation value is re-added separately as a minimal block (see buildOrientationApp1).
+
+/** True when this APPn / COM segment is metadata that must not reach the public bucket. */
+function isDroppedSegment(buf: Buffer, marker: number, payloadStart: number, segEnd: number): boolean {
+  if (marker === 0xfe) return true                                   // COM
+  if (marker < 0xe0 || marker > 0xef) return false                   // not an APPn: structural, never dropped
+  const startsWith = (tag: string) =>
+    segEnd - payloadStart >= tag.length && buf.toString('latin1', payloadStart, payloadStart + tag.length) === tag
+  if (marker === 0xe0) return !startsWith('JFIF\0')
+  if (marker === 0xe2) return !startsWith('ICC_PROFILE\0')
+  if (marker === 0xee) return !startsWith('Adobe')
+  return true
+}
 
 /** Read the EXIF orientation (1-8) out of an APP1 payload (starting at "Exif\0\0"), or null. */
 export function readExifOrientation(app1: Buffer): number | null {
@@ -85,7 +105,7 @@ function copyScansThroughEoi(buf: Buffer, start: number, out: Buffer[]): boolean
     if (i + 4 > buf.length) return false
     const len = buf.readUInt16BE(i + 2)
     if (len < 2 || i + 2 + len > buf.length) return false
-    if (JPEG_DROP.has(m) || isMpfSegment(buf, m, i + 4, i + 2 + len)) {
+    if (isDroppedSegment(buf, m, i + 4, i + 2 + len)) {
       out.push(buf.subarray(copyFrom, i))                // metadata between scans: skip it
       copyFrom = i + 2 + len
     }
@@ -94,17 +114,38 @@ function copyScansThroughEoi(buf: Buffer, start: number, out: Buffer[]): boolean
   return false
 }
 
-// APP2 'MPF\0' (Multi-Picture Format) holds byte offsets to secondary images. Those images are
-// removed with the trailing data and the offsets would be wrong after any earlier segment is
-// dropped, so the index goes too. (ICC_PROFILE lives in APP2 as well and is kept.)
-function isMpfSegment(buf: Buffer, marker: number, payloadStart: number, segEnd: number): boolean {
-  return marker === 0xe2 && segEnd - payloadStart >= 4 && buf.toString('latin1', payloadStart, payloadStart + 4) === 'MPF\0'
+/**
+ * FIX (Workspace lifecycle independent pass 4): the EXIF orientation used to be picked up while the
+ * main loop walked the segments, so a file with its ICC profile (APP2) ahead of its EXIF block had
+ * already emitted the first non-JFIF segment — and the point where the orientation block goes — before
+ * the orientation was known. The block was then never written and a portrait photo came out sideways.
+ * Read it in a first pass over the header segments instead.
+ */
+function findExifOrientation(buf: Buffer): number | null {
+  let i = 2
+  while (i < buf.length) {
+    if (buf[i] !== 0xff) return null
+    while (i < buf.length && buf[i] === 0xff) i++
+    if (i >= buf.length) return null
+    const marker = buf[i]; i++
+    if (marker === 0xda || marker === 0xd9) return null              // reached the image data
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd8)) continue
+    if (i + 2 > buf.length) return null
+    const len = buf.readUInt16BE(i)
+    if (len < 2 || i + len > buf.length) return null
+    if (marker === 0xe1) {
+      const o = readExifOrientation(buf.subarray(i + 2, i + len))
+      if (o) return o
+    }
+    i += len
+  }
+  return null
 }
 
 export function stripJpegMetadata(buf: Buffer): Buffer | null {
   if (buf.length < 4 || buf[0] !== 0xff || buf[1] !== 0xd8) return null
   const out: Buffer[] = [buf.subarray(0, 2)]
-  let orientation: number | null = null
+  const orientation = findExifOrientation(buf)
   let insertedOrientation = false
   let i = 2
   const insertOrientation = () => {
@@ -127,16 +168,7 @@ export function stripJpegMetadata(buf: Buffer): Buffer | null {
       out.push(seg)
       return copyScansThroughEoi(buf, i + len, out) ? Buffer.concat(out) : null
     }
-    if (marker === 0xe1) {
-      const o = readExifOrientation(buf.subarray(i + 2, i + len))
-      if (o && orientation === null) orientation = o
-    }
-    if (isMpfSegment(buf, marker, i + 2, i + len)) {
-      // dropped — see isMpfSegment
-    } else if (JPEG_DROP.has(marker)) {
-      // Keep the Adobe colour-transform marker: without it CMYK/YCCK files decode with wrong colours.
-      if (marker === 0xee && buf.toString('latin1', i + 2, i + 7) === 'Adobe') out.push(seg)
-    } else {
+    if (!isDroppedSegment(buf, marker, i + 2, i + len)) {
       // Put the orientation block right after JFIF/first segment position: before the first
       // frame/table segment (anything that is not APP0).
       if (marker !== 0xe0) insertOrientation()

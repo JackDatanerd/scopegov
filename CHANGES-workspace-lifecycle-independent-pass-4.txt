@@ -1,0 +1,24 @@
+Workspace lifecycle — independent pass 4 (section 3)
+====================================================
+Scope: api/workspace/{create, complete-onboarding, delete, leave, list, switch, profile (+avatar)}
+and the RPCs behind them (create/leave/delete_workspace_atomic, migration 118 bodies).
+
+Result: 2 bugs, both in lib/utils/image-metadata.ts (used by profile/avatar). No route or SQL bugs.
+
+B1  JPEG metadata strip was a deny-list. Only APP1, APP12-15 and COM were removed, so APP3-APP11
+    (vendor metadata and the C2PA / content-credentials block in APP11) went into the PUBLIC `logos`
+    bucket. Now an allow-list: of all APPn/COM segments only JFIF (APP0), ICC_PROFILE (APP2) and
+    Adobe (APP14) survive. Also applies to segments slipped between progressive scans. The MPF index
+    is dropped as before (it is APP2 but not an ICC profile). JFXX thumbnails are dropped too.
+
+B2  EXIF orientation lost when the ICC profile preceded the EXIF block. The orientation was read
+    while walking segments, after the insertion point had already passed, so the minimal orientation
+    block was never written and portrait photos rendered sideways. Orientation is now read in a
+    first pass over the header segments.
+
+Files:  lib/utils/image-metadata.ts   (modified)
+        tests/workspace-lifecycle-pass4.test.ts   (new)
+
+Verified: the new tests plus the existing B7 (pass 1) and B2 (pass 2) image tests pass under a
+vitest shim in this sandbox (no node_modules here). Please run `npm ci && npx tsc --noEmit &&
+npx vitest run` before pushing.
