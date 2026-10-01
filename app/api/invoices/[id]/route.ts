@@ -7,8 +7,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
 import { computeInvoiceTotals, enteredAmountOf, parseDateOnly, parsePaymentInstructions } from '@/lib/documents/invoice-totals'
 import { baseContractValue, computeContractPosition } from '@/lib/reports/contract-position'
-import { getPendingApprovalForDocument, cancelApprovalRequest } from '@/lib/approvals/engine'
-import { isSendClaimLive } from '@/lib/approvals/send-claim'
+import { getPendingApprovalForDocument, cancelApprovalRequest, approvalSendInFlight } from '@/lib/approvals/engine'
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -324,18 +323,24 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
 
     // The last approval step just cleared and the send is running: deleting now
     // would race a document that is about to go out.
-    const active = await getPendingApprovalForDocument(service, 'invoice', id)
-    if (active?.status === 'pending' && isSendClaimLive(active.sending_started_at))
+    // FIX (section-11 pass, finding 2): this only treated status 'pending' as a send in flight, but a RETRY
+    // claims the same way while the request stays 'approved' — so deleting during a retry slipped through (and
+    // cancelApprovalRequest, which never cancels a live claim, silently did nothing). approvalSendInFlight
+    // covers both claim states.
+    if (await approvalSendInFlight(service, session.workspaceId, ['invoice'], id))
       return NextResponse.json({ error: 'This invoice was just approved and is being sent — refresh in a moment.' }, { status: 409 })
 
     // A gated invoice stays 'draft' the whole time it's under review, so the status
     // check above didn't stop a delete out from under an in-flight approval chain
     // (or an approved-but-unsent one). Cancel first, same as CO close/withdraw.
-    await cancelApprovalRequest(service, {
+    const cancelResult = await cancelApprovalRequest(service, {
       documentType: 'invoice', documentId: id, workspaceId: session.workspaceId,
       actorId: session.id, actorEmail: session.email, actorName: session.name,
       reason: 'Invoice deleted',
     })
+    // A send started in the gap since the check above — stop before the invoice is destroyed under it.
+    if (cancelResult.blockedBySend)
+      return NextResponse.json({ error: 'This invoice was just approved and is being sent — refresh in a moment.' }, { status: 409 })
 
     // FIX (section-12 audit, pass 2): `.eq('id', id)` alone — a send landing between
     // the status read above and this delete would hard-delete an invoice that had

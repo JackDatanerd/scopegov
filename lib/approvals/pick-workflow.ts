@@ -18,9 +18,9 @@ export function pickWorkflow<T extends {
   const ordered = [...workflows].sort((a, b) => (rank(b) - rank(a)) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
 
   // A thresholded workflow is only comparable against a document in the SAME
-  // currency (see migration 023); a currency-agnostic one has no amount to compare.
+  // currency (see migration 023).
   const direct = ordered.find(w =>
-    w.threshold_amount == null || (w.threshold_currency === currency && amount >= Number(w.threshold_amount))
+    w.threshold_amount != null && w.threshold_currency === currency && amount >= Number(w.threshold_amount)
   )
   if (direct) return direct
 
@@ -32,7 +32,13 @@ export function pickWorkflow<T extends {
   const fallback = ordered.filter(w =>
     w.threshold_amount != null && w.threshold_currency !== currency && w.apply_to_other_currencies === true
   )
-  if (fallback.length === 0) return null
+  // FIX (section-11 pass, finding 1): the catch-all used to be matched in the `direct` step above, so
+  // when a workspace had a catch-all AND a workflow flagged "also gate other currencies", the flag never
+  // took effect — a EUR document was always handled by the catch-all's (usually lighter) chain even though
+  // the admin explicitly asked for the stricter one to cover every other currency. The catch-all now only
+  // applies after both the same-currency thresholds and the opted-in other-currency fallback have had
+  // their turn. Same-currency behaviour is unchanged (a cleared threshold still beats the catch-all).
+  if (fallback.length === 0) return ordered.find(w => w.threshold_amount == null) ?? null
 
   // FIX (section-11 audit, re-audit — bug): "the most senior chain (highest
   // threshold) wins" was implemented by sorting every fallback candidate by

@@ -135,10 +135,10 @@ export interface GateResult {
 // (approval_requests_one_active_per_doc, migration 069).
 async function findActiveRequest(
   service: any, workspaceId: string, documentType: ApprovalDocumentType, documentId: string
-): Promise<{ id: string; status: string; send_failed_at: string | null } | null> {
+): Promise<{ id: string; status: string; send_failed_at: string | null; sending_started_at: string | null } | null> {
   const { data } = await service
     .from('approval_requests')
-    .select('id, status, send_failed_at')
+    .select('id, status, send_failed_at, sending_started_at')
     .eq('workspace_id', workspaceId)
     .eq('document_type', documentType)
     .eq('document_id', documentId)
@@ -148,7 +148,12 @@ async function findActiveRequest(
   return (data && data[0]) || null
 }
 
-function activeRequestResult(active: { id: string; status: string }): GateResult {
+function activeRequestResult(active: { id: string; status: string; sending_started_at?: string | null }): GateResult {
+  // FIX (section-11 pass, finding 4): a request whose last step just cleared stays 'pending' while its send runs.
+  // A second Send click in that window was answered "Sent for approval — the client will be notified once it
+  // clears", which is wrong: nothing is waiting on anyone. Say what is actually happening.
+  if (active.status === 'pending' && isSendClaimLive(active.sending_started_at))
+    return { requiresApproval: true, blocked: true, approvalRequestId: active.id, status: 409, error: SEND_IN_FLIGHT_MESSAGE }
   if (active.status === 'pending') return { requiresApproval: true, approvalRequestId: active.id }
   return {
     requiresApproval: true, blocked: true, approvalRequestId: active.id, status: 409,
@@ -698,6 +703,13 @@ export async function projectApprovalSendInFlight(
 // that no longer exists (or is no longer awaiting send) is a dead end for
 // whoever it's assigned to, so it's closed out explicitly rather than left
 // to rot.
+export interface CancelApprovalResult {
+  /** The request was found live and is now cancelled. */
+  cancelled: boolean
+  /** A request exists but was left alone because its final-approval send (or a retry) is running right now. */
+  blockedBySend: boolean
+}
+
 export async function cancelApprovalRequest(service: any, params: {
   documentType: ApprovalDocumentType
   documentId: string
@@ -712,7 +724,12 @@ export async function cancelApprovalRequest(service: any, params: {
    * requester must not be told it is "an editable draft again" when it no longer exists or is locked.
    */
   returnedToDraft?: boolean
-}) {
+}): Promise<CancelApprovalResult> {
+  // FIX (section-11 pass, finding 2): this used to return nothing, so a cancel that was refused because a
+  // send was running (see the live-claim guards below) was indistinguishable from "nothing to cancel" —
+  // callers that go on to destroy the document (invoice DELETE) carried on and left an "Approved — not
+  // sent" request behind for a document that no longer exists. Callers that must not proceed past a
+  // refused cancel now check `blockedBySend`.
   // FIX (fix round, section-11 flagship finding): this used to match only
   // status='pending' — a request that fully cleared approval but then
   // failed to auto-send (status='approved', send_failed_at set; see
@@ -742,14 +759,14 @@ export async function cancelApprovalRequest(service: any, params: {
     .order('created_at', { ascending: false })
     .limit(1)
   const request = requestRows && requestRows[0]
-  if (!request) return
+  if (!request) return { cancelled: false, blockedBySend: false }
 
   // FIX (section-11 audit): the route callers already refuse to cancel while a send
   // (original OR retry) is actively claimed, but this is the actual write path every
   // caller funnels through — belt-and-suspenders against any future caller that skips
   // that check. A stale claim (crashed mid-send, past healStuckSends' own window) is
   // still cancellable; only a claim young enough to plausibly still be in flight blocks.
-  if (isSendClaimLive(request.sending_started_at)) return
+  if (isSendClaimLive(request.sending_started_at)) return { cancelled: false, blockedBySend: true }
 
   const now = new Date().toISOString()
   // FIX (re-audit): no CAS here either — a cancel racing a genuine
@@ -780,7 +797,13 @@ export async function cancelApprovalRequest(service: any, params: {
       `and(status.eq.approved,send_failed_at.not.is.null,sending_started_at.lt.${staleBefore})`,
     ].join(','))
     .select('id').maybeSingle()
-  if (!cancelled) return
+  if (!cancelled) {
+    // The write matched nothing: either a decision/retry changed the request in the gap (a claim may now be
+    // live) or it was already resolved. Re-read so the caller can tell "send started" from "nothing to do".
+    const { data: now2 } = await service.from('approval_requests')
+      .select('status, sending_started_at').eq('id', request.id).maybeSingle()
+    return { cancelled: false, blockedBySend: !!now2 && isSendClaimLive(now2.sending_started_at) }
+  }
 
   // FIX (deep audit, notifications section — feature gap): whoever was
   // already notified "awaiting your approval" for the currently-pending
@@ -890,6 +913,7 @@ export async function cancelApprovalRequest(service: any, params: {
     entityId: params.documentId,
     metadata: { approval_request_id: request.id, reason: params.reason || null },
   })
+  return { cancelled: true, blockedBySend: false }
 }
 
 // ── REMINDERS ────────────────────────────────────────────────────

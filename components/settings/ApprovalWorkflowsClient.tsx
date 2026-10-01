@@ -274,8 +274,10 @@ function WorkflowEditorModal({ workflow, defaultType, roles, members, workspaceC
     if (!name.trim()) { setError('Give this workflow a name'); return }
     // Ticking the threshold box with no amount would quietly save a workflow
     // that applies to every document — the opposite of what was asked for.
-    if (hasThreshold && (threshold.trim() === '' || !Number.isFinite(Number(threshold)) || Number(threshold) < 0)) {
-      setError('Enter the value threshold, or untick “Only apply above a value threshold”.'); return
+    if (hasThreshold && (threshold.trim() === '' || !Number.isFinite(Number(threshold)) || Number(threshold) <= 0)) {
+      // FIX (section-11 pass, finding 6): 0 passed here but the server (parseThresholdAmount) refuses it — the admin
+      // only found out after the save round-trip, with a message about "greater than zero" they hadn't been told.
+      setError('Enter a value threshold above zero, or untick “Only apply above a value threshold”.'); return
     }
     const cleanSteps = steps.filter(s => s.kind && s.id)
     if (cleanSteps.length === 0) { setError('Add at least one approver'); return }

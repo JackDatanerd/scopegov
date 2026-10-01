@@ -1,0 +1,34 @@
+Section 11 (approval workflows engine) - fresh pass, fixes
+==========================================================
+No migration. Files that did not change between the audited tarball and the fresh one: every file in this
+section (lib/approvals, app/api/approvals, app/api/approval-workflows, components/approvals, cron).
+
+1. pickWorkflow (lib/approvals/pick-workflow.ts) - MEDIUM
+   A catch-all workflow was matched in the "direct" step, so a workflow flagged "also gate other
+   currencies" could never apply to a foreign-currency document in a workspace that also had a
+   catch-all. Order is now: cleared same-currency threshold -> opted-in other-currency workflow ->
+   catch-all. Same-currency behaviour unchanged.
+   DECISION TAKEN: the opted-in workflow outranks the catch-all for foreign currencies (the checkbox's
+   wording promises exactly that). To get the opposite, revert the `fallback.length === 0` line.
+
+2. cancelApprovalRequest (lib/approvals/engine.ts) + invoices/[id] DELETE - LOW/MED
+   cancel now returns { cancelled, blockedBySend }. Invoice DELETE used a check that only saw the
+   original auto-send claim (status 'pending'), not a retry claim (status 'approved'); it now uses
+   approvalSendInFlight and also stops if the cancel itself is refused by a send that started in the gap.
+   NOT changed: CO withdraw (check-then-write race remains; the in-flight send fails "Only draft COs" and
+   lands in the normal retryable/cancellable "Approved - not sent" state).
+
+3. Decision email (lib/email/templates.ts) - LOW
+   No "approved and sent" / "sent to the client automatically" when the client email bounced.
+
+4. evaluateApprovalGate (lib/approvals/engine.ts) - LOW
+   A second Send click while the final send runs now gets the 409 "being sent right now" message instead
+   of "Sent for approval".
+
+5. ApprovalsClient - LOW (UX)
+   Tab switches reset the status/type filters; the "pending" landing filter only applies to All requests.
+
+6. ApprovalWorkflowsClient - NIT
+   Zero threshold refused client-side like the server does.
+
+Tests: tests/approvals-pass2-fixes.test.ts (new).

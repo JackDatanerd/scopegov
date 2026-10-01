@@ -747,14 +747,19 @@ export async function sendApprovalDecisionEmail(params: {
     headerColour: approved ? (sendFailed || deliveryWarning ? C.amber : C.green) : C.red,
     label: approved ? (sendFailed ? 'Approved — action needed' : 'Approval Granted') : 'Approval Rejected',
     headline: approved
-      ? (sendFailed ? `${documentLabel} approved, but not sent` : `${documentLabel} approved${autoSent ? ' and sent' : ''}`)
+      // FIX (section-11 pass, finding 3): with a delivery warning the document WAS sent but the client never got the
+      // email — "approved and sent" + "sent to the client automatically" contradicted the amber box below it.
+      ? (sendFailed ? `${documentLabel} approved, but not sent`
+        : deliveryWarning ? `${documentLabel} approved — client email not delivered`
+        : `${documentLabel} approved${autoSent ? ' and sent' : ''}`)
       : `${documentLabel} was rejected`,
     body: `
       <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${requesterName},</p>
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
         ${decidedByName} ${approved ? 'approved' : 'rejected'} <strong>${documentTitle}</strong>
         on <strong>${projectName}</strong>.
-        ${approved && autoSent ? ' It has been sent to the client automatically.' : ''}
+        ${approved && autoSent && !deliveryWarning ? ' It has been sent to the client automatically.' : ''}
+        ${approved && autoSent && deliveryWarning ? ' It was sent, but the email to the client did not go out.' : ''}
         ${!approved ? (isCounter
           ? ' The counter-offer has not been accepted and is still open — review it and try again.'
           : ' It has not been sent and remains a draft — make any changes needed and resubmit.') : ''}

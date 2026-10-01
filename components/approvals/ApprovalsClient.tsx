@@ -158,6 +158,15 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
   const [selected, setSelected] = useState<ApprovalRequest | null>(null)
   const [statusFilter, setStatusFilter] = useState(!canApprove && canViewAll ? 'pending' : '')
   const [typeFilter, setTypeFilter] = useState('')
+  // FIX (section-11 pass, finding 5): the oversight-only landing filter ('pending', so the page matches the
+  // sidebar badge) used to follow the member to "My requests", silently hiding their approved / send-failed /
+  // rejected requests behind a filter they never chose there. It now only applies to the All-requests tab;
+  // every tab switch starts from a clean filter.
+  function selectTab(next: Tab) {
+    setStatusFilter(next === 'all' && !canApprove && canViewAll ? 'pending' : '')
+    setTypeFilter('')
+    setTab(next)
+  }
   // Requests the caller submitted that were approved but not sent — fetched
   // independently of the tabs, since they belong to the ORIGINAL REQUESTER who
   // may hold neither the approving role nor oversight permissions.
@@ -325,7 +334,7 @@ export default function ApprovalsClient({ session, canViewAll, canManageWorkflow
       {tabs.length > 1 && (
         <div style={{ display: 'flex', gap: 6, marginBottom: 18, flexWrap: 'wrap' }}>
           {tabs.map(t => (
-            <button key={t.id} className={`btn btn-sm ${tab === t.id ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab(t.id)}>
+            <button key={t.id} className={`btn btn-sm ${tab === t.id ? 'btn-primary' : 'btn-ghost'}`} onClick={() => selectTab(t.id)}>
               {t.label}{t.id === 'mine' && mineCount ? ` (${mineCount})` : ''}
             </button>
           ))}
