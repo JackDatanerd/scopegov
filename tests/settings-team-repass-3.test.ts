@@ -65,7 +65,13 @@ beforeEach(() => {
   session = mkSession()
 })
 
-const PNG_HEADER = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0])
+// The logo route now strips image metadata (independent pass 5) and refuses a file it cannot parse as a
+// PNG, so the fixture is a structurally valid minimal PNG (signature + IHDR + IDAT + IEND) rather than a bare header.
+const pngChunk = (type: string, data: Buffer) => { const l = Buffer.alloc(4); l.writeUInt32BE(data.length); return Buffer.concat([l, Buffer.from(type, 'latin1'), data, Buffer.alloc(4)]) }
+const PNG_HEADER = Buffer.concat([
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+  pngChunk('IHDR', Buffer.alloc(13, 1)), pngChunk('IDAT', Buffer.from('px')), pngChunk('IEND', Buffer.alloc(0)),
+])
 
 describe('R3-1: PATCH /api/workspace/branding echoes updatedAt', () => {
   it('returns the fresh updatedAt when a field actually changes', async () => {

@@ -19,11 +19,12 @@
 // worst case, a bookmark-quality link.
 //
 // Requires an authenticated session (redirect('/login') mirrors every
-// other page in this route group) but deliberately does NOT require the
-// CURRENT active workspace to be onboarding-complete the way the rest of
-// this group's layout might otherwise assume — the user's own currently-
-// active fallback workspace is what /api/workspace/switch itself checks
-// membership against, not this page.
+// other page in this route group). NOTE (independent pass 5): an earlier version of this
+// comment claimed this page "deliberately does NOT require the CURRENT active workspace to be
+// onboarding-complete". It does: it sits inside the (app) layout, which redirects to /onboarding
+// when the active workspace is unfinished, and the middleware gate does the same first. Such a
+// person lands on the onboarding waiting screen and can switch from there; making this page
+// reachable earlier would mean moving it out of the (app) group.
 //
 // (Onboarding independent pass 7: this comment used to claim a restorable
 // workspace "has already finished onboarding by definition". It hasn't

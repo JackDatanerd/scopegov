@@ -1,0 +1,38 @@
+Workspace lifecycle — independent pass 5 (section 3)
+====================================================
+Scope: api/workspace/{create, complete-onboarding, delete, leave, list, switch, profile (+avatar)},
+restore, the RPCs behind them (create/leave/delete_workspace_atomic, restore_workspace_atomic,
+middleware_gate_state), Sidebar / Settings danger zone / onboarding discard flows, workspace-open.
+
+Result: 2 bugs (+1 traced out-of-section). No route or SQL bugs.
+
+B1  /workspace-open used a soft navigation (router.replace). It sits inside the (app) layout, which was
+    already rendered for the previous workspace, and Next does not re-render a shared layout on a soft
+    navigation — so after clicking "Open workspace" in the restored-workspace email the Sidebar and
+    CommandPalette kept the old workspace's name, logo, plan and permissions while the page body showed
+    the new one. Now window.location.replace('/dashboard'), as Sidebar.switchWorkspace/restoreWorkspace
+    already do. The page header also claimed it works without an onboarded active workspace; it can't
+    (the (app) layout and middleware redirect first) — comment corrected.
+
+B2  PNG avatar metadata strip was still a deny-list (tEXt/zTXt/iTXt/eXIf/tIME). Every other chunk —
+    C2PA / Content Credentials (caBX), vendor and private chunks, suggested palettes — was copied into
+    the PUBLIC `logos` bucket. Now an allow-list of the critical, colour, display and APNG chunks.
+    (JPEG was already an allow-list since pass 4.)
+
+B2b (traced) api/workspace/branding/logo stored the uploaded bytes verbatim in the same public bucket.
+    It now runs the same stripImageMetadata() as the avatar route and refuses an unparseable file with
+    the same "looks damaged" 400.
+
+Files:  components/workspace/WorkspaceOpenClient.tsx       (modified)
+        app/(app)/workspace-open/page.tsx                  (modified, comment only)
+        lib/utils/image-metadata.ts                        (modified)
+        app/api/workspace/branding/logo/route.ts           (modified)
+        tests/settings-team-repass-3.test.ts               (modified: logo fixture is now a valid minimal PNG,
+                                                            since the route refuses a bare 8-byte header)
+        tests/workspace-lifecycle-pass5.test.ts            (new)
+        CHANGES-workspace-lifecycle-independent-pass-5.txt (new)
+
+Verified in this sandbox (no node_modules): the stripper run against real PIL-generated JPEGs (baseline,
+progressive, trailing data after EOI, EXIF GPS/Make) and PNGs (tEXt, eXIf, private caBX chunk); output
+decodes, orientation kept, metadata gone. Please run `npm ci && npx tsc --noEmit && npx vitest run`
+before pushing.

@@ -12,7 +12,8 @@
 //         The EXIF *orientation* value is kept by writing back a minimal EXIF block that
 //         contains only that one tag — dropping it would make portrait phone photos render
 //         sideways in browsers that honour it.
-//   PNG:  drops the ancillary text/time/EXIF chunks (tEXt, zTXt, iTXt, eXIf, tIME).
+//   PNG:  allow-list — keeps only the critical and colour/display/animation chunks a decoder needs;
+//         every other chunk (text, EXIF, time, C2PA, vendor/private) is dropped.
 // Returns null when the file isn't structurally a valid image of that type, so the caller can
 // reject it instead of storing something it couldn't inspect.
 
@@ -180,7 +181,21 @@ export function stripJpegMetadata(buf: Buffer): Buffer | null {
 }
 
 const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
-const PNG_DROP = new Set(['tEXt', 'zTXt', 'iTXt', 'eXIf', 'tIME'])
+// FIX (Workspace lifecycle independent pass 5 — B2): PNG was still a deny-list of five chunks
+// (tEXt, zTXt, iTXt, eXIf, tIME) while JPEG moved to an allow-list in pass 4 for the same reason, so
+// every OTHER ancillary chunk — the C2PA / Content Credentials chunk (caBX), vendor chunks
+// (prVW, iDOT, ...), suggested palettes, private chunks — went into the PUBLIC bucket verbatim.
+// Allow-list now: only chunks a decoder needs to draw the image correctly survive.
+//   critical:  IHDR PLTE IDAT IEND
+//   colour:    tRNS gAMA cHRM sRGB iCCP sBIT cICP mDCV cLLI
+//   display:   bKGD hIST pHYs
+//   animation: acTL fcTL fdAT (APNG)
+const PNG_KEEP = new Set([
+  'IHDR', 'PLTE', 'IDAT', 'IEND',
+  'tRNS', 'gAMA', 'cHRM', 'sRGB', 'iCCP', 'sBIT', 'cICP', 'mDCV', 'cLLI',
+  'bKGD', 'hIST', 'pHYs',
+  'acTL', 'fcTL', 'fdAT',
+])
 
 export function stripPngMetadata(buf: Buffer): Buffer | null {
   if (buf.length < 8 || !buf.subarray(0, 8).equals(PNG_SIG)) return null
@@ -192,7 +207,7 @@ export function stripPngMetadata(buf: Buffer): Buffer | null {
     const type = buf.toString('latin1', i + 4, i + 8)
     const end = i + 12 + len
     if (end > buf.length) return null
-    if (!PNG_DROP.has(type)) out.push(buf.subarray(i, end))
+    if (PNG_KEEP.has(type)) out.push(buf.subarray(i, end))
     i = end
     if (type === 'IEND') { sawIend = true; break }
   }

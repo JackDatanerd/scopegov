@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { stripImageMetadata } from '@/lib/utils/image-metadata'
 
 // FIX (audit round 3, finding #5): the browser previously wrote logo
 // files straight to Supabase Storage (`supabase.storage.from('logos')
@@ -99,7 +100,16 @@ export async function POST(request: NextRequest) {
     // never trusted from the client — a member can only ever overwrite
     // their own workspace's logo.
     const path = `${session.workspaceId}/logo.${ext}`
-    const bytes = new Uint8Array(buffer)
+    // FIX (Workspace lifecycle independent pass 5 — B2, traced from profile/avatar): the logo lands in
+    // the same PUBLIC bucket as avatars and was stored byte-for-byte, so whatever a design tool or
+    // phone embedded (EXIF/GPS, XMP creator and edit history, C2PA) was published at a stable URL that
+    // is also embedded in emails and PDFs. Same metadata strip as the avatar route; a file that can't
+    // be parsed as the image type it claims to be is refused rather than stored uninspected.
+    const cleaned = stripImageMetadata(file.type, buffer)
+    if (!cleaned) {
+      return NextResponse.json({ error: 'That image file looks damaged. Try re-saving it as a PNG or JPG.' }, { status: 400 })
+    }
+    const bytes = new Uint8Array(cleaned)
 
     // FIX (deep audit, section 5 re-pass): the path is keyed by extension
     // (logo.png vs logo.jpg), so switching file types (upload a PNG, later
