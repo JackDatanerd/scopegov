@@ -180,15 +180,25 @@ export async function POST(request: NextRequest) {
     try {
       const { data: billing } = await (service as any)
         .from('billing')
-        .select('paystack_subscription_code, paystack_email_token, cancels_at_period_end')
+        .select('paystack_subscription_code, paystack_email_token, cancels_at_period_end, cancelled_by_workspace_delete_at')
         .eq('workspace_id', workspaceId).maybeSingle()
-      if (billing?.paystack_subscription_code) {
+      // FIX (Workspace lifecycle independent pass — B1): only re-enable a subscription that the DELETE
+      // itself cancelled (billing.cancelled_by_workspace_delete_at, migration 132). Resuming every
+      // subscription undid a cancellation the owner had requested themselves before deleting, and the
+      // customer was charged again at the next cycle.
+      if (billing?.paystack_subscription_code && billing.cancelled_by_workspace_delete_at) {
         const result = await resumePaystackSubscription(billing)
         if (!result.ok) {
           console.error('Paystack resume after workspace restore failed (non-fatal):', result.error)
-        } else if (billing.cancels_at_period_end) {
+          // Marker deliberately left in place so the failed resume is still identifiable.
+          await alertBillingOps(service, `billing:restore-resume:${workspaceId}`, 'Workspace restored but its subscription could not be re-enabled', [
+            `workspace: ${workspaceId}`,
+            `resume error: ${result.error || 'unknown'}`,
+            'The workspace is live again but its Paystack subscription is still cancelled by the earlier delete. Resume it manually.',
+          ]).catch(() => {})
+        } else {
           const localUpdate = () => (service as any).from('billing').update({
-            cancels_at_period_end: false, updated_at: new Date().toISOString(),
+            cancels_at_period_end: false, cancelled_by_workspace_delete_at: null, updated_at: new Date().toISOString(),
           }).eq('workspace_id', workspaceId)
           let upd = await localUpdate()
           if (upd.error) upd = await localUpdate()

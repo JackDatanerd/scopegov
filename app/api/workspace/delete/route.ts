@@ -368,6 +368,36 @@ export async function DELETE(request: Request) {
       .eq('workspace_id', session.workspaceId).is('consumed_at', null)
     if (purgeErr) console.error('Could not purge pending checkouts on workspace delete:', purgeErr.message)
 
+    // FIX (Workspace lifecycle independent pass — B1): remember that THIS delete is what disabled the
+    // Paystack subscription, so workspace/restore re-enables it only in that case. Without the marker
+    // restore resumed any subscription, undoing a cancellation the owner had made themselves before
+    // deleting. Not set when the subscription was already non-renewing (nothing for restore to undo).
+    // Retried once; if it still cannot be written restore simply won't auto-resume (the safe direction)
+    // and billing ops is told so the customer isn't left silently without a subscription.
+    const cancelledByDelete = !!billing?.paystack_subscription_code && !cancelResult.alreadyCancelled
+    if (cancelledByDelete) {
+      const mark = () => (service as any).from('billing')
+        .update({ cancelled_by_workspace_delete_at: now, updated_at: new Date().toISOString() })
+        .eq('workspace_id', session.workspaceId)
+      let marked = await mark()
+      if (marked.error) marked = await mark()
+      if (marked.error) {
+        await alertBillingOps(service, `billing:delete-marker:${session.workspaceId}`, 'Workspace deleted but delete-cancel marker not recorded', [
+          `workspace: ${session.workspaceId}`,
+          `Paystack subscription was cancelled by the delete but billing.cancelled_by_workspace_delete_at could not be written: ${marked.error.message}`,
+          'If the owner restores this workspace the subscription will NOT be re-enabled automatically — resume it by hand.',
+        ]).catch(() => {})
+      }
+    } else if (billing) {
+      // A marker left over from an earlier delete/restore cycle (e.g. its clear-on-restore write failed)
+      // must not survive a delete that did NOT cancel anything, or a later restore would resume a
+      // subscription the owner cancelled themselves.
+      const { error: clrErr } = await (service as any).from('billing')
+        .update({ cancelled_by_workspace_delete_at: null })
+        .eq('workspace_id', session.workspaceId).not('cancelled_by_workspace_delete_at', 'is', null)
+      if (clrErr) console.error('Workspace delete: could not clear stale cancel marker (non-fatal):', clrErr.message)
+    }
+
     // Member deactivation and active_workspace_id reassignment (which used to live
     // here as two separate best-effort writes) now happen inside
     // delete_workspace_atomic above, in the same transaction as the soft-delete.
@@ -390,10 +420,24 @@ export async function DELETE(request: Request) {
       actorEmail: session.email, actorName: session.name,
       eventType: 'workspace.deleted', entityType: 'workspace',
       entityId: session.workspaceId, entityName: session.agencyName,
-      metadata: { billing_cancelled: !!billing?.paystack_subscription_code },
+      metadata: { billing_cancelled: cancelledByDelete },
     })
 
-    return NextResponse.json({ ok: true })
+    // FIX (Workspace lifecycle independent pass — B2): tell the client whether the caller still has a
+    // live workspace (delete_workspace_atomic already pointed active_workspace_id at it), so Settings
+    // can carry on there instead of signing out someone who has other workspaces.
+    let hasOtherWorkspace = false
+    try {
+      const { data: rest } = await (service as any)
+        .from('workspace_members')
+        .select('workspace_id, workspaces!inner(deleted_at)')
+        .eq('user_id', session.id).eq('status', 'active')
+        .is('workspaces.deleted_at', null)
+        .limit(1)
+      hasOtherWorkspace = Array.isArray(rest) && rest.length > 0
+    } catch { /* default: treat as none — the client then signs out, the old behaviour */ }
+
+    return NextResponse.json({ ok: true, hasOtherWorkspace })
   } catch (err) {
     // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): the
     // outer catch-all here still returned a raw exception message

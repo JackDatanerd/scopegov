@@ -271,7 +271,7 @@ interface Props {
   defaults:    any
   logoUrl:     string | null
   session:     SessionUser
-  permissions: { manageWorkspace: boolean; manageBilling: boolean; viewAuditLog: boolean; manageRoles: boolean }
+  permissions: { manageWorkspace: boolean; manageBilling: boolean; viewAuditLog: boolean; manageRoles: boolean; canDeleteWorkspace: boolean }
   mfaMandatory: boolean
 }
 
@@ -2464,8 +2464,12 @@ function DangerTab({ workspace, permissions, session }: any) {
       })
       // Round 21: a gateway 502/504 (HTML body) made res.json() throw a raw parse error into the
       // Danger zone, and a JSON error with no `error` field produced an empty message.
-      const json = await res.json().catch(() => ({})) as { error?: string }
+      const json = await res.json().catch(() => ({})) as { error?: string; hasOtherWorkspace?: boolean }
       if (!res.ok) throw new Error(json.error || 'Could not delete workspace. Try again.')
+      // FIX (Workspace lifecycle independent pass — B2): someone who still belongs to another workspace is
+      // already pointed at it server-side; signing them out of the whole app for deleting one workspace was
+      // pointless. Only a person left with nothing signs out (their next stop is the setup/restore page).
+      if (json.hasOtherWorkspace) { window.location.href = '/dashboard'; return }
       // FIX (deep audit, Auth+MFA re-pass — signOut scope): this used to
       // call the bare, unscoped supabase.auth.signOut(), which defaults to
       // scope: 'global' — revoking every session on every device the
@@ -2496,6 +2500,18 @@ function DangerTab({ workspace, permissions, session }: any) {
       <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, color: 'var(--red)', marginBottom: 20 }}>Danger zone</h2>
       {err && <div className="auth-error" style={{ marginBottom: 14 }}>{err}</div>}
       {isOwner && <TransferOwnershipSection />}
+      {/* FIX (Workspace lifecycle independent pass — B3): only the owner (or, once the owner is gone, a
+          settings admin) can delete — see app/(app)/settings/page.tsx. Everyone else used to get the full
+          type-the-name form and a 403 after submitting it. */}
+      {!permissions.canDeleteWorkspace ? (
+        <div className="settings-section" style={{ border: '1px solid #FECACA' }}>
+          <div className="settings-section-title" style={{ color: 'var(--red)' }}>Delete workspace</div>
+          <p style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.6 }}>
+            Only the workspace owner can delete this workspace. Ask the owner, or have them transfer
+            ownership to you first.
+          </p>
+        </div>
+      ) : (
       <div className="settings-section" style={{ border: '1px solid #FECACA' }}>
         <div className="settings-section-title" style={{ color: 'var(--red)' }}>Delete workspace</div>
         <p style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.6, marginBottom: 16 }}>
@@ -2525,6 +2541,7 @@ function DangerTab({ workspace, permissions, session }: any) {
           {deleting ? <span className="spin" /> : 'Delete workspace'}
         </button>
       </div>
+      )}
     </div>
   )
 }

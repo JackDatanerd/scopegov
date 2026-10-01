@@ -168,6 +168,24 @@ export default async function SettingsPage() {
   // here now, the same way, so Settings' "MFA mandatory" badge and its
   // Disable-button gating agree with what the server will actually
   // enforce for a mandatory-MFA role held in a non-active workspace.
+  // FIX (Workspace lifecycle independent pass — B3): DELETE /api/workspace/delete is an OWNER action; a
+  // settings admin may only do it once the owner is no longer an active member (otherwise nobody could
+  // ever remove the workspace). The Danger zone showed the delete form to every settings admin, and the
+  // route then refused them with a 403 after they had typed the name. Same rule as the route.
+  let canDeleteWorkspace = false
+  if (canManageWorkspace) {
+    const ownerId: string | null = wsRes.data?.created_by ?? null
+    if (!ownerId || ownerId === session.id) {
+      canDeleteWorkspace = true
+    } else {
+      const { data: ownerMember, error: ownerErr } = await (service as any)
+        .from('workspace_members').select('id')
+        .eq('workspace_id', session.workspaceId).eq('user_id', ownerId).eq('status', 'active').maybeSingle()
+      // On a failed read fall back to showing the form — the route still enforces the rule.
+      canDeleteWorkspace = !!ownerErr || !ownerMember
+    }
+  }
+
   const mfaMandatory = await userHasAnyMfaMandatoryMembership(session.id)
 
   // FIX (deep audit, Settings section \u2014 the redaction above, not applied
@@ -199,6 +217,7 @@ export default async function SettingsPage() {
         // FIX (deep audit, section 5 re-pass): EXPORT_DATA removed — see
         // lib/supabase/types.ts for why; it never gated anything.
         manageRoles:     hasPermission(session, 'MANAGE_ROLES'),
+        canDeleteWorkspace,
       }}
     />
   )

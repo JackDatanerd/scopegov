@@ -1,0 +1,25 @@
+scopegov — Workspace lifecycle (create / complete-onboarding / delete / leave / list / switch / profile)
+Fresh independent pass. Requires migration 132 in addition to the code.
+
+B1 (medium) restore re-enabled a subscription the OWNER had cancelled
+  workspace/restore resumed Paystack for any workspace holding a subscription code. Cancel plan ->
+  delete -> restore therefore un-cancelled the plan and the customer was charged at the next cycle.
+  - migration 132: billing.cancelled_by_workspace_delete_at (+ backfill for workspaces deleted inside
+    the 30-day restore window whose delete cancelled billing and where no earlier cancellation existed).
+  - workspace/delete: sets the marker only when IT cancelled (not when already non-renewing), clears a
+    stale one otherwise, pages billing ops if the marker cannot be written, and audits the true value
+    (billing_cancelled used to be true whenever a subscription code existed).
+  - workspace/restore: resumes only when the marker is set; clears marker + cancels_at_period_end on
+    success; keeps the marker and pages billing ops if the resume fails.
+  Workspaces deleted BEFORE 132 that the backfill cannot classify will not auto-resume on restore
+  (the safe direction); billing ops can resume those by hand.
+
+B2 (low) Settings delete signed out people who still have other workspaces
+  delete now returns hasOtherWorkspace; Settings goes to /dashboard in that case, signs out otherwise.
+
+B3 (low) Danger zone showed the delete form to every settings admin; the route 403s non-owners
+  settings/page.tsx computes canDeleteWorkspace with the route's own rule (owner, or owner no longer an
+  active member); non-qualifying admins see an explanation instead of the form.
+
+Tests: tests/workspace-lifecycle-fresh-b1-b3.test.ts (restore behaviour with mocked Supabase/Paystack +
+source contracts). NOTE: written without node_modules available — run `npm test` before pushing.
