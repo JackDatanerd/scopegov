@@ -12,6 +12,7 @@
 'use client'
 import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { isoDateInZone } from '@/lib/utils/timezone'
 
 interface Props {
   clientId: string
@@ -26,12 +27,14 @@ interface Props {
   // Now editable here and shown; email_bounced_at surfaces the Resend webhook's bounce/complaint signal.
   timezone?: string | null
   emailBouncedAt?: string | null
+  /** Workspace time zone — the one every other date on the Clients pages is shown in. */
+  workspaceTimeZone?: string | null
   emailBounceKind?: string | null
   editable: boolean
 }
 
 export default function ClientContactCard({
-  clientId, name, companyName, email, phone, ccEmails, paymentTermsNote, notes, timezone, emailBouncedAt, emailBounceKind, editable,
+  clientId, name, companyName, email, phone, ccEmails, paymentTermsNote, notes, timezone, emailBouncedAt, workspaceTimeZone, emailBounceKind, editable,
 }: Props) {
   const router = useRouter()
   const [editing, setEditing] = useState(false)
@@ -117,7 +120,7 @@ export default function ClientContactCard({
         {emailBouncedAt && (
           <div className="auth-error" style={{ margin: '8px 0', fontSize: 12 }}>
             <i className="ti ti-mail-exclamation" style={{ fontSize: 13, marginRight: 5 }} />
-            Email to this address {emailBounceKind === 'complaint' ? 'was marked as spam' : 'bounced'} on {new Date(emailBouncedAt).toISOString().slice(0, 10)} — the client may not be receiving documents. Check the address{editable ? ' and correct it below' : ''}.
+            Email to this address {emailBounceKind === 'complaint' ? 'was marked as spam' : 'bounced'} on {isoDateInZone(emailBouncedAt, workspaceTimeZone || 'UTC')} — the client may not be receiving documents. Check the address{editable ? ' and correct it below' : ''}.
           </div>
         )}
         {phone && (

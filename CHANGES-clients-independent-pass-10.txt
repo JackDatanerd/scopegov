@@ -1,0 +1,19 @@
+Clients (section 14) — independent pass 10
+==========================================
+
+B1 (Low) NUL bytes / lone surrogates passed validation and failed in Postgres as a 500
+  lib/utils/client-input.ts
+    - EMAIL_RE now rejects control characters and unpaired surrogates (u flag).
+    - New hasUnstorableText() + UNSTORABLE_TEXT_ERROR(); applied to name, every optional text
+      field (company, phone, notes, VAT, payment terms) and every billing-address part.
+  app/api/clients/[id]/contacts/route.ts            (name, role)
+  app/api/clients/[id]/contacts/[contactId]/route.ts (name, role)
+    - Emails on both routes are covered by the stricter EMAIL_RE.
+  Cross-section: POST /api/projects (inline new client) reuses parseClientInput, so it is fixed too.
+
+B2 (Low) Bounce date on the Contact card was UTC, every other Clients date is workspace-zone
+  components/clients/ClientContactCard.tsx   new optional prop workspaceTimeZone; uses isoDateInZone
+  app/(app)/clients/[id]/page.tsx            passes workspaceTimeZone={timeZone}
+
+Tests: tests/clients-pass10-fixes.test.ts
+No migration required.

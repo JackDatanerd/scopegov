@@ -8,7 +8,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
-import { EMAIL_RE, CLIENT_LIMITS, CONTACT_ROLE_TYPES } from '@/lib/utils/client-input'
+import { EMAIL_RE, CLIENT_LIMITS, CONTACT_ROLE_TYPES, hasUnstorableText, UNSTORABLE_TEXT_ERROR } from '@/lib/utils/client-input'
 // FIX (independent pass round 2, section 14): this route's own local escapeLike() was broken
 // (see lib/utils/escape-like.ts for the full story) — imported instead of re-typed.
 import { escapeLike } from '@/lib/utils/escape-like'
@@ -53,6 +53,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const patch: Record<string, unknown> = {}
     if (body.name !== undefined) {
       if (typeof body.name !== 'string' || !body.name.trim()) return NextResponse.json({ error: 'Name is required' }, { status: 400 })
+      if (hasUnstorableText(body.name)) return NextResponse.json({ error: UNSTORABLE_TEXT_ERROR('Name') }, { status: 400 })
       if (body.name.trim().length > CLIENT_LIMITS.name) return NextResponse.json({ error: `Name is too long (${CLIENT_LIMITS.name} characters max)` }, { status: 400 })
       patch.name = body.name.trim()
     }
@@ -71,6 +72,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       if (body.role !== null && typeof body.role !== 'string') return NextResponse.json({ error: 'Role must be text' }, { status: 400 })
       if (typeof body.role === 'string' && body.role.trim().length > CLIENT_LIMITS.contactRole)
         return NextResponse.json({ error: `Role is too long (${CLIENT_LIMITS.contactRole} characters max)` }, { status: 400 })
+      if (typeof body.role === 'string' && hasUnstorableText(body.role)) return NextResponse.json({ error: UNSTORABLE_TEXT_ERROR('Role') }, { status: 400 })
       patch.role = typeof body.role === 'string' ? body.role.trim() || null : null
     }
     if (body.roleType !== undefined) {

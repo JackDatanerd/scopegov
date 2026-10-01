@@ -495,6 +495,7 @@ export default async function ClientDetailPage({ params }: Props) {
               notes={client.notes}
               timezone={client.timezone}
               emailBouncedAt={client.email_bounced_at}
+              workspaceTimeZone={timeZone}
               emailBounceKind={client.email_bounce_kind}
               editable={canEditClientData}
             />

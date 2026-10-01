@@ -14,7 +14,17 @@
 
 import { isValidTimeZone } from '@/lib/utils/timezone'
 
-export const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+// FIX (independent pass 10, section 14 — B1): `[^\s@]` accepted a NUL byte, other control characters and lone UTF-16
+// surrogates. Postgres cannot store \u0000 in text/jsonb and rejects an unpaired surrogate escape, so such an address
+// passed validation and then failed inside the RPC as a generic 500. Control characters and lone surrogates are never
+// part of a real address; the `u` flag makes `\ud800-\udfff` match ONLY unpaired surrogates (a valid pair is one code point).
+export const EMAIL_RE = /^[^\s@\u0000-\u001f\u007f\ud800-\udfff]+@[^\s@\u0000-\u001f\u007f\ud800-\udfff]+\.[^\s@\u0000-\u001f\u007f\ud800-\udfff]+$/u
+
+/** True when the text holds a NUL byte or an unpaired surrogate — values Postgres refuses to store. */
+export function hasUnstorableText(s: string): boolean {
+  return /[\u0000\ud800-\udfff]/u.test(s)
+}
+export const UNSTORABLE_TEXT_ERROR = (label: string) => `${label} contains characters that can’t be saved`
 export const MAX_CC_EMAILS = 10
 
 export const CLIENT_LIMITS = {
@@ -41,6 +51,7 @@ function optionalText(v: unknown, label: string, max: number): { ok: true; value
   if (v === null) return { ok: true, value: null }
   if (typeof v !== 'string') return { ok: false, error: `${label} must be text` }
   const t = v.trim()
+  if (hasUnstorableText(t)) return { ok: false, error: UNSTORABLE_TEXT_ERROR(label) }
   if (t.length > max) return { ok: false, error: `${label} is too long (${max} characters max)` }
   return { ok: true, value: t || null }
 }
@@ -60,6 +71,7 @@ export function normalizeBillingAddress(
     if (raw === undefined || raw === null || raw === '') continue
     if (typeof raw !== 'string') return { ok: false, error: `Billing address ${key} must be text` }
     const t = raw.trim()
+    if (hasUnstorableText(t)) return { ok: false, error: UNSTORABLE_TEXT_ERROR(`Billing address ${key}`) }
     const unchanged = !!existing && typeof existing === 'object' && !Array.isArray(existing)
       && typeof (existing as any)[key] === 'string' && (existing as any)[key].trim() === t
     if (t.length > CLIENT_LIMITS.addressPart && !unchanged) return { ok: false, error: `Billing address ${key} is too long (${CLIENT_LIMITS.addressPart} characters max)` }
@@ -100,6 +112,7 @@ export function parseClientInput(
   // name — required, never blank
   if (mode === 'create' || body.name !== undefined) {
     if (typeof body.name !== 'string' || !body.name.trim()) return fail('Name is required')
+    if (hasUnstorableText(body.name)) return fail(UNSTORABLE_TEXT_ERROR('Name'))
     if (body.name.trim().length > CLIENT_LIMITS.name) return fail(`Name is too long (${CLIENT_LIMITS.name} characters max)`)
     updates.name = body.name.trim()
   }
