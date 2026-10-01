@@ -76,6 +76,25 @@ export function extractUnquotedContent(text: string, opts: { isForward?: boolean
     return forwarded && t.startsWith('>') ? t.replace(/^>\s?/, '').trim() : t
   }
 
+  // FIX (independent pass 5, section 13 - B1): the "-- " signature delimiter ended the scan unconditionally. In a
+  // forward the forwarder's OWN signature sits ABOVE the forwarded message in Outlook / Apple Mail / Thunderbird
+  // ("FYI see below", "--", "Bob / Acme", then the forwarded header block or banner), so the scan stopped before it
+  // ever reached the client's request and only the cover note was classified (-> in_scope, no flag, no failure marker).
+  // Until the forwarded body has started, a delimiter now looks ahead for where it starts and resumes there; with
+  // nothing to resume at it ends the scan exactly as before. Once the forwarded body is under way a delimiter is the
+  // CLIENT's signature and still ends it (everything below is the earlier thread).
+  let inForwardedBody = false
+  const FORWARD_LOOKAHEAD = 60 // a signature block is a handful of lines; never scan the whole message for this
+  const forwardedBodyStart = (from: number): number => {
+    const stop = Math.min(lines.length, from + FORWARD_LOOKAHEAD)
+    for (let j = from; j < stop; j++) {
+      const lt = lines[j].trim()
+      if (FORWARD_BANNER.test(lt)) return j
+      if (forwarded && (ORIGINAL_MSG.test(view(lines[j])) || OUTLOOK_RULE.test(view(lines[j])) || isHeaderPair(lines, j, view) || lt.startsWith('>'))) return j
+    }
+    return -1
+  }
+
   let i = 0
   for (; i < lines.length; i++) {
     const raw = lines[i]
@@ -85,7 +104,13 @@ export function extractUnquotedContent(text: string, opts: { isForward?: boolean
     if (quoted && t.startsWith('>')) continue // a deeper quote level inside a forward: earlier thread
     const body = quoted ? t : raw
 
-    if (SIGNATURE_DELIM.test(body.trimEnd()) || t === '-- ') break
+    if (SIGNATURE_DELIM.test(body.trimEnd()) || t === '-- ') {
+      if (!inForwardedBody) {
+        const start = forwardedBodyStart(i + 1)
+        if (start !== -1) { i = start - 1; continue } // the loop's i++ lands on the forwarded block
+      }
+      break
+    }
 
     // Gmail / Apple Mail attribution, possibly wrapped onto the next line.
     const next = view(lines[i + 1] || '')
@@ -93,14 +118,16 @@ export function extractUnquotedContent(text: string, opts: { isForward?: boolean
     if (ON_WROTE_START.test(t) && ATTRIBUTION_HINT.test(t) && !t.endsWith('wrote:') && WROTE_ONLY.test(next)) break
     if (ON_WROTE_START.test(t) && ATTRIBUTION_HINT.test(t) && /wrote:\s*$/i.test(next) && next.length < 120) break
 
-    if (FORWARD_BANNER.test(t)) { forwarded = true; skipHeaderBlock(); continue }
+    if (FORWARD_BANNER.test(t)) { forwarded = true; inForwardedBody = true; skipHeaderBlock(); continue }
 
     const startsOutlook = ORIGINAL_MSG.test(t) || OUTLOOK_RULE.test(t) || isHeaderPair(lines, i, view)
     if (startsOutlook) {
       if (!forwarded) break            // reply: everything below is the quoted thread
+      inForwardedBody = true
       skipHeaderBlock(); continue       // forward: keep the forwarded body, drop its headers
     }
 
+    if (quoted && forwarded) inForwardedBody = true // a ">"-quoted forwarded body has begun
     out.push(body)
   }
   return out.join('\n').replace(/\n{3,}/g, '\n\n').trim()

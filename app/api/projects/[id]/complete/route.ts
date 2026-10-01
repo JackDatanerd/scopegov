@@ -92,14 +92,30 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // leave a Complete project with live flags.
     const openFlags = (project.guardian_flags || []).filter((f: any) => OPEN_FLAG_STATUSES.includes(f.status))
     if (openFlags.length > 0) {
-      const { error: flagErr } = await (service as any).from('guardian_flags')
-        .update({
-          status:       'closed',
-          close_reason: `Project marked complete by ${session.name}`,
-          resolved_at:  now,
-          updated_at:   now,
-        })
-        .in('id', openFlags.map((f: any) => f.id))
+      // FIX (independent pass 5, section 13 - B2): this closed every live flag with the SAME update and no
+      // `resolution`. A borderline_review flag nobody ever confirmed therefore became closed/resolution:null, which
+      // (a) Reports' classifyFlag counted as a real, closed-without-CO scope flag (a pending/dismissed borderline is
+      // excluded from every flag metric), and (b) made POST /api/guardian/flags reopen restore it as a live OPEN flag
+      // with its placeholder 'info' severity, skipping the confirm step. A borderline closed by completion is the
+      // "not confirmed as scope creep" outcome (`not_out_of_scope`, restored to borderline_review on reopen); an open
+      // flag gets the plain `closed` resolution. Each update also CAS-es on the status it read, so a flag someone
+      // resolved / converted a moment ago is not overwritten.
+      const closeGroup = async (status: 'open' | 'borderline_review', resolution: 'closed' | 'not_out_of_scope') => {
+        const ids = openFlags.filter((f: any) => f.status === status).map((f: any) => f.id)
+        if (ids.length === 0) return null
+        const { error } = await (service as any).from('guardian_flags')
+          .update({
+            status:       'closed',
+            resolution,
+            close_reason: `Project marked complete by ${session.name}`,
+            resolved_by:  session.id,
+            resolved_at:  now,
+            updated_at:   now,
+          })
+          .in('id', ids).eq('status', status)
+        return error
+      }
+      const flagErr = (await closeGroup('open', 'closed')) || (await closeGroup('borderline_review', 'not_out_of_scope'))
       if (flagErr) {
         console.error('Project complete: closing flags failed, reverting:', flagErr)
         await (service as any).from('projects')

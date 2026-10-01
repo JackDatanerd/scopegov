@@ -60,7 +60,10 @@ function tagAt(text: string, i: number, lastGt: { pos: number }): { end: number;
   j++
   for (; j < text.length; j++) {
     const c = text.charCodeAt(j)
-    if (isLetter(c) || (c >= 48 && c <= 57) || c === 45) continue
+    // ':' lets Word/Outlook namespaced tags (<o:p>, <v:shape>, <w:sdt>) be recognised and stripped; a name
+    // followed by anything but '>', '/>' or whitespace is still not a tag, so "<mailto:a@b.com>" and
+    // "<http://x.com>" stay text.
+    if (isLetter(c) || (c >= 48 && c <= 57) || c === 45 || c === 58) continue
     break
   }
   const name = text.slice(nameStart, j).toLowerCase()
@@ -87,6 +90,25 @@ function hasHtmlTag(text: string): boolean {
     else i = text.indexOf('<', i + 1)
   }
   return false
+}
+
+/**
+ * Drops `<!-- ... -->` comments, which include Outlook's `<!--[if gte mso 9]><xml>...</xml><![endif]-->` blocks (the
+ * XML inside is not message text, and used to reach the classifier and the embedding verbatim). An unclosed `<!--`
+ * is left as written. Linear: once no `-->` remains, nothing later can close one.
+ */
+function stripComments(text: string): string {
+  let out = ''
+  let from = 0
+  let i = text.indexOf('<!--')
+  while (i !== -1) {
+    const end = text.indexOf('-->', i + 4)
+    if (end === -1) break
+    out += text.slice(from, i) + ' '
+    from = end + 3
+    i = text.indexOf('<!--', from)
+  }
+  return out + text.slice(from)
 }
 
 /** Drops `<style>...</style>` / `<script>...</script>` blocks (contents included). An unclosed one is left for the tag strip. */
@@ -163,7 +185,7 @@ export function decodeEntities(text: string): string {
 export function toPlainText(content: string): string {
   let text = String(content ?? '').slice(0, MAX_PLAINTEXT_INPUT_CHARS)
   if (hasHtmlTag(text)) {
-    text = decodeEntities(stripAllTags(stripRawTextBlocks(text).replace(/<br\s*\/?>|<\/(p|div|li|tr|h[1-6]|blockquote)>/gi, '\n')))
+    text = decodeEntities(stripAllTags(stripRawTextBlocks(stripComments(text)).replace(/<br\s*\/?>|<\/(p|div|li|tr|h[1-6]|blockquote)>/gi, '\n')))
   }
   return text.replace(/\r\n?/g, '\n').replace(/[ \t\f\v]+/g, ' ').replace(/ ?\n ?/g, '\n').replace(/\n{3,}/g, '\n\n').trim()
 }

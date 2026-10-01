@@ -11,7 +11,7 @@ import {
 import { logAudit } from '@/lib/utils/audit'
 import { checkAiRateLimitByProject, recordAiUsageByProject } from '@/lib/utils/rate-limit'
 import { EVIDENCE_BUCKET } from '@/lib/utils/storage-cleanup'
-import { ALLOWED_ATTACHMENT_TYPES, matchesDeclaredType } from '@/lib/utils/file-signature'
+import { ALLOWED_ATTACHMENT_TYPES, matchesDeclaredType, resolveAttachmentType } from '@/lib/utils/file-signature'
 import { escapeLike } from '@/lib/utils/escape-like'
 
 // BUG-016: verify the Postmark inbound webhook before processing.
@@ -202,7 +202,11 @@ export async function POST(request: NextRequest) {
       for (const a of rawAttachments) {
         try {
           const name = String(a?.Name || '').slice(0, 200) || 'attachment'
-          const contentType = String(a?.ContentType || '').split(';')[0].trim().toLowerCase()
+          // FIX (independent pass 5, section 13 - L1): some mail clients label a PDF / .docx / .eml
+          // application/octet-stream (or send no type). The manual upload route resolves those from the extension;
+          // this path took the declared type verbatim, so the file was silently dropped. Same resolver, and binary
+          // types still have to pass the magic-byte check below.
+          const contentType = resolveAttachmentType(name, String(a?.ContentType || '').split(';')[0].trim().toLowerCase())
           const b64 = typeof a?.Content === 'string' ? a.Content : null
           if (!b64 || !ALLOWED_ATTACHMENT_TYPES.has(contentType)) continue
           const buffer = Buffer.from(b64, 'base64')
