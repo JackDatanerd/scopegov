@@ -6,6 +6,7 @@ import { permissionsRequireMfa } from '@/lib/auth/mfa-policy'
 import { registerSessionSeen } from '@/lib/auth/session-seen'
 import { headers as nextHeaders } from 'next/headers'
 import { effectivePlanTier } from '@/lib/billing/plans'
+import { isAuthRetryableFetchError } from '@supabase/supabase-js'
 
 // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — flagship
 // finding): every place in this codebase that has to pick a FALLBACK
@@ -40,11 +41,39 @@ export function pickFallbackMembership(
   return done[0] || alive[0]
 }
 
+/**
+ * FIX (Auth+MFA pass 9 — MEDIUM): getSession() answered `null` for "nobody is signed in" AND for "the lookup
+ * failed" (it ignored every query's `error` and swallowed every exception). Every page calls
+ * `if (!session) redirect('/login')`, and middleware sends a signed-in person away from /login to
+ * /dashboard — so one transient PostgREST/Auth blip put a signed-in user into a /login <-> /dashboard
+ * redirect loop (the browser's "too many redirects"). Middleware already fails closed with a retryable 503
+ * for ITS lookups; pages now get the same distinction through getSessionStrict(), which throws this error on
+ * an infrastructure failure (rendered by app/error.tsx with a Retry button) and still returns null only for
+ * a genuinely missing session. getSession() keeps its null-on-failure contract for the ~110 API routes.
+ */
+export class SessionUnavailableError extends Error {
+  constructor(message = 'Session lookup unavailable') { super(message); this.name = 'SessionUnavailableError' }
+}
+
 export async function getSession(): Promise<SessionUser | null> {
+  return loadSession(false)
+}
+
+/** For pages/layouts that redirect to /login on null: throws SessionUnavailableError instead of returning null on an outage. */
+export async function getSessionStrict(): Promise<SessionUser | null> {
+  return loadSession(true)
+}
+
+async function loadSession(strict: boolean): Promise<SessionUser | null> {
   try {
     const supabase = await createServerSupabaseClient()
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return null
+    const { data: { user }, error: userAuthError } = await supabase.auth.getUser()
+    if (!user) {
+      if (strict && userAuthError && (isAuthRetryableFetchError(userAuthError) || ((userAuthError as any).status ?? 0) >= 500)) {
+        throw new SessionUnavailableError(userAuthError.message)
+      }
+      return null
+    }
 
     const service = createServiceClient()
 
@@ -57,8 +86,9 @@ export async function getSession(): Promise<SessionUser | null> {
     // workspace every time. Look up active_workspace_id first, then prefer
     // that membership; fall back to the oldest active membership if it's
     // unset or stale (e.g. points to a workspace they're no longer in).
-    const { data: userRow } = await (service as any)
+    const { data: userRow, error: userRowErr } = await (service as any)
       .from('users').select('active_workspace_id, deleted_at').eq('id', user.id).maybeSingle()
+    if (strict && userRowErr) throw new SessionUnavailableError(userRowErr.message)
 
     // FIX (cron/portal audit round 2): a soft-deleted account is never a valid session. Nothing used to
     // check deleted_at anywhere, so a deleted user's still-valid JWT (or, before deletion started banning
@@ -75,7 +105,7 @@ export async function getSession(): Promise<SessionUser | null> {
     // how a stray active-status row pointing at one came to exist.
     let memberRow: any = null
     if (userRow?.active_workspace_id) {
-      const { data } = await (service as any)
+      const { data, error: activeErr } = await (service as any)
         .from('workspace_members')
         .select(`
           id,
@@ -93,6 +123,7 @@ export async function getSession(): Promise<SessionUser | null> {
         .eq('workspace_id', userRow.active_workspace_id)
         .eq('status', 'active')
         .maybeSingle()
+      if (strict && activeErr) throw new SessionUnavailableError(activeErr.message)
       memberRow = data?.workspaces?.deleted_at ? null : data
     }
 
@@ -102,7 +133,7 @@ export async function getSession(): Promise<SessionUser | null> {
       // single oldest one — see pickFallbackMembership's own comment above
       // for why oldest-first alone isn't the right tie-break. 25 comfortably
       // covers any realistic number of workspace memberships for one user.
-      const { data } = await (service as any)
+      const { data, error: fallbackErr } = await (service as any)
         .from('workspace_members')
         .select(`
           id,
@@ -120,6 +151,7 @@ export async function getSession(): Promise<SessionUser | null> {
         .eq('status', 'active')
         .order('created_at', { ascending: true })
         .limit(25)
+      if (strict && fallbackErr) throw new SessionUnavailableError(fallbackErr.message)
       memberRow = pickFallbackMembership(data)
     }
 
@@ -164,7 +196,11 @@ export async function getSession(): Promise<SessionUser | null> {
       brandColour:          ws?.brand_colour || null,
       hasPasswordIdentity:  (user.identities || []).some((i: any) => i.provider === 'email'),
     }
-  } catch {
+  } catch (err) {
+    if (strict) {
+      if (err instanceof SessionUnavailableError) throw err
+      throw new SessionUnavailableError(err instanceof Error ? err.message : undefined)
+    }
     return null
   }
 }

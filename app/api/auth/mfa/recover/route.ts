@@ -8,7 +8,7 @@ import { backupCodeCandidateHashes } from '@/lib/utils/backup-codes'
 import { sendMfaDisabledEmail, sendAccountLockedEmail } from '@/lib/email/templates'
 import { resolveActiveWorkspaceId, resolveActorName } from '@/lib/auth/session'
 import {
-  beginAuthAttempt, releaseAuthAttempt, clearAuthFailures, lockedResponseBody, AUTH_ATTEMPT_LIMIT,
+  beginAuthAttempt, releaseAuthAttempt, clearAuthFailures, clearMfaCodeLockouts, lockedResponseBody, AUTH_ATTEMPT_LIMIT,
 } from '@/lib/auth/attempt-limit'
 import { logSecurityAudit } from '@/lib/auth/security-audit'
 
@@ -55,24 +55,39 @@ export async function POST(request: Request) {
 
     // Peppered HMAC (current) OR legacy unsalted sha256 — codes issued before the
     // change keep working (lib/utils/backup-codes.ts).
-    const { data: matchRows } = await (service as any)
+    // FIX (Auth+MFA pass 9 — LOW): the lookup's and the claim's `error` were never read, so a
+    // transient database failure on a perfectly valid, unspent code was scored as a WRONG code — a
+    // strike, a `mfa_recovery_failed` audit row, and \"invalid or already used\" — the same
+    // transient-failure-reported-as-a-user-mistake gap pass 8 closed for listFactors. A failed lookup
+    // or claim is now an availability error: the reservation is released and nothing is spent.
+    const { data: matchRows, error: matchErr } = await (service as any)
       .from('user_mfa_backup_codes')
       .select('id')
       .eq('user_id', user.id)
       .in('code_hash', backupCodeCandidateHashes(body.code))
       .is('used_at', null)
       .limit(1)
+    if (matchErr) {
+      console.error('MFA recovery: backup-code lookup failed:', matchErr.message)
+      await releaseAuthAttempt(service, begin.attemptId)
+      return NextResponse.json({ error: 'Recovery could not be completed. Your backup code was not used — please try again.' }, { status: 502 })
+    }
     const match = (matchRows || [])[0] || null
 
     // Claim it atomically: only the request whose UPDATE actually flips
     // used_at from NULL gets to proceed.
     let claimed = false
     if (match) {
-      const { data: claimRows } = await (service as any)
+      const { data: claimRows, error: claimErr } = await (service as any)
         .from('user_mfa_backup_codes')
         .update({ used_at: new Date().toISOString() })
         .eq('id', match.id).is('used_at', null)
         .select('id')
+      if (claimErr) {
+        console.error('MFA recovery: backup-code claim failed:', claimErr.message)
+        await releaseAuthAttempt(service, begin.attemptId)
+        return NextResponse.json({ error: 'Recovery could not be completed. Your backup code was not used — please try again.' }, { status: 502 })
+      }
       claimed = (claimRows || []).length === 1
     }
 
@@ -124,6 +139,7 @@ export async function POST(request: Request) {
     }
 
     await clearAuthFailures(service, user.id, 'mfa_recover')
+    await clearMfaCodeLockouts(service, user.id)
 
     const { error: retireErr } = await (service as any).from('user_mfa_backup_codes')
       .update({ used_at: new Date().toISOString() })

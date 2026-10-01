@@ -26,8 +26,9 @@ export default function StepUpHost() {
       if (m === 'totp') {
         try {
           const r = await fetch('/api/auth/mfa/factors'); const j = await r.json()
-          setFactorId(j.factorId || null)
-        } catch { /* the submit will explain */ }
+          if (!r.ok || !j.factorId) setError('We couldn\u2019t load your authenticator. Cancel and try again.')
+          setFactorId(r.ok ? (j.factorId || null) : null)
+        } catch { setError('We couldn\u2019t load your authenticator. Cancel and try again.') }
       }
     }
     window.addEventListener(STEP_UP_EVENT, onRequest)

@@ -78,6 +78,24 @@ export async function clearAuthFailures(service: any, userId: string, kind: Auth
   }
 }
 
+/**
+ * FIX (Auth+MFA pass 9 — MEDIUM): a backup-code recovery, a workspace admin's MFA reset and a platform
+ * admin's MFA reset all REMOVE the authenticator, so whatever wrong-code strikes were recorded against it
+ * (`mfa_verify`, and the Auth hook's own `mfa_verify_hook` ledger) belong to a factor that no longer exists.
+ * Those routes cleared only `mfa_recover` (or nothing), so the person — usually there BECAUSE they had just
+ * typed several wrong codes — hit "Too many incorrect attempts" on the very first code of the replacement
+ * enrolment, for up to the 5-minute window. Wipe the sign-in code ledgers once the factor is gone.
+ */
+export async function clearMfaCodeLockouts(service: any, userId: string): Promise<void> {
+  try {
+    const { error } = await service
+      .from('auth_attempts').delete().eq('user_id', userId).in('kind', ['mfa_verify', 'mfa_verify_hook'])
+    if (error) console.error('clearMfaCodeLockouts failed:', error.message)
+  } catch (err) {
+    console.error('clearMfaCodeLockouts failed:', err)
+  }
+}
+
 export function lockoutMessage(retryAfterSeconds: number): string {
   const mins = Math.max(1, Math.ceil(retryAfterSeconds / 60))
   return `Too many incorrect attempts. Try again in ${mins} minute${mins === 1 ? '' : 's'}.`

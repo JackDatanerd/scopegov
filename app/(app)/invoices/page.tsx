@@ -2,7 +2,7 @@
 // Phase 4a: workspace-wide invoice registry, mirrors /sow's pattern.
 // Phase 4: portfolio reconciliation strip for VIEW_ALL_PROJECTS users.
 
-import { getSession, hasPermission } from '@/lib/auth/session'
+import { getSessionStrict, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
@@ -24,7 +24,7 @@ export default async function InvoicesPage({ searchParams }: {
   const sp = await searchParams
   const filters = parseRegistryFilters(sp)
   const page = Math.max(1, Math.min(1000, parseInt(sp.page || '1', 10) || 1))
-  const session = await getSession()
+  const session = await getSessionStrict()
   if (!session) redirect('/login')
   if (!hasPermission(session, 'VIEW_FINANCIALS')) redirect('/dashboard')
 

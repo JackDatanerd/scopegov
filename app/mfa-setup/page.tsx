@@ -1,4 +1,4 @@
-import { getSession, userHasAnyMfaMandatoryMembership } from '@/lib/auth/session'
+import { getSessionStrict, userHasAnyMfaMandatoryMembership } from '@/lib/auth/session'
 import { adminNeedsMfaEnrolment } from '@/lib/auth/admin'
 import { redirect } from 'next/navigation'
 import MfaSetupClient from '@/components/mfa/MfaSetupClient'
@@ -17,7 +17,7 @@ interface Props {
 }
 
 export default async function MfaSetupPage({ searchParams }: Props) {
-  const session = await getSession()
+  const session = await getSessionStrict()
   const sp = await searchParams
 
   // FIX (Auth+MFA independent pass 7 — MEDIUM): getSession() is null for anyone with no

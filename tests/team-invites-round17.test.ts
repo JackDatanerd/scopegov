@@ -30,7 +30,7 @@ function chain(table: string, ops: Op[] = []): any {
 
 vi.mock('@/lib/auth/session', async () => {
   const actual: any = await vi.importActual('@/lib/auth/session')
-  return { ...actual, getSession: async () => session }
+  return { ...actual, getSession: async () => session, getSessionStrict: async () => session }
 })
 vi.mock('@/lib/supabase/server', () => ({
   createServiceClient: () => ({ from: (t: string) => chain(t), rpc: async () => ({ data: [], error: null }) }),

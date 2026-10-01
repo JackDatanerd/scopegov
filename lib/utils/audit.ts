@@ -56,6 +56,12 @@ function getAmbientClientIp(): string | undefined {
 }
 
 export async function logAudit(service: any, params: AuditParams): Promise<boolean> {
+  // FIX (Auth+MFA pass 9 — LOW): the auth routes pass `(await resolveActiveWorkspaceId(...)) || ''` for a
+  // person with NO workspace membership (a platform-support account — the case mfa-setup was built to
+  // admit). audit_log.workspace_id is a NOT NULL uuid, so that insert could only fail, and it logged a
+  // console error on every MFA sign-in / step-up of such an account. There is no per-workspace trail to
+  // write to, so say so quietly instead of attempting it.
+  if (!params.workspaceId) return false
   try {
     const ipAddress = params.ipAddress
       ?? (params.omitClientIp || SYSTEM_ACTOR_EMAILS.has(params.actorEmail) ? undefined : getAmbientClientIp())

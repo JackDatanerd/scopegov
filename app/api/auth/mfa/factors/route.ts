@@ -14,7 +14,14 @@ export async function GET() {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-    const { data: factors } = await supabase.auth.mfa.listFactors()
+    // FIX (Auth+MFA pass 9 — LOW): a failed listFactors() left `factors` undefined and was reported as
+    // `enrolled: false` with a 200 — an enrolled person saw "Off" / "Required, not set up", and the
+    // step-up modal got no factorId (its Confirm button stayed disabled with no message).
+    const { data: factors, error: listErr } = await supabase.auth.mfa.listFactors()
+    if (listErr) {
+      console.error('MFA factors GET: could not list factors:', listErr.message)
+      return NextResponse.json({ error: 'Could not load MFA status' }, { status: 502 })
+    }
     const verified = (factors?.totp || []).find(f => f.status === 'verified')
 
     const service = createServiceClient()

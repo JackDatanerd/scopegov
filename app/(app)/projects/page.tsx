@@ -1,4 +1,4 @@
-import { getSession, hasPermission } from '@/lib/auth/session'
+import { getSessionStrict, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
@@ -19,7 +19,7 @@ const PROJECTS_MAX_ROWS = 20000
 
 export default async function ProjectsPage({ searchParams }: { searchParams: Promise<{ filter?: string }> }) {
   const { filter } = await searchParams
-  const session = await getSession()
+  const session = await getSessionStrict()
   if (!session) redirect('/login')
 
   const service = createServiceClient()

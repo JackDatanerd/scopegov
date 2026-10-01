@@ -4,7 +4,7 @@
 // making the UI show hardcoded defaults even after a successful save.
 // .maybeSingle() returns null gracefully when no row exists, never 406.
 
-import { getSession, hasPermission, userHasAnyMfaMandatoryMembership } from '@/lib/auth/session'
+import { getSessionStrict, hasPermission, userHasAnyMfaMandatoryMembership } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import SettingsClient from '@/components/settings/SettingsClient'
@@ -12,7 +12,7 @@ import SettingsClient from '@/components/settings/SettingsClient'
 export const metadata = { title: 'Settings' }
 
 export default async function SettingsPage() {
-  const session = await getSession()
+  const session = await getSessionStrict()
   if (!session) redirect('/login')
 
   const service = createServiceClient()

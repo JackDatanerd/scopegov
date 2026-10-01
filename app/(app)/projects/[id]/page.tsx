@@ -2,7 +2,7 @@ import { loadProjectActivity } from '@/lib/utils/project-activity'
 import { canReadProject } from '@/lib/utils/project-access'
 import { amendmentImpact, baseContractValue } from '@/lib/utils/contract-value'
 import { computeContractPosition } from '@/lib/reports/contract-position'
-import { getSession, hasPermission } from '@/lib/auth/session'
+import { getSessionStrict, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect, notFound } from 'next/navigation'
 import ProjectDetail from '@/components/projects/ProjectDetail'
@@ -21,7 +21,7 @@ export async function generateMetadata({ params }: Props) {
   // /projects/<uuid> — authenticated or not, any workspace — leaked that
   // project's name via the page <title>, independent of whether the page
   // body then redirected or 404'd. Scope it exactly like the page does.
-  const session = await getSession()
+  const session = await getSessionStrict()
   if (!session) return { title: 'Project' }
   const service = createServiceClient()
   // FIX (Projects & Dashboard pass 2, B5): workspace scoping alone still let a limited-access member (VIEW_OWN_PROJECTS,
@@ -35,7 +35,7 @@ export async function generateMetadata({ params }: Props) {
 export default async function ProjectPage({ params, searchParams }: Props) {
   const { id } = await params
   const { tab = 'overview', new: isNew } = await searchParams
-  const session = await getSession()
+  const session = await getSessionStrict()
   if (!session) redirect('/login')
 
   const service = createServiceClient()

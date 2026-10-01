@@ -1,4 +1,4 @@
-import { getSession, hasPermission } from '@/lib/auth/session'
+import { getSessionStrict, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import { fetchPaged } from '@/lib/utils/paginate'
@@ -8,7 +8,7 @@ import { getWorkspaceTimeZone } from '@/lib/utils/workspace-time'
 export const metadata = { title: 'Audit Log' }
 
 export default async function AuditLogPage() {
-  const session = await getSession()
+  const session = await getSessionStrict()
   if (!session) redirect('/login')
   if (!hasPermission(session, 'VIEW_AUDIT_LOG')) {
     return (

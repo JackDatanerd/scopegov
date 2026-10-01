@@ -9,6 +9,8 @@ import { checkedSend } from '@/lib/email/delivery'
 import { requireStepUpForCurrentUser } from '@/lib/auth/step-up'
 import { activeWorkspaceIdsForUser } from '@/lib/auth/security-audit'
 import { notifySecurityEvent } from '@/lib/utils/notify'
+import { clearMfaCodeLockouts } from '@/lib/auth/attempt-limit'
+import { otherWorkspaceResetGaps, MFA_RESET_OTHER_WORKSPACE_MESSAGE } from '@/lib/auth/mfa-reset-authority'
 
 // FEATURE (deep audit, Auth+MFA section — feature gap): there was no way
 // back into the app for a member who lost their authenticator device AND
@@ -72,6 +74,10 @@ export async function POST(
     if (await isProtectedOwnerTarget(service, session.workspaceId, session.id, member.user_id))
       return NextResponse.json({ error: OWNER_PROTECTED_MESSAGE }, { status: 403 })
 
+    // Pass 9: MFA is the person's, not this workspace's — see lib/auth/mfa-reset-authority.ts.
+    if ((await otherWorkspaceResetGaps(service, session.id, member.user_id, session.workspaceId)).length > 0)
+      return NextResponse.json({ error: MFA_RESET_OTHER_WORKSPACE_MESSAGE }, { status: 403 })
+
     const { data: factorsData, error: listErr } = await (service as any).auth.admin.mfa.listFactors({ userId: member.user_id })
     if (listErr) throw new Error(listErr.message)
 
@@ -83,6 +89,9 @@ export async function POST(
       const { error: delErr } = await (service as any).auth.admin.mfa.deleteFactor({ id: f.id, userId: member.user_id })
       if (delErr) throw new Error(delErr.message)
     }
+
+    // Pass 9: the strikes belonged to the factor that was just removed — don't lock the replacement enrolment.
+    await clearMfaCodeLockouts(service, member.user_id)
 
     // Any unused backup codes belonged to the enrollment that's now gone —
     // mark them spent so a stale code can't outlive the factor it was

@@ -5,6 +5,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { notifySecurityEvent } from '@/lib/utils/notify'
 import { sendMfaDisabledEmail } from '@/lib/email/templates'
 import { checkedSend } from '@/lib/email/delivery'
+import { clearMfaCodeLockouts } from '@/lib/auth/attempt-limit'
 
 // Platform-level counterpart to app/api/team/[id]/reset-mfa/route.ts — same
 // underlying mechanics (delete the TOTP factor(s) via the admin API, spend
@@ -44,6 +45,9 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   await (service as any).from('user_mfa_backup_codes')
     .update({ used_at: new Date().toISOString() })
     .eq('user_id', target.id).is('used_at', null)
+
+  // Pass 9: the strikes belonged to the factor that was just removed — don't lock the replacement enrolment.
+  await clearMfaCodeLockouts(service, target.id)
 
   const { error: revokeErr } = await (service as any).rpc('revoke_user_sessions', { p_user: target.id, p_except: null })
   if (revokeErr) console.error('[admin] MFA reset: session revoke failed (non-fatal):', revokeErr.message)

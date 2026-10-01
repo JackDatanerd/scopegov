@@ -46,7 +46,7 @@ vi.mock('@supabase/supabase-js', () => ({
 vi.mock('@/lib/auth/attempt-limit', () => ({
   AUTH_ATTEMPT_LIMIT: { maxFailures: 5, windowSeconds: 300 },
   beginAuthAttempt: async () => ({ allowed: true, retryAfterSeconds: 0, failures: 1, attemptId: 'a1' }),
-  releaseAuthAttempt: async () => {}, clearAuthFailures: async () => {}, lockedResponseBody: () => ({}),
+  releaseAuthAttempt: async () => {}, clearAuthFailures: async () => {}, clearMfaCodeLockouts: async () => {}, lockedResponseBody: () => ({}),
 }))
 vi.mock('@/lib/auth/session', () => ({ resolveActorName: async (_s: any, _u: any, f: string) => f, resolveActiveWorkspaceId: async () => 'w1' }))
 vi.mock('@/lib/utils/audit', () => ({ logAudit: async () => true }))

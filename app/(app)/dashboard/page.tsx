@@ -1,4 +1,4 @@
-import { getSession, hasPermission, trialExpired } from '@/lib/auth/session'
+import { getSessionStrict, hasPermission, trialExpired } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
@@ -48,7 +48,7 @@ const TONE_COLOUR: Record<string, string> = {
 }
 
 export default async function DashboardPage() {
-  const session = await getSession()
+  const session = await getSessionStrict()
   if (!session) redirect('/login')
 
   const service         = createServiceClient()

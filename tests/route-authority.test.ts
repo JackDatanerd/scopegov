@@ -74,6 +74,11 @@ vi.mock('@/lib/auth/step-up', async () => {
   return { ...actual, requireStepUpForCurrentUser: async () => stepUpResponse, requireStepUp: async () => stepUpResponse }
 })
 vi.mock('@/lib/utils/audit', () => ({ logAudit: async () => true }))
+let resetGaps: string[] = []
+vi.mock('@/lib/auth/mfa-reset-authority', () => ({
+  otherWorkspaceResetGaps: async () => resetGaps,
+  MFA_RESET_OTHER_WORKSPACE_MESSAGE: 'other workspace',
+}))
 vi.mock('@/lib/email/templates', async () => {
   const actual: any = await vi.importActual('@/lib/email/templates')
   return Object.fromEntries(Object.keys(actual).map(k => [k, async () => ({})]))
@@ -252,6 +257,16 @@ describe('admin MFA reset', () => {
     const res = await POST(json('/api/team/m1/reset-mfa', 'POST'), P('m1'))
     expect(res.status).toBe(401)
     expect(writes).toEqual([])
+  })
+
+  it('refuses when the actor lacks authority in the target\u2019s other workspaces (pass 9)', async () => {
+    resetGaps = ['wB']
+    tables.workspace_members = { data: { id: 'm1', user_id: 'target', status: 'active', effective_permissions: { INVITE_MEMBERS: true }, users: { name: 'T', email: 't@x' } }, error: null }
+    const { POST } = await import('../app/api/team/[id]/reset-mfa/route')
+    const res = await POST(json('/api/team/m1/reset-mfa', 'POST'), P('m1'))
+    resetGaps = []
+    expect(res.status).toBe(403)
+    expect(writes).not.toContain('auth.deleteFactor')
   })
 
   it('revokes the target\u2019s sessions once it proceeds', async () => {

@@ -67,6 +67,10 @@ export default function LoginForm() {
         if ((err as any).code === 'email_not_confirmed' || /email not confirmed/i.test(err.message)) {
           setNeedsConfirm(true)
           setError('Please confirm your email address before signing in. We sent you a verification link when you signed up.')
+        } else if ((err as any).code === 'user_banned' || /user is banned/i.test(err.message)) {
+          // FIX (Auth+MFA pass 9 — LOW): a deleted (or suspended) account is banned in GoTrue, and the raw
+          // "User is banned" fell through to the generic branch below.
+          setError('This account is no longer active. If you think that is a mistake, contact support.')
         } else if ((err as any).status === 429) {
           setError('Too many sign-in attempts. Please wait a few minutes and try again.')
         } else {

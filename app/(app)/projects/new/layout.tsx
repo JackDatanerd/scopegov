@@ -7,10 +7,10 @@
 // Redirect them to the projects list instead (same fallback the other permission-gated pages use).
 
 import { redirect } from 'next/navigation'
-import { getSession, hasPermission } from '@/lib/auth/session'
+import { getSessionStrict, hasPermission } from '@/lib/auth/session'
 
 export default async function NewProjectLayout({ children }: { children: React.ReactNode }) {
-  const session = await getSession()
+  const session = await getSessionStrict()
   if (!session) redirect('/login')
   if (!hasPermission(session, 'CREATE_PROJECTS')) redirect('/projects')
   return <>{children}</>

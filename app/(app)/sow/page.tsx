@@ -1,6 +1,6 @@
 // app/(app)/sow/page.tsx
 
-import { getSession, hasPermission } from '@/lib/auth/session'
+import { getSessionStrict, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
@@ -9,7 +9,7 @@ import { formatDate, formatCurrency, sowStatusLabel } from '@/lib/utils/format' 
 export const metadata = { title: 'SOW Registry' }
 
 export default async function SowPage() {
-  const session = await getSession()
+  const session = await getSessionStrict()
   if (!session) redirect('/login')
 
   const service = createServiceClient()

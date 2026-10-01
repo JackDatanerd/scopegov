@@ -1,0 +1,9 @@
+Auth + MFA independent pass 9
+1 MEDIUM  recovery / admin MFA resets clear mfa_verify + mfa_verify_hook ledgers (clearMfaCodeLockouts) - no 429 on re-enrolment
+2 MEDIUM  getSession(): new getSessionStrict() throws SessionUnavailableError on lookup failure; 18 page/layout callers use it; app/error.tsx retry screen - no /login <-> /dashboard loop
+3 MEDIUM  team reset-mfa requires MANAGE_ROLES + ceiling + non-owner in every OTHER workspace the target is active in (lib/auth/mfa-reset-authority.ts)
+4 LOW     GET /api/auth/mfa/factors 502 on listFactors failure; MfaSection + StepUpHost surface it
+5 LOW     mfa/recover: failed lookup/claim query = 502, reservation released, code not spent
+6 LOW     LoginForm: banned/deleted account gets a friendly message
+7 LOW     logAudit skips workspace-less rows quietly
+Tests: tests/auth-mfa-pass-9.test.ts (+ mock updates in pass-8, route-authority, team-invites-round17)

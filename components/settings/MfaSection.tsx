@@ -19,8 +19,13 @@ export default function MfaSection({ mandatory }: { mandatory: boolean }) {
   const [newCodes, setNewCodes] = useState<string[] | null>(null)
   const [error, setError] = useState('')
 
+  const [statusFailed, setStatusFailed] = useState(false)
   function loadStatus() {
-    fetch('/api/auth/mfa/factors').then(r => r.json()).then(setStatus).catch(() => {})
+    // Pass 9: an error body used to be stored as the status, rendering an enrolled person as "Off".
+    fetch('/api/auth/mfa/factors')
+      .then(async r => { const j = await r.json().catch(() => null); if (!r.ok || typeof j?.enrolled !== 'boolean') throw new Error('status'); return j })
+      .then(j => { setStatus(j); setStatusFailed(false) })
+      .catch(() => setStatusFailed(true))
   }
   useEffect(loadStatus, [])
 
@@ -52,6 +57,16 @@ export default function MfaSection({ mandatory }: { mandatory: boolean }) {
 
   function copyAllCodes() {
     if (newCodes) navigator.clipboard.writeText(newCodes.join('\n')).catch(() => {})
+  }
+
+  if (!status && statusFailed) {
+    return (
+      <div className="settings-section">
+        <div className="settings-section-title">Two-factor authentication</div>
+        <p style={{ fontSize: 13, color: 'var(--text-2)', margin: '0 0 12px' }}>We couldn&apos;t load your two-factor status.</p>
+        <button className="btn btn-ghost btn-sm" onClick={loadStatus}>Try again</button>
+      </div>
+    )
   }
 
   if (!status) {

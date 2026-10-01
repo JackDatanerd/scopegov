@@ -35,14 +35,14 @@
 // onboarding-status resumes it (creator) or shows the waiting screen
 // (everyone else). Nothing here needs to know which case it is.)
 
-import { getSession } from '@/lib/auth/session'
+import { getSessionStrict } from '@/lib/auth/session'
 import { redirect } from 'next/navigation'
 import WorkspaceOpenClient from '@/components/workspace/WorkspaceOpenClient'
 
 export const metadata = { title: 'Opening workspace…' }
 
 export default async function WorkspaceOpenPage() {
-  const session = await getSession()
+  const session = await getSessionStrict()
   if (!session) redirect('/login')
   return <WorkspaceOpenClient />
 }

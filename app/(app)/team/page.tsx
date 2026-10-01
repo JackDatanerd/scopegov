@@ -2,7 +2,7 @@
 // C8: added invited_email and invite_token_expires_at to SELECT so pending
 // invites table can show the invitee email and expiry date correctly.
 
-import { getSession, hasPermission } from '@/lib/auth/session'
+import { getSessionStrict, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import TeamClient from '@/components/team/TeamClient'
@@ -16,7 +16,7 @@ import { inviterGrantAllowed } from '@/lib/utils/invite-authority'
 export const metadata = { title: 'Team' }
 
 export default async function TeamPage() {
-  const session = await getSession()
+  const session = await getSessionStrict()
   if (!session) redirect('/login')
 
   const service = createServiceClient()

@@ -1,4 +1,4 @@
-import { getSession, hasPermission } from '@/lib/auth/session'
+import { getSessionStrict, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect, notFound } from 'next/navigation'
 import Link from 'next/link'
@@ -35,7 +35,7 @@ function contactNameFromEntity(entityName: string, clientName: string): string {
 
 export default async function ClientDetailPage({ params }: Props) {
   const { id }  = await params
-  const session = await getSession()
+  const session = await getSessionStrict()
   if (!session) redirect('/login')
 
   // FIX (independent pass 1, section 14 — B3): a non-UUID id reached Postgres (22P02), which the read below

@@ -1,11 +1,11 @@
-import { getSession, hasPermission } from '@/lib/auth/session'
+import { getSessionStrict, hasPermission } from '@/lib/auth/session'
 import { redirect } from 'next/navigation'
 import PortfolioDashboard from '@/components/portfolio/PortfolioDashboard'
 
 export const metadata = { title: 'Portfolio' }
 
 export default async function PortfolioPage() {
-  const session = await getSession()
+  const session = await getSessionStrict()
   if (!session) redirect('/login')
 
   if (!hasPermission(session, 'VIEW_PORTFOLIO')) {

@@ -1,4 +1,4 @@
-import { getSession, hasPermission } from '@/lib/auth/session'
+import { getSessionStrict, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import ClientsClient from '@/components/clients/ClientsClient'
@@ -11,7 +11,7 @@ const MAX_CLIENTS = 5000
 export const metadata = { title: 'Clients' }
 
 export default async function ClientsPage() {
-  const session = await getSession()
+  const session = await getSessionStrict()
   if (!session) redirect('/login')
 
   const service = createServiceClient()

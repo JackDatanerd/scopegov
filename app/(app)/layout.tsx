@@ -1,11 +1,11 @@
 import { redirect } from 'next/navigation'
-import { getSession } from '@/lib/auth/session'
+import { getSessionStrict } from '@/lib/auth/session'
 import Sidebar from '@/components/layout/Sidebar'
 import CommandPalette from '@/components/layout/CommandPalette'
 import StepUpHost from '@/components/auth/StepUpHost'
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
-  const session = await getSession()
+  const session = await getSessionStrict()
   if (!session) redirect('/login')
   if (!session.onboardingCompletedAt) redirect('/onboarding')
 
