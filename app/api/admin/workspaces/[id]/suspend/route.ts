@@ -70,6 +70,35 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     }
   }
 
+  // FIX (cron section 17, round 6 — B1): remember that THIS suspension is what disabled the Paystack subscription, so
+  // admin restore re-enables it only in that case (same marker, same reasoning as workspace/delete, migration 132 —
+  // a workspace is either self-deleted or suspended at one time, so the column is not ambiguous). Without it admin
+  // restore resumed any subscription, undoing a cancellation the owner had requested themselves before the suspension.
+  // Not set when the subscription was already non-renewing (nothing for restore to undo) or when the cancel FAILED
+  // (that case is carried by needs_paystack_cancel, which restore also reads). Retried once; if it still cannot be
+  // written, ops is told that restore will not auto-resume.
+  const cancelledBySuspend = !!billing?.paystack_subscription_code && cancelResult.ok && !cancelResult.alreadyCancelled
+  if (cancelledBySuspend) {
+    const mark = () => (service as any).from('billing')
+      .update({ cancelled_by_workspace_delete_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+      .eq('workspace_id', params.id)
+    let marked = await mark()
+    if (marked.error) marked = await mark()
+    if (marked.error) {
+      await alertBillingOps(service, `billing:suspend-marker:${params.id}`, 'Workspace suspended but suspend-cancel marker not recorded', [
+        `workspace: ${params.id}`,
+        `Paystack subscription was cancelled by the suspension but billing.cancelled_by_workspace_delete_at could not be written: ${marked.error.message}`,
+        'If this workspace is restored its subscription will NOT be re-enabled automatically — resume it by hand.',
+      ]).catch(() => {})
+    }
+  } else if (cancelResult.ok && billing?.cancelled_by_workspace_delete_at) {
+    // A marker left over from an earlier delete/restore cycle must not survive a suspension that did NOT cancel
+    // anything, or a later restore would resume a subscription the owner cancelled themselves.
+    const { error: clrErr } = await (service as any).from('billing')
+      .update({ cancelled_by_workspace_delete_at: null }).eq('workspace_id', params.id)
+    if (clrErr) console.error('[admin] suspend: could not clear stale cancel marker (non-fatal):', clrErr.message)
+  }
+
   // (Billing re-pass, independent redo #3 — B3) Same reason as workspace/delete:
   // a pending checkout must not outlive the suspension and bind a fresh
   // subscription to an unreachable workspace. Best-effort.

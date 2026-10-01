@@ -1,0 +1,33 @@
+CRON (section 17) — round 6 independent pass
+============================================
+Scope: all 10 files under app/api/cron/* plus the helpers they call. Two confirmed bugs, both fixed here.
+
+B1 (HIGH) — admin workspace restore left billing state that cron/payment-overdue then acted on
+  app/api/admin/workspaces/[id]/restore/route.ts
+  app/api/admin/workspaces/[id]/suspend/route.ts
+  supabase/migrations/134_admin_suspend_cancel_marker_backfill.sql   (RUN THIS BEFORE DEPLOYING THE CODE)
+  - Suspend disables the Paystack subscription; the subscription.disable webhook then flags the row
+    cancels_at_period_end = true (it does not look at workspaces.deleted_at). Admin restore re-enabled the
+    subscription on Paystack but never cleared that flag, so payment-overdue step 5 downgraded the restored,
+    still-paying workspace to Solo and wiped its subscription fields the first time current_period_end was past.
+  - When the cancel at suspend FAILED, needs_paystack_cancel was set for step 4b. Restore never cleared it, so
+    4b cancelled the subscription the admin had just re-enabled and nulled the code WITHOUT downgrading the plan
+    (live workspace on a paid tier with nothing renewing it).
+  - Restore also resumed ANY subscription, undoing a cancellation the owner had made before the suspension
+    (the same defect migration 132 closed for self-service delete).
+  Fix: suspend records cancelled_by_workspace_delete_at (same marker as delete; a workspace is either self-deleted
+  or suspended, never both) only when the suspension itself disabled the subscription. Restore clears
+  needs_paystack_cancel first, resumes only when the marker or needs_paystack_cancel says it should, and on a
+  successful resume clears cancels_at_period_end + the marker, all pinned to the subscription code that was read.
+  Failures retry once and page billing ops. Migration 134 backfills the marker for workspaces already suspended
+  so their restore keeps today's behaviour.
+
+B2 (MEDIUM) — healStuckSends swallowed query errors
+  lib/approvals/engine.ts, app/api/cron/approval-stall/route.ts
+  - Neither the candidate SELECT nor the finalize_approval_send RPC had its error read, so a broken heal looked
+    like "nothing stuck": healed 0, green heartbeat, documents left locked, nobody told.
+  Fix: opt-in strict mode (the cron uses it) throws on a failed SELECT (step fails, alert, no heartbeat) and
+  routes a failed per-row RPC to onError (cron: run.rowError). The lazy heal on GET /api/approvals stays
+  non-throwing but now logs. The cron also reports a failed approval.send_failed_stale audit write.
+
+Tests: tests/cron-section17-round6.test.ts, tests/cron-section17-round6-stall.test.ts

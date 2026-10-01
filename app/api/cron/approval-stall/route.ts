@@ -35,14 +35,17 @@ export async function POST(request: NextRequest) {
 
   // Step 0 — a request parked in its "sending" state by a process that died mid-send.
   await run.step('heal stuck sends', async () => {
-    const fixed = await healStuckSends(service)
+    // strict: a failed lookup throws into this step (alert, no heartbeat) and a failed per-row finalize is a row error —
+    // see healStuckSends. Previously both read as "nothing stuck" and the run went green.
+    const fixed = await healStuckSends(service, 10, undefined, { strict: true, onError: (label, e) => run.rowError(label, e) })
     for (const r of fixed) {
-      await insertAuditRow(service, {
+      const logged = await insertAuditRow(service, {
         workspace_id: r.workspace_id, actor_id: null, project_id: r.project_id,
         actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
         event_type: 'approval.send_failed_stale', entity_type: 'approval_request', entity_id: r.id,
         metadata: { reason: 'send did not finish; request moved to the retryable approved-not-sent state' },
       })
+      if (!logged) run.rowError(`approval ${r.id}`, new Error('send healed but its approval.send_failed_stale audit row failed to write'))
       healed++
     }
   })

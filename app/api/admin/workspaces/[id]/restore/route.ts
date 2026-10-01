@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireAdmin, isAdminGuardFailure, logAdminAction } from '@/lib/auth/admin'
 import { resumePaystackSubscription } from '@/lib/integrations/paystack'
+import { alertBillingOps } from '@/lib/billing/ops-alert'
 import { sendWorkspaceRestoredEmail } from '@/lib/email/templates'
 
 export async function POST(request: NextRequest, { params }: { params: { id: string } }) {
@@ -19,10 +20,62 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     return NextResponse.json({ error: 'Could not restore workspace' }, { status: 500 })
   }
 
+  // FIX (cron section 17, round 6 — B1, HIGH): this used to call resumePaystackSubscription and stop. Two pieces of
+  // billing state written while the workspace was suspended outlived the restore, and cron/payment-overdue acts on both:
+  //   * `cancels_at_period_end` — the suspension's own Paystack disable fires subscription.disable, which flags the row
+  //     as cancelling (the webhook does not look at workspaces.deleted_at). Left set on a restored, still-paying
+  //     workspace, step 5 downgrades it to Solo and wipes its live subscription fields the first time
+  //     current_period_end is in the past — and a suspension routinely spans a period end. The self-service restore
+  //     already clears it (workspace/restore, with its own comment); this admin path never did.
+  //   * `needs_paystack_cancel` — set when the cancel at suspend FAILED, so step 4b would retry it. 4b is not joined to
+  //     workspaces, so after the restore it went on to cancel the subscription the admin had just re-enabled and clear
+  //     the subscription fields WITHOUT downgrading the plan: a live workspace on a paid tier with nothing renewing it.
+  // The flag is obsolete the moment the workspace is live again, whatever the resume does, so it is cleared first (before
+  // any Paystack call, shrinking the window in which 4b could still pick the row up). Both writes are pinned to the
+  // subscription code that was read, so a plan switch landing in between is never touched.
   const { data: billing } = await (service as any).from('billing').select('*').eq('workspace_id', params.id).maybeSingle()
-  const resumeResult = await resumePaystackSubscription(billing)
-  if (!resumeResult.ok) {
-    console.error('[admin] Paystack resume on restore failed:', resumeResult.error)
+  const subCode: string | null = billing?.paystack_subscription_code ?? null
+
+  if (subCode && billing.needs_paystack_cancel) {
+    const { error: flagErr } = await (service as any).from('billing')
+      .update({ needs_paystack_cancel: false, updated_at: new Date().toISOString() })
+      .eq('workspace_id', params.id).eq('paystack_subscription_code', subCode)
+    if (flagErr) {
+      await alertBillingOps(service, `billing:restore-cancel-flag:${params.id}`, 'Workspace restored but needs_paystack_cancel could not be cleared', [
+        `workspace: ${params.id}`, `subscription: ${subCode}`, `error: ${flagErr.message}`,
+        'payment-overdue step 4b will cancel this live subscription on its next run. Clear billing.needs_paystack_cancel by hand NOW.',
+      ]).catch(() => {})
+    }
+  }
+
+  // Re-enable only what the SUSPENSION cancelled (billing.cancelled_by_workspace_delete_at, set by admin suspend) or what
+  // may have been cancelled without us hearing about it (needs_paystack_cancel: the cancel call failed or its response was
+  // lost — resume treats "already active" as success). A subscription the owner had cancelled themselves before the
+  // suspension is left cancelled, exactly as workspace/restore does for a self-service delete.
+  const shouldResume = !!subCode && (!!billing.cancelled_by_workspace_delete_at || !!billing.needs_paystack_cancel)
+  let resumeResult: { ok: boolean; error?: string; skipped?: boolean } = { ok: true, skipped: true }
+  if (shouldResume) {
+    resumeResult = await resumePaystackSubscription(billing)
+    if (!resumeResult.ok) {
+      console.error('[admin] Paystack resume on restore failed:', resumeResult.error)
+      await alertBillingOps(service, `billing:restore-resume:${params.id}`, 'Workspace restored but its subscription could not be re-enabled', [
+        `workspace: ${params.id}`, `subscription: ${subCode}`, `resume error: ${resumeResult.error || 'unknown'}`,
+        'The workspace is live again but its Paystack subscription is still cancelled by the suspension. Resume it manually. Until then billing.cancels_at_period_end stays set, so the period-end sweep will downgrade it.',
+      ]).catch(() => {})
+    } else {
+      const localUpdate = () => (service as any).from('billing').update({
+        cancels_at_period_end: false, cancelled_by_workspace_delete_at: null, updated_at: new Date().toISOString(),
+      }).eq('workspace_id', params.id).eq('paystack_subscription_code', subCode)
+      let upd = await localUpdate()
+      if (upd.error) upd = await localUpdate()
+      if (upd.error) {
+        await alertBillingOps(service, `billing:restore-resume-local-write:${params.id}`, 'Resume-on-restore not recorded locally', [
+          `workspace: ${params.id}`,
+          `Paystack subscription was RE-ENABLED on admin restore but billing.cancels_at_period_end could not be cleared: ${upd.error.message}`,
+          'Left as-is, the period-end sweep would downgrade a customer who is still being charged.',
+        ]).catch(() => {})
+      }
+    }
   }
 
   // FIX (deep audit, Workspace lifecycle independent re-pass — feature gap):
@@ -62,7 +115,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     targetType: 'workspace',
     targetId: workspace.id,
     targetLabel: workspace.agency_name || workspace.name,
-    metadata: { paystackResumeOk: resumeResult.ok, membersNotified: notified },
+    metadata: { paystackResumeOk: resumeResult.ok, ...(resumeResult.skipped ? { paystackResumeSkipped: true } : {}), membersNotified: notified },
   })
 
   return NextResponse.json({ ok: true })

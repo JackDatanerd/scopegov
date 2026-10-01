@@ -1118,8 +1118,18 @@ export async function retryFailedSend(service: any, params: {
 // its default (10) either way — that's the "an auto-send takes a few
 // seconds, not minutes" threshold from the comment above, not a cron-only
 // concern.
+//
+// FIX (cron section 17, round 6 — B2): neither the candidate SELECT nor the finalize_approval_send RPC had its `error`
+// read — supabase-js never throws, so a failing query (a missing function after a bad deploy, a permission change, a
+// transient outage) looked identical to "nothing is stuck": the approval-stall cron reported `healed: 0`, wrote a
+// green heartbeat, and stuck documents stayed locked with nothing anywhere saying the recovery had stopped working
+// (the exact failure class lib/utils/cron-run.ts exists to remove). `strict` makes a failed SELECT throw (so the cron's
+// step fails loudly: alert, no heartbeat) and routes a failed per-row RPC to `onError` (a poison row must not stop the
+// rest, nor withhold the run's heartbeat) — the cron passes run.rowError. Without `strict` (the lazy heal on
+// GET /api/approvals, where a thrown error would break a page load) failures are logged instead of vanishing.
 export async function healStuckSends(
   service: any, olderThanMinutes = 10, workspaceId?: string,
+  opts: { strict?: boolean; onError?: (label: string, err: unknown) => void } = {},
 ): Promise<Array<{ id: string; workspace_id: string; project_id: string | null }>> {
   const cutoff = new Date(Date.now() - olderThanMinutes * 60 * 1000).toISOString()
   let q = service
@@ -1127,16 +1137,26 @@ export async function healStuckSends(
     .select('id, workspace_id, requested_by, project_id, document_type, context')
     .eq('status', 'pending').not('sending_started_at', 'is', null).lt('sending_started_at', cutoff)
   if (workspaceId) q = q.eq('workspace_id', workspaceId)
-  const { data: stuck } = await q
+  const { data: stuck, error: stuckErr } = await q
     .order('sending_started_at', { ascending: true }).limit(50)
+  if (stuckErr) {
+    if (opts.strict) throw new Error(`heal stuck sends select: ${stuckErr.message}`)
+    console.error('healStuckSends: could not list stuck sends:', stuckErr.message)
+    return []
+  }
 
   const healed: Array<{ id: string; workspace_id: string; project_id: string | null }> = []
   for (const r of stuck || []) {
     const reason = 'The send did not finish (the server may have restarted mid-send). Check whether the document already shows as sent: if it does, cancel this request; otherwise retry the send.'
-    const { data: ok } = await service.rpc('finalize_approval_send', {
+    const { data: ok, error: finalizeErr } = await service.rpc('finalize_approval_send', {
       p_request_id: r.id, p_send_ok: false, p_error: reason, p_delivery_warning: null,
     })
-    if (ok !== true) continue
+    if (finalizeErr) {
+      if (opts.onError) opts.onError(`heal stuck send ${r.id}`, finalizeErr)
+      else console.error(`healStuckSends: finalize_approval_send failed for ${r.id}:`, finalizeErr.message)
+      continue
+    }
+    if (ok !== true) continue // false = the request was resolved concurrently; nothing left to heal
     healed.push({ id: r.id, workspace_id: r.workspace_id, project_id: r.project_id ?? null })
     try {
       const [inAppOn] = await filterByNotificationPreference(
