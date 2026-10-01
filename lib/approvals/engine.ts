@@ -154,6 +154,16 @@ function activeRequestResult(active: { id: string; status: string; sending_start
   // clears", which is wrong: nothing is waiting on anyone. Say what is actually happening.
   if (active.status === 'pending' && isSendClaimLive(active.sending_started_at))
     return { requiresApproval: true, blocked: true, approvalRequestId: active.id, status: 409, error: SEND_IN_FLIGHT_MESSAGE }
+  // FIX (section-11 independent pass 10, B2): a claim older than SEND_CLAIM_WINDOW_MS is presumed dead, but the request is
+  // still 'pending' until healStuckSends (10 min) rescues it — and the old code answered a Send click in that gap with
+  // "Sent for approval — the client will be notified once it clears" although every step is decided and nobody is
+  // waiting on anyone. evaluateApprovalGate heals such a request first (see below); this is the answer if that heal
+  // could not run.
+  if (active.status === 'pending' && active.sending_started_at)
+    return {
+      requiresApproval: true, blocked: true, approvalRequestId: active.id, status: 409,
+      error: 'This document was approved but the automatic send did not finish. Open it in Approvals to retry the send, or cancel that request to start over.',
+    }
   if (active.status === 'pending') return { requiresApproval: true, approvalRequestId: active.id }
   return {
     requiresApproval: true, blocked: true, approvalRequestId: active.id, status: 409,
@@ -167,7 +177,14 @@ export async function evaluateApprovalGate(service: any, params: GateParams): Pr
 
   // Idempotency: a request for this exact document already covers us —
   // return it rather than creating a duplicate.
-  const active = await findActiveRequest(service, workspaceId, documentType, documentId)
+  let active = await findActiveRequest(service, workspaceId, documentType, documentId)
+  // FIX (section-11 independent pass 10, B2): a request whose send claim has died is moved into the normal, visible,
+  // retryable 'approved — not sent' state right here, instead of waiting out healStuckSends' 10-minute default (the
+  // claim window — the point after which cancel already treats it as dead — is 2 minutes; sends are capped at 60s).
+  if (active && active.status === 'pending' && active.sending_started_at && !isSendClaimLive(active.sending_started_at)) {
+    try { await healStuckSends(service, SEND_CLAIM_WINDOW_MS / 60000, workspaceId) } catch (e) { console.error('gate: heal of a dead send claim failed:', e) }
+    active = await findActiveRequest(service, workspaceId, documentType, documentId)
+  }
   if (active) return activeRequestResult(active)
 
   const { data: workflows } = await service

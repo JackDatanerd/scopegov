@@ -1,0 +1,20 @@
+CHANGES — section 11 (approvals engine), independent pass 10
+============================================================
+Applied on top of the live snapshot that already contained cron-section17-round6 (healStuckSends strict/onError) — untouched.
+
+B1  lib/approvals/pick-workflow.ts
+    "Also gate other currencies" captured a document whose OWN currency had an explicit thresholded rule it did not
+    clear (EUR 1,000 under "EUR from 5,000" was held by an opted-in USD 10,000 chain). The flag is for currencies no
+    threshold is denominated in. A currency with its own thresholded rule is now governed by it alone (or the catch-all).
+
+B2  lib/approvals/engine.ts (evaluateApprovalGate, activeRequestResult), app/api/approvals/route.ts
+    A request whose final-approval send claim had died (older than the 2-minute claim window) stayed 'pending' until
+    healStuckSends' 10-minute threshold; a Send click in that gap was answered "Sent for approval" with nobody waiting,
+    and the Approvals modal showed "Sending…" with no Cancel/Retry. The gate now heals a dead claim first (-> the normal
+    "approved — not sent" state, 409 with retry guidance); activeRequestResult refuses a pending request still holding a
+    claim if the heal could not run; the lazy heal on GET /api/approvals uses the claim window instead of 10 minutes.
+    The cron's own 10-minute heal is unchanged.
+
+Tests: tests/approvals-independent-pass-10.test.ts (8 cases). pickWorkflow behaviour verified by execution against
+the new cases and all prior pass-2 cases. Not verifiable here (no node_modules): full tsc, next build, vitest.
+No migration.

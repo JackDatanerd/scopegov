@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { healStuckSends } from '@/lib/approvals/engine'
+import { SEND_CLAIM_WINDOW_MS } from '@/lib/approvals/send-claim'
 import { fetchAll } from '@/lib/utils/fetch-all'
 import {
   REQUEST_FIELDS, LIGHT_REQUEST_FIELDS, allowedProjectIdsFor, canDecideRequest, decorate,
@@ -50,7 +51,9 @@ export async function GET(request: NextRequest) {
     // table scan on every load. Best-effort: a failure here must never break
     // the list itself.
     if (!light) {
-      try { await healStuckSends(service, 10, session.workspaceId) } catch (e) { console.error('lazy healStuckSends failed:', e) }
+      // FIX (section-11 independent pass 10, B2): same window the cancel route and the gate treat as "dead" (2 min), not
+      // 10 — between the two the request showed "Sending…" with no Cancel/Retry offered.
+      try { await healStuckSends(service, SEND_CLAIM_WINDOW_MS / 60000, session.workspaceId) } catch (e) { console.error('lazy healStuckSends failed:', e) }
     }
     const respond = (rows: any[], scopeName: string) => light
       ? NextResponse.json({ count: rows.length, scope: scopeName })

@@ -29,7 +29,13 @@ export function pickWorkflow<T extends {
   // ungated, however large. A workflow can now opt in to gating every other
   // currency too (no conversion — every such document is gated); the most
   // senior chain (highest threshold) wins.
-  const fallback = ordered.filter(w =>
+  // FIX (section-11 independent pass 10, B1): "other currencies" is for a currency NO threshold is denominated in
+  // (the migration 069 comment and the note above say exactly that). The filter below never checked it, so when the
+  // document's own currency had an explicit thresholded rule it did not clear (EUR 1,000 under an explicit "EUR from
+  // 5,000" rule) an opted-in USD workflow still captured it and held a document the admin deliberately left ungated.
+  // A currency with its own thresholded rule is governed by that rule alone (or the catch-all, below).
+  const hasOwnCurrencyRule = ordered.some(w => w.threshold_amount != null && w.threshold_currency === currency)
+  const fallback = hasOwnCurrencyRule ? [] : ordered.filter(w =>
     w.threshold_amount != null && w.threshold_currency !== currency && w.apply_to_other_currencies === true
   )
   // FIX (section-11 pass, finding 1): the catch-all used to be matched in the `direct` step above, so
