@@ -10,9 +10,11 @@ vi.mock('@/lib/utils/cron-alert', () => ({ alertCronFailure: async (...a: any[])
 vi.mock('@/lib/utils/cron-heartbeat', () => ({ recordCronHeartbeat: async (_s: any, name: string) => { h.heartbeats.push(name) } }))
 vi.mock('@/lib/utils/notify', () => ({ notifyMembersWithPermission: async () => {} }))
 vi.mock('@/lib/utils/permissions-query', () => ({ getMemberEmailsWithPermission: async () => [] }))
-vi.mock('@/lib/billing/recipients', () => ({ getBillingRecipients: async () => [{ name: 'Bea', email: 'bea@agency.test' }] }))
+let recipientsForTest: Array<{ name: string; email: string }> = [{ name: 'Bea', email: 'bea@agency.test' }]
+vi.mock('@/lib/billing/recipients', () => ({ getBillingRecipients: async () => recipientsForTest }))
 vi.mock('@/lib/billing/ops-alert', () => ({ alertBillingOps: async () => {} }))
-vi.mock('@/lib/integrations/paystack', () => ({ cancelPaystackSubscription: async () => ({ ok: true }) }))
+const cancelResult = { ok: true }
+vi.mock('@/lib/integrations/paystack', () => ({ cancelPaystackSubscription: async () => (cancelResult.ok ? { ok: true } : { ok: false, error: 'paystack down' }) }))
 vi.mock('@/lib/email/templates', () => ({
   sendTrialWarningEmail: async () => {}, sendInvoiceOverdueInternalEmail: async () => {},
   sendPaymentMilestoneOverdueEmail: async () => {}, sendSubscriptionEndedEmail: async () => {},
@@ -37,6 +39,7 @@ const REMINDER_POINT = GRACE_DAYS - GRACE_REMINDER_DAYS_LEFT // days into grace 
 
 beforeEach(() => {
   h.reminders.length = 0; h.alerts.length = 0; h.heartbeats.length = 0
+  recipientsForTest = [{ name: 'Bea', email: 'bea@agency.test' }]
   vi.spyOn(console, 'error').mockImplementation(() => {})
 })
 
@@ -96,5 +99,47 @@ describe('payment-overdue — grace-period reminder', () => {
     h.db = createFakeSupabase({ billing: [b] })
     await run()
     expect(h.reminders).toHaveLength(0)
+  })
+})
+
+describe('payment-overdue — cron section 17 pass 5 regressions', () => {
+  it('B2: a workspace with NO billing recipient is not marked reminded — marker withheld, row error raised, retried next run', async () => {
+    recipientsForTest = []
+    h.db = createFakeSupabase({ billing: [billing('w1', REMINDER_POINT + 0.3)] })
+    const { body } = await run()
+    expect(h.reminders).toHaveLength(0)
+    expect((h.db.tables.audit_log || []).some((a: any) => a.event_type === 'billing.payment_failed_grace_reminder')).toBe(false)
+    expect(body.rowErrors?.join(' ')).toMatch(/no billing recipient to warn/)
+    // someone becomes reachable -> the next run sends it
+    recipientsForTest = [{ name: 'Bea', email: 'bea@agency.test' }]
+    await run()
+    expect(h.reminders).toHaveLength(1)
+  })
+
+  it('B1: a failed write after the enforcement claim restores the grace clock so the next run retries (it used to leave the workspace on its paid plan forever)', async () => {
+    h.db = createFakeSupabase(
+      { billing: [billing('w1', GRACE_DAYS + 1)], workspaces: [{ id: 'w1', plan_tier: 'studio', deleted_at: null }] },
+      { errors: [{ table: 'billing', op: 'update', message: 'transient', when: (p: any) => 'needs_paystack_cancel' in p, times: 1 }] },
+    )
+    // billing row with a live subscription whose cancel fails -> the flag write is the one that throws
+    h.db.tables.billing[0].paystack_subscription_code = 'SUB_1'
+    h.db.tables.billing[0].paystack_email_token = 'tok'
+    cancelResult.ok = false
+    const r1 = await run()
+    expect(r1.body.rowErrors?.join(' ')).toMatch(/transient/)
+    expect(h.db.tables.billing[0].grace_period_started_at).not.toBeNull()
+    expect(h.db.tables.workspaces[0].plan_tier).toBe('studio')
+    // next run: the write works, enforcement completes
+    cancelResult.ok = true
+    await run()
+    expect(h.db.tables.workspaces[0].plan_tier).toBe('solo')
+    expect(h.db.tables.billing[0].grace_period_started_at).toBeNull()
+  })
+
+  it('B1: the grace clock is NOT restored when the downgrade committed', async () => {
+    h.db = createFakeSupabase({ billing: [billing('w1', GRACE_DAYS + 1)], workspaces: [{ id: 'w1', plan_tier: 'studio', deleted_at: null }] })
+    await run()
+    expect(h.db.tables.workspaces[0].plan_tier).toBe('solo')
+    expect(h.db.tables.billing[0].grace_period_started_at).toBeNull()
   })
 })

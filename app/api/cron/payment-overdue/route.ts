@@ -335,7 +335,16 @@ export async function POST(request: NextRequest) {
             else sendErrors.push(`recipient: ${delivery.error}`)
           } catch (e) { sendErrors.push(`recipient: ${e instanceof Error ? e.message : String(e)}`) }
         }
-        if (recipients.length > 0 && !anySent) {
+        // FIX (cron section 17, independent pass 5 — B2): with NO recipient at all (no MANAGE_BILLING holder, the creator
+        // gone or erased, or the holder lookup failed) the loop above sends nothing, `anySent` stays false, and the old
+        // `recipients.length > 0 &&` guard let the dedupe marker below be written anyway — recording a warning nobody
+        // received, right before step 4 downgrades the workspace without it. Withhold the marker and surface it so the
+        // next run retries (someone may have been added) and ops sees a workspace entering enforcement unwarned.
+        if (recipients.length === 0) {
+          run.rowError(`grace reminder ${b.workspace_id}`, new Error('no billing recipient to warn (no MANAGE_BILLING holder and no usable creator address) — dedupe marker withheld so it retries next run'))
+          continue
+        }
+        if (!anySent) {
           run.rowError(`grace reminder ${b.workspace_id}`, new Error(
             `reminder email failed for every recipient — dedupe marker withheld so it retries next run: ${sendErrors.join('; ')}`
           ))
@@ -398,78 +407,97 @@ export async function POST(request: NextRequest) {
         // carries the same subscription-code guard, and a guard that matches zero rows means
         // a newer subscription is already on file: nothing to do, and the workspace is left
         // on whatever plan that subscription's own handler set (the downgrade below is skipped).
+        // FIX (cron section 17, independent pass 5 — B1): the claim above clears grace_period_started_at, which is the ONLY
+        // thing that makes tomorrow's run select this workspace again. Only a failed DOWNGRADE used to put it back; a throw
+        // from any other write after the claim (the subscription-clear write, the needs_paystack_cancel flag write, a
+        // transient DB error) left the clock null, so nothing ever retried: the workspace kept its paid plan indefinitely and,
+        // after a failed Paystack cancel with a failed flag write, the customer kept being charged with nothing flagged for
+        // step 4b. Now ANY throw before the downgrade has committed restores the clock (guarded: only if nothing started a
+        // fresh one), so the next run retries the whole enforcement. Every step is idempotent (Paystack reports an
+        // already-disabled subscription as ok).
+        let downgradeCommitted = false
         let paystackCancelled = true
-        let raced = false
-        if (!b.paystack_subscription_code) {
-          const { data: cleared, error: clearErr } = await (service as any).from('billing')
-            .update({ ...ENDED_SUBSCRIPTION_FIELDS, updated_at: now.toISOString() })
-            .eq('workspace_id', b.workspace_id).is('paystack_subscription_code', null)
-            .select('workspace_id')
-          if (clearErr) throw new Error(clearErr.message)
-          raced = !cleared?.length
-        }
-        if (b.paystack_subscription_code) {
-          const r = await cancelPaystackSubscription({
-            paystack_subscription_code: b.paystack_subscription_code, paystack_email_token: b.paystack_email_token,
-          })
-          paystackCancelled = r.ok
-          if (r.ok) {
+        try {
+          let raced = false
+          if (!b.paystack_subscription_code) {
             const { data: cleared, error: clearErr } = await (service as any).from('billing')
               .update({ ...ENDED_SUBSCRIPTION_FIELDS, updated_at: now.toISOString() })
-              .eq('workspace_id', b.workspace_id).eq('paystack_subscription_code', b.paystack_subscription_code)
+              .eq('workspace_id', b.workspace_id).is('paystack_subscription_code', null)
               .select('workspace_id')
             if (clearErr) throw new Error(clearErr.message)
             raced = !cleared?.length
-          } else {
-            // Leave the code in place and flag it so step 4b retries — the customer must not keep being charged.
-            const { data: flagged, error: flagErr } = await (service as any).from('billing')
-              .update({ needs_paystack_cancel: true })
-              .eq('workspace_id', b.workspace_id).eq('paystack_subscription_code', b.paystack_subscription_code)
-              .select('workspace_id')
-            if (flagErr) throw new Error(flagErr.message)
-            raced = !flagged?.length
-            if (!raced) {
-              await alertBillingOps(service, `billing:orphan-sub:${b.workspace_id}`, 'Downgraded workspace still has a live Paystack subscription', [
-                `workspace: ${b.workspace_id}`, `subscription: ${b.paystack_subscription_code}`, `error: ${r.error}`,
-                'Will be retried on every payment-overdue run (billing.needs_paystack_cancel).',
-              ])
-            }
-            // If raced, a plan switch already replaced this subscription on the billing row —
-            // its own subscription.create handler already tried (and, on its own failure,
-            // recorded a billing_pending_subscription_cancels retry for) this exact old
-            // subscription code, so there is nothing left for this failure branch to do.
           }
-        }
+          if (b.paystack_subscription_code) {
+            const r = await cancelPaystackSubscription({
+              paystack_subscription_code: b.paystack_subscription_code, paystack_email_token: b.paystack_email_token,
+            })
+            paystackCancelled = r.ok
+            if (r.ok) {
+              const { data: cleared, error: clearErr } = await (service as any).from('billing')
+                .update({ ...ENDED_SUBSCRIPTION_FIELDS, updated_at: now.toISOString() })
+                .eq('workspace_id', b.workspace_id).eq('paystack_subscription_code', b.paystack_subscription_code)
+                .select('workspace_id')
+              if (clearErr) throw new Error(clearErr.message)
+              raced = !cleared?.length
+            } else {
+              // Leave the code in place and flag it so step 4b retries — the customer must not keep being charged.
+              const { data: flagged, error: flagErr } = await (service as any).from('billing')
+                .update({ needs_paystack_cancel: true })
+                .eq('workspace_id', b.workspace_id).eq('paystack_subscription_code', b.paystack_subscription_code)
+                .select('workspace_id')
+              if (flagErr) throw new Error(flagErr.message)
+              raced = !flagged?.length
+              if (!raced) {
+                await alertBillingOps(service, `billing:orphan-sub:${b.workspace_id}`, 'Downgraded workspace still has a live Paystack subscription', [
+                  `workspace: ${b.workspace_id}`, `subscription: ${b.paystack_subscription_code}`, `error: ${r.error}`,
+                  'Will be retried on every payment-overdue run (billing.needs_paystack_cancel).',
+                ])
+              }
+              // If raced, a plan switch already replaced this subscription on the billing row —
+              // its own subscription.create handler already tried (and, on its own failure,
+              // recorded a billing_pending_subscription_cancels retry for) this exact old
+              // subscription code, so there is nothing left for this failure branch to do.
+            }
+          }
 
-        if (raced) {
-          // A newer subscription is already on file: its own handler owns the workspace's plan. The
-          // downgrade has not been applied yet (it now runs LAST, below), so there is nothing to revert —
-          // the old revert wrote back the stale plan_tier read at select time and could clobber the tier
-          // the plan switch had just set.
-          console.log(`Grace enforcement: workspace ${ws.id} got a new subscription while this row was being processed — leaving its plan untouched`)
-          continue
-        }
+          if (raced) {
+            // A newer subscription is already on file: its own handler owns the workspace's plan. The
+            // downgrade has not been applied yet (it now runs LAST, below), so there is nothing to revert —
+            // the old revert wrote back the stale plan_tier read at select time and could clobber the tier
+            // the plan switch had just set.
+            console.log(`Grace enforcement: workspace ${ws.id} got a new subscription while this row was being processed — leaving its plan untouched`)
+            continue
+          }
 
-        // FIX (cron section 17, pass 2): the downgrade is the LAST write and compare-and-set on the plan the
-        // row was read with. It used to run first and be reverted to that stale value when a plan switch
-        // was detected, which overwrote the new plan the webhook had written in between.
-        const { data: downgraded, error: downgradeErr } = await (service as any).from('workspaces')
-          .update({ plan_tier: 'solo', updated_at: now.toISOString() })
-          .eq('id', ws.id).eq('plan_tier', ws.plan_tier)
-          .select('id')
-        if (downgradeErr) {
-          // The subscription side is already settled, so put the grace clock back (only if nothing has
-          // started a fresh one) and tomorrow's run retries instead of the workspace keeping paid
-          // features forever with nothing left to trigger the downgrade.
-          console.error('Grace enforcement: downgrade failed, restoring grace clock:', downgradeErr.message)
-          await (service as any).from('billing')
-            .update({ grace_period_started_at: b.grace_period_started_at })
-            .eq('workspace_id', b.workspace_id).is('grace_period_started_at', null)
-          throw new Error(`downgrade failed for ${ws.id}: ${downgradeErr.message}`)
-        }
-        if (!downgraded?.length) {
-          console.log(`Grace enforcement: workspace ${ws.id} changed plan while this row was being processed — not downgrading`)
-          continue
+          // FIX (cron section 17, pass 2): the downgrade is the LAST write and compare-and-set on the plan the
+          // row was read with. It used to run first and be reverted to that stale value when a plan switch
+          // was detected, which overwrote the new plan the webhook had written in between.
+          const { data: downgraded, error: downgradeErr } = await (service as any).from('workspaces')
+            .update({ plan_tier: 'solo', updated_at: now.toISOString() })
+            .eq('id', ws.id).eq('plan_tier', ws.plan_tier)
+            .select('id')
+          if (downgradeErr) {
+            // The catch below puts the grace clock back so tomorrow's run retries instead of the workspace
+            // keeping paid features forever with nothing left to trigger the downgrade.
+            console.error('Grace enforcement: downgrade failed:', downgradeErr.message)
+            throw new Error(`downgrade failed for ${ws.id}: ${downgradeErr.message}`)
+          }
+          if (!downgraded?.length) {
+            console.log(`Grace enforcement: workspace ${ws.id} changed plan while this row was being processed — not downgrading`)
+            continue
+          }
+          downgradeCommitted = true
+        } catch (e) {
+          if (!downgradeCommitted) {
+            const { error: restoreErr } = await (service as any).from('billing')
+              .update({ grace_period_started_at: b.grace_period_started_at })
+              .eq('workspace_id', b.workspace_id).is('grace_period_started_at', null)
+            if (restoreErr) {
+              console.error('Grace enforcement: could not restore the grace clock:', restoreErr.message)
+              throw new Error(`${e instanceof Error ? e.message : String(e)} (and the grace clock could NOT be restored: ${restoreErr.message} — workspace ${b.workspace_id} will not be retried automatically)`)
+            }
+          }
+          throw e
         }
 
         await insertAuditRow(service, {

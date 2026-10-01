@@ -94,13 +94,16 @@ export async function POST(request: NextRequest) {
             entityType: 'workspace', entityId: ws.id,
           })
           if (res.inserted) {
-            await insertAuditRow(service, {
+            const bellMarked = await insertAuditRow(service, {
               workspace_id: ws.id, actor_id: null,
               actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
               event_type: 'billing.trial_ending_bell', entity_type: 'workspace',
               entity_id: ws.id, entity_name: ws.agency_name,
               metadata: { days_left: daysLeft, day: today, recipients: res.recipients.length },
             })
+            // FIX (cron section 17, independent pass 5 — B3): insertAuditRow reports failure by returning false. This row is the
+            // once-per-day dedupe key for the bell, so a failed write means the bell repeats on any same-day re-run — say so.
+            if (!bellMarked) run.rowError(`trial workspace ${ws.id}`, new Error('trial bell created but its dedupe audit row failed to write — a same-day re-run will repeat it'))
           }
         }
 
@@ -131,13 +134,15 @@ export async function POST(request: NextRequest) {
             })
             // A rejected send is not a sent warning: the audit row below is also the dedupe key.
             if (!delivery.ok) { console.error('Trial warning email rejected:', delivery.error); continue }
-            await insertAuditRow(service, {
+            const warnMarked = await insertAuditRow(service, {
               workspace_id: ws.id, actor_id: null,
               actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
               event_type: 'billing.trial_ending_soon', entity_type: 'workspace',
               entity_id: ws.id, entity_name: ws.agency_name,
               metadata: { days_left: daysLeft, user_id: person.id, day: today },
             })
+            // FIX (cron section 17, independent pass 5 — B3): same as the bell above — this row is the per-person-per-day dedupe key.
+            if (!warnMarked) run.rowError(`trial warning ${ws.id} → user ${person.id}`, new Error('warning sent but its dedupe audit row failed to write — a same-day re-run will resend it'))
             sent++
           } catch (e) { run.rowError(`trial warning ${ws.id} → user ${person.id}`, e) }
         }

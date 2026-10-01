@@ -1,0 +1,14 @@
+Cron section 17 — independent pass 5 (base f6eed53)
+
+B1 payment-overdue step 4 (grace enforcement): the claim clears grace_period_started_at, the only thing that makes the next
+   run select the workspace again, but only a failed DOWNGRADE restored it. A throw from the subscription-clear write or the
+   needs_paystack_cancel flag write left the clock null: the workspace kept its paid plan forever (and, with a failed Paystack
+   cancel, the customer kept being charged with nothing flagged for step 4b). Any throw before the downgrade commits now
+   restores the clock (guarded by `grace_period_started_at IS NULL`); a failed restore is named in the ops alert.
+B2 payment-overdue step 3 (grace reminder): with no billing recipient the dedupe marker was written for a warning nobody
+   received. Marker is now withheld and a row error raised, so it retries and ops sees an unwarned workspace.
+B3 trial-warning: insertAuditRow's false (failed dedupe-marker write) was ignored for the bell and the per-person warning;
+   now surfaced as a row error.
+
+Tests: tests/payment-overdue-grace.test.ts (+3, two fail on the old code), tests/trial-warning-cron.test.ts (+1, fails on old code).
+No migration.

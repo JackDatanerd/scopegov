@@ -14,13 +14,15 @@ vi.mock('@/lib/utils/permissions-query', () => ({
   filterByNotificationPreference: async (_s: any, _w: string, _e: string, r: any[]) => r,
 }))
 vi.mock('@/lib/utils/verify-cron', () => ({ verifyCronSecret: () => true }))
-vi.mock('@/lib/utils/audit', () => ({ insertAuditRow: async (_s: any, row: any) => { audits.push(row) } }))
+let auditOk = true
+const rowErrors: string[] = []
+vi.mock('@/lib/utils/audit', () => ({ insertAuditRow: async (_s: any, row: any) => { audits.push(row); return auditOk } }))
 vi.mock('@/lib/utils/cron-run', () => ({
   CronRun: class {
     result: Record<string, unknown> = {}
     constructor(..._a: any[]) {}
     async step(_n: string, fn: () => Promise<void>) { await fn() }
-    rowError(label: string, e: unknown) { throw e }
+    rowError(label: string, e: unknown) { rowErrors.push(`${label}: ${(e as any)?.message}`) }
     async finish() { return { body: { ok: true, ...this.result }, status: 200 } }
   },
   fetchAll: async () => [{
@@ -51,7 +53,7 @@ vi.mock('@/lib/supabase/server', () => ({
 import { POST } from '@/app/api/cron/trial-warning/route'
 
 beforeEach(() => {
-  sendTrial.mockClear(); notifyUsers.mockClear(); audits.length = 0
+  sendTrial.mockClear(); notifyUsers.mockClear(); audits.length = 0; rowErrors.length = 0; auditOk = true
   creatorActive = true; bellAlreadySent = false
   holders = [{ id: 'h1', name: 'Hal', email: 'hal@x.test' }]
   vi.spyOn(console, 'error').mockImplementation(() => {})
@@ -66,6 +68,7 @@ describe('POST /api/cron/trial-warning', () => {
     expect(p).toMatchObject({ type: 'trial_ending', eventType: 'trial_ending', entityType: 'workspace', entityId: 'w1' })
     expect(p.recipientIds).toEqual(expect.arrayContaining(['h1', 'creator']))
     expect(audits.some(a => a.event_type === 'billing.trial_ending_bell')).toBe(true)
+    expect(rowErrors).toEqual([])
   })
 
   it('does not warn a creator who is no longer an active member', async () => {
@@ -79,5 +82,12 @@ describe('POST /api/cron/trial-warning', () => {
     bellAlreadySent = true
     await POST({} as any)
     expect(notifyUsers).not.toHaveBeenCalled()
+  })
+
+  it('surfaces a failed dedupe-marker write (bell and per-person) instead of ignoring insertAuditRow\'s false', async () => {
+    auditOk = false
+    await POST({} as any)
+    expect(rowErrors.some(e => /bell created but its dedupe audit row failed/.test(e))).toBe(true)
+    expect(rowErrors.some(e => /warning sent but its dedupe audit row failed/.test(e))).toBe(true)
   })
 })
