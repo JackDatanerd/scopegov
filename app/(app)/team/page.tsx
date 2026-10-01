@@ -56,6 +56,17 @@ export default async function TeamPage() {
       .order('deactivated_at', { ascending: false }),
   ])
 
+  // FIX (Team & Invites round 17): none of the three reads above was ever error-checked — a transient DB
+  // failure rendered `data || []` as an EMPTY team: a paid workspace showed "0 active" with an empty role
+  // picker, and a Solo workspace got the upgrade wall instead of its roster. A failed read is not "no rows".
+  const loadError = membersRes.error || rolesRes.error || deactivatedRes.error
+  if (loadError) {
+    console.error('[team] page load failed', {
+      members: membersRes.error?.message, roles: rolesRes.error?.message, deactivated: deactivatedRes.error?.message,
+    })
+    return <TeamLoadError />
+  }
+
   const canInvite      = hasPermission(session, 'INVITE_MEMBERS')
   const canManageRoles = hasPermission(session, 'MANAGE_ROLES')
 
@@ -219,6 +230,26 @@ export default async function TeamPage() {
       assignableRoleIds={(rolesRes.data || []).filter((r: any) => roleWithinCeiling(session, r)).map((r: any) => r.id)}
       roleHolderCounts={roleHolderCountsByRole}
     />
+  )
+}
+
+function TeamLoadError() {
+  return (
+    <div className="page" style={{ maxWidth: 720 }}>
+      <div className="page-hd">
+        <div>
+          <h1 className="page-title">Team</h1>
+          <p className="page-sub">Collaborate with colleagues on projects and scope governance</p>
+        </div>
+      </div>
+      <div className="surface" style={{ padding: '28px 32px' }}>
+        <p style={{ fontSize: 14, color: 'var(--text)', marginBottom: 6, fontWeight: 600 }}>We couldn&apos;t load your team</p>
+        <p style={{ fontSize: 13, color: 'var(--text-3)', lineHeight: 1.7, marginBottom: 16 }}>
+          This is a temporary problem on our side — your team and invites are untouched. Refresh the page in a moment.
+        </p>
+        <Link href="/team" className="btn btn-secondary btn-sm">Try again</Link>
+      </div>
+    </div>
   )
 }
 

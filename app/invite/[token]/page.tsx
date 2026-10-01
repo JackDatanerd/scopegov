@@ -89,7 +89,10 @@ export default function InvitePage() {
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ name, password, acceptedTerms: true }),
       })
-      const json = await res.json()
+      // FIX (Team & Invites round 17): a non-JSON reply (gateway timeout, HTML error page) threw a raw parse
+      // error here — and a timeout can land AFTER the server already created the account, in which case the
+      // person needs to be told to sign in, not shown "Unexpected token '<'".
+      const json = await res.json().catch(() => ({}))
       if (!res.ok) {
         // FIX (deep audit, Team & Invites re-pass — dead-end form): the
         // backend (api/team/invite/[token]/signup) already distinguishes
@@ -111,7 +114,9 @@ export default function InvitePage() {
           setMode('existing-user')
           return
         }
-        throw new Error(json.error)
+        throw new Error(json.error || (res.status >= 500
+          ? 'Something went wrong on our side. If you already tried once, your account may have been created — try signing in with the password you chose.'
+          : 'Could not create your account. Please try again.'))
       }
 
       // FIX (deep audit, Team & Invites re-pass): a single fixed 800ms
@@ -212,7 +217,8 @@ export default function InvitePage() {
       if (!res.ok) {
         const j = await res.json().catch(() => ({}))
         if (redirectIfMfaRequired(res.status, j)) return
-        throw new Error(j.error)
+        // FIX (round 17): `new Error(undefined)` has an empty message, which the catch below showed as a blank error.
+        throw new Error(j.error || 'Could not accept this invite')
       }
       setMode('done')
       setTimeout(() => router.push('/dashboard'), 1500)

@@ -59,8 +59,11 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
     // A pending invite holds no permissions of its own yet, so the check above passes trivially for
     // it — check the ROLE it would grant, the same standard Resend applies, so someone can't cancel
     // an invite into a role above their own.
-    if (wasInvite && member.role_id) {
-      const { data: inviteRole } = await service.from('roles').select('permissions').eq('id', member.role_id).maybeSingle()
+    // FIX (Team & Invites round 17): this was gated on `member.role_id`, so an invite with NO role (which
+    // receives the workspace default role on acceptance) skipped the ceiling entirely — Resend, Copy link and
+    // Change role all use roleGrantedAtAcceptance() for exactly that case; revoke was the one caller left out.
+    if (wasInvite) {
+      const inviteRole = await roleGrantedAtAcceptance(service, session.workspaceId, member.role_id)
       const beyondRole = permissionsBeyondActorForTarget(session, inviteRole?.permissions)
       if (beyondRole.length > 0) {
         return NextResponse.json({

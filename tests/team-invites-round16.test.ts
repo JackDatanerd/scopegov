@@ -57,7 +57,7 @@ vi.mock('@/lib/utils/seat-limit', () => ({
   seatLimitBreachedAfterWrite: async () => ({ ok: true }),
 }))
 vi.mock('@/lib/utils/rate-limit', () => ({ checkInviteRateLimit: async () => ({ allowed: true }) }))
-vi.mock('@/lib/utils/invite-authority', () => ({ inviterMayStillGrant: async () => true }))
+vi.mock('@/lib/utils/invite-authority', () => ({ inviterMayStillGrant: async () => true, roleGrantedAtAcceptance: async () => null }))
 
 const mkSession = () => ({
   id: 'actor', workspaceId: 'w1', name: 'Actor', email: 'actor@x.com',

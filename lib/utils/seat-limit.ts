@@ -75,7 +75,7 @@ export async function checkSeatLimit(
 }
 
 function seatLimitMessage(limits: { seats: number; name: string }) {
-  return `This workspace is at its ${limits.seats}-seat limit on the ${limits.name} plan. Deactivate a member or upgrade in Settings \u2192 Billing first.`
+  return `This workspace is at its ${limits.seats}-seat limit on the ${limits.name.replace(/\s*\(.*\)\s*$/, '')} plan. Deactivate a member or upgrade in Settings \u2192 Billing first.`
 }
 
 /**

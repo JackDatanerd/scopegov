@@ -190,10 +190,13 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: inviteEmail, roleId: inviteRoleId || null }),
       })
-      const json = await res.json()
+      // FIX (Team & Invites round 17): every mutation handler below used a bare `await res.json()` — a gateway
+      // timeout or an HTML error page threw a raw "Unexpected token '<'" at the admin, and a JSON body with no
+      // `error` produced `new Error(undefined)` (an empty message, so nothing at all was shown).
+      const json = await res.json().catch(() => ({}))
       if (!res.ok) {
         if (typeof json.reactivateMemberId === 'string') setReactivateOffer(json.reactivateMemberId)
-        throw new Error(json.error)
+        throw new Error(json.error || 'Failed to send invite')
       }
       setModal(null); setInviteEmail(''); setInviteRoleId('')
       // FIX (deep audit, Team & Invites re-pass): the invite row is
@@ -344,8 +347,8 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ roleId: roleEditRoleId || null }),
       })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error)
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json.error || 'Could not change this member\u2019s role')
       if (json.warning) setNotice(json.warning)
       setRoleEditMember(null); router.refresh()
     } catch (err: unknown) {
@@ -368,8 +371,8 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ permissionOverrides: overrideDraft }),
       })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error)
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json.error || 'Could not save permission overrides')
       if (json.warning) setNotice(json.warning)
       setOverrideMember(null); router.refresh()
     } catch (err: unknown) {
@@ -385,8 +388,8 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: roleName, description: roleDesc, permissions: rolePerms }),
       })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error)
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json.error || 'Failed to create role')
       setModal(null); setRoleName(''); setRoleDesc(''); setRolePerms({})
       router.refresh()
     } catch (err: unknown) {
@@ -403,8 +406,8 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ permissions: editPerms, name: editName.trim(), description: editDesc.trim() }),
       })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error)
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json.error || 'Failed to save role')
       if (json.defaultWarning) setNotice(json.defaultWarning)
       setEditRole(null); router.refresh()
     } catch (err: unknown) {
@@ -428,7 +431,7 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ isDefault: true }),
       })
-      const json = await res.json()
+      const json = await res.json().catch(() => ({}))
       if (!res.ok) { setError(json.error || 'Could not set default role'); return }
       if (json.defaultWarning) { setError(json.defaultWarning); return }
       router.refresh()
