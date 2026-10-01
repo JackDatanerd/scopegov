@@ -173,9 +173,12 @@ export default async function SowPage() {
             <i className="ti ti-file-description empty-state-icon" />
             <p className="empty-state-title">No SOWs yet</p>
             <p className="empty-state-sub">SOWs are generated when you create a project and complete the scope brief.</p>
-            <Link href="/projects/new">
-              <button className="btn btn-primary"><i className="ti ti-plus" style={{ fontSize: 13 }} /> New project</button>
-            </Link>
+            {/* Gated like every other entry point to the wizard: POST /api/projects requires CREATE_PROJECTS. */}
+            {hasPermission(session, 'CREATE_PROJECTS') && (
+              <Link href="/projects/new">
+                <button className="btn btn-primary"><i className="ti ti-plus" style={{ fontSize: 13 }} /> New project</button>
+              </Link>
+            )}
           </div>
         </div>
       ) : (
