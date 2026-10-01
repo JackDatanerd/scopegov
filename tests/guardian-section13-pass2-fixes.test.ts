@@ -147,10 +147,13 @@ describe('G2 — one flag per check, and the sweep leaves live requests alone', 
   })
 
   it('the sweep does not treat a never-attempted row as due until the live request has had time to finish', () => {
-    const src = read('app/api/cron/guardian-health/route.ts')
-    expect(src).toMatch(/const LIVE_PATH_GRACE_MS = 10 \* 60000/)
-    expect(src).toMatch(/if \(!r\.last_attempt_at\) return now - new Date\(r\.created_at\)\.getTime\(\) >= LIVE_PATH_GRACE_MS/)
-    expect(src).not.toMatch(/if \(!r\.last_attempt_at\) return true/)
+    // pass 4 (B5): the grace + backoff rule moved from the route into lib/ai/guardian-pipeline.ts so the query and the JS backstop share it
+    const pipe = read('lib/ai/guardian-pipeline.ts')
+    const route = read('app/api/cron/guardian-health/route.ts')
+    expect(pipe).toMatch(/GUARDIAN_LIVE_PATH_GRACE_MS = 10 \* 60000/)
+    expect(pipe).toMatch(/if \(!r\.last_attempt_at\) return nowMs - new Date\(r\.created_at\)\.getTime\(\) >= GUARDIAN_LIVE_PATH_GRACE_MS/)
+    expect(pipe).not.toMatch(/if \(!r\.last_attempt_at\) return true/)
+    expect(route).toContain('isSweepDue(r, now)')
   })
 })
 

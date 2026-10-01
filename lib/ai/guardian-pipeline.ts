@@ -17,6 +17,7 @@
 
 import {
   classifyGuardianCheck, getEmbedding, cosineSimilarity, parseVector, resolveMatchedAmendmentId, toPlainText,
+  netAmendmentDeliverables,
   type Sensitivity, type ClassificationResult,
 } from '@/lib/ai/guardian'
 import { sendGuardianFlagEmail } from '@/lib/email/templates'
@@ -29,6 +30,39 @@ export const DEDUP_THRESHOLD = 0.85
 export const DEDUP_WINDOW_DAYS = 30
 /** Automatic (cron) attempts stop here; a person can still retry by hand. */
 export const MAX_AUTO_CLASSIFICATION_ATTEMPTS = 5
+
+// FIX (independent pass 4, section 13 - B5): the sweep fetched the 40 OLDEST candidate rows and only THEN dropped the
+// ones still inside their backoff window. Rows waiting out a long backoff (15m, 30m, 1h, 2h, 4h per attempt) kept
+// occupying those 40 slots, so during an Anthropic outage newer rows - including ones that were due - were never even
+// looked at until the older ones burned their last attempt (~8h). The due-ness test now lives in the query: one
+// bounded query per attempt count, each filtered to rows whose own backoff has elapsed (or that were never attempted
+// and are past the live-path grace), so every row the sweep reads is one it can actually work on.
+export const GUARDIAN_SWEEP_BACKOFF_BASE_MS = 15 * 60000   // 15m, 30m, 60m, ... per failed attempt
+// guardian/check and guardian/inbound INSERT the row as `pending` (attempts 0, last_attempt_at null) and classify it
+// without claiming it; a sweep inside that window would classify it in parallel (two flags, two emails). A row younger
+// than this is left to its live request; one whose request died mid-flight is still swept, just this much later.
+export const GUARDIAN_LIVE_PATH_GRACE_MS = 10 * 60000
+
+export function sweepAttemptCutoffs(nowMs: number, maxAttempts: number = MAX_AUTO_CLASSIFICATION_ATTEMPTS) {
+  return Array.from({ length: Math.max(0, maxAttempts) }, (_, attempts) => ({
+    attempts,
+    attemptedBefore: new Date(nowMs - GUARDIAN_SWEEP_BACKOFF_BASE_MS * Math.pow(2, attempts)).toISOString(),
+    createdBefore: new Date(nowMs - GUARDIAN_LIVE_PATH_GRACE_MS).toISOString(),
+  }))
+}
+
+/** PostgREST `or` filter selecting the rows of one attempt bucket whose backoff / grace has elapsed. */
+export function sweepDueFilter(c: { attemptedBefore: string; createdBefore: string }): string {
+  return `last_attempt_at.lte.${c.attemptedBefore},and(last_attempt_at.is.null,created_at.lte.${c.createdBefore})`
+}
+
+/** Same rule in JS - kept as a backstop on the rows the due-filtered queries return. */
+export function isSweepDue(r: { last_attempt_at?: string | null; created_at: string; classification_attempts?: number | null }, nowMs: number): boolean {
+  if (!r.last_attempt_at) return nowMs - new Date(r.created_at).getTime() >= GUARDIAN_LIVE_PATH_GRACE_MS
+  const wait = GUARDIAN_SWEEP_BACKOFF_BASE_MS * Math.pow(2, Number(r.classification_attempts || 0))
+  return nowMs - new Date(r.last_attempt_at).getTime() >= wait
+}
+
 
 export interface GuardianActor {
   id: string | null
@@ -147,11 +181,13 @@ export async function classifyAndRecord(service: any, p: {
   let classification: ClassificationResult
   try {
     const { data, error } = await service.from('amendments')
-      .select('id, title, added_deliverables').eq('project_id', project.id)
+      .select('id, title, added_deliverables, removed_deliverables, created_at').eq('project_id', project.id)
+      .order('created_at', { ascending: true })
     // An unreadable amendments list must not silently degrade to "no COs" — that
     // would misclassify already-covered work as scope creep.
     if (error) throw new Error(`amendments read failed: ${error.message}`)
-    amendments = data || []
+    // Only deliverables still live after any later credit/descope CO (see netAmendmentDeliverables).
+    amendments = netAmendmentDeliverables(data || [])
     classification = await classifyGuardianCheck({
       content: check.content,
       snapshot: { deliverables: snapshot.deliverables || [], outOfScope: snapshot.out_of_scope || [] },

@@ -8,7 +8,10 @@ import { sendEmail } from '@/lib/email/send'
 import { systemFrom } from '@/lib/email/from'
 import { alertCronFailure } from '@/lib/utils/cron-alert'
 import { recordCronHeartbeat } from '@/lib/utils/cron-heartbeat'
-import { reclassifyCheck, GUARDIAN_SYSTEM_ACTOR, MAX_AUTO_CLASSIFICATION_ATTEMPTS } from '@/lib/ai/guardian-pipeline'
+import {
+  reclassifyCheck, GUARDIAN_SYSTEM_ACTOR, MAX_AUTO_CLASSIFICATION_ATTEMPTS,
+  sweepAttemptCutoffs, sweepDueFilter, isSweepDue,
+} from '@/lib/ai/guardian-pipeline'
 import { recordAiUsageByProject } from '@/lib/utils/rate-limit'
 
 // FIX (audit round 3): local copy replaced with the shared,
@@ -77,14 +80,6 @@ async function markAlerted(service: any, key: string): Promise<void> {
 const SWEEP_BATCH = 10               // AI calls per run (cost + duration bound)
 const SWEEP_BUDGET_MS = 90_000       // stop starting new work after this
 const SWEEP_MAX_AGE_DAYS = 90        // don't resurrect very old backlog
-const BACKOFF_BASE_MS = 15 * 60000   // 15m, 30m, 60m, … per failed attempt
-// FIX (independent pass 2, section 13 - G2): guardian/check and guardian/inbound INSERT the row as `pending`
-// (attempts 0, last_attempt_at null) and classify it without claiming it - inbound uploads up to 10 attachments
-// first. `due()` used to treat "never attempted" as due immediately, so a sweep firing inside that window picked the
-// row up, won reclassifyCheck's compare-and-swap (attempts still 0) and classified it in parallel with the request
-// that owned it: two flags and two emails for one check. A row younger than this is left to its live request; a
-// request that died mid-flight (function timeout) is still swept, just this much later.
-const LIVE_PATH_GRACE_MS = 10 * 60000
 
 function groupByWorkspace(rows: Array<{ workspace_id: string }>): string {
   const counts = new Map<string, number>()
@@ -111,27 +106,29 @@ async function sweepUnclassified(service: any) {
     .not('projects.status', 'in', '(Complete,Archived)')
     .is('projects.workspaces.deleted_at', null)
 
-  const { data: failedRows, error: failedErr } = await live(service.from('guardian_checks')
-    .select(`${cols}, projects!inner(deleted_at, status, workspaces!inner(deleted_at))`))
-    .eq('outcome', 'pending').eq('is_duplicate', false).eq('classification_failed', true)
-    .lt('classification_attempts', MAX_AUTO_CLASSIFICATION_ATTEMPTS).gte('created_at', oldest)
-    .order('created_at', { ascending: true }).limit(40)
-  if (failedErr) throw new Error(`guardian sweep (failed): ${failedErr.message}`)
-
+  // One bounded query per attempt count, each already filtered to rows that are due (see sweepDueFilter), for both
+  // kinds; merged oldest-first with failed rows ahead of backlog.
+  const buckets = sweepAttemptCutoffs(now)
+  const failedSelect = `${cols}, projects!inner(deleted_at, status, workspaces!inner(deleted_at))`
   // Backlog: pending, never failed, and the project NOW has a signed-SOW snapshot.
-  const { data: backlogRows, error: backlogErr } = await live(service.from('guardian_checks')
-    .select(`${cols}, projects!inner(deleted_at, status, workspaces!inner(deleted_at), project_scope_snapshot!inner(id))`))
-    .eq('outcome', 'pending').eq('is_duplicate', false).eq('classification_failed', false)
-    .lt('classification_attempts', MAX_AUTO_CLASSIFICATION_ATTEMPTS).gte('created_at', oldest)
-    .order('created_at', { ascending: true }).limit(40)
-  if (backlogErr) throw new Error(`guardian sweep (backlog): ${backlogErr.message}`)
+  const backlogSelect = `${cols}, projects!inner(deleted_at, status, workspaces!inner(deleted_at), project_scope_snapshot!inner(id))`
+  const run = (select: string, failed: boolean, c: ReturnType<typeof sweepAttemptCutoffs>[number]) =>
+    live(service.from('guardian_checks').select(select))
+      .eq('outcome', 'pending').eq('is_duplicate', false).eq('classification_failed', failed)
+      .eq('classification_attempts', c.attempts).gte('created_at', oldest)
+      .or(sweepDueFilter(c))
+      .order('created_at', { ascending: true }).limit(SWEEP_BATCH)
+  const [failedResults, backlogResults] = await Promise.all([
+    Promise.all(buckets.map(c => run(failedSelect, true, c))),
+    Promise.all(buckets.map(c => run(backlogSelect, false, c))),
+  ])
+  for (const r of failedResults) if (r.error) throw new Error(`guardian sweep (failed): ${r.error.message}`)
+  for (const r of backlogResults) if (r.error) throw new Error(`guardian sweep (backlog): ${r.error.message}`)
+  const byAge = (x: any, y: any) => String(x.created_at).localeCompare(String(y.created_at))
+  const failedRows = failedResults.flatMap((r: any) => r.data || []).sort(byAge)
+  const backlogRows = backlogResults.flatMap((r: any) => r.data || []).sort(byAge)
 
-  const due = (r: any) => {
-    if (!r.last_attempt_at) return now - new Date(r.created_at).getTime() >= LIVE_PATH_GRACE_MS
-    const wait = BACKOFF_BASE_MS * Math.pow(2, Number(r.classification_attempts || 0))
-    return now - new Date(r.last_attempt_at).getTime() >= wait
-  }
-  const candidates = [...(failedRows || []), ...(backlogRows || [])].filter(due).slice(0, SWEEP_BATCH)
+  const candidates = [...failedRows, ...backlogRows].filter((r: any) => isSweepDue(r, now)).slice(0, SWEEP_BATCH)
 
   const started = Date.now()
   // FIX (independent pass round 2, section 13): `duplicates` is a new bucket — reclassifyCheck

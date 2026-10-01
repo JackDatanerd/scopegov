@@ -131,12 +131,39 @@ function stripAllTags(text: string): string {
   return out + text.slice(copyFrom)
 }
 
+// FIX (independent pass 4, section 13 - B4): the HTML branch of toPlainText decoded six entities, one after another.
+// Everything else survived into what the classifier reads ("&#8217;", "&eacute;", "&ndash;", "&#x27;" - the entities mail
+// clients emit for apostrophes, accents and dashes), and because `&amp;` was decoded BEFORE `&lt;`/`&gt;`/`&quot;`, a
+// literal "&amp;lt;" came out as "<" instead of "&lt;". One pass over a single regex decodes every entity exactly once
+// (nothing it produces is re-scanned), numeric references included; unknown names are left as written.
+const NAMED_ENTITIES: Record<string, string> = {
+  nbsp: ' ', amp: '&', lt: '<', gt: '>', quot: '"', apos: "'",
+  lsquo: '\u2018', rsquo: '\u2019', ldquo: '\u201C', rdquo: '\u201D', sbquo: '\u201A', bdquo: '\u201E',
+  ndash: '\u2013', mdash: '\u2014', hellip: '\u2026', bull: '\u2022', middot: '\u00B7', ensp: ' ', emsp: ' ', thinsp: ' ',
+  copy: '\u00A9', reg: '\u00AE', trade: '\u2122', euro: '\u20AC', pound: '\u00A3', yen: '\u00A5', cent: '\u00A2', deg: '\u00B0',
+  laquo: '\u00AB', raquo: '\u00BB', times: '\u00D7', divide: '\u00F7', sect: '\u00A7', para: '\u00B6',
+  agrave: '\u00E0', aacute: '\u00E1', acirc: '\u00E2', atilde: '\u00E3', auml: '\u00E4', aring: '\u00E5', ccedil: '\u00E7',
+  egrave: '\u00E8', eacute: '\u00E9', ecirc: '\u00EA', euml: '\u00EB', igrave: '\u00EC', iacute: '\u00ED', icirc: '\u00EE', iuml: '\u00EF',
+  ntilde: '\u00F1', ograve: '\u00F2', oacute: '\u00F3', ocirc: '\u00F4', otilde: '\u00F5', ouml: '\u00F6', oslash: '\u00F8',
+  ugrave: '\u00F9', uacute: '\u00FA', ucirc: '\u00FB', uuml: '\u00FC', yacute: '\u00FD', szlig: '\u00DF',
+  Agrave: '\u00C0', Aacute: '\u00C1', Acirc: '\u00C2', Atilde: '\u00C3', Auml: '\u00C4', Aring: '\u00C5', Ccedil: '\u00C7',
+  Egrave: '\u00C8', Eacute: '\u00C9', Ecirc: '\u00CA', Euml: '\u00CB', Iacute: '\u00CD', Ntilde: '\u00D1', Oacute: '\u00D3',
+  Ouml: '\u00D6', Uacute: '\u00DA', Uuml: '\u00DC',
+}
+export function decodeEntities(text: string): string {
+  return text.replace(/&(?:#(\d{1,7})|#[xX]([0-9a-fA-F]{1,6})|([A-Za-z][A-Za-z0-9]{1,9}));/g, (whole, dec, hex, name) => {
+    if (name) return NAMED_ENTITIES[name] ?? whole
+    const cp = dec !== undefined ? Number(dec) : parseInt(hex, 16)
+    if (cp === 160) return ' '
+    if (!Number.isFinite(cp) || cp === 0 || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) return whole
+    return String.fromCodePoint(cp)
+  })
+}
+
 export function toPlainText(content: string): string {
   let text = String(content ?? '').slice(0, MAX_PLAINTEXT_INPUT_CHARS)
   if (hasHtmlTag(text)) {
-    text = stripAllTags(stripRawTextBlocks(text).replace(/<br\s*\/?>|<\/(p|div|li|tr|h[1-6]|blockquote)>/gi, '\n'))
-      .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    text = decodeEntities(stripAllTags(stripRawTextBlocks(text).replace(/<br\s*\/?>|<\/(p|div|li|tr|h[1-6]|blockquote)>/gi, '\n')))
   }
   return text.replace(/\r\n?/g, '\n').replace(/[ \t\f\v]+/g, ' ').replace(/ ?\n ?/g, '\n').replace(/\n{3,}/g, '\n\n').trim()
 }
@@ -177,6 +204,48 @@ export interface Amendment {
   id: string
   added_deliverables: string[]
   title: string
+  /** Present on rows read from `amendments`; only used by netAmendmentDeliverables. */
+  removed_deliverables?: string[] | null
+  created_at?: string | null
+}
+
+/**
+ * FIX (independent pass 4, section 13 - B1): the classifier was told every amendment's `added_deliverables`
+ * forever. A credit / descope change order (migration 100) REMOVES a deliverable - remove_scope_deliverables moves
+ * it back to the snapshot's out_of_scope - but the earlier CO that had added it still listed it under "ACCEPTED
+ * CHANGE ORDERS", and the prompt rule for "excluded AND CO-listed" says the client bought it, so a request for
+ * work the client had since dropped came back `covered_by_co` and never raised a flag. Only titles that are
+ * still live count: an add is dropped when a LATER amendment removed that title (case/space-insensitive), and an
+ * add made after the removal (bought again) is kept. Amendments left with nothing are dropped entirely, so the
+ * "no amendments" paths (hasAmendments, matchedAgainst:'amendment') see the real picture.
+ */
+export function netAmendmentDeliverables(amendments: Amendment[]): Amendment[] {
+  const norm = (t: unknown) => String(t ?? '').trim().toLowerCase()
+  const indexed = amendments.map((a, i) => ({ a, i }))
+  indexed.sort((x, y) => {
+    const tx = x.a.created_at ? Date.parse(x.a.created_at) : NaN
+    const ty = y.a.created_at ? Date.parse(y.a.created_at) : NaN
+    if (Number.isFinite(tx) && Number.isFinite(ty) && tx !== ty) return tx - ty
+    return x.i - y.i
+  })
+  const lastRemovedAt = new Map<string, number>() // title -> position (in time order) of the latest amendment that removed it
+  indexed.forEach(({ a }, pos) => {
+    for (const r of a.removed_deliverables || []) { const k = norm(r); if (k) lastRemovedAt.set(k, pos) }
+  })
+  const posById = new Map<string, number>()
+  indexed.forEach(({ a }, pos) => posById.set(a.id, pos))
+  const out: Amendment[] = []
+  for (const { a } of indexed) {
+    const pos = posById.get(a.id) as number
+    const live = (a.added_deliverables || []).filter(d => {
+      const k = norm(d)
+      if (!k) return false
+      const removedAt = lastRemovedAt.get(k)
+      return removedAt === undefined || removedAt < pos
+    })
+    if (live.length > 0) out.push({ ...a, added_deliverables: live })
+  }
+  return out
 }
 
 // FIX (deep audit, section 13 — feature gap): guardian_checks.matched_amendment_id
