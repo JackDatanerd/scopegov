@@ -1,0 +1,10 @@
+Portfolio (section 8) — independent pass 8 (bugs only)
+
+1. components/portfolio/PortfolioDashboard.tsx — TrendChart y-axis labels
+   Gridlines were drawn at [max, max/2, 0] but labelled with a formatter that did not match them:
+   - flags mode rounded the middle tick (max 3 -> gridline at 1.5 labelled "2"; max 5 -> 2.5 labelled "3"; max 1 -> "1, 1, 0");
+   - risk mode floored the scale at 1, so a flat zero-risk line labelled its top gridline "$1";
+   - the compact currency formatter only abbreviates from 1,000, so one axis could read "USD 1.5k / $750 / $0".
+   Scale and labels now come from lib/reports/portfolio-chart-axis.ts: whole-number ticks for counts (even top so the
+   middle is whole), only the zero line labelled when there is no risk to plot, one label style per axis.
+   Test: tests/portfolio-chart-axis.test.ts

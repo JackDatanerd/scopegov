@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { formatCurrency, formatDate, formatRelative } from '@/lib/utils/format'
 import { groupRiskByClient } from '@/lib/reports/portfolio-client-groups'
+import { chartAxis, formatAxisTick } from '@/lib/reports/portfolio-chart-axis'
 
 type Period = '30d' | '90d' | '6m' | '12m' | 'all'
 
@@ -508,8 +509,9 @@ function TrendChart({ points: allPoints, mode, currency, hasSnapshots }: { point
   )
 
   const values = points.map(p => mode === 'risk' ? (p.contractValueAtRisk ?? 0) : p.openFlagsCount)
-  const max = Math.max(...values, 1)
-  const min = Math.min(...values, 0)
+  // Whole-number ticks for counts and one consistent label style per axis — see lib/reports/portfolio-chart-axis.ts.
+  const axis = chartAxis(values, mode)
+  const { max, min } = axis
   const range = max - min || 1
 
   if (points.length < 2) {
@@ -543,8 +545,8 @@ function TrendChart({ points: allPoints, mode, currency, hasSnapshots }: { point
 
   // Three gridlines (top / middle / bottom) with their values — the chart had no axis at all, so a reader
   // could only learn the scale by hovering.
-  const ticks = [max, min + range / 2, min]
-  const fmtTick = (v: number) => mode === 'risk' ? formatCurrency(v, currency, true) : String(Math.round(v))
+  const ticks = axis.ticks
+  const fmtTick = (v: number) => formatAxisTick(v, mode, currency, axis)
   const linePath = values.map((v, i) => `${i === 0 ? 'M' : 'L'} ${xFor(i)} ${yFor(v)}`).join(' ')
   const areaPath = `${linePath} L ${xFor(values.length - 1)} ${H - PAD} L ${xFor(0)} ${H - PAD} Z`
   const colour = mode === 'risk' ? 'var(--red)' : 'var(--amber)'
