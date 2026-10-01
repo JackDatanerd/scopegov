@@ -62,7 +62,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // override above to cancel someone else's request got the exact same
     // audit-log text as the requester cancelling their own, making the
     // audit trail actively misleading about who acted.
-    await cancelApprovalRequest(service, {
+    const cancelResult = await cancelApprovalRequest(service, {
       documentType: req.document_type, documentId: req.document_id,
       workspaceId: session.workspaceId,
       actorId: session.id, actorEmail: session.email, actorName: session.name,
@@ -78,6 +78,18 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       // notification text this drives must not claim it does.
       returnedToDraft: req.document_type !== 'co_counter',
     })
+
+    // FIX (section-11 independent pass 9, B1): the result was ignored, so this answered { ok: true } even when
+    // nothing was cancelled. The pre-checks above read the row BEFORE the write; the last approver can clear the
+    // final step in between, which stamps the send claim — cancelApprovalRequest then (correctly) refuses and
+    // returns { cancelled: false, blockedBySend: true }, but the requester was told "cancelled / back to draft"
+    // while the document was in fact going out to the client. Same for a request that was decided or cancelled by
+    // someone else in the gap. Report what actually happened.
+    if (!cancelResult.cancelled) {
+      if (cancelResult.blockedBySend)
+        return NextResponse.json({ error: 'This request is being sent right now — give it a moment, then refresh.' }, { status: 409 })
+      return NextResponse.json({ error: 'This request was already decided or cancelled — refresh to see its current state.' }, { status: 409 })
+    }
 
     return NextResponse.json({ ok: true })
   } catch (err) {

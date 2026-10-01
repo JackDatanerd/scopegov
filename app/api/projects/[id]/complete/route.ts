@@ -124,13 +124,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         .in('document_type', SCOPE_CHANGE_DOCUMENT_TYPES)
       for (const r of (pending || [])) {
         try {
-          await cancelApprovalRequest(service, {
+          const cancelRes = await cancelApprovalRequest(service, {
             documentType: r.document_type, documentId: r.document_id,
             workspaceId: session.workspaceId, actorId: session.id,
             actorEmail: session.email, actorName: session.name,
             reason: 'Project marked complete',
           })
-          scopeApprovalsCancelled++
+          // FIX (section-11 independent pass 9, B1): only count a cancel that actually happened — a refused one
+          // (send in flight / already resolved) used to inflate scope_approvals_cancelled in the audit log.
+          if (cancelRes.cancelled) scopeApprovalsCancelled++
         } catch (e) { console.error('Project complete: could not cancel approval request:', e) }
       }
     } catch (e) { console.error('Project complete: approval cleanup failed (non-fatal):', e) }

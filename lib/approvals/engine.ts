@@ -261,7 +261,26 @@ export async function evaluateApprovalGate(service: any, params: GateParams): Pr
     }))
   )
   if (stepsInsertErr) {
-    await service.from('approval_requests').delete().eq('id', request.id)
+    // FIX (section-11 independent pass 9, B3): the rollback delete's result was never read. If it failed too, a
+    // 'pending' request with NO steps stayed behind — the document stayed locked, the next Send answered "Sent for
+    // approval" (it matches the live request), and nobody could ever decide it. Check the delete; if it did not
+    // land, fall back to marking the request cancelled (frees the unique active-request slot) and leave a trail.
+    const { error: rollbackErr } = await service.from('approval_requests').delete().eq('id', request.id)
+    if (rollbackErr) {
+      console.error('Approval gate rollback delete failed — cancelling the stepless request instead:', rollbackErr)
+      const stamp = new Date().toISOString()
+      const { error: cancelErr } = await service.from('approval_requests')
+        .update({ status: 'cancelled', decided_at: stamp, updated_at: stamp })
+        .eq('id', request.id).eq('status', 'pending')
+      if (cancelErr) console.error('Approval gate rollback: could not cancel the stepless request either:', cancelErr, request.id)
+      await logAudit(service, {
+        workspaceId,
+        actorId: params.requestedBy.id, actorEmail: params.requestedBy.email, actorName: params.requestedBy.name,
+        eventType: 'approval.gate_rollback_failed', entityType: entityTypeFor(documentType),
+        entityId: documentId, entityName: params.documentTitle || '',
+        metadata: { approval_request_id: request.id, cancelled_fallback: !cancelErr },
+      })
+    }
     throw new Error('Failed to create approval steps — send halted for safety')
   }
 
@@ -1036,10 +1055,33 @@ export async function retryFailedSend(service: any, params: {
     // FIX (section-11 audit): CAS'd on status still being 'approved' — belt-and-suspenders
     // alongside the cancel-side fix above, so a cancel that somehow still won the race can't
     // have this write silently erase the send_failed_at evidence of what actually happened.
-    await service.from('approval_requests').update({
+    // FIX (section-11 independent pass 9, B2): this write's result was never read, but the document HAS been
+    // sent by now. If it failed (transient error) or matched nothing (cancelled in the gap), the request kept
+    // showing "Approved — not sent" for a sent document: Retry then failed ("Only draft…"), the stall cron
+    // escalated it as unsent, and the audit log still said the retry succeeded. Retry once, then leave the same
+    // approval.send_outcome_unrecorded trail finalizeSend uses.
+    const clearPatch = {
       send_failed_at: null, send_failed_reason: null, sending_started_at: null,
       delivery_warning: deliveryWarning, updated_at: now,
-    }).eq('id', request.id).eq('status', 'approved')
+    }
+    let cleared = false
+    for (let attempt = 0; attempt < 2 && !cleared; attempt++) {
+      const { data: clearedRow, error: clearErr } = await service.from('approval_requests')
+        .update(clearPatch).eq('id', request.id).eq('status', 'approved')
+        .select('id').maybeSingle()
+      if (clearErr) console.error('retryFailedSend: could not record the successful send (attempt ' + (attempt + 1) + '):', clearErr)
+      else if (clearedRow) cleared = true
+      else break // matched nothing: the request left 'approved' (cancelled) — a retry cannot change that
+    }
+    if (!cleared) {
+      await logAudit(service, {
+        workspaceId: params.workspaceId,
+        actorId: params.actor.id, actorEmail: params.actor.email, actorName: params.actor.name,
+        eventType: 'approval.send_outcome_unrecorded', entityType: entityTypeFor(request.document_type),
+        entityId: request.document_id, entityName: request.context?.title || '',
+        metadata: { approval_request_id: request.id, send_ok: true, via: 'retry' },
+      })
+    }
     await logAudit(service, {
       workspaceId: params.workspaceId,
       actorId: params.actor.id, actorEmail: params.actor.email, actorName: params.actor.name,
@@ -1052,9 +1094,10 @@ export async function retryFailedSend(service: any, params: {
 
   // Still failing (e.g. the client's email is still missing) — refresh the
   // reason shown in the UI so it reflects whatever's actually wrong now.
-  await service.from('approval_requests').update({
+  const { error: reasonErr } = await service.from('approval_requests').update({
     send_failed_reason: outcome.error, sending_started_at: null, updated_at: now,
   }).eq('id', request.id)
+  if (reasonErr) console.error('retryFailedSend: could not release the send claim after a failed retry:', reasonErr)
   return { ok: false, error: outcome.error }
 }
 

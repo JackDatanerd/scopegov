@@ -1,0 +1,23 @@
+CHANGES — section 11 (approvals engine), independent pass 9
+===========================================================
+
+B1  app/api/approvals/[id]/cancel/route.ts, app/api/projects/[id]/complete/route.ts
+    The cancel route ignored cancelApprovalRequest's { cancelled, blockedBySend } and always answered ok:true.
+    A cancel racing the last approver's decision (send claim stamped between the route's read and the write)
+    was refused by the engine, yet the requester was told the request was cancelled while the document was
+    being sent. Now 409 (send in flight / already decided or cancelled). Project-complete counted refused
+    cancels in scope_approvals_cancelled; it now counts only real ones.
+
+B2  lib/approvals/engine.ts (retryFailedSend)
+    The write that clears send_failed_at after a successful retry send was unchecked. If it failed or matched
+    nothing, the request kept showing "Approved — not sent" for a sent document (retry then failed, stall cron
+    escalated it). Now selects the row, retries once on error, and logs approval.send_outcome_unrecorded
+    (via: 'retry') when it cannot be recorded. The failed-retry claim-release write now logs its error.
+
+B3  lib/approvals/engine.ts (evaluateApprovalGate)
+    The rollback delete after a failed approval_steps insert was unchecked; a second failure left a pending
+    request with no steps (document locked, undecidable). Now checks the delete, falls back to marking the
+    request cancelled (CAS on pending) and logs approval.gate_rollback_failed. The send is still halted.
+
+Tests: tests/approvals-independent-pass-9.test.ts (source-shape, 11 cases).
+Not verifiable here (no node_modules / network): tsc, next build, the vitest run.
