@@ -2,20 +2,15 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import { isValidTimeZone, detectBrowserTimezone, listRuntimeTimezones } from '@/lib/utils/timezone'
+import { generateSlug } from '@/lib/utils/workspace-slug'
 
 const read = (p: string) => readFileSync(join(process.cwd(), p), 'utf8')
 const SLUG_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/
 
-// generateSlug is module-private; pull its source out and run it so the test exercises the real code.
+// Pass 9 moved generateSlug into lib/utils/workspace-slug.ts (shared with the settings route); the test
+// now exercises the real exported function directly.
 function loadGenerateSlug(): (name: string) => string {
-  const src = read('app/api/workspace/create/route.ts')
-  const suffixDecl = src.match(/const slugSuffix = [^\n]+/)![0]
-  const fn = src.slice(src.indexOf('function generateSlug'), src.indexOf('export async function POST'))
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { customAlphabet } = require('nanoid')
-  const body = `${suffixDecl}\n${fn}\nreturn generateSlug`
-    .replace(/: string/g, '')
-  return new Function('customAlphabet', body)(customAlphabet)
+  return generateSlug
 }
 
 describe('B5 — generated workspace slugs satisfy the Settings slug validator', () => {

@@ -5,6 +5,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { generateSlug } from '@/lib/utils/workspace-slug'
 import { sanitizeDisplayName } from '@/lib/utils/sanitize'
 import { INDUSTRIES, CURRENCIES } from '@/lib/constants/workspace-options'
 import { isValidTimeZone, formatDateInZone } from '@/lib/utils/timezone'
@@ -264,7 +265,7 @@ export async function PATCH(request: NextRequest) {
     // below needs to read it alongside everything else.
     const { data: current, error: currentErr } = await (service as any)
       .from('workspaces')
-      .select(`${Object.values(COLUMNS).join(', ')}, slug_changed_at, updated_at`)
+      .select(`${Object.values(COLUMNS).join(', ')}, slug_changed_at, onboarding_completed_at, updated_at`)
       .eq('id', session.workspaceId).single()
     if (currentErr || !current) {
       console.error('Workspace settings: could not load workspace:', currentErr)
@@ -323,6 +324,22 @@ export async function PATCH(request: NextRequest) {
     for (const key of changedKeys) updates[COLUMNS[key]] = proposed[key]
     if (changedKeys.includes('slug')) updates.slug_changed_at = new Date().toISOString()
 
+    // Onboarding independent pass 9: the wizard's first step creates the workspace with a handle derived
+    // from the name typed at that moment, then (on Back + Continue) renames it through this route. The
+    // handle never followed, so a typo fixed on Back stayed in the handle — which report filenames read
+    // back. While the workspace is still unfinished AND its handle has never been set by a person
+    // (slug_changed_at is null, so it is still the auto-generated one), derive it again from the new name.
+    // slug_changed_at is deliberately NOT stamped: this is the system keeping its own default in step, and
+    // stamping it would burn the owner's first free change and put the 30-day cooldown on a handle they
+    // never chose. An explicit slug in the same request wins (changedKeys already carries it).
+    let autoSlug = false
+    if (changedKeys.includes('name') && !('slug' in proposed) &&
+        !current.onboarding_completed_at && !current.slug_changed_at &&
+        typeof proposed.name === 'string' && proposed.name) {
+      updates.slug = generateSlug(proposed.name)
+      autoSlug = true
+    }
+
     // FIX (independent re-audit, Settings section — flagship finding):
     // proactive_risk_threshold is a bare number with no currency of its own —
     // it's implicitly denominated in whatever workspaces.currency happens to
@@ -358,7 +375,16 @@ export async function PATCH(request: NextRequest) {
     // is still the one we read.
     let write = (service as any).from('workspaces').update(updates).eq('id', session.workspaceId)
     if (current.updated_at) write = write.eq('updated_at', current.updated_at)
-    const { data: written, error } = await write.select('id')
+    let { data: written, error } = await write.select('id')
+
+    // The auto-generated handle's 6-character suffix collided with an existing one (≈1 in 2 billion per
+    // name) — draw another instead of failing a rename the person made no mistake in.
+    if (error && (error as any).code === '23505' && autoSlug) {
+      updates.slug = generateSlug(proposed.name as string)
+      let retry = (service as any).from('workspaces').update(updates).eq('id', session.workspaceId)
+      if (current.updated_at) retry = retry.eq('updated_at', current.updated_at)
+      ;({ data: written, error } = await retry.select('id'))
+    }
 
     if (error) {
       // workspaces.slug is UNIQUE (migration 001) — someone else already holds it.
@@ -379,7 +405,7 @@ export async function PATCH(request: NextRequest) {
       actorEmail: session.email, actorName: session.name,
       eventType: 'workspace.settings_updated', entityType: 'workspace',
       entityId: session.workspaceId, entityName: session.workspaceName,
-      metadata: { fields: changedKeys, changes },
+      metadata: { fields: changedKeys, changes, ...(autoSlug ? { slugRegenerated: true } : {}) },
     })
 
     return NextResponse.json({

@@ -1062,6 +1062,15 @@ function OnboardingWizard() {
           // swallowed any error (invalid email, etc.) and silently advanced
           // to the next step regardless — the person had no idea nothing
           // was sent. Now a failed invite blocks advancing and shows why.
+          // Onboarding independent pass 9 — the route's own seat-limit copy ("upgrade in Settings →
+          // Billing first") points at a page this wizard's creator cannot open until setup finishes
+          // (the (app) layout bounces an unfinished workspace back here). That answer is real on a
+          // workspace whose trial has lapsed (effective plan Solo = 1 seat, and the creator already
+          // holds it), so say what actually works from here instead.
+          if (json.upgradeRequired) {
+            setError('This workspace\u2019s plan has no free seat for an invite right now. Skip this step \u2014 once setup is finished you can upgrade in Settings \u2192 Billing and invite from the Team page.')
+            return
+          }
           setError(json.error || 'Could not send that invite — check the email address, or skip this step.')
           return
         }
@@ -1502,7 +1511,7 @@ function OnboardingWizard() {
 
             <div className="fgrp">
               <label className="flbl">Agency name</label>
-              <input className="finp" value={agencyName} placeholder="Meridian Creative" autoFocus required
+              <input className="finp" value={agencyName} placeholder="Meridian Creative" autoFocus required maxLength={120}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAgencyName(e.target.value)} />
             </div>
             <div className="fgrp">
@@ -1631,7 +1640,7 @@ function OnboardingWizard() {
             </div>
             <div className="fgrp">
               <label className="flbl">Governing law <span className="fhint">— the contract law that governs your SOWs</span></label>
-              <input className="finp" value={governingLaw}
+              <input className="finp" value={governingLaw} maxLength={200}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setGoverningLaw(e.target.value)}
                 placeholder="e.g. Republic of Kenya" />
               {/* FIX (fresh independent audit, section 4 — feature gap): /api/sow/generate hard-
@@ -1669,7 +1678,7 @@ function OnboardingWizard() {
 
             <div className="fgrp">
               <label className="flbl">Email address <span className="fhint">— optional</span></label>
-              <input type="email" className="finp" value={inviteEmail} autoFocus
+              <input type="email" className="finp" value={inviteEmail} autoFocus maxLength={254}
                 placeholder="colleague@youragency.com"
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setInviteEmail(e.target.value)} />
             </div>

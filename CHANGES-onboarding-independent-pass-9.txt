@@ -1,0 +1,29 @@
+Onboarding independent pass (round 9) — base 29d547b — three low-severity items, no migration
+
+B1 (low) Misleading invite refusal. The wizard's team-invite step relayed the route's seat-limit copy
+   ("upgrade in Settings → Billing first"), but the (app) layout sends an unfinished workspace back to
+   /onboarding, so its creator cannot open Billing. Real on a resumed trial workspace past its 14 days
+   (effective plan Solo = 1 seat, already held by the creator). The wizard now answers upgradeRequired with
+   "no free seat right now — skip this step; after setup you can upgrade in Settings → Billing and invite
+   from Team".
+
+B2 (low) Handle did not follow a rename made on Back. The slug was generated once from the first-typed
+   agency name; fixing a typo on Back left it in the handle (read back into report filenames).
+   PATCH /api/workspace/settings now re-derives the handle from the new name ONLY while
+   onboarding_completed_at is null AND slug_changed_at is null (still the auto-generated one). It does not
+   stamp slug_changed_at, so the owner keeps their first free change and no 30-day cooldown starts on a
+   handle they never chose. An explicit slug in the request wins. A unique-violation on the new random
+   suffix retries once. Audit metadata carries slugRegenerated. generateSlug moved to
+   lib/utils/workspace-slug.ts, shared by create and settings.
+
+B3 (low) Silent truncation. Agency name input had no maxLength (server cuts at 120 via
+   sanitizeDisplayName). Inputs now carry the server limits: agency name 120, governing law 200,
+   invite email 254.
+
+Files: app/onboarding/page.tsx, app/api/workspace/settings/route.ts, app/api/workspace/create/route.ts,
+       lib/utils/workspace-slug.ts (new), tests/onboarding-independent-pass-9.test.ts (new),
+       tests/onboarding-independent-pass-3.test.ts (loads generateSlug from its new home)
+
+Known, NOT touched: tests/approvals-pass2-fixes.test.ts ("long-dead claim") and
+tests/workspace-lifecycle-pass5.test.ts (B1 — it asserts the string 'router.replace' is absent from
+WorkspaceOpenClient.tsx, whose own comments contain it) both fail on the pristine 29d547b clone too.
