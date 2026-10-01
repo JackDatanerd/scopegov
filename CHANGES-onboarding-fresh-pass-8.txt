@@ -1,0 +1,17 @@
+Onboarding fresh independent pass (round 8) — base e500182
+
+B1 (medium) Trial cap dead end. create_workspace_atomic raised TRIAL_ALREADY_USED from trial_used_at alone
+   (set at first-ever workspace creation), so discarding an abandoned >24h-old wizard workspace — or using
+   the Sidebar "Create new workspace" link — could never create another workspace. Migration 133 adds
+   users.trial_spent_at (stamped by a trigger on workspaces when onboarding completes, the plan leaves
+   trial, or a still-trial workspace changes creator) and the cap now requires it. Stored on the user, not
+   derived from workspace rows, because the 30-day purge hard-deletes workspaces. Backfill keeps the cap for
+   everyone with spent or purged history and frees only users who never spent a trial.
+   >>> Run migration 133 against Supabase BEFORE/with deploy. <<<
+
+B2 (low) Stale switch target after discard. discardWorkspace() switched into otherWorkspaces[0] (load-time
+   snapshot); a stale entry showed "Not a member of that workspace" and left the page on the deleted
+   workspace. It now tries each remembered workspace and falls through to the onboarding-status check.
+
+Files: app/onboarding/page.tsx, supabase/migrations/133_trial_cap_counts_spent_trials_only.sql,
+       tests/onboarding-fresh-pass-8.test.ts

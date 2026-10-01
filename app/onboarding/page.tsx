@@ -722,8 +722,21 @@ function OnboardingWizard() {
       }
       clearSavedProgress()
       if (otherWorkspaces.length > 0) {
-        await switchToWorkspace(otherWorkspaces[0].id)
-        return
+        // FIX (fresh independent audit, section 4): otherWorkspaces is a load-time snapshot, and
+        // the delete above has already succeeded. Switching into a stale entry (membership since
+        // removed, left, deleted or suspended) used to surface "Not a member of that workspace"
+        // and leave the page pointing at the workspace that no longer exists, so the next Continue
+        // 409'd. Try each remembered workspace; if none still accepts the switch, fall through to
+        // the server-side onboarding-status check below, which repoints the active workspace itself.
+        for (const w of otherWorkspaces) {
+          try {
+            const swRes = await fetch('/api/workspace/switch', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ workspaceId: w.id }),
+            })
+            if (swRes.ok) { router.push('/dashboard'); return }
+          } catch { /* try the next one */ }
+        }
       }
       // FIX (deep audit, Workspace lifecycle + Onboarding re-pass —
       // feature gap): this used to go straight to '/onboarding?new=1' —
