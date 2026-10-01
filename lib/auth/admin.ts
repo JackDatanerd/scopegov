@@ -69,6 +69,36 @@ export async function getAdminActor(): Promise<AdminActor | null> {
   }
 }
 
+// FIX (Auth+MFA independent pass 7 — MEDIUM): a platform admin with NO workspace
+// membership (the support-account case this file's own header describes) could
+// never satisfy hasVerifiedMfaFactor(): getAdminActor() refused them, the admin
+// layout sent them to /dashboard, middleware bounced them from there to /onboarding,
+// and /mfa-setup itself required a workspace session — so there was no route by
+// which such an account could enrol the factor the admin panel demands.
+// Returns { name } ONLY for a signed-in, non-deleted platform admin who has no
+// verified factor yet — i.e. someone for whom "go and enrol" is the right answer and
+// whose existence as an admin they already know. Everyone else gets null, so a
+// non-admin still learns nothing about whether the admin surface exists.
+export async function adminNeedsMfaEnrolment(): Promise<{ name: string } | null> {
+  try {
+    const supabase = await createServerSupabaseClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user || hasVerifiedMfaFactor(user as any)) return null
+
+    const service = createServiceClient()
+    const { data: row } = await (service as any)
+      .from('users')
+      .select('name, email, is_platform_admin, deleted_at')
+      .eq('id', user.id)
+      .maybeSingle()
+    if (!row || row.deleted_at || !row.is_platform_admin) return null
+    return { name: row.name || row.email || 'there' }
+  } catch (err) {
+    console.error('[admin] adminNeedsMfaEnrolment threw:', err)
+    return null
+  }
+}
+
 // Route-handler guard for app/api/admin/*. Returns a 403 NextResponse to
 // return-as-is when the caller isn't an admin, or the actor + a service
 // client to use for the rest of the handler. `requireStepUp` re-verifies a

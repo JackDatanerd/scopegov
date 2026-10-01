@@ -1,5 +1,5 @@
 import { redirect } from 'next/navigation'
-import { getAdminActor } from '@/lib/auth/admin'
+import { getAdminActor, adminNeedsMfaEnrolment } from '@/lib/auth/admin'
 import styles from '@/styles/admin.module.css'
 import AdminNav from './AdminNav'
 
@@ -8,7 +8,13 @@ import AdminNav from './AdminNav'
 // who guesses the URL) learns nothing about whether this surface exists.
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
   const actor = await getAdminActor()
-  if (!actor) redirect('/dashboard')
+  if (!actor) {
+    // A confirmed platform admin who simply hasn't enrolled a factor yet is sent to set
+    // one up (it works without any workspace — see app/mfa-setup/page.tsx). Anyone else
+    // gets the same silent redirect as before, so the surface's existence stays hidden.
+    if (await adminNeedsMfaEnrolment()) redirect('/mfa-setup?next=%2Fadmin')
+    redirect('/dashboard')
+  }
 
   return (
     <div className={styles.shell}>

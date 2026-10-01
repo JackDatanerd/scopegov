@@ -1,0 +1,28 @@
+Auth + MFA — independent pass 7 (audited on the tarball scopegov-full, re-verified unchanged on the follow-up tarball)
+
+1. MEDIUM  A platform admin with NO workspace membership could never enrol MFA, so could never open the admin
+          panel. getAdminActor()/requireAdmin() demand a verified factor; the admin layout sent the refused
+          admin to /dashboard, middleware bounced them from there to /onboarding, and /mfa-setup itself
+          redirected to /login because getSession() is null without a membership.
+          - lib/auth/admin.ts: adminNeedsMfaEnrolment() -> { name } only for a signed-in, non-deleted platform
+            admin with no verified factor (null for everyone else, so non-admins still learn nothing).
+          - app/(admin)/admin/layout.tsx: that admin is redirected to /mfa-setup?next=/admin; everyone else
+            keeps the silent /dashboard redirect.
+          - app/mfa-setup/page.tsx: no longer requires a workspace session for such an admin (anyone else with
+            no session still goes to /login); defaults `next` to /admin; coming for /admin makes it
+            non-skippable (Skip -> /admin -> back here would loop).
+2. LOW     /api/auth/mfa/verify, first enrolment: the factor is verified BEFORE backup codes are issued, so an
+          issueBackupCodes() failure (or a throwing workspace/name lookup) returned 500 "Verification failed"
+          and skipped the `mfa_enabled` audit row, the notification, the email and the sign-out of other
+          sessions for good (a retry is an ordinary challenge). Now: success with an empty code list
+          (`backupCodesIssued: false`), every follow-up still runs, and the setup screen's existing
+          "Generate backup codes" button covers the missing codes.
+3. LOW     Migration 131: first MFA enrolment moves the session aal1 -> aal2, so audit_auth_session_login()'s
+          UPDATE branch wrote a second `security.login_succeeded` row for a sign-in the INSERT branch had
+          already recorded. The UPDATE branch now stands down when a login row for the same session_id exists.
+          A session whose INSERT was skipped (ordinary MFA sign-in, backup-code recovery + re-enrolment) has
+          no such row, so it is still recorded exactly once.
+
+Tests: tests/auth-mfa-independent-pass-7.test.ts (15 cases; 10 fail against the pre-fix code).
+Run migration 131 in the Supabase SQL editor after 130. It only replaces the trigger function (CREATE OR
+REPLACE; the triggers from 068 keep pointing at it) and is safe to re-run.

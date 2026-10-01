@@ -1,4 +1,5 @@
 import { getSession, userHasAnyMfaMandatoryMembership } from '@/lib/auth/session'
+import { adminNeedsMfaEnrolment } from '@/lib/auth/admin'
 import { redirect } from 'next/navigation'
 import MfaSetupClient from '@/components/mfa/MfaSetupClient'
 import StepUpHost from '@/components/auth/StepUpHost'
@@ -17,14 +18,28 @@ interface Props {
 
 export default async function MfaSetupPage({ searchParams }: Props) {
   const session = await getSession()
-  if (!session) redirect('/login')
-
   const sp = await searchParams
+
+  // FIX (Auth+MFA independent pass 7 — MEDIUM): getSession() is null for anyone with no
+  // active workspace, which sent a platform admin with no membership to /login (and from
+  // there to /onboarding) — they could never enrol the factor the admin panel requires.
+  // Such an admin is let in here without a workspace; anyone else with no session still
+  // goes to /login.
+  const adminPending = await adminNeedsMfaEnrolment()
+  if (!session && !adminPending) redirect('/login')
+
   // FIX (deep audit, Auth+MFA section): was permissionsRequireMfa(session.permissions),
   // which only reflects the ACTIVE workspace. A user forced here because a
-  // NON-active membership mandates MFA saw this as optional and got a "Skip
-  // for now" link that just looped them back — see userHasAnyMfaMandatoryMembership.
-  const mandatory = await userHasAnyMfaMandatoryMembership(session.id)
+  // NON-active membership mandates MFA saw this as optional and got a "Skip for now"
+  // link that just looped them back — see userHasAnyMfaMandatoryMembership.
+  const next = session
+    ? safeRedirectPath(sp.next)
+    : (sp.next && sp.next.startsWith('/admin') ? safeRedirectPath(sp.next) : '/admin')
+  // An admin who arrived to open the admin panel can't "skip": /admin would just send
+  // them straight back here.
+  const mandatory = (session ? await userHasAnyMfaMandatoryMembership(session.id) : false)
+    || (!!adminPending && next.startsWith('/admin'))
+  const userName = session ? session.name : adminPending!.name
 
   // StepUpHost: /api/auth/mfa/enroll asks for a fresh password confirmation before
   // it starts a first enrolment (see that route) — this page sits outside the (app)
@@ -34,9 +49,9 @@ export default async function MfaSetupPage({ searchParams }: Props) {
       <StepUpHost />
       <MfaSetupClient
         mandatory={mandatory}
-        next={safeRedirectPath(sp.next)}
+        next={next}
         recovered={sp.recovered === '1'}
-        userName={session.name}
+        userName={userName}
       />
     </>
   )

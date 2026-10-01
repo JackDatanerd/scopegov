@@ -148,8 +148,18 @@ export async function POST(request: Request) {
 
     await clearAuthFailures(service, user.id, 'mfa_verify')
 
-    const workspaceId = await resolveActiveWorkspaceId(service, user.id)
-    const actorName = await resolveActorName(service, user.id, user.user_metadata?.name || user.email!)
+    // FIX (Auth+MFA independent pass 7): from here on the factor IS verified (and the
+    // session is aal2). A lookup that throws must not turn that into a 500 "Verification
+    // failed" — on the enrolment branch it used to skip the audit row, the notice/email
+    // and the sign-out of other sessions for good (a retry is just an ordinary challenge).
+    const workspaceId = await resolveActiveWorkspaceId(service, user.id).catch((e: unknown) => {
+      console.error('MFA verify: could not resolve the active workspace (non-fatal):', e)
+      return null
+    })
+    const actorName = await resolveActorName(service, user.id, user.user_metadata?.name || user.email!).catch((e: unknown) => {
+      console.error('MFA verify: could not resolve the actor name (non-fatal):', e)
+      return (user.user_metadata?.name as string | undefined) || user.email!
+    })
 
     if (!isEnrolment) {
       // The auth.sessions trigger (migration 068) records this sign-in when the
@@ -168,7 +178,19 @@ export async function POST(request: Request) {
     }
 
     // ── First-time enrolment completed ──
-    const backupCodes = await issueBackupCodes(service, user.id)
+    // FIX (Auth+MFA independent pass 7 — LOW): the factor is already verified at this
+    // point, so a failure to issue the codes (an RPC/database error) used to bubble to
+    // the outer catch as 500 "Verification failed" and skip everything below — the
+    // `mfa_enabled` audit row, the notification and email, and the sign-out of other
+    // sessions — with no way to run them later (a retry is treated as a plain challenge).
+    // The enrolment itself succeeded, so report success with NO codes: the setup screen
+    // already handles that by offering "Generate backup codes" (api/auth/mfa/backup-codes).
+    let backupCodes: string[] = []
+    try {
+      backupCodes = await issueBackupCodes(service, user.id)
+    } catch (e) {
+      console.error('MFA verify: enrolment succeeded but backup codes could not be issued:', e)
+    }
 
     await logSecurityAudit(service, {
       actorId: user.id, actorEmail: user.email!, actorName,
@@ -183,10 +205,14 @@ export async function POST(request: Request) {
       .catch(e => console.error('MFA enable email failed (non-fatal):', e))
 
     // Enabling MFA is the moment to cut off any session that got in without it.
-    const { error: othersErr } = await supabase.auth.signOut({ scope: 'others' })
-    if (othersErr) console.error('MFA enable: could not revoke other sessions (non-fatal):', othersErr.message)
+    try {
+      const { error: othersErr } = await supabase.auth.signOut({ scope: 'others' })
+      if (othersErr) console.error('MFA enable: could not revoke other sessions (non-fatal):', othersErr.message)
+    } catch (e) { console.error('MFA enable: could not revoke other sessions (non-fatal):', e) }
 
-    return NextResponse.json({ ok: true, backupCodes })
+    // `backupCodes` is empty only when issuing them failed above; the client treats that
+    // as "show the Generate button", never as a failed enrolment.
+    return NextResponse.json({ ok: true, backupCodes, backupCodesIssued: backupCodes.length > 0 })
   } catch (err) {
     console.error('MFA verify error:', err)
     return NextResponse.json({ error: 'Verification failed' }, { status: 500 })
