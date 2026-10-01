@@ -1,0 +1,29 @@
+CHANGES — Notifications & email (section 19), independent pass 5
+=================================================================
+
+Two bugs, both found on a fresh independent pass of api/notifications/*, lib/email/*, the Resend webhook and the
+notification UI. No feature changes.
+
+1. Resend webhook lost the per-recipient alert when it lost the status race   [REAL BUG]
+   app/api/webhooks/resend/route.ts
+   Resend emits one event PER RECIPIENT and delivers them concurrently. A CC's bounce routinely races the client's own
+   delivered/bounced event: both read the same email_log.status, one wins the guarded update, and the loser answered
+   200 { unchanged: true } having done nothing — no bounce alert for its recipient, no clients.email_bounced_at marker
+   (or, for a delivery, the stale bounce marker was never cleared). A 200 is never retried, so it was lost for good.
+   The earlier "bug 1" fix made alerts/markers per-address but only for the "status did not advance" branch.
+   Fix: the per-address handling is now one helper (applyAddressEffects) used by BOTH the "did not advance" branch and
+   the lost-CAS branch. The alert stays deduplicated and a failed alert still answers 500 so Resend retries.
+
+2. /api/notifications/preferences ignored read errors   [LOW]
+   app/api/notifications/preferences/route.ts
+   GET: a failed read of notification_preferences / workspace_notification_defaults answered 200 with every toggle ON and
+   nothing locked. PATCH: a failed read of the existing row made the channel being LEFT ALONE fall back to the workspace
+   default and get written as the person's explicit choice; a failed read of the default skipped the lock check.
+   Fix: all three reads check `error` and answer 500 (nothing is written).
+
+Tests: tests/notifications-email-pass5.test.ts (9 cases: 3 lost-race webhook cases incl. retry-after-failed-alert, 6
+preferences-route cases). NOTE: written without being able to run vitest (no node_modules/network in the audit sandbox) —
+run `npx vitest run tests/notifications-email-pass5.test.ts tests/resend-webhook-route.test.ts` before pushing.
+
+Files: app/api/webhooks/resend/route.ts, app/api/notifications/preferences/route.ts,
+       tests/notifications-email-pass5.test.ts, this file.

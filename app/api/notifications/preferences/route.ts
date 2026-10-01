@@ -20,7 +20,7 @@ export async function GET() {
     // This route needs to reflect both: what actually resolves to (the
     // org default, when the member has no override) and whether the
     // toggle is even editable (locked).
-    const [{ data: rows }, { data: defaultRows }] = await Promise.all([
+    const [{ data: rows, error: rowsErr }, { data: defaultRows, error: defaultsErr }] = await Promise.all([
       (service as any)
         .from('notification_preferences')
         .select('event_type, email_enabled, in_app_enabled')
@@ -31,6 +31,15 @@ export async function GET() {
         .select('event_type, email_enabled, in_app_enabled, locked')
         .eq('workspace_id', session.workspaceId),
     ])
+
+    // FIX (Notifications & email independent pass 5): neither query's `error` was read (supabase-js returns it, it does not
+    // throw), so a failed read answered 200 with every toggle ON and nothing locked — the Settings tab then showed
+    // notifications as enabled that the person had muted, and let them toggle against a state that was never loaded.
+    // A failed read is a 500, like GET /api/notifications.
+    if (rowsErr || defaultsErr) {
+      console.error('Notification preferences GET read failed:', rowsErr?.message || defaultsErr?.message)
+      return NextResponse.json({ error: 'Could not load notification preferences' }, { status: 500 })
+    }
 
     const inAppOnly = new Set(IN_APP_ONLY_EVENT_TYPES)
     const defaultsByType = new Map((defaultRows || []).map((d: any) => [d.event_type, d]))
@@ -87,12 +96,18 @@ export async function PATCH(request: NextRequest) {
 
     const service = createServiceClient()
 
-    const { data: defaultRow } = await (service as any)
+    const { data: defaultRow, error: defaultErr } = await (service as any)
       .from('workspace_notification_defaults')
       .select('locked, email_enabled, in_app_enabled')
       .eq('workspace_id', session.workspaceId)
       .eq('event_type', eventType)
       .maybeSingle()
+    // FIX (Notifications & email independent pass 5): a failed read of the workspace default was treated as "no default,
+    // not locked" — it skipped the lock check and resolved the untouched channel against the wrong baseline.
+    if (defaultErr) {
+      console.error('Notification preferences PATCH default read failed:', defaultErr.message)
+      return NextResponse.json({ error: 'Could not save this preference. Try again.' }, { status: 500 })
+    }
     if (defaultRow?.locked) {
       return NextResponse.json({ error: 'This notification is required by your workspace administrator' }, { status: 403 })
     }
@@ -102,11 +117,18 @@ export async function PATCH(request: NextRequest) {
 
     // Preserve the channel being left alone. It used to be overwritten with `true` on every write,
     // so toggling one channel silently re-enabled the other.
-    const { data: existing } = await (service as any)
+    const { data: existing, error: existingErr } = await (service as any)
       .from('notification_preferences')
       .select('email_enabled, in_app_enabled')
       .eq('user_id', session.id).eq('workspace_id', session.workspaceId).eq('event_type', eventType)
       .maybeSingle()
+    // FIX (Notifications & email independent pass 5): a failed read made `existing` null, so the channel being LEFT ALONE
+    // fell back to the workspace default and was then written as the person's explicit choice — toggling one channel
+    // silently reset the other.
+    if (existingErr) {
+      console.error('Notification preferences PATCH read failed:', existingErr.message)
+      return NextResponse.json({ error: 'Could not save this preference. Try again.' }, { status: 500 })
+    }
     const currentEmail = existing ? existing.email_enabled  : (defaultRow ? defaultRow.email_enabled  : true)
     const currentInApp = existing ? existing.in_app_enabled : (defaultRow ? defaultRow.in_app_enabled : true)
 

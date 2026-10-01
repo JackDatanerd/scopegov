@@ -66,21 +66,9 @@ export async function POST(request: NextRequest) {
 
     const next = nextEmailStatus(row.status, type)
     if (!next) {
-      // A delivery to THIS address proves it works even when the message-level status did not advance (another
-      // recipient's event landed first). Clearing is idempotent and address-scoped, so it is always safe.
-      if (type === 'email.delivered') await trackClientEmailHealth(service, row, 'delivered', address)
-      // FIX (Notifications & email independent pass, bug 1): Resend sends one bounce/complaint event PER RECIPIENT,
-      // but the message-level status only moves forward. Once one recipient's bounce had moved it to 'bounced', every
-      // later bounce of the same email (a CC first, then the client's own address — the normal shape of a SOW, CO or
-      // invoice) came back as "not an advance", so that recipient raised no alert and never marked the client record.
-      // The alert and the marker are per address, so they run regardless of whether the message status moved; the
-      // alert is deduplicated so a redelivered event cannot raise it twice.
-      if (type === 'email.bounced' || type === 'email.complained') {
-        const failure = type === 'email.complained' ? 'complained' : 'bounced'
-        const alerted = await alertSender(service, row, failure, address, { dedupe: true })
-        if (!alerted) throw new Error('bounce alert could not be written') // → 500, Resend retries
-        await trackClientEmailHealth(service, row, failure, address)
-      }
+      // The message-level status did not advance (an earlier event already moved it past this one) — the
+      // per-address effects still have to run, see applyAddressEffects.
+      await applyAddressEffects(service, row, type, address)
       return NextResponse.json({ ok: true, unchanged: true })
     }
 
@@ -90,7 +78,17 @@ export async function POST(request: NextRequest) {
       .from('email_log').update({ status: next, updated_at: new Date().toISOString() })
       .eq('id', row.id).eq('status', row.status).select('id')
     if (upErr) throw new Error(upErr.message)
-    if (!updated || updated.length === 0) return NextResponse.json({ ok: true, unchanged: true })
+    if (!updated || updated.length === 0) {
+      // FIX (Notifications & email independent pass 5): lost the status race. Resend emits one event PER RECIPIENT and
+      // delivers them concurrently, so a CC's bounce routinely races the client's own delivered/bounced event: both read
+      // the same status, one wins this guarded update, and the loser used to answer 200 "unchanged" having done
+      // NOTHING — its recipient's bounce alert and client-record marker (or its delivery clearing a stale marker) were
+      // lost for good, because a 200 is never retried. The guard only protects the MESSAGE-level status (and the
+      // once-only alert that goes with a status transition); everything per-address runs exactly as in the
+      // "did not advance" branch above (the alert is deduplicated, so a concurrent redelivery cannot double it).
+      await applyAddressEffects(service, row, type, address)
+      return NextResponse.json({ ok: true, unchanged: true })
+    }
 
     if (next === 'bounced' || next === 'complained') {
       const alerted = await alertSender(service, row, next, address)
@@ -107,6 +105,29 @@ export async function POST(request: NextRequest) {
     console.error('[resend-webhook] processing failed:', err)
     // 500 → Resend retries; the guarded update above makes the retry safe.
     return NextResponse.json({ error: 'Processing failed' }, { status: 500 })
+  }
+}
+
+/**
+ * Per-ADDRESS effects of a webhook event, for the cases where the message-level status did not move for THIS event
+ * (it had already advanced past it, or a concurrent event for another recipient won the status update).
+ *   • delivered → the address works: clear its stale bounce marker (idempotent, address-scoped).
+ *   • bounced / complained → alert the sender (deduplicated, so a redelivered or concurrent copy cannot raise it twice)
+ *     and mark the client record. A failed alert throws, so the webhook answers 500 and Resend retries.
+ */
+async function applyAddressEffects(service: any, row: any, type: string, address: string) {
+  if (type === 'email.delivered') await trackClientEmailHealth(service, row, 'delivered', address)
+  // FIX (Notifications & email independent pass, bug 1): Resend sends one bounce/complaint event PER RECIPIENT, but the
+  // message-level status only moves forward. Once one recipient's bounce had moved it to 'bounced', every later bounce of
+  // the same email (a CC first, then the client's own address — the normal shape of a SOW, CO or invoice) came back as
+  // "not an advance", so that recipient raised no alert and never marked the client record. The alert and the marker are
+  // per address, so they run regardless of whether the message status moved; the alert is deduplicated so a redelivered
+  // event cannot raise it twice.
+  if (type === 'email.bounced' || type === 'email.complained') {
+    const failure = type === 'email.complained' ? 'complained' : 'bounced'
+    const alerted = await alertSender(service, row, failure, address, { dedupe: true })
+    if (!alerted) throw new Error('bounce alert could not be written') // → 500, Resend retries
+    await trackClientEmailHealth(service, row, failure, address)
   }
 }
 
