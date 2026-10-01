@@ -2,7 +2,7 @@ export const runtime = 'nodejs'
 
 import { NextResponse, type NextRequest } from 'next/server'
 import { createServerSupabaseClient, createServiceClient, createStatelessAuthClient } from '@/lib/supabase/server'
-import { userHasAnyMfaMandatoryMembership, resolveActiveWorkspaceId, resolveActorName } from '@/lib/auth/session'
+import { userHasAnyMfaMandatoryMembership, MfaPolicyLookupError, resolveActiveWorkspaceId, resolveActorName } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { notifySecurityEvent } from '@/lib/utils/notify'
 import { sendPasswordChangedEmail, sendAccountLockedEmail } from '@/lib/email/templates'
@@ -117,7 +117,16 @@ export async function POST(request: NextRequest) {
 
     // Accounts whose role requires MFA must be at aal2 to change their password.
     // (Every other account with a second factor is held at aal2 by middleware.)
-    const mandatory = await userHasAnyMfaMandatoryMembership(user.id)
+    let mandatory: boolean
+    try {
+      mandatory = await userHasAnyMfaMandatoryMembership(user.id)
+    } catch (e) {
+      if (!(e instanceof MfaPolicyLookupError)) throw e
+      console.error('Change password: could not check whether the role requires 2FA:', e.message)
+      return NextResponse.json({
+        error: 'We couldn\u2019t verify your account\u2019s security policy right now. Please try again.',
+      }, { status: 503, headers: { 'Retry-After': '5' } })
+    }
     if (mandatory) {
       const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
       if (aal?.currentLevel !== 'aal2') {

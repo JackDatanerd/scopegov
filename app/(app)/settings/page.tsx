@@ -4,7 +4,7 @@
 // making the UI show hardcoded defaults even after a successful save.
 // .maybeSingle() returns null gracefully when no row exists, never 406.
 
-import { getSessionStrict, hasPermission, userHasAnyMfaMandatoryMembership } from '@/lib/auth/session'
+import { getSessionStrict, hasPermission, userHasAnyMfaMandatoryMembershipOrAssume } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import SettingsClient from '@/components/settings/SettingsClient'
@@ -186,7 +186,7 @@ export default async function SettingsPage() {
     }
   }
 
-  const mfaMandatory = await userHasAnyMfaMandatoryMembership(session.id)
+  const mfaMandatory = await userHasAnyMfaMandatoryMembershipOrAssume(session.id)
 
   // FIX (deep audit, Settings section \u2014 the redaction above, not applied
   // to its neighbour): the `workspace` block directly above exists because

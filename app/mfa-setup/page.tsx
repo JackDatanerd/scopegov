@@ -1,4 +1,4 @@
-import { getSessionStrict, userHasAnyMfaMandatoryMembership } from '@/lib/auth/session'
+import { getSessionStrict, userHasAnyMfaMandatoryMembershipOrAssume } from '@/lib/auth/session'
 import { adminNeedsMfaEnrolment } from '@/lib/auth/admin'
 import { redirect } from 'next/navigation'
 import MfaSetupClient from '@/components/mfa/MfaSetupClient'
@@ -37,7 +37,7 @@ export default async function MfaSetupPage({ searchParams }: Props) {
     : (sp.next && sp.next.startsWith('/admin') ? safeRedirectPath(sp.next) : '/admin')
   // An admin who arrived to open the admin panel can't "skip": /admin would just send
   // them straight back here.
-  const mandatory = (session ? await userHasAnyMfaMandatoryMembership(session.id) : false)
+  const mandatory = (session ? await userHasAnyMfaMandatoryMembershipOrAssume(session.id) : false)
     || (!!adminPending && next.startsWith('/admin'))
   const userName = session ? session.name : adminPending!.name
 

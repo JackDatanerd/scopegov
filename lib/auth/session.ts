@@ -220,12 +220,32 @@ async function loadSession(strict: boolean): Promise<SessionUser | null> {
 // This is the one aggregate check all four sites should share.
 export async function userHasAnyMfaMandatoryMembership(userId: string): Promise<boolean> {
   const service = createServiceClient()
-  const { data: memberships } = await (service as any)
+  const { data: memberships, error } = await (service as any)
     .from('workspace_members')
     .select('effective_permissions')
     .eq('user_id', userId)
     .eq('status', 'active')
+  // FIX (Auth+MFA independent pass 10): the lookup error was never read, so a failed read
+  // returned `false` — "not mandatory" — and the guards built on this answer failed OPEN
+  // (a governance-role user could disable 2FA during a DB blip). Throw instead; callers
+  // answer a retryable 503 (routes) or assume "mandatory" (display, see below).
+  if (error) throw new MfaPolicyLookupError(error.message)
   return (memberships || []).some((m: any) => permissionsRequireMfa(m.effective_permissions))
+}
+
+export class MfaPolicyLookupError extends Error {
+  constructor(message = 'MFA policy lookup failed') { super(message); this.name = 'MfaPolicyLookupError' }
+}
+
+// Display-only variant for pages: when the lookup fails, assume the stricter answer
+// (mandatory) so the UI never offers "Skip for now" / "Disable" it can't vouch for.
+export async function userHasAnyMfaMandatoryMembershipOrAssume(userId: string): Promise<boolean> {
+  try {
+    return await userHasAnyMfaMandatoryMembership(userId)
+  } catch (err) {
+    console.error('MFA mandatory lookup failed (assuming mandatory for display):', err)
+    return true
+  }
 }
 
 // FIX (deep audit, RLS+permissions section — audit-log workspace-fallback

@@ -6,7 +6,7 @@ import { createServerSupabaseClient, createServiceClient } from '@/lib/supabase/
 import { logSecurityAudit } from '@/lib/auth/security-audit'
 import { requireStepUp } from '@/lib/auth/step-up'
 import { sendMfaDisabledEmail } from '@/lib/email/templates'
-import { userHasAnyMfaMandatoryMembership, resolveActiveWorkspaceId, resolveActorName } from '@/lib/auth/session'
+import { userHasAnyMfaMandatoryMembership, MfaPolicyLookupError, resolveActiveWorkspaceId, resolveActorName } from '@/lib/auth/session'
 
 export async function GET() {
   try {
@@ -103,7 +103,17 @@ export async function DELETE(request: Request) {
     // entirely instead of attributing it to the user's remaining
     // membership.
     const activeWorkspaceId = await resolveActiveWorkspaceId(service, user.id)
-    if (await userHasAnyMfaMandatoryMembership(user.id)) {
+    let mandatory: boolean
+    try {
+      mandatory = await userHasAnyMfaMandatoryMembership(user.id)
+    } catch (e) {
+      if (!(e instanceof MfaPolicyLookupError)) throw e
+      console.error('MFA disable: could not check whether the role requires 2FA:', e.message)
+      return NextResponse.json({
+        error: 'We couldn\u2019t check your account\u2019s two-factor policy right now. Please try again.',
+      }, { status: 503, headers: { 'Retry-After': '5' } })
+    }
+    if (mandatory) {
       return NextResponse.json({
         error: 'Your role requires two-factor authentication to stay enabled. Ask an admin to change your permissions first.',
       }, { status: 403 })

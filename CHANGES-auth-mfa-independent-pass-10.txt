@@ -1,0 +1,6 @@
+Auth + MFA independent pass 10 (base 13a2197)
+B1 (LOW): userHasAnyMfaMandatoryMembership() ignored its query error and returned false ("not mandatory"),
+so the guards built on it failed open. It now throws MfaPolicyLookupError.
+ - DELETE /api/auth/mfa/factors and POST /api/auth/change-password answer a retryable 503.
+ - /mfa-setup and Settings use userHasAnyMfaMandatoryMembershipOrAssume() (assumes mandatory on failure).
+Test: tests/auth-mfa-pass-10.test.ts (6 tests).
