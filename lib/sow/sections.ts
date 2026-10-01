@@ -70,6 +70,10 @@ export function hydrateSections(stored: any[], metadata: any): any[] {
       const hydrated: any = { ...existing, title: sectionTitle(def.id, lang), order: def.order }
       // `visible` is stored JSON — coerce anything that isn't a real boolean.
       if (typeof hydrated.visible !== 'boolean') hydrated.visible = true
+      // FIX (SOW lifecycle pass 3): a required section can never be hidden (the editor has no toggle for it and the
+      // write path forces it true), so a legacy row stored hidden would be dropped from the client's document yet pass
+      // send validation and be impossible to unhide. Every read path hydrates, so forcing it here repairs all of them.
+      if (REQUIRED_SECTION_IDS.includes(def.id)) hydrated.visible = true
       // FIX (re-audit, section 18 — flagship finding): re-sanitize on every read, the same
       // defense-in-depth the CO `note` and invoice `payment_instructions` fields already got in an
       // earlier round (see sanitizeRichTextOrNull at their portal GET routes) — "sanitize what

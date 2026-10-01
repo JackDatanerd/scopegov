@@ -20,6 +20,7 @@ import { checkedSend } from '@/lib/email/delivery'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
 import { computeContentHash, storeExecutedPdf } from '@/lib/documents/executed-pdf'
 import { createHash } from 'node:crypto'
+import { hydrateSections } from '@/lib/sow/sections'
 import { createSowMilestones, ensureGuardianEmail, writeScopeSnapshot } from '@/lib/documents/post-signing'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
@@ -328,7 +329,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         projectName:   project.name + (project.disc ? ` — ${project.disc}` : ''),
         contractValue: project.contract_value || 0,
         currency:      project.currency || 'USD',
-        sections:      sow.sections || [],
+        // FIX (SOW lifecycle pass 3): hydrate like every other render path (internal PDF, portal PDF, portal page) so
+        // the frozen executed PDF is exactly the document the client reviewed. The raw rows could omit a section the
+        // client saw (legacy rows missing `visible`) or print one they never did (legacy rows without payment_schedule).
+        // The content hash below stays over the raw stored sections.
+        sections:      hydrateSections(sow.sections || [], sow.metadata),
         language:      sow.metadata?.language || 'en',
         msaReference:  sow.metadata?.msaReference || null,
         paymentSchedule: (milestones || []).map((m: any) => ({

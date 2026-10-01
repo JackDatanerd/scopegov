@@ -264,7 +264,9 @@ function renderRuns(runs: InlineRun[]) {
  * bullet glyph the way a word processor does, so a two-level list in the
  * editor survives into the signed PDF as a two-level list.
  */
-const NESTED_BULLETS = ['\u2022', '\u25E6', '\u25AA']
+// The embedded Noto subset has no U+25E6 / U+25AA (they printed as missing-glyph boxes), so deeper levels use
+// glyphs that ARE in the subset: bullet (U+2022), en dash (U+2013), hyphen.
+const NESTED_BULLETS = ['\u2022', '\u2013', '-']
 
 // FIX (SOW lifecycle pass, B1): Tiptap emits <li><p>text</p></li> (and one <p> per paragraph when an item
 // holds several). Paragraph/heading wrappers inside an item become line breaks between them; the wrappers
