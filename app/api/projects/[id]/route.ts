@@ -448,7 +448,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     if (!hasPermission(session, 'VIEW_CLIENT_DATA') && safe.clients) safe.clients = { ...safe.clients, email: null }
     // canViewFinancials lets CoEditor lock its pricing controls for a new change order instead of offering fields
     // the create route would refuse (CO-2); retainer_duration_months tells it whether a retainer has a term to extend (CO-4).
-    return NextResponse.json({ project: safe, canViewFinancials: hasPermission(session, 'VIEW_FINANCIALS') })
+    return NextResponse.json({
+      project: safe,
+      canViewFinancials: hasPermission(session, 'VIEW_FINANCIALS'),
+      canCreateChangeOrders: hasPermission(session, 'CREATE_CHANGE_ORDERS'),
+      canSendChangeOrders: hasPermission(session, 'SEND_CHANGE_ORDERS'),
+    })
   } catch (err) {
     console.error('Project fetch error:', err)
     return NextResponse.json({ error: 'Error' }, { status: 500 })

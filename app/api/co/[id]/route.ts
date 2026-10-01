@@ -44,7 +44,11 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     if (!(await canReadProject(service, session, co.project_id)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
-    const flagRequestText: string | null = co.guardian_flags?.guardian_checks?.content ?? null
+    // The client's raw request text is gated exactly like the Guardian flag route's own source view: only members who
+    // can act on a flag / change order (or open Guardian history) may read it. Any project reader used to get it here.
+    const canSeeFlagSource = (['APPROVE_FLAGS', 'GRANT_EXCEPTIONS', 'CREATE_CHANGE_ORDERS', 'ACCESS_GUARDIAN_HISTORY'] as const)
+      .some(perm => hasPermission(session, perm))
+    const flagRequestText: string | null = canSeeFlagSource ? (co.guardian_flags?.guardian_checks?.content ?? null) : null
     // FIX (section-10 audit): `select('*')` above pulls every column,
     // including `token` — the raw client-portal JWT used for accept/
     // counter/decline/countersign — and this route returned it
@@ -92,6 +96,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       pendingApproval,
       permissions: {
         canEdit: hasPermission(session, 'CREATE_CHANGE_ORDERS'),
+        canSend: hasPermission(session, 'SEND_CHANGE_ORDERS'),
         canViewFinancials,
       },
     })

@@ -96,7 +96,7 @@ describe('CO-4: CoEditor after a failed load', () => {
     expect(src).toMatch(/const \[loadFailed, setLoadFailed\]/)
     expect(src).toMatch(/const isLocked = [^\n]*loadFailed/)
     expect(src).toMatch(/if \(loadFailed \|\| pendingApproval/)
-    expect(src).toMatch(/\[snapshot, financialsHidden, pendingApproval, status, loading, loadFailed\]/)
+    expect(src).toMatch(/\[snapshot, financialsHidden, pendingApproval, status, loading, loadFailed, canEdit\]/)
   })
   it('flags both a non-OK response and a network error, and does not show the "sent" banner', () => {
     expect(src).toMatch(/if \(!r\.ok\) \{ setLoadFailed\(true\)/)

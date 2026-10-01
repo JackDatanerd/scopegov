@@ -1,0 +1,30 @@
+CO logic (section 10) — independent pass 3
+===========================================
+
+B1 (Medium) Credit change orders rounded half-cent ties the wrong way
+  lib/documents/co-totals.ts
+    - Math.round breaks .5 ties toward +Infinity, so rounding a NEGATIVE product/sum gave a credit one cent
+      less than the identical work as a charge (10.50 @ 5% tax: charge +11.03, credit -11.02), ~0.7% of
+      amount/tax combinations. CoEditor computes the positive figure and negates, so it displayed -11.03
+      while the server stored and printed -11.02.
+    - Credit line totals, subtotal and total are now derived from the positive amounts and negated at the
+      end (never -0). Charge CO results are unchanged.
+
+B2 (Low) CoEditor ignored the server-reported permissions
+  components/co/CoEditor.tsx
+    - Reads permissions.canEdit / canSend (existing CO) and canCreateChangeOrders / canSendChangeOrders
+      (new CO). Without edit permission the form and autosave lock with a read-only banner; without send
+      permission the Send button is hidden and handleSend refuses BEFORE doSave, so a new CO is no longer
+      created and then 403'd.
+  app/api/co/[id]/route.ts   GET permissions now include canSend (SEND_CHANGE_ORDERS)
+  app/api/projects/[id]/route.ts  GET now returns canCreateChangeOrders / canSendChangeOrders
+
+B3 (Low) GET /api/co/[id] returned the client's raw request text to any project reader
+  app/api/co/[id]/route.ts
+    - flagRequestText (guardian_checks.content) is now returned only to members holding APPROVE_FLAGS,
+      GRANT_EXCEPTIONS, CREATE_CHANGE_ORDERS or ACCESS_GUARDIAN_HISTORY — the same set the Guardian flag
+      route uses for its source view.
+
+Tests
+  tests/co-independent-pass-3.test.ts (new; the rounding tests fail on the previous code)
+  tests/co-independent-pass-2.test.ts (autosave dependency-array assertion now includes canEdit)

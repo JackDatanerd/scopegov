@@ -173,24 +173,31 @@ export function computeCoTotals(
       description,
       quantity: q,
       rate:     storedRate,
-      total:    roundCurrency(q * storedRate),
+      // Round the POSITIVE amount and negate afterwards: Math.round breaks .5 ties toward +Infinity, so rounding a
+      // negative product directly gave a credit one cent less than the same work as a charge (and than the editor shows).
+      total:    credit ? -roundCurrency(q * r) : roundCurrency(q * storedRate),
       ...(isAdjustment ? { kind: 'adjustment' as const } : {}),
     })
   }
 
-  const lineSum = roundCurrency(lineItems.reduce((s, l) => s + l.total, 0))
+  // A credit's lines are stored negative. Derive subtotal / total from the POSITIVE amounts (exactly what the editor
+  // computes and displays) and negate at the end, so a credit is always the exact mirror of the same charge — rounding
+  // a negative sum directly breaks half-cent ties the other way (see the line total above).
+  const sign = credit ? -1 : 1
+  const neg = (n: number) => (credit && n !== 0 ? -n : n)
+  const lineSum = roundCurrency(lineItems.reduce((s, l) => s + sign * l.total, 0))
 
   // Line-item amounts are what the agency typed. When tax is inclusive
   // those figures already contain the tax, so the gross IS the line sum
   // and the net has to be back-solved out of it — that net is what the
   // document's "Subtotal" row states, and total − subtotal is the tax
   // amount the PDF can finally print.
-  const subtotal = taxInclusive && taxRate > 0
+  const subtotal = neg(taxInclusive && taxRate > 0
     ? roundCurrency(lineSum / (1 + taxRate / 100))
-    : lineSum
-  const total = taxInclusive
+    : lineSum)
+  const total = neg(taxInclusive
     ? lineSum
-    : roundCurrency(lineSum * (1 + taxRate / 100))
+    : roundCurrency(lineSum * (1 + taxRate / 100)))
 
   return { ok: true, totals: { lineItems, subtotal, taxRate, taxInclusive, total } }
 }

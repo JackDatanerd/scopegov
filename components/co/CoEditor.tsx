@@ -52,6 +52,11 @@ export default function CoEditor({ projId, coId }: Props) {
   // the rest of the form stays editable.
   const [pricingLocked, setPricingLocked] = useState(false)
   const [saveError,   setSaveError]    = useState('')
+  // The server refuses edits without CREATE_CHANGE_ORDERS and sends without SEND_CHANGE_ORDERS. The editor used to
+  // ignore both (GET /api/co/[id] returned canEdit and nothing read it), offering a fully editable form and a Send
+  // button that could only fail — for a new CO, only after the draft had already been created.
+  const [canEdit, setCanEdit] = useState(true)
+  const [canSend, setCanSend] = useState(true)
   const [isRetainerRenewal, setIsRetainerRenewal] = useState(false)
   // Credit / descope change order (migration 100): the agency enters positive amounts; the server stores them as a
   // reduction and the client is asked to accept a credit. Mutually exclusive with a retainer renewal.
@@ -111,6 +116,8 @@ export default function CoEditor({ projId, coId }: Props) {
           setProjectType(json.project?.type ?? null)
           setRetainerOpenEnded(json.project?.type === 'retainer' && !(Number(json.project?.retainer_duration_months) > 0))
           if (json.canViewFinancials === false) setPricingLocked(true)
+          if (json.canCreateChangeOrders === false) setCanEdit(false)
+          if (json.canSendChangeOrders === false) setCanSend(false)
         })
         .catch(() => {})
       // Workspace billing defaults (Settings → Workspace → Billing defaults) pre-fill a new CO's tax
@@ -156,6 +163,8 @@ export default function CoEditor({ projId, coId }: Props) {
           setStatus(co.status || 'draft')
           setPendingApproval(!!json.pendingApproval)
           setFinancialsHidden(json.permissions?.canViewFinancials === false)
+          setCanEdit(json.permissions?.canEdit !== false)
+          setCanSend(json.permissions?.canSend !== false)
           setIsRetainerRenewal(co.is_retainer_renewal || false)
           setRenewalTermMonths(co.renewal_term_months != null ? String(co.renewal_term_months) : '')
           setTimelineImpactDays(co.timeline_impact_days != null ? String(co.timeline_impact_days) : '')
@@ -235,7 +244,7 @@ export default function CoEditor({ projId, coId }: Props) {
     if (loading) return
     // Never write (and never leave a timer armed) for a CO the server would refuse to edit or that the viewer can't
     // see the pricing of. Clearing matters: the timer used to survive these early returns.
-    if (loadFailed || pendingApproval || financialsHidden || (savedCoId.current && status !== 'draft')) {
+    if (loadFailed || pendingApproval || financialsHidden || !canEdit || (savedCoId.current && status !== 'draft')) {
       if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null }
       pendingSave.current = false
       if (awaitingBaseline.current) { awaitingBaseline.current = false }
@@ -276,7 +285,7 @@ export default function CoEditor({ projId, coId }: Props) {
       }
     }, 1500)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [snapshot, financialsHidden, pendingApproval, status, loading, loadFailed])
+  }, [snapshot, financialsHidden, pendingApproval, status, loading, loadFailed, canEdit])
 
   // FIX (CO send "not found" on a brand-new CO): doSave() used to always
   // call router.replace() to the new CO's own URL immediately after
@@ -339,6 +348,7 @@ export default function CoEditor({ projId, coId }: Props) {
   }
 
   async function handleSend() {
+    if (!canSend) { setError("You don't have permission to send change orders. Save the draft and ask someone who can."); return }
     if (!title.trim()) { setError('Title is required'); return }
     if (lineItems.every(l => l.total === 0)) { setError('Add at least one line item with a value'); return }
     // FIX (CO-logic fix round): matches the server-side check in
@@ -372,7 +382,7 @@ export default function CoEditor({ projId, coId }: Props) {
   // is no sensible "edit a price you can't see" state, and PATCH would
   // reject their save anyway; this just tells them why up front instead
   // of letting them type into fields backed by redacted data.
-  const isLocked = status !== 'draft' || pendingApproval || financialsHidden || loadFailed
+  const isLocked = status !== 'draft' || pendingApproval || financialsHidden || loadFailed || !canEdit
 
   async function draftWithAi() {
     if (!aiText.trim()) { setAiError('Describe what the client is asking for first.'); return }
@@ -445,7 +455,9 @@ export default function CoEditor({ projId, coId }: Props) {
             actually works: Revise & resend, on the project's CO tab. */}
         {isLocked && !loadFailed && (
           <div className="banner banner-info" style={{ marginBottom: 14 }}>
-            {financialsHidden
+            {!canEdit
+              ? <>You don&rsquo;t have permission to edit change orders, so this one is shown read-only.</>
+              : financialsHidden
               ? <>You don&rsquo;t have permission to view this change order&rsquo;s pricing, so it&rsquo;s shown read-only. Ask an admin for financial access if you need to edit it.</>
               : pendingApproval && status === 'draft'
               ? <>This change order is waiting on an approval request and can&rsquo;t be edited. Decide or cancel the request from <strong>Approvals</strong> to unlock it.</>
@@ -679,9 +691,11 @@ export default function CoEditor({ projId, coId }: Props) {
 
         {!isLocked && (
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-            <button className="btn btn-primary" onClick={handleSend} disabled={sending || !title.trim()}>
-              {sending ? <><span className="spin" /> Sending…</> : <><i className="ti ti-send" style={{ fontSize: 13 }} /> Send to client</>}
-            </button>
+            {canSend && (
+              <button className="btn btn-primary" onClick={handleSend} disabled={sending || !title.trim()}>
+                {sending ? <><span className="spin" /> Sending…</> : <><i className="ti ti-send" style={{ fontSize: 13 }} /> Send to client</>}
+              </button>
+            )}
             <button className="btn btn-ghost" onClick={() => doSave(true)} disabled={saving || !title.trim()}>
               {saving ? <span className="spin spin-dark" /> : 'Save draft'}
             </button>
