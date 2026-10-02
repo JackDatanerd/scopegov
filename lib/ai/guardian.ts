@@ -293,11 +293,17 @@ export function resolveMatchedAmendmentId(
   for (const a of amendments) {
     if ((a.added_deliverables || []).some(d => d.trim().toLowerCase() === ref)) return a.id
   }
+  // FIX (independent pass 6, section 13 - P2): this accepted ANY substring either way, so a short or generic
+  // reference ("API", "o") linked matched_amendment_id to whichever change order listed a deliverable that merely
+  // contained it. A fuzzy match now needs the shorter text to be at least 4 characters and at least 40% of the length of
+  // the longer one - enough for minor wording drift ("Logo design" vs "Logo design (3 concepts)"), not for a stray token.
+  const nearMatch = (dl: string): boolean => {
+    if (!dl || !(dl.includes(ref) || ref.includes(dl))) return false
+    const shorter = Math.min(dl.length, ref.length), longer = Math.max(dl.length, ref.length)
+    return shorter >= 4 && shorter / longer >= 0.4
+  }
   for (const a of amendments) {
-    if ((a.added_deliverables || []).some(d => {
-      const dl = d.trim().toLowerCase()
-      return dl.length > 0 && (dl.includes(ref) || ref.includes(dl))
-    })) return a.id
+    if ((a.added_deliverables || []).some(d => nearMatch(d.trim().toLowerCase()))) return a.id
   }
   for (const a of amendments) {
     if (a.title.trim().toLowerCase() === ref) return a.id

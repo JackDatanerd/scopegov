@@ -466,11 +466,15 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         // signing routes: atomically claim the flag first (the update only
         // succeeds if it's still open AND unconverted), and only create
         // the change order if that claim succeeds.
-        const { data: claimed } = await (service as any)
+        const { data: claimed, error: claimErr } = await (service as any)
           .from('guardian_flags')
           .update({ status: 'converted_to_co', updated_at: now })
           .eq('id', id).eq('status', 'open').is('change_order_id', null)
           .select('id')
+        // FIX (independent pass 6, section 13 - P3): the error was never read, so a DB failure on the claim was reported
+        // as a 409 "Cannot draft a change order from a flag with status open" - a lie that sent the user hunting for a
+        // conflict that did not exist. A failed write is a 500 (retryable); only an empty result is a lost race.
+        if (claimErr) throw new Error(`flag claim failed: ${claimErr.message}`)
 
         if (!claimed || claimed.length === 0) {
           return NextResponse.json({

@@ -318,7 +318,7 @@ export async function classifyAndRecord(service: any, p: {
 export type ReclassifyResult =
   | { status: 'classified'; classification: ClassificationResult; flagId: string | null; project: PipelineProject }
   | { status: 'failed'; reason: 'classification' | 'flag' }
-  | { status: 'skipped'; reason: 'not_found' | 'not_eligible' | 'no_snapshot' | 'max_attempts' | 'claimed' | 'inactive' }
+  | { status: 'skipped'; reason: 'not_found' | 'not_eligible' | 'no_snapshot' | 'max_attempts' | 'claimed' | 'inactive' | 'paused' }
   | { status: 'duplicate'; duplicateOfId: string }
 
 export async function reclassifyCheck(service: any, checkId: string, opts: {
@@ -330,6 +330,13 @@ export async function reclassifyCheck(service: any, checkId: string, opts: {
   /** true = only classification_failed checks (manual retry); false = also unclassified backlog */
   requireFailed?: boolean
   maxAttempts?: number
+  /**
+   * FIX (independent pass 6, section 13 - P1): automatic callers (the guardian-health sweep) must honour a MANUAL pause
+   * the same way guardian/inbound does on arrival ("Guardian monitoring stops while it's paused"). A mail queued before
+   * the pause (no SOW yet, rate-limited, or classification_failed) was otherwise classified, flagged and emailed to the
+   * team while the project was paused. A person pressing Retry is still allowed - they are looking at it.
+   */
+  skipManualPause?: boolean
   // FIX (independent pass round 4, section 13): both callers of this function (the manual retry
   // route and the guardian-health cron sweep) used to call recordAiUsage/recordAiUsageByProject
   // themselves BEFORE calling this — meaning a call that turned out to be 'not_eligible',
@@ -358,7 +365,7 @@ export async function reclassifyCheck(service: any, checkId: string, opts: {
   if (attempts >= (opts.maxAttempts ?? Infinity)) return { status: 'skipped', reason: 'max_attempts' }
 
   const { data: project } = await service.from('projects')
-    .select(`id, name, status, deleted_at, workspace_id, workspaces(id, guardian_sensitivity_tier, deleted_at), project_scope_snapshot(deliverables, out_of_scope)`)
+    .select(`id, name, status, stall_reason, deleted_at, workspace_id, workspaces(id, guardian_sensitivity_tier, deleted_at), project_scope_snapshot(deliverables, out_of_scope)`)
     .eq('id', check.project_id).eq('workspace_id', check.workspace_id).maybeSingle()
   if (!project) return { status: 'skipped', reason: 'not_found' }
   // Same gates as live submission: nothing is classified, flagged or emailed for a deleted project,
@@ -366,6 +373,8 @@ export async function reclassifyCheck(service: any, checkId: string, opts: {
   // attempt is burned and no AI usage recorded.
   if (project.deleted_at || !project.workspaces || project.workspaces.deleted_at || ['Complete', 'Archived'].includes(project.status))
     return { status: 'skipped', reason: 'inactive' }
+  if (opts.skipManualPause && project.status === 'Stalled' && project.stall_reason === 'manual')
+    return { status: 'skipped', reason: 'paused' }
   const snapshot = project.project_scope_snapshot
   if (!snapshot) return { status: 'skipped', reason: 'no_snapshot' }
 

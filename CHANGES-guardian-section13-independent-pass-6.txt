@@ -1,0 +1,10 @@
+Section 13 (Guardian / scope governance) - independent pass 6
+Base: a56a45b
+
+P1 guardian-health sweep + reclassifyCheck: honour a MANUAL pause (Stalled + stall_reason='manual'), like guardian/inbound.
+   Query-level exclusion (projects.or(...)) so paused rows can't starve the batch; reclassifyCheck skipManualPause backstop
+   ('paused' skip reason, before the attempt claim). Manual Retry is unchanged.
+P2 resolveMatchedAmendmentId: fuzzy match needs shorter side >= 4 chars and >= 40% of the longer.
+P3 flags PATCH draft_co: claim update error is read -> 500, not a false 409.
+Left as-is (design): exceptions exposure is not capped in scope-health at-risk.
+Test: tests/guardian-section13-pass6-fixes.test.ts

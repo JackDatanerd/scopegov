@@ -105,6 +105,10 @@ async function sweepUnclassified(service: any) {
     .is('projects.deleted_at', null)
     .not('projects.status', 'in', '(Complete,Archived)')
     .is('projects.workspaces.deleted_at', null)
+    // FIX (independent pass 6, section 13 - P1): a manually paused project is "stop watching this" (see guardian/inbound);
+    // excluded in the query for the same starvation reason as the dead rows above. The or() keeps rows whose
+    // stall_reason is NULL (every non-stalled project) - a bare neq would drop those too.
+    .or('status.neq.Stalled,stall_reason.is.null,stall_reason.neq.manual', { referencedTable: 'projects' })
 
   // One bounded query per attempt count, each already filtered to rows that are due (see sweepDueFilter), for both
   // kinds; merged oldest-first with failed rows ahead of backlog.
@@ -148,7 +152,7 @@ async function sweepUnclassified(service: any) {
       // once its own claim succeeds — see that function's comment.
       const res = await reclassifyCheck(service, c.id, {
         actor: GUARDIAN_SYSTEM_ACTOR, auditEvent: 'check.swept', emailPath: 'automatic re-check',
-        requireFailed: false, maxAttempts: MAX_AUTO_CLASSIFICATION_ATTEMPTS,
+        requireFailed: false, maxAttempts: MAX_AUTO_CLASSIFICATION_ATTEMPTS, skipManualPause: true,
         recordUsage: () => recordAiUsageByProject(service, c.workspace_id, c.project_id, 'guardian.sweep'),
       })
       if (res.status === 'classified') { stats.classified++; if (res.flagId) stats.flagged++ }
