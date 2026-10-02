@@ -10,6 +10,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
+import { isUuidString } from '@/lib/utils/uuid'
 
 export async function POST(
   request: NextRequest,
@@ -25,6 +26,9 @@ export async function POST(
     const body = await request.json().catch(() => null)
     const memberId = body?.memberId
     if (!memberId || typeof memberId !== 'string') return NextResponse.json({ error: 'memberId required' }, { status: 400 })
+    // FIX (Projects & Dashboard pass 4 — B3): a non-UUID id reached the uuid column filters; on DELETE the failed delete was
+    // thrown as a 500 (POST only degraded to a 404). It is a malformed request — 400 on both.
+    if (!isUuidString(memberId)) return NextResponse.json({ error: 'Invalid memberId' }, { status: 400 })
 
     const service = createServiceClient()
 
@@ -148,6 +152,9 @@ export async function DELETE(
     const body = await request.json().catch(() => null)
     const memberId = body?.memberId
     if (!memberId || typeof memberId !== 'string') return NextResponse.json({ error: 'memberId required' }, { status: 400 })
+    // FIX (Projects & Dashboard pass 4 — B3): a non-UUID id reached the uuid column filters; on DELETE the failed delete was
+    // thrown as a 500 (POST only degraded to a 404). It is a malformed request — 400 on both.
+    if (!isUuidString(memberId)) return NextResponse.json({ error: 'Invalid memberId' }, { status: 400 })
 
     const service = createServiceClient()
 

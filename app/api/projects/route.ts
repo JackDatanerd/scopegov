@@ -83,6 +83,9 @@ export async function POST(request: NextRequest) {
     }
 
     let resolvedClientId = clientId
+    // FIX (Projects & Dashboard pass 4 — B2): whether THIS request created the client. The wizard renames "its" client when
+    // the user edits the name after stepping Back; a client that already existed under that email is not the wizard's to rename.
+    let clientCreated = false
     // FIX (Projects & Dashboard pass 2, B4): an archived client picked for this project used to be reactivated BEFORE the
     // project existed, so a failed insert or a lost plan-limit race left a reactivated client with no project. It is
     // now recorded here and reactivated only once the project has been created and kept.
@@ -119,6 +122,7 @@ export async function POST(request: NextRequest) {
 
       if (!clientErr && created?.ok) {
         resolvedClientId = created.client_id
+        clientCreated = true
         // FIX (independent pass, section 14 trace): clients created through project creation left no
         // `client.created` audit row (POST /api/clients writes one), so the client's history started
         // with an unexplained record.
@@ -249,7 +253,7 @@ export async function POST(request: NextRequest) {
 
     // clientId is returned so the wizard can re-use the (possibly just-created) client
     // when the user steps Back and re-submits, instead of creating a second project.
-    return NextResponse.json({ projectId: project.id, clientId: resolvedClientId })
+    return NextResponse.json({ projectId: project.id, clientId: resolvedClientId, clientCreated })
   } catch (err) {
     console.error('Project create error:', err)
     return NextResponse.json({ error: 'Could not create the project' }, { status: 500 })

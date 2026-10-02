@@ -260,7 +260,8 @@ export default function ProjectDiscussion({
     // uniqueMentionLabel's own comment in lib/utils/project-messages.ts.
     const label = uniqueMentionLabel(member.name, member.id, pickedRef.current)
     pickedRef.current[label] = member.id
-    const replaced = upToCaret.replace(/@([^\s@]*)$/, `@${label} `)
+    // FIX (Projects & Dashboard pass 4 — B7): a replacement FUNCTION, so `$&` / `$1` in a person's name is inserted literally.
+    const replaced = upToCaret.replace(/@([^\s@]*)$/, () => `@${label} `)
     const next = replaced + rest
     setDraft(next)
     setMentionActive(false)
@@ -431,6 +432,10 @@ export default function ProjectDiscussion({
             value={draft}
             onChange={e => handleDraftChange(e.target.value)}
             onKeyDown={e => {
+              // FIX (Projects & Dashboard pass 4 — B5): Enter that CONFIRMS an IME composition (Japanese / Chinese / Korean
+              // input) sent the half-typed message, or picked a mention. keyCode 229 covers browsers that fire keydown
+              // after compositionend (Safari).
+              if (e.nativeEvent.isComposing || e.keyCode === 229) return
               if (mentionActive) {
                 // Enter/Tab picks the highlighted person (Enter used to do nothing while the picker was
                 // open, so the keyboard could never complete a mention); arrows move the highlight.

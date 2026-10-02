@@ -156,7 +156,9 @@ export default function ProjectDetail({
     setDeleting(true); setError('')
     try {
       const res = await fetch(`/api/projects/${project.id}`, { method: 'DELETE' })
-      if (!res.ok) { const j = await res.json(); throw new Error(j.error) }
+      // FIX (Projects & Dashboard pass 4 — B6): a non-JSON error body (gateway 502/504) made res.json() throw a parse error
+      // that was shown to the user verbatim; guard it like pause / reopen / edit already do.
+      if (!res.ok) { const j = await res.json().catch(() => ({} as any)); throw new Error(j.error || 'Could not delete project') }
       router.push('/projects')
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Could not delete project')
@@ -209,7 +211,9 @@ export default function ProjectDetail({
     setCompleting(true); setError('')
     try {
       const res = await fetch(`/api/projects/${project.id}/complete`, { method: 'POST' })
-      if (!res.ok) { const j = await res.json(); throw new Error(j.error) }
+      // FIX (Projects & Dashboard pass 4 — B6): a non-JSON error body (gateway 502/504) made res.json() throw a parse error
+      // that was shown to the user verbatim; guard it like pause / reopen / edit already do.
+      if (!res.ok) { const j = await res.json().catch(() => ({} as any)); throw new Error(j.error || 'Could not mark the project complete') }
       router.refresh()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Something went wrong')
@@ -221,7 +225,9 @@ export default function ProjectDetail({
     setArchiving(true); setError('')
     try {
       const res = await fetch(`/api/projects/${project.id}/archive`, { method: 'POST' })
-      if (!res.ok) { const j = await res.json(); throw new Error(j.error) }
+      // FIX (Projects & Dashboard pass 4 — B6): a non-JSON error body (gateway 502/504) made res.json() throw a parse error
+      // that was shown to the user verbatim; guard it like pause / reopen / edit already do.
+      if (!res.ok) { const j = await res.json().catch(() => ({} as any)); throw new Error(j.error || 'Could not archive the project') }
       router.refresh()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Something went wrong')
@@ -285,7 +291,9 @@ export default function ProjectDetail({
     setUnarchiving(true); setError('')
     try {
       const res = await fetch(`/api/projects/${project.id}/unarchive`, { method: 'POST' })
-      if (!res.ok) { const j = await res.json(); throw new Error(j.error) }
+      // FIX (Projects & Dashboard pass 4 — B6): a non-JSON error body (gateway 502/504) made res.json() throw a parse error
+      // that was shown to the user verbatim; guard it like pause / reopen / edit already do.
+      if (!res.ok) { const j = await res.json().catch(() => ({} as any)); throw new Error(j.error || 'Could not unarchive the project') }
       router.refresh()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Something went wrong')
@@ -406,6 +414,9 @@ export default function ProjectDetail({
             )}
             <MetricBlock label={isRetainer ? (project.retainer_duration_months > 0 ? 'Original term value' : 'Contracted to date') : 'Original value'} value={formatCurrency(baseValue, currency)} />
             {recoveredAmt > 0 && <MetricBlock label="Recovered" value={`+${formatCurrency(recoveredAmt, currency)}`} color="var(--green)" />}
+            {/* FIX (Projects & Dashboard pass 4 — B8): accepted credit change orders make the impact negative. Nothing here
+                showed it, so "Original value" and "Effective total" differed with no explanation. */}
+            {recoveredAmt < 0 && <MetricBlock label="Credited" value={`-${formatCurrency(-recoveredAmt, currency)}`} color="var(--red)" />}
             {atRiskAmt > 0 && <MetricBlock label="At risk (pending COs)" value={formatCurrency(atRiskAmt, currency)} color="var(--gold)" />}
             <MetricBlock label="Effective total" value={formatCurrency(effectiveContractValue, currency)} bold />
           </div>
@@ -421,12 +432,18 @@ export default function ProjectDetail({
             committed. barTotal folds At-risk into the denominator so all three segments are drawn
             as a share of "everything currently at stake" (effective total + pending), and the three
             ratios sum to exactly 1 again. */}
-        {permissions.viewFinancials && (effectiveContractValue + atRiskAmt) > 0 && (() => {
-          const barTotal = effectiveContractValue + atRiskAmt
+        {/* FIX (Projects & Dashboard pass 4 — B8): the "three ratios sum to exactly 1" claim above only held while the
+            accepted-CO impact was >= 0. With credit change orders the effective total is BELOW the base (and is floored
+            at 0), so base / barTotal alone summed past 1 once anything was pending and the flex row renormalised, drawing
+            Base too narrow and Pending too wide. The Base segment is now the part of the base still committed
+            (min(base, effective)), so the segments always partition barTotal. */}
+        {permissions.viewFinancials && (Math.min(baseValue, effectiveContractValue) + Math.max(0, recoveredAmt) + Math.max(0, atRiskAmt)) > 0 && (() => {
+          const committedBase = Math.min(baseValue, effectiveContractValue)
+          const barTotal = committedBase + Math.max(0, recoveredAmt) + Math.max(0, atRiskAmt)
           return (
           <div style={{ marginBottom: 16 }}>
             <div className="lb-track">
-              <div style={{ flex: baseValue / barTotal, background: 'var(--blue)', height: 4 }} />
+              <div style={{ flex: committedBase / barTotal, background: 'var(--blue)', height: 4 }} />
               {recoveredAmt > 0 && <div style={{ flex: recoveredAmt / barTotal, background: 'var(--green)', height: 4 }} />}
               {atRiskAmt > 0 && <div style={{ flex: atRiskAmt / barTotal, background: 'var(--gold)', height: 4 }} />}
             </div>

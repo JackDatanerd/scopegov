@@ -149,12 +149,17 @@ export async function DELETE(
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
     const now = new Date().toISOString()
-    const { error } = await (service as any)
+    // FIX (Projects & Dashboard pass 4 — B4): the write had no `deleted_at IS NULL` guard and never looked at how many rows it
+    // touched, so two concurrent deletes both "succeeded" and each wrote a project_message.deleted audit row (the second also
+    // overwrote the first deleted_at). Only the request that actually flips the row audits.
+    const { data: deleted, error } = await (service as any)
       .from('project_messages')
       .update({ deleted_at: now })
-      .eq('id', messageId)
+      .eq('id', messageId).is('deleted_at', null)
+      .select('id')
 
     if (error) throw new Error(error.message)
+    if (!deleted || deleted.length === 0) return NextResponse.json({ ok: true })
 
     await logAudit(service, {
       workspaceId: session.workspaceId, actorId: session.id,

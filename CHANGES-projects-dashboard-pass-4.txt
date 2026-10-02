@@ -1,0 +1,39 @@
+CHANGES — Projects & Dashboard (section 7), independent pass 4
+================================================================
+Bugs only; no features.
+
+B1  Completing a project whose borderline-flag close failed left the project's OPEN flags closed (the two groups are
+    separate statements) while reporting "not completed". app/api/projects/[id]/complete/route.ts — the open group is
+    now restored (status open, resolution/close fields cleared), CAS-ing on this request's own close stamp.
+
+B2  The wizard could rename an unrelated existing client: an inline "new client" whose email matched an existing client
+    reused it silently, and Back + edit-name then PATCHed that client. POST /api/projects now returns clientCreated;
+    app/(app)/projects/new/page.tsx only renames a client it created (also on the Back-flow /api/clients path).
+
+B3  members POST/DELETE with a non-UUID memberId: DELETE threw a 500, POST a misleading 404. Both are a 400 now
+    (app/api/projects/[id]/members/route.ts, lib/utils/uuid.ts isUuidString).
+
+B4  Concurrent message deletes both succeeded and each wrote a project_message.deleted audit row.
+    app/api/projects/[id]/messages/[messageId]/route.ts — the update guards on deleted_at IS NULL and the audit row is
+    written only by the request that flipped the row.
+
+B5  components/projects/ProjectDiscussion.tsx — Enter confirming an IME composition (CJK) no longer sends the message or
+    picks a mention.
+
+B6  components/projects/ProjectDetail.tsx — Delete / Complete / Archive / Unarchive no longer show a raw JSON parse error
+    when the server answers with a non-JSON body (gateway 502/504); they fall back to a plain message.
+    (The same unguarded pattern exists in SOW/Guardian tab handlers of this file — left for those sections' passes.)
+
+B7  components/projects/ProjectDiscussion.tsx — insertMention builds the replacement with a function so "$&" / "$1" in a
+    person's name is inserted literally.
+
+B8  components/projects/ProjectDetail.tsx — with accepted credit change orders the header value bar's segments summed past
+    1 and renormalised (Base too narrow, Pending too wide), and the credit was shown nowhere. Base is now
+    min(base, effective); a "Credited" metric appears when the amendment impact is negative.
+
+Not changed (noted in the audit): messages/read can fail to advance the read marker for two messages created in the same
+millisecond (JS truncates microseconds) — extremely rare; the SOW editor URL does not tie sowId to [id] (cosmetic, the API
+enforces access).
+
+Tests: tests/projects-dashboard-pass-4.test.ts (source-level guards). Not executed in the authoring sandbox
+(no node_modules / network) — run `npx vitest run tests/projects-dashboard-pass-4.test.ts` and `npx tsc --noEmit` locally.

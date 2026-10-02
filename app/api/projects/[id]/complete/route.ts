@@ -100,6 +100,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       // "not confirmed as scope creep" outcome (`not_out_of_scope`, restored to borderline_review on reopen); an open
       // flag gets the plain `closed` resolution. Each update also CAS-es on the status it read, so a flag someone
       // resolved / converted a moment ago is not overwritten.
+      const closeReason = `Project marked complete by ${session.name}`
       const closeGroup = async (status: 'open' | 'borderline_review', resolution: 'closed' | 'not_out_of_scope') => {
         const ids = openFlags.filter((f: any) => f.status === status).map((f: any) => f.id)
         if (ids.length === 0) return null
@@ -107,7 +108,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           .update({
             status:       'closed',
             resolution,
-            close_reason: `Project marked complete by ${session.name}`,
+            close_reason: closeReason,
             resolved_by:  session.id,
             resolved_at:  now,
             updated_at:   now,
@@ -115,9 +116,27 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           .in('id', ids).eq('status', status)
         return error
       }
-      const flagErr = (await closeGroup('open', 'closed')) || (await closeGroup('borderline_review', 'not_out_of_scope'))
+      const openErr = await closeGroup('open', 'closed')
+      const borderlineErr = openErr ? null : await closeGroup('borderline_review', 'not_out_of_scope')
+      const flagErr = openErr || borderlineErr
       if (flagErr) {
         console.error('Project complete: closing flags failed, reverting:', flagErr)
+        // FIX (Projects & Dashboard pass 4 — B1): the two groups are separate statements. When the borderline group
+        // failed, the open group had ALREADY been closed — putting only the project back left those flags closed with
+        // no audit row, on a project the API told the user was "not completed". Re-open exactly the rows this request
+        // closed (CAS on our own close stamp so a flag someone has touched since is left alone).
+        if (borderlineErr) {
+          const closedOpenIds = openFlags.filter((f: any) => f.status === 'open').map((f: any) => f.id)
+          if (closedOpenIds.length > 0) {
+            const { error: restoreErr } = await (service as any).from('guardian_flags')
+              .update({
+                status: 'open', resolution: null, close_reason: null,
+                resolved_by: null, resolved_at: null, updated_at: new Date().toISOString(),
+              })
+              .in('id', closedOpenIds).eq('status', 'closed').eq('close_reason', closeReason).eq('resolved_at', now)
+            if (restoreErr) console.error('Project complete: could not restore the flags it had closed:', restoreErr)
+          }
+        }
         await (service as any).from('projects')
           .update({ status: 'Active', updated_at: new Date().toISOString() })
           .eq('id', id).eq('status', 'Complete')
