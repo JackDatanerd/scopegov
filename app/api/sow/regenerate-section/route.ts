@@ -4,7 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { stripAndParse, stripHtml, countWords } from '@/lib/utils/format'
-import { sanitizeRichText } from '@/lib/utils/sanitize'
+import { sanitizeRichText, truncateText } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
 import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
 import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
@@ -35,7 +35,7 @@ export async function POST(request: NextRequest) {
     const { sowId, sectionId } = reqBody as any
     // Free-text inputs go straight into the model prompt: type-check and cap them (they were
     // unbounded, so one request could burn arbitrary tokens).
-    const asText = (v: unknown, max: number) => (typeof v === 'string' ? v.slice(0, max) : '')
+    const asText = (v: unknown, max: number) => (typeof v === 'string' ? truncateText(v, max) : '')
     const currentContent = asText(reqBody.currentContent, MAX_SECTION_CONTENT_LENGTH)
     const instruction    = asText(reqBody.instruction, 500).trim()
     const projectContext = asText(reqBody.projectContext, 500).trim()

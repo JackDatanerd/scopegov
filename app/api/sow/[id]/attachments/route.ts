@@ -33,6 +33,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { ALLOWED_ATTACHMENT_TYPES as ALLOWED_TYPES, matchesDeclaredType, resolveAttachmentType } from '@/lib/utils/file-signature'
 import { EVIDENCE_BUCKET } from '@/lib/utils/storage-cleanup'
+import { truncateText } from '@/lib/utils/sanitize'
 import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024 // 10 MB — same cap as flag evidence
@@ -126,7 +127,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const rawExt = file.name.includes('.') ? (file.name.split('.').pop() || '') : ''
     const ext = rawExt.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 10) || 'bin'
-    const displayName = file.name.replace(/[\\/]+/g, '_').slice(0, 200) || 'attachment'
+    const displayName = truncateText(file.name.replace(/[\\/]+/g, '_'), 200) || 'attachment'
     const storagePath = `${session.workspaceId}/sow/${id}/${randomUUID()}.${ext}`
 
     const buffer = Buffer.from(await file.arrayBuffer())

@@ -3,6 +3,7 @@ export const runtime = 'nodejs'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { stripAndParse } from '@/lib/utils/format'
+import { truncateText } from '@/lib/utils/sanitize'
 import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
 import { createServiceClient } from '@/lib/supabase/server'
 import Anthropic from '@anthropic-ai/sdk'
@@ -30,7 +31,7 @@ export async function POST(request: NextRequest) {
 
     const reqBody = await request.json().catch(() => null)
     const briefText   = typeof reqBody?.briefText === 'string' ? reqBody.briefText : ''
-    const projectType = typeof reqBody?.projectType === 'string' ? reqBody.projectType.slice(0, 120) : undefined
+    const projectType = typeof reqBody?.projectType === 'string' ? truncateText(reqBody.projectType, 120) : undefined
     if (!briefText.trim()) return NextResponse.json({ error: 'briefText required' }, { status: 400 })
 
     // FIX (audit round 3): no rate limiting existed on this or any other
@@ -44,7 +45,7 @@ export async function POST(request: NextRequest) {
 
 Text:
 """
-${briefText.slice(0, 8000)}
+${truncateText(briefText, 8000)}
 """
 
 Project type context: ${projectType || 'not specified'}

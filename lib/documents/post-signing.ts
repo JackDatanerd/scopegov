@@ -14,7 +14,7 @@
 import { logAudit } from '@/lib/utils/audit'
 import { parseTableAmount } from '@/lib/sow/table-schema'
 import { roundCurrency } from '@/lib/utils/format'
-import { decodeHtmlEntities } from '@/lib/utils/sanitize'
+import { decodeHtmlEntities, truncateText } from '@/lib/utils/sanitize'
 
 /** Deliverables + out-of-scope items the Guardian classifier treats as the agreed baseline. */
 export function buildScopeSnapshotContent(sections: any[]): {
@@ -218,9 +218,9 @@ export async function createSowMilestones(
       if (parsedRows.length > 0 && Math.abs(scheduleSum - contractValue) < 0.01) {
         for (const r of parsedRows) {
           milestones.push({
-            title:   r.title.slice(0, 200),
+            title:   truncateText(r.title, 200),
             amount:  roundCurrency(r.amount),
-            trigger: (r.trigger || 'As defined in the SOW').slice(0, 500),
+            trigger: truncateText(r.trigger || 'As defined in the SOW', 500),
             type: 'fixed', percentage: null,
           })
         }

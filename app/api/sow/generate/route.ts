@@ -14,7 +14,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
 import { logAudit } from '@/lib/utils/audit'
-import { sanitizeRichText } from '@/lib/utils/sanitize'
+import { sanitizeRichText, truncateText } from '@/lib/utils/sanitize'
 import { applyAgencyStandards, ensureContractValueStated, type AgencyStandards } from '@/lib/ai/sow-content'
 import { pickAgencyStandards } from '@/lib/utils/agency-standards'
 import { canReadProject } from '@/lib/utils/project-access'
@@ -32,7 +32,7 @@ import { roundCurrency } from '@/lib/utils/format'
 import { insertNextSowVersion } from '@/lib/documents/sow-version'
 // FIX (fresh independent audit, section 9): needed to preserve a section's manual
 // show/hide state across a regenerate — see the existingSow overwrite branch below.
-import { REQUIRED_SECTION_IDS } from '@/lib/sow/sections'
+import { REQUIRED_SECTION_IDS, sanitizeTableRows } from '@/lib/sow/sections'
 
 // FIX (section-9 audit, 9-B11): none of the free-text brief fields were
 // length-capped before going into the prompt. api/sow/parse-brief caps
@@ -44,7 +44,7 @@ import { REQUIRED_SECTION_IDS } from '@/lib/sow/sections'
 const FIELD_LIMITS = { objective: 4000, deliverables: 8000, outOfScope: 4000, timeline: 2000, projectType: 120 }
 
 function capped(value: unknown, max: number): string {
-  return typeof value === 'string' ? value.slice(0, max) : ''
+  return typeof value === 'string' ? truncateText(value, max) : ''
 }
 
 // FIX (re-audit — build-blocking): was constructed at module scope, so an
@@ -323,7 +323,7 @@ export async function POST(request: NextRequest) {
         // language like the body content does.
         title: sectionTitle(def.id, contentInput.language),
         content: sanitizeRichText(allContent[def.id] || ''),
-        ...(TABLE_SECTION_IDS.includes(def.id as SowTableSectionId) ? { table: tables[def.id as SowTableSectionId] } : {}),
+        ...(TABLE_SECTION_IDS.includes(def.id as SowTableSectionId) ? { table: sanitizeTableRows(def.id, tables[def.id as SowTableSectionId]) } : {}),
         // FEATURE (section-9 audit follow-up): every other section
         // defaults to visible — payment_schedule is the one exception,
         // shown by default only when it's actually relevant (the agency

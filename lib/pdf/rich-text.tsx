@@ -91,7 +91,9 @@ function collectInlineRuns(html: string): InlineRun[] {
           const href = HREF_RE.exec(attrs || '')
           const url  = href?.[2] ?? href?.[3]
           // sanitizeRichText already restricts schemes to http/https/mailto.
-          if (url) next.href = url
+          // The stored href is HTML-attribute escaped (`?a=1&amp;b=2`); the PDF link annotation must carry the
+          // real URL, or every query parameter after the first is broken in the signed document.
+          if (url) next.href = decodeEntities(url)
         }
         stack.push(next)
       } else if (stack.length > 1) {
@@ -351,9 +353,20 @@ function renderBlocks(html: string, style: any): React.ReactNode[] {
   })
 }
 
+/**
+ * Escape a `<` that cannot start a tag. sanitizeRichText output never contains one (text `<` is stored as `&lt;`),
+ * but mapPdfSymbols() runs over the whole PDF payload before rendering and turns `\u2264`, `\u2190` and `\u2194`
+ * into `<=`, `<-` and `<->`. The tokenizers below read that `<` as the start of a tag and either dropped it or
+ * swallowed everything up to the next `>`. A real tag always starts with a letter or `/`.
+ */
+export function escapeStrayAngleBrackets(html: string): string {
+  return html.replace(/<(?![a-zA-Z/])/g, '&lt;')
+}
+
 /** Renders sanitized section HTML as react-pdf blocks, preserving bold/italic/underline/strike and rendering <ol> with real numbers instead of collapsing to bullets. */
-export function RichText({ html, style }: { html: string | null | undefined; style: any }) {
-  if (!html || !html.trim()) return null
+export function RichText({ html: rawHtml, style }: { html: string | null | undefined; style: any }) {
+  if (!rawHtml || !rawHtml.trim()) return null
+  const html = escapeStrayAngleBrackets(rawHtml)
   const blocks = splitBlocks(html)
 
   // Fallback: content isn't wrapped in a recognized block tag at all

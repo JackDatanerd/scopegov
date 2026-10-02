@@ -134,7 +134,7 @@ export function sanitizeSectionList(incoming: unknown, stored: any[], metadata?:
       id:      def.id,
       title:   sectionTitle(def.id, metadata?.language),
       order:   def.order,
-      content: sanitizeRichText(String(from.content ?? '').slice(0, MAX_SECTION_CONTENT_LENGTH)),
+      content: sanitizeRichText(truncateText(String(from.content ?? ''), MAX_SECTION_CONTENT_LENGTH)),
       visible,
       ...(isTableSection(def.id) ? { table: sanitizeTableRows(def.id, from.table) } : {}),
     }
