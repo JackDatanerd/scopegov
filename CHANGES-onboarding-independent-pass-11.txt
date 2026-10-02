@@ -1,0 +1,15 @@
+Onboarding independent pass 11 (base commit 002a13d)
+
+B1  app/api/team/roles/route.ts GET + app/onboarding/page.tsx step 3: a failed roles read was answered as an
+    empty 200 (and the wizard also swallowed fetch failures), so the role picker never appeared and the invite
+    went out with no roleId; the invitee silently got the workspace default role. The route now answers 500;
+    the wizard treats a non-ok/malformed response as a failure, shows a Retry link, and submitInvite refuses to
+    send while the role list is not loaded (Skip stays available). The fetch effect also ignores a late
+    response after the step/workspace changes.
+
+B2  styles/globals.css: .ob-card had no narrow-screen rule (40px/44px padding left ~222px of content at 360px,
+    too tight for the brand-colour row and the Back / Skip / Continue row). Added a max-width:480px block that
+    shrinks the gutters and lets the step label and nav rows wrap.
+
+Tests: tests/onboarding-independent-pass-11.test.ts
+Note: `tsc` reports one pre-existing error in tests/guardian-unstorable-text.test.ts (embeddingText export), outside this section.

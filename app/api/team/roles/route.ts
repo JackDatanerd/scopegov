@@ -165,9 +165,12 @@ export async function GET() {
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const service = createServiceClient()
-    const { data: roles } = await (service as any)
+    const { data: roles, error: rolesErr } = await (service as any)
       .from('roles').select('id,name,description,permissions,is_default')
       .eq('workspace_id', session.workspaceId).order('name')
+    // A failed read is not "this workspace has no roles": an empty 200 made the onboarding wizard hide
+    // its role picker and send the invite with no roleId, so the invitee silently got the default role.
+    if (rolesErr) return NextResponse.json({ error: 'Could not load roles. Please try again.' }, { status: 500 })
 
     // FIX (build, Team & Invites section — HIGH, info disclosure): this
     // returned the full permissions jsonb for every role in the workspace

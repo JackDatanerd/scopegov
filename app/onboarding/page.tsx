@@ -129,6 +129,8 @@ function OnboardingWizard() {
   // now sees and chooses the role.
   const [inviteRoles,  setInviteRoles]  = useState<Array<{ id: string; name: string; is_default: boolean }>>([])
   const [inviteRoleId, setInviteRoleId] = useState('')
+  const [rolesFailed,  setRolesFailed]  = useState(false)
+  const [rolesAttempt, setRolesAttempt] = useState(0)
 
   const STORAGE_KEY_PREFIX = 'scopegov_onboarding_'
   const [restored, setRestored] = useState(false)
@@ -1042,21 +1044,39 @@ function OnboardingWizard() {
 
   useEffect(() => {
     if (step !== 3 || !workspaceId || inviteRoles.length > 0) return
+    let cancelled = false
+    setRolesFailed(false)
     fetch('/api/team/roles')
-      .then(r => r.json())
+      .then(async r => {
+        const json = await r.json().catch(() => ({}))
+        // A failed read used to be swallowed here (and answered as an empty 200 by the route): the
+        // role picker simply never appeared and the invite went out with no roleId, so the invitee
+        // silently got the workspace default role. Now a failure is surfaced and blocks the invite.
+        if (!r.ok || !Array.isArray(json.roles)) throw new Error('roles')
+        return json
+      })
       .then(json => {
-        if (!Array.isArray(json.roles)) return
+        if (cancelled) return
         setInviteRoles(json.roles)
         const def = json.roles.find((r: any) => r.is_default)
         if (def) setInviteRoleId(def.id)
       })
-      .catch(() => { /* non-critical — the invite just falls back to the workspace default role */ })
-  }, [step, workspaceId, inviteRoles.length])
+      .catch(() => { if (!cancelled) setRolesFailed(true) })
+    return () => { cancelled = true }
+  }, [step, workspaceId, inviteRoles.length, rolesAttempt])
 
   /* ── Step 3: Invite ───────────────────────────────────────── */
   async function submitInvite() {
     setError('')
     if (inviteEmail.trim() && workspaceId) {
+      // Never send without knowing which role the invitee gets: with the list unloaded the invite
+      // would silently fall back to the workspace default role.
+      if (inviteRoles.length === 0) {
+        setError(rolesFailed
+          ? 'Could not load the roles for this invite. Use Retry above, or skip this step and invite from the Team page.'
+          : 'The role list is still loading — wait a moment and try again, or skip this step.')
+        return
+      }
       setLoading(true)
       try {
         const res  = await fetch('/api/team/invite', {
@@ -1712,6 +1732,13 @@ function OnboardingWizard() {
                 </select>
                 <p className="fhint" style={{ marginTop: 6 }}>Decides what they can see and do. You can change it later on the Team page.</p>
               </div>
+            )}
+            {rolesFailed && inviteRoles.length === 0 && (
+              <p className="fhint" style={{ marginBottom: 12 }}>
+                Couldn&apos;t load the role list.{' '}
+                <button type="button" className="ob-skip" style={{ display: 'inline', padding: 0, textDecoration: 'underline' }}
+                  onClick={() => setRolesAttempt(n => n + 1)}>Retry</button>
+              </p>
             )}
             {error && <div className="auth-error">{error}</div>}
 

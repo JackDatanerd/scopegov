@@ -371,6 +371,14 @@ p, h1, h2, h3, h4, h5 { margin: 0; }
 .ob-nav { display: flex; align-items: center; justify-content: space-between; margin-top: 28px; border-top: 1px solid var(--border); padding-top: 20px; }
 .ob-skip { font-size: 12px; color: var(--text-3); background: none; border: none; cursor: pointer; }
 .ob-skip:hover { color: var(--text-2); }
+/* Narrow phones: the 40px/44px card padding left ~222px of content at 360px, too tight for the brand-colour
+   row and the Back / Skip / Continue row, so shrink the gutters and let those rows wrap. */
+@media (max-width: 480px) {
+  .ob-root { padding: 16px 12px; }
+  .ob-card { padding: 28px 20px; }
+  .ob-step-lbl { flex-wrap: wrap; gap: 4px 8px; }
+  .ob-nav { flex-wrap: wrap; gap: 8px; }
+}
 
 /* ── GUARDIAN SIDEBAR ────────────────────────────────────────── */
 .guardian-pane { width: 260px; min-width: 260px; border-left: 1px solid var(--border); padding: 28px 22px; background: var(--surface); }
