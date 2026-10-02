@@ -2503,7 +2503,7 @@ function DangerTab({ workspace, permissions, session }: any) {
     <div>
       <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, color: 'var(--red)', marginBottom: 20 }}>Danger zone</h2>
       {err && <div className="auth-error" style={{ marginBottom: 14 }}>{err}</div>}
-      {isOwner && <TransferOwnershipSection />}
+      {isOwner && <TransferOwnershipSection workspaceId={workspace?.id} />}
       {/* FIX (Workspace lifecycle independent pass — B3): only the owner (or, once the owner is gone, a
           settings admin) can delete — see app/(app)/settings/page.tsx. Everyone else used to get the full
           type-the-name form and a 403 after submitting it. */}
@@ -2550,7 +2550,7 @@ function DangerTab({ workspace, permissions, session }: any) {
   )
 }
 
-function TransferOwnershipSection() {
+function TransferOwnershipSection({ workspaceId }: { workspaceId?: string }) {
   const [loading,  setLoading]  = useState(true)
   const [members,  setMembers]  = useState<Array<{ id: string; name: string; email: string }>>([])
   const [selected, setSelected] = useState('')
@@ -2573,7 +2573,7 @@ function TransferOwnershipSection() {
     try {
       const res  = await fetchWithStepUp('/api/workspace/transfer-ownership', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ newOwnerUserId: selected }),
+        body: JSON.stringify({ newOwnerUserId: selected, workspaceId }),
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error || 'Could not transfer ownership')

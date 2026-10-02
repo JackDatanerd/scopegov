@@ -41,7 +41,7 @@ vi.mock('@/lib/email/delivery', () => ({ checkedSend: async (fn: () => Promise<u
 
 const post = () => new Request('http://localhost/api/workspace/transfer-ownership', {
   method: 'POST', headers: { 'content-type': 'application/json' },
-  body: JSON.stringify({ newOwnerUserId: 'u2' }),
+  body: JSON.stringify({ newOwnerUserId: '22222222-2222-4222-8222-222222222222', workspaceId: 'w1' }),
 })
 
 beforeEach(() => {

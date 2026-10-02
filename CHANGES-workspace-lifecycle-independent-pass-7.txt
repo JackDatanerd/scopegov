@@ -1,0 +1,3 @@
+Workspace lifecycle independent pass 7
+B1 transfer-ownership POST: client sends workspaceId; mismatch with the session's active workspace -> 409 (same guard as workspace/delete). Non-UUID newOwnerUserId -> 400.
+Files: app/api/workspace/transfer-ownership/route.ts, components/settings/SettingsClient.tsx (TransferOwnershipSection takes workspaceId), tests/workspace-lifecycle-independent-pass-7.test.ts (new), tests/workspace-transfer-trial-collision.test.ts (request now carries a UUID + workspaceId).

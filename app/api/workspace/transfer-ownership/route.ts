@@ -23,6 +23,7 @@ import { NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { requireStepUpForCurrentUser } from '@/lib/auth/step-up'
+import { isUuidString } from '@/lib/utils/uuid'
 
 export async function GET() {
   try {
@@ -66,6 +67,17 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => ({}))
     const newOwnerUserId = typeof body?.newOwnerUserId === 'string' ? body.newOwnerUserId : null
     if (!newOwnerUserId) return NextResponse.json({ error: 'newOwnerUserId is required' }, { status: 400 })
+    if (!isUuidString(newOwnerUserId)) return NextResponse.json({ error: 'Invalid newOwnerUserId' }, { status: 400 })
+
+    // FIX (Workspace lifecycle independent pass — B1): the target workspace is the session's CURRENT
+    // active one, so a stale Settings tab (another tab switched workspaces since it loaded its eligible
+    // list) could hand ownership of a different workspace to the person picked for this one. The client
+    // now says which workspace it is looking at, same guard as DELETE /api/workspace/delete.
+    if (typeof body?.workspaceId !== 'string' || body.workspaceId !== session.workspaceId) {
+      return NextResponse.json({
+        error: 'You\u2019re no longer working on that workspace. Reload the page and try again.',
+      }, { status: 409 })
+    }
 
     // Handing over a workspace is irreversible by the giver — confirm it's them.
     const stepUp = await requireStepUpForCurrentUser()
