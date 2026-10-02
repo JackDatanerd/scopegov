@@ -26,6 +26,20 @@ export function amountFieldForNet(net: number, taxRate: number, taxInclusive: bo
   return taxInclusive && rate > 0 ? roundCurrency(n * (1 + rate / 100)) : n
 }
 
+// FIX (section-12 independent pass 15 — B1): the forms summed UNROUNDED quantity × rate while the server
+// rounds each line to cents first (computeInvoiceTotals) and rejects a typed amount more than 0.01 away
+// from ITS sum. Three lines of 2.5 × 19.99 gave 149.92 on the form and 149.91 on the server — a valid
+// invoice refused with a disabled Amount field the user couldn't correct. Both forms now use these two
+// helpers so what they show is exactly what the server computes.
+export function lineTotal(quantity: number, rate: number): number {
+  return roundCurrency((Number(quantity) || 0) * (Number(rate) || 0))
+}
+
+/** Sum of the rows that have a description, each row rounded to cents first (server order of operations). */
+export function itemizedSubtotal(lines: Array<{ description: string; quantity: number; rate: number }>): number {
+  return roundCurrency(lines.filter(l => l.description.trim()).reduce((s, l) => s + lineTotal(l.quantity, l.rate), 0))
+}
+
 export interface EditLine { description: string; quantity: number; rate: number }
 
 export interface EditFormState {

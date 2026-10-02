@@ -51,6 +51,16 @@ export const MAX_QUANTITY = 1_000_000
 const MAX_RATE = 1_000_000_000
 const MAX_AMOUNT = 1_000_000_000_000
 
+// FIX (section-12 independent pass 15 — L1): every numeric input went through a bare Number(), which
+// coerces `true` -> 1, `[5]` -> 5 and `null`/'' -> 0 (a direct API call with {amount: true} created a 1.00
+// invoice). The payments routes already accept only a number or a non-blank numeric string (pass 14, L2);
+// the invoice money inputs now follow the same rule. NaN = not a usable number.
+export function toStrictNumber(value: unknown): number {
+  if (typeof value === 'number') return value
+  if (typeof value === 'string' && value.trim() !== '') return Number(value)
+  return NaN
+}
+
 /**
  * @param entered   The figure the agency typed: the NET when tax is exclusive, the
  *                  GROSS when tax is inclusive. Ignored (but cross-checked when
@@ -73,7 +83,7 @@ export function computeInvoiceTotals(input: {
   } else if (input.taxRate === null || input.taxRate === '') {
     taxRate = 0
   } else {
-    taxRate = Number(input.taxRate)
+    taxRate = toStrictNumber(input.taxRate)
     if (!Number.isFinite(taxRate) || taxRate < 0 || taxRate > 100)
       return { ok: false, error: 'Tax rate must be a number between 0 and 100' }
   }
@@ -89,8 +99,8 @@ export function computeInvoiceTotals(input: {
       if (!description) continue // blank rows are dropped, same as before
       if (description.length > MAX_DESCRIPTION_LEN)
         return { ok: false, error: `Line item descriptions must be under ${MAX_DESCRIPTION_LEN} characters` }
-      const quantity = Number(raw?.quantity)
-      const rate = Number(raw?.rate)
+      const quantity = toStrictNumber(raw?.quantity)
+      const rate = toStrictNumber(raw?.rate)
       if (!Number.isFinite(quantity) || quantity < 0 || quantity > MAX_QUANTITY)
         return { ok: false, error: `"${description.slice(0, 40)}": quantity must be between 0 and ${MAX_QUANTITY.toLocaleString('en-US')}` }
       if (!Number.isFinite(rate) || rate < 0 || rate > MAX_RATE)
@@ -129,7 +139,7 @@ export function computeInvoiceTotals(input: {
     // A stale form (edited line items, then the amount field lagged behind) must
     // not silently win over the line items the client will actually see.
     if (input.entered !== undefined && input.entered !== null && input.entered !== '') {
-      const typed = Number(input.entered)
+      const typed = toStrictNumber(input.entered)
       if (!Number.isFinite(typed) || Math.abs(typed - lineSum) > 0.01)
         return { ok: false, error: `Line items total ${lineSum.toFixed(2)} does not match the invoice amount ${Number.isFinite(typed) ? typed.toFixed(2) : String(input.entered)}` }
     }
@@ -138,7 +148,7 @@ export function computeInvoiceTotals(input: {
     if (lineSum <= 0) return { ok: false, error: 'Line items must total more than 0' }
     entered = lineSum
   } else {
-    entered = Number(input.entered)
+    entered = toStrictNumber(input.entered)
     if (!Number.isFinite(entered) || entered <= 0) return { ok: false, error: 'Amount must be a positive number' }
     if (entered > MAX_AMOUNT) return { ok: false, error: 'Amount is unreasonably large' }
     entered = roundCurrency(entered)

@@ -1,0 +1,20 @@
+Invoicing (section 12) — independent pass 15
+
+B1  components/invoices/BillingTab.tsx + lib/documents/invoice-form.ts: Create and Edit modals summed UNROUNDED
+    quantity x rate, while the server rounds each line to cents first and rejects an amount more than 0.01 from its
+    own sum. 3 x (2.5 x 19.99) = 149.92 on the form, 149.91 on the server -> "Line items total ... does not match",
+    with the Amount field disabled. New lineTotal()/itemizedSubtotal() helpers mirror the server's order of
+    operations; both modals use them.
+B2  app/portal/invoice/[token]/page.tsx: fmtDate() formatted date-only values (due date, payment date received) in the
+    client's zone, so clients west of UTC saw the previous day (due 15 Oct shown as 14 Oct; PDF/email said 15 Oct).
+    Now uses formatDate(), which formats calendar dates in UTC and leaves real timestamps in the viewer's zone.
+B3  Same page: a tax-inclusive invoice printed "Tax (x%) — included" with a dash; the PDF states the amount. The portal
+    now prints amount - subtotal like the PDF.
+L1  lib/documents/invoice-totals.ts: amount, tax rate, line quantity and line rate went through bare Number(), so
+    true/[5]/null coerced into valid values ({amount:true} created a 1.00 invoice). New toStrictNumber(): a number or a
+    non-blank numeric string only (same rule as the payments routes, pass 14 L2).
+
+Tests: tests/invoice-pass15-rounding-and-strict-numbers.test.ts
+
+Not changed: reminder cooldown race (needs a DB-level lock/migration; impact is one duplicate email).
+No migrations in this pass.

@@ -12,7 +12,7 @@ import RichTextField from '@/components/ui/RichTextField'
 import { baseContractValue } from '@/lib/reports/contract-position'
 import { isOpenEndedRetainer } from '@/lib/utils/contract-value'
 import { isPaymentClaimOpen } from '@/lib/utils/invoice-registry'
-import { amountFieldForNet, buildInvoiceEditPatch, type EditFormState } from '@/lib/documents/invoice-form'
+import { amountFieldForNet, buildInvoiceEditPatch, lineTotal, itemizedSubtotal, type EditFormState } from '@/lib/documents/invoice-form'
 
 const METHOD_LABELS: Record<string, string> = {
   bank_transfer: 'Bank transfer', stripe: 'Stripe', check: 'Check', cash: 'Cash', other: 'Other',
@@ -766,7 +766,7 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
   const [lineItems, setLineItems] = useState<Array<{ id: string; description: string; quantity: number; rate: number; total: number }>>(
     [{ id: nanoid(), description: '', quantity: 1, rate: 0, total: 0 }]
   )
-  const itemsSubtotal = lineItems.filter(l => l.description.trim()).reduce((s, l) => s + l.total, 0)
+  const itemsSubtotal = itemizedSubtotal(lineItems)
 
   // AI draft — mirrors CoEditor's "Draft with AI" exactly: agency
   // describes what's being billed, model proposes a title + itemized
@@ -835,7 +835,7 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
     setLineItems(prev => prev.map(l => {
       if (l.id !== id) return l
       const updated = { ...l, [field]: value }
-      updated.total = updated.quantity * updated.rate
+      updated.total = lineTotal(updated.quantity, updated.rate)
       return updated
     }))
   }
@@ -1216,7 +1216,7 @@ function EditInvoiceModal({ invoiceId, projectCurrency, onClose, onSaved }: {
   const [taxInclusive, setTaxInclusive] = useState(true)
   const [itemized, setItemized] = useState(false)
   const [lineItems, setLineItems] = useState<Array<{ id: string; description: string; quantity: number; rate: number; total: number }>>([])
-  const itemsSubtotal = lineItems.filter(l => l.description.trim()).reduce((s, l) => s + l.total, 0)
+  const itemsSubtotal = itemizedSubtotal(lineItems)
 
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
@@ -1304,7 +1304,7 @@ function EditInvoiceModal({ invoiceId, projectCurrency, onClose, onSaved }: {
     setLineItems(prev => prev.map(l => {
       if (l.id !== id) return l
       const updated = { ...l, [field]: value }
-      updated.total = updated.quantity * updated.rate
+      updated.total = lineTotal(updated.quantity, updated.rate)
       return updated
     }))
   }

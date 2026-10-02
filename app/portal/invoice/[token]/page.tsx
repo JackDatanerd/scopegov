@@ -6,6 +6,7 @@ import PortalShell from '@/components/portal/PortalShell'
 // portal page — this page had the same raw .toLocaleString() money formatting bug, and had by far
 // the most instances of it (every line-item, the running balance, and the contract-position box).
 import { formatAmount } from '@/lib/utils/money'
+import { formatDate } from '@/lib/utils/format'
 
 type PortalState = 'loading' | 'error' | 'ready'
 
@@ -74,9 +75,13 @@ const METHOD_LABEL: Record<string, string> = {
   bank_transfer: 'Bank transfer', stripe: 'Stripe', check: 'Check', cash: 'Cash', other: 'Other',
 }
 
+// FIX (section-12 independent pass 15 — B2): a date-only value ('2026-10-15' — due date, payment date received)
+// parsed as UTC midnight and was formatted in the CLIENT'S zone, so anyone west of UTC saw the previous day
+// (due 15 Oct showed as 14 Oct while the PDF and email said 15 Oct). formatDate formats a calendar date in
+// UTC and leaves real timestamps (claimed / flagged / resolved) in the viewer's zone.
 function fmtDate(d: string | null) {
   if (!d) return ''
-  return new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
+  return formatDate(d, { day: 'numeric', month: 'long', year: 'numeric' })
 }
 
 export default function InvoicePortalPage() {
@@ -292,7 +297,8 @@ export default function InvoicePortalPage() {
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#555', marginBottom: 6 }}>
                     <span>Tax ({invoice.taxRate}%){invoice.taxInclusive ? ' — included' : ''}</span>
                     <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>
-                      {invoice.taxInclusive ? '—' : `${invoice.currency} ${formatAmount(invoice.amount - invoice.subtotal, invoice.currency)}`}
+                      {/* FIX (pass 15 — B3): the PDF states the tax inside a tax-inclusive total; the portal printed a dash. */}
+                      {`${invoice.currency} ${formatAmount(invoice.amount - invoice.subtotal, invoice.currency)}`}
                     </span>
                   </div>
                 </>
