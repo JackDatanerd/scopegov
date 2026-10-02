@@ -23,6 +23,7 @@ import {
 import { sendGuardianFlagEmail } from '@/lib/email/templates'
 import { checkedSend } from '@/lib/email/delivery'
 import { logAudit } from '@/lib/utils/audit'
+import { stripUnstorableText, truncateText } from '@/lib/utils/sanitize'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 
@@ -86,7 +87,7 @@ export function embeddingText(content: string): string {
   const text = toPlainText(content)
   if (text.length <= EMBED_TEXT_MAX) return text
   const half = Math.floor((EMBED_TEXT_MAX - 1) / 2) // the joining newline takes the last character of the budget
-  return `${text.slice(0, half)}\n${text.slice(-half)}`
+  return stripUnstorableText(`${text.slice(0, half)}\n${text.slice(-half)}`) // a cut can split an emoji; repair it
 }
 
 // ── Duplicate detection ───────────────────────────────────────
@@ -295,7 +296,7 @@ export async function classifyAndRecord(service: any, p: {
       workspaceId: project.workspace_id, permission: 'APPROVE_FLAGS', eventType: 'guardian_flag',
       type: 'guardian_flag',
       title: isBorderline ? `Borderline scope item — ${project.name}` : `Scope flag — ${project.name}`,
-      body: classification.reasoning?.slice(0, 140) || (isBorderline
+      body: truncateText(classification.reasoning, 140) || (isBorderline
         ? 'A possible scope item needs a quick look.'
         : 'A new out-of-scope request was flagged.'),
       entityType: 'project', entityId: project.id, projectId: project.id,

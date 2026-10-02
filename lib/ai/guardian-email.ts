@@ -16,6 +16,9 @@
 // A forward is recognised from the subject (Fwd:/FW:) or a forwarded-message banner, and
 // in that case the forwarded body is kept (only its header block is dropped).
 
+// Relative (not '@/') so this file stays loadable without the Next alias; sanitize.ts is the shared Postgres-safe text helper.
+import { stripUnstorableText, truncateText } from '../utils/sanitize'
+
 // FIX (independent pass round 4, section 13): this used to test only the single prefix at the very
 // start of the subject, while cleanSubject() below strips a whole CHAIN of them in a loop. A subject
 // with a reply prefix layered in front of a forward marker — "Re: Fwd: New feature idea" (reply-all
@@ -51,7 +54,7 @@ export function isForwardSubject(subject: string): boolean {
 
 /** Strip a leading Re:/Fwd: chain from a subject for display/classification. */
 export function cleanSubject(subject: string): string {
-  return String(subject || '').replace(/^\s*((re|fwd?|fw|wg|tr|rv|aw)\s*:\s*)+/i, '').trim().slice(0, 300)
+  return truncateText(stripUnstorableText(String(subject || '').replace(/^\s*((re|fwd?|fw|wg|tr|rv|aw)\s*:\s*)+/i, '').trim()), 300)
 }
 
 // FIX (independent pass 4, section 13 - B3): a wrapped attribution ("On <something>" / "<name> wrote:") was recognised

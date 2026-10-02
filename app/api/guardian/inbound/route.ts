@@ -9,6 +9,7 @@ import {
   extractUnquotedContent, isForwardSubject, cleanSubject, isAutomatedMessage, senderEmail, matchGuardianAddress,
 } from '@/lib/ai/guardian-email'
 import { logAudit } from '@/lib/utils/audit'
+import { stripUnstorableText, truncateText } from '@/lib/utils/sanitize'
 import { checkAiRateLimitByProject, recordAiUsageByProject } from '@/lib/utils/rate-limit'
 import { EVIDENCE_BUCKET } from '@/lib/utils/storage-cleanup'
 import { ALLOWED_ATTACHMENT_TYPES, matchesDeclaredType, resolveAttachmentType } from '@/lib/utils/file-signature'
@@ -74,7 +75,7 @@ export async function POST(request: NextRequest) {
     const fromEmail  = String(payload.From || '')
     const fromAddr   = senderEmail(payload)
     const subject    = String(payload.Subject || '')
-    const messageId  = typeof payload.MessageID === 'string' && payload.MessageID ? payload.MessageID.slice(0, 200) : null
+    const messageId  = typeof payload.MessageID === 'string' && payload.MessageID ? truncateText(stripUnstorableText(payload.MessageID), 200) : null
 
     // Extract the project from the guardian address (proj-{8chars}@guard.scopegov.app).
     // matchGuardianAddress anchors the whole address (the old regex also matched
@@ -152,7 +153,7 @@ export async function POST(request: NextRequest) {
     const bodyText  = (!isForward && stripped) ? stripped : extractUnquotedContent(fullText, { isForward })
     const subj      = cleanSubject(subject)
     let cleanContent = [subj ? `Subject: ${subj}` : '', bodyText].filter(Boolean).join('\n\n').trim()
-    if (cleanContent.length > MAX_CHECK_CONTENT_CHARS) cleanContent = cleanContent.slice(0, MAX_CHECK_CONTENT_CHARS)
+    if (cleanContent.length > MAX_CHECK_CONTENT_CHARS) cleanContent = truncateText(cleanContent, MAX_CHECK_CONTENT_CHARS)
 
     // The old floor was 20 characters, which discarded real requests like "Add dark mode".
     if (cleanContent.length < 8 || (!bodyText && !subj)) {
@@ -165,7 +166,7 @@ export async function POST(request: NextRequest) {
     // ── Sender recognition (informational — never blocks) ─────
     const senderKnown = await isKnownSender(service, project.workspace_id, project.client_id, fromAddr)
     const rawAttachments: any[] = Array.isArray(payload.Attachments) ? payload.Attachments.slice(0, 10) : []
-    const attachments = rawAttachments.map((a: any) => String(a?.Name || '').slice(0, 120)).filter(Boolean)
+    const attachments = rawAttachments.map((a: any) => truncateText(stripUnstorableText(String(a?.Name || '')), 120)).filter(Boolean)
     const sourceMetadata: Record<string, unknown> = {
       from: fromEmail, from_address: fromAddr, subject, to: toEmail,
       ...(messageId ? { message_id: messageId } : {}),
@@ -201,7 +202,7 @@ export async function POST(request: NextRequest) {
     const saveCheckAttachments = async (checkId: string) => {
       for (const a of rawAttachments) {
         try {
-          const name = String(a?.Name || '').slice(0, 200) || 'attachment'
+          const name = truncateText(stripUnstorableText(String(a?.Name || '')), 200) || 'attachment'
           // FIX (independent pass 5, section 13 - L1): some mail clients label a PDF / .docx / .eml
           // application/octet-stream (or send no type). The manual upload route resolves those from the extension;
           // this path took the declared type verbatim, so the file was silently dropped. Same resolver, and binary

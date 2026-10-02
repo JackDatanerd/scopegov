@@ -5,7 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
-import { sanitizePlainText, truncateText } from '@/lib/utils/sanitize'
+import { sanitizePlainText, stripUnstorableText, truncateText } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
 import { isTerminalStatus } from '@/lib/utils/project-status'
 import { workspaceTaxDefaults } from '@/lib/documents/tax-defaults'
@@ -19,7 +19,7 @@ const MAX_VALUE = 1e12
 /** Trimmed, sanitized, length-capped text — or null when the value isn't a string. */
 function cleanText(v: unknown, max: number): string | null {
   if (typeof v !== 'string') return null
-  return truncateText(sanitizePlainText(v.trim()), max)
+  return truncateText(stripUnstorableText(sanitizePlainText(v.trim())), max)
 }
 
 // The four permissions that make the original client message relevant to a person.
@@ -222,7 +222,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         let parsedValue: number
         if (estimatedValue === undefined || estimatedValue === null || estimatedValue === '') parsedValue = 0
         else if (typeof estimatedValue === 'number') parsedValue = estimatedValue
-        else if (typeof estimatedValue === 'string' && /^\s*\d+(\.\d+)?\s*$/.test(estimatedValue)) parsedValue = Number(estimatedValue)
+        else if (typeof estimatedValue === 'string' && /^\s*(\d+(\.\d*)?|\.\d+)\s*$/.test(estimatedValue)) parsedValue = Number(estimatedValue)
         else parsedValue = NaN
         if (!Number.isFinite(parsedValue) || parsedValue < 0 || parsedValue > MAX_VALUE)
           return NextResponse.json({ error: 'Estimated value must be a non-negative number' }, { status: 400 })
@@ -343,7 +343,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           resolvedEscalateTo = member.users.id
           assignee = { name: member.users.name, email: member.users.email }
         }
-        const safeNote = sanitizePlainText(escalationNote)
+        const safeNote = stripUnstorableText(sanitizePlainText(escalationNote))
 
         // FIX (deep audit, section 13, finding #7): escalated_to/
         // escalation_note are a single overwritable slot, same as CO's —
@@ -492,7 +492,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           workspace_id: session.workspaceId,
           flag_id:      id,
           // sow_reference can be null (a flag raised without a matching clause) — that printed "Change Order — null".
-          title:        flag.sow_reference ? `Change Order — ${String(flag.sow_reference).slice(0, 150)}` : 'Change Order',
+          title:        flag.sow_reference ? `Change Order — ${truncateText(String(flag.sow_reference), 150)}` : 'Change Order',
           status:       'draft',
           // FIX (section-10 audit, cross-cutting): line_items is a jsonb
           // column — JSON.stringify(...) here stores a JSON-encoded
@@ -619,7 +619,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           await notifyMembersWithPermission(service, {
             workspaceId: session.workspaceId, permission: 'APPROVE_FLAGS', eventType: 'guardian_flag',
             type: 'guardian_flag', title: `Scope flag confirmed — ${projectName}`,
-            body: (flag.description || '').slice(0, 140) || 'A borderline item was confirmed as out of scope.',
+            body: truncateText(flag.description || '', 140) || 'A borderline item was confirmed as out of scope.',
             entityType: 'project', entityId: flag.project_id, projectId: flag.project_id,
             excludeUserId: session.id,
           })

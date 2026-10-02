@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { stripUnstorableText } from '@/lib/utils/sanitize'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { MAX_CHECK_CONTENT_CHARS, type Sensitivity } from '@/lib/ai/guardian'
 import { classifyAndRecord, findDuplicateCheck, tryEmbedding } from '@/lib/ai/guardian-pipeline'
@@ -22,14 +23,17 @@ export async function POST(request: NextRequest) {
 
     let body: any
     try { body = await request.json() } catch { return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 }) }
-    const { projectId, content, source = 'paste' } = body || {}
+    const { projectId, content: rawContent, source = 'paste' } = body || {}
     const isRetroactive = body?.isRetroactive === true
 
     // FIX (independent pass, section 13): `content` was only truthiness/`.trim()`-checked, so a
     // non-string (number/array/object) threw a TypeError → 500, and there was no upper bound at
     // all — an arbitrarily large paste was stored verbatim and sent to the classifier.
-    if (typeof projectId !== 'string' || !projectId || typeof content !== 'string' || !content.trim())
+    if (typeof projectId !== 'string' || !projectId || typeof rawContent !== 'string' || !rawContent.trim())
       return NextResponse.json({ error: 'projectId and content required' }, { status: 400 })
+    // NUL / half-emoji from a paste would fail the insert as a 500, so scrub before the length check and storage.
+    const content = stripUnstorableText(rawContent).trim()
+    if (!content) return NextResponse.json({ error: 'projectId and content required' }, { status: 400 })
     if (content.length > MAX_CHECK_CONTENT_CHARS)
       return NextResponse.json({
         error: `Content is too long (${content.length.toLocaleString()} characters). Paste at most ${MAX_CHECK_CONTENT_CHARS.toLocaleString()} — the request itself, not the whole thread.`,

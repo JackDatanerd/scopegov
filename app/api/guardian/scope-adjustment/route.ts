@@ -4,7 +4,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { canReadProject } from '@/lib/utils/project-access'
-import { sanitizePlainText } from '@/lib/utils/sanitize'
+import { sanitizePlainText, stripUnstorableText } from '@/lib/utils/sanitize'
 import { isTerminalStatus } from '@/lib/utils/project-status'
 
 export async function POST(request: NextRequest) {
@@ -24,8 +24,8 @@ export async function POST(request: NextRequest) {
     if (typeof projectId !== 'string' || typeof deliverable !== 'string' || !deliverable
         || typeof body?.newValue !== 'string' || typeof body?.reason !== 'string')
       return NextResponse.json({ error: 'deliverable, newValue, and reason are required' }, { status: 400 })
-    const newValue = sanitizePlainText(body.newValue.trim())
-    const reason   = sanitizePlainText(body.reason.trim())
+    const newValue = stripUnstorableText(sanitizePlainText(body.newValue.trim())).trim()
+    const reason   = stripUnstorableText(sanitizePlainText(body.reason.trim())).trim()
     if (!newValue || !reason)
       return NextResponse.json({ error: 'deliverable, newValue, and reason are required' }, { status: 400 })
     if (newValue.length > 200)

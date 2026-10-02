@@ -1,0 +1,16 @@
+Section 13 (Guardian / scope governance) - independent pass 7
+
+B1  Guardian text paths were not Postgres-safe. NUL (U+0000) and half-emoji (lone surrogates) fail a text/jsonb insert;
+    plain .slice() cuts could split an emoji and toPlainText never removed NUL. Result: an inbound email that hit it
+    returned 500, Postmark redelivered into the same failure and the request was never recorded; notifications lost silently.
+    - lib/utils/sanitize.ts: new stripUnstorableText (deletes NUL, replaces lone surrogates with U+FFFD).
+    - lib/ai/guardian.ts: toPlainText scrubs; classifier input cut with truncateText.
+    - lib/ai/guardian-pipeline.ts: embeddingText repaired after halving; notification body via truncateText.
+    - lib/ai/guardian-email.ts: cleanSubject scrubbed + truncateText(300).
+    - guardian/inbound: content cap, attachment names (120/200) and MessageID use scrub + truncateText.
+    - guardian/check: pasted content scrubbed before length check/storage.
+    - scope-governance comments: body scrubbed; notification snippet via truncateText.
+    - guardian/flags + exceptions + scope-adjustment: free-text fields scrubbed; CO title and borderline notification
+      body use truncateText.
+M1  Estimated value regex rejected ".5" (flags exception action, exceptions PATCH). Now accepts .5 and 5.
+Tests: tests/guardian-unstorable-text.test.ts

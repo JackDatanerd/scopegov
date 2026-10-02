@@ -5,6 +5,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { resolveEntity, canReadProject, canWriteGovernance, isValidEntityType } from '@/lib/utils/flag-governance'
 import { notifyUsers } from '@/lib/utils/notify'
+import { stripUnstorableText, truncateText } from '@/lib/utils/sanitize'
 import { getMembersWithPermission } from '@/lib/utils/permissions-query'
 
 export async function GET(
@@ -68,7 +69,7 @@ export async function POST(
     // A non-string body (number/array/object) used to throw on `.trim()` → 500.
     if (body?.body !== undefined && typeof body.body !== 'string')
       return NextResponse.json({ error: 'Comment body must be text' }, { status: 400 })
-    const text = (body?.body || '').trim()
+    const text = stripUnstorableText(body?.body || '').trim()
     if (!text) return NextResponse.json({ error: 'Comment body is required' }, { status: 400 })
     if (text.length > 4000) return NextResponse.json({ error: 'Comment is too long' }, { status: 400 })
 
@@ -189,7 +190,7 @@ async function notifyEntityOwner(
 
     // notifyUsers is the single choke point: active membership, project access, the in-app
     // preference / workspace default, and the insert's own error are all handled there.
-    const snippet = commentText.length > 140 ? `${commentText.slice(0, 137)}…` : commentText
+    const snippet = commentText.length > 140 ? `${truncateText(commentText, 137)}…` : commentText
     await notifyUsers(service, {
       workspaceId: session.workspaceId, recipientIds: Array.from(recipientIds),
       type: 'flag_comment_added', eventType: 'flag_comment_added',
