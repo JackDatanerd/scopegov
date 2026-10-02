@@ -4,7 +4,7 @@ import { createClient } from '@/lib/supabase/client'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { safeRedirectPath } from '@/lib/utils/safe-redirect'
-import { resolveLoginMessage } from '@/lib/auth/login-messages'
+import { resolveLoginMessage, loginMessageFromHash, type LoginMessage } from '@/lib/auth/login-messages'
 import { TERMS_VERSION } from '@/lib/auth/terms'
 
 export default function LoginForm() {
@@ -17,7 +17,10 @@ export default function LoginForm() {
   // FIX (build — Auth independent audit, LOW): messages come from a fixed,
   // code-keyed table (lib/auth/login-messages.ts). Arbitrary `?message=` text used
   // to be rendered in the green success box — a phishing/spoofing surface.
-  const message = resolveLoginMessage(searchParams.get('m'), searchParams.get('message'))
+  // FIX (Auth+MFA independent pass 11): a resent verification link lands here with its outcome in the
+  // URL fragment — see loginMessageFromHash() in lib/auth/login-messages.ts.
+  const [hashMessage, setHashMessage] = useState<LoginMessage | null>(null)
+  const message = resolveLoginMessage(searchParams.get('m'), searchParams.get('message')) ?? hashMessage
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
@@ -30,6 +33,14 @@ export default function LoginForm() {
   const [resendCooldown, setResendCooldown] = useState(0)
   const [resendNotice, setResendNotice] = useState('')
   const supabase = createClient()
+
+  useEffect(() => {
+    const fromHash = loginMessageFromHash(window.location.hash)
+    if (!fromHash) return
+    setHashMessage(fromHash)
+    // Never leave a token in the address bar / history.
+    window.history.replaceState(null, '', window.location.pathname + window.location.search)
+  }, [])
 
   useEffect(() => {
     if (resendCooldown <= 0) return
@@ -46,7 +57,10 @@ export default function LoginForm() {
     // request still claimed "a new link is on its way" and started the cooldown.
     const { error: resendErr } = await supabase.auth.resend({
       type: 'signup', email,
-      options: { emailRedirectTo: `${window.location.origin}/api/auth/callback?next=${encodeURIComponent(next)}` },
+      // FIX (Auth+MFA independent pass 11): resend() sends no PKCE challenge, so the link comes back with
+      // the session in the URL fragment, which the server callback cannot read (it reported "link expired"
+      // for an address that was confirmed). Land on /login, which reads the fragment (loginMessageFromHash).
+      options: { emailRedirectTo: `${window.location.origin}/login?next=${encodeURIComponent(next)}` },
     }).catch(() => ({ error: { status: 0 } as any }))
     if (resendErr) {
       setError((resendErr as any).status === 429 || (resendErr as any).code === 'over_email_send_rate_limit'

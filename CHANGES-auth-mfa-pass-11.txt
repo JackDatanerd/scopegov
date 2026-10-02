@@ -1,0 +1,5 @@
+Auth + MFA independent pass 11 (afresh, as if no prior pass existed)
+1 LOW  mfa-challenge: listFactors() error treated as "no factor" -> redirect loop with middleware; now a retry state (app/mfa-challenge/page.tsx)
+2 LOW  resend-verification links (login + signup pages) carry the outcome in the URL fragment, which the server callback can't read -> false "link expired"; now land on /login which reads it via loginMessageFromHash (lib/auth/login-messages.ts, LoginForm.tsx, signup/page.tsx)
+3 NIT  /api/auth/signup maps 429 / signup_disabled / 5xx instead of echoing raw GoTrue text; also honours code user_already_exists
+Tests: tests/auth-mfa-pass-11.test.ts   (not run in the audit sandbox: no node_modules)

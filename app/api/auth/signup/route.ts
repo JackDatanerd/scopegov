@@ -71,8 +71,22 @@ export async function POST(request: NextRequest) {
       // re-send a confirmation email to an already-confirmed address, so
       // the real account holder isn't spammed — probing an email address
       // via signup no longer confirms whether it's in use.
-      if (err.message.toLowerCase().includes('already registered'))
+      if (err.message.toLowerCase().includes('already registered') || (err as { code?: string }).code === 'user_already_exists')
         return NextResponse.json({ ok: true, emailSent: true })
+      // FIX (Auth+MFA independent pass 11, nit): every other auth route maps rate limits / upstream
+      // failures to friendly copy; signup returned GoTrue's raw text as a 400 ("email rate limit
+      // exceeded"). Map by status/code; validation-type 4xx (weak password, bad email) keep GoTrue's
+      // own message because it tells the person what to change.
+      const status = (err as { status?: number }).status
+      const code = (err as { code?: string }).code
+      if (status === 429 || code === 'over_email_send_rate_limit' || code === 'over_request_rate_limit')
+        return NextResponse.json({ error: 'Too many sign-up attempts. Please wait a few minutes and try again.' }, { status: 429 })
+      if (code === 'signup_disabled')
+        return NextResponse.json({ error: 'Sign-ups are currently disabled.' }, { status: 403 })
+      if (typeof status === 'number' && status >= 500) {
+        console.error('Signup upstream error:', err)
+        return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 502 })
+      }
       return NextResponse.json({ error: err.message }, { status: 400 })
     }
 

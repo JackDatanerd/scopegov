@@ -32,7 +32,9 @@ export default function SignupPage() {
     // FIX (Auth+MFA fresh audit — LOW): see the same fix in login/LoginForm.tsx.
     const { error: resendErr } = await supabase.auth.resend({
       type: 'signup', email,
-      options: { emailRedirectTo: `${window.location.origin}/api/auth/callback?next=/onboarding` },
+      // FIX (Auth+MFA independent pass 11): see the same fix in login/LoginForm.tsx — a resent link carries
+      // its outcome in the URL fragment, which only a page (not the server callback) can read.
+      options: { emailRedirectTo: `${window.location.origin}/login?next=${encodeURIComponent('/onboarding')}` },
     }).catch(() => ({ error: { status: 0 } as any }))
     if (resendErr) {
       setResendFailed(true)

@@ -27,6 +27,9 @@ function MfaChallengeInner() {
 
   const [factorId, setFactorId] = useState<string | null>(null)
   const [loadingFactor, setLoadingFactor] = useState(true)
+  // FIX (Auth+MFA independent pass 11, LOW): a failed factor lookup is not "no factor" — see load().
+  const [loadFailed, setLoadFailed] = useState(false)
+  const [loadAttempt, setLoadAttempt] = useState(0)
   const [code, setCode] = useState('')
   const [backupCode, setBackupCode] = useState('')
   const [useBackup, setUseBackup] = useState(false)
@@ -44,11 +47,22 @@ function MfaChallengeInner() {
     // to setup from there).
     let cancelled = false
     async function load() {
-      let { data } = await supabase.auth.mfa.listFactors()
+      setLoadFailed(false); setLoadingFactor(true)
+      // FIX (Auth+MFA independent pass 11, LOW): the lookup's `error` used to be ignored, so a transient
+      // network / Auth failure looked exactly like "this account has no verified factor": the page
+      // replaced itself with `next`, the middleware (session still at aal1 with a factor owed) bounced
+      // straight back here, and that repeated for as long as the failure lasted. The server routes
+      // (verify, recover, factors GET, step-up) already treat this error as retryable; do the same here —
+      // show a retry state instead of navigating.
+      let { data, error: listErr } = await supabase.auth.mfa.listFactors()
+      if (cancelled) return
+      if (listErr) { setLoadFailed(true); setLoadingFactor(false); return }
       let verified = data?.totp?.find(f => f.status === 'verified')
       if (!verified) {
         await supabase.auth.refreshSession().catch(() => {})
-        ;({ data } = await supabase.auth.mfa.listFactors())
+        ;({ data, error: listErr } = await supabase.auth.mfa.listFactors())
+        if (cancelled) return
+        if (listErr) { setLoadFailed(true); setLoadingFactor(false); return }
         verified = data?.totp?.find(f => f.status === 'verified')
       }
       if (cancelled) return
@@ -59,7 +73,7 @@ function MfaChallengeInner() {
     }
     load()
     return () => { cancelled = true }
-  }, [supabase, router, next])
+  }, [supabase, router, next, loadAttempt])
 
   async function handleVerify(e: React.FormEvent) {
     e.preventDefault()
@@ -149,6 +163,15 @@ function MfaChallengeInner() {
               {error && <div className="auth-error">{error}</div>}
               {loadingFactor ? (
                 <div style={{ textAlign: 'center', padding: '20px 0' }}><span className="spin spin-dark" /></div>
+              ) : loadFailed ? (
+                <>
+                  <div className="auth-error">We couldn&apos;t load your authenticator. Check your connection and try again.</div>
+                  <button type="button" className="btn btn-primary"
+                    style={{ width: '100%', justifyContent: 'center', padding: '10px' }}
+                    onClick={() => setLoadAttempt(n => n + 1)}>
+                    Try again
+                  </button>
+                </>
               ) : !factorId ? (
                 <div className="auth-error">No verified authenticator found on this account. Contact your workspace owner.</div>
               ) : (

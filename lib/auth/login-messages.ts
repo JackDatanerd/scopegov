@@ -16,6 +16,7 @@ export type LoginMessageCode =
   | 'password_updated'
   | 'account_deleted'
   | 'workspace_deleted'
+  | 'email_confirmed'
 
 export interface LoginMessage {
   text: string
@@ -28,6 +29,7 @@ export const LOGIN_MESSAGES: Record<LoginMessageCode, LoginMessage> = {
   password_updated:  { text: 'Password updated. Please sign in again.', tone: 'success' },
   account_deleted:   { text: 'Your account has been deleted.', tone: 'success' },
   workspace_deleted: { text: 'Workspace deleted.', tone: 'success' },
+  email_confirmed:   { text: 'Your email address is confirmed. Sign in to continue.', tone: 'success' },
 }
 
 const LEGACY_MESSAGES: Record<string, LoginMessageCode> = {
@@ -44,5 +46,21 @@ export function resolveLoginMessage(code: string | null | undefined, legacyMessa
   if (legacyMessage && Object.prototype.hasOwnProperty.call(LEGACY_MESSAGES, legacyMessage)) {
     return LOGIN_MESSAGES[LEGACY_MESSAGES[legacyMessage]]
   }
+  return null
+}
+
+/**
+ * FIX (Auth+MFA independent pass 11): a verification email sent by supabase.auth.resend() carries no PKCE
+ * challenge, so GoTrue confirms the address and then redirects with the session in the URL FRAGMENT
+ * (`#access_token=…&type=signup`, or `#error=…&error_code=otp_expired`). The server-side
+ * /api/auth/callback can never see a fragment, so that link used to end on "link expired" for an account
+ * that was in fact confirmed. The resend buttons now point at /login, and /login reads the outcome from
+ * the fragment here. Only two fixed messages can result (never text taken from the URL), and a bare
+ * access_token without type=signup shows nothing.
+ */
+export function loginMessageFromHash(hash: string | null | undefined): LoginMessage | null {
+  const params = new URLSearchParams((hash || '').replace(/^#/, ''))
+  if (params.get('error') || params.get('error_code') || params.get('error_description')) return LOGIN_MESSAGES.link_invalid
+  if (params.get('access_token') && params.get('type') === 'signup') return LOGIN_MESSAGES.email_confirmed
   return null
 }
