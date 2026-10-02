@@ -40,7 +40,8 @@ export default function DocumentNumberingSection() {
 
   async function save(s: Sequence) {
     const d = draft[s.documentType]
-    const prefix = d.prefix.trim().toUpperCase()
+    // Blank means "use the default prefix": the input's placeholder, the live preview and the server all treat it that way.
+    const prefix = d.prefix.trim().toUpperCase() || s.defaultPrefix
     const next = Number(d.next)
     if (!PREFIX_RE.test(prefix)) {
       setMsg(m => ({ ...m, [s.documentType]: { ok: false, text: 'Prefix can use letters, numbers and hyphens (up to 12 characters) and must start and end with a letter or number.' } }))
@@ -81,7 +82,7 @@ export default function DocumentNumberingSection() {
       {!rows && !loadErr && <p style={{ fontSize: 12, color: 'var(--text-3)' }}>Loading…</p>}
       {rows && rows.map(s => {
         const d = draft[s.documentType] || { prefix: s.prefix, next: String(s.nextNumber) }
-        const dirty = d.prefix.trim().toUpperCase() !== s.prefix || Number(d.next) !== s.nextNumber
+        const dirty = (d.prefix.trim().toUpperCase() || s.defaultPrefix) !== s.prefix || Number(d.next) !== s.nextNumber
         const m = msg[s.documentType]
         return (
           <div key={s.documentType} className="fgrp" style={{ marginBottom: 14 }}>

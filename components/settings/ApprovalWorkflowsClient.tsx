@@ -83,7 +83,8 @@ export default function ApprovalWorkflowsClient({ initialWorkflows, roles, membe
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ isActive: nextActive }),
       })
-      if (!res.ok) { const j = await res.json(); throw new Error(j.error) }
+      // A gateway 502/504 answers with an HTML body; res.json() on it threw a raw parse error into the banner.
+      if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || 'Failed to update') }
       setWorkflows(ws => ws.map(x => x.id === w.id ? { ...x, is_active: nextActive } : x))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update')
@@ -95,8 +96,8 @@ export default function ApprovalWorkflowsClient({ initialWorkflows, roles, membe
     setBusyId(w.id); setError('')
     try {
       const res = await fetch(`/api/approval-workflows/${w.id}`, { method: 'DELETE' })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error)
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json.error || 'Failed to remove')
       if (json.deactivatedInstead) {
         setWorkflows(ws => ws.map(x => x.id === w.id ? { ...x, is_active: false } : x))
       } else {
@@ -237,7 +238,14 @@ function WorkflowEditorModal({ workflow, defaultType, roles, members, workspaceC
   // multi-step chain exists to collect several sign-offs, and one person clearing
   // every step defeats it. Self-approval defaults OFF.
   const [allowSelfApproval, setAllowSelfApproval] = useState(workflow?.allow_self_approval ?? false)
-  const [requireDistinct, setRequireDistinct] = useState(workflow?.require_distinct_approvers ?? true)
+  // A one-step workflow is always saved with require_distinct_approvers = false (the box is hidden and the
+  // payload forces it off below), so that stored false says nothing about the admin's choice. Reading it back
+  // made "A different person must approve each step" load unticked the moment a second step was added, letting
+  // one person who qualifies for every step clear the whole chain. Only a multi-step workflow's stored value is
+  // a real choice; anything else starts from the default (on).
+  const [requireDistinct, setRequireDistinct] = useState(
+    workflow && workflow.approval_workflow_steps.length > 1 ? workflow.require_distinct_approvers : true
+  )
   const [applyOtherCurrencies, setApplyOtherCurrencies] = useState(workflow?.apply_to_other_currencies ?? false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -303,7 +311,7 @@ function WorkflowEditorModal({ workflow, defaultType, roles, members, workspaceC
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       })
-      const json = await res.json()
+      const json = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(json.error || 'Failed to save')
       onSaved()
     } catch (err) {

@@ -79,7 +79,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'No file provided' }, { status: 400 })
     }
 
-    const ext = ALLOWED_TYPES[file.type]
+    // file.type is client-supplied: a plain-object lookup would also match inherited keys ('constructor',
+    // '__proto__'), which got past this check and then threw (500) in the magic-byte step below.
+    const ext = Object.prototype.hasOwnProperty.call(ALLOWED_TYPES, file.type) ? ALLOWED_TYPES[file.type] : undefined
     if (!ext) {
       return NextResponse.json({ error: 'Please upload a PNG or JPG file.' }, { status: 400 })
     }
