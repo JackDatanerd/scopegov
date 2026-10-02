@@ -35,7 +35,11 @@ export async function PATCH(request: NextRequest) {
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
       return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
     }
-    const { workspaceId: expectedWorkspaceId, expectedUpdatedAt, brandColour, logoStoragePath, agencySignatureData } = body as Record<string, unknown>
+    const { workspaceId: expectedWorkspaceId, expectedUpdatedAt, expected, brandColour, logoStoragePath, agencySignatureData } = body as Record<string, unknown>
+    // FIX (Settings independent pass 5 — B5): optional per-field baseline — see the conflict check below.
+    if (expected !== undefined && (expected === null || typeof expected !== 'object' || Array.isArray(expected))) {
+      return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+    }
     // FIX (deep audit, Onboarding round — traced multi-tab/multi-session
     // staleness risk): this route deliberately writes to session.workspaceId
     // rather than any client-supplied ID, to defeat a confused-deputy risk
@@ -93,60 +97,81 @@ export async function PATCH(request: NextRequest) {
 
     if (Object.keys(proposed).length === 0) return NextResponse.json({ ok: true, unchanged: true })
 
-    const { data: current, error: currentErr } = await service
-      .from('workspaces').select('brand_colour, logo_storage_path, agency_signature_data, updated_at')
-      .eq('id', session.workspaceId).single()
-    if (currentErr || !current) {
-      console.error('Workspace branding: could not load workspace:', currentErr)
-      return NextResponse.json({ error: 'Failed to update branding' }, { status: 500 })
-    }
-
-    // FIX (deep audit, Settings independent re-pass): unlike
-    // /api/workspace/settings (which compares every field's pre-edit value
-    // against what the DB actually holds before writing) and unlike
-    // /api/workspace/defaults, this route wrote straight through with no
-    // staleness check at all beyond the plain workspaceId match above — two
-    // admins saving branding at the same instant, or the same admin in two
-    // tabs, could silently lose one write. `expectedUpdatedAt` is optional
-    // (older/other callers that never send it keep working unchanged) but
-    // when the client does send the updated_at it loaded the form from, a
-    // mismatch means someone else's write landed since — refuse rather than
-    // clobber it, mirroring settings' own conflict shape (`conflicts: [...]`)
-    // so the existing "Reload latest settings" UI just works here too.
-    // FIX (Settings pass, B2): this was a strict string comparison, but the two sides can never
-    // be equal as strings even when they are the same instant — this route (and the logo route)
-    // hand back `new Date().toISOString()` ("...155Z") while PostgREST returns the stored value as
-    // "...155+00:00" (and may carry microseconds). So after ANY write that echoed updatedAt
-    // (signature save/clear, logo upload/removal, a previous branding save) the very next save
-    // was refused as a conflict with the person's own action. Compare instants, not text.
-    if (typeof expectedUpdatedAt === 'string' && !sameInstant(expectedUpdatedAt, current.updated_at)) {
-      return NextResponse.json({
-        error: 'Branding was changed elsewhere since you loaded this page.',
-        conflicts: ['branding'],
-      }, { status: 409 })
-    }
-
-    // The signature image itself is never written to the audit trail.
+    // FIX (Settings independent pass 5 — B5): `expected` carries what the editor loaded for the fields it is
+    // writing: { brandColour?, logoStoragePath?, hasSignature? }. The save is refused only when one of THOSE
+    // fields has since changed. expectedUpdatedAt (below, kept for older callers) is the whole row's timestamp,
+    // which a billing webhook, a plan change or a governing-law save also moves — so a person saving a colour
+    // was told "changed elsewhere" although nothing about branding had changed. When `expected` is present it
+    // replaces the timestamp check.
+    const exp = (expected ?? null) as Record<string, unknown> | null
     const REDACT = ['agency_signature_data']
-    const comparable = { ...current, brand_colour: typeof current.brand_colour === 'string' ? current.brand_colour.toLowerCase() : current.brand_colour }
-    const { changedKeys, changes } = diffFields(comparable, proposed, REDACT)
-    // FIX (deep audit, Settings re-pass round 2): include updatedAt on the
-    // unchanged path too — a caller (e.g. BrandingTab's local
-    // concurrency-tracking state) that's only learning the current value
-    // rather than reacting to a real change still needs it to stay in sync.
-    if (changedKeys.length === 0) return NextResponse.json({ ok: true, unchanged: true, updatedAt: current.updated_at })
+    let current: any = null
+    let changedKeys: string[] = []
+    let changes: Record<string, unknown> = {}
+    let updates: Record<string, unknown> = {}
+    let written: any[] | null = null
 
-    const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
-    for (const key of changedKeys) updates[key] = proposed[key]
+    // The compare-and-swap below can lose a race to an unrelated write to the same row. With a per-field
+    // baseline that is not a conflict, so read again and re-check once before giving up.
+    for (let attempt = 0; attempt < (exp ? 3 : 1); attempt++) {
+      const { data, error: currentErr } = await service
+        .from('workspaces').select('brand_colour, logo_storage_path, agency_signature_data, updated_at')
+        .eq('id', session.workspaceId).single()
+      if (currentErr || !data) {
+        console.error('Workspace branding: could not load workspace:', currentErr)
+        return NextResponse.json({ error: 'Failed to update branding' }, { status: 500 })
+      }
+      current = data
 
-    // Compare-and-swap on updated_at, like /api/workspace/settings: the staleness check above and
-    // this write are two round trips, so two admins saving at the same instant could both pass it.
-    let write = service.from('workspaces').update(updates).eq('id', session.workspaceId)
-    if (current.updated_at) write = write.eq('updated_at', current.updated_at)
-    const { data: written, error } = await write.select('id')
-    if (error) {
-      console.error('Workspace branding update failed:', error)
-      return NextResponse.json({ error: 'Failed to update branding' }, { status: 500 })
+      if (exp) {
+        const conflicts: string[] = []
+        if ('brand_colour' in proposed && exp.brandColour !== undefined &&
+            String(exp.brandColour).toLowerCase() !== String(current.brand_colour ?? '').toLowerCase()) conflicts.push('brandColour')
+        if ('logo_storage_path' in proposed && exp.logoStoragePath !== undefined &&
+            (exp.logoStoragePath || null) !== (current.logo_storage_path || null)) conflicts.push('logoStoragePath')
+        if ('agency_signature_data' in proposed && exp.hasSignature !== undefined &&
+            !!exp.hasSignature !== !!current.agency_signature_data) conflicts.push('agencySignatureData')
+        if (conflicts.length > 0) {
+          return NextResponse.json({
+            error: 'Branding was changed elsewhere since you loaded this page.',
+            conflicts,
+          }, { status: 409 })
+        }
+      } else if (typeof expectedUpdatedAt === 'string' && !sameInstant(expectedUpdatedAt, current.updated_at)) {
+        // FIX (deep audit, Settings independent re-pass): unlike /api/workspace/settings (which compares every
+        // field's pre-edit value against what the DB actually holds before writing) this route wrote straight
+        // through with no staleness check at all. Compare INSTANTS, not text: this route and the logo route
+        // return `new Date().toISOString()` ("...155Z") while PostgREST returns "...155+00:00" (and may carry
+        // microseconds), so a strict string comparison refused a person's own previous save.
+        return NextResponse.json({
+          error: 'Branding was changed elsewhere since you loaded this page.',
+          conflicts: ['branding'],
+        }, { status: 409 })
+      }
+
+      // The signature image itself is never written to the audit trail.
+      const comparable = { ...current, brand_colour: typeof current.brand_colour === 'string' ? current.brand_colour.toLowerCase() : current.brand_colour }
+      const diff = diffFields(comparable, proposed, REDACT)
+      changedKeys = diff.changedKeys
+      changes = diff.changes
+      // FIX (deep audit, Settings re-pass round 2): include updatedAt on the unchanged path too — a caller that
+      // is only learning the current value rather than reacting to a real change still needs it.
+      if (changedKeys.length === 0) return NextResponse.json({ ok: true, unchanged: true, updatedAt: current.updated_at })
+
+      updates = { updated_at: new Date().toISOString() }
+      for (const key of changedKeys) updates[key] = proposed[key]
+
+      // Compare-and-swap on updated_at, like /api/workspace/settings: the staleness check above and this write
+      // are two round trips, so two admins saving at the same instant could both pass it. Only write if the row
+      // is still the one we read.
+      let write = service.from('workspaces').update(updates).eq('id', session.workspaceId)
+      if (current.updated_at) write = write.eq('updated_at', current.updated_at)
+      const { data: w, error } = await write.select('id')
+      if (error) {
+        console.error('Workspace branding update failed:', error)
+        return NextResponse.json({ error: 'Failed to update branding' }, { status: 500 })
+      }
+      if (w && w.length > 0) { written = w; break }
     }
     if (!written || written.length === 0) {
       return NextResponse.json({

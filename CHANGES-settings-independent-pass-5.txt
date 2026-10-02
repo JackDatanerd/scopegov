@@ -1,0 +1,44 @@
+CHANGES — Settings, independent re-audit (pass 5)
+=================================================
+
+Scope: app/(app)/settings (+ settings/approvals, settings/audit),
+api/workspace/settings, api/workspace/defaults, api/workspace/branding.
+Audit-only first; fixes applied on the live copy supplied afterwards. No migration required.
+No feature gaps found.
+
+B1. Saving after a failed page read overwrote real data
+    Files: app/(app)/settings/page.tsx, components/settings/SettingsClient.tsx
+    The defaults and billing reads' errors were never checked. A failed defaults read rendered placeholders
+    (2 rounds, 50/50, blank standard terms) and "Save defaults", which sends every field, overwrote the real
+    saved values. A failed workspace read did the same to the brand colour. The page now reports
+    loadFailed {workspace, defaults}; the client shows a banner, disables the affected saves and refuses them
+    in patch(). Project-type overrides load themselves and are unaffected.
+
+B2. Approvals page showed a failed read as "no rules"
+    File: app/(app)/settings/approvals/page.tsx
+    A failed workflows/roles/members read rendered the empty state, inviting duplicate rules. It now shows an
+    error panel with a retry link. Currency reads are logged and tolerated.
+
+B3. "(USD only)" on a rule that also gates other currencies
+    File: components/settings/ApprovalWorkflowsClient.tsx
+    Wording corrected; the redundant flag was dropped.
+
+B4. Stale type text after a failed type load (Defaults tab)
+    File: components/settings/SettingsClient.tsx
+    Switching project type now clears the previous type's values before loading.
+
+B5. Branding save refused as "changed elsewhere" when nothing about branding had changed
+    Files: app/api/workspace/branding/route.ts, components/settings/SettingsClient.tsx
+    The conflict check compared the whole row's updated_at, which billing webhooks, plan changes and the
+    governing-law/SOW-language write-through also move. The client now sends a per-field `expected`
+    ({brandColour, logoStoragePath, hasSignature}) and the server refuses only when a field being written has
+    changed; a lost compare-and-swap is re-read and retried (up to 3 reads). expectedUpdatedAt still works for
+    callers that send no `expected`. The baseline lives in SettingsClient so it survives tab switches. Save
+    branding and the signature buttons now disable each other while one is in flight.
+    Trade-off: a signature replaced by a colleague with another signature is no longer flagged (presence only).
+
+Tests
+-----
+  tests/settings-independent-pass-5.test.ts   new (8 cases, branding route)
+Neither vitest nor a full tsc could run here (no node_modules, no network). The five edited source files were
+syntax-checked with tsc; run `npx tsc --noEmit` and `npx vitest run` after extracting.

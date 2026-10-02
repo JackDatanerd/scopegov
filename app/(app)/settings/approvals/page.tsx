@@ -95,6 +95,42 @@ export default async function ApprovalWorkflowsPage() {
       .limit(5000),
   ])
 
+  // FIX (Settings independent pass 5 — B2): none of these reads' errors were checked, so a failed workflows
+  // read rendered as "No approval rules — they send immediately", and an admin who believed it created
+  // duplicate rules (or switched real ones off). A failed read is shown as a failure. The roles and members
+  // lists feed every step's picker and the "nobody can approve" warnings, so they count too. The currency and
+  // project-currency reads only drive defaults and a warning, so they are logged and tolerated.
+  const failed = [
+    ['workflows', workflowsRes], ['roles', rolesRes], ['members', membersRes],
+  ].filter(([, r]: any) => r.error)
+  if (failed.length > 0) {
+    for (const [name, r] of failed as any[]) console.error(`Approval workflows: failed to load ${name}`, r.error)
+    return (
+      <div className="page" style={{ maxWidth: 720 }}>
+        <div className="page-hd">
+          <div>
+            <div style={{ marginBottom: 6 }}>
+              <Link href="/settings" style={{ fontSize: 12, color: 'var(--text-3)' }}>
+                <i className="ti ti-arrow-left" style={{ fontSize: 11 }} /> Settings
+              </Link>
+            </div>
+            <h1 className="page-title">Approval Workflows</h1>
+          </div>
+        </div>
+        <div className="surface">
+          <div className="empty-state">
+            <i className="ti ti-alert-triangle empty-state-icon" />
+            <p className="empty-state-title">Couldn&rsquo;t load your approval workflows</p>
+            <p className="empty-state-sub">Nothing has been changed. Reload the page to try again before creating or editing a rule.</p>
+            <Link href="/settings/approvals"><button className="btn btn-ghost btn-sm">Try again</button></Link>
+          </div>
+        </div>
+      </div>
+    )
+  }
+  if (wsRes.error) console.error('Approval workflows: failed to load workspace currency', wsRes.error)
+  if (projectCurrenciesRes.error) console.error('Approval workflows: failed to load project currencies', projectCurrenciesRes.error)
+
   const workflows = workflowsRes.data || []
   const roles     = (rolesRes.data || [])
     .map((r: any) => ({ id: r.id, name: r.name, canApprove: r.permissions?.APPROVE_DOCUMENTS === true }))

@@ -270,12 +270,15 @@ interface Props {
   billing:     any
   defaults:    any
   logoUrl:     string | null
+  // Which of the page's initial reads failed (see settings/page.tsx). A failed read renders placeholders, and
+  // saving those would overwrite the real saved values — so the matching saves are refused.
+  loadFailed?: { workspace: boolean; defaults: boolean }
   session:     SessionUser
   permissions: { manageWorkspace: boolean; manageBilling: boolean; viewAuditLog: boolean; manageRoles: boolean; canDeleteWorkspace: boolean }
   mfaMandatory: boolean
 }
 
-export default function SettingsClient({ workspace, billing, defaults, logoUrl, session, permissions, mfaMandatory }: Props) {
+export default function SettingsClient({ workspace, billing, defaults, logoUrl, loadFailed = { workspace: false, defaults: false }, session, permissions, mfaMandatory }: Props) {
   const searchParams = useSearchParams()
   const router       = useRouter()
   const supabase     = createClient()
@@ -358,6 +361,16 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
     }
     return ok
   }
+  // FIX (Settings independent pass 5 — B5): what the branding fields looked like when this page loaded, advanced
+  // by our own saves. Sent as `expected` so the server refuses only a real change to the fields being written.
+  // It used to send the workspace row's updated_at, which ANY write to the row moves — a billing webhook, a
+  // plan change, a governing-law save — so Save branding was refused as "changed elsewhere" with nothing about
+  // branding having changed. Lives here (not in BrandingTab) so it survives tab switches like the other state.
+  const brandingBase = useRef({
+    brandColour:     String(workspace?.brand_colour || '#1A5C3A').toLowerCase(),
+    logoStoragePath: (workspace?.logo_storage_path || null) as string | null,
+    hasSignature:    !!workspace?.agency_signature_data,
+  })
   const [brandColour, setBrandColour] = useState(() => workspace?.brand_colour || '#1A5C3A')
   const [logoPreview, setLogoPreview] = useState<string | null>(logoUrl)
   // FIX (Settings independent pass, bug 2): the picked-but-unsaved File lives here next to its preview. It used to be
@@ -392,6 +405,15 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
 
 
   async function patch(path: string, body: any) {
+    // FIX (Settings independent pass 5 — B1): refuse a save built from placeholders after a failed read. The
+    // global defaults save and the branding save send every field, so they would overwrite real values.
+    // A project-type override is loaded fresh from the API, so it is unaffected by the page's defaults read.
+    const isGlobalDefaults = path === '/api/workspace/defaults' && !body?.projectType
+    if ((isGlobalDefaults && loadFailed.defaults) || (path !== '/api/workspace/defaults' && loadFailed.workspace)) {
+      setSaved(''); setConflict(false); setWarning('')
+      setError('These settings could not be loaded, so saving is turned off to protect what is already saved. Reload the page and try again.')
+      return false
+    }
     setSaving(true); setError(''); setConflict(false); setWarning('')
     lastPatchJson.current = null
     try {
@@ -475,6 +497,14 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
             )}
           </div>
         )}
+        {loadFailed.workspace && (
+          <div className="auth-error" style={{ marginBottom: 14 }}>
+            We couldn&apos;t load this workspace&apos;s settings, so what is shown may not be accurate and saving is turned off.
+            <div style={{ marginTop: 8 }}>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => window.location.reload()}>Reload</button>
+            </div>
+          </div>
+        )}
         {saved && <div className="auth-success" style={{ marginBottom: 14 }}>{saved}</div>}
         {warning && (
           <div className="auth-error" style={{ marginBottom: 14, background: '#FFFBEB', borderColor: '#FDE68A', color: '#92400E' }}>
@@ -496,14 +526,14 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
             preview={logoPreview} setPreview={setLogoPreview}
             logoFile={logoFile} setLogoFile={setLogoFile}
             savedSignature={workspace?.agency_signature_data || null}
-            expectedUpdatedAt={workspace?.updated_at || null}
-            lastPatchJson={lastPatchJson}
+            baseRef={brandingBase}
+            loadFailed={loadFailed.workspace}
             permissions={permissions} onSave={patch} saving={saving}
           />
         )}
 
         {tab === 'defaults' && (
-          <DefaultsTab form={defaultsForm} setForm={setDefaultsForm} permissions={permissions} onSave={patch} saving={saving} setTab={setTab} />
+          <DefaultsTab form={defaultsForm} setForm={setDefaultsForm} permissions={permissions} onSave={patch} saving={saving} setTab={setTab} globalLoadFailed={loadFailed.defaults} />
         )}
 
         {tab === 'guardian' && (
@@ -1029,7 +1059,7 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedA
 }
 
 // ── BRANDING ──────────────────────────────────────────────────
-function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, logoFile, setLogoFile, savedSignature, expectedUpdatedAt, lastPatchJson, permissions, onSave, saving }: any) {
+function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, logoFile, setLogoFile, savedSignature, baseRef, loadFailed, permissions, onSave, saving }: any) {
   const [uploading, setUploading] = useState(false)
   const [fileError, setFileError] = useState('')
   const [removingLogo, setRemovingLogo] = useState(false)
@@ -1038,24 +1068,7 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, logo
   const [sigError,   setSigError]   = useState('')
   const sigPadRef = useRef<SignaturePadHandle>(null)
 
-  // FIX (deep audit, Settings re-pass round 2 — false-conflict bug): the
-  // `expectedUpdatedAt` prop only ever moves forward when the PARENT
-  // re-renders with a fresh `workspace` prop, which only happens after
-  // router.refresh() completes — a full round trip back to the server
-  // component. Three write paths in this component change
-  // workspaces.updated_at without going through that: the logo upload
-  // (POST .../logo), the logo removal (DELETE .../logo), and the
-  // signature save/clear (raw PATCH below, not routed through `onSave`).
-  // Each of those used to leave the prop's stale value in place, so the
-  // very next branding save in the same session sent an expectedUpdatedAt
-  // that no longer matched the DB row — a conflict against the user's own
-  // prior action, not a real one. This local copy is the actual source of
-  // truth for what THIS component should send next; it starts from the
-  // prop and is advanced immediately by every one of those write paths as
-  // soon as each one's response reports the new value, rather than waiting
-  // for the slower prop-refresh round trip.
-  const [freshUpdatedAt, setFreshUpdatedAt] = useState<string | null>(expectedUpdatedAt)
-  useEffect(() => { setFreshUpdatedAt(expectedUpdatedAt) }, [expectedUpdatedAt])
+  // (Concurrency baseline: see brandingBase in SettingsClient — Settings independent pass 5, B5.)
 
   if (!permissions.manageWorkspace) return <Restricted />
 
@@ -1092,12 +1105,6 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, logo
     setUploading(true)
     try {
       let logoStoragePath: string | undefined
-      // FIX (Settings pass, B1): `freshUpdatedAt` is the value captured when this render ran, so
-      // calling setFreshUpdatedAt() after the upload never changed what the branding PATCH below
-      // sent — it still carried the pre-upload timestamp and was refused as a conflict every time a
-      // logo and a colour were saved together. Track the baseline in a local variable that the
-      // upload can advance in place.
-      let baseline: string | null = freshUpdatedAt
       if (logoFile) {
         // FIX (audit round 3): route the upload through the server so
         // MANAGE_WORKSPACE_SETTINGS and file validation are enforced
@@ -1110,23 +1117,15 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, logo
         if (res.ok) {
           const json = await res.json()
           logoStoragePath = json.logoStoragePath
-          // FIX (deep audit, Settings re-pass round 2 — false-conflict
-          // bug): this upload just moved workspaces.updated_at forward on
-          // the server. Advance our own baseline to match before the
-          // branding PATCH below fires, or that PATCH's concurrency check
-          // sees a mismatch against its own preceding request every time.
-          if (json.updatedAt) { setFreshUpdatedAt(json.updatedAt); baseline = json.updatedAt }
-          // The upload route already linked the logo to the workspace, so a failed colour save below
-          // must not leave the file selected (a retry would upload and conflict all over again).
+          // The upload route already linked the new logo to the workspace, so our baseline for the logo is the
+          // new path — the branding save below must not see its own upload as someone else's change.
+          if (json.logoStoragePath) baseRef.current.logoStoragePath = json.logoStoragePath
+          // A failed colour save below must not leave the file selected (a retry would upload all over again).
           setLogoFile(null)
         } else {
-          // FIX (deep audit, Settings section): this fell through to the
-          // branding PATCH below with no early return, so a failed logo
-          // upload still produced a successful colour save — and `onSave`
-          // sets the shared `saved` flag, so the person got a green
-          // "Changes saved." banner sitting directly above a red "Could
-          // not upload logo" error. Stop here instead; the colour can be
-          // saved on its own by retrying without picking a file.
+          // FIX (deep audit, Settings section): this fell through to the branding PATCH below with no early
+          // return, so a failed logo upload still produced a successful colour save and a green banner above
+          // a red error. Stop here; the colour can be saved on its own by retrying without picking a file.
           const json = await res.json().catch(() => ({}))
           setFileError(json.error || 'Could not upload logo — try again.')
           return
@@ -1135,13 +1134,15 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, logo
       const ok = await onSave('/api/workspace/branding', {
         brandColour: colour,
         ...(logoStoragePath ? { logoStoragePath } : {}),
-        ...(baseline ? { expectedUpdatedAt: baseline } : {}),
+        expected: {
+          brandColour: baseRef.current.brandColour,
+          ...(logoStoragePath ? { logoStoragePath: baseRef.current.logoStoragePath } : {}),
+        },
       })
-      // FIX (deep audit, Settings re-pass round 2): keep our local baseline
-      // in step with what this save actually landed, same reasoning as the
-      // logo-upload branch above.
-      if (ok && lastPatchJson?.current?.updatedAt) setFreshUpdatedAt(lastPatchJson.current.updatedAt)
-      if (ok) setLogoFile(null)
+      if (ok) {
+        baseRef.current.brandColour = colour.toLowerCase()
+        setLogoFile(null)
+      }
     } finally { setUploading(false) }
   }
 
@@ -1158,10 +1159,7 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, logo
       const res = await fetch(workspaceId ? `/api/workspace/branding/logo?workspaceId=${encodeURIComponent(workspaceId)}` : '/api/workspace/branding/logo', { method: 'DELETE' })
       const json = await res.json().catch(() => ({}))
       if (!res.ok) { setFileError(json.error || 'Could not remove logo — try again.'); return }
-      // FIX (deep audit, Settings re-pass round 2 — false-conflict bug):
-      // same reasoning as the upload path above — this removal moves
-      // updated_at forward on the server too.
-      if (json.updatedAt) setFreshUpdatedAt(json.updatedAt)
+      baseRef.current.logoStoragePath = null
       setPreview(null)
       setLogoFile(null)
     } catch {
@@ -1178,13 +1176,7 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, logo
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           agencySignatureData: dataUrl,
-          // FIX (deep audit, Settings re-pass round 2): this call never
-          // sent expectedUpdatedAt at all, so two people saving branding
-          // fields at once could silently clobber each other here even
-          // though the sibling colour/logo save is protected. Bringing it
-          // in line also means this write's own effect on updated_at is
-          // now visible to it — see freshUpdatedAt's own comment above.
-          ...(freshUpdatedAt ? { expectedUpdatedAt: freshUpdatedAt } : {}),
+          expected: { hasSignature: baseRef.current.hasSignature },
         }),
       })
       const json = await res.json().catch(() => ({}))
@@ -1192,7 +1184,7 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, logo
         if (Array.isArray(json.conflicts)) setSigError('Branding was changed elsewhere since you loaded this page. Reload and try again.')
         throw new Error()
       }
-      if (json.updatedAt) setFreshUpdatedAt(json.updatedAt)
+      baseRef.current.hasSignature = true
       setSigSaved(dataUrl)
       sigPadRef.current?.clear()
     } catch { setSigError(prev => prev || 'Could not save signature — try again.') }
@@ -1206,12 +1198,12 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, logo
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           agencySignatureData: null,
-          ...(freshUpdatedAt ? { expectedUpdatedAt: freshUpdatedAt } : {}),
+          expected: { hasSignature: baseRef.current.hasSignature },
         }),
       })
       const json = await res.json().catch(() => ({}))
       if (res.ok) {
-        if (json.updatedAt) setFreshUpdatedAt(json.updatedAt)
+        baseRef.current.hasSignature = false
         setSigSaved(null)
       } else if (Array.isArray(json.conflicts)) {
         setSigError('Branding was changed elsewhere since you loaded this page. Reload and try again.')
@@ -1284,7 +1276,10 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, logo
             </div>
           )}
         </div>
-        <button className="btn btn-primary btn-sm" onClick={saveBranding} disabled={saving || uploading}>
+        {loadFailed && (
+          <p className="ferr" style={{ marginBottom: 10 }}>Your saved branding couldn&apos;t be loaded, so saving is turned off. Reload the page to try again.</p>
+        )}
+        <button className="btn btn-primary btn-sm" onClick={saveBranding} disabled={saving || uploading || savingSig || !!loadFailed}>
           {saving || uploading ? <span className="spin" /> : 'Save branding'}
         </button>
       </div>
@@ -1300,7 +1295,7 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, logo
               <img src={sigSaved} alt="Saved signature" style={{ height: 60, display: 'block' }} />
             </div>
             <div>
-              <button className="btn btn-ghost btn-sm" onClick={clearSavedSignature} disabled={savingSig}>
+              <button className="btn btn-ghost btn-sm" onClick={clearSavedSignature} disabled={savingSig || saving || uploading || !!loadFailed}>
                 {savingSig ? <span className="spin spin-dark" /> : <><i className="ti ti-trash" style={{ fontSize: 12 }} /> Remove & redraw</>}
               </button>
               {sigError && <p className="ferr" style={{ marginTop: 6 }}>{sigError}</p>}
@@ -1313,7 +1308,7 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, logo
             </div>
             {sigError && <p className="ferr" style={{ marginTop: 6 }}>{sigError}</p>}
             <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-              <button className="btn btn-primary btn-sm" onClick={saveSignature} disabled={savingSig}>
+              <button className="btn btn-primary btn-sm" onClick={saveSignature} disabled={savingSig || saving || uploading || !!loadFailed}>
                 {savingSig ? <span className="spin" /> : 'Save signature'}
               </button>
               <button className="btn btn-ghost btn-sm" onClick={() => sigPadRef.current?.clear()} disabled={savingSig}>Clear</button>
@@ -1389,7 +1384,7 @@ function StandardsFields({ value, onChange, disabled }: { value: StandardsForm; 
 // never shows a value that isn't what's stored.
 const REVISION_ROUND_CHOICES = Array.from({ length: 10 }, (_, i) => String(i + 1))
 
-function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab }: any) {
+function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab, globalLoadFailed }: any) {
   function set(key: string, value: string) {
     setForm((f: any) => ({ ...f, [key]: value }))
   }
@@ -1415,6 +1410,9 @@ function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab }: any
   useEffect(() => {
     setLocalError(''); setTypeLoadFailed(false)
     if (isGlobal) { setTypeData(null); return }
+    // FIX (Settings independent pass 5 — B4): clear the previous type's values first, so a failed load never
+    // leaves the last type's wording sitting in the editor under the new type's name.
+    setTypeData(null); setTypeStd({ revisionPolicy: '', paymentTerms: '', outOfScope: '', assumptions: '' })
     let cancelled = false
     setTypeLoading(true)
     fetch(`/api/workspace/defaults?projectType=${scope}`)
@@ -1543,6 +1541,12 @@ function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab }: any
           </button>{' '}and applies to every SOW, regardless of project type.
         </p>
         {localError && <p className="ferr" style={{ marginTop: 10 }}>{localError}</p>}
+        {isGlobal && globalLoadFailed && (
+          <p className="ferr" style={{ marginTop: 10 }}>
+            Your saved defaults couldn&apos;t be loaded, so what is shown above is not your real settings and saving is turned off.{' '}
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => window.location.reload()}>Reload</button>
+          </p>
+        )}
         {typeLoadFailed && (
           <p className="ferr" style={{ marginTop: 10 }}>
             Couldn&apos;t load this project type&apos;s defaults, so nothing is shown to edit.{' '}
@@ -1550,7 +1554,7 @@ function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab }: any
           </p>
         )}
         <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
-          <button className="btn btn-primary btn-sm" disabled={saving || typeLoading || typeLoadFailed} onClick={saveCurrent}>
+          <button className="btn btn-primary btn-sm" disabled={saving || typeLoading || typeLoadFailed || (isGlobal && !!globalLoadFailed)} onClick={saveCurrent}>
             {saving ? <span className="spin" /> : isGlobal ? 'Save defaults' : `Save ${PROJECT_TYPE_LABELS[scope]} override`}
           </button>
           {!isGlobal && typeData?.isOverride && (

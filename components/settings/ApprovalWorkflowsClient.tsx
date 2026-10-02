@@ -147,7 +147,11 @@ export default function ApprovalWorkflowsClient({ initialWorkflows, roles, membe
                     <div style={{ fontSize: 13.5, fontWeight: 500 }}>{w.name}</div>
                     <div style={{ fontSize: 12, color: 'var(--text-3)' }}>
                       {w.threshold_amount != null
-                        ? `Applies at ${formatCurrency(w.threshold_amount, w.threshold_currency || 'USD')} and above (${w.threshold_currency || 'USD'} only)`
+                        // FIX (Settings independent pass 5 — B3): "(USD only)" contradicted a rule that also holds every
+                        // document in another currency.
+                        ? (w.apply_to_other_currencies
+                          ? `Applies at ${formatCurrency(w.threshold_amount, w.threshold_currency || 'USD')} and above, and to every document in another currency`
+                          : `Applies at ${formatCurrency(w.threshold_amount, w.threshold_currency || 'USD')} and above (${w.threshold_currency || 'USD'} only)`)
                         : 'Applies to every document of this type'}
                       {' · '}
                       {w.approval_workflow_steps.length} step{w.approval_workflow_steps.length !== 1 ? 's' : ''}:{' '}
@@ -162,7 +166,6 @@ export default function ApprovalWorkflowsClient({ initialWorkflows, roles, membe
                       const flags: string[] = []
                       if (w.allow_self_approval) flags.push('requester may approve')
                       if (w.require_distinct_approvers) flags.push('different approver per step')
-                      if (w.apply_to_other_currencies && w.threshold_amount != null) flags.push('other currencies gated too')
                       return (
                         <>
                           {broken.length > 0 && (

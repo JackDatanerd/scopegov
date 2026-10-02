@@ -84,6 +84,21 @@ export default async function SettingsPage() {
   if (wsRes.error) {
     console.error('Settings: failed to load workspace', wsRes.error)
   }
+  // FIX (Settings independent pass 5 — B1): a failed read used to be indistinguishable from "nothing is
+  // saved yet". The Defaults tab then seeded its form with placeholders (2 rounds, 50/50, blank standard
+  // terms) and "Save defaults" — which sends every field — overwrote the real saved values; the Branding
+  // tab did the same with its placeholder colour. Tell the client which reads failed so it can refuse
+  // those saves instead. A missing workspace row counts as a failure too (.single() reports it as an error).
+  if (defaultsRes.error) {
+    console.error('Settings: failed to load workspace defaults', defaultsRes.error)
+  }
+  if (billingRes.error) {
+    console.error('Settings: failed to load billing', billingRes.error)
+  }
+  const loadFailed = {
+    workspace: !!wsRes.error || !wsRes.data,
+    defaults:  !!defaultsRes.error,
+  }
 
   // FIX (deep audit, Settings section \u2014 stale logo after replacement):
   // the upload path is `${workspaceId}/logo.${ext}` with `upsert: true`,
@@ -208,6 +223,7 @@ export default async function SettingsPage() {
       billing={billing}
       defaults={canManageWorkspace ? (defaultsRes.data?.[0] ?? null) : null}
       logoUrl={logoUrl}
+      loadFailed={loadFailed}
       session={{ ...session, hasPasswordIdentity }}
       mfaMandatory={mfaMandatory}
       permissions={{
