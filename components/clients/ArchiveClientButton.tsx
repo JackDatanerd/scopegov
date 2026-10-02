@@ -6,7 +6,7 @@
 // path. This is the missing control.
 
 'use client'
-import { useState } from 'react'
+import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 
 export default function ArchiveClientButton({
@@ -15,6 +15,10 @@ export default function ArchiveClientButton({
   const router = useRouter()
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  // FIX (independent pass 14, section 14 — B3): `loading` cleared as soon as router.refresh() was *called*,
+  // so until the refresh landed the button still showed (and accepted a click for) the previous state.
+  // Stay busy until the refresh settles.
+  const [refreshing, startRefresh] = useTransition()
   const archived = status === 'archived'
 
   async function toggle() {
@@ -40,7 +44,7 @@ export default function ArchiveClientButton({
         body: JSON.stringify({ status: archived ? 'active' : 'archived' }),
       })
       if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || 'Failed') }
-      router.refresh()
+      startRefresh(() => { router.refresh() })
     } catch (e) {
       // FIX (deep audit, section 14): failures used to only be
       // console.error'd — the button just stopped spinning with no
@@ -51,8 +55,8 @@ export default function ArchiveClientButton({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
-      <button className="btn btn-ghost" disabled={loading} onClick={toggle} title={archived ? 'Reactivate this client' : 'Archive this client — hides it from the default client list'}>
-        {loading ? <span className="spin" /> : (
+      <button className="btn btn-ghost" disabled={loading || refreshing} onClick={toggle} title={archived ? 'Reactivate this client' : 'Archive this client — hides it from the default client list'}>
+        {loading || refreshing ? <span className="spin" /> : (
           <>
             <i className={`ti ti-${archived ? 'archive-off' : 'archive'}`} style={{ fontSize: 13 }} />
             {archived ? 'Reactivate' : 'Archive'}

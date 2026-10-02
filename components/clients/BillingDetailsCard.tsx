@@ -12,7 +12,7 @@
 // that page stays server-rendered.
 
 'use client'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 
 interface BillingAddress {
@@ -47,6 +47,23 @@ export default function BillingDetailsCard({ clientId, vatNumber, billingAddress
   const [editing, setEditing] = useState(false)
   const [saving,  setSaving]  = useState(false)
   const [error,   setError]   = useState('')
+  // FIX (independent pass 14, section 14 — B3): same as ClientContactCard — a successful save closed the
+  // editor immediately and the read-only view showed the OLD address / VAT until router.refresh()
+  // landed. Stay in edit mode (busy) until the refresh settles; the timeout is only a backstop.
+  const [refreshing, startRefresh] = useTransition()
+  const closeAfterRefresh = useRef(false)
+  const backstop = useRef<ReturnType<typeof setTimeout> | null>(null)
+  function clearBackstop() { if (backstop.current) { clearTimeout(backstop.current); backstop.current = null } }
+  useEffect(() => {
+    if (closeAfterRefresh.current && !refreshing) { closeAfterRefresh.current = false; clearBackstop(); setEditing(false) }
+  }, [refreshing])
+  useEffect(() => clearBackstop, [])
+  function closeWhenRefreshed() {
+    closeAfterRefresh.current = true
+    startRefresh(() => { router.refresh() })
+    clearBackstop()
+    backstop.current = setTimeout(() => { backstop.current = null; if (closeAfterRefresh.current) { closeAfterRefresh.current = false; setEditing(false) } }, 8000)
+  }
   const [form, setForm] = useState<BillingAddress>(billingAddress || {})
   const [vat,  setVat]  = useState(vatNumber || '')
   // FIX (deep audit, section 14 — bug): save() used to PATCH billingAddress AND vatNumber every
@@ -91,8 +108,7 @@ export default function BillingDetailsCard({ clientId, vatNumber, billingAddress
       })
       const json = await res.json().catch(() => ({} as Record<string, any>))
       if (!res.ok) throw new Error(json.error || 'Failed to save')
-      setEditing(false)
-      router.refresh()
+      closeWhenRefreshed()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to save')
     } finally { setSaving(false) }
@@ -167,10 +183,10 @@ export default function BillingDetailsCard({ clientId, vatNumber, billingAddress
         <input className="finp" value={vat} onChange={e => setVat(e.target.value)} placeholder="87-1046203" />
       </div>
       <div className="modal-footer" style={{ justifyContent: 'flex-start', gap: 8, paddingLeft: 0 }}>
-        <button className="btn btn-primary btn-sm" disabled={saving} onClick={save}>
-          {saving ? <span className="spin" /> : 'Save billing details'}
+        <button className="btn btn-primary btn-sm" disabled={saving || refreshing} onClick={save}>
+          {saving || refreshing ? <span className="spin" /> : 'Save billing details'}
         </button>
-        <button className="btn btn-ghost btn-sm" onClick={() => { setEditing(false); setForm(billingAddress || {}); setVat(vatNumber || ''); setBaseline(null) }}>
+        <button className="btn btn-ghost btn-sm" disabled={saving || refreshing} onClick={() => { setEditing(false); setForm(billingAddress || {}); setVat(vatNumber || ''); setBaseline(null) }}>
           Cancel
         </button>
       </div>

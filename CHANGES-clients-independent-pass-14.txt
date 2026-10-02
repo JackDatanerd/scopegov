@@ -1,0 +1,39 @@
+scopegov — Section 14 (Clients) — independent pass 14 fixes
+===========================================================
+Cold independent audit of api/clients, components/clients, app/(app)/clients.
+Applied against the live snapshot taken after the pass-14 audit (approvals / team /
+workspace work was already in it; none of those files are touched here).
+No migration required. No new dependencies.
+
+B1  components/clients/ClientsClient.tsx
+    Name sort compared lowercased strings with < / >, so "Émile" / "Ösel" sorted after
+    "Zed". Now a fixed-locale ('en') Intl.Collator (accent- and case-insensitive, numeric
+    aware). Locale is fixed, not the runtime default, so SSR and hydration agree.
+    The projects / since sorts are unchanged.
+
+B2  app/api/clients/[id]/contacts/route.ts, app/api/projects/route.ts
+    A client deleted after a route's existence check made the INSERT fail the client_id FK
+    (23503) and surfaced as "Internal server error". Both routes now answer 404
+    "Client not found". (projects/route.ts traced out of Clients.)
+
+B3  components/clients/ClientContactCard.tsx, BillingDetailsCard.tsx,
+    ArchiveClientButton.tsx, ClientContactsCard.tsx
+    Controls released / editors closed the moment router.refresh() was *called*, so the
+    old values showed until it landed (looked like the save was dropped). They now stay
+    busy, and saved editors stay open, until the refresh settles (useTransition), with an
+    8s backstop. In ClientContactsCard the close is per-form so saving one form never
+    discards another open form's input.
+
+B4  lib/utils/client-input.ts
+    EMAIL_RE accepted "_" in domain labels (a@exa_mple.com) — undeliverable. Domain labels
+    now use a stricter class; the local part still accepts "_". Verified against valid /
+    invalid / hostile (backtracking) inputs.
+
+NOT CHANGED (needs a product call): client Money block — "Invoiced" sums pre-tax subtotal
+while "Paid"/"Outstanding" use post-tax amounts (comes from lib/reports/contract-position.ts).
+
+TESTS
+    tests/clients-pass14-fixes.test.ts (new)
+
+VERIFY AFTER EXTRACTING
+    npx tsc --noEmit && npx vitest run tests/clients-pass14-fixes.test.ts && npx vitest run

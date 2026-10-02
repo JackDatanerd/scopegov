@@ -45,9 +45,14 @@ import { isValidTimeZone } from '@/lib/utils/timezone'
 //      unsupported lookbehind literal would throw at load time on older Safari.
 const EMAIL_BAD = String.raw`\s@\u0000-\u001f\u007f-\u009f\ud800-\udfff\u00ad\u034f\u061c\u115f\u1160\u180b-\u180e\u200b\u200e\u200f\u202a-\u202e\u2060-\u206f\u2800\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff9-\ufffd\u{e0000}-\u{e0fff}<>()\[\],;:"\\`
 const EMAIL_CHAR = String.raw`[^${EMAIL_BAD}.]`                       // any permitted character except the dot
-const EMAIL_LABEL = String.raw`[^${EMAIL_BAD}.\-](?:${EMAIL_CHAR}*[^${EMAIL_BAD}.\-])?` // a domain label: no leading / trailing hyphen
+// FIX (independent pass 14, section 14 — B4): `_` is a legal local-part character but is not valid in a
+// hostname, so `a@exa_mple.com` passed validation and bounced on the first send. Domain labels use a
+// stricter class that also excludes it (the local part keeps accepting it).
+const DOMAIN_BAD = EMAIL_BAD + '_'
+const DOMAIN_CHAR = String.raw`[^${DOMAIN_BAD}.]`
+const EMAIL_LABEL = String.raw`[^${DOMAIN_BAD}.\-](?:${DOMAIN_CHAR}*[^${DOMAIN_BAD}.\-])?` // a domain label: no leading / trailing hyphen
 export const EMAIL_RE = new RegExp(
-  String.raw`^(?=[^@]{1,64}@)${EMAIL_CHAR}+(?:\.${EMAIL_CHAR}+)*@(?:${EMAIL_LABEL}\.)+(?![0-9]+$)(?=${EMAIL_CHAR}{2})${EMAIL_LABEL}$`,
+  String.raw`^(?=[^@]{1,64}@)${EMAIL_CHAR}+(?:\.${EMAIL_CHAR}+)*@(?:${EMAIL_LABEL}\.)+(?![0-9]+$)(?=${DOMAIN_CHAR}{2})${EMAIL_LABEL}$`,
   'u',
 )
 

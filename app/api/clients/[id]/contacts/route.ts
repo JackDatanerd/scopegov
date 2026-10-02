@@ -140,6 +140,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (error?.message?.includes('contact_limit_exceeded')) {
       return NextResponse.json({ error: `A client can have at most ${MAX_CONTACTS_PER_CLIENT} contacts.` }, { status: 409 })
     }
+    // FIX (independent pass 14, section 14 — B2): client_contact_add locks the client row, but a client
+    // deleted after this route's existence check leaves nothing to lock, so the INSERT fails the
+    // client_id foreign key (23503). That is "the client is gone", not a server fault — a bare 500
+    // here told the user nothing and read like an outage.
+    if (error?.code === '23503') return NextResponse.json({ error: 'Client not found' }, { status: 404 })
     if (error) throw new Error(error.message)
 
     const { data: contact } = await (service as any).from('client_contacts').select(CONTACT_COLS).eq('id', newId).single()

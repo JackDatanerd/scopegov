@@ -10,6 +10,8 @@ import { formatDateInZone, isoDateInZone } from '@/lib/utils/timezone'
 
 type SortKey = 'name' | 'projects' | 'since'
 
+const NAME_COLLATOR = new Intl.Collator('en', { sensitivity: 'base', numeric: true })
+
 export default function ClientsClient({ clients, canCreate, canViewFinancials, canViewClientData, truncated = false, timeZone = 'UTC' }: {
   clients: any[]; canCreate: boolean; canViewFinancials: boolean; canViewClientData: boolean; truncated?: boolean; timeZone?: string
 }) {
@@ -62,7 +64,18 @@ export default function ClientsClient({ clients, canCreate, canViewFinancials, c
     const key = (c: any) => sortKey === 'name' ? String(c.name || '').toLowerCase()
       : sortKey === 'projects' ? (c.projects || []).length
       : String(c.created_at || '')
-    return [...rows].sort((x, y) => (key(x) < key(y) ? -1 : key(x) > key(y) ? 1 : 0) * dir)
+    // FIX (independent pass 14, section 14 — B1): names were compared as lowercased UTF-16 strings
+    // with < / >, so "Émile" or "Ösel" sorted after "Zed". Collator gives real alphabetical order
+    // (accents, case, embedded numbers). The locale is fixed ('en') rather than the runtime default:
+    // this memo also runs during SSR, and a server/browser locale difference would reorder the rows
+    // between the server HTML and hydration.
+    return [...rows].sort((x, y) => {
+      const a = key(x), b = key(y)
+      const cmp = sortKey === 'name'
+        ? NAME_COLLATOR.compare(String(a), String(b))
+        : (a < b ? -1 : a > b ? 1 : 0)   // projects (number) and since (ISO timestamp) compare directly
+      return cmp * dir
+    })
   }, [clients, search, showArchived, sortKey, sortDir])
 
   function toggleSort(k: SortKey) {

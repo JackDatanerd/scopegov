@@ -10,7 +10,7 @@
 // edit surface for everything BillingDetailsCard doesn't cover.
 
 'use client'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { isoDateInZone } from '@/lib/utils/timezone'
 
@@ -40,6 +40,25 @@ export default function ClientContactCard({
   const [editing, setEditing] = useState(false)
   const [saving,  setSaving]  = useState(false)
   const [error,   setError]   = useState('')
+  // FIX (independent pass 14, section 14 — B3): a successful save used to call setEditing(false) and then
+  // router.refresh() — so for the length of the refresh the read-only view rendered the OLD props, and the
+  // card looked as if the save had been thrown away. The card now stays in edit mode (busy, showing what
+  // was just saved) until the refresh has landed, then closes onto the new values. The timeout is only a
+  // backstop so a refresh that never settles can't leave the form stuck.
+  const [refreshing, startRefresh] = useTransition()
+  const closeAfterRefresh = useRef(false)
+  const backstop = useRef<ReturnType<typeof setTimeout> | null>(null)
+  function clearBackstop() { if (backstop.current) { clearTimeout(backstop.current); backstop.current = null } }
+  useEffect(() => {
+    if (closeAfterRefresh.current && !refreshing) { closeAfterRefresh.current = false; clearBackstop(); setEditing(false) }
+  }, [refreshing])
+  useEffect(() => clearBackstop, [])
+  function closeWhenRefreshed() {
+    closeAfterRefresh.current = true
+    startRefresh(() => { router.refresh() })
+    clearBackstop()
+    backstop.current = setTimeout(() => { backstop.current = null; if (closeAfterRefresh.current) { closeAfterRefresh.current = false; setEditing(false) } }, 8000)
+  }
 
   const [form, setForm] = useState({
     name: name || '',
@@ -97,8 +116,7 @@ export default function ClientContactCard({
       })
       const json = await res.json().catch(() => ({} as Record<string, any>))
       if (!res.ok) throw new Error(json.error || 'Failed to save')
-      setEditing(false)
-      router.refresh()
+      closeWhenRefreshed()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to save')
     } finally { setSaving(false) }
@@ -210,10 +228,10 @@ export default function ClientContactCard({
         <textarea className="finp" rows={3} value={form.notes} onChange={e => set('notes', e.target.value)} />
       </div>
       <div className="modal-footer" style={{ justifyContent: 'flex-start', gap: 8, paddingLeft: 0 }}>
-        <button className="btn btn-primary btn-sm" disabled={saving || !form.name.trim() || !form.email.trim()} onClick={save}>
-          {saving ? <span className="spin" /> : 'Save contact details'}
+        <button className="btn btn-primary btn-sm" disabled={saving || refreshing || !form.name.trim() || !form.email.trim()} onClick={save}>
+          {saving || refreshing ? <span className="spin" /> : 'Save contact details'}
         </button>
-        <button className="btn btn-ghost btn-sm" onClick={() => {
+        <button className="btn btn-ghost btn-sm" disabled={saving || refreshing} onClick={() => {
           setEditing(false)
           setForm({
             name: name || '', companyName: companyName || '', email: email || '', phone: phone || '',

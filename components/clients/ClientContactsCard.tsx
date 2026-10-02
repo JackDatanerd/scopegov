@@ -22,7 +22,7 @@
 // change orders.
 
 'use client'
-import { useState } from 'react'
+import { useEffect, useRef, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 
 interface Contact {
@@ -44,6 +44,23 @@ export default function ClientContactsCard({
   const [editingId, setEditingId] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [error, setError] = useState('')
+  // FIX (independent pass 14, section 14 — B3): every action here used to release its busy state (and the
+  // add / edit forms used to close) the moment router.refresh() was *called*, so until the refresh landed
+  // the list still showed the pre-change contacts — a removed contact still sitting there, the old primary
+  // still primary, a just-added contact missing — as if the action had been dropped. Now the controls stay
+  // disabled, and a saved form stays open, until the refresh has landed. Which form to close is tracked per
+  // save, because an add form and an edit form can be open together and saving one must not discard the
+  // other's unsaved input. The timeout is only a backstop.
+  const [refreshing, startRefresh] = useTransition()
+  const pendingClose = useRef<(() => void) | null>(null)
+  useEffect(() => {
+    if (pendingClose.current && !refreshing) { const fn = pendingClose.current; pendingClose.current = null; fn() }
+  }, [refreshing])
+  function refreshThenClose(close: () => void) {
+    pendingClose.current = close
+    startRefresh(() => { router.refresh() })
+    setTimeout(() => { if (pendingClose.current === close) { pendingClose.current = null; close() } }, 8000)
+  }
 
   async function remove(contactId: string, contactName: string, wasPrimary: boolean) {
     // One click used to delete a contact (and possibly the CC'd primary) irreversibly.
@@ -53,7 +70,7 @@ export default function ClientContactsCard({
       const res  = await fetch(`/api/clients/${clientId}/contacts/${contactId}`, { method: 'DELETE' })
       const json = await res.json().catch(() => ({} as Record<string, any>))
       if (!res.ok) throw new Error(json.error || 'Failed to remove contact')
-      router.refresh()
+      startRefresh(() => { router.refresh() })
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to remove contact')
     } finally { setBusyId(null) }
@@ -68,7 +85,7 @@ export default function ClientContactsCard({
       })
       const json = await res.json().catch(() => ({} as Record<string, any>))
       if (!res.ok) throw new Error(json.error || 'Failed to update contact')
-      router.refresh()
+      startRefresh(() => { router.refresh() })
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to update contact')
     } finally { setBusyId(null) }
@@ -105,7 +122,8 @@ export default function ClientContactsCard({
             key={c.id}
             clientId={clientId}
             initial={c}
-            onDone={() => { setEditingId(null); router.refresh() }}
+            busy={refreshing}
+            onDone={() => refreshThenClose(() => setEditingId(cur => (cur === c.id ? null : cur)))}
             onCancel={() => setEditingId(null)}
           />
         ) : (
@@ -124,12 +142,12 @@ export default function ClientContactsCard({
             {editable && (
               <div style={{ display: 'flex', gap: 4 }}>
                 {!c.is_primary && (
-                  <button className="btn btn-ghost btn-xs" disabled={busyId === c.id} onClick={() => makePrimary(c.id)}>
+                  <button className="btn btn-ghost btn-xs" disabled={busyId === c.id || refreshing} onClick={() => makePrimary(c.id)}>
                     Make primary
                   </button>
                 )}
-                <button className="btn btn-ghost btn-xs" disabled={busyId === c.id} onClick={() => setEditingId(c.id)}>Edit</button>
-                <button className="btn btn-ghost btn-xs" disabled={busyId === c.id} onClick={() => remove(c.id, c.name, c.is_primary)}>
+                <button className="btn btn-ghost btn-xs" disabled={busyId === c.id || refreshing} onClick={() => setEditingId(c.id)}>Edit</button>
+                <button className="btn btn-ghost btn-xs" disabled={busyId === c.id || refreshing} onClick={() => remove(c.id, c.name, c.is_primary)}>
                   {busyId === c.id ? <span className="spin" /> : 'Remove'}
                 </button>
               </div>
@@ -141,7 +159,8 @@ export default function ClientContactsCard({
       {adding && (
         <ContactForm
           clientId={clientId}
-          onDone={() => { setAdding(false); router.refresh() }}
+          busy={refreshing}
+          onDone={() => refreshThenClose(() => setAdding(false))}
           onCancel={() => setAdding(false)}
         />
       )}
@@ -149,8 +168,8 @@ export default function ClientContactsCard({
   )
 }
 
-function ContactForm({ clientId, initial, onDone, onCancel }: {
-  clientId: string; initial?: Contact; onDone: () => void; onCancel: () => void
+function ContactForm({ clientId, initial, onDone, onCancel, busy = false }: {
+  clientId: string; initial?: Contact; onDone: () => void; onCancel: () => void; busy?: boolean
 }) {
   const [name, setName] = useState(initial?.name || '')
   const [email, setEmail] = useState(initial?.email || '')
@@ -240,10 +259,10 @@ function ContactForm({ clientId, initial, onDone, onCancel }: {
         Primary contact
       </label>
       <div style={{ display: 'flex', gap: 8 }}>
-        <button className="btn btn-primary btn-xs" disabled={saving || !name.trim() || !email.trim()} onClick={save}>
-          {saving ? <span className="spin" /> : initial ? 'Save' : 'Add contact'}
+        <button className="btn btn-primary btn-xs" disabled={saving || busy || !name.trim() || !email.trim()} onClick={save}>
+          {saving || busy ? <span className="spin" /> : initial ? 'Save' : 'Add contact'}
         </button>
-        <button className="btn btn-ghost btn-xs" onClick={onCancel} disabled={saving}>Cancel</button>
+        <button className="btn btn-ghost btn-xs" onClick={onCancel} disabled={saving || busy}>Cancel</button>
       </div>
     </div>
   )

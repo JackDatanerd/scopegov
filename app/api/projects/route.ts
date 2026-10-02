@@ -188,6 +188,11 @@ export async function POST(request: NextRequest) {
       .select('id')
       .single()
 
+    // FIX (independent pass 14, section 14 — B2, traced out of Clients): the client was verified
+    // earlier in this request, but a delete / merge-then-delete landing in between fails the
+    // projects.client_id foreign key. Report that as the client being gone, not a 500.
+    if (projErr?.code === '23503' && /client_id/i.test(projErr.message || ''))
+      return NextResponse.json({ error: 'Client not found' }, { status: 404 })
     if (projErr) throw new Error(projErr.message)
 
     // Lost the count-then-insert race (a concurrent create took the last slot)? Undo — the project
