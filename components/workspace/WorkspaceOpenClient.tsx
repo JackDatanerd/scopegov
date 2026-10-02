@@ -29,7 +29,7 @@ function WorkspaceOpenInner() {
           })
         } catch { /* best-effort — fall through to /dashboard regardless */ }
       }
-      // FIX (Workspace lifecycle independent pass 5 — B1): this was router.replace('/dashboard'), a soft
+      // FIX (Workspace lifecycle independent pass 5 — B1): this used the client-side Next navigation helper to /dashboard, a soft
       // navigation. This page lives inside the (app) layout, which was already rendered for the
       // PREVIOUS active workspace, and Next does not re-render a shared layout on a soft navigation —
       // so <Sidebar> and <CommandPalette> kept the old workspace's name, logo, plan and permissions

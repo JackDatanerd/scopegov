@@ -105,21 +105,43 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   }
 }
 
+// Agency branding for the portal's terminal-state screens. The live (awaiting-signature)
+// response carries this inside `sow`, but terminal states return only `{ state }` — so a client
+// revisiting a signed/declined link (e.g. from the signed-copy email) rendered the page with
+// agencyName undefined ("The team at undefined has been notified") and lost the agency's
+// header branding. Returned as a sibling `branding` object so the page can use it in any state.
+async function portalBranding(sow: any, service: any) {
+  const workspace = sow.projects?.workspaces
+  let logoUrl: string | null = null
+  if (workspace?.logo_storage_path) {
+    const { data: urlData } = await (service as any).storage
+      .from('logos')
+      .getPublicUrl(workspace.logo_storage_path)
+    logoUrl = urlData?.publicUrl || null
+  }
+  return {
+    agencyName:  (workspace?.agency_name as string | undefined) || null,
+    brandColour: (workspace?.brand_colour as string | undefined) || '#1A5C3A',
+    logoUrl,
+  }
+}
+
 async function buildSowResponse(sow: any, service: any, userAgent: string | null) {
   if (sow.status === 'signed') {
     return {
       state: 'signed',
       signedBy: sow.signed_by, signedAt: sow.signed_at,
       clientSignatureData: sow.client_signature_data || null,
+      branding: await portalBranding(sow, service),
     }
   }
-  if (sow.status === 'withdrawn')  return { state: 'withdrawn' }
-  if (sow.status === 'declined')   return { state: 'declined' }
-  if (sow.status === 'expired')    return { state: 'expired' }
+  if (sow.status === 'withdrawn')  return { state: 'withdrawn', branding: await portalBranding(sow, service) }
+  if (sow.status === 'declined')   return { state: 'declined',  branding: await portalBranding(sow, service) }
+  if (sow.status === 'expired')    return { state: 'expired',   branding: await portalBranding(sow, service) }
   // BUG: changes_requested was never checked here, so revisiting a link
   // after requesting changes fell through to the default case below and
   // re-served the full signing form as if nothing had happened.
-  if (sow.status === 'changes_requested') return { state: 'changes_requested' }
+  if (sow.status === 'changes_requested') return { state: 'changes_requested', branding: await portalBranding(sow, service) }
 
   // FEATURE (portal audit, section 18): first time this document is
   // actually opened while still awaiting a response — the one signal this

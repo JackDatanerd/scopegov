@@ -60,6 +60,9 @@ export default function SowPortalPage() {
   const [error,     setError]     = useState('')
   const [activeSection, setActiveSection] = useState<string | null>(null)
   const [signedInfo, setSignedInfo] = useState<{ signedBy: string | null; clientSignatureData: string | null } | null>(null)
+  // Agency branding for terminal-state screens (signed / declined / ...), where the API returns
+  // no `sow` object. Without this a revisit rendered "The team at undefined".
+  const [branding, setBranding] = useState<{ agencyName: string | null; brandColour: string; logoUrl: string | null } | null>(null)
   const [sigEmpty,  setSigEmpty]  = useState(true)
   const sigPadRef = useRef<SignaturePadHandle>(null)
 
@@ -69,6 +72,7 @@ export default function SowPortalPage() {
       .then(json => {
         if (json.state) {
           setState(json.state as PortalState)
+          if (json.branding) setBranding(json.branding)
           if (json.state === 'signed') setSignedInfo({ signedBy: json.signedBy, clientSignatureData: json.clientSignatureData })
           return
         }
@@ -149,7 +153,9 @@ export default function SowPortalPage() {
     } finally { setSubmitting(false) }
   }
 
-  const accent = sow?.brandColour || '#1A5C3A'
+  const agencyLabel = sow?.agencyName || branding?.agencyName || ''
+  const shellLogo   = sow?.logoUrl ?? branding?.logoUrl ?? null
+  const accent = sow?.brandColour || branding?.brandColour || '#1A5C3A'
   // FIX (section-9 re-pass): lib/pdf/renderer.tsx deliberately excludes
   // 'parties' and 'signature' from its generic section loop because both
   // are already shown via dedicated blocks (the PDF's own Parties box
@@ -199,7 +205,7 @@ export default function SowPortalPage() {
 
   if (state === 'signed' || (state as string) === 'requesting' || (state as string) === 'changes_requested') {
     return (
-      <PortalShell accent={accent} agencyName={sow?.agencyName}>
+      <PortalShell accent={accent} agencyName={agencyLabel || undefined} logoUrl={shellLogo}>
         <div style={{ textAlign: 'center', padding: '80px 32px' }}>
           <div style={{ width: 64, height: 64, background: '#EDFAF2', border: '1px solid #B7DCC8', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px' }}>
             <i className={`ti ${state === 'signed' ? 'ti-check' : 'ti-send'}`} style={{ fontSize: 28, color: '#1A5C3A' }} />
@@ -209,7 +215,7 @@ export default function SowPortalPage() {
           </h2>
           <p style={{ fontSize: 14, color: '#555', lineHeight: 1.7, maxWidth: 360, margin: '0 auto' }}>
             {state === 'signed'
-              ? `Thank you${signedInfo?.signedBy ? `, ${signedInfo.signedBy}` : ''}. Your signed copy will be emailed to you. The team at ${sow?.agencyName} has been notified.`
+              ? `Thank you${signedInfo?.signedBy ? `, ${signedInfo.signedBy}` : ''}. Your signed copy will be emailed to you. ${agencyLabel ? `The team at ${agencyLabel}` : 'The agency'} has been notified.`
               : 'Your feedback has been sent. The team will review your notes and send an updated agreement.'}
           </p>
           {state === 'signed' && signedInfo?.clientSignatureData && (
@@ -234,14 +240,14 @@ export default function SowPortalPage() {
 
   if (state === 'declined') {
     return (
-      <PortalShell accent={accent} agencyName={sow?.agencyName}>
+      <PortalShell accent={accent} agencyName={agencyLabel || undefined} logoUrl={shellLogo}>
         <div style={{ textAlign: 'center', padding: '80px 32px' }}>
           <div style={{ width: 64, height: 64, background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px' }}>
             <i className="ti ti-x" style={{ fontSize: 28, color: '#B91C1C' }} />
           </div>
           <h2 style={{ fontFamily: 'Georgia,serif', fontSize: 22, margin: '0 0 10px' }}>Agreement declined</h2>
           <p style={{ fontSize: 14, color: '#555', lineHeight: 1.7, maxWidth: 360, margin: '0 auto' }}>
-            You have declined this Statement of Work. {sow?.agencyName} has been notified.
+            You have declined this Statement of Work. {agencyLabel || 'The agency'} has been notified.
           </p>
         </div>
       </PortalShell>

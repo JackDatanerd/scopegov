@@ -147,7 +147,11 @@ describe('finding 4 - gate during the final send', () => {
   it('a long-dead claim is not reported as an active send', async () => {
     const stale = new Date(Date.now() - 60 * 60 * 1000).toISOString()
     const r = await evaluateApprovalGate(gateService({ id: 'r1', status: 'pending', send_failed_at: null, sending_started_at: stale }), params)
-    expect(r.blocked).toBeUndefined()
+    // Since approvals pass 10 (B2) a dead claim is never answered "sending right now" NOR "waiting for approval":
+    // it is reported as approved-but-unsent (retry/cancel) once the heal could not clear it.
+    expect(r.error).not.toBe(SEND_IN_FLIGHT_MESSAGE)
+    expect(r).toMatchObject({ requiresApproval: true, blocked: true, status: 409, approvalRequestId: 'r1' })
+    expect(r.error).toMatch(/did not finish/)
   })
 })
 

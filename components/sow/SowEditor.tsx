@@ -268,9 +268,25 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
     }, 800)
   }
 
+  // On unmount (in-app navigation, which never fires beforeunload) a still-pending debounce
+  // must be WRITTEN, not just cancelled — clearing the timer alone silently dropped an MSA
+  // reference typed <800ms before clicking Back. keepalive lets the request outlive the page.
   useEffect(() => {
-    return () => { if (msaSaveTimer.current) clearTimeout(msaSaveTimer.current) }
-  }, [])
+    return () => {
+      if (!msaSaveTimer.current) return
+      clearTimeout(msaSaveTimer.current)
+      msaSaveTimer.current = null
+      const pending = msaPendingValue.current
+      if (pending !== null) {
+        void fetch(`/api/sow/${sowId}`, {
+          method:    'PATCH',
+          headers:   { 'Content-Type': 'application/json' },
+          body:      JSON.stringify({ msaReference: pending }),
+          keepalive: true,
+        }).catch(() => {})
+      }
+    }
+  }, [sowId])
 
   // FIX (re-audit, data-loss finding): warn before the tab closes/navigates
   // away while a section's edit hasn't been persisted yet — previously a

@@ -51,7 +51,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Please draw your signature to sign' }, { status: 400 })
 
     // Check revoked
-    const { revoked } = await checkRevokedToken(service, token)
+    const { revoked, reason: revokedReason } = await checkRevokedToken(service, token)
+    // 'superseded' is written ONLY by this route, at the moment of a successful signature (the original
+    // signing token is rotated for the long-lived post-signing one). A client whose first response was lost
+    // and who retries with the old link was told "no longer active" even though their signature had gone
+    // through; say what actually happened, matching the 409 a same-token double-submit already gets.
+    if (revoked && revokedReason === 'superseded')
+      return NextResponse.json({ error: 'This SOW was already signed' }, { status: 409 })
     if (revoked) return NextResponse.json({ error: 'This link is no longer active' }, { status: 410 })
 
     // Fetch SOW
