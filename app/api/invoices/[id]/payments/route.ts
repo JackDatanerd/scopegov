@@ -135,6 +135,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           error: 'This payment would exceed the invoice balance — someone may have just recorded another payment on it. Refresh and try again.',
         }, { status: 409 })
       }
+      // FIX (section-12 independent pass — bug): migration 136. A void landing between the status read above and
+      // this insert used to let the payment through onto a voided invoice; the guard trigger now refuses it.
+      if (error.message?.includes('draft or void invoice')) {
+        return NextResponse.json({
+          error: 'This invoice was just voided, so a payment can no longer be recorded on it — refresh the page.',
+        }, { status: 409 })
+      }
       console.error('Invoice payment insert error:', error)
       return NextResponse.json({ error: 'Failed to record payment' }, { status: 500 })
     }

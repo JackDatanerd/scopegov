@@ -1,0 +1,25 @@
+Invoicing (section 12) — independent pass 16
+
+B1 (Low, race)  supabase/migrations/136_invoice_payment_guard_rejects_void_and_draft.sql + both payment routes:
+    guard_invoice_payment_overpayment() locked the parent invoice row but only read its amount. A void that
+    committed between POST /api/invoices/[id]/payments' status check and its insert let the payment land on a
+    VOIDED invoice: amount_paid went above 0 on a void invoice, the void route's "money was received — give a
+    reason and confirm" safeguard (and amount_paid_at_void in the audit row) never ran, and finance was notified
+    of a payment on an invoice the client had just been told was void. The guard now reads the status under the
+    same FOR UPDATE lock (which waits for a concurrent void to commit) and refuses INSERT on a draft/void invoice
+    and any amount / date / invoice change to an existing payment on one. DELETE is untouched. POST and PATCH
+    payment routes map the error to a clean 409 instead of a 500.
+B2 (Low, UX)    app/(app)/invoices/page.tsx: a failed invoices query on page 1 only reached console.error, so the
+    registry rendered "No invoices yet" / "No invoices match"; a failed ledger read was swallowed into [], so the
+    strip showed "Collected $0.00" with no receivables or aging. The page now shows an error banner for either
+    failure, suppresses the empty state for a failed list, and shows "—" for Collected when the ledger failed.
+
+Tests: tests/invoicing-section12-pass-16.test.ts (source-level), tests/pg-replay.test.ts (new describe for
+migration 136, runs only with PG_REPLAY_URL).
+
+RUN MIGRATION 136 in Supabase before or together with the deploy (the routes tolerate it either way).
+Migration number: 136 was the next free number in this snapshot — if another session has since added a 136,
+renumber this file (and the two references in the tests) before committing.
+
+Not run: the suite (no node_modules / no network in this sandbox). Changes reviewed by hand, and the source
+assertions in the new test were dry-run with node against the edited files.

@@ -76,6 +76,9 @@ export async function PATCH(
     if (error) {
       if (error.message?.includes('exceed invoice balance'))
         return NextResponse.json({ error: 'That amount would take the payments past the invoice total.' }, { status: 409 })
+      // Migration 136: the invoice was voided after the status check above.
+      if (error.message?.includes('draft or void invoice'))
+        return NextResponse.json({ error: 'This invoice was just voided, so its payments can no longer be edited — refresh the page.' }, { status: 409 })
       console.error('Invoice payment update error:', error)
       return NextResponse.json({ error: 'Failed to update payment' }, { status: 500 })
     }

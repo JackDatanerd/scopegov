@@ -933,6 +933,44 @@ describe.skipIf(!URL_)('Postgres replay (migrations 001..latest on a real databa
 
 
   // ── Guardian / scope governance (migration 120) ───────────────────────────
+  describe('invoice payment guard refuses draft/void invoices (migration 136)', () => {
+    async function invoiceWithStatus(n: number, status: string): Promise<{ id: string }> {
+      await makeUser(n); await makeWorkspace(n, n, 'agency')
+      const [client] = await sql(`INSERT INTO public.clients (workspace_id, name, email) VALUES ($1,'C','c${n}@x.dev') RETURNING id`, [W(n)])
+      const [proj] = await sql(`INSERT INTO public.projects (workspace_id, client_id, name, type, created_by) VALUES ($1,$2,'P','web',$3) RETURNING id`, [W(n), client.id, U(n)])
+      const c = await pool.connect()
+      try {
+        await c.query('BEGIN')
+        // Only the invoice row matters here; skip FK/trigger work for the document it points at.
+        await c.query(`SET LOCAL session_replication_role = replica`)
+        const { rows: [inv] } = await c.query(`INSERT INTO public.invoices (workspace_id, project_id, sow_id, title, amount, status, created_by) VALUES ($1,$2,gen_random_uuid(),'Inv',100,$3,$4) RETURNING id`, [W(n), proj.id, status, U(n)])
+        await c.query('COMMIT')
+        return inv
+      } catch (e) { await c.query('ROLLBACK').catch(() => {}); throw e } finally { c.release() }
+    }
+
+    it('rejects a payment on a void invoice and on a draft invoice', async () => {
+      for (const [n, status] of [[220, 'void'], [221, 'draft']] as const) {
+        const inv = await invoiceWithStatus(n, status)
+        await expect(sql(`INSERT INTO public.invoice_payments (invoice_id, amount, paid_at, recorded_by) VALUES ($1,10,current_date,$2)`, [inv.id, U(n)]))
+          .rejects.toThrow(/draft or void invoice/)
+        const [{ n: rows }] = await sql(`SELECT count(*)::int AS n FROM public.invoice_payments WHERE invoice_id = $1`, [inv.id])
+        expect(rows).toBe(0)
+      }
+    })
+
+    it('still accepts a payment on a sent invoice and still refuses an overpayment', async () => {
+      const inv = await invoiceWithStatus(222, 'sent')
+      await sql(`INSERT INTO public.invoice_payments (invoice_id, amount, paid_at, recorded_by) VALUES ($1,40,current_date,$2)`, [inv.id, U(222)])
+      await expect(sql(`INSERT INTO public.invoice_payments (invoice_id, amount, paid_at, recorded_by) VALUES ($1,61,current_date,$2)`, [inv.id, U(222)]))
+        .rejects.toThrow(/exceed invoice balance/)
+    })
+
+    it('migration 136 can be applied a second time without error', async () => {
+      await reapply('136_')
+    })
+  })
+
   describe('Guardian scope snapshot append + repairs (migration 120)', () => {
     const P = 'a0000000-0000-4000-8000-00000000000a'
     const WS = 'b0000000-0000-4000-8000-00000000000b'

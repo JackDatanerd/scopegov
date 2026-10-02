@@ -145,6 +145,10 @@ export default async function InvoicesPage({ searchParams }: {
   // already-collected cash silently vanished from "Collected" the moment its
   // invoice was voided. Only draft needs excluding here — a draft can't carry a
   // payment in the first place.
+  // FIX (section-12 independent pass — bug): a failed ledger read used to be swallowed into [] — the strip then
+  // showed "Collected $0.00", no receivables and no aging, indistinguishable from a workspace that has collected
+  // nothing. Remember that it failed so the page can say so.
+  let ledgerFailed = false
   const ledgerRows = await fetchAll<any>('invoice registry ledger', (fromRow, toRow) => {
     let q = (service as any)
       .from('invoices').select('id, currency, amount, amount_paid, status, due_date, projects!inner(deleted_at)')
@@ -153,7 +157,7 @@ export default async function InvoicesPage({ searchParams }: {
       .order('id').range(fromRow, toRow)
     if (allowedProjectIds !== null) q = q.in('project_id', allowedProjectIds)
     return q
-  }).catch((e: unknown) => { console.error('Invoices registry ledger error:', e); return [] as any[] })
+  }).catch((e: unknown) => { console.error('Invoices registry ledger error:', e); ledgerFailed = true; return [] as any[] })
 
   const paidByCurrency = new Map<string, number>()
   const receivables = new Map<string, { outstanding: number; buckets: number[] }>()
@@ -239,6 +243,19 @@ export default async function InvoicesPage({ searchParams }: {
         </div>
       )}
 
+      {/* FIX (section-12 independent pass — bug): a failed invoices query only reached console.error, so page 1
+          rendered "No invoices yet" / "No invoices match" for a workspace whose list simply failed to load; the
+          money strip had the same blind spot. Say so instead of presenting an empty ledger. */}
+      {(invErr || ledgerFailed) && (
+        <div className="banner banner-danger" style={{ marginBottom: 20 }}>
+          <span>
+            {invErr
+              ? 'The invoice list could not be loaded, so what you see below may be incomplete. Reload the page to try again.'
+              : 'The collected and receivables figures could not be loaded and are not shown correctly. Reload the page to try again.'}
+          </span>
+        </div>
+      )}
+
       <div className="mstrip" style={{ marginBottom: 22 }}>
         <div className="mc">
           <div className="mc-lbl">Total invoices</div>
@@ -265,7 +282,9 @@ export default async function InvoicesPage({ searchParams }: {
               workspace's default currency. Most agencies only ever see
               one line here — this only changes anything for a workspace
               that genuinely has invoices in more than one currency. */}
-          {paidByCurrency.size === 0 ? (
+          {ledgerFailed ? (
+            <div className="mc-val green">—</div>
+          ) : paidByCurrency.size === 0 ? (
             <div className="mc-val green">{formatCurrencyExact(0, wsCurrency)}</div>
           ) : (
             Array.from(paidByCurrency.entries()).map(([cur, amount], i) => (
@@ -350,7 +369,7 @@ export default async function InvoicesPage({ searchParams }: {
         </div>
       )}
 
-      {!safeInvoices.length ? (
+      {invErr && !safeInvoices.length ? null : !safeInvoices.length ? (
         <div className="surface">
           <div className="empty-state">
             <i className="ti ti-receipt-2 empty-state-icon" />
