@@ -43,10 +43,16 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     const notFound = () => NextResponse.json({ error: 'Approval request not found' }, { status: 404 })
     if (!row) return notFound()
 
-    const { data: member } = await (service as any)
+    const { data: member, error: memberErr } = await (service as any)
       .from('workspace_members').select('role_id')
       .eq('workspace_id', session.workspaceId).eq('user_id', session.id).eq('status', 'active')
       .maybeSingle()
+    // FIX (approvals pass, B3): a failed read left roleId = null, so a role-assigned approver was told 404 "not found"
+    // for a request that was theirs.
+    if (memberErr) {
+      console.error('Approval request GET: member lookup failed:', memberErr)
+      return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    }
     const roleId: string | null = member?.role_id ?? null
 
     const isRequester = row.requested_by === session.id

@@ -258,7 +258,10 @@ export async function evaluateApprovalGate(service: any, params: GateParams): Pr
         // approval always fell back to sendSowDocument/sendCoDocument's 30-day default,
         // silently overriding whatever expiry the requester actually chose before the
         // chain even started. Read back by dispatchSend below.
-        expires_in_days: Number.isFinite(params.expiresInDays) ? params.expiresInDays : null,
+        // FIX (approvals pass, B5): Number.isFinite() on the raw value dropped a numeric string ("14") that the direct
+        // send path (Number(...) in send-sow/send-co) accepts, so the same request got 14 days sent directly but the
+        // 30-day default when it went through an approval. Coerce the same way; the send functions clamp the range.
+        expires_in_days: (() => { const d = Number(params.expiresInDays); return Number.isFinite(d) && d >= 1 ? Math.trunc(d) : null })(),
       },
     })
     .select('id')
@@ -486,22 +489,38 @@ export type DecisionResult =
   | { ok: false; error: string; status: number }
 
 export async function recordApprovalDecision(service: any, params: DecisionParams): Promise<DecisionResult> {
-  const { data: request } = await service
+  // FIX (approvals pass, B2): none of the reads in this function looked at `error` — supabase-js resolves to
+  // { data: null, error } rather than throwing, so a transient failure on the request or step read answered a
+  // misleading 404 "not found" / 400 "already decided", and the two reads that ran AFTER decide_approval_step
+  // committed (the requester, the next step) silently skipped telling the next approver or parked a final approval
+  // as "not sent" for a false reason. Every read is now made BEFORE the decision is recorded and a failed one is a
+  // retryable 500 with nothing committed.
+  const { data: request, error: requestErr } = await service
     .from('approval_requests')
     .select('id, workspace_id, workflow_id, document_type, document_id, project_id, requested_by, status, current_step, total_steps, context, allow_self_approval, require_distinct_approvers')
     .eq('id', params.requestId)
     .eq('workspace_id', params.actor.workspaceId)
-    .single()
+    .maybeSingle()
+  if (requestErr) {
+    console.error('recordApprovalDecision: request lookup failed:', requestErr)
+    return { ok: false, error: 'Could not load this approval request — please try again.', status: 500 }
+  }
 
   if (!request) return { ok: false, error: 'Approval request not found', status: 404 }
   if (request.status !== 'pending') return { ok: false, error: 'This request has already been decided', status: 400 }
 
-  const { data: step } = await service
+  const { data: stepRows, error: stepErr } = await service
     .from('approval_steps')
     .select('id, step_order, approver_role_id, approver_user_id, status')
     .eq('request_id', request.id)
-    .eq('step_order', request.current_step)
-    .single()
+    .in('step_order', [request.current_step, request.current_step + 1])
+  if (stepErr) {
+    console.error('recordApprovalDecision: step lookup failed:', stepErr)
+    return { ok: false, error: 'Could not load this approval step — please try again.', status: 500 }
+  }
+  const step = (stepRows || []).find((s: any) => s.step_order === request.current_step)
+  // The step after this one, read now so the notification after an 'advanced' outcome needs no further read.
+  const nextStep = (stepRows || []).find((s: any) => s.step_order === request.current_step + 1) || null
 
   if (!step || step.status !== 'pending') return { ok: false, error: 'This step has already been decided', status: 400 }
 
@@ -583,6 +602,13 @@ export async function recordApprovalDecision(service: any, params: DecisionParam
   // reassignment exists to guarantee. Pass the exact identity `eligible`
   // was computed against so the function can re-verify it against the row
   // it actually holds locked, not the stale one read in JS.
+  const { data: requester, error: requesterErr } = await service
+    .from('users').select('id, name, email').eq('id', request.requested_by).maybeSingle()
+  if (requesterErr) {
+    console.error('recordApprovalDecision: requester lookup failed:', requesterErr)
+    return { ok: false, error: 'Could not record your decision — please try again.', status: 500 }
+  }
+
   const { data: outcome, error: decideErr } = await service.rpc('decide_approval_step', {
     p_request_id: request.id, p_step_id: step.id, p_decision: params.decision,
     p_actor_id: params.actor.id, p_note: params.note || null,
@@ -600,9 +626,6 @@ export async function recordApprovalDecision(service: any, params: DecisionParam
     console.error('decide_approval_step returned an unexpected outcome:', outcome)
     return { ok: false, error: 'Could not record your decision — please try again.', status: 500 }
   }
-
-  const { data: requester } = await service
-    .from('users').select('id, name, email').eq('id', request.requested_by).maybeSingle()
 
   if (outcome === 'rejected') {
     await logAudit(service, {
@@ -634,12 +657,6 @@ export async function recordApprovalDecision(service: any, params: DecisionParam
       entityId: request.document_id, entityName: docTitle,
       metadata: { approval_request_id: request.id, step: step.step_order, note: params.note || null },
     })
-
-    const nextStepOrder = request.current_step + 1
-    const { data: nextStep } = await service
-      .from('approval_steps')
-      .select('step_order, approver_role_id, approver_user_id')
-      .eq('request_id', request.id).eq('step_order', nextStepOrder).single()
 
     if (nextStep && requester) {
       await notifyStepApprovers(service, {
@@ -818,7 +835,7 @@ export async function cancelApprovalRequest(service: any, params: {
   // row matches (see getPendingApprovalForDocument), returning null — so the
   // cancel silently did nothing while a chain stayed live. Scoped to the
   // workspace and newest-first instead.
-  const { data: requestRows } = await service
+  const { data: requestRows, error: requestRowsErr } = await service
     .from('approval_requests')
     .select('id, project_id, current_step, context, status, requested_by, sending_started_at')
     .eq('workspace_id', params.workspaceId)
@@ -827,6 +844,12 @@ export async function cancelApprovalRequest(service: any, params: {
     .or('status.eq.pending,and(status.eq.approved,send_failed_at.not.is.null)')
     .order('created_at', { ascending: false })
     .limit(1)
+  // FIX (approvals pass, B1): a failed read answered { cancelled: false, blockedBySend: false } — exactly "nothing to
+  // cancel" — and every caller that destroys or supersedes the document (CO withdraw / close / revise / exception,
+  // invoice void / delete, project delete / complete) carried on, leaving a live 'pending' request (edit lock, a row in
+  // approvers' queues, an auto-send that can never succeed) pointing at a document that no longer exists. Throw, like
+  // getPendingApprovalForDocument: every caller runs inside its route's try/catch.
+  if (requestRowsErr) throw new Error(`could not look up the approval request to cancel: ${requestRowsErr.message}`)
   const request = requestRows && requestRows[0]
   if (!request) return { cancelled: false, blockedBySend: false }
 
@@ -856,7 +879,7 @@ export async function cancelApprovalRequest(service: any, params: {
   // claim (older than SEND_CLAIM_WINDOW_MS) stays cancellable, matching the pre-read above. Written as a
   // single OR of AND-groups so PostgREST evaluates it as one (status) x (claim) condition.
   const staleBefore = new Date(Date.now() - SEND_CLAIM_WINDOW_MS).toISOString()
-  const { data: cancelled } = await service.from('approval_requests').update({
+  const { data: cancelled, error: cancelWriteErr } = await service.from('approval_requests').update({
     status: 'cancelled', decided_at: now, updated_at: now,
   }).eq('id', request.id)
     .or([
@@ -866,6 +889,8 @@ export async function cancelApprovalRequest(service: any, params: {
       `and(status.eq.approved,send_failed_at.not.is.null,sending_started_at.lt.${staleBefore})`,
     ].join(','))
     .select('id').maybeSingle()
+  // FIX (approvals pass, B1): a failed write was read as "matched nothing" and re-read below as already resolved.
+  if (cancelWriteErr) throw new Error(`could not cancel the approval request: ${cancelWriteErr.message}`)
   if (!cancelled) {
     // The write matched nothing: either a decision/retry changed the request in the gap (a claim may now be
     // live) or it was already resolved. Re-read so the caller can tell "send started" from "nothing to do".
@@ -885,14 +910,23 @@ export async function cancelApprovalRequest(service: any, params: {
   // shouldn't be re-notified about one going away either). In-app only —
   // this is a lower-urgency, no-action-needed heads-up, not worth a new
   // email template in its own right.
-  const { data: pendingStep } = await service
+  const { data: pendingStep, error: pendingStepErr } = await service
     .from('approval_steps')
     .select('approver_role_id, approver_user_id')
     .eq('request_id', request.id).eq('step_order', request.current_step).eq('status', 'pending')
     .maybeSingle()
+  // Best-effort heads-up only — the request is already cancelled — but leave a trail instead of silence.
+  if (pendingStepErr) console.error('cancelApprovalRequest: could not read the pending step for the heads-up notification:', pendingStepErr)
 
-  await service.from('approval_steps').update({ status: 'skipped' })
-    .eq('request_id', request.id).eq('status', 'pending')
+  // FIX (approvals pass, B1): the result was never read. The request is already 'cancelled' (committed above), so this
+  // cannot undo that — but steps left 'pending' under a cancelled request render as live "Awaiting decision" steps.
+  // Retry once, then leave a trail.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const { error: skipErr } = await service.from('approval_steps').update({ status: 'skipped' })
+      .eq('request_id', request.id).eq('status', 'pending')
+    if (!skipErr) break
+    console.error(`cancelApprovalRequest: could not mark the remaining steps skipped (attempt ${attempt + 1}):`, skipErr, request.id)
+  }
 
   if (pendingStep) {
     try {
@@ -1004,20 +1038,26 @@ export async function cancelApprovalRequest(service: any, params: {
 export async function sendApprovalReminder(
   service: any, requestId: string
 ): Promise<'sent' | 'no_recipients' | 'not_found'> {
-  const { data: request } = await service
+  // FIX (approvals pass, B2): these three reads ignored `error`, so a transient failure came back as 'not_found' and
+  // the cron counted it as a resolved/orphaned row. Throw — the cron records it as a row error (same contract as the
+  // notification lookup below).
+  const { data: request, error: reminderReqErr } = await service
     .from('approval_requests')
     .select('id, workspace_id, document_type, current_step, total_steps, context, requested_by, project_id, allow_self_approval, require_distinct_approvers')
-    .eq('id', requestId).eq('status', 'pending').single()
+    .eq('id', requestId).eq('status', 'pending').maybeSingle()
+  if (reminderReqErr) throw new Error(`approval reminder: request lookup failed: ${reminderReqErr.message}`)
   if (!request) return 'not_found'
 
-  const { data: step } = await service
+  const { data: step, error: reminderStepErr } = await service
     .from('approval_steps')
     .select('step_order, approver_role_id, approver_user_id')
     .eq('request_id', requestId).eq('step_order', request.current_step).eq('status', 'pending').maybeSingle()
+  if (reminderStepErr) throw new Error(`approval reminder: step lookup failed: ${reminderStepErr.message}`)
   if (!step) return 'not_found'
 
-  const { data: requester } = await service
+  const { data: requester, error: reminderRequesterErr } = await service
     .from('users').select('id, name, email').eq('id', request.requested_by).maybeSingle()
+  if (reminderRequesterErr) throw new Error(`approval reminder: requester lookup failed: ${reminderRequesterErr.message}`)
   if (!requester) return 'not_found'
 
   // Throwing core on purpose (see notifyStepApprovers): a failed recipient lookup must surface as a cron row
@@ -1069,27 +1109,41 @@ export async function retryFailedSend(service: any, params: {
   workspaceId: string
   actor: { id: string; email: string; name: string }
 }): Promise<{ ok: true; deliveryWarning?: string | null } | { ok: false; error: string }> {
-  const { data: request } = await service
+  // FIX (approvals pass, B2): neither read below looked at `error` — a transient failure answered "not found" /
+  // "the requester no longer has an account" (and the latter told the user to cancel a request that was fine).
+  const { data: request, error: retryReqErr } = await service
     .from('approval_requests')
     .select('id, document_type, document_id, project_id, context, status, send_failed_at, requested_by')
-    .eq('id', params.requestId).eq('workspace_id', params.workspaceId).single()
+    .eq('id', params.requestId).eq('workspace_id', params.workspaceId).maybeSingle()
+  if (retryReqErr) {
+    console.error('retryFailedSend: request lookup failed:', retryReqErr)
+    return { ok: false, error: 'Could not load this approval request — please try again.' }
+  }
 
   if (!request) return { ok: false, error: 'Approval request not found' }
   if (request.status !== 'approved' || !request.send_failed_at)
     return { ok: false, error: 'This request has nothing to retry' }
 
-  const { data: requester } = await service
+  const { data: requester, error: retryRequesterErr } = await service
     .from('users').select('id, name, email').eq('id', request.requested_by).maybeSingle()
+  if (retryRequesterErr) {
+    console.error('retryFailedSend: requester lookup failed:', retryRequesterErr)
+    return { ok: false, error: 'Could not look up the person who requested this — please try again.' }
+  }
   if (!requester)
     return { ok: false, error: 'The person who requested this no longer has an account, so it could not be sent automatically. Cancel this request and send the document again.' }
 
   const claimStamp = new Date().toISOString()
   const staleBefore = new Date(Date.now() - SEND_CLAIM_WINDOW_MS).toISOString()
-  const { data: claimed } = await service.from('approval_requests')
+  const { data: claimed, error: claimErr } = await service.from('approval_requests')
     .update({ sending_started_at: claimStamp })
     .eq('id', request.id).eq('status', 'approved').not('send_failed_at', 'is', null)
     .or(`sending_started_at.is.null,sending_started_at.lt.${staleBefore}`)
     .select('id')
+  if (claimErr) {
+    console.error('retryFailedSend: could not claim the send:', claimErr)
+    return { ok: false, error: 'Could not start the retry — please try again.' }
+  }
   if (!claimed || claimed.length === 0)
     return { ok: false, error: 'A retry is already in progress — give it a moment, then refresh.' }
 
@@ -1238,18 +1292,28 @@ export async function reassignApprovalStep(service: any, params: {
   target: { userId?: string | null; roleId?: string | null }
   reason?: string | null
 }): Promise<{ ok: true } | { ok: false; error: string; status: number }> {
-  const { data: request } = await service
+  // FIX (approvals pass, B2): the request and step reads here ignored `error` too (404 "not found" / 409 "already
+  // decided" for a transient failure).
+  const { data: request, error: reassignReqErr } = await service
     .from('approval_requests')
     .select('id, project_id, document_type, document_id, requested_by, status, current_step, total_steps, context, allow_self_approval, require_distinct_approvers, sending_started_at')
-    .eq('id', params.requestId).eq('workspace_id', params.workspaceId).single()
+    .eq('id', params.requestId).eq('workspace_id', params.workspaceId).maybeSingle()
+  if (reassignReqErr) {
+    console.error('reassignApprovalStep: request lookup failed:', reassignReqErr)
+    return { ok: false, error: 'Could not load this approval request — please try again.', status: 500 }
+  }
   if (!request) return { ok: false, error: 'Approval request not found', status: 404 }
   if (request.status !== 'pending' || request.sending_started_at)
     return { ok: false, error: 'Only a request that is still waiting on an approver can be reassigned', status: 409 }
 
-  const { data: step } = await service
+  const { data: step, error: reassignStepErr } = await service
     .from('approval_steps')
     .select('id, step_order, approver_role_id, approver_user_id, status')
-    .eq('request_id', request.id).eq('step_order', request.current_step).single()
+    .eq('request_id', request.id).eq('step_order', request.current_step).maybeSingle()
+  if (reassignStepErr) {
+    console.error('reassignApprovalStep: step lookup failed:', reassignStepErr)
+    return { ok: false, error: 'Could not load this approval step — please try again.', status: 500 }
+  }
   if (!step || step.status !== 'pending')
     return { ok: false, error: 'This step has already been decided', status: 409 }
 
@@ -1318,9 +1382,13 @@ export async function reassignApprovalStep(service: any, params: {
       return { ok: false, error: `That reassignment would strand a later step: ${feasibility.error}`, status: 409 }
   }
 
-  const { data: updated } = await service.from('approval_steps')
+  const { data: updated, error: reassignWriteErr } = await service.from('approval_steps')
     .update({ approver_user_id: targetUser, approver_role_id: targetRole })
     .eq('id', step.id).eq('status', 'pending').select('id').maybeSingle()
+  if (reassignWriteErr) {
+    console.error('reassignApprovalStep: could not save the reassignment:', reassignWriteErr)
+    return { ok: false, error: 'Could not save the reassignment — nothing was changed. Please try again.', status: 500 }
+  }
   if (!updated) return { ok: false, error: 'This step has already been decided', status: 409 }
 
   const now = new Date().toISOString()

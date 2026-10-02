@@ -95,13 +95,13 @@ describe('recordApprovalDecision four-eyes check fails closed', () => {
   const step = { id: 's2', step_order: 2, approver_role_id: null, approver_user_id: 'u2', status: 'pending' }
 
   it('a failed "did this person already approve an earlier step" read refuses instead of waving them through', async () => {
-    const svc: any = fake({ approval_requests: ok(request), approval_steps: [ok(step), boom] })
+    const svc: any = fake({ approval_requests: ok(request), approval_steps: [ok([step]), boom] })
     const r = await recordApprovalDecision(svc, { requestId: 'r1', actor, decision: 'approved' })
     expect(r).toMatchObject({ ok: false, status: 500 })
   })
   it('a failed role lookup for a role-assigned step is a retryable 500, not "you are not an approver"', async () => {
     const roleStep = { ...step, approver_user_id: null, approver_role_id: 'role1' }
-    const svc: any = fake({ approval_requests: ok(request), approval_steps: ok(roleStep), workspace_members: boom })
+    const svc: any = fake({ approval_requests: ok(request), approval_steps: ok([roleStep]), workspace_members: boom })
     const r = await recordApprovalDecision(svc, { requestId: 'r1', actor, decision: 'approved' })
     expect(r).toMatchObject({ ok: false, status: 500 })
   })

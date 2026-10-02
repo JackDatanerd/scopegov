@@ -46,11 +46,14 @@ export const LIGHT_REQUEST_FIELDS = `
 // reason, with no behavior change for any currently-active session.
 export async function allowedProjectIdsFor(service: any, session: any): Promise<Set<string> | null> {
   if (hasPermission(session, 'VIEW_ALL_PROJECTS')) return null
-  const { data: ids } = await service
+  const { data: ids, error } = await service
     .from('project_members_active')
     .select('project_id')
     .eq('project_workspace_id', session.workspaceId)
     .eq('member_user_id', session.id)
+  // FIX (approvals pass, B3): a failed read became an empty Set — "this member can see no projects" — so a restricted
+  // approver's queue and sidebar badge silently emptied. Callers run inside the route's try/catch (500).
+  if (error) throw new Error(`could not load the viewer's project access: ${error.message}`)
   return new Set((ids || []).map((r: any) => r.project_id))
 }
 

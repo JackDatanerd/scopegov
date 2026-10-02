@@ -5,6 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { reassignApprovalStep } from '@/lib/approvals/engine'
 import { canReadProject } from '@/lib/utils/project-access'
+import { isUuid } from '@/lib/approvals/workflow-input'
 
 // FEATURE (section-11 audit, pass 2): hand the CURRENT step of a pending
 // request to a different person or role. Steps are snapshots of the workflow
@@ -24,6 +25,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
     const userId = typeof body.userId === 'string' && body.userId ? body.userId : null
     const roleId = typeof body.roleId === 'string' && body.roleId ? body.roleId : null
+    // FIX (approvals pass, B4): the ids were never shape-checked, so a non-uuid value reached Postgres and came back as an
+    // opaque 500 instead of a 400 (the workflow routes already run every id through the same check).
+    if ((userId && !isUuid(userId)) || (roleId && !isUuid(roleId)))
+      return NextResponse.json({ error: 'The selected approver is invalid' }, { status: 400 })
     const reason = typeof body.reason === 'string' ? body.reason.trim() : ''
     if (reason.length > 500)
       return NextResponse.json({ error: 'Please keep the reason under 500 characters' }, { status: 400 })

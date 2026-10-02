@@ -1,0 +1,16 @@
+Approvals engine (section 11) — fail-closed reads, pass 12
+
+B1  lib/approvals/engine.ts cancelApprovalRequest: a failed lookup answered "nothing to cancel" and every
+    caller that destroys/supersedes a document carried on with the request still live. Now throws on a failed
+    lookup and on a failed cancel write; the step-skip write is retried once and logged.
+B2  recordApprovalDecision: request/step/requester/next-step reads now all happen BEFORE decide_approval_step
+    (failed read = retryable 500, nothing committed). Next step is read together with the current one.
+    retryFailedSend (request, requester, claim), reassignApprovalStep (request, step, write) and
+    sendApprovalReminder (throws into the cron's row error) no longer read a failed query as not-found.
+B3  GET /api/approvals and /api/approvals/[id]: failed member-role lookup is a 500 (was a silently empty
+    queue / 404). lib/approvals/list.ts allowedProjectIdsFor throws on a failed read (was an empty set).
+B4  POST /api/approvals/[id]/reassign: userId/roleId are uuid-checked (400, was a Postgres 500).
+B5  evaluateApprovalGate: expiresInDays coerced with Number() like send-sow/send-co, so "14" survives the gate.
+
+Tests: tests/approvals-pass-11-fixes.test.ts (new, 21); tests/approvals-fail-closed.test.ts mocks updated to the
+row-array step read. No migration required.

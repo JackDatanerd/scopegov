@@ -36,13 +36,19 @@ export async function GET(request: NextRequest) {
     if (typeFilter && !TYPE_FILTERS.has(typeFilter))
       return NextResponse.json({ error: 'Invalid type filter' }, { status: 400 })
 
-    const { data: member } = await (service as any)
+    const { data: member, error: memberErr } = await (service as any)
       .from('workspace_members')
       .select('role_id')
       .eq('workspace_id', session.workspaceId)
       .eq('user_id', session.id)
       .eq('status', 'active')
       .maybeSingle()
+    // FIX (approvals pass, B3): a failed read left roleId = null, so every role-assigned request silently dropped out
+    // of "My queue" and the sidebar badge (200, wrong count) until the next load. Report the failure instead.
+    if (memberErr) {
+      console.error('Approvals list: member lookup failed:', memberErr)
+      return NextResponse.json({ error: 'Could not load approvals' }, { status: 500 })
+    }
     const roleId: string | null = member?.role_id ?? null
 
     // FIX (independent pass 3): lazy self-heal — see healStuckSends' own
