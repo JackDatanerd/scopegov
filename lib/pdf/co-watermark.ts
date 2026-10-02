@@ -16,3 +16,22 @@ export function coWatermarkLabel(status: string | null | undefined): string | nu
     default: return 'DRAFT'
   }
 }
+
+/**
+ * The status badge printed in a CO PDF's header. 'awaiting_response' used to read "Pending Approval", but that status
+ * means the CO has been SENT and is waiting on the CLIENT — a change order waiting on an internal approval is still a
+ * draft — and the watermark on the same page says UNSIGNED. (Split out here so it can be unit-tested.)
+ */
+export const CO_STATUS_LABEL: Record<string, string> = {
+  draft:                     'Draft',
+  awaiting_response:         'Awaiting Response',
+  awaiting_countersignature: 'Awaiting Countersignature',
+  accepted:                  'Accepted',
+  declined:                  'Declined',
+  countered:                 'Countered',
+  closed:                    'Closed',
+  stalled:                   'Stalled',
+  withdrawn:                 'Withdrawn',
+  exception_granted:         'Exception Granted',
+  expired:                   'Expired',
+}

@@ -15,7 +15,7 @@ import { isTableSection, milestoneBlockLabels, type SowTableRow } from '@/lib/so
 import { formatAddressLines, type LegalAddress } from '@/lib/utils/format'
 import { PDF_FONT, sanitizeForPdf } from '@/lib/pdf/fonts'
 import { mapPdfSymbols } from '@/lib/pdf/pdf-symbols'
-import { coWatermarkLabel } from '@/lib/pdf/co-watermark'
+import { coWatermarkLabel, CO_STATUS_LABEL } from '@/lib/pdf/co-watermark'
 import { invoiceSingleLineAmount } from '@/lib/pdf/invoice-line'
 
 // Phase 11: the ScopeGov credit in the footer of every document is a real
@@ -546,24 +546,11 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
 // ── CO PDF ───────────────────────────────────────────────────
 
 // Firm-issued change orders always show a status badge, even (especially)
-// before acceptance — Meridian's sample shows "PENDING APPROVAL" front
+// before acceptance — the badge (labels live in lib/pdf/co-watermark.ts) sits front
 // and center. `accepted`/`declined` reuse the signature block's own
 // visual treatment below, so they're intentionally muted here to avoid
 // redundant emphasis; the states that most need a loud badge are the
 // in-limbo ones where nothing else on the page communicates status.
-const CO_STATUS_LABEL: Record<string, string> = {
-  draft:                     'Draft',
-  awaiting_response:         'Pending Approval',
-  awaiting_countersignature: 'Awaiting Countersignature',
-  accepted:                  'Accepted',
-  declined:                  'Declined',
-  countered:                 'Countered',
-  closed:                    'Closed',
-  stalled:                   'Stalled',
-  withdrawn:                 'Withdrawn',
-  exception_granted:         'Exception Granted',
-  expired:                   'Expired',
-}
 
 
 const CO_STATUS_LOUD = new Set(['awaiting_response', 'awaiting_countersignature', 'countered', 'stalled'])

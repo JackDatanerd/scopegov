@@ -1,0 +1,21 @@
+CHANGES — Section 10 (CO logic), independent pass 5
+
+BUG CO-E1 (medium): the change-order editor formatted every amount with formatCurrency(), which rounds to WHOLE units by
+design. The editor's own comment promises "the figures shown here are the figures that get stored and printed", but
+3 x 33.34 (stored/printed 100.02) showed "$100", 386.66 showed "$387", a 0.45 tax line showed "$0", and a 3-decimal
+currency (KWD 12.345) lost its last digits - while the PDF and the client email carry the exact amount. For a credit CO
+the helper negated every figure, and -0 formats as "-$0": every blank row and the empty summary read as a negative zero.
+FIX: lib/documents/co-money.ts formatCoAmount() - exact amount in the currency's own minor units (formatCurrencyExact),
+never a negative zero, non-finite -> 0. components/co/CoEditor.tsx uses it for line totals, subtotal, tax, total and the
+summary card.
+
+BUG CO-P1 (low): the CO PDF header badge labelled status 'awaiting_response' "Pending Approval". That status means the CO
+was SENT and is waiting on the CLIENT (a CO waiting on an internal approval is still a draft), the same page's watermark
+says UNSIGNED, and "Pending Approval" collides with the Approvals feature.
+FIX: label is now "Awaiting Response". The map moved from lib/pdf/renderer.tsx to lib/pdf/co-watermark.ts (pure, so it is
+unit-testable) and the renderer imports it.
+
+TRACED, left alone: ProjectDetail's CoCard / project tables also use whole-unit formatCurrency for CO totals; that is the
+app-wide list/summary convention (dashboard totals), not an editor that claims to mirror the stored figures.
+
+TEST: tests/co-editor-money-and-status-label.test.ts

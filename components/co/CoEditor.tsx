@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef } from 'react'
 import RichTextField from '@/components/ui/RichTextField'
 import { useRouter } from 'next/navigation'
-import { formatCurrency } from '@/lib/utils/format'
+import { formatCoAmount } from '@/lib/documents/co-money'
 import { nanoid } from 'nanoid'
 
 // `kind: 'adjustment'` marks a system-written negotiation line ("Negotiated discount…") from an accepted
@@ -103,8 +103,9 @@ export default function CoEditor({ projId, coId }: Props) {
   const subtotal = taxInclusive && rate > 0 ? rq(lineSum / (1 + rate / 100)) : lineSum
   const total    = taxInclusive ? lineSum : rq(lineSum * (1 + rate / 100))
   const taxAmt   = rq(total - subtotal)
-  // A credit is entered as positive amounts and shown as the reduction it is.
-  const money    = (n: number) => formatCurrency(isCredit ? -n : n, currency)
+  // A credit is entered as positive amounts and shown as the reduction it is. Exact minor units (not formatCurrency's
+  // whole-unit rounding): these are the figures that get stored and printed — see lib/documents/co-money.ts.
+  const money    = (n: number) => formatCoAmount(n, currency, isCredit)
 
   useEffect(() => {
     if (!coId) {
