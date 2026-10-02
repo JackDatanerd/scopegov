@@ -110,10 +110,15 @@ export async function POST(request: NextRequest) {
     // the sort comment in lib/approvals/engine.ts) and isn't blocked here
     // — only the truly ambiguous case of two unconditional rules.
     if (thresholdAmount == null) {
-      const { count: dupeCatchAll } = await (service as any)
+      const { count: dupeCatchAll, error: dupeCatchAllErr } = await (service as any)
         .from('approval_workflows').select('id', { count: 'exact', head: true })
         .eq('workspace_id', session.workspaceId).eq('document_type', documentType)
         .eq('is_active', true).is('threshold_amount', null)
+      // FIX (approvals pass 13): a failed count read as "no duplicate"; report it as a retryable failure instead.
+      if (dupeCatchAllErr) {
+        console.error('Approval workflow POST: duplicate catch-all check failed:', dupeCatchAllErr)
+        return NextResponse.json({ error: 'Could not check existing workflows — please try again.' }, { status: 500 })
+      }
       if ((dupeCatchAll || 0) > 0) {
         return NextResponse.json({
           error: `An active catch-all ${documentType === 'sow' ? 'SOW' : documentType === 'invoice' ? 'invoice' : 'change order'} workflow already exists (applies to every document, no threshold). Add a value threshold to this one, or edit the existing rule instead.`,
@@ -128,10 +133,14 @@ export async function POST(request: NextRequest) {
       // outcome deterministic, but one of the two rules is then
       // permanently dead with no warning anyone ever gets. Block it the
       // same way.
-      const { count: dupeThreshold } = await (service as any)
+      const { count: dupeThreshold, error: dupeThresholdErr } = await (service as any)
         .from('approval_workflows').select('id', { count: 'exact', head: true })
         .eq('workspace_id', session.workspaceId).eq('document_type', documentType)
         .eq('is_active', true).eq('threshold_amount', thresholdAmount).eq('threshold_currency', thresholdCurrency)
+      if (dupeThresholdErr) {
+        console.error('Approval workflow POST: duplicate threshold check failed:', dupeThresholdErr)
+        return NextResponse.json({ error: 'Could not check existing workflows — please try again.' }, { status: 500 })
+      }
       if ((dupeThreshold || 0) > 0) {
         return NextResponse.json({
           error: `An active ${documentType === 'sow' ? 'SOW' : documentType === 'invoice' ? 'invoice' : 'change order'} workflow already exists at this exact threshold (${thresholdCurrency} ${thresholdAmount}) — only one of the two would ever actually apply. Pick a different threshold, or edit the existing rule instead.`,
@@ -161,9 +170,14 @@ export async function POST(request: NextRequest) {
       // is invisible to the stall-cron's escalation — it only detects
       // zero *reachable* recipients, not zero *authorized* ones — so a
       // chain like this stalls forever with no automatic alert.
-      const { data: roleRows } = await (service as any)
+      const { data: roleRows, error: roleRowsErr } = await (service as any)
         .from('roles').select('id, name, permissions')
         .eq('workspace_id', session.workspaceId).in('id', roleIds)
+      // FIX (approvals pass 13): a failed read answered 400 "roles are not part of this workspace".
+      if (roleRowsErr) {
+        console.error('Approval workflow POST: role lookup failed:', roleRowsErr)
+        return NextResponse.json({ error: 'Could not verify the selected roles — please try again.' }, { status: 500 })
+      }
       if ((roleRows?.length || 0) !== new Set(roleIds).size)
         return NextResponse.json({ error: 'One or more selected roles are not part of this workspace' }, { status: 400 })
       const roleCantApprove = (roleRows || []).find((r: any) => r.permissions?.APPROVE_DOCUMENTS !== true)
@@ -173,9 +187,13 @@ export async function POST(request: NextRequest) {
         }, { status: 400 })
     }
     if (userIds.length) {
-      const { data: memberRows } = await (service as any)
+      const { data: memberRows, error: memberRowsErr } = await (service as any)
         .from('workspace_members').select('user_id, effective_permissions, users!workspace_members_user_id_fkey(name)')
         .eq('workspace_id', session.workspaceId).eq('status', 'active').in('user_id', userIds)
+      if (memberRowsErr) {
+        console.error('Approval workflow POST: approver lookup failed:', memberRowsErr)
+        return NextResponse.json({ error: 'Could not verify the selected approvers — please try again.' }, { status: 500 })
+      }
       if ((memberRows?.length || 0) !== new Set(userIds).size)
         return NextResponse.json({ error: 'One or more selected approvers are not active members of this workspace' }, { status: 400 })
       // FIX (section-11 audit, flagship finding): same gap as the role

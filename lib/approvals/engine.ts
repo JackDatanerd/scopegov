@@ -1108,7 +1108,9 @@ export async function retryFailedSend(service: any, params: {
   requestId: string
   workspaceId: string
   actor: { id: string; email: string; name: string }
-}): Promise<{ ok: true; deliveryWarning?: string | null } | { ok: false; error: string }> {
+}): Promise<{ ok: true; deliveryWarning?: string | null } | { ok: false; error: string; status: number }> {
+  // FIX (approvals pass 13): failures now carry the HTTP status the route should answer with (it used to answer 400 for
+  // everything, including a lookup that failed transiently and a retry that was already in progress).
   // FIX (approvals pass, B2): neither read below looked at `error` — a transient failure answered "not found" /
   // "the requester no longer has an account" (and the latter told the user to cancel a request that was fine).
   const { data: request, error: retryReqErr } = await service
@@ -1117,21 +1119,21 @@ export async function retryFailedSend(service: any, params: {
     .eq('id', params.requestId).eq('workspace_id', params.workspaceId).maybeSingle()
   if (retryReqErr) {
     console.error('retryFailedSend: request lookup failed:', retryReqErr)
-    return { ok: false, error: 'Could not load this approval request — please try again.' }
+    return { ok: false, error: 'Could not load this approval request — please try again.', status: 500 }
   }
 
-  if (!request) return { ok: false, error: 'Approval request not found' }
+  if (!request) return { ok: false, error: 'Approval request not found', status: 404 }
   if (request.status !== 'approved' || !request.send_failed_at)
-    return { ok: false, error: 'This request has nothing to retry' }
+    return { ok: false, error: 'This request has nothing to retry', status: 400 }
 
   const { data: requester, error: retryRequesterErr } = await service
     .from('users').select('id, name, email').eq('id', request.requested_by).maybeSingle()
   if (retryRequesterErr) {
     console.error('retryFailedSend: requester lookup failed:', retryRequesterErr)
-    return { ok: false, error: 'Could not look up the person who requested this — please try again.' }
+    return { ok: false, error: 'Could not look up the person who requested this — please try again.', status: 500 }
   }
   if (!requester)
-    return { ok: false, error: 'The person who requested this no longer has an account, so it could not be sent automatically. Cancel this request and send the document again.' }
+    return { ok: false, error: 'The person who requested this no longer has an account, so it could not be sent automatically. Cancel this request and send the document again.', status: 400 }
 
   const claimStamp = new Date().toISOString()
   const staleBefore = new Date(Date.now() - SEND_CLAIM_WINDOW_MS).toISOString()
@@ -1142,10 +1144,10 @@ export async function retryFailedSend(service: any, params: {
     .select('id')
   if (claimErr) {
     console.error('retryFailedSend: could not claim the send:', claimErr)
-    return { ok: false, error: 'Could not start the retry — please try again.' }
+    return { ok: false, error: 'Could not start the retry — please try again.', status: 500 }
   }
   if (!claimed || claimed.length === 0)
-    return { ok: false, error: 'A retry is already in progress — give it a moment, then refresh.' }
+    return { ok: false, error: 'A retry is already in progress — give it a moment, then refresh.', status: 409 }
 
   const outcome = await dispatchSend(service, request, {
     workspaceId: params.workspaceId,
@@ -1202,7 +1204,7 @@ export async function retryFailedSend(service: any, params: {
     send_failed_reason: outcome.error, sending_started_at: null, updated_at: now,
   }).eq('id', request.id)
   if (reasonErr) console.error('retryFailedSend: could not release the send claim after a failed retry:', reasonErr)
-  return { ok: false, error: outcome.error }
+  return { ok: false, error: outcome.error, status: 400 }
 }
 
 // ── SELF-HEALING ─────────────────────────────────────────────────
@@ -1645,6 +1647,7 @@ async function notifyStepApproversOrThrow(service: any, args: {
   // rejected (sendEmail returns { ok: false } rather than throwing — the old `.catch` never fired), used to
   // be counted as notified, so a request could sit with nobody told and no "no reachable approver" alert.
   const reached = new Set<string>()
+  let inAppInsertFailed = false
   if (inAppRecipients.length) {
     try {
       const inserted = await insertNotificationRows(service, inAppRecipients.map(r => ({
@@ -1657,7 +1660,8 @@ async function notifyStepApproversOrThrow(service: any, args: {
         entity_id:    args.requestId,
       })))
       if (inserted) inAppRecipients.forEach(r => reached.add(r.id))
-    } catch { /* never let a notification failure break the approval flow */ }
+      else inAppInsertFailed = true
+    } catch { inAppInsertFailed = true /* never let a notification failure break the approval flow */ }
   }
 
   const appUrl = process.env.NEXT_PUBLIC_APP_URL || ''
@@ -1675,6 +1679,12 @@ async function notifyStepApproversOrThrow(service: any, args: {
     else console.error('approval requested email failed:', delivery.error)
   }))
 
+  // FIX (approvals pass 13): when the bell insert hit a database error and the email path reached nobody either, the
+  // approvers exist and are eligible — the failure is ours, not a broken assignment. Returning 0 made the stall cron
+  // raise "no reachable approver" (bell + audit row) at the admins for a healthy request. Throwing lets the cron record
+  // a row error instead; notifyStepApprovers (every post-commit caller) swallows it and still returns 0, as before.
+  if (reached.size === 0 && inAppInsertFailed)
+    throw new Error('could not deliver the approval notification (in-app insert failed and no email was delivered)')
   return reached.size
 }
 

@@ -54,7 +54,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // branch above never enforced that same boundary, so a project-
     // restricted admin could cancel a request for a project they have no
     // other visibility into. Mirrors the decision path's own check exactly.
-    if (!(await canReadProject(service, session, req.project_id)))
+    // FIX (approvals pass 13): the requester is exempt. This check exists for the admin-override branch (a workspace-wide
+    // MANAGE_WORKSPACE_SETTINGS holder is not project visibility); applying it to the requester too meant someone who
+    // lost access to the project could not abandon their own request — which edit-locks the document — and an admin
+    // had to do it for them. Cancelling touches no project data the requester has not already been party to.
+    if (req.requested_by !== session.id && !(await canReadProject(service, session, req.project_id)))
       return NextResponse.json({ error: 'You do not have access to this project' }, { status: 403 })
 
     // FIX (section-11 audit): this reason was hardcoded regardless of who

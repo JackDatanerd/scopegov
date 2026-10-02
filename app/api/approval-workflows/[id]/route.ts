@@ -20,9 +20,14 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (!canManage(session)) return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
 
     const service = createServiceClient()
-    const { data: existing } = await (service as any)
+    const { data: existing, error: existingErr } = await (service as any)
       .from('approval_workflows').select('id, name, document_type, is_active, threshold_amount, threshold_currency, allow_self_approval, require_distinct_approvers, apply_to_other_currencies')
-      .eq('id', id).eq('workspace_id', session.workspaceId).single()
+      .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
+    // FIX (approvals pass 13): .single() turned any read failure into a 404 "Workflow not found".
+    if (existingErr) {
+      console.error('Approval workflow PATCH: lookup failed:', existingErr)
+      return NextResponse.json({ error: 'Could not load this workflow — please try again.' }, { status: 500 })
+    }
     if (!existing) return NextResponse.json({ error: 'Workflow not found' }, { status: 404 })
 
     const body = await request.json().catch(() => null)
@@ -83,9 +88,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       const roleIds = steps!.map(st => st.approverRoleId).filter(Boolean) as string[]
       const userIds = steps!.map(st => st.approverUserId).filter(Boolean) as string[]
       if (roleIds.length) {
-        const { data: roleRows } = await (service as any)
+        const { data: roleRows, error: roleRowsErr } = await (service as any)
           .from('roles').select('id, name, permissions')
           .eq('workspace_id', session.workspaceId).in('id', roleIds)
+        if (roleRowsErr) {
+          console.error('Approval workflow PATCH: role lookup failed:', roleRowsErr)
+          return NextResponse.json({ error: 'Could not verify the selected roles — please try again.' }, { status: 500 })
+        }
         if ((roleRows?.length || 0) !== new Set(roleIds).size)
           return NextResponse.json({ error: 'One or more selected roles are not part of this workspace' }, { status: 400 })
         const roleCantApprove = (roleRows || []).find((r: any) => r.permissions?.APPROVE_DOCUMENTS !== true)
@@ -95,9 +104,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           }, { status: 400 })
       }
       if (userIds.length) {
-        const { data: memberRows } = await (service as any)
+        const { data: memberRows, error: memberRowsErr } = await (service as any)
           .from('workspace_members').select('user_id, effective_permissions, users!workspace_members_user_id_fkey(name)')
           .eq('workspace_id', session.workspaceId).eq('status', 'active').in('user_id', userIds)
+        if (memberRowsErr) {
+          console.error('Approval workflow PATCH: approver lookup failed:', memberRowsErr)
+          return NextResponse.json({ error: 'Could not verify the selected approvers — please try again.' }, { status: 500 })
+        }
         if ((memberRows?.length || 0) !== new Set(userIds).size)
           return NextResponse.json({ error: 'One or more selected approvers are not active members of this workspace' }, { status: 400 })
         const memberCantApprove = (memberRows || []).find((m: any) => m.effective_permissions?.APPROVE_DOCUMENTS !== true)
@@ -108,8 +121,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       }
     }
 
-    const { count: existingStepCount } = await (service as any)
+    const { count: existingStepCount, error: stepCountErr } = await (service as any)
       .from('approval_workflow_steps').select('id', { count: 'exact', head: true }).eq('workflow_id', id)
+    // FIX (approvals pass 13): a failed count read as zero steps and answered 409 "no approver steps".
+    if (stepCountErr) {
+      console.error('Approval workflow PATCH: step count failed:', stepCountErr)
+      return NextResponse.json({ error: 'Could not load this workflow — please try again.' }, { status: 500 })
+    }
 
     const resultingActive    = 'is_active' in patch ? (patch.is_active as boolean) : existing.is_active
     const resultingThreshold = 'threshold_amount' in patch ? patch.threshold_amount : existing.threshold_amount
@@ -121,21 +139,29 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     }
 
     if (resultingActive && resultingThreshold == null) {
-      const { count: dupeCatchAll } = await (service as any)
+      const { count: dupeCatchAll, error: dupeCatchAllErr } = await (service as any)
         .from('approval_workflows').select('id', { count: 'exact', head: true })
         .eq('workspace_id', session.workspaceId).eq('document_type', existing.document_type)
         .eq('is_active', true).is('threshold_amount', null).neq('id', id)
+      if (dupeCatchAllErr) {
+        console.error('Approval workflow PATCH: duplicate catch-all check failed:', dupeCatchAllErr)
+        return NextResponse.json({ error: 'Could not check existing workflows — please try again.' }, { status: 500 })
+      }
       if ((dupeCatchAll || 0) > 0) {
         return NextResponse.json({
           error: `An active catch-all ${existing.document_type === 'sow' ? 'SOW' : existing.document_type === 'invoice' ? 'invoice' : 'change order'} workflow already exists. Add a value threshold to this one, or deactivate the other rule first.`,
         }, { status: 409 })
       }
     } else if (resultingActive && resultingThreshold != null) {
-      const { count: dupeThreshold } = await (service as any)
+      const { count: dupeThreshold, error: dupeThresholdErr } = await (service as any)
         .from('approval_workflows').select('id', { count: 'exact', head: true })
         .eq('workspace_id', session.workspaceId).eq('document_type', existing.document_type)
         .eq('is_active', true).eq('threshold_amount', resultingThreshold).eq('threshold_currency', resultingCurrency)
         .neq('id', id)
+      if (dupeThresholdErr) {
+        console.error('Approval workflow PATCH: duplicate threshold check failed:', dupeThresholdErr)
+        return NextResponse.json({ error: 'Could not check existing workflows — please try again.' }, { status: 500 })
+      }
       if ((dupeThreshold || 0) > 0) {
         return NextResponse.json({
           error: `An active ${existing.document_type === 'sow' ? 'SOW' : existing.document_type === 'invoice' ? 'invoice' : 'change order'} workflow already exists at this exact threshold (${resultingCurrency} ${resultingThreshold}) — only one of the two would ever actually apply. Pick a different threshold, or deactivate the other rule first.`,
@@ -208,9 +234,13 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
     if (!canManage(session)) return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
 
     const service = createServiceClient()
-    const { data: existing } = await (service as any)
+    const { data: existing, error: existingErr } = await (service as any)
       .from('approval_workflows').select('id, name')
-      .eq('id', id).eq('workspace_id', session.workspaceId).single()
+      .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
+    if (existingErr) {
+      console.error('Approval workflow DELETE: lookup failed:', existingErr)
+      return NextResponse.json({ error: 'Could not load this workflow — please try again.' }, { status: 500 })
+    }
     if (!existing) return NextResponse.json({ error: 'Workflow not found' }, { status: 404 })
 
     // If this workflow has ever produced a real approval request, keep it

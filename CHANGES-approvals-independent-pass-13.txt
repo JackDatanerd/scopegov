@@ -1,0 +1,21 @@
+Approvals (section 11) — independent pass 13
+Base: 5f278a4. Four low-severity findings, all "a transient failure was misreported". No migration.
+
+F1  app/api/approval-workflows/route.ts, app/api/approval-workflows/[id]/route.ts
+    POST/PATCH/DELETE ignored `error` on the workflow lookup (.single() -> 404), the step count (-> 409 "no approver
+    steps"), the duplicate catch-all / threshold guard counts, and the role / approver ownership lookups (-> 400 "not part
+    of this workspace"). Each now answers a retryable 500. PATCH/DELETE existence reads use maybeSingle().
+F2  lib/approvals/engine.ts (retryFailedSend), app/api/approvals/[id]/retry-send/route.ts
+    retry-send answered 400 for every failure. retryFailedSend now returns the status: 404 / 400 / 409 (retry already in
+    progress) / 500 (failed lookup or claim).
+F3  lib/approvals/engine.ts (notifyStepApproversOrThrow)
+    When the in-app insert hit a database error and no email reached anyone either, the reminder returned 0 and the stall
+    cron raised "no reachable approver" for a healthy request. It now throws (cron row error); post-commit callers still
+    swallow it via notifyStepApprovers and behave as before.
+F4  app/api/approvals/[id]/cancel/route.ts
+    The canReadProject check (meant for the admin-override branch) is skipped for the requester, so someone who lost project
+    access can still abandon their own edit-locking request.
+
+tests/approvals-pass-13-fixes.test.ts (12 tests). Full suite: 2133 passed; the one failure,
+tests/guardian-unstorable-text.test.ts (embeddingText missing from lib/ai/guardian), is in the Guardian section and is not
+touched by this change.

@@ -51,7 +51,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       actor: { id: session.id, email: session.email, name: session.name },
     })
 
-    if (!result.ok) return NextResponse.json({ error: result.error }, { status: 400 })
+    if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status })
     return NextResponse.json({ ok: true, ...(result.deliveryWarning ? { deliveryWarning: result.deliveryWarning } : {}) })
   } catch (err) {
     console.error('Approval retry-send error:', err)
