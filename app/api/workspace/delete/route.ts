@@ -5,7 +5,8 @@
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
-import { cancelPaystackSubscription, resumePaystackSubscription } from '@/lib/integrations/paystack'
+import { cancelPaystackSubscription, fetchPaystackSubscription, resumePaystackSubscription } from '@/lib/integrations/paystack'
+import { UPSTREAM_ENDED_STATUSES } from '@/lib/billing/plans'
 import { alertBillingOps } from '@/lib/billing/ops-alert'
 import { logAudit } from '@/lib/utils/audit'
 import { requireStepUpForCurrentUser } from '@/lib/auth/step-up'
@@ -338,7 +339,24 @@ export async function DELETE(request: Request) {
     // declined cancellation) silently fell through to soft-deleting the
     // workspace anyway, leaving a live, still-renewing subscription with
     // no workspace left to manage it from. Now actually checked.
-    const cancelResult = await cancelPaystackSubscription(billing)
+    let cancelResult = await cancelPaystackSubscription(billing)
+    // FIX (Workspace lifecycle independent pass 23 — B1): a failed cancel call is NOT proof that nothing was
+    // disabled. Paystack can accept the disable and the response still be lost or hit the 12 s timeout in
+    // paystackFetch; the failure branch below then unstamps the marker, returns 502 "try again" and leaves a LIVE
+    // workspace whose subscription Paystack has in fact ended — its subscription.disable webhook then sets
+    // cancels_at_period_end, and the period-end sweep downgrades a customer who was only told to retry. (If the
+    // owner retries and the delete succeeds, the flag is set and the marker gone, so the delete also claims no
+    // ownership and a restore would not re-enable billing.) billing/cancel fixed the same ambiguity in Billing
+    // pass 10 B2 by asking Paystack for the real state before treating the call as failed; this route never did.
+    // The marker was stamped before the call and the owner was not already cancelling, so a subscription found
+    // ended upstream is read as THIS delete's cancel having landed: ok, NOT alreadyCancelled, which keeps the
+    // marker and lets a restore re-enable it. A failed lookup, or any non-ended status, keeps the 502 below.
+    if (!cancelResult.ok && billing?.paystack_subscription_code) {
+      const check = await fetchPaystackSubscription(billing.paystack_subscription_code)
+      if (check.ok && check.sub.status && UPSTREAM_ENDED_STATUSES.has(check.sub.status)) {
+        cancelResult = { ok: true, alreadyCancelled: false }
+      }
+    }
     if (!cancelResult.ok) {
       console.error('Workspace delete blocked — Paystack cancellation failed:', cancelResult.error)
       // The delete is not going ahead and nothing was disabled: do not leave a marker we just wrote.

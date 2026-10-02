@@ -1,0 +1,16 @@
+Workspace lifecycle (c3) — independent pass 23
+
+B1  workspace/delete: a failed cancelPaystackSubscription() call was treated as "nothing was disabled". The route
+    unstamped its marker and returned 502 while the workspace stayed live, even though Paystack may already have
+    ended the subscription (accepted the disable, response lost / 12 s timeout). The subscription.disable webhook
+    then set cancels_at_period_end on a live workspace and the sweep downgraded a paying customer; a retried
+    delete also claimed no ownership of the cancellation, so a restore would not re-enable billing.
+    Fix: on a failed cancel, fetchPaystackSubscription() and, if the status is in UPSTREAM_ENDED_STATUSES, treat the
+    cancel as landed ({ ok: true, alreadyCancelled: false }) so the marker stays and restore can resume it.
+    A failed lookup or a non-ended status keeps the existing 502 + unstamp.
+
+Files:
+  app/api/workspace/delete/route.ts                       (fix)
+  tests/workspace-delete-ambiguous-cancel.test.ts         (new regression test)
+  tests/workspace-delete-fail-closed.test.ts              (mock gains fetchPaystackSubscription, inconclusive default)
+  tests/workspace-lifecycle-pass6.test.ts                 (same mock update)

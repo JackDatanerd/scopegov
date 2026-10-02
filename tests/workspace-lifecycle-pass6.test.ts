@@ -37,6 +37,8 @@ vi.mock('@/lib/auth/step-up', () => ({ requireStepUpForCurrentUser: async () => 
 vi.mock('@/lib/integrations/paystack', () => ({
   cancelPaystackSubscription: (...a: any[]) => h.cancel(...a),
   resumePaystackSubscription: (...a: any[]) => h.resume(...a),
+  // Inconclusive by default (Paystack unreachable), so a failed cancel keeps its 502 path in these tests.
+  fetchPaystackSubscription: async () => ({ ok: false, notFound: false, error: 'unreachable' }),
 }))
 vi.mock('@/lib/billing/ops-alert', () => ({ alertBillingOps: (...a: any[]) => h.alertOps(...a) }))
 vi.mock('@/lib/utils/audit', () => ({ logAudit: (...a: any[]) => h.audit(...a) }))
