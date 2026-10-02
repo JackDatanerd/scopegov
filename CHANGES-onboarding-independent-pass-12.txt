@@ -1,0 +1,11 @@
+Onboarding independent pass 12
+
+B1  app/api/workspace/onboarding-status/route.ts: the route authenticated with getUser() alone and never read
+    users.deleted_at — the only wizard-called route (create, complete-onboarding, switch, list, restore) that
+    didn't. middleware.ts skips the deleted-account check for API routes and admin_suspend bans the auth user
+    while leaving workspace_members active, so until the access token expired a suspended/deleted account could
+    still read workspace/creator names and the resume payload (defaults, governing law, branding). The existing
+    users read now also selects deleted_at and the route answers 401 like its siblings.
+
+Tests: tests/onboarding-independent-pass-12.test.ts
+Note: not run here (no node_modules / network in the audit environment) — run `npx vitest run tests/onboarding*` before pushing.

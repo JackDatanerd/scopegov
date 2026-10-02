@@ -96,7 +96,7 @@ export async function GET() {
     const service = createServiceClient()
 
     const [{ data: userRow, error: userErr }, { data: memberships, error: membershipsErr }] = await Promise.all([
-      (service as any).from('users').select('active_workspace_id').eq('id', user.id).maybeSingle(),
+      (service as any).from('users').select('active_workspace_id, deleted_at').eq('id', user.id).maybeSingle(),
       (service as any)
         .from('workspace_members')
         .select(`workspace_id, workspaces(
@@ -133,6 +133,14 @@ export async function GET() {
     // the full story) — this route decides between 'create'/'resume'/
     // 'waiting'/'complete', and a stray active-status row pointing at a
     // dead workspace should never factor into that decision.
+    // FIX (Onboarding independent pass 12 — B1): this route authenticates with getUser() alone and, unlike
+    // every other route the wizard calls (create, complete-onboarding, switch, list, restore), never looked
+    // at users.deleted_at. middleware.ts skips the deleted-account check for API routes, and admin_suspend
+    // bans the auth user while leaving workspace_members active — so until the access token expired, a
+    // suspended/deleted account could still read its workspace and creator names and the resume payload
+    // (defaults, governing law, branding) from here. Refused the same way as the sibling routes.
+    if (userRow?.deleted_at) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
     const active = (memberships || []).filter((m: any) => m.workspaces && !m.workspaces.deleted_at)
     const activeWorkspaceId = userRow?.active_workspace_id
 
