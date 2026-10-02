@@ -249,9 +249,53 @@ export async function DELETE(request: Request) {
     // best-effort handling.
     const { data: billing } = await (service as any)
       .from('billing')
-      .select('paystack_subscription_code, paystack_email_token')
+      .select('paystack_subscription_code, paystack_email_token, cancels_at_period_end, cancelled_by_workspace_delete_at')
       .eq('workspace_id', session.workspaceId)
       .maybeSingle()
+
+    // FIX (Workspace lifecycle independent pass 6 — B1): whether THIS delete owns the Paystack
+    // cancellation (and so whether restore may re-enable it) used to be decided from the result of
+    // the one cancel call this request happened to make: `alreadyCancelled` => "not ours, write no
+    // marker". That is wrong whenever the call that really disabled the subscription was a DIFFERENT
+    // delete attempt: (a) a first attempt disabled it and then timed out before the RPC committed,
+    // and the owner's retry (which is the request that wins the RPC) saw Paystack say "already
+    // non-renewing"; (b) two overlapping DELETEs, where the one that cancelled loses the workspace
+    // lock and returns 409 "already deleted". Either way the workspace ended up deleted with no
+    // marker, so a later restore skipped the resume and a customer who restored "everything" stayed
+    // unsubscribed (the webhook-set cancels_at_period_end then downgraded them at period end).
+    // The webhook flips cancels_at_period_end after ANY disable, so that flag alone cannot tell the
+    // owner's own earlier cancellation from one this delete caused. Decide it BEFORE calling Paystack
+    // instead: if the owner was already cancelling (flag set, no delete marker), the delete owns
+    // nothing; otherwise stamp the marker first (only if nobody has yet) so every attempt, retry and
+    // overlapping request sees the same durable answer, and unwind it on every path that leaves the
+    // workspace alive.
+    const hasSubscription = !!billing?.paystack_subscription_code
+    const ownerAlreadyCancelling = !!billing?.cancels_at_period_end && !billing?.cancelled_by_workspace_delete_at
+    let deleteMayOwnCancellation = hasSubscription && !ownerAlreadyCancelling
+    let markerStampedByThisRequest = false
+    let markerAlreadyHeld = !!billing?.cancelled_by_workspace_delete_at
+    if (deleteMayOwnCancellation && !markerAlreadyHeld) {
+      const stamp = () => (service as any).from('billing')
+        .update({ cancelled_by_workspace_delete_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+        .eq('workspace_id', session.workspaceId).is('cancelled_by_workspace_delete_at', null)
+        .select('workspace_id')
+      let st = await stamp()
+      if (st.error) st = await stamp()
+      if (st.error) {
+        // Without the marker a later restore would not resume billing, so refuse before touching Paystack.
+        console.error('Workspace delete blocked — could not record the billing marker:', st.error.message)
+        return NextResponse.json({
+          error: 'Could not start the delete. Nothing was changed — try again.',
+        }, { status: 500 })
+      }
+      // A conditional update that matched nothing means a concurrent attempt stamped first.
+      if (Array.isArray(st.data) && st.data.length > 0) markerStampedByThisRequest = true
+      else markerAlreadyHeld = true
+    }
+    const unstampMarker = () => (service as any).from('billing')
+      .update({ cancelled_by_workspace_delete_at: null, updated_at: new Date().toISOString() })
+      .eq('workspace_id', session.workspaceId)
+
     // FIX (round 3, Workspace lifecycle Finding 2 — CRITICAL): the result
     // of this call used to be discarded entirely, defeating the whole
     // point of the comment above — a Paystack failure (unreachable API,
@@ -261,10 +305,26 @@ export async function DELETE(request: Request) {
     const cancelResult = await cancelPaystackSubscription(billing)
     if (!cancelResult.ok) {
       console.error('Workspace delete blocked — Paystack cancellation failed:', cancelResult.error)
+      // The delete is not going ahead and nothing was disabled: do not leave a marker we just wrote.
+      if (markerStampedByThisRequest) {
+        const un = await unstampMarker()
+        if (un.error) console.error('Workspace delete: could not clear the billing marker after a failed cancel (non-fatal):', un.error.message)
+      }
       return NextResponse.json({
         error: cancelResult.error || 'Could not cancel this workspace\u2019s billing subscription. Try again, or contact support@scopegov.app.',
       }, { status: 502 })
     }
+
+    // Paystack saying "already non-renewing / not found" right after a marker THIS request wrote
+    // means there was nothing left for the delete to cancel (the subscription was already ended
+    // upstream): drop the marker so restore does not try to resume a subscription that is gone. When
+    // another attempt held the marker first, that attempt is the one that disabled it — keep it.
+    if (cancelResult.alreadyCancelled && markerStampedByThisRequest) {
+      const un = await unstampMarker()
+      if (un.error) console.error('Workspace delete: could not clear the billing marker (non-fatal):', un.error.message)
+      deleteMayOwnCancellation = false
+    }
+    const deleteOwnsCancellation = deleteMayOwnCancellation && (markerAlreadyHeld || !cancelResult.alreadyCancelled)
 
     const now = new Date().toISOString()
 
@@ -304,8 +364,10 @@ export async function DELETE(request: Request) {
       .rpc('delete_workspace_atomic', { p_workspace_id: session.workspaceId, p_now: now })
     if (wsDeleteError) {
       const msg = String(wsDeleteError.message || '')
-      // Someone (another tab / a retry) already deleted it: the request that won owns
-      // the billing cancellation — do NOT resume anything here.
+      // Someone (another tab / a retry) already deleted it. Do NOT resume anything here: the delete
+      // that won stands. (B1: the winner is NOT necessarily the request that called Paystack — which is
+      // why the billing marker is written before that call, not decided from this request's own cancel
+      // result, so whichever request won, the marker is already on the row.)
       if (msg.includes('already_deleted') || msg.includes('workspace_not_found')) {
         return NextResponse.json({ error: 'This workspace has already been deleted.' }, { status: 409 })
       }
@@ -315,7 +377,7 @@ export async function DELETE(request: Request) {
       // workspace with a dead subscription (the old message "Nothing was changed" was
       // simply untrue for billing).
       let billingRestored = true
-      if (billing?.paystack_subscription_code && !cancelResult.alreadyCancelled) {
+      if (billing?.paystack_subscription_code && deleteOwnsCancellation) {
         const resumed = await resumePaystackSubscription(billing).catch((e: unknown) => ({ ok: false, error: String(e) }))
         if (resumed.ok) {
           // FIX (Workspace lifecycle independent pass 2 — B3): the cancel above makes Paystack fire
@@ -325,8 +387,11 @@ export async function DELETE(request: Request) {
           // downgrade them. Clear it, mirroring workspace/restore and billing/resume. Unconditional
           // (not gated on the value we read before the cancel) because the webhook may already have
           // landed by now.
+          // B1: the subscription is live again, so the delete marker (now written BEFORE the cancel)
+          // must go with the flag — left behind, a later delete->restore would be treated as if that
+          // delete had cancelled the plan.
           const clearFlag = () => (service as any).from('billing').update({
-            cancels_at_period_end: false, updated_at: new Date().toISOString(),
+            cancels_at_period_end: false, cancelled_by_workspace_delete_at: null, updated_at: new Date().toISOString(),
           }).eq('workspace_id', session.workspaceId).eq('paystack_subscription_code', billing.paystack_subscription_code)
           let upd = await clearFlag()
           if (upd.error) upd = await clearFlag()
@@ -371,10 +436,13 @@ export async function DELETE(request: Request) {
     // FIX (Workspace lifecycle independent pass — B1): remember that THIS delete is what disabled the
     // Paystack subscription, so workspace/restore re-enables it only in that case. Without the marker
     // restore resumed any subscription, undoing a cancellation the owner had made themselves before
-    // deleting. Not set when the subscription was already non-renewing (nothing for restore to undo).
+    // deleting. Not set when the owner had already cancelled (nothing for restore to undo).
+    // (Independent pass 6 — B1: the marker is now written BEFORE the Paystack call — see above — so this
+    // is only a re-assertion for the winning request: it covers a marker an overlapping request cleared
+    // after seeing "already cancelled" while this one still owns the cancellation.)
     // Retried once; if it still cannot be written restore simply won't auto-resume (the safe direction)
     // and billing ops is told so the customer isn't left silently without a subscription.
-    const cancelledByDelete = !!billing?.paystack_subscription_code && !cancelResult.alreadyCancelled
+    const cancelledByDelete = deleteOwnsCancellation
     if (cancelledByDelete) {
       const mark = () => (service as any).from('billing')
         .update({ cancelled_by_workspace_delete_at: now, updated_at: new Date().toISOString() })

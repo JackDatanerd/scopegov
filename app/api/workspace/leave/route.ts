@@ -57,6 +57,28 @@ export async function POST(request: NextRequest) {
     const { data: leavingUserRow } = await (service as any)
       .from('users').select('name').eq('id', user.id).maybeSingle()
 
+    // FIX (Workspace lifecycle independent pass 6 — B2): leave_workspace_atomic deletes every pending
+    // (invited / expired) invite the leaver sent — invite authority hangs off `invited_by`, so those
+    // invites cannot outlive their sender. DELETE /api/team/[id] already tells the admin how many were
+    // revoked when it does the same to a removed member; leaving said nothing, so the invitees' emailed
+    // links just stopped working and nobody who remained knew an invite had gone. Counted here, before
+    // the RPC deletes them (the RPC returns nothing), with the SAME predicate the RPC uses, so the
+    // teammates notified below can re-send. Best-effort and approximate by design: a failed count must
+    // never block leaving, and an invite accepted in the gap is simply no longer pending.
+    let revokedInviteCount = 0
+    try {
+      const { count, error: invCountErr } = await (service as any)
+        .from('workspace_members')
+        .select('id', { count: 'exact', head: true })
+        .eq('workspace_id', workspaceId).eq('invited_by', user.id)
+        .in('status', ['invited', 'expired'])
+        // `user_id IS DISTINCT FROM leaver` as the RPC writes it: a plain .neq() compiles to
+        // `<>`, which drops the NULL user_id rows that most pending invites are.
+        .or(`user_id.is.null,user_id.neq.${user.id}`)
+      if (invCountErr) console.error('Workspace leave: could not count the leaver\u2019s pending invites (non-fatal):', invCountErr.message)
+      else revokedInviteCount = count || 0
+    } catch (e) { console.error('Workspace leave: pending-invite count threw (non-fatal):', e) }
+
     // FIX (deep audit, Workspace lifecycle section — TOCTOU race): the
     // last-member and sole-admin guards used to read the active-member
     // set, then write, as two separate steps with no lock between them —
@@ -150,7 +172,8 @@ export async function POST(request: NextRequest) {
       workspaceId, actorId: user.id, actorEmail: user.email || '',
       actorName: leavingUserRow?.name || user.user_metadata?.name || user.email || '',
       eventType: 'member.left', entityType: 'workspace_member', entityId: member.id,
-      entityName: member.workspaces?.name || '', metadata: {},
+      entityName: member.workspaces?.name || '',
+      metadata: revokedInviteCount > 0 ? { revoked_pending_invites: revokedInviteCount } : {},
     }).catch(() => {})
 
     // FIX (deep audit, Workspace lifecycle + Onboarding re-pass — minor):
@@ -161,11 +184,14 @@ export async function POST(request: NextRequest) {
     await notifyMembersWithPermission(service, {
       workspaceId: workspaceId, permission: 'INVITE_MEMBERS', eventType: 'member_left',
       type: 'member_left', title: 'A teammate left',
-      body: `${leavingUserRow?.name || user.user_metadata?.name || user.email} left the workspace.`,
+      body: `${leavingUserRow?.name || user.user_metadata?.name || user.email} left the workspace.`
+        + (revokedInviteCount > 0
+          ? ` ${revokedInviteCount} pending invite${revokedInviteCount === 1 ? '' : 's'} they sent ${revokedInviteCount === 1 ? 'was' : 'were'} revoked with them — re-send ${revokedInviteCount === 1 ? 'it' : 'them'} from your own account if still needed.`
+          : ''),
       entityType: 'team', excludeUserId: user.id,
     })
 
-    return NextResponse.json({ ok: true })
+    return NextResponse.json({ ok: true, ...(revokedInviteCount > 0 ? { revokedPendingInvites: revokedInviteCount } : {}) })
   } catch (err) {
     // FIX (deep audit, Workspace lifecycle + Onboarding re-pass): same
     // leak, in the outer catch-all this time — an unexpected exception

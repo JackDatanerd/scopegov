@@ -1,0 +1,76 @@
+
+scopegov — Workspace lifecycle (section 3) independent pass 6
+2 bugs fixed, no feature gaps (none looked for — bugs only this round)
+=====================================================================
+
+Independent audit of api/workspace/create, complete-onboarding, delete, leave,
+list, switch, profile (+ avatar), with the effective SQL they call (118, 133,
+116, 132) and the Sidebar / Settings / onboarding callers. Existing FIX comments
+were treated as unverified. create, complete-onboarding, list, switch, profile
+and avatar held up. The only change in the repo between the audited snapshot and
+this one that touches the section is the slug generator moving to
+lib/utils/workspace-slug.ts — a pure refactor, reviewed, no behaviour change.
+
+MODIFIED FILES (2)
+-------------------
+
+  app/api/workspace/delete/route.ts
+
+    B1 — restore could silently skip re-enabling billing (medium-low).
+    workspace/restore resumes the Paystack subscription only when
+    billing.cancelled_by_workspace_delete_at is set. delete wrote that marker only
+    when ITS OWN cancelPaystackSubscription call returned alreadyCancelled:false.
+    So whenever the call that actually disabled the subscription belonged to a
+    DIFFERENT delete attempt, the delete that committed wrote no marker:
+      (a) attempt 1 disabled Paystack, then timed out before the RPC committed; the
+          owner's retry saw "already non-renewing" and won the RPC;
+      (b) two overlapping DELETEs: the one that cancelled loses the workspace lock
+          and returns 409; the one that won had nothing to mark.
+    A later restore then skipped the resume, the webhook-set cancels_at_period_end
+    stayed true, and a customer who restored "everything" was downgraded at period
+    end. The old code comment ("the request that won owns the billing
+    cancellation") was the misleading claim — the winner is not necessarily the
+    request that called Paystack. The webhook flips cancels_at_period_end after ANY
+    disable, so that flag alone cannot tell the owner's own earlier cancellation
+    from one the delete caused.
+    Fix: the decision is made BEFORE the Paystack call. If the owner was already
+    cancelling (flag set, no marker) the delete owns nothing. Otherwise the marker
+    is stamped first with a conditional update (only if still NULL), so retries and
+    overlapping requests see one durable answer. If the marker cannot be written the
+    delete refuses (500) before touching Paystack. It is withdrawn when Paystack
+    refuses (502) and when Paystack says there was nothing left to cancel (and this
+    request was the one that stamped it). The rollback path resumes whenever the
+    delete owns the cancellation (previously skipped on a retry for the same
+    reason) and clears marker + flag together.
+    No SQL change.
+
+  app/api/workspace/leave/route.ts
+
+    B2 — leaving silently revoked the leaver's pending invites (low).
+    leave_workspace_atomic deletes every invited/expired invite the leaver sent
+    (invite authority hangs off invited_by). DELETE /api/team/[id] reports the
+    count for the same action; leave said nothing, so invitees' emailed links just
+    died and nobody remaining knew. The count is now taken before the RPC with the
+    RPC's own NULL-safe predicate (user_id IS DISTINCT FROM leaver — written as
+    .or('user_id.is.null,user_id.neq.<id>'); a plain .neq() compiles to <> and would
+    have dropped the NULL-user_id rows that most pending invites are), surfaced in
+    the "teammate left" notification, the audit metadata and the response
+    (revokedPendingInvites). Best-effort: a failed count never blocks leaving.
+
+NEW FILES (2)
+--------------
+
+  tests/workspace-lifecycle-pass6.test.ts   18 tests (9 B1, 6 B2 + guards that must
+                                            hold before and after)
+  CHANGES-workspace-lifecycle-independent-pass-6.txt
+
+KNOWN NARROW EDGES (accepted, not fixed)
+-----------------------------------------
+  * A marker stranded on a LIVE workspace (process killed between the stamp and the
+    RPC, AND the owner then cancels the plan themselves, AND deletes again) would be
+    read as delete-owned. Needs a crash in a sub-second window plus two later user
+    actions; restore's own marker clear is alerted to ops if it fails.
+  * Two simultaneous deletes of a workspace whose subscription is already gone
+    upstream can leave a marker that restore then fails to resume (ops-alerted).
+  * The leaver's invite count can differ by one from what the RPC deletes if an
+    invite is accepted in the gap.
