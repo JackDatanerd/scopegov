@@ -1,0 +1,19 @@
+SEARCH (section 20) — independent pass 7 (bugs only)
+Audited fresh: app/api/search/route.ts, lib/search/query.ts, unaccent-map, migrations 062/073/111,
+components/layout/CommandPalette.tsx, and the /team?highlight= and ?tab= landing handlers.
+
+BUG 1 (low-medium) — accent-sensitive matching on CO titles, invoice titles, flag descriptions / SOW refs.
+  Projects, clients, contacts and members matched on accent-folded search_text columns (062/073/111); the
+  change-order, invoice and flag blocks still ran ilike on the raw title/description/sow_reference, so "cafe"
+  never found "Café extras" (nor the reverse) unless the project's own name also matched.
+  Fix: migration 137 adds generated, accent-folded search_text + trigram index to change_orders (title),
+  invoices (title) and guardian_flags (description + sow_reference). The three blocks now match, prefix-match
+  and equality-match on it using folded tokens; the separate flag sow_reference query is folded into it.
+  DEPLOY ORDER: apply migration 137 BEFORE (or with) this route — until then those three blocks report `partial`.
+
+BUG 2 (low) — flag result titles cut with slice(0, 80) could split an emoji, leaving a lone surrogate
+  (rendered as a broken-character box in the palette). Fix: truncateByCodePoint() in lib/search/query.ts.
+
+Tests: tests/search-independent-pass-7.test.ts (new); tests/search-section-pass-round5.test.ts assertions
+updated from the raw `title` column to `search_text`.
+Not changed: no sidebar/palette entry point (feature decision, left to the owner).

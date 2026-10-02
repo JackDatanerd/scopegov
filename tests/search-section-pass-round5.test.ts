@@ -46,8 +46,8 @@ describe('Search round 5 — exact-name fetches and ordered prefix fetches', () 
     await GET(req('Acme Labs'))
     expect(has('clients', c => c[0] === 'ilike' && c[1] === 'name' && c[2] === 'acme labs')).toBe(true)
     expect(has('projects', c => c[0] === 'ilike' && c[1] === 'name' && c[2] === 'acme labs')).toBe(true)
-    expect(has('change_orders', c => c[0] === 'ilike' && c[1] === 'title' && c[2] === 'acme labs')).toBe(true)
-    expect(has('invoices', c => c[0] === 'ilike' && c[1] === 'title' && c[2] === 'acme labs')).toBe(true)
+    expect(has('change_orders', c => c[0] === 'ilike' && c[1] === 'search_text' && c[2] === 'acme labs')).toBe(true)
+    expect(has('invoices', c => c[0] === 'ilike' && c[1] === 'search_text' && c[2] === 'acme labs')).toBe(true)
   })
 
   it('escapes LIKE wildcards in the equality fetch', async () => {

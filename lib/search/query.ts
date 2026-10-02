@@ -84,6 +84,13 @@ export function plainTokens(raw: string): string[] {
   return split(clean(raw).toLowerCase().replace(/\s+/g, ' ').trim())
 }
 
+// Cut by code point, not UTF-16 unit: String.slice(0, 80) can end between the two halves of an emoji (or any
+// astral character), leaving a lone surrogate that renders as a broken-character box in the palette.
+export function truncateByCodePoint(text: string, max: number): string {
+  const chars = Array.from(String(text ?? ''))
+  return chars.length > max ? `${chars.slice(0, max).join('')}…` : chars.join('')
+}
+
 /** `%term%` with LIKE metacharacters escaped so what was typed matches literally. */
 export function likePattern(token: string): string {
   return `%${escapeIlike(token)}%`

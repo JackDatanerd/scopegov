@@ -6,7 +6,7 @@ import { escapeIlike } from '@/lib/audit/search'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { sowStatusLabel, coStatusLabel, invoiceStatusLabel, flagStatusLabel } from '@/lib/utils/format'
 import {
-  foldedTokens, plainTokens, likePattern, prefixLike, isSearchable, rankBy, searchRateLimited,
+  foldedTokens, plainTokens, likePattern, prefixLike, isSearchable, rankBy, searchRateLimited, truncateByCodePoint,
 } from '@/lib/search/query'
 
 // Global command-palette search: projects, clients (+ their contacts), change
@@ -71,6 +71,15 @@ import {
 //     shows its label ("Sent", "Partially paid", "CO Created"). They now use the shared label helpers in
 //     lib/utils/format.ts. (The palette's other round-6 fix is in components/team/TeamClient.tsx: a member result
 //     picked while the Team page was on its Roles tab navigated and then showed nothing.)
+
+// Round 7 (Search section, independent pass) — what this pass found and fixes:
+//   • Change-order titles, invoice titles and flag descriptions / SOW references were still matched with a plain,
+//     accent-SENSITIVE ilike on the raw column — the gap migrations 062/073/111 closed for projects, clients,
+//     contacts and members. "cafe" never found a CO titled "Café extras" (nor "café" "Cafe extras") unless the
+//     project's own name matched too. Migration 137 adds the same generated, accent-folded search_text (+ trigram
+//     index) to change_orders, invoices and guardian_flags; these blocks now match on it with folded tokens.
+//     Flags' text column also covers the cited SOW clause, replacing the separate sow_reference query.
+//   • Flag result titles were cut with slice(0, 80), which can split an emoji and leave a lone surrogate.
 
 type Result = { type: string; id: string; title: string; sub: string; href: string }
 
@@ -247,7 +256,7 @@ export async function GET(request: NextRequest) {
           .select('id, title, document_number, status, project_id, projects!inner(name, deleted_at)')
           .eq('workspace_id', wsId).is('projects.deleted_at', null), 'project_id')
         let byTitle = base()
-        for (const t of plain) byTitle = byTitle.ilike('title', likePattern(t))
+        for (const t of folded) byTitle = byTitle.ilike('search_text', likePattern(t))
         let byProject = base()
         for (const t of folded) byProject = byProject.ilike('projects.search_text', likePattern(t))
         const none = Promise.resolve({ data: [], error: null })
@@ -255,9 +264,9 @@ export async function GET(request: NextRequest) {
           byTitle.order('created_at', NEWEST).limit(FETCH),
           base().ilike('document_number', likePattern(wholePlain)).order('created_at', NEWEST).limit(FETCH),
           byProject.order('created_at', NEWEST).limit(FETCH),
-          base().ilike('title', prefixLike(wholePlain)).order('created_at', NEWEST).limit(FETCH),
+          base().ilike('search_text', prefixLike(wholeFolded)).order('created_at', NEWEST).limit(FETCH),
           clientIds.length ? byClientIds(base()).order('created_at', NEWEST).limit(FETCH) : none,
-          base().ilike('title', escapeIlike(wholePlain)).limit(FETCH),
+          base().ilike('search_text', escapeIlike(wholeFolded)).limit(FETCH),
         ])
         const rows = dedupe([...must<any[]>(a), ...must<any[]>(b), ...must<any[]>(c), ...must<any[]>(d), ...must<any[]>(e), ...must<any[]>(f)])
         // Ranked with `folded` (not `plain`): a row can now be here purely because it matched the
@@ -302,7 +311,7 @@ export async function GET(request: NextRequest) {
           .select('id, title, invoice_number, status, project_id, projects!inner(name, deleted_at)')
           .eq('workspace_id', wsId).is('projects.deleted_at', null), 'project_id')
         let byTitle = base()
-        for (const t of plain) byTitle = byTitle.ilike('title', likePattern(t))
+        for (const t of folded) byTitle = byTitle.ilike('search_text', likePattern(t))
         let byProject = base()
         for (const t of folded) byProject = byProject.ilike('projects.search_text', likePattern(t))
         const none = Promise.resolve({ data: [], error: null })
@@ -310,9 +319,9 @@ export async function GET(request: NextRequest) {
           byTitle.order('created_at', NEWEST).limit(FETCH),
           base().ilike('invoice_number', likePattern(wholePlain)).order('created_at', NEWEST).limit(FETCH),
           byProject.order('created_at', NEWEST).limit(FETCH),
-          base().ilike('title', prefixLike(wholePlain)).order('created_at', NEWEST).limit(FETCH),
+          base().ilike('search_text', prefixLike(wholeFolded)).order('created_at', NEWEST).limit(FETCH),
           clientIds.length ? byClientIds(base()).order('created_at', NEWEST).limit(FETCH) : none,
-          base().ilike('title', escapeIlike(wholePlain)).limit(FETCH),
+          base().ilike('search_text', escapeIlike(wholeFolded)).limit(FETCH),
         ])
         const rows = dedupe([...must<any[]>(a), ...must<any[]>(b), ...must<any[]>(c), ...must<any[]>(d), ...must<any[]>(e), ...must<any[]>(f)])
         // Ranked with `folded` — see the change-orders block above for why.
@@ -330,25 +339,25 @@ export async function GET(request: NextRequest) {
       // project's name.
       nothingVisible ? Promise.resolve([] as Result[]) : block('flags', async () => {
         const base = () => scope(service.from('guardian_flags')
-          .select('id, description, sow_reference, severity, status, project_id, projects!inner(name, deleted_at)')
+          .select('id, description, severity, status, project_id, projects!inner(name, deleted_at)')
           .eq('workspace_id', wsId).is('projects.deleted_at', null)
           .order('created_at', { ascending: false }), 'project_id')
         let byDescription = base()
-        for (const t of plain) byDescription = byDescription.ilike('description', likePattern(t))
+        // search_text = description + the SOW clause cited (migration 137), accent-folded.
+        for (const t of folded) byDescription = byDescription.ilike('search_text', likePattern(t))
         let byProject = base()
         for (const t of folded) byProject = byProject.ilike('projects.search_text', likePattern(t))
         const none = Promise.resolve({ data: [], error: null })
-        const [a, b, c, d] = await Promise.all([
+        const [a, b, c] = await Promise.all([
           byDescription.limit(FETCH),
-          base().ilike('sow_reference', likePattern(wholePlain)).limit(FETCH),
           byProject.limit(FETCH),
           clientIds.length ? byClientIds(base()).limit(FETCH) : none,
         ])
-        const rows = dedupe([...must<any[]>(a), ...must<any[]>(b), ...must<any[]>(c), ...must<any[]>(d)])
+        const rows = dedupe([...must<any[]>(a), ...must<any[]>(b), ...must<any[]>(c)])
         // Ranked with `folded` — see the change-orders block above for why.
         return rankBy(rows, folded, f => `${f.description} ${f.projects?.name || ''}`).slice(0, 4).map(f => ({
           type: 'guardian_flag', id: f.id,
-          title: f.description.length > 80 ? `${f.description.slice(0, 80)}…` : f.description,
+          title: truncateByCodePoint(f.description, 80),
           sub: `${f.projects?.name || ''} · ${f.severity} severity · ${flagStatusLabel(String(f.status))}`,
           href: `/projects/${f.project_id}?tab=guardian`,
         }))
