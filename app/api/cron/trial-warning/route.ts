@@ -58,7 +58,7 @@ export async function POST(request: NextRequest) {
         // Who can act on it: everyone holding MANAGE_BILLING, plus the creator — but only while the
         // creator is STILL an active member. After an ownership transfer and departure they were
         // being warned about a workspace they no longer belong to.
-        const allHolders = await getMembersWithPermission(service, ws.id, 'MANAGE_BILLING', 25)
+        const allHolders = await getMembersWithPermission(service, ws.id, 'MANAGE_BILLING', 200)
         const holders = await filterByNotificationPreference(service, ws.id, 'trial_ending', allHolders)
         const audience = new Map<string, { id: string; name: string; email: string }>()
         for (const h of holders) audience.set(h.email.toLowerCase(), h)

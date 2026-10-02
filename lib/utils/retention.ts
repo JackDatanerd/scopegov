@@ -31,8 +31,9 @@ export interface PruneResult { deleted: number; truncated: boolean }
 export async function pruneInBatches(
   service: any, table: string, applyFilter: (q: any) => any, opts: PruneOptions = {},
 ): Promise<PruneResult> {
-  const batch = Math.min(Math.max(opts.batch ?? 500, 1), 1000)
-  const maxBatches = opts.maxBatches ?? 200
+  // 200 ids (~7 KB of URL) keeps the DELETE .in() filter well inside gateway request-line limits; 500 (~18 KB) did not.
+  const batch = Math.min(Math.max(opts.batch ?? 200, 1), 1000)
+  const maxBatches = opts.maxBatches ?? 500
   const budgetMs = opts.budgetMs ?? 60_000
   const idCol = opts.idColumn ?? 'id'
   const startedAt = Date.now()

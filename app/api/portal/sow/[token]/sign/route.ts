@@ -379,6 +379,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         clientName:  client.name,
         projectName: project.name + (project.disc ? ` — ${project.disc}` : ''),
         signedBy:    signerName,
+        projectId:   project.id,
         portalUrl:   `${process.env.NEXT_PUBLIC_APP_URL}/projects/${project.id}?tab=sow`,
         attachments: pdfAttachment ? [pdfAttachment] : undefined,
       }), 'SOW signed (agency) email')

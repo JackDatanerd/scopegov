@@ -219,7 +219,7 @@ export async function sendSowSignedAgencyEmail(params: {
   projectId?: string
   attachments?: Array<{ filename: string; content: string }>
 }) {
-  const { to, agencyName: agencyNameRaw, clientName: clientNameRaw, projectName: projectNameRaw, signedBy: signedByRaw, attachments, projectId } = params
+  const { to, agencyName: agencyNameRaw, clientName: clientNameRaw, projectName: projectNameRaw, signedBy: signedByRaw, attachments, projectId, portalUrl } = params
   const agencyName  = escapeHtml(agencyNameRaw)
   const clientName  = escapeHtml(clientNameRaw)
   const projectName = escapeHtml(projectNameRaw)
@@ -245,7 +245,11 @@ export async function sendSowSignedAgencyEmail(params: {
         A signed PDF copy has been attached to this email for your records.
       </p>
     `,
-    ...(projectId ? { cta: 'Open project in ScopeGov', ctaUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects/${projectId}?tab=sow` } : {}),
+    // The only caller passes the project deep link as `portalUrl` (and no projectId), so fall back to it:
+    // without this the email carried no button at all.
+    ...(projectId
+      ? { cta: 'Open project in ScopeGov', ctaUrl: `${process.env.NEXT_PUBLIC_APP_URL}/projects/${projectId}?tab=sow` }
+      : portalUrl ? { cta: 'Open project in ScopeGov', ctaUrl: portalUrl } : {}),
   })
 
   return deliver({
