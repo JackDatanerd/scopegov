@@ -1,0 +1,54 @@
+scopegov — Section 14 (Clients) — independent pass 15 fixes
+===========================================================
+Cold independent audit of api/clients, components/clients, app/(app)/clients (plus the traced
+webhook). Applied against the live snapshot taken after the pass-15 audit; none of the files
+other sessions were touching (guardian, projects dashboard, scope-governance) are modified here.
+No migration required. No new dependencies.
+
+B1  lib/utils/client-input.ts
+    EMAIL_RE was a pure deny-list and the domain's list never covered ordinary punctuation, so
+    addresses carrying paste artefacts passed create / edit / CC / contact validation and then
+    bounced on the first send: jane@acme.com'  'jane@acme.com'  jane@acme.com…
+    “jane@acme.com”  jane@acme.com?subject=hi  jane@acme.com»  jane@ac!me.com  a@ex%ample.com
+    a@x.com/  a@x.com|  jane@acme.com€ …  Two lookaheads were added to the existing pattern: the
+    DOMAIN rejects any Unicode punctuation / symbol / other-category character except . - and
+    ZWNJ / ZWJ / U+00B7 (kept: real in some scripts' domain names); the LOCAL part keeps every
+    ASCII atext special (+ ' * ! # $ % & / = ? ^ _ ` { | } ~ -) but refuses NON-ASCII punctuation
+    (curly quotes, ellipsis, guillemets) — a paste artefact, never a typed address.
+    The existing deny-list is kept (a positive \p{L} class would have re-admitted the Hangul
+    filler characters, which are letters). Linear-time on hostile input; all earlier pass
+    10 / 11 / 12 / 13 / 14 rejections and acceptances still hold.
+
+B2  app/api/webhooks/resend/route.ts   (traced out of Clients)
+    trackClientEmailHealth matched the client with ilike(escapeLike(to)) alone in all three
+    branches. escapeLike() maps a "*" to the "_" single-character wildcard (PostgREST cannot
+    escape "*", and "*" is a legal local-part character), so an event for a*@x.com also matched
+    ab@x.com / a1@x.com: a bounce or spam complaint stamped the red marker on an UNRELATED client,
+    and a delivery cleared another client's genuine bounce. The pass-13 fix (exact sameEmail()
+    after the LIKE) had been applied to contacts, project creation and Guardian inbound but not
+    here. Candidates are now read (limit 25), filtered with sameEmail(), and written by id.
+    Cost: one small select before the update on "delivered" events.
+
+B3  lib/reports/client-money.ts (new), app/(app)/clients/[id]/page.tsx
+    The Money block mixed tax bases: Contracted / Invoiced came from computeContractPositions()
+    (deliberately PRE-tax) while Paid / Outstanding / Overdue are POST-tax, so a fully settled
+    client billed with tax read  Invoiced 1,000 · Paid 1,160 · Outstanding 0.
+    DECISION: Invoiced is now the invoice TOTAL (incl. tax) — Σ amount of non-draft, non-void
+    invoices — so Invoiced, Paid and Outstanding share one basis and Invoiced − Paid = Outstanding
+    again. Contracted stays ex-tax (it is what was scoped). Each card now says its basis
+    ("· ex. tax" / "· incl. tax") and a one-line caption explains it.
+    computeContractPositions() is NOT changed — the invoice PDFs' "Remaining contract" needs the
+    pre-tax figure. The page's two invoice reads (positions + open invoices) are unchanged in
+    count: the open-invoices read became one non-draft read that feeds Invoiced, Outstanding and
+    Overdue from a single consistent set. Arithmetic lives in a pure helper (summarizeClientMoney)
+    so it is unit-tested; sums are rounded to cents; a failed read still blanks the whole summary.
+
+TESTS
+    tests/clients-pass15-fixes.test.ts    (new — B1 validator, B3 helper + page wiring)
+    tests/clients-pass15-webhook.test.ts  (new — B2, drives the real route over the fake DB)
+    Verified: against the UNFIXED code the B1 tests fail 31/34 and the B2 tests fail 4/6 (the
+    two that pass are controls); against the fixed code all pass. The existing client, webhook
+    and contract-position suites give identical results before and after.
+
+VERIFY AFTER EXTRACTING
+    npx tsc --noEmit && npx vitest run tests/clients-pass15-fixes.test.ts tests/clients-pass15-webhook.test.ts && npx vitest run

@@ -5,7 +5,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { verifyResendSignature, nextEmailStatus, classifyEmailKind, bounceAlertBody } from '@/lib/email/webhook'
 import { notifyUsers, notifyMembersWithPermission } from '@/lib/utils/notify'
 import type { Permission } from '@/lib/supabase/types'
-import { escapeLike } from '@/lib/utils/escape-like'
+import { escapeLike, sameEmail } from '@/lib/utils/escape-like'
 
 // Resend delivery webhook (configure in the Resend dashboard → Webhooks → this URL, events
 // email.delivered / email.delivery_delayed / email.bounced / email.complained / email.failed, and
@@ -203,19 +203,29 @@ async function trackClientEmailHealth(service: any, row: any, status: string, ad
   try {
     const to = (address || String((row.to_emails || [])[0] || '')).trim().toLowerCase()
     if (!to || !row.workspace_id) return
+    // FIX (independent pass 15, section 14 — B2): all three branches matched the client with `ilike(escapeLike(to))`
+    // alone. escapeLike() turns a `*` into the single-character wildcard `_` (PostgREST cannot escape `*`), and `*` is a
+    // legal local-part character, so an event for `a*@x.com` also matched `ab@x.com` / `a1@x.com`: a bounce or spam
+    // complaint stamped the red marker on an UNRELATED client, and a delivery to one cleared another client's genuine
+    // bounce. Every other ilike lookup on this address (contacts, project creation, Guardian inbound) was already
+    // followed by an exact sameEmail() check (pass 13); this one was missed. The candidates are now read, filtered to
+    // the exact case-insensitive address, and written by id.
+    const { data: hits, error: selErr } = await service.from('clients').select('id, email, email_bounce_kind')
+      .eq('workspace_id', row.workspace_id).ilike('email', escapeLike(to)).limit(25)
+    if (selErr) { console.error('[resend-webhook] could not look up client for email health:', selErr.message); return }
+    const matched = (hits || []).filter((c: any) => sameEmail(c.email, to))
     if (status === 'complained') {
-      const { error } = await service.from('clients')
-        .update({ email_bounced_at: new Date().toISOString(), email_bounce_kind: 'complaint' })
-        .eq('workspace_id', row.workspace_id).ilike('email', escapeLike(to))
-      if (error) console.error('[resend-webhook] could not mark client email complaint:', error.message)
+      const ids = matched.map((c: any) => c.id)
+      if (ids.length) {
+        const { error } = await service.from('clients')
+          .update({ email_bounced_at: new Date().toISOString(), email_bounce_kind: 'complaint' }).in('id', ids)
+        if (error) console.error('[resend-webhook] could not mark client email complaint:', error.message)
+      }
     } else if (status === 'bounced') {
       // A spam complaint outranks a bounce ("stays until the address is changed"). Bounce events for an address are
       // now processed even when the message status did not advance, so one arriving after a complaint must not turn
       // the marker back into a plain bounce — which the next successful delivery would then clear.
-      const { data: hits, error: selErr } = await service.from('clients').select('id, email_bounce_kind')
-        .eq('workspace_id', row.workspace_id).ilike('email', escapeLike(to))
-      if (selErr) { console.error('[resend-webhook] could not look up client for email bounce:', selErr.message); return }
-      const ids = (hits || []).filter((c: any) => c.email_bounce_kind !== 'complaint').map((c: any) => c.id)
+      const ids = matched.filter((c: any) => c.email_bounce_kind !== 'complaint').map((c: any) => c.id)
       if (ids.length) {
         const { error } = await service.from('clients')
           .update({ email_bounced_at: new Date().toISOString(), email_bounce_kind: 'bounce' }).in('id', ids)
@@ -223,10 +233,12 @@ async function trackClientEmailHealth(service: any, row: any, status: string, ad
       }
     } else if (status === 'delivered') {
       // Only a plain bounce clears on delivery — a spam complaint stays until the address is changed.
-      const { error } = await service.from('clients')
-        .update({ email_bounced_at: null, email_bounce_kind: null })
-        .eq('workspace_id', row.workspace_id).ilike('email', escapeLike(to)).eq('email_bounce_kind', 'bounce')
-      if (error) console.error('[resend-webhook] could not clear client email bounce:', error.message)
+      const ids = matched.filter((c: any) => c.email_bounce_kind === 'bounce').map((c: any) => c.id)
+      if (ids.length) {
+        const { error } = await service.from('clients')
+          .update({ email_bounced_at: null, email_bounce_kind: null }).in('id', ids)
+        if (error) console.error('[resend-webhook] could not clear client email bounce:', error.message)
+      }
     }
   } catch (e) {
     console.error('[resend-webhook] client email health update failed:', e)

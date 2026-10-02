@@ -12,6 +12,7 @@ import { IN_PROGRESS_STATUSES } from '@/lib/utils/project-status'
 import { computeContractPositions } from '@/lib/reports/contract-position'
 import { effectiveContractValue, monthlyRetainerRate, loadRetainerMonthsBilled } from '@/lib/utils/contract-value'
 import { fetchAll } from '@/lib/utils/fetch-all'
+import { summarizeClientMoney, type ClientMoney } from '@/lib/reports/client-money'
 import { isUuidString } from '@/lib/utils/uuid'
 import { getWorkspaceTimeZone } from '@/lib/utils/workspace-time'
 import { formatDateInZone } from '@/lib/utils/timezone'
@@ -224,8 +225,11 @@ export default async function ClientDetailPage({ params }: Props) {
   // computeContractPositions() the invoice PDFs and the rollup use (so the numbers can't disagree
   // with them), over ONLY the projects this viewer may see, grouped per currency. Outstanding =
   // unpaid balance of sent / partially-paid / overdue invoices (post-tax, what is actually owed).
-  type Money = { contracted: number; invoiced: number; paid: number; outstanding: number; overdue: number; atRisk: number }
-  const moneyByCurrency = new Map<string, Money>()
+  // FIX (independent pass 15, section 14 — B3): the arithmetic moved to lib/reports/client-money.ts. Invoiced is now the
+  // invoice TOTAL (incl. tax) like Paid / Outstanding — it used to be the pre-tax subtotal, so a fully paid taxed client
+  // showed Paid > Invoiced. Contracted stays ex-tax (see that file's header). The one invoices read below replaces the
+  // old open-invoices-only read: the non-draft invoices give Invoiced, Outstanding and Overdue from one consistent set.
+  let moneyByCurrency = new Map<string, ClientMoney>()
   // FIX (independent pass 2, section 14): the open-invoices read below destructured `{ data }` and threw the
   // error away, and passed EVERY project id in one `.in()` (computeContractPositions chunks at 100 "to stay
   // under proxy limits"). On a failed read — or a client with a few hundred projects — Contracted / Invoiced /
@@ -237,35 +241,19 @@ export default async function ClientDetailPage({ params }: Props) {
     try {
       const positions = await computeContractPositions(service, projectsRaw)
       const ids = (projectsRaw as any[]).map(p => p.id)
-      const openInvoices: any[] = []
+      const billedInvoices: any[] = []
       for (let i = 0; i < ids.length; i += 100) {
         const slice = ids.slice(i, i + 100)
-        openInvoices.push(...await fetchAll<any>('client open invoices', (from, to) =>
+        billedInvoices.push(...await fetchAll<any>('client invoices', (from, to) =>
           (service as any).from('invoices').select('id, project_id, amount, amount_paid, status')
-            .in('project_id', slice).in('status', ['sent', 'partially_paid', 'overdue'])
+            .in('project_id', slice).neq('status', 'draft')
             .order('id').range(from, to)))
       }
-      const cur = (pid: string) => (projectsRaw as any[]).find(p => p.id === pid)?.currency || 'USD'
-      const bucket = (c: string): Money => {
-        let m = moneyByCurrency.get(c)
-        if (!m) { m = { contracted: 0, invoiced: 0, paid: 0, outstanding: 0, overdue: 0, atRisk: 0 }; moneyByCurrency.set(c, m) }
-        return m
-      }
-      for (const p of projectsRaw as any[]) {
-        const pos = positions.get(p.id); if (!pos) continue
-        const m = bucket(p.currency || 'USD')
-        m.contracted += pos.contractedValue; m.invoiced += pos.invoicedToDate; m.paid += pos.paidToDate; m.atRisk += pos.atRiskValue
-      }
-      for (const inv of (openInvoices || []) as any[]) {
-        const owed = Math.max(0, (Number(inv.amount) || 0) - (Number(inv.amount_paid) || 0))
-        const m = bucket(cur(inv.project_id))
-        m.outstanding += owed
-        if (inv.status === 'overdue') m.overdue += owed
-      }
+      moneyByCurrency = summarizeClientMoney(projectsRaw as any[], positions, billedInvoices)
     } catch (e) {
       console.error('Client financial summary failed:', e)
       moneyFailed = true
-      moneyByCurrency.clear()
+      moneyByCurrency = new Map()
     }
   }
   const showMoney = Array.from(moneyByCurrency.values()).some(m => m.invoiced > 0 || m.outstanding > 0 || m.contracted > 0)
@@ -384,6 +372,11 @@ export default async function ClientDetailPage({ params }: Props) {
           {showMoney && (
             <div style={{ marginBottom: 20 }}>
               <div className="sec-hd" style={{ marginBottom: 12 }}><div className="sec-title">Money</div></div>
+              {/* FIX (independent pass 15, section 14 — B3): say which figures include tax. Contracted is what was scoped
+                  (ex. tax); Invoiced, Paid and Outstanding are what the client was billed / has paid / owes (incl. tax). */}
+              <p style={{ fontSize: 11, color: 'var(--text-4)', margin: '-6px 0 10px' }}>
+                Contracted is before tax. Invoiced, paid and outstanding include tax.
+              </p>
               {Array.from(moneyByCurrency.entries()).map(([currency, m]) => (
                 <div key={currency} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10, marginBottom: 10 }}>
                   {([
@@ -392,7 +385,7 @@ export default async function ClientDetailPage({ params }: Props) {
                     ['CO awaiting reply', m.atRisk, false],
                   ] as Array<[string, number, boolean]>).map(([label, value, warn]) => (
                     <div key={label} className="surface surface-p" style={{ padding: '10px 12px' }}>
-                      <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 3 }}>{label}{moneyByCurrency.size > 1 ? ` · ${currency}` : ''}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 3 }}>{label}{moneyByCurrency.size > 1 ? ` · ${currency}` : ''}{label === 'Contracted' ? ' · ex. tax' : label === 'Invoiced' ? ' · incl. tax' : ''}</div>
                       <div style={{ fontSize: 15, fontWeight: 500, fontFamily: 'IBM Plex Mono, monospace', color: label === 'Overdue' && warn ? 'var(--red)' : label === 'Outstanding' && warn ? 'var(--amber)' : undefined }}>
                         {/* FIX (clients pass 8): invoice-derived figures keep their cents (formatCurrency rounds to
                             whole units: a $0.29 balance read "$0" under an amber warning). Contracted stays whole. */}

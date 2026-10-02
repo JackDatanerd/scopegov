@@ -51,8 +51,20 @@ const EMAIL_CHAR = String.raw`[^${EMAIL_BAD}.]`                       // any per
 const DOMAIN_BAD = EMAIL_BAD + '_'
 const DOMAIN_CHAR = String.raw`[^${DOMAIN_BAD}.]`
 const EMAIL_LABEL = String.raw`[^${DOMAIN_BAD}.\-](?:${DOMAIN_CHAR}*[^${DOMAIN_BAD}.\-])?` // a domain label: no leading / trailing hyphen
+// FIX (independent pass 15, section 14 — B1): every list above is a DENY list, and the domain's was still missing everything
+// that is neither whitespace, a control / invisible character nor one of the RFC specials. So punctuation and symbols that
+// ride along when an address is copied out of prose, a signature or a rich-text page passed validation and bounced on the
+// first send: `jane@acme.com'` / `'jane@acme.com'`, `jane@acme.com…`, `“jane@acme.com”`, `jane@acme.com?subject=hi`,
+// `jane@acme.com»`, `jane@ac!me.com`, `a@ex%ample.com`, `a@x.com/`, `a@x.com|`, `jane@acme.com€` and the like. A hostname is
+// only ever letters, digits, marks and hyphens, so the domain now rejects any Unicode punctuation / symbol / other-category
+// character except `.` `-` and (kept on purpose, see above) ZWNJ / ZWJ and the Catalan middle dot U+00B7. The local part keeps
+// the ASCII `atext` specials (`+ ' * ! # $ % & / = ? ^ _ \` { | } ~ -`) but refuses NON-ASCII punctuation / symbols — a curly
+// quote or ellipsis there is a paste artefact (`“jane@acme.com`), never a typed address. Both are lookaheads over `[^@]*`, so
+// the pattern stays linear-time on hostile input (covered by the pass 14 timing test, repeated for pass 15).
+const NON_ASCII_JUNK = String.raw`(?![\u0000-\u007f\u00b7\u200c\u200d])[\p{P}\p{S}\p{C}]`   // non-ASCII punctuation / symbol / other
+const DOMAIN_JUNK    = String.raw`(?![.\-\u00b7\u200c\u200d])[\p{P}\p{S}\p{C}]`            // anything but . - and the kept joiners
 export const EMAIL_RE = new RegExp(
-  String.raw`^(?=[^@]{1,64}@)${EMAIL_CHAR}+(?:\.${EMAIL_CHAR}+)*@(?:${EMAIL_LABEL}\.)+(?![0-9]+$)(?=${DOMAIN_CHAR}{2})${EMAIL_LABEL}$`,
+  String.raw`^(?=[^@]{1,64}@)(?![^@]*${NON_ASCII_JUNK})${EMAIL_CHAR}+(?:\.${EMAIL_CHAR}+)*@(?![^@]*${DOMAIN_JUNK})(?:${EMAIL_LABEL}\.)+(?![0-9]+$)(?=${DOMAIN_CHAR}{2})${EMAIL_LABEL}$`,
   'u',
 )
 
