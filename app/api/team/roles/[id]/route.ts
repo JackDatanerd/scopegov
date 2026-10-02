@@ -60,8 +60,10 @@ export async function PATCH(
 
     const service = createServiceClient() as any
 
-    const { data: existingRole } = await service
+    const { data: existingRole, error: existingRoleErr } = await service
       .from('roles').select('name, description, permissions, is_default').eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
+    // A failed read is not "no such role" (404).
+    if (existingRoleErr) return NextResponse.json({ error: 'Could not load this role. Please try again.' }, { status: 500 })
     if (!existingRole) return NextResponse.json({ error: 'Role not found' }, { status: 404 })
 
     // The Edit role form always sends the role's full permission map, even when only the name or
@@ -88,7 +90,8 @@ export async function PATCH(
       }, { status: 403 })
 
     if (name !== undefined && normalizeRoleName(name) !== normalizeRoleName(existingRole.name || '')) {
-      const { data: others } = await service.from('roles').select('id,name').eq('workspace_id', session.workspaceId)
+      const { data: others, error: othersErr } = await service.from('roles').select('id,name').eq('workspace_id', session.workspaceId)
+      if (othersErr) return NextResponse.json({ error: 'Could not check the role name. Please try again.' }, { status: 500 })
       if (roleNameTaken(others || [], name, id))
         return NextResponse.json({ error: 'A role with that name already exists in this workspace' }, { status: 409 })
     }
@@ -117,10 +120,12 @@ export async function PATCH(
     if (permissions !== undefined) {
       const ownerId = await workspaceOwnerId(service, session.workspaceId)
       if (ownerId && ownerId !== session.id) {
-        const { data: ownerHoldsRole } = await service
+        const { data: ownerHoldsRole, error: ownerHoldsErr } = await service
           .from('workspace_members').select('id')
           .eq('workspace_id', session.workspaceId).eq('user_id', ownerId).eq('role_id', id).eq('status', 'active')
           .maybeSingle()
+        // Not "the owner doesn't hold this role": that skipped owner protection entirely.
+        if (ownerHoldsErr) return NextResponse.json({ error: 'Could not check who holds this role. Please try again.' }, { status: 500 })
         if (ownerHoldsRole) {
           return NextResponse.json({
             error: 'This role belongs to the workspace owner, so its permissions can\u2019t be changed by anyone else. Ask the owner to make this change, or have them hand ownership over from Settings \u2192 Danger zone first.',
@@ -141,9 +146,11 @@ export async function PATCH(
         perm => existingRole.permissions?.[perm] === true && permissions![perm] !== true
       )
       if (losing.length > 0) {
-        const { data: activeMembers } = await service
+        const { data: activeMembers, error: activeMembersErr } = await service
           .from('workspace_members').select('id,role_id,permission_overrides,effective_permissions')
           .eq('workspace_id', session.workspaceId).eq('status', 'active')
+        // An empty snapshot would read as "everyone is orphaned" (a false 409 naming the wrong cause).
+        if (activeMembersErr) return NextResponse.json({ error: 'Could not check who holds these permissions. Please try again.' }, { status: 500 })
 
         const snapshot = (activeMembers || []).map((m: any) => ({ id: m.id, effectivePermissions: m.effective_permissions }))
         const simulated = new Map<string, Record<string, unknown> | null>(
@@ -164,9 +171,11 @@ export async function PATCH(
     // Application-layer floor for APPROVE_DOCUMENTS — see approvalPermissionOrphanedBy.
     if (permissions !== undefined && permissions !== null &&
         existingRole.permissions?.['APPROVE_DOCUMENTS'] === true && permissions['APPROVE_DOCUMENTS'] !== true) {
-      const { data: approvalMembers } = await service
+      const { data: approvalMembers, error: approvalMembersErr } = await service
         .from('workspace_members').select('id,role_id,permission_overrides,effective_permissions')
         .eq('workspace_id', session.workspaceId).eq('status', 'active')
+      // An empty snapshot reads as "no approvers left" (a false 409), or, with the loss misjudged, a skipped guard.
+      if (approvalMembersErr) return NextResponse.json({ error: 'Could not check who can approve documents. Please try again.' }, { status: 500 })
       const approvalSnapshot = (approvalMembers || []).map((m: any) => ({ id: m.id, effectivePermissions: m.effective_permissions }))
       const approvalSimulated = new Map<string, Record<string, unknown> | null>(
         (approvalMembers || [])
@@ -188,11 +197,13 @@ export async function PATCH(
       // revoking the permission via PATCH has the identical effect on a
       // live step as deleting the role outright, so it needs the same
       // guard.
-      const { count: liveApprovalSteps } = await service
+      const { count: liveApprovalSteps, error: liveStepsErr } = await service
         .from('approval_steps')
         .select('id, approval_requests!inner(workspace_id, status)', { count: 'exact', head: true })
         .eq('approver_role_id', id).eq('status', 'pending')
         .eq('approval_requests.workspace_id', session.workspaceId).eq('approval_requests.status', 'pending')
+      // Not "zero live steps": that skipped the dead-end guard and let the revoke through.
+      if (liveStepsErr) return NextResponse.json({ error: 'Could not check pending approvals. Please try again.' }, { status: 500 })
       if ((liveApprovalSteps || 0) > 0) {
         return NextResponse.json({
           error: `This role is the current approver on ${liveApprovalSteps} approval request${liveApprovalSteps === 1 ? '' : 's'} still waiting for a decision. Reassign or cancel ${liveApprovalSteps === 1 ? 'it' : 'them'} from the Approvals page first, or leave Approve documents on this role until they clear.`,
@@ -322,9 +333,11 @@ export async function DELETE(
       return NextResponse.json({ error: 'Missing permission: MANAGE_ROLES' }, { status: 403 })
 
     const service = createServiceClient() as any
-    const { data: role } = await service
+    const { data: role, error: roleErr } = await service
       .from('roles').select('id, name, is_default, permissions')
       .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
+    // A failed read is not "no such role" (404).
+    if (roleErr) return NextResponse.json({ error: 'Could not load this role. Please try again.' }, { status: 500 })
     if (!role) return NextResponse.json({ error: 'Role not found' }, { status: 404 })
 
     if (role.is_default) {
@@ -340,9 +353,11 @@ export async function DELETE(
       }, { status: 403 })
     }
 
-    const { data: holders } = await service
+    const { data: holders, error: holdersErr } = await service
       .from('workspace_members').select('id,status')
       .eq('workspace_id', session.workspaceId).eq('role_id', id)
+    // Not "nobody holds this role": that skipped every holder guard below.
+    if (holdersErr) return NextResponse.json({ error: 'Could not check who holds this role. Please try again.' }, { status: 500 })
     const live        = (holders || []).filter((m: any) => m.status === 'active').length
     const pending     = (holders || []).filter((m: any) => m.status === 'invited' || m.status === 'expired').length
     const deactivated = (holders || []).filter((m: any) => m.status === 'deactivated').length
@@ -362,9 +377,11 @@ export async function DELETE(
       }, { status: 409 })
     }
 
-    const { count: stepCount } = await service
+    const { count: stepCount, error: stepCountErr } = await service
       .from('approval_workflow_steps').select('id', { count: 'exact', head: true })
       .eq('approver_role_id', id)
+    // Not "no workflow uses it": that skipped the guard and deleted a role an approval workflow depends on.
+    if (stepCountErr) return NextResponse.json({ error: 'Could not check approval workflows. Please try again.' }, { status: 500 })
     if ((stepCount || 0) > 0) {
       return NextResponse.json({
         error: 'This role is used as an approver in one or more approval workflows. Update those workflows first.',
@@ -377,11 +394,13 @@ export async function DELETE(
     // no ON DELETE rule either, so a role that had EVER appeared in a finished
     // request could never be deleted, and the failure surfaced as a bare 500;
     // migration 069 makes historical steps SET NULL.)
-    const { count: liveApprovalSteps } = await service
+    const { count: liveApprovalSteps, error: liveStepsErr } = await service
       .from('approval_steps')
       .select('id, approval_requests!inner(workspace_id, status)', { count: 'exact', head: true })
       .eq('approver_role_id', id).eq('status', 'pending')
       .eq('approval_requests.workspace_id', session.workspaceId).eq('approval_requests.status', 'pending')
+    // Not "zero live steps": that skipped the guard and left a pending step with no approver.
+    if (liveStepsErr) return NextResponse.json({ error: 'Could not check pending approvals. Please try again.' }, { status: 500 })
     if ((liveApprovalSteps || 0) > 0) {
       return NextResponse.json({
         error: `This role is the current approver on ${liveApprovalSteps} approval request${liveApprovalSteps === 1 ? '' : 's'} still waiting for a decision. Reassign or cancel ${liveApprovalSteps === 1 ? 'it' : 'them'} from the Approvals page first.`,

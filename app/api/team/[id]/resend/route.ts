@@ -66,11 +66,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!limited.allowed)
       return NextResponse.json({ error: limited.message }, { status: 429 })
 
-    const { data: member } = await (service as any)
+    const { data: member, error: memberErr } = await (service as any)
       .from('workspace_members')
       .select('id,status,role_id,invited_email,user_id,invited_by,invite_token,invite_token_expires_at,roles(name,permissions),users!workspace_members_user_id_fkey(email)')
       .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
 
+    // A failed read is not "no such invite": answering 404 told the admin the invite was gone.
+    if (memberErr) return NextResponse.json({ error: 'Could not load this invite. Please try again.' }, { status: 500 })
     if (!member) return NextResponse.json({ error: 'Invite not found' }, { status: 404 })
     if (member.status === 'active')
       return NextResponse.json({ error: 'This person has already accepted — there is nothing to resend.' }, { status: 409 })

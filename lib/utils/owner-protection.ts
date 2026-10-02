@@ -15,7 +15,10 @@ export const OWNER_PROTECTED_MESSAGE =
   'This person is the workspace owner, so their access can\u2019t be changed by anyone else. They can hand ownership over from Settings \u2192 Danger zone first.'
 
 export async function workspaceOwnerId(service: any, workspaceId: string): Promise<string | null> {
-  const { data } = await service.from('workspaces').select('created_by').eq('id', workspaceId).maybeSingle()
+  const { data, error } = await service.from('workspaces').select('created_by').eq('id', workspaceId).maybeSingle()
+  // A failed read is not "this workspace has no owner": answering null made isProtectedOwnerTarget() report
+  // "not the owner" and let the caller through. Callers sit inside their route's try/catch (500, retryable).
+  if (error) throw new Error(`workspace owner lookup failed: ${error.message}`)
   return (data?.created_by as string | undefined) ?? null
 }
 

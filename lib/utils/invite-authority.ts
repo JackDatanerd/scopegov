@@ -22,17 +22,22 @@ export async function inviterMayStillGrant(
   service: any, workspaceId: string, invitedBy: string | null | undefined, roleId: string | null | undefined
 ): Promise<boolean> {
   if (!invitedBy) return true
-  const { data: inviter } = await service
+  // A failed read must not be answered as "the inviter is gone" (a spurious 410 on a database blip) or, for the
+  // role, as "nothing to check" (fail open). Throw: every caller runs inside its route's try/catch (retryable 500).
+  const { data: inviter, error: inviterErr } = await service
     .from('workspace_members').select('effective_permissions')
     .eq('workspace_id', workspaceId).eq('user_id', invitedBy).eq('status', 'active').maybeSingle()
+  if (inviterErr) throw new Error(`inviter lookup failed: ${inviterErr.message}`)
   if (!inviter) return false
 
   let rolePerms: unknown = null
   if (roleId) {
-    const { data } = await service.from('roles').select('permissions').eq('id', roleId).eq('workspace_id', workspaceId).maybeSingle()
+    const { data, error } = await service.from('roles').select('permissions').eq('id', roleId).eq('workspace_id', workspaceId).maybeSingle()
+    if (error) throw new Error(`invite role lookup failed: ${error.message}`)
     rolePerms = data?.permissions ?? null
   } else {
-    const { data } = await service.from('roles').select('permissions').eq('workspace_id', workspaceId).eq('is_default', true).maybeSingle()
+    const { data, error } = await service.from('roles').select('permissions').eq('workspace_id', workspaceId).eq('is_default', true).maybeSingle()
+    if (error) throw new Error(`default role lookup failed: ${error.message}`)
     rolePerms = data?.permissions ?? null
   }
   return inviterGrantAllowed(inviter.effective_permissions, rolePerms)
@@ -66,8 +71,10 @@ export async function roleGrantedAtAcceptance(
   service: any, workspaceId: string, roleId: string | null | undefined
 ): Promise<{ id: string; name: string; permissions: Record<string, unknown> } | null> {
   const base = service.from('roles').select('id,name,permissions').eq('workspace_id', workspaceId)
-  const { data } = roleId
+  const { data, error } = roleId
     ? await base.eq('id', roleId).maybeSingle()
     : await base.eq('is_default', true).maybeSingle()
+  // A failed read is not "no such role" — null here means "nothing to check against the actor's ceiling".
+  if (error) throw new Error(`role lookup failed: ${error.message}`)
   return data ?? null
 }

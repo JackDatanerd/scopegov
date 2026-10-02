@@ -1,0 +1,20 @@
+Team & Invites — round 18 (independent pass, bugs only)
+
+B1 (low)  A failed database read was treated as "no data" across the team routes.
+          - [id] DELETE / PATCH (both paths) / resend / link / reset-mfa: member lookup error -> 500 (was 404 "not found").
+          - PATCH: new-role and old-role lookup errors -> 500 (old-role null understated what the floor simulation loses).
+          - invite POST: account, explicit-role, default-role, membership-guard reads and the stale-row clear -> 500
+            (were: skipped guards, a skipped ceiling check, or a misleading "invite already pending").
+          - roles/[id] PATCH: role, name-uniqueness, owner-holds-role (owner protection was skipped), active-member
+            snapshots, live-approval-step reads -> 500. DELETE: role, holders, workflow-step, live-step reads -> 500
+            (guards were skipped, the delete went ahead).
+          - lib/utils/owner-protection.ts workspaceOwnerId and lib/utils/invite-authority.ts inviterMayStillGrant /
+            roleGrantedAtAcceptance now THROW on a read error (callers all sit inside their route's try/catch).
+            Previously: "no owner" (owner protection bypassed), "inviter is gone" (spurious 410), "no role to check".
+B2 (low)  invite accept: getAuthenticatorAssuranceLevel() error was ignored, so the only second-factor gate on the
+          public /api/team/invite/ prefix failed open. Now 503 (retryable). Also reads "has a verified factor" from the
+          live user getUser() returned (as middleware does) instead of the cookie-cached nextLevel.
+B3 (cosmetic) Team header printed "0 pending invites" for viewers who never load the list; now shown only to viewers
+          who can invite.
+
+Tests: tests/team-invites-round18.test.ts (18; 17 fail on the previous code). Full suite 1970 passed, tsc clean.

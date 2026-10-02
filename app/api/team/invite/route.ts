@@ -66,13 +66,18 @@ export async function POST(request: NextRequest) {
     // default that changes (or was already privileged) before acceptance.
     let role: { id: string; name: string; permissions: Record<string, unknown> } | null = null
     if (roleId) {
-      const { data } = await (service as any)
+      const { data, error: roleErr } = await (service as any)
         .from('roles').select('id,name,permissions').eq('id', roleId).eq('workspace_id', wsId).maybeSingle()
+      // A failed read is not "invalid role" (400 blamed the admin's input for a database blip).
+      if (roleErr) return NextResponse.json({ error: 'Could not load that role. Please try again.' }, { status: 500 })
       if (!data) return NextResponse.json({ error: 'Invalid role for this workspace' }, { status: 400 })
       role = data
     } else {
-      const { data } = await (service as any)
+      const { data, error: defaultRoleErr } = await (service as any)
         .from('roles').select('id,name,permissions').eq('workspace_id', wsId).eq('is_default', true).maybeSingle()
+      // Not "no default role": null here skipped the ceiling check and minted an invite that accept's
+      // inviterMayStillGrant() can refuse for the whole 7 days it holds a seat.
+      if (defaultRoleErr) return NextResponse.json({ error: 'Could not load the workspace\u2019s default role. Please try again.' }, { status: 500 })
       role = data || null
     }
     if (role && !roleWithinCeiling(session, role)) {
@@ -84,8 +89,10 @@ export async function POST(request: NextRequest) {
     }
 
     const normalizedEmail = email.toLowerCase().trim()
-    const { data: existingUser } = await (service as any)
+    const { data: existingUser, error: existingUserErr } = await (service as any)
       .from('users').select('id, deleted_at').eq('email', normalizedEmail).maybeSingle()
+    // Not "no account for this address": that skipped the deleted-account and member-by-account guards below.
+    if (existingUserErr) return NextResponse.json({ error: 'Could not check this address. Please try again.' }, { status: 500 })
 
     // FIX (Team & Invites independent pass — invite to a deleted account): a self-deleted account keeps its
     // email (and is banned) for the 30-day erasure window, so this lookup finds it. The invite was created
@@ -114,6 +121,10 @@ export async function POST(request: NextRequest) {
             .eq('workspace_id', wsId).eq('user_id', existingUser.id)
         : Promise.resolve({ data: [] }),
     ])
+    // Not "no existing rows": that skipped the already-a-member / deactivated / pending guards and let the unique
+    // index answer instead, with a misleading "An invite is already pending".
+    if (byEmailRes.error || byUserRes.error)
+      return NextResponse.json({ error: 'Could not check this address. Please try again.' }, { status: 500 })
     const relatedRows = [...(byEmailRes.data || []), ...(byUserRes.data || [])]
       .filter((r: any, i: number, all: any[]) => all.findIndex(x => x.id === r.id) === i)
     const related: any[] = relatedRows || []
@@ -156,8 +167,10 @@ export async function POST(request: NextRequest) {
     const expiredIds = related.filter(r => r.status === 'expired' || isLapsed(r) || isStaleDeactivated(r)).map(r => r.id)
     if (expiredIds.length > 0) {
       // Status-guarded like every other delete of a never-accepted row: an accept racing this can't lose its row.
-      await (service as any).from('workspace_members').delete().in('id', expiredIds)
+      const { error: clearErr } = await (service as any).from('workspace_members').delete().in('id', expiredIds)
         .or('status.in.(invited,expired),and(status.eq.deactivated,joined_at.is.null)')
+      // If the stale rows survive, the insert below trips the unique index and reports "already pending".
+      if (clearErr) return NextResponse.json({ error: 'Could not prepare the invite. Please try again.' }, { status: 500 })
     }
 
     const inviteToken   = nanoid(32)

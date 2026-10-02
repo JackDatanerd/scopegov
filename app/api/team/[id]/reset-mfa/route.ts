@@ -46,11 +46,13 @@ export async function POST(
 
     const service = createServiceClient()
 
-    const { data: member } = await (service as any)
+    const { data: member, error: memberErr } = await (service as any)
       .from('workspace_members')
       .select('id,user_id,status,effective_permissions,users!workspace_members_user_id_fkey(name,email)')
       .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
 
+    // A failed read is not "no such member": answering 404 told the admin the row was gone.
+    if (memberErr) return NextResponse.json({ error: 'Could not load this member. Please try again.' }, { status: 500 })
     if (!member) return NextResponse.json({ error: 'Member not found' }, { status: 404 })
     if (!member.user_id)
       return NextResponse.json({ error: 'This invite has not been accepted yet' }, { status: 400 })

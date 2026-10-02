@@ -28,11 +28,13 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
 
     const service = createServiceClient() as any
 
-    const { data: member } = await service
+    const { data: member, error: memberErr } = await service
       .from('workspace_members')
       .select('id,user_id,role_id,status,joined_at,invited_email,effective_permissions,users!workspace_members_user_id_fkey(name,email)')
       .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
 
+    // A failed read is not "no such member": answering 404 told the admin the row was gone.
+    if (memberErr) return NextResponse.json({ error: 'Could not load this member. Please try again.' }, { status: 500 })
     if (!member) return NextResponse.json({ error: 'Member not found' }, { status: 404 })
     if (member.user_id === session.id)
       return NextResponse.json({ error: 'You cannot deactivate yourself' }, { status: 400 })
@@ -230,10 +232,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       if (body.status !== 'active')
         return NextResponse.json({ error: 'Only reactivation (status: "active") is supported here — use DELETE to deactivate.' }, { status: 400 })
 
-      const { data: member } = await service
+      const { data: member, error: memberErr } = await service
         .from('workspace_members')
         .select('id,status,user_id,joined_at,deactivated_at,role_id,effective_permissions,users!workspace_members_user_id_fkey(name,email,deleted_at)')
         .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
+      if (memberErr) return NextResponse.json({ error: 'Could not load this member. Please try again.' }, { status: 500 })
       if (!member) return NextResponse.json({ error: 'Member not found' }, { status: 404 })
       if (member.status !== 'deactivated')
         return NextResponse.json({ error: 'Member is not deactivated' }, { status: 400 })
@@ -345,9 +348,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       }
     }
 
-    const { data: targetMember } = await service
+    const { data: targetMember, error: targetErr } = await service
       .from('workspace_members').select('user_id,role_id,status,permission_overrides,effective_permissions,users!workspace_members_user_id_fkey(name,email)')
       .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
+    if (targetErr) return NextResponse.json({ error: 'Could not load this member. Please try again.' }, { status: 500 })
     if (!targetMember) return NextResponse.json({ error: 'Member not found' }, { status: 404 })
 
     const outOfReach = permissionsBeyondActorForTarget(session, targetMember.effective_permissions)
@@ -371,8 +375,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     let newRolePermissions: Record<string, unknown> | null | undefined = undefined // undefined = role not changing
     if (body.roleId !== undefined) {
       if (body.roleId) {
-        const { data: role } = await service
+        const { data: role, error: roleErr } = await service
           .from('roles').select('id,name,permissions').eq('id', body.roleId).eq('workspace_id', session.workspaceId).maybeSingle()
+        // A failed read is not "invalid role" (400 blamed the admin's input for a database blip).
+        if (roleErr) return NextResponse.json({ error: 'Could not load that role. Please try again.' }, { status: 500 })
         if (!role) return NextResponse.json({ error: 'Invalid role for this workspace' }, { status: 400 })
         if (!roleWithinCeiling(session, role))
           return NextResponse.json({ error: 'Cannot assign a role with permissions you don\u2019t hold yourself' }, { status: 403 })
@@ -419,7 +425,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     let oldRoleName: string | null = null
     let oldRolePermissions: Record<string, unknown> | null = null
     if (targetMember.role_id) {
-      const { data: oldRole } = await service.from('roles').select('name,permissions').eq('id', targetMember.role_id).maybeSingle()
+      const { data: oldRole, error: oldRoleErr } = await service.from('roles').select('name,permissions').eq('id', targetMember.role_id).maybeSingle()
+      // oldRolePermissions feeds the floor simulation below; null on a failed read would understate what is lost.
+      if (oldRoleErr) return NextResponse.json({ error: 'Could not load the current role. Please try again.' }, { status: 500 })
       oldRoleName = oldRole?.name ?? null
       oldRolePermissions = oldRole?.permissions ?? null
     }

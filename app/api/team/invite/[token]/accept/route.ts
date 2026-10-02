@@ -79,8 +79,22 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // has no workspace yet), so the middleware's second-factor gate does not cover
     // it. A password-only session for an account that HAS a second factor must not
     // be able to attach new memberships.
-    const { data: aalNow } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
-    if (aalNow?.nextLevel === 'aal2' && aalNow.currentLevel !== 'aal2') {
+    //
+    // FIX (Team & Invites round 18 — B2): the lookup's `error` was never read. On a failure both levels stayed
+    // undefined, the comparison below was false, and this — the ONLY second-factor gate on this path — let the
+    // request through; middleware fails the same lookup closed (503) everywhere it applies. Fail closed here too,
+    // and take "does this account have a verified factor" from the live user getUser() returned (as middleware
+    // does) rather than the cookie-cached nextLevel, which stays 'aal2' after backup-code recovery deleted the factor.
+    const { data: aalNow, error: aalErr } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
+    if (aalErr) {
+      console.error('Invite accept: getAuthenticatorAssuranceLevel failed:', aalErr.message)
+      return NextResponse.json({ error: 'Could not verify your sign-in. Please try again.' }, { status: 503 })
+    }
+    const liveFactors = (user as any).factors as Array<{ status: string }> | undefined
+    const needsSecondFactor = liveFactors
+      ? liveFactors.some(f => f.status === 'verified')
+      : aalNow?.nextLevel === 'aal2'
+    if (needsSecondFactor && aalNow?.currentLevel !== 'aal2') {
       return NextResponse.json({ error: 'Complete two-factor verification before accepting this invite.', code: 'mfa_required' }, { status: 403 })
     }
 

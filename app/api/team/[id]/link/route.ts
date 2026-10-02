@@ -25,11 +25,13 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
       return NextResponse.json({ error: 'Missing permission: INVITE_MEMBERS' }, { status: 403 })
 
     const service = createServiceClient() as any
-    const { data: member } = await service
+    const { data: member, error: memberErr } = await service
       .from('workspace_members')
       .select('id,status,invited_email,invited_by,role_id,invite_token,invite_token_expires_at,roles(name,permissions),users!workspace_members_user_id_fkey(email)')
       .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
 
+    // A failed read is not "no such invite": answering 404 told the admin the invite was gone.
+    if (memberErr) return NextResponse.json({ error: 'Could not load this invite. Please try again.' }, { status: 500 })
     if (!member) return NextResponse.json({ error: 'Invite not found' }, { status: 404 })
     if (member.status !== 'invited' && member.status !== 'expired')
       return NextResponse.json({ error: 'There is no pending invite for this member.' }, { status: 409 })

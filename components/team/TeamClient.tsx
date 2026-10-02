@@ -464,7 +464,10 @@ export default function TeamClient({ members, pendingInvites, expiredInvites = [
         <div>
           <h1 className="page-title">Team</h1>
           <p className="page-sub">
-            {members.length} active · {pendingInvites.length} pending invite{pendingInvites.length !== 1 ? 's' : ''}
+            {members.length} active
+            {/* The page only loads pending invites for viewers who can invite; for everyone else the list is empty
+                by design, so "0 pending invites" would be a false statement rather than a count. */}
+            {canInvite && <> · {pendingInvites.length} pending invite{pendingInvites.length !== 1 ? 's' : ''}</>}
             {canInvite && seatLimit != null && (
               <> · <strong>{seatsInUse} of {seatLimit}</strong> seat{seatLimit === 1 ? '' : 's'} in use</>
             )}
