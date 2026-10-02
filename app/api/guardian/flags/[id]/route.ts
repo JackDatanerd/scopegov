@@ -5,7 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
-import { sanitizePlainText } from '@/lib/utils/sanitize'
+import { sanitizePlainText, truncateText } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
 import { isTerminalStatus } from '@/lib/utils/project-status'
 import { workspaceTaxDefaults } from '@/lib/documents/tax-defaults'
@@ -19,7 +19,7 @@ const MAX_VALUE = 1e12
 /** Trimmed, sanitized, length-capped text — or null when the value isn't a string. */
 function cleanText(v: unknown, max: number): string | null {
   if (typeof v !== 'string') return null
-  return sanitizePlainText(v.trim()).slice(0, max)
+  return truncateText(sanitizePlainText(v.trim()), max)
 }
 
 // The four permissions that make the original client message relevant to a person.
@@ -246,7 +246,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           workspace_id: session.workspaceId,
           flag_id:      id,
           deliverable:  flag.sow_reference,
-          granted_what: cleanText(grantedWhat, 1000) || sanitizePlainText(String(flag.description || '')).slice(0, 1000),
+          granted_what: cleanText(grantedWhat, 1000) || truncateText(sanitizePlainText(String(flag.description || '')), 1000),
           granted_by:   session.id,
           estimated_value: parsedValue,
           reason:       reasonText,

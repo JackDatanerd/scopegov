@@ -5,7 +5,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
-import { sanitizePlainText } from '@/lib/utils/sanitize'
+import { sanitizePlainText, truncateText } from '@/lib/utils/sanitize'
 import { canReadProject } from '@/lib/utils/project-access'
 
 const MAX_VALUE = 1e12
@@ -52,12 +52,12 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       }
     }
     if (body?.reason !== undefined) {
-      const r = typeof body.reason === 'string' ? sanitizePlainText(body.reason.trim()).slice(0, 2000) : ''
+      const r = typeof body.reason === 'string' ? truncateText(sanitizePlainText(body.reason.trim()), 2000) : ''
       if (!r) return NextResponse.json({ error: 'A reason is required' }, { status: 400 })
       if (r !== exc.reason) { updates.reason = r; changes.reason = { from: exc.reason, to: r } }
     }
     if (body?.grantedWhat !== undefined) {
-      const g = typeof body.grantedWhat === 'string' ? sanitizePlainText(body.grantedWhat.trim()).slice(0, 1000) : ''
+      const g = typeof body.grantedWhat === 'string' ? truncateText(sanitizePlainText(body.grantedWhat.trim()), 1000) : ''
       if (!g) return NextResponse.json({ error: 'A description of what was granted is required' }, { status: 400 })
       if (g !== exc.granted_what) { updates.granted_what = g; changes.granted_what = { from: exc.granted_what, to: g } }
     }

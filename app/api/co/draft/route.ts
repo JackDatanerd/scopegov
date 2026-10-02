@@ -8,7 +8,7 @@ import { canReadProject } from '@/lib/utils/project-access'
 import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
 import { isTerminalStatus } from '@/lib/utils/project-status'
 import Anthropic from '@anthropic-ai/sdk'
-import { sanitizePlainText } from '@/lib/utils/sanitize'
+import { sanitizePlainText, truncateText } from '@/lib/utils/sanitize'
 import { MIN_CO_TIMELINE_DAYS, MAX_CO_TIMELINE_DAYS } from '@/lib/documents/co-input'
 
 // Forced tool call instead of "return only JSON" + string parsing (BUG-027's
@@ -178,7 +178,7 @@ Rules:
     const lineItems = (Array.isArray(parsed.lineItems) ? parsed.lineItems : []).slice(0, 6).map(l => {
       const q = Number(l?.quantity)
       return {
-        description: sanitizePlainText(String(l?.description ?? '')).slice(0, 500),
+        description: truncateText(sanitizePlainText(String(l?.description ?? '')), 500),
         quantity: Number.isFinite(q) && q > 0 && q <= 10_000 ? q : 1,
         rate: 0,
       }
@@ -190,9 +190,9 @@ Rules:
     const days = rawDays === null || rawDays === undefined || (typeof rawDays === 'string' && rawDays.trim() === '') ? NaN : Number(rawDays)
 
     return NextResponse.json({
-      title:              sanitizePlainText(String(parsed.title ?? '')).slice(0, 200),
-      note:               sanitizePlainText(String(parsed.note ?? '')).slice(0, 2000),
-      scopeImpact:        parsed.scopeImpact ? sanitizePlainText(String(parsed.scopeImpact)).slice(0, 1000) : null,
+      title:              truncateText(sanitizePlainText(String(parsed.title ?? '')), 200),
+      note:               truncateText(sanitizePlainText(String(parsed.note ?? '')), 2000),
+      scopeImpact:        parsed.scopeImpact ? truncateText(sanitizePlainText(String(parsed.scopeImpact)), 1000) : null,
       timelineImpactDays: Number.isInteger(days) && days >= MIN_CO_TIMELINE_DAYS && days <= MAX_CO_TIMELINE_DAYS ? days : null,
       lineItems,
     })

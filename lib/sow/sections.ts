@@ -4,7 +4,7 @@
 // app/api/sow/[id]/route.ts: a Next.js route module may only export route
 // handlers, so these helpers could not live there.
 
-import { sanitizeRichText, sanitizePlainText, decodeHtmlEntities } from '@/lib/utils/sanitize'
+import { sanitizeRichText, sanitizePlainText, decodeHtmlEntities, truncateText } from '@/lib/utils/sanitize'
 import { isTableSection, SOW_TABLE_SCHEMAS, type SowTableSectionId } from '@/lib/sow/table-schema'
 import { SOW_SECTION_DEFS, sectionTitle } from '@/lib/ai/sow-content'
 
@@ -35,7 +35,7 @@ export function sanitizeTableRows(sectionId: string, rows: unknown): Array<Recor
   return rows.slice(0, MAX_TABLE_ROWS).map((row: any) => {
     const clean: Record<string, string> = {}
     for (const col of schema.columns)
-      clean[col.key] = sanitizePlainText(String(row?.[col.key] ?? '').slice(0, MAX_TABLE_CELL_LENGTH))
+      clean[col.key] = sanitizePlainText(truncateText(String(row?.[col.key] ?? ''), MAX_TABLE_CELL_LENGTH))
     return clean
   })
 }

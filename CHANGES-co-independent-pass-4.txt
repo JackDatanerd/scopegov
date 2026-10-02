@@ -1,0 +1,11 @@
+CHANGES — Section 10 (CO logic), independent pass 4
+
+BUG (low): capped free-text fields were cut with String.slice, which counts UTF-16 units. A cap landing inside an
+emoji left a lone high surrogate; Postgres rejects it, so the create/save failed with a generic error.
+
+FIX: lib/utils/sanitize.ts gains truncateText() (never splits a surrogate pair); cleanTextField now uses it.
+  Section 10: lib/documents/co-input.ts (title, scope impact note), app/api/co/draft/route.ts (AI title/note/scope/lines).
+  cleanTextField also covers close / withdraw / escalate / exception reasons.
+  Traced siblings (same pattern): app/api/guardian/exceptions/[id], app/api/guardian/flags/[id] (cleanText + granted_what),
+  lib/sow/sections.ts (table cells), lib/ai/sow-content.ts (checklist items, revision policy, payment terms).
+TEST: tests/co-truncate-surrogate.test.ts

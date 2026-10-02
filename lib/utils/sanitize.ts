@@ -89,6 +89,24 @@ export function sanitizePlainText(text: string | null | undefined): string {
 }
 
 /**
+ * Cut `text` to at most `maxLength` UTF-16 code units WITHOUT splitting a surrogate pair.
+ *
+ * `String.prototype.slice` counts UTF-16 units, so a cap that lands in the middle of an emoji (or any
+ * character outside the BMP) leaves a lone high surrogate at the end. That string is not valid Unicode: the
+ * JSON body sent to Postgres is rejected, the whole write fails, and the user just sees a generic
+ * "could not save" for a title or note that looked fine. (sanitizeDisplayName below already guards this for
+ * names; every other capped free-text field needs the same treatment, so they share this.)
+ */
+export function truncateText(text: string | null | undefined, maxLength: number): string {
+  if (!text || maxLength <= 0) return ''
+  if (text.length <= maxLength) return text
+  let end = maxLength
+  const last = text.charCodeAt(end - 1)
+  if (last >= 0xD800 && last <= 0xDBFF) end -= 1 // the cut would strand the first half of a pair
+  return text.slice(0, end)
+}
+
+/**
  * Validate + clean an untrusted free-text request field: returns '' for a
  * missing value, null when the value is present but not a string (so the caller
  * can answer 400 instead of crashing on `.trim()`), otherwise the sanitized,
@@ -97,7 +115,7 @@ export function sanitizePlainText(text: string | null | undefined): string {
 export function cleanTextField(value: unknown, maxLen: number): string | null {
   if (value === undefined || value === null) return ''
   if (typeof value !== 'string') return null
-  return sanitizePlainText(value).slice(0, maxLen)
+  return truncateText(sanitizePlainText(value), maxLen)
 }
 
 /** Escape text for safe interpolation into an HTML email body (outbound notification emails, not stored). */
