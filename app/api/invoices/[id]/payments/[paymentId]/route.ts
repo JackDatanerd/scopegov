@@ -45,7 +45,7 @@ export async function PATCH(
 
     const update: Record<string, any> = {}
     if (body.amount !== undefined) {
-      const raw = Number(body.amount)
+      const raw = typeof body.amount === 'number' || (typeof body.amount === 'string' && body.amount.trim() !== '') ? Number(body.amount) : NaN
       if (!Number.isFinite(raw) || raw <= 0 || raw > 1_000_000_000_000)
         return NextResponse.json({ error: 'Amount must be a positive number' }, { status: 400 })
       const amount = roundCurrency(raw)

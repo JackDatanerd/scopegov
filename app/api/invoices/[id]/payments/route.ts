@@ -60,7 +60,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // `referenceNote` threw (opaque 500), an unparseable `paidAt` reached the
     // database (500), a date in the future was accepted, and the amount was stored
     // exactly as typed — more than two decimals included.
-    const rawAmount = Number(body.amount)
+    const rawAmount = typeof body.amount === 'number' || (typeof body.amount === 'string' && body.amount.trim() !== '') ? Number(body.amount) : NaN
     if (!Number.isFinite(rawAmount) || rawAmount <= 0 || rawAmount > 1_000_000_000_000)
       return NextResponse.json({ error: 'Amount must be a positive number' }, { status: 400 })
     const amount = roundCurrency(rawAmount)

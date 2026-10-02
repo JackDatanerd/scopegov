@@ -766,7 +766,7 @@ function CreateInvoiceModal({ projectId, projectCurrency, milestones, sows, cos,
   const [lineItems, setLineItems] = useState<Array<{ id: string; description: string; quantity: number; rate: number; total: number }>>(
     [{ id: nanoid(), description: '', quantity: 1, rate: 0, total: 0 }]
   )
-  const itemsSubtotal = lineItems.reduce((s, l) => s + l.total, 0)
+  const itemsSubtotal = lineItems.filter(l => l.description.trim()).reduce((s, l) => s + l.total, 0)
 
   // AI draft — mirrors CoEditor's "Draft with AI" exactly: agency
   // describes what's being billed, model proposes a title + itemized
@@ -1216,7 +1216,7 @@ function EditInvoiceModal({ invoiceId, projectCurrency, onClose, onSaved }: {
   const [taxInclusive, setTaxInclusive] = useState(true)
   const [itemized, setItemized] = useState(false)
   const [lineItems, setLineItems] = useState<Array<{ id: string; description: string; quantity: number; rate: number; total: number }>>([])
-  const itemsSubtotal = lineItems.reduce((s, l) => s + l.total, 0)
+  const itemsSubtotal = lineItems.filter(l => l.description.trim()).reduce((s, l) => s + l.total, 0)
 
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')

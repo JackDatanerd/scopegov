@@ -1,0 +1,11 @@
+Invoicing (section 12) — independent pass 14
+
+B1  components/invoices/BillingTab.tsx (Create + Edit modals): itemsSubtotal now sums only rows with a
+    description. Blank rows are dropped server-side, so counting them made the typed amount disagree with
+    the server's line sum ("Line items total X does not match the invoice amount Y").
+L1  lib/pdf/renderer.tsx: Contract position block is not printed on a void invoice (its "incl. this invoice"
+    label was false: void invoices are excluded from invoicedToDate).
+L2  app/api/invoices/[id]/payments/route.ts and payments/[paymentId]/route.ts: amount must be a number or a
+    non-empty numeric string (Number(true) / Number([5]) no longer coerce into valid amounts).
+
+Not changed: reminder cooldown race (needs a DB-level lock/migration; impact is one duplicate email).

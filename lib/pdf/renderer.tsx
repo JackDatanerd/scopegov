@@ -1089,7 +1089,7 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
             already computed nightly for the reporting dashboard but never
             shown to the client on the document itself before now. Gives an
             AP reviewer the running picture without a separate report. */}
-        {data.contractPosition && (
+        {data.contractPosition && data.status !== 'void' && (
           <View style={s.section}>
             <Text style={s.secTitle}>Contract position</Text>
             <View style={s.cpRow}>
