@@ -89,19 +89,22 @@ describe('GET /api/search', () => {
 
   it('a member limited to their own projects with none assigned sees no project-scoped results and triggers no such queries', async () => {
     session.perms = ['VIEW_CLIENT_DATA', 'VIEW_FINANCIALS'] // no VIEW_ALL_PROJECTS
-    tables.project_members = { data: [], error: null }
+    tables.project_members = { data: [], count: 0, error: null } as any
     const json = await (await GET(req('acme'))).json()
     const t = usedTables()
     for (const scoped of ['projects', 'change_orders', 'sow_documents', 'invoices', 'guardian_flags']) expect(t).not.toContain(scoped)
     expect(json.results.every((r: any) => ['client', 'contact'].includes(r.type))).toBe(true)
   })
 
-  it('restricts project-scoped blocks to the member\'s own project ids', async () => {
+  it('restricts project-scoped blocks to the member\'s own projects through the relationship (no id list in the URL)', async () => {
     session.perms = ['VIEW_CLIENT_DATA']
-    tables.project_members = { data: [{ project_id: 'mine' }], error: null }
+    tables.project_members = { data: [], count: 1, error: null } as any
     await GET(req('acme'))
     const co = queried.find(q => q.table === 'change_orders')!
-    expect(co.calls).toContainEqual(['in', 'project_id', ['mine']])
+    expect(co.calls).toContainEqual(['eq', 'projects.project_members.workspace_members.user_id', session.id])
+    expect(co.calls).toContainEqual(['eq', 'projects.project_members.workspace_members.status', 'active'])
+    expect(co.calls.some(c => c[0] === 'in' && c[1] === 'project_id')).toBe(false)
+    expect(co.calls.find(c => c[0] === 'select')![1]).toContain('project_members!inner(workspace_members!inner(user_id, status))')
   })
 
   it('ranks an exact/starts-with project ahead of a mere substring match', async () => {

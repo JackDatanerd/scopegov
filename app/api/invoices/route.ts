@@ -1,5 +1,6 @@
 export const runtime = 'nodejs'
 
+import { MEMBER_PROJECT_EMBED_SUFFIX, scopeToMemberProjects } from '@/lib/utils/member-project-scope'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
@@ -40,7 +41,7 @@ export async function GET(request: NextRequest) {
       .select(`id, project_id, milestone_id, sow_id, co_id, invoice_number, title,
         amount, amount_paid, currency, status, due_date, sent_at, paid_at, voided_at,
         disputed_at, created_at, updated_at,
-        projects!inner(id, name, deleted_at, clients(id, name, company_name))`)
+        projects!inner(id, name, deleted_at, clients(id, name, company_name)${!projectId && !canViewAll ? MEMBER_PROJECT_EMBED_SUFFIX : ''})`)
       .eq('workspace_id', session.workspaceId)
       // Invoices of a soft-deleted (trashed) project are not part of the live ledger.
       .is('projects.deleted_at', null)
@@ -49,17 +50,11 @@ export async function GET(request: NextRequest) {
     if (projectId) {
       query = query.eq('project_id', projectId)
     } else if (!canViewAll) {
-      // FIX (fix round, section-11/12 finding): same workspace-scoping gap
-      // as /api/approvals — filtered on workspace_members.user_id alone,
-      // with no workspace_id scope, so it pulled in project ids from every
-      // workspace the viewer belongs to, not just this one. Mirrors
-      // canReadProject's own join pattern (lib/utils/project-access.ts).
-      const { data: ids } = await (service as any)
-        .from('project_members')
-        .select('project_id, projects!inner(workspace_id), workspace_members!inner(user_id)')
-        .eq('projects.workspace_id', session.workspaceId)
-        .eq('workspace_members.user_id', session.id)
-      query = query.in('project_id', (ids || []).map((r: any) => r.project_id))
+      // FIX (Search section, round 8 — traced from /api/search): this read the member's whole project list and
+      // sent every id back in `.in('project_id', ids)` — past a couple of hundred projects the URL exceeded
+      // gateway limits and the list failed for long-tenured restricted members. Filtered through the
+      // relationship instead (lib/utils/member-project-scope.ts), active memberships only.
+      query = scopeToMemberProjects(query, session.id, 'projects.project_members')
     }
     if (status) query = query.eq('status', status)
 

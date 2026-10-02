@@ -2,6 +2,7 @@
 // Phase 4a: workspace-wide invoice registry, mirrors /sow's pattern.
 // Phase 4: portfolio reconciliation strip for VIEW_ALL_PROJECTS users.
 
+import { MEMBER_PROJECT_EMBED_SUFFIX, scopeToMemberProjects } from '@/lib/utils/member-project-scope'
 import { getSessionStrict, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
@@ -45,19 +46,14 @@ export default async function InvoicesPage({ searchParams }: {
   // invoice — every client name and dollar figure — workspace-wide
   // through this one page. Fixed the same way /sow/page.tsx was fixed.
   const canViewAll = hasPermission(session, 'VIEW_ALL_PROJECTS')
-  let allowedProjectIds: string[] | null = null
-  if (!canViewAll) {
-    // FIX (fix round, section-11/12 finding): same workspace-scoping gap
-    // as /api/approvals and /api/invoices — mirrors canReadProject's own
-    // join pattern (lib/utils/project-access.ts) instead of filtering on
-    // workspace_members.user_id alone.
-    const { data: ids } = await (service as any)
-      .from('project_members')
-      .select('project_id, projects!inner(workspace_id), workspace_members!inner(user_id)')
-      .eq('projects.workspace_id', session.workspaceId)
-      .eq('workspace_members.user_id', session.id)
-    allowedProjectIds = (ids || []).map((r: any) => r.project_id)
-  }
+  // FIX (Search section, round 8 — traced from /api/search): this read the member's whole project list and sent
+  // every id back in `.in('project_id', ids)` on four queries. Those rows are never removed when a project
+  // completes, so past a couple of hundred projects the URL exceeded gateway limits and the registry (and its
+  // summary strip) failed for exactly the long-tenured restricted members. The restriction is now an embedded
+  // filter through the relationship (lib/utils/member-project-scope.ts), active memberships only.
+  const restricted = !canViewAll
+  const memberEmbed = restricted ? MEMBER_PROJECT_EMBED_SUFFIX : ''
+  const memberUserId = session.id
 
   // FEATURE (section-12 audit, pass 2): filter, search and page — the list used to be
   // one unfiltered, hard-capped (500) table. Invoices of a soft-deleted project are
@@ -72,7 +68,7 @@ export default async function InvoicesPage({ searchParams }: {
     // visible on this workspace-wide list, the same way disputed_at/dispute_resolved_at
     // already are — see the matching pill below and in BillingTab.tsx.
     .select(`id, invoice_number, title, amount, amount_paid, currency, status, due_date, sent_at, paid_at, created_at, disputed_at, dispute_resolved_at, payment_claimed_at, payment_claim_cleared_at,
-      projects!inner(id, name, deleted_at, clients(name))`, { count: 'exact' })
+      projects!inner(id, name, deleted_at, clients(name)${memberEmbed})`, { count: 'exact' })
     .eq('workspace_id', session.workspaceId)
     .is('projects.deleted_at', null)
     .order('created_at', { ascending: false })
@@ -80,7 +76,7 @@ export default async function InvoicesPage({ searchParams }: {
     // could repeat or vanish across pages. The export route already tie-breaks on id.
     .order('id')
     .range(from, from + pageSize - 1)
-  if (allowedProjectIds !== null) invoicesQuery = invoicesQuery.in('project_id', allowedProjectIds)
+  if (restricted) invoicesQuery = scopeToMemberProjects(invoicesQuery, memberUserId, 'projects.project_members')
   invoicesQuery = applyRegistryFilters(invoicesQuery, filters, textProjectIds)
 
   const { data: invoices = [], error: invErr, count: filteredCount } = await invoicesQuery
@@ -110,12 +106,12 @@ export default async function InvoicesPage({ searchParams }: {
   // generic "showing the 10 most recent" banner (which reads as being
   // about the table, not these figures) to suggest anything was missing.
   // Use exact counts instead, same as /sow's fix, scoped to the same
-  // allowedProjectIds filter as the list query above.
+  // member-project filter as the list query above.
   const workspaceId = session.workspaceId
   function countQuery(statuses?: string[]) {
-    let q = (service as any).from('invoices').select('id, projects!inner(deleted_at)', { count: 'exact', head: true })
+    let q = (service as any).from('invoices').select(`id, projects!inner(deleted_at${memberEmbed})`, { count: 'exact', head: true })
       .eq('workspace_id', workspaceId).is('projects.deleted_at', null)
-    if (allowedProjectIds !== null) q = q.in('project_id', allowedProjectIds)
+    if (restricted) q = scopeToMemberProjects(q, memberUserId, 'projects.project_members')
     if (statuses) q = q.in('status', statuses)
     return q
   }
@@ -151,11 +147,11 @@ export default async function InvoicesPage({ searchParams }: {
   let ledgerFailed = false
   const ledgerRows = await fetchAll<any>('invoice registry ledger', (fromRow, toRow) => {
     let q = (service as any)
-      .from('invoices').select('id, currency, amount, amount_paid, status, due_date, projects!inner(deleted_at)')
+      .from('invoices').select(`id, currency, amount, amount_paid, status, due_date, projects!inner(deleted_at${memberEmbed})`)
       .eq('workspace_id', workspaceId).is('projects.deleted_at', null)
       .neq('status', 'draft')
       .order('id').range(fromRow, toRow)
-    if (allowedProjectIds !== null) q = q.in('project_id', allowedProjectIds)
+    if (restricted) q = scopeToMemberProjects(q, memberUserId, 'projects.project_members')
     return q
   }).catch((e: unknown) => { console.error('Invoices registry ledger error:', e); ledgerFailed = true; return [] as any[] })
 

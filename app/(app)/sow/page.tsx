@@ -1,5 +1,6 @@
 // app/(app)/sow/page.tsx
 
+import { MEMBER_PROJECT_EMBED_SUFFIX, scopeToMemberProjects } from '@/lib/utils/member-project-scope'
 import { getSessionStrict, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
@@ -37,43 +38,26 @@ export default async function SowPage() {
   // number here you can't see" tell.
   const canViewFinancials = hasPermission(session, 'VIEW_FINANCIALS')
   const canViewAll = hasPermission(session, 'VIEW_ALL_PROJECTS')
-  let allowedProjectIds: string[] | null = null
-  if (!canViewAll) {
-    // FIX (SOW lifecycle re-audit): this joined project_members straight to
-    // workspace_members filtered only on user_id — the same shape
-    // project-access.ts's own comment (BUG-058) already flags as unsafe,
-    // and the version here additionally never scoped to
-    // workspace_members.status or workspace_id at all, so it pulled in
-    // project ids from EVERY workspace this user has ever belonged to
-    // (active or not) and from deactivated memberships within this one.
-    // Not an actual leak today — the sow_documents query below is always
-    // separately scoped to `workspace_id = session.workspaceId`, so a
-    // stray project id from elsewhere can never match a row — but it's
-    // the one place in this codebase still bypassing
-    // project_members_active (migration 070), the belt-and-braces view
-    // every other membership check uses specifically so a failed/partial
-    // deactivation sweep doesn't have to be trusted blindly. Match that
-    // pattern instead of quietly relying on canReadProject's own
-    // defense-in-depth living somewhere else.
-    const { data: ids } = await (service as any)
-      .from('project_members_active')
-      .select('project_id')
-      .eq('project_workspace_id', session.workspaceId)
-      .eq('member_user_id', session.id)
-    allowedProjectIds = (ids || []).map((r: any) => r.project_id)
-  }
+  // FIX (Search section, round 8 — traced from /api/search): the registry used to read the member's whole
+  // project list and send every id back in `.in('project_id', ids)`. Those rows are never removed when a
+  // project completes, so past a couple of hundred projects the URL exceeded gateway limits and the page showed an
+  // empty registry for exactly the long-tenured members. The restriction is now an embedded filter through the
+  // relationship (lib/utils/member-project-scope.ts), active memberships only — the same rule as the
+  // project_members_active view (migration 070) this read used.
+  const restricted = !canViewAll
+  const memberEmbed = restricted ? MEMBER_PROJECT_EMBED_SUFFIX : ''
 
   let sowQuery = (service as any)
     .from('sow_documents')
     .select(`id, version, document_number, status, sent_at, signed_at, created_at,
-      projects!inner(id, name, contract_value, currency, deleted_at, clients(name))`)
+      projects!inner(id, name, contract_value, currency, deleted_at, clients(name)${memberEmbed})`)
     .eq('workspace_id', session.workspaceId)
     // FIX (SOW lifecycle independent pass, S2): SOWs of soft-deleted projects were listed and
     // counted (and linked to a project page that 404s). Same filter the invoices registry uses.
     .is('projects.deleted_at', null)
     .order('created_at', { ascending: false })
     .limit(limit)
-  if (allowedProjectIds !== null) sowQuery = sowQuery.in('project_id', allowedProjectIds)
+  if (restricted) sowQuery = scopeToMemberProjects(sowQuery, session.id, 'projects.project_members')
 
   const { data: sows = [], error: sowErr } = await sowQuery
 
@@ -89,16 +73,17 @@ export default async function SowPage() {
   // was really "count of the first `limit` fetched" — silently wrong for
   // any workspace that ever exceeds that cap, with no disclaimer outside
   // the solo-tier banner. Use exact counts, unaffected by the row limit.
-  // Also scoped to allowedProjectIds now, same reasoning as the list above.
+  // Also scoped to the member's projects now, same reasoning as the list above.
   // FIX (section-9 audit, build-blocking): `session` is typed
   // `SessionUser | null` and TypeScript can't carry the early
   // `if (!session) redirect(...)` narrowing into this closure, so this
   // failed `tsc --noEmit`. Capture the narrowed value.
   const workspaceId = session.workspaceId
+  const workspaceUserId = session.id
   function countQuery(status?: string) {
-    let q = (service as any).from('sow_documents').select('id, projects!inner(deleted_at)', { count: 'exact', head: true })
+    let q = (service as any).from('sow_documents').select(`id, projects!inner(deleted_at${memberEmbed})`, { count: 'exact', head: true })
       .eq('workspace_id', workspaceId).is('projects.deleted_at', null)
-    if (allowedProjectIds !== null) q = q.in('project_id', allowedProjectIds)
+    if (restricted) q = scopeToMemberProjects(q, workspaceUserId, 'projects.project_members')
     if (status) q = q.eq('status', status)
     return q
   }

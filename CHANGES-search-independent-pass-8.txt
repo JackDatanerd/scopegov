@@ -1,0 +1,34 @@
+Search section (20) - independent pass 8
+========================================
+
+BUG: project-restricted members lose search results (and registry pages) once they are on many projects.
+  /api/search read the member's whole project_members list (unpaged, so silently capped at 1,000 rows) and put
+  every id into the `.in(...)` URL of every project-scoped query (projects, change orders, SOWs, invoices, flags,
+  3-6 queries each). project_members rows are never removed when a project completes or archives, so the list only
+  grows; at ~37 bytes an id the request URL passes gateway limits after a couple of hundred projects and all five
+  blocks fail on every keystroke ("Some results couldn't be loaded"), leaving only clients / contacts / team.
+
+FIX: the restriction is now an embedded filter through the relationship, in the database
+  (lib/utils/member-project-scope.ts: project_members!inner(workspace_members!inner(user_id, status)) + two .eq
+  filters on that path). Constant-size requests, no row cap, active memberships only (same rule as the
+  project_members_active view, migration 070). Search keeps a head COUNT to short-circuit "member is on no projects".
+
+TRACED INTO OTHER SECTIONS (same defect, same fix):
+  app/(app)/sow/page.tsx            registry list + 3 counts (was .in('project_id', ids) via project_members_active)
+  app/(app)/invoices/page.tsx       registry list + 3 counts + ledger
+  app/api/invoices/export/route.ts  CSV export (every page of it)
+  app/api/invoices/route.ts         GET list
+
+FILES
+  lib/utils/member-project-scope.ts           NEW
+  app/api/search/route.ts
+  app/(app)/sow/page.tsx
+  app/(app)/invoices/page.tsx
+  app/api/invoices/export/route.ts
+  app/api/invoices/route.ts
+  tests/search-route.test.ts                  (two tests updated to the new behaviour)
+  tests/search-independent-pass-8.test.ts     NEW
+
+NOTE: vitest / tsc could not be run in the sandbox (no node_modules). After applying, run `npx tsc --noEmit` and
+`npx vitest run tests/search-route.test.ts tests/search-independent-pass-8.test.ts`, then open /sow, /invoices and
+the command palette as a member WITHOUT VIEW_ALL_PROJECTS to confirm the nested-embed filter returns their projects.

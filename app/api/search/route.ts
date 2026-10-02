@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { escapeIlike } from '@/lib/audit/search'
 import { getSession, hasPermission } from '@/lib/auth/session'
+import { MEMBER_PROJECT_EMBED_SUFFIX, scopeToMemberProjects } from '@/lib/utils/member-project-scope'
 import { sowStatusLabel, coStatusLabel, invoiceStatusLabel, flagStatusLabel } from '@/lib/utils/format'
 import {
   foldedTokens, plainTokens, likePattern, prefixLike, isSearchable, rankBy, searchRateLimited, truncateByCodePoint,
@@ -72,6 +73,13 @@ import {
 //     lib/utils/format.ts. (The palette's other round-6 fix is in components/team/TeamClient.tsx: a member result
 //     picked while the Team page was on its Roles tab navigated and then showed nothing.)
 
+// Round 8 (Search section, independent pass) — what this pass found and fixes:
+//   • A project-restricted member's whole project_members id list was sent in every block's `.in(...)` URL (and
+//     read without paging). Those rows are never removed when a project completes, so past a couple of hundred
+//     projects the requests exceeded gateway limits and five of the eight blocks failed on every keystroke. The
+//     restriction is now an embedded filter (lib/utils/member-project-scope.ts) — no id list. Same fix in the SOW
+//     and invoice registries, the invoice list/export routes (see CHANGES-search-independent-pass-8.txt).
+
 // Round 7 (Search section, independent pass) — what this pass found and fixes:
 //   • Change-order titles, invoice titles and flag descriptions / SOW references were still matched with a plain,
 //     accent-SENSITIVE ilike on the raw column — the gap migrations 062/073/111 closed for projects, clients,
@@ -83,7 +91,6 @@ import {
 
 type Result = { type: string; id: string; title: string; sub: string; href: string }
 
-const NO_PROJECTS = '00000000-0000-0000-0000-000000000000'
 const FETCH = 15 // rows fetched per query before ranking
 const NEWEST = { ascending: false } as const
 
@@ -114,19 +121,29 @@ export async function GET(request: NextRequest) {
     const canViewClientData = hasPermission(session, 'VIEW_CLIENT_DATA')
     const canViewFinancials = hasPermission(session, 'VIEW_FINANCIALS')
 
-    // Project-scoped visibility, identical to the rest of the app: everything
-    // unless the member is limited to projects they're on.
-    let restrictedProjectIds: string[] | null = null
-    if (!canViewAll) {
-      const { data, error } = await service
-        .from('project_members').select('project_id, workspace_members!inner(user_id)')
+    // Project-scoped visibility, identical to the rest of the app: everything unless the member is limited to
+    // projects they're on. FIX (Search section, round 8): this used to read the member's whole project_members
+    // list and put every id into each query's `.in(...)` URL — a long-tenured restricted member (those rows are
+    // never removed when a project completes or archives) went past the gateway's URL limit, so the projects,
+    // change-order, SOW, invoice and flag blocks all failed on every search ("Some results couldn't be loaded"),
+    // and the unpaged id read silently stopped at 1,000 projects. The restriction is now an embedded filter
+    // through the relationship (lib/utils/member-project-scope.ts): constant-size requests, no id list at all.
+    const restricted = !canViewAll
+    let nothingVisible = false
+    if (restricted) {
+      const { count, error } = await service
+        .from('project_members')
+        .select('id, projects!inner(workspace_id), workspace_members!inner(user_id, status)', { count: 'exact', head: true })
+        .eq('projects.workspace_id', wsId)
         .eq('workspace_members.user_id', session.id)
+        .eq('workspace_members.status', 'active')
       if (error) throw new Error(`project scope: ${error.message}`)
-      restrictedProjectIds = (data || []).map((r: any) => r.project_id)
+      nothingVisible = (count ?? 0) === 0
     }
-    const nothingVisible = restrictedProjectIds !== null && restrictedProjectIds.length === 0
-    const scope = (query: any, column: string) =>
-      restrictedProjectIds ? query.in(column, restrictedProjectIds.length ? restrictedProjectIds : [NO_PROJECTS]) : query
+    // `memberPath` is where the query reaches project_members: 'project_members' on projects, 'projects.project_members'
+    // on every table that embeds `projects!inner(...)`. `embed` is appended to that same select.
+    const scope = (query: any, memberPath: string) => (restricted ? scopeToMemberProjects(query, session.id, memberPath) : query)
+    const embed = restricted ? MEMBER_PROJECT_EMBED_SUFFIX : ''
 
     const failed: string[] = []
     const guard = async <T,>(name: string, fn: () => Promise<T[]>): Promise<T[]> => {
@@ -174,8 +191,8 @@ export async function GET(request: NextRequest) {
       // ── Projects: by their own name/description, or by their client ──
       nothingVisible ? Promise.resolve([] as Result[]) : block('projects', async () => {
         const base = () => scope(service.from('projects')
-          .select('id, name, disc, status, internal_ref, clients(name)')
-          .eq('workspace_id', wsId).is('deleted_at', null), 'id')
+          .select(`id, name, disc, status, internal_ref, clients(name)${embed}`)
+          .eq('workspace_id', wsId).is('deleted_at', null), 'project_members')
         let own = base()
         for (const t of folded) own = own.ilike('search_text', likePattern(t))
         // FIX (Search section, round 3): was a bare LIMIT with no ORDER BY — the one
@@ -253,8 +270,8 @@ export async function GET(request: NextRequest) {
       // found the project and any SOWs on it, never its change orders.
       nothingVisible ? Promise.resolve([] as Result[]) : block('change orders', async () => {
         const base = () => scope(service.from('change_orders')
-          .select('id, title, document_number, status, project_id, projects!inner(name, deleted_at)')
-          .eq('workspace_id', wsId).is('projects.deleted_at', null), 'project_id')
+          .select(`id, title, document_number, status, project_id, projects!inner(name, deleted_at${embed})`)
+          .eq('workspace_id', wsId).is('projects.deleted_at', null), 'projects.project_members')
         let byTitle = base()
         for (const t of folded) byTitle = byTitle.ilike('search_text', likePattern(t))
         let byProject = base()
@@ -283,8 +300,8 @@ export async function GET(request: NextRequest) {
       // ── SOWs (drafts excluded — they have no number and aren't registered) ──
       nothingVisible ? Promise.resolve([] as Result[]) : block('SOWs', async () => {
         const base = () => scope(service.from('sow_documents')
-          .select('id, status, version, document_number, project_id, projects!inner(name, deleted_at)')
-          .eq('workspace_id', wsId).neq('status', 'draft').is('projects.deleted_at', null), 'project_id')
+          .select(`id, status, version, document_number, project_id, projects!inner(name, deleted_at${embed})`)
+          .eq('workspace_id', wsId).neq('status', 'draft').is('projects.deleted_at', null), 'projects.project_members')
         // FIX: `projects!inner` — see the note at the top of this file.
         let byProject = base()
         for (const t of folded) byProject = byProject.ilike('projects.search_text', likePattern(t))
@@ -308,8 +325,8 @@ export async function GET(request: NextRequest) {
       // gap as change orders above — never matched on the project's name.
       (!canViewFinancials || nothingVisible) ? Promise.resolve([] as Result[]) : block('invoices', async () => {
         const base = () => scope(service.from('invoices')
-          .select('id, title, invoice_number, status, project_id, projects!inner(name, deleted_at)')
-          .eq('workspace_id', wsId).is('projects.deleted_at', null), 'project_id')
+          .select(`id, title, invoice_number, status, project_id, projects!inner(name, deleted_at${embed})`)
+          .eq('workspace_id', wsId).is('projects.deleted_at', null), 'projects.project_members')
         let byTitle = base()
         for (const t of folded) byTitle = byTitle.ilike('search_text', likePattern(t))
         let byProject = base()
@@ -339,9 +356,9 @@ export async function GET(request: NextRequest) {
       // project's name.
       nothingVisible ? Promise.resolve([] as Result[]) : block('flags', async () => {
         const base = () => scope(service.from('guardian_flags')
-          .select('id, description, severity, status, project_id, projects!inner(name, deleted_at)')
+          .select(`id, description, severity, status, project_id, projects!inner(name, deleted_at${embed})`)
           .eq('workspace_id', wsId).is('projects.deleted_at', null)
-          .order('created_at', { ascending: false }), 'project_id')
+          .order('created_at', { ascending: false }), 'projects.project_members')
         let byDescription = base()
         // search_text = description + the SOW clause cited (migration 137), accent-folded.
         for (const t of folded) byDescription = byDescription.ilike('search_text', likePattern(t))

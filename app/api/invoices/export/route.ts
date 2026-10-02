@@ -10,6 +10,7 @@ export const maxDuration = 60
 // page itself (VIEW_FINANCIALS) and scoped to the projects the caller can see;
 // the export is audited, the same way the other CSV exports are.
 
+import { MEMBER_PROJECT_EMBED_SUFFIX, scopeToMemberProjects } from '@/lib/utils/member-project-scope'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
@@ -32,15 +33,10 @@ export async function GET(request: NextRequest) {
     const filters = parseRegistryFilters({ status: searchParams.get('status') || '', q: searchParams.get('q') || '' })
 
     const service = createServiceClient()
-    let allowedProjectIds: string[] | null = null
-    if (!hasPermission(session, 'VIEW_ALL_PROJECTS')) {
-      const { data: ids } = await (service as any)
-        .from('project_members')
-        .select('project_id, projects!inner(workspace_id), workspace_members!inner(user_id)')
-        .eq('projects.workspace_id', session.workspaceId)
-        .eq('workspace_members.user_id', session.id)
-      allowedProjectIds = (ids || []).map((r: any) => r.project_id)
-    }
+    // FIX (Search section, round 8 — traced from /api/search): the member's whole project list was sent back in
+    // `.in('project_id', ids)` on every page of the export — past a couple of hundred projects the URL exceeded
+    // gateway limits and the CSV failed for long-tenured restricted members. Filtered through the relationship instead.
+    const restricted = !hasPermission(session, 'VIEW_ALL_PROJECTS')
     const textMatch = await projectIdsMatching(service, session.workspaceId, filters.q)
     // A partial ledger must never be handed over as the whole one.
     if (textMatch.truncated)
@@ -52,13 +48,13 @@ export async function GET(request: NextRequest) {
         .from('invoices')
         .select(`id, invoice_number, title, status, currency, amount, subtotal, tax_rate, tax_inclusive, amount_paid,
           due_date, sent_at, paid_at, voided_at, created_at, po_number, disputed_at, dispute_resolved_at,
-          projects!inner(name, deleted_at, clients(name, company_name))`)
+          projects!inner(name, deleted_at, clients(name, company_name)${restricted ? MEMBER_PROJECT_EMBED_SUFFIX : ''})`)
         .eq('workspace_id', session.workspaceId)
         .is('projects.deleted_at', null)
         .order('created_at', { ascending: false })
         .order('id')
         .range(from, to)
-      if (allowedProjectIds !== null) q = q.in('project_id', allowedProjectIds)
+      if (restricted) q = scopeToMemberProjects(q, session.id, 'projects.project_members')
       return applyRegistryFilters(q, filters, textProjectIds)
     })
 
