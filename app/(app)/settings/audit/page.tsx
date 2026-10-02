@@ -33,6 +33,10 @@ export default async function AuditLogPage() {
   // that project" is a normal audit question and the project filter is now
   // backed by audit_log.project_id, which outlives the project row.
   // Paged so a workspace past PostgREST's max-rows cap still lists them all.
+  // FIX (Settings independent pass 6 — B4): a failed read, or one past the row cap, used to come back as a plain
+  // (shorter) list. The client then labelled every event whose project wasn't in it "Deleted project" and offered
+  // project / user filters that were silently incomplete. Track whether each list is complete and say so.
+  const listState = { projectsComplete: true, membersComplete: true }
   const [projects, members] = await Promise.all([
     fetchPaged<any>(
       (f, t) => (service as any)
@@ -42,7 +46,8 @@ export default async function AuditLogPage() {
         .order('name').order('id')
         .range(f, t),
       { maxRows: 5000 },
-    ).then(r => r.rows).catch(err => { console.error('Audit page projects load failed:', err); return [] as any[] }),
+    ).then(r => { if (r.truncated) listState.projectsComplete = false; return r.rows })
+     .catch(err => { console.error('Audit page projects load failed:', err); listState.projectsComplete = false; return [] as any[] }),
     // FIX (re-audit, Reports & Audit section): this had no `.range()`/count
     // at all — the exact "PostgREST silently caps an unbounded read at its
     // Max Rows setting" bug the projects fetch right above (and this
@@ -61,7 +66,8 @@ export default async function AuditLogPage() {
         .order('created_at').order('id')
         .range(f, t),
       { maxRows: 5000 },
-    ).then(r => r.rows).catch(err => { console.error('Audit page members load failed:', err); return [] as any[] }),
+    ).then(r => { if (r.truncated) listState.membersComplete = false; return r.rows })
+     .catch(err => { console.error('Audit page members load failed:', err); listState.membersComplete = false; return [] as any[] }),
   ])
 
   const projectOptions = projects.map((p: any) => ({ id: p.id, name: p.name, deleted: !!p.deleted_at }))
@@ -78,5 +84,10 @@ export default async function AuditLogPage() {
 
   const timeZone = await getWorkspaceTimeZone(service, session.workspaceId)
 
-  return <AuditLogClient projects={projectOptions} members={memberOptions} timeZone={timeZone} />
+  return (
+    <AuditLogClient
+      projects={projectOptions} members={memberOptions} timeZone={timeZone}
+      projectsComplete={listState.projectsComplete} membersComplete={listState.membersComplete}
+    />
+  )
 }

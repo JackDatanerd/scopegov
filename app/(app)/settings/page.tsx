@@ -95,9 +95,14 @@ export default async function SettingsPage() {
   if (billingRes.error) {
     console.error('Settings: failed to load billing', billingRes.error)
   }
+  // FIX (Settings independent pass 6 — B1): a failed billing read used to leave `billing` null, which the Billing tab
+  // can only read as "this workspace has no subscription": the current tier's card turned into "Subscribe", Cancel / Update
+  // card disappeared and the "time you've already paid for is not credited" confirmation before a plan switch was skipped.
+  // Say the read failed so the tab can refuse to act on missing data instead.
   const loadFailed = {
     workspace: !!wsRes.error || !wsRes.data,
     defaults:  !!defaultsRes.error,
+    billing:   !!billingRes.error,
   }
 
   // FIX (deep audit, Settings section \u2014 stale logo after replacement):

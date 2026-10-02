@@ -13,14 +13,19 @@
 
 import React from 'react'
 import { Document, Page, View, Text, StyleSheet, renderToBuffer } from '@react-pdf/renderer'
-import { formatDateTimeInZone } from '@/lib/utils/timezone'
+import { formatDateTimeInZone, resolveTimeZone } from '@/lib/utils/timezone'
 import { PDF_FONT, sanitizeForPdf } from '@/lib/pdf/fonts'
 
 function fmtDateTime(iso: string, tz?: string) {
   return formatDateTimeInZone(iso, tz)
 }
-function fmtDate(iso: string) {
-  return new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
+// FIX (Settings independent pass 6 — B5): this formatted in the server's zone (UTC on Vercel) while every other
+// timestamp in this PDF — the header just above included — is printed in the workspace's own zone, so an adjustment
+// made shortly after local midnight showed the previous calendar day. Same long-month wording as before.
+function fmtDate(iso: string, tz?: string) {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  return new Intl.DateTimeFormat('en-GB', { timeZone: resolveTimeZone(tz), day: 'numeric', month: 'long', year: 'numeric' }).format(d)
 }
 function fmtMoney(amount: number | null | undefined, currency: string): string {
   if (amount === null || amount === undefined) return '—'
@@ -226,7 +231,7 @@ function ScopeReportDocument({ meta, data }: { meta: ReportPdfMeta; data: any })
                 <Text style={[s.td, { width: ADJ_COL.project }]}>{a.projects?.name || ''}</Text>
                 <View style={{ width: ADJ_COL.change }}>
                   <Text style={s.td}>{a.old_value} to {a.new_value}</Text>
-                  <Text style={s.tdSub}>{fmtDate(a.adjusted_at)}</Text>
+                  <Text style={s.tdSub}>{fmtDate(a.adjusted_at, meta.timeZone)}</Text>
                 </View>
                 <Text style={[s.td, { flex: 1 }]}>{a.reason}</Text>
               </View>

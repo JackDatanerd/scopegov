@@ -37,8 +37,9 @@ export default function MfaSection({ mandatory }: { mandatory: boolean }) {
         method: 'DELETE', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ factorId: status.factorId }),
       })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error)
+      // A gateway 502/504 answers with an HTML body; res.json() on it threw a raw parse error into the banner.
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json.error || 'Request failed — try again.')
       setConfirmingDisable(false)
       loadStatus()
     } catch (e: unknown) { setError(e instanceof Error ? e.message : 'Could not disable') } finally { setLoading(false) }
@@ -48,8 +49,9 @@ export default function MfaSection({ mandatory }: { mandatory: boolean }) {
     setLoading(true); setError('')
     try {
       const res = await fetchWithStepUp('/api/auth/mfa/backup-codes', { method: 'POST' })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error)
+      // A gateway 502/504 answers with an HTML body; res.json() on it threw a raw parse error into the banner.
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json.error || 'Request failed — try again.')
       setNewCodes(json.backupCodes)
       loadStatus()
     } catch (e: unknown) { setError(e instanceof Error ? e.message : 'Could not regenerate codes') } finally { setLoading(false) }

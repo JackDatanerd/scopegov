@@ -88,7 +88,12 @@ function formatMetaValue(v: unknown): string {
   try { return JSON.stringify(v) } catch { return String(v) }
 }
 
-export default function AuditLogClient({ projects, members, timeZone }: { projects: Project[]; members: Member[]; timeZone: string }) {
+export default function AuditLogClient({ projects, members, timeZone, projectsComplete = true, membersComplete = true }: {
+  projects: Project[]; members: Member[]; timeZone: string
+  // False when the project / member list could not be read in full (a failed read, or past the row cap). The filters
+  // then offer only part of the workspace, and a project missing from the list does not mean it was deleted.
+  projectsComplete?: boolean; membersComplete?: boolean
+}) {
   const [preset, setPreset] = useState('90d')
   const [from, setFrom] = useState(daysAgoLocal(90))
   const [to, setTo] = useState(localDate(new Date()))
@@ -319,6 +324,16 @@ export default function AuditLogClient({ projects, members, timeZone }: { projec
         </div>
       </div>
 
+      {(!projectsComplete || !membersComplete) && (
+        <div className="auth-error" style={{ background: '#FFFBEB', borderColor: '#FDE68A', color: '#92400E', marginBottom: 14 }}>
+          {!projectsComplete && !membersComplete
+            ? 'The project and user filters could not be loaded in full, so they may be missing some entries.'
+            : !projectsComplete
+              ? 'The project filter could not be loaded in full, so it may be missing some projects.'
+              : 'The user filter could not be loaded in full, so it may be missing some people.'}
+          {' '}The events themselves are not affected.
+        </div>
+      )}
       {error && <div className="auth-error" style={{ marginBottom: 14 }}>{error}</div>}
       {truncated && !loading && !hasMore && (
         <div className="auth-error" style={{ background: '#FFFBEB', borderColor: '#FDE68A', color: '#92400E', marginBottom: 14 }}>
@@ -380,7 +395,7 @@ export default function AuditLogClient({ projects, members, timeZone }: { projec
                           {e.projectId && (
                             <>
                               <span style={{ color: 'var(--text-3)' }}>Project</span>
-                              <span>{project && !project.deleted ? <a href={`/projects/${e.projectId}`}>{project.name}</a> : `${project?.name || 'Deleted project'}${project?.deleted ? ' (deleted)' : ''}`}</span>
+                              <span>{project && !project.deleted ? <a href={`/projects/${e.projectId}`}>{project.name}</a> : `${project?.name || (projectsComplete ? 'Deleted project' : 'Project (name unavailable)')}${project?.deleted ? ' (deleted)' : ''}`}</span>
                             </>
                           )}
                           <span style={{ color: 'var(--text-3)' }}>Actor</span>

@@ -32,21 +32,32 @@ export async function GET() {
 
     const service = createServiceClient()
 
-    const { data: ws } = await (service as any)
+    // FIX (Settings independent pass 6 — B3): neither read's error was looked at, so a failed members read answered
+    // 200 with an empty list — which the Danger zone words as "no other member holds Manage workspace settings",
+    // sending the owner off to change roles for a problem that does not exist. A failed read is now a failure.
+    const { data: ws, error: wsErr } = await (service as any)
       .from('workspaces')
       .select('created_by')
       .eq('id', session.workspaceId)
       .maybeSingle()
+    if (wsErr) {
+      console.error('Transfer-ownership: could not read workspace:', wsErr)
+      return NextResponse.json({ error: 'Could not load eligible members. Try again.' }, { status: 500 })
+    }
 
     const isOwner = !!ws && ws.created_by === session.id
     if (!isOwner) return NextResponse.json({ isOwner: false, eligibleMembers: [] })
 
-    const { data: members } = await (service as any)
+    const { data: members, error: membersErr } = await (service as any)
       .from('workspace_members')
       .select('user_id, effective_permissions, users!workspace_members_user_id_fkey(id, name, email)')
       .eq('workspace_id', session.workspaceId)
       .eq('status', 'active')
       .neq('user_id', session.id)
+    if (membersErr) {
+      console.error('Transfer-ownership: could not read members:', membersErr)
+      return NextResponse.json({ error: 'Could not load eligible members. Try again.' }, { status: 500 })
+    }
 
     const eligibleMembers = (members || [])
       .filter((m: any) => m.effective_permissions?.MANAGE_WORKSPACE_SETTINGS === true)

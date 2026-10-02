@@ -272,13 +272,13 @@ interface Props {
   logoUrl:     string | null
   // Which of the page's initial reads failed (see settings/page.tsx). A failed read renders placeholders, and
   // saving those would overwrite the real saved values — so the matching saves are refused.
-  loadFailed?: { workspace: boolean; defaults: boolean }
+  loadFailed?: { workspace: boolean; defaults: boolean; billing?: boolean }
   session:     SessionUser
   permissions: { manageWorkspace: boolean; manageBilling: boolean; viewAuditLog: boolean; manageRoles: boolean; canDeleteWorkspace: boolean }
   mfaMandatory: boolean
 }
 
-export default function SettingsClient({ workspace, billing, defaults, logoUrl, loadFailed = { workspace: false, defaults: false }, session, permissions, mfaMandatory }: Props) {
+export default function SettingsClient({ workspace, billing, defaults, logoUrl, loadFailed = { workspace: false, defaults: false, billing: false }, session, permissions, mfaMandatory }: Props) {
   const searchParams = useSearchParams()
   const router       = useRouter()
   const supabase     = createClient()
@@ -540,7 +540,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
           <GuardianTab form={guardianForm} setForm={setGuardianForm} permissions={permissions} onSave={patchWorkspace} saving={saving} currency={workspace?.currency || 'USD'} />
         )}
 
-        {tab === 'billing' && <BillingTab workspace={workspace} billing={billing} session={session} permissions={permissions} />}
+        {tab === 'billing' && <BillingTab workspace={workspace} billing={billing} billingLoadFailed={!!loadFailed.billing} session={session} permissions={permissions} />}
 
         {tab === 'notifications' && <NotificationsTab permissions={permissions} />}
 
@@ -1399,6 +1399,10 @@ function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab, globa
   const [reloadTick, setReloadTick] = useState(0)
   const [localError, setLocalError] = useState('')
   const isGlobal = scope === 'global'
+  // Settings independent pass 6 — B2: which load of a project type's values is the current one. The effect below and
+  // refetchType() each take a number; a response whose number is no longer current is dropped, so a slow answer for
+  // one type can never land in the editor under another type's name.
+  const loadSeq = useRef(0)
 
   const stdFromJson = (json: any): StandardsForm => ({
     revisionPolicy: json?.revisionPolicy || '',
@@ -1409,7 +1413,8 @@ function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab, globa
 
   useEffect(() => {
     setLocalError(''); setTypeLoadFailed(false)
-    if (isGlobal) { setTypeData(null); return }
+    loadSeq.current++ // invalidates any refetchType() still in flight for the previous scope
+    if (isGlobal) { setTypeData(null); setTypeLoading(false); return }
     // FIX (Settings independent pass 5 — B4): clear the previous type's values first, so a failed load never
     // leaves the last type's wording sitting in the editor under the new type's name.
     setTypeData(null); setTypeStd({ revisionPolicy: '', paymentTerms: '', outOfScope: '', assumptions: '' })
@@ -1446,9 +1451,24 @@ function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab, globa
     else setTypeStd(prev => ({ ...prev, ...patch }))
   }
 
+  // Reloads the current type after a save / removal. Marks the editor busy while it runs, ignores the answer if the
+  // scope changed (or another load started) meanwhile, and treats a failed reload as a failed load — leaving the old
+  // values and a "Remove override" button on screen would present stale state as current.
   async function refetchType() {
-    const res = await fetch(`/api/workspace/defaults?projectType=${scope}`)
-    if (res.ok) { const json = await res.json(); setTypeData(json); setTypeStd(stdFromJson(json)) }
+    const seq = ++loadSeq.current
+    setTypeLoading(true)
+    try {
+      const res = await fetch(`/api/workspace/defaults?projectType=${scope}`)
+      if (!res.ok) throw new Error('load failed')
+      const json = await res.json()
+      if (seq !== loadSeq.current) return
+      setTypeData(json); setTypeStd(stdFromJson(json)); setTypeLoadFailed(false)
+    } catch {
+      if (seq !== loadSeq.current) return
+      setTypeData(null); setTypeLoadFailed(true)
+    } finally {
+      if (seq === loadSeq.current) setTypeLoading(false)
+    }
   }
 
   async function saveCurrent() {
@@ -1497,7 +1517,7 @@ function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab, globa
 
         <div className="fgrp" style={{ marginBottom: 18, maxWidth: 340 }}>
           <label className="flbl">Applies to</label>
-          <select className="finp" value={scope} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setScope(e.target.value)}>
+          <select className="finp" value={scope} disabled={saving || typeLoading} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setScope(e.target.value)}>
             <option value="global">Global default (all project types)</option>
             {DEFAULTS_PROJECT_TYPES.map(pt => <option key={pt} value={pt}>{PROJECT_TYPE_LABELS[pt]}</option>)}
           </select>
@@ -1710,7 +1730,7 @@ function loadPaystackScript(): Promise<void> {
   })
 }
 
-function BillingTab({ workspace, billing, session, permissions }: any) {
+function BillingTab({ workspace, billing, billingLoadFailed = false, session, permissions }: any) {
   const planTier  = workspace?.plan_tier || 'trial'
   const planLabel = PLAN_LABELS[planTier] || planTier
   // FIX (Billing fix round — MEDIUM): everything below that speaks about "the subscription" (Renews, Cancel,
@@ -1870,6 +1890,9 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
   }
 
   async function handleUpgrade(planKey: string, intervalOverride?: 'monthly' | 'annual') {
+    // Settings independent pass 6 — B1: without the subscription row this function cannot tell a switch (which forfeits
+    // paid time and needs the warning) from a first purchase, so it does not guess.
+    if (billingLoadFailed) return
     const targetInterval = intervalOverride || planInterval
     // Paystack does not prorate: switching starts a NEW subscription that is
     // charged immediately and the old one ends now, so any time already paid
@@ -1960,6 +1983,13 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
         <div className="banner banner-warn" style={{ marginBottom: 14, alignItems: 'center' }}>
           <span className="spin spin-dark" style={{ marginRight: 10 }} />
           <span>Payment received — confirming your plan. This page will refresh as soon as it&apos;s active.</span>
+        </div>
+      )}
+
+      {billingLoadFailed && (
+        <div className="banner banner-warn" style={{ marginBottom: 14, alignItems: 'center', justifyContent: 'space-between' }}>
+          <span>We couldn&apos;t load your subscription details, so plan changes are turned off for now. Nothing has been changed.</span>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => window.location.reload()}>Reload</button>
         </div>
       )}
 
@@ -2123,7 +2153,7 @@ function BillingTab({ workspace, billing, session, permissions }: any) {
                 ) : (
                   <button className="btn btn-ghost btn-sm"
                     style={{ marginTop: 12, width: '100%', justifyContent: 'center' }}
-                    disabled={!!upgrading}
+                    disabled={!!upgrading || billingLoadFailed}
                     onClick={() => handleUpgrade(plan.key)}>
                     {isLoading ? <span className="spin spin-dark" /> : (
                       isCurrentTier && !hasSubscription
@@ -2559,11 +2589,18 @@ function TransferOwnershipSection({ workspaceId }: { workspaceId?: string }) {
   const [err,      setErr]      = useState('')
   const [done,     setDone]     = useState(false)
 
+  // Settings independent pass 6 — B3: a failed load must not read as "nobody is eligible".
+  const [loadFailed, setLoadFailed] = useState(false)
+
   useEffect(() => {
     fetch('/api/workspace/transfer-ownership')
-      .then(r => r.json())
+      .then(async r => {
+        const json = await r.json().catch(() => ({}))
+        if (!r.ok) throw new Error(json.error || 'Could not load eligible members.')
+        return json
+      })
       .then(json => setMembers(Array.isArray(json.eligibleMembers) ? json.eligibleMembers : []))
-      .catch(() => setErr('Could not load eligible members.'))
+      .catch((e: unknown) => { setLoadFailed(true); setErr(e instanceof Error ? e.message : 'Could not load eligible members.') })
       .finally(() => setLoading(false))
   }, [])
 
@@ -2575,7 +2612,8 @@ function TransferOwnershipSection({ workspaceId }: { workspaceId?: string }) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ newOwnerUserId: selected, workspaceId }),
       })
-      const json = await res.json()
+      // A gateway 502/504 answers with an HTML body; res.json() on it threw a raw parse error into the banner.
+      const json = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(json.error || 'Could not transfer ownership')
       setDone(true)
     } catch (e: unknown) {
@@ -2603,6 +2641,8 @@ function TransferOwnershipSection({ workspaceId }: { workspaceId?: string }) {
       {err && <div className="auth-error" style={{ marginBottom: 14 }}>{err}</div>}
       {loading ? (
         <p style={{ fontSize: 13, color: 'var(--text-3)' }}>Loading eligible members&hellip;</p>
+      ) : loadFailed ? (
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => window.location.reload()}>Reload</button>
       ) : members.length === 0 ? (
         <p style={{ fontSize: 13, color: 'var(--text-3)' }}>
           No other active member currently holds &ldquo;Manage workspace settings&rdquo;. Grant it to someone
