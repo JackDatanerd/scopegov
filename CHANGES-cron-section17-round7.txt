@@ -1,0 +1,25 @@
+CRON SECTION 17 — independent pass 7 (bugs only; no feature work)
+Scope: all 10 files under app/api/cron/* named in section 17, plus the helpers they depend on.
+Both bugs are in app/api/cron/payment-overdue/route.ts, step 5 ("cancelled subscriptions past their paid period end").
+
+B1 (low-medium) — rollback after a failed downgrade was never checked
+  Step 5 claims a row by clearing cancels_at_period_end (the only thing that makes a later run select it),
+  then downgrades the workspace. If the downgrade failed, it tried to put the billing row back — but never
+  read that write's result. When both failed (typical during a DB blip) the workspace kept its paid plan for
+  free, nothing selected it again, billing-reconcile ignores rows with no subscription code, and no alert fired.
+  Fix: read the restore's { error }; if it failed, throw a row error that says so and names the manual repair.
+  Row errors page ops through CronRun/alertCronFailure.
+
+B2 (low) — step 5 nulled paystack_customer_code
+  Every other subscription-ending write (ENDED_SUBSCRIPTION_FIELDS: non-payment downgrade, etc.) keeps the
+  customer code ON PURPOSE (see its comment and lib/billing/resolve.ts) so a late event for the dead
+  subscription resolves to the workspace and is ignored as superseded. Step 5 alone cleared it, so a late
+  invoice.payment_failed / subscription.disable could no longer be matched and paged ops.
+  Fix: drop the override; the sweep now ends the subscription exactly like the other paths.
+
+Files
+  M app/api/cron/payment-overdue/route.ts
+  A tests/cron-section17-pass7.test.ts   (3 tests: customer code kept; rollback ok; rollback also fails)
+  A CHANGES-cron-section17-round7.txt
+
+No migration. No behaviour change on the success path other than the retained customer code.

@@ -628,7 +628,13 @@ export async function POST(request: NextRequest) {
         // so a plan switch that replaced it between the select and this write can't have its brand-new
         // subscription's fields wiped by ENDED_SUBSCRIPTION_FIELDS.
         let claimQ = (service as any).from('billing')
-          .update({ ...ENDED_SUBSCRIPTION_FIELDS, paystack_customer_code: null, updated_at: now.toISOString() })
+          // FIX (cron section 17, pass 7): this used to also null paystack_customer_code. Every other
+          // subscription-ending write (ENDED_SUBSCRIPTION_FIELDS, above) keeps it ON PURPOSE so that a late
+          // event for the dead subscription still resolves to this workspace and is recognised as superseded
+          // (lib/billing/resolve.ts). With the code cleared here, a late invoice.payment_failed /
+          // subscription.disable for the ended subscription matched nothing (or, on a shared customer,
+          // looked ambiguous) and paged ops for an event that should have been ignored.
+          .update({ ...ENDED_SUBSCRIPTION_FIELDS, updated_at: now.toISOString() })
           .eq('workspace_id', b.workspace_id)
           .eq('cancels_at_period_end', true)
           .lt('current_period_end', now.toISOString())
@@ -650,7 +656,12 @@ export async function POST(request: NextRequest) {
           .eq('id', ws.id).eq('plan_tier', ws.plan_tier)
           .select('id')
         if (downgradeErr) {
-          await (service as any).from('billing').update({
+          // FIX (cron section 17, pass 7): the result of this restore was never read. It is the ONLY thing that
+          // makes the next run select this workspace again (the claim above cleared cancels_at_period_end), so
+          // when it failed too — the usual case, since a database blip that fails the downgrade tends to fail
+          // the next write as well — the workspace kept its paid plan for free indefinitely and nothing said
+          // so. Step 4 already reads its equivalent restore; this one now does too, and a failure is loud.
+          const { error: restoreErr } = await (service as any).from('billing').update({
             cancels_at_period_end: true,
             paystack_subscription_code: b.paystack_subscription_code ?? null,
             paystack_customer_code: b.paystack_customer_code ?? null,
@@ -661,6 +672,13 @@ export async function POST(request: NextRequest) {
             payment_method_type: b.payment_method_type ?? null,
           }).eq('workspace_id', b.workspace_id).is('paystack_subscription_code', null)
           cancelledSubscriptionsEndedCount--
+          if (restoreErr) {
+            throw new Error(
+              `downgrade failed for ${ws.id}: ${downgradeErr.message} — AND restoring the cancelled-subscription marker failed: ` +
+              `${restoreErr.message}. The workspace is still on '${ws.plan_tier}' with its billing row already cleared, so no later ` +
+              `run will pick it up; set plan_tier to 'solo' by hand (period ended ${b.current_period_end}).`,
+            )
+          }
           throw new Error(`downgrade failed for ${ws.id}: ${downgradeErr.message}`)
         }
         if (!downgraded?.length) {
