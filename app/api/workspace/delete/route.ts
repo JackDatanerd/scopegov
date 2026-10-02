@@ -11,7 +11,15 @@ import { logAudit } from '@/lib/utils/audit'
 import { requireStepUpForCurrentUser } from '@/lib/auth/step-up'
 import { sendWorkspaceDeletedEmail } from '@/lib/email/templates'
 
+// Deleting a workspace makes ~15 DB reads, a Paystack cancel (up to a few HTTP calls) and, after the commit,
+// one email per member. Without an explicit limit this ran under the platform default, and a timeout after the
+// RPC committed left a deleted workspace with no audit entry and an error shown to the person who deleted it.
+export const maxDuration = 60
+// Stop sending the (best-effort) member emails after this long so the response always gets back inside maxDuration.
+const EMAIL_BUDGET_MS = 40_000
+
 export async function DELETE(request: Request) {
+  const startedAt = Date.now()
   try {
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -35,6 +43,17 @@ export async function DELETE(request: Request) {
 
     const service = createServiceClient()
 
+    // Every read that gates this destructive action must FAIL CLOSED. A failed read returns data/count = null, which
+    // used to read as "no owner to defer to", "no signed documents" and — worst — "no billing row, so no subscription
+    // to cancel", letting the delete proceed with the customer's Paystack subscription still charging a deleted
+    // workspace. Nothing has been changed at any call site of this helper, so the person can simply retry.
+    const readFailed = (what: string, err: { message?: string } | null | undefined) => {
+      console.error(`Workspace delete blocked — could not check ${what}:`, err?.message ?? err)
+      return NextResponse.json({
+        error: 'Could not check this workspace before deleting it. Nothing was changed — try again.',
+      }, { status: 500 })
+    }
+
     // FIX (RLS+permissions audit round 2): this was gated on MANAGE_WORKSPACE_SETTINGS
     // alone — a permission routinely delegated to a co-admin — with no ownership
     // check, no typed confirmation server-side and no step-up, yet it cancels the
@@ -43,13 +62,15 @@ export async function DELETE(request: Request) {
     // shows the button to the owner). If the owner is no longer an active member
     // (they left after handing over, or the account was deleted) a settings admin
     // may still do it, otherwise nobody could ever remove the workspace.
-    const { data: wsOwnerRow } = await (service as any)
+    const { data: wsOwnerRow, error: wsOwnerErr } = await (service as any)
       .from('workspaces').select('created_by').eq('id', session.workspaceId).maybeSingle()
+    if (wsOwnerErr) return readFailed('the workspace owner', wsOwnerErr)
     const ownerId: string | null = wsOwnerRow?.created_by ?? null
     if (ownerId && ownerId !== session.id) {
-      const { data: ownerMember } = await (service as any)
+      const { data: ownerMember, error: ownerMemberErr } = await (service as any)
         .from('workspace_members').select('id')
         .eq('workspace_id', session.workspaceId).eq('user_id', ownerId).eq('status', 'active').maybeSingle()
+      if (ownerMemberErr) return readFailed('the workspace owner\u2019s membership', ownerMemberErr)
       if (ownerMember) {
         return NextResponse.json({
           error: 'Only the workspace owner can delete it. Ask the owner, or have them transfer ownership to you first.',
@@ -67,11 +88,13 @@ export async function DELETE(request: Request) {
     if (stepUp) return stepUp
 
     // Block deletion if any signed SOW exists
-    const { count: signedSowCount } = await (service as any)
+    const { count: signedSowCount, error: signedSowCountErr } = await (service as any)
       .from('sow_documents')
       .select('id', { count: 'exact', head: true })
       .eq('workspace_id', session.workspaceId)
       .eq('status', 'signed')
+
+    if (signedSowCountErr) return readFailed('signedSowCount', signedSowCountErr)
 
     if ((signedSowCount || 0) > 0) {
       return NextResponse.json({
@@ -89,11 +112,13 @@ export async function DELETE(request: Request) {
     // blocking here too means the agency actually has to withdraw or wait
     // out a pending SOW first — the same "resolve it, don't just vanish"
     // discipline the signed-SOW guard above already enforces.
-    const { count: pendingSowCount } = await (service as any)
+    const { count: pendingSowCount, error: pendingSowCountErr } = await (service as any)
       .from('sow_documents')
       .select('id', { count: 'exact', head: true })
       .eq('workspace_id', session.workspaceId)
       .eq('status', 'awaiting_signature')
+
+    if (pendingSowCountErr) return readFailed('pendingSowCount', pendingSowCountErr)
 
     if ((pendingSowCount || 0) > 0) {
       return NextResponse.json({
@@ -113,11 +138,13 @@ export async function DELETE(request: Request) {
     // changes_requested SOW slipped through and got permanently stranded (portal shows a generic
     // "revoked" state via isWorkspaceDeleted(), with no way for the agency to ever act on it again,
     // since every member is deactivated by this same delete).
-    const { count: pendingSowChangesCount } = await (service as any)
+    const { count: pendingSowChangesCount, error: pendingSowChangesCountErr } = await (service as any)
       .from('sow_documents')
       .select('id', { count: 'exact', head: true })
       .eq('workspace_id', session.workspaceId)
       .eq('status', 'changes_requested')
+
+    if (pendingSowChangesCountErr) return readFailed('pendingSowChangesCount', pendingSowChangesCountErr)
 
     if ((pendingSowChangesCount || 0) > 0) {
       return NextResponse.json({
@@ -131,11 +158,13 @@ export async function DELETE(request: Request) {
     // invoice_payments is a real ledger of money the agency has actually
     // collected from clients — deleting the workspace wiped both with no
     // check at all. Block on either.
-    const { count: acceptedCoCount } = await (service as any)
+    const { count: acceptedCoCount, error: acceptedCoCountErr } = await (service as any)
       .from('change_orders')
       .select('id', { count: 'exact', head: true })
       .eq('workspace_id', session.workspaceId)
       .eq('status', 'accepted')
+
+    if (acceptedCoCountErr) return readFailed('acceptedCoCount', acceptedCoCountErr)
 
     if ((acceptedCoCount || 0) > 0) {
       return NextResponse.json({
@@ -168,11 +197,13 @@ export async function DELETE(request: Request) {
     // open negotiation with no way for the client to hear back and no way
     // for the agency to ever act on it again (every member gets
     // deactivated by this same delete).
-    const { count: pendingCoCount } = await (service as any)
+    const { count: pendingCoCount, error: pendingCoCountErr } = await (service as any)
       .from('change_orders')
       .select('id', { count: 'exact', head: true })
       .eq('workspace_id', session.workspaceId)
       .in('status', ['awaiting_response', 'awaiting_countersignature', 'countered', 'stalled'])
+
+    if (pendingCoCountErr) return readFailed('pendingCoCount', pendingCoCountErr)
 
     if ((pendingCoCount || 0) > 0) {
       return NextResponse.json({
@@ -182,12 +213,14 @@ export async function DELETE(request: Request) {
       }, { status: 409 })
     }
 
-    const { count: paymentCount } = await (service as any)
+    const { count: paymentCount, error: paymentCountErr } = await (service as any)
       .from('invoice_payments')
       // invoice_payments has no workspace_id column of its own — filtering on one made this query
       // error, the error was ignored, and the count read as 0, so the guard never blocked anything.
       .select('id, invoices!inner(workspace_id)', { count: 'exact', head: true })
       .eq('invoices.workspace_id', session.workspaceId)
+
+    if (paymentCountErr) return readFailed('paymentCount', paymentCountErr)
 
     if ((paymentCount || 0) > 0) {
       return NextResponse.json({
@@ -205,11 +238,13 @@ export async function DELETE(request: Request) {
     // check deleted_at) would otherwise have kept showing payment
     // instructions with no agency member left active to manage or record
     // whatever the client actually pays.
-    const { count: outstandingInvoiceCount } = await (service as any)
+    const { count: outstandingInvoiceCount, error: outstandingInvoiceCountErr } = await (service as any)
       .from('invoices')
       .select('id', { count: 'exact', head: true })
       .eq('workspace_id', session.workspaceId)
       .in('status', ['sent', 'overdue'])
+
+    if (outstandingInvoiceCountErr) return readFailed('outstandingInvoiceCount', outstandingInvoiceCountErr)
 
     if ((outstandingInvoiceCount || 0) > 0) {
       return NextResponse.json({
@@ -247,11 +282,12 @@ export async function DELETE(request: Request) {
     // is a no-op + logged-only-on-failure if there's no active
     // subscription or the call fails, matching billing/cancel's own
     // best-effort handling.
-    const { data: billing } = await (service as any)
+    const { data: billing, error: billingReadErr } = await (service as any)
       .from('billing')
       .select('paystack_subscription_code, paystack_email_token, cancels_at_period_end, cancelled_by_workspace_delete_at')
       .eq('workspace_id', session.workspaceId)
       .maybeSingle()
+    if (billingReadErr) return readFailed('the billing record', billingReadErr)
 
     // FIX (Workspace lifecycle independent pass 6 — B1): whether THIS delete owns the Paystack
     // cancellation (and so whether restore may re-enable it) used to be decided from the result of
@@ -424,6 +460,18 @@ export async function DELETE(request: Request) {
       }, { status: 500 })
     }
 
+    // Record the deletion in the audit trail the moment it has committed — BEFORE any slow best-effort work below
+    // (checkout purge, marker write, per-member emails). It used to be written after the email loop, so a timeout
+    // there left a deleted workspace with no audit entry at all. `deleteOwnsCancellation` is final by this point.
+    const cancelledByDelete = deleteOwnsCancellation
+    await logAudit(service, {
+      workspaceId: session.workspaceId, actorId: session.id,
+      actorEmail: session.email, actorName: session.name,
+      eventType: 'workspace.deleted', entityType: 'workspace',
+      entityId: session.workspaceId, entityName: session.agencyName,
+      metadata: { billing_cancelled: cancelledByDelete },
+    })
+
     // FIX (Billing re-pass, independent redo #3 — B3): drop this workspace's
     // unconsumed checkouts. They live 24h and used to survive deletion, so a
     // popup left open and paid afterwards bound a live subscription to a
@@ -442,7 +490,6 @@ export async function DELETE(request: Request) {
     // after seeing "already cancelled" while this one still owns the cancellation.)
     // Retried once; if it still cannot be written restore simply won't auto-resume (the safe direction)
     // and billing ops is told so the customer isn't left silently without a subscription.
-    const cancelledByDelete = deleteOwnsCancellation
     if (cancelledByDelete) {
       const mark = () => (service as any).from('billing')
         .update({ cancelled_by_workspace_delete_at: now, updated_at: new Date().toISOString() })
@@ -470,27 +517,6 @@ export async function DELETE(request: Request) {
     // here as two separate best-effort writes) now happen inside
     // delete_workspace_atomic above, in the same transaction as the soft-delete.
 
-    // Best-effort — must never block the deletion itself, which has
-    // already succeeded by this point.
-    for (const m of otherMembers) {
-      const u = m?.user
-      if (!u?.email) continue
-      await sendWorkspaceDeletedEmail({
-        to: u.email, name: u.name || u.email,
-        agencyName: session.agencyName, deletedByName: session.name,
-      }).catch(e => console.error('Workspace deleted email failed (non-fatal):', e))
-    }
-
-    // FIX (deep audit, section 5): record the deletion itself in the
-    // audit trail — a workspace-ending action had no entry at all.
-    await logAudit(service, {
-      workspaceId: session.workspaceId, actorId: session.id,
-      actorEmail: session.email, actorName: session.name,
-      eventType: 'workspace.deleted', entityType: 'workspace',
-      entityId: session.workspaceId, entityName: session.agencyName,
-      metadata: { billing_cancelled: cancelledByDelete },
-    })
-
     // FIX (Workspace lifecycle independent pass — B2): tell the client whether the caller still has a
     // live workspace (delete_workspace_atomic already pointed active_workspace_id at it), so Settings
     // can carry on there instead of signing out someone who has other workspaces.
@@ -504,6 +530,22 @@ export async function DELETE(request: Request) {
         .limit(1)
       hasOtherWorkspace = Array.isArray(rest) && rest.length > 0
     } catch { /* default: treat as none — the client then signs out, the old behaviour */ }
+
+    // Best-effort — must never block the deletion itself, which has already succeeded and been audited. Sent one
+    // at a time (the provider rate-limits bursts) but inside a time budget, so a large team can never push the
+    // response past maxDuration.
+    for (const m of otherMembers) {
+      if (Date.now() - startedAt > EMAIL_BUDGET_MS) {
+        console.error('Workspace delete: email budget exhausted — remaining member notifications skipped (non-fatal)')
+        break
+      }
+      const u = m?.user
+      if (!u?.email) continue
+      await sendWorkspaceDeletedEmail({
+        to: u.email, name: u.name || u.email,
+        agencyName: session.agencyName, deletedByName: session.name,
+      }).catch(e => console.error('Workspace deleted email failed (non-fatal):', e))
+    }
 
     return NextResponse.json({ ok: true, hasOtherWorkspace })
   } catch (err) {

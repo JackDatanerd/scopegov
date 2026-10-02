@@ -97,6 +97,14 @@ export async function POST(req: Request) {
       if (msg.includes('workspace_not_found'))
         return NextResponse.json({ error: 'Workspace not found.' }, { status: 404 })
 
+      // The recipient already owns an active trial workspace of their own, and a person may own only one at a time
+      // (one_active_trial_per_creator). The function's UPDATE of created_by trips that index; unmapped it surfaced as a
+      // generic 500 "try again" that could never succeed on retry. The transaction rolled back, so nothing changed.
+      if ((error as any).code === '23505' && msg.includes('one_active_trial_per_creator'))
+        return NextResponse.json({
+          error: 'That person already owns an active trial workspace, and a person can only own one trial at a time. Upgrade this workspace off the trial plan first, or ask them to upgrade or delete their own trial, then try again.',
+        }, { status: 409 })
+
       console.error('transfer_workspace_ownership failed:', error)
       return NextResponse.json({ error: 'Could not transfer ownership. Try again.' }, { status: 500 })
     }
