@@ -31,6 +31,7 @@
 'use client'
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { normalizeSearchText } from '@/lib/search/query'
 
 interface Other { id: string; name: string; email: string | null; status: string | null }
 
@@ -71,8 +72,10 @@ export default function ClientDangerZone({
     } finally { setLoadingOthers(false) }
   }
 
-  const q = filter.trim().toLowerCase()
-  const matching = (others || []).filter(o => !q || o.name.toLowerCase().includes(q) || (o.email || '').toLowerCase().includes(q))
+  // FIX (independent pass 13, section 14 — B4): folded like the rest of the app's search (accents, case), so
+  // typing "jose" finds "José" in this picker the same way global search does.
+  const q = normalizeSearchText(filter)
+  const matching = (others || []).filter(o => !q || normalizeSearchText(o.name).includes(q) || normalizeSearchText(o.email || '').includes(q))
   const shown = matching.slice(0, MAX_OPTIONS_SHOWN)
   const selected = (others || []).find(o => o.id === targetId)
   if (selected && !shown.some(o => o.id === selected.id)) shown.unshift(selected)
@@ -154,7 +157,13 @@ export default function ClientDangerZone({
           ) : (
             <div>
               <label className="flbl">Merge into</label>
-              {(others || []).length === 0 ? (
+              {/* FIX (independent pass 13, section 14 — B2): `merging` flips to true BEFORE the client list has
+                  loaded, and `(others || []).length === 0` is true for "not loaded yet" — so every merge attempt
+                  flashed "There is no other client to merge into." until GET /api/clients returned (seconds on a big
+                  roster). The empty message now needs the list to have actually loaded; until then, a spinner. */}
+              {others === null ? (
+                <p style={{ fontSize: 12, color: 'var(--text-3)', margin: '0 0 8px' }}><span className="spin" /> Loading clients…</p>
+              ) : others.length === 0 ? (
                 <p style={{ fontSize: 12, color: 'var(--text-3)', margin: '0 0 8px' }}>There is no other client to merge into.</p>
               ) : (
                 <>

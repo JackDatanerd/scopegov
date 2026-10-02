@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { formatCurrencyGroups } from '@/lib/utils/format'
 import { IN_PROGRESS_STATUSES } from '@/lib/utils/project-status'
 import { csvCell } from '@/lib/utils/client-csv'
+import { normalizeSearchText } from '@/lib/search/query'
 import { formatDateInZone, isoDateInZone } from '@/lib/utils/timezone'
 
 type SortKey = 'name' | 'projects' | 'since'
@@ -38,21 +39,24 @@ export default function ClientsClient({ clients, canCreate, canViewFinancials, c
   // FIX (independent pass, section 14): phone wasn't searchable although it's shown in the table, and
   // when a search only matched ARCHIVED clients (hidden by default) the empty state said "No results"
   // with no hint that they existed.
+  // FIX (independent pass 13, section 14 — B4): this was a plain toLowerCase().includes(), so "jose" never found
+  // "José" and "muller" never found "Müller" — while the top-bar search (migrations 062/073, normalizeSearchText)
+  // folds accents exactly this way. `q` is now the folded query and each field is folded the same way.
   const matches = (c: any, q: string) =>
-    c.name.toLowerCase().includes(q) ||
-    c.email?.toLowerCase().includes(q) ||
-    c.phone?.toLowerCase().includes(q) ||
-    c.company_name?.toLowerCase().includes(q)
+    normalizeSearchText(c.name || '').includes(q) ||
+    normalizeSearchText(c.email || '').includes(q) ||
+    normalizeSearchText(c.phone || '').includes(q) ||
+    normalizeSearchText(c.company_name || '').includes(q)
 
   const hiddenArchivedMatches = useMemo(() => {
     if (showArchived || !search.trim()) return 0
-    const q = search.trim().toLowerCase()
+    const q = normalizeSearchText(search)
     return clients.filter(c => c.status === 'archived' && matches(c, q)).length
   }, [clients, search, showArchived])
 
   const filtered = useMemo(() => {
     const base = showArchived ? clients : clients.filter(c => c.status !== 'archived')
-    const q = search.trim().toLowerCase()
+    const q = normalizeSearchText(search)
     const rows = q ? base.filter(c => matches(c, q)) : base
     const dir = sortDir === 'asc' ? 1 : -1
     const key = (c: any) => sortKey === 'name' ? String(c.name || '').toLowerCase()

@@ -9,9 +9,10 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { EMAIL_RE, CLIENT_LIMITS, CONTACT_ROLE_TYPES, hasUnstorableText, UNSTORABLE_TEXT_ERROR } from '@/lib/utils/client-input'
-// FIX (independent pass round 2, section 14): this route's own local escapeLike() was broken
-// (see lib/utils/escape-like.ts for the full story) — imported instead of re-typed.
-import { escapeLike } from '@/lib/utils/escape-like'
+// FIX (independent pass 13, section 14 — B1): the duplicate-email pre-check used an `ilike`; PostgREST reads `*` in an
+// ilike value as `%` and it cannot be escaped (see lib/utils/escape-like.ts), so editing a contact to `a*@x.com` was
+// refused as a duplicate of `ab@x.com`. Compared exactly, in code, over the client's (<= 25) contacts instead.
+import { sameEmail } from '@/lib/utils/escape-like'
 import { isUuidString } from '@/lib/utils/uuid'
 
 async function loadContact(service: any, workspaceId: string, clientId: string, contactId: string) {
@@ -62,8 +63,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       if (email.length > CLIENT_LIMITS.email || !EMAIL_RE.test(email))
         return NextResponse.json({ error: 'Please enter a valid email address' }, { status: 400 })
       if (email !== String(contact.email).toLowerCase()) {
-        const { data: dupe } = await (service as any).from('client_contacts')
-          .select('id,name').eq('client_id', id).ilike('email', escapeLike(email)).neq('id', contactId).limit(1).maybeSingle()
+        const { data: siblings, error: dupeErr } = await (service as any).from('client_contacts')
+          .select('id,name,email').eq('client_id', id).neq('id', contactId)
+        if (dupeErr) throw new Error(dupeErr.message)
+        const dupe = (siblings || []).find((c: any) => sameEmail(c.email, email))
         if (dupe) return NextResponse.json({ error: `${dupe.name} already has this email address.` }, { status: 409 })
       }
       patch.email = email

@@ -1,0 +1,31 @@
+CLIENTS — independent pass 13 (bugs only)
+=========================================
+
+B1  escapeLike() did not neutralise `*` — PostgREST reads `*` in an ilike value as `%` and cannot escape it
+      lib/utils/escape-like.ts          escapeLike() now maps `*` to `_`; new sameEmail() (exact, case-insensitive).
+      app/api/clients/[id]/contacts/route.ts
+      app/api/clients/[id]/contacts/[contactId]/route.ts
+                                        Duplicate-email pre-check reads the client's (<= 25) contacts and compares in
+                                        code instead of ilike. Adding/editing a contact `a*@x.com` was refused as a
+                                        "duplicate" of the unrelated `ab@x.com`.
+      app/api/guardian/inbound/route.ts isKnownSender(): same — a sender `a*@x.com` matched a saved contact `ab@x.com`
+                                        and was treated as the client.
+      app/api/projects/route.ts         Client lookup by email takes up to 25 candidates and keeps the exact match
+                                        (was: whichever row limit(1) returned).
+
+B2  Merge picker flashed "There is no other client to merge into." while the client list was still loading
+      components/clients/ClientDangerZone.tsx   Loading state while `others === null`; empty message only when loaded
+                                        and genuinely empty.
+
+B3  EMAIL_RE accepted undeliverable shapes
+      lib/utils/client-input.ts         + bidi isolates U+2066-2069 / U+2060-206F, U+061C, U+034F, Hangul fillers,
+                                        Mongolian selectors, variation selectors, C1 controls (U+0085), tag characters,
+                                        blank braille; local part cannot start/end with `.` and is <= 64 chars; domain
+                                        labels cannot start/end with `-`; TLD >= 2 chars and not all digits (also
+                                        rejects bare IPv4). No lookbehind (module is bundled for the browser).
+
+B4  Client list / merge-picker search was accent-sensitive ("jose" did not find "José")
+      components/clients/ClientsClient.tsx
+      components/clients/ClientDangerZone.tsx   Both fold with normalizeSearchText(), like the top-bar search.
+
+Tests: tests/clients-pass13-fixes.test.ts

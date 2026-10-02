@@ -30,9 +30,24 @@ import { isValidTimeZone } from '@/lib/utils/timezone'
 // contact cards save from an onClick (not a <form> submit), so the browser's own type="email" check never ran for them.
 // RFC 5322 specials that are never part of a deliverable address as people type it — `<>()[],;:"\` — are now excluded from
 // both the local part and the domain. The apostrophe (o'brien@…) and `+` (jane+tag@…) stay valid, as do non-ASCII letters.
-const EMAIL_BAD = String.raw`\s@\u0000-\u001f\u007f\ud800-\udfff\u00ad\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\ufeff<>()\[\],;:"\\`
+// FIX (independent pass 13, section 14 — B3): three more ways an address passed validation and then bounced on the first send.
+//  (1) Invisible characters the earlier lists missed — the bidi isolates U+2066–2069 and the rest of the U+2060–206F format block,
+//      the Arabic letter mark U+061C, the combining grapheme joiner U+034F, the Hangul / halfwidth-Hangul fillers (U+115F, U+1160,
+//      U+3164, U+FFA0), the Mongolian variation selectors / vowel separator U+180B–180E, the emoji variation selectors U+FE00–FE0F,
+//      the C1 controls U+0080–009F (U+0085 NEL), the interlinear-annotation / replacement characters, the blank braille cell and the
+//      invisible \"tag\" characters U+E0000–E0FFF. All survive a copy-paste from a web page or PDF and are not part of a real address.
+//      (ZWNJ/ZWJ U+200C/D are still allowed — they are real characters in some scripts' domain names.)
+//  (2) Dot placement: only `..` was refused, so `.jane@acme.com` and `jane.@acme.com` passed (RFC 5321 forbids a local part that
+//      starts or ends with a dot). The local part is now dot-separated non-empty atoms; the domain is dot-separated non-empty labels.
+//  (3) Domain shape: a label that starts or ends with `-` (`jane@-acme.com`, `jane@acme-.com`), a one-character TLD (`jane@acme.c`)
+//      and an all-digits TLD (`jane@acme.1`, and a bare IPv4 like `jane@1.2.3.4`) are never deliverable. A local part over 64 characters
+//      (RFC 5321) is refused too. Written without a lookbehind on purpose: this module is also bundled for the browser, where an
+//      unsupported lookbehind literal would throw at load time on older Safari.
+const EMAIL_BAD = String.raw`\s@\u0000-\u001f\u007f-\u009f\ud800-\udfff\u00ad\u034f\u061c\u115f\u1160\u180b-\u180e\u200b\u200e\u200f\u202a-\u202e\u2060-\u206f\u2800\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff9-\ufffd\u{e0000}-\u{e0fff}<>()\[\],;:"\\`
+const EMAIL_CHAR = String.raw`[^${EMAIL_BAD}.]`                       // any permitted character except the dot
+const EMAIL_LABEL = String.raw`[^${EMAIL_BAD}.\-](?:${EMAIL_CHAR}*[^${EMAIL_BAD}.\-])?` // a domain label: no leading / trailing hyphen
 export const EMAIL_RE = new RegExp(
-  String.raw`^(?!.*\.\.)[^${EMAIL_BAD}]+@(?!\.)[^${EMAIL_BAD}]+\.[^${EMAIL_BAD}]*[^${EMAIL_BAD}.]$`,
+  String.raw`^(?=[^@]{1,64}@)${EMAIL_CHAR}+(?:\.${EMAIL_CHAR}+)*@(?:${EMAIL_LABEL}\.)+(?![0-9]+$)(?=${EMAIL_CHAR}{2})${EMAIL_LABEL}$`,
   'u',
 )
 

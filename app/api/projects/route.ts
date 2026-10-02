@@ -5,7 +5,7 @@ import { wouldExceedLimit, isProjectBeyondLimit, projectLimitMessage } from '@/l
 import { insertAuditRow } from '@/lib/utils/audit'
 import { fetchPaged, fetchPagedIn } from '@/lib/utils/paginate'
 import { parseClientInput } from '@/lib/utils/client-input'
-import { escapeLike } from '@/lib/utils/escape-like'
+import { escapeLike, sameEmail } from '@/lib/utils/escape-like'
 import {
   parseProjectName, parseOptionalText, parseProjectType, parseContractValue,
   parseCurrencyCode, parseStartDate, parseRetainerMonths,
@@ -131,9 +131,16 @@ export async function POST(request: NextRequest) {
         })
       } else {
         // Already exists (RPC said so, or the unique constraint did) — look it up case-insensitively.
-        const lookup = created?.existing_id
-          ? await (service as any).from('clients').select('id, name, status').eq('id', created.existing_id).eq('workspace_id', session.workspaceId).maybeSingle()
-          : await (service as any).from('clients').select('id, name, status').eq('workspace_id', session.workspaceId).ilike('email', escapeLike(cu.email)).limit(1).maybeSingle()
+        let lookup: { data: any } = { data: null }
+        if (created?.existing_id) {
+          lookup = await (service as any).from('clients').select('id, name, status').eq('id', created.existing_id).eq('workspace_id', session.workspaceId).maybeSingle()
+        } else {
+          // FIX (independent pass 13, section 14 — B1): escapeLike() can no longer match more than single-character
+          // look-alikes of the address (a `*` becomes `_`), but it can still over-match — so take a few candidates and
+          // keep only the exact, case-insensitive match instead of whichever row `limit(1)` happened to return.
+          const byEmail = await (service as any).from('clients').select('id, name, status, email').eq('workspace_id', session.workspaceId).ilike('email', escapeLike(cu.email)).limit(25)
+          lookup = { data: (byEmail?.data || []).find((c: any) => sameEmail(c.email, cu.email)) ?? null }
+        }
         existingClient = lookup.data
         if (!existingClient) throw new Error('Could not create or find the client for this email')
         resolvedClientId = existingClient.id

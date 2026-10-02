@@ -25,9 +25,11 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { EMAIL_RE, CLIENT_LIMITS, CONTACT_ROLE_TYPES, hasUnstorableText, UNSTORABLE_TEXT_ERROR, type ContactRoleType } from '@/lib/utils/client-input'
-// FIX (independent pass round 2, section 14): this route's own local escapeLike() was broken
-// (see lib/utils/escape-like.ts for the full story) — imported instead of re-typed.
-import { escapeLike } from '@/lib/utils/escape-like'
+// FIX (independent pass 13, section 14 — B1): the duplicate-email pre-check used an `ilike`, and PostgREST reads `*`
+// in an ilike value as `%` with no way to escape it (see lib/utils/escape-like.ts) — so `a*@x.com` was refused as a
+// "duplicate" of the unrelated `ab@x.com`. A client holds at most MAX_CONTACTS_PER_CLIENT contacts, so the check
+// now reads them and compares exactly, case-insensitively, in code.
+import { sameEmail } from '@/lib/utils/escape-like'
 import { isUuidString } from '@/lib/utils/uuid'
 
 const MAX_CONTACTS_PER_CLIENT = 25
@@ -116,8 +118,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if ((count || 0) >= MAX_CONTACTS_PER_CLIENT)
       return NextResponse.json({ error: `A client can have at most ${MAX_CONTACTS_PER_CLIENT} contacts.` }, { status: 409 })
 
-    const { data: dupe } = await (service as any).from('client_contacts')
-      .select('id,name').eq('client_id', id).ilike('email', escapeLike(email)).limit(1).maybeSingle()
+    const { data: sameClientContacts, error: dupeErr } = await (service as any).from('client_contacts')
+      .select('id,name,email').eq('client_id', id)
+    if (dupeErr) throw new Error(dupeErr.message)
+    const dupe = (sameClientContacts || []).find((c: any) => sameEmail(c.email, email))
     if (dupe) return NextResponse.json({ error: `${dupe.name} already has this email address.` }, { status: 409 })
 
     // FIX (independent pass, section 14): the old primary was demoted in one statement and the new

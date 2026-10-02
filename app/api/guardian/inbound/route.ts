@@ -12,7 +12,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { checkAiRateLimitByProject, recordAiUsageByProject } from '@/lib/utils/rate-limit'
 import { EVIDENCE_BUCKET } from '@/lib/utils/storage-cleanup'
 import { ALLOWED_ATTACHMENT_TYPES, matchesDeclaredType, resolveAttachmentType } from '@/lib/utils/file-signature'
-import { escapeLike } from '@/lib/utils/escape-like'
+import { sameEmail } from '@/lib/utils/escape-like'
 
 // BUG-016: verify the Postmark inbound webhook before processing.
 //
@@ -328,10 +328,11 @@ async function isKnownSender(service: any, workspaceId: string, clientId: string
     // may not be, and Postgres `=` is case-sensitive regardless. A saved contact like
     // "Jane@Acme.com" could never match here even though the clients.email/cc_emails check just
     // above it is already case-insensitive via a lowercased Set. ilike matches case-insensitively;
-    // escapeLike guards against `addr` containing a literal '%' or '_' (rare but legal in an
-    // email local-part) being read as a wildcard instead of a literal character.
-    const { data: contact } = await service.from('client_contacts')
-      .select('id').eq('client_id', clientId).ilike('email', escapeLike(addr)).limit(1)
-    return !!contact?.length
+    // FIX (independent pass 13, section 14 — B1): this used `ilike` + escapeLike, but PostgREST reads `*` in an ilike
+    // value as `%` (unescapable), so a sender like `a*@x.com` matched a saved contact `ab@x.com` and was treated as
+    // the client. A client holds at most 25 contacts: read them and compare exactly, case-insensitively, in code.
+    const { data: contacts } = await service.from('client_contacts')
+      .select('email').eq('client_id', clientId)
+    return (contacts || []).some((c: any) => sameEmail(c.email, addr))
   } catch { return false }
 }
