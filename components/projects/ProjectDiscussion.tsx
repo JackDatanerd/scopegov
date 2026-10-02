@@ -277,11 +277,15 @@ export default function ProjectDiscussion({
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ body }),
       })
-      const json = await res.json()
-      if (!res.ok) { setError(json.error || 'Could not send that message.'); return }
+      // A non-JSON error body (gateway 502/504) or a dropped connection used to throw out of here with no catch:
+      // an unhandled rejection, no message shown, and the Send button simply un-spun. The draft is kept so it can be resent.
+      const json = await res.json().catch(() => ({} as any))
+      if (!res.ok || !json.message) { setError(json.error || 'Could not send that message.'); return }
       setMessages(prev => [...prev, json.message])
       setDraft('')
       pickedRef.current = {}
+    } catch {
+      setError('Could not send that message — check your connection and try again.')
     } finally { setPosting(false) }
   }
 

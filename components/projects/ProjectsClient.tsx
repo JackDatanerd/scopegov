@@ -1,5 +1,5 @@
 'use client'
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import type { SessionUser } from '@/lib/supabase/types'
@@ -84,6 +84,14 @@ export default function ProjectsClient({ projects, canCreate, canViewFinancials,
   const [attentionOnly, setAttentionOnly] = useState(initialFilter === 'attention')
   const [search, setSearch] = useState('')
   const [view,   setView]   = useState<'grouped' | 'list'>('grouped')
+
+  // The useState initialisers above only run on first mount, but this component stays mounted when the URL's
+  // ?filter= changes (Sidebar / command palette -> plain /projects while on /projects?filter=attention), which left
+  // the attention toggle and the "All" tab stuck on for a URL that no longer asks for them. Follow the URL when it changes.
+  useEffect(() => {
+    setAttentionOnly(initialFilter === 'attention')
+    setTab(initialFilter === 'attention' ? 'all' : 'active')
+  }, [initialFilter])
 
   const filtered = useMemo(() => {
     let list = projects

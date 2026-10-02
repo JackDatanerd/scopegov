@@ -1,0 +1,6 @@
+Projects & Dashboard (section 7) - independent pass 5
+B1 components/projects/ProjectDiscussion.tsx - submit() had try/finally with no catch: a non-JSON error body or dropped connection
+   was an unhandled rejection with no error shown. Now parses defensively, catches, shows an error, keeps the draft.
+B2 components/projects/ProjectsClient.tsx - ?filter=attention state was seeded once on mount and stuck on when navigating to plain
+   /projects (Sidebar / palette). Now re-syncs attention toggle + tab when initialFilter changes.
+Test: tests/projects-dashboard-pass-5.test.ts
