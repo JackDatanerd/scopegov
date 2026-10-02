@@ -1,0 +1,34 @@
+Approvals (section 11) — fresh independent pass: governance reads fail CLOSED
+==========================================================================
+
+Class of bug: supabase-js never throws; a failed read resolves to { data: null, error }. Several reads that the
+approval gate, the edit lock, the send-in-flight guard and the four-eyes check rest on ignored `error`, so a
+transient failure read as "no data" — and "no data" meant "no workflow", "not locked", "nothing sending",
+"nobody approved earlier". Every one of those failed OPEN.
+
+B1  lib/approvals/engine.ts  evaluateApprovalGate
+    - workflow read error  -> was { requiresApproval: false } (document sent UNGATED); now throws, send halted (500).
+    - findActiveRequest error -> was "no active request"; now throws.
+    - workflow-steps read error -> was the misleading "no approvers configured" 409; now throws.
+B2  lib/approvals/engine.ts  recordApprovalDecision
+    - four-eyes ("already approved an earlier step") read error -> was skipped, so the same person could clear a
+      second step of a require-distinct chain; now a retryable 500.
+    - role-membership read error -> was "You are not an approver for this step"; now a retryable 500.
+B3  lib/approvals/engine.ts  getPendingApprovalForDocument / approvalSendInFlight / projectApprovalSendInFlight
+    - the edit lock and the in-flight-send guards returned null/false on a read error (document editable during
+      approval; CO close/withdraw/revise/exception, invoice delete, project delete/complete proceeding during a
+      live auto-send); now throw. All callers run inside route try/catch (500).
+B4  lib/approvals/engine.ts  requesterCanStillSend
+    - read errors answered "no longer an active member" and parked a valid approval as approved-not-sent with a
+      wrong reason; now throw -> dispatchSend reports "send failed unexpectedly — retry it".
+B5  lib/approvals/eligibility.ts loadCandidates + engine.ts reassignApprovalStep
+    - candidate read error -> empty list ("nobody can approve"); now throws.
+    - reassign: earlier-approvals / remaining-steps read errors emptied the distinct-approver pre-flight; now 500.
+B6  app/api/approval-workflows/route.ts GET
+    - read error answered 200 { workflows: [] } ("no rules"); now 500.
+    - two comments updated: the gate no longer treats a zero-step workflow as "no approval needed".
+
+Tests: tests/approvals-fail-closed.test.ts (13; 10 fail on the previous code, 3 are happy-path controls).
+Not changed here (noted): cancelApprovalRequest still reports "nothing to cancel" on a failed lookup (callers then
+mutate the document; recoverable via the stall cron / manual cancel) — changing it means changing its result type
+across ~10 callers in other sections.

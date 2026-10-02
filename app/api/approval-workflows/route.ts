@@ -23,7 +23,7 @@ export async function GET() {
     if (!canManage(session)) return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
 
     const service = createServiceClient()
-    const { data: workflows } = await (service as any)
+    const { data: workflows, error: workflowsErr } = await (service as any)
       .from('approval_workflows')
       .select(`
         id, document_type, name, threshold_amount, threshold_currency, is_active, created_at,
@@ -36,6 +36,12 @@ export async function GET() {
       .order('document_type', { ascending: true })
       .order('threshold_amount', { ascending: false, nullsFirst: false })
 
+    // FIX (section-11 fresh pass, B6): a failed read answered 200 { workflows: [] } — indistinguishable from "no approval
+    // rules", the same misread the Settings page fix (Settings pass 5, B2) closed on the server-rendered path.
+    if (workflowsErr) {
+      console.error('Approval workflows GET read failed:', workflowsErr)
+      return NextResponse.json({ error: 'Could not load approval workflows' }, { status: 500 })
+    }
     return NextResponse.json({ workflows: workflows || [] })
   } catch (err) {
     // FIX (deep audit, Settings re-pass): raw exception messages were
@@ -220,10 +226,11 @@ export async function POST(request: NextRequest) {
 
     // FIX (deep audit, section 5 re-pass): this insert's result was
     // discarded — a failure here left an ACTIVE workflow row with zero
-    // steps. evaluateApprovalGate() explicitly treats a zero-step workflow
-    // as "no approval needed" (lib/approvals/engine.ts), so the failure
-    // mode wasn't a visible error, it was a silently unguarded approval
-    // gate that looked configured. Check the error and roll back the
+    // steps. (When this was written evaluateApprovalGate() read a zero-step
+    // workflow as "no approval needed", a silently unguarded gate that looked
+    // configured; it now fails closed with a 409 — see lib/approvals/engine.ts —
+    // but a falsely-active, stepless rule would still block every send of this
+    // document type, so the rollback below stays.) Check the error and roll back the
     // parent row rather than leave a broken, falsely-active workflow
     // behind.
     const { error: stepsErr } = await (service as any).from('approval_workflow_steps').insert(
@@ -240,10 +247,9 @@ export async function POST(request: NextRequest) {
       if (rollbackErr) {
         // FIX (deep audit, Settings + Team re-pass round 2 — LOW): the
         // rollback's own result used to be thrown away. If it ALSO fails,
-        // the comment right above (evaluateApprovalGate treats a zero-step
-        // workflow as "no approval needed") describes exactly the state
-        // this would silently leave behind — a genuinely dangerous one,
-        // since it looks configured. The row can't be deleted from here
+        // the comment right above describes exactly the state this would
+        // leave behind — a falsely-active, stepless rule that now blocks
+        // every send of this document type (the gate fails closed on it). The row can't be deleted from here
         // (workspace_members/approval_requests may already reference it by
         // now), so fail closed instead: force it inactive, and log loudly
         // enough that a zero-step ACTIVE workflow is never the quiet

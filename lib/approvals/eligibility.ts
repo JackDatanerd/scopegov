@@ -33,7 +33,11 @@ async function loadCandidates(
     .eq('status', 'active')
   if (where.userId) q = q.eq('user_id', where.userId)
   else if (where.roleId) q = q.eq('role_id', where.roleId)
-  const { data } = await q.order('user_id').limit(500)
+  const { data, error } = await q.order('user_id').limit(500)
+  // FIX (section-11 fresh pass, B5): a failed read came back as an empty candidate list — the gate then refused to
+  // create the request with "nobody can approve this" (a transient error blamed on Settings), and the reassign picker
+  // showed nobody. Callers all run inside a route try/catch: report a failure, not an empty answer.
+  if (error) throw new Error(`could not load approver candidates: ${error.message}`)
 
   const holders = (data || []).filter((m: any) => m.users?.id && m.effective_permissions?.APPROVE_DOCUMENTS === true)
   const permissionMap = new Map<string, Record<string, boolean>>(

@@ -136,7 +136,7 @@ export interface GateResult {
 async function findActiveRequest(
   service: any, workspaceId: string, documentType: ApprovalDocumentType, documentId: string
 ): Promise<{ id: string; status: string; send_failed_at: string | null; sending_started_at: string | null } | null> {
-  const { data } = await service
+  const { data, error } = await service
     .from('approval_requests')
     .select('id, status, send_failed_at, sending_started_at')
     .eq('workspace_id', workspaceId)
@@ -145,6 +145,10 @@ async function findActiveRequest(
     .or('status.eq.pending,and(status.eq.approved,send_failed_at.not.is.null)')
     .order('created_at', { ascending: false })
     .limit(1)
+  // FIX (section-11 fresh pass, B1): a failed lookup read as "no request owns this document", so the gate carried on
+  // to workflow selection and — with no workflow, or after a lost insert race — let a document that already had a
+  // live request go out ungated. The gate must fail closed (every caller runs inside a route try/catch -> 500).
+  if (error) throw new Error(`approval gate: could not look up the active request: ${error.message}`)
   return (data && data[0]) || null
 }
 
@@ -187,21 +191,29 @@ export async function evaluateApprovalGate(service: any, params: GateParams): Pr
   }
   if (active) return activeRequestResult(active)
 
-  const { data: workflows } = await service
+  const { data: workflows, error: workflowsErr } = await service
     .from('approval_workflows')
     .select('id, threshold_amount, threshold_currency, allow_self_approval, require_distinct_approvers, apply_to_other_currencies')
     .eq('workspace_id', workspaceId)
     .eq('document_type', workflowLookupType(documentType))
     .eq('is_active', true)
+  // FIX (section-11 fresh pass, B1 — the flagship): this read's error was never looked at. A transient failure gave
+  // `workflows = null` -> no workflow picked -> `{ requiresApproval: false }`, i.e. the send route went ahead and
+  // sent a document that an approval rule was supposed to hold, with nothing logged. A rule that cannot be read is
+  // not the same as no rule: halt the send (same discipline as the request/steps inserts below).
+  if (workflowsErr) throw new Error(`approval gate: could not read approval workflows — send halted for safety: ${workflowsErr.message}`)
 
   const workflow = pickWorkflow(workflows || [], params.amount, params.currency)
   if (!workflow) return { requiresApproval: false }
 
-  const { data: steps } = await service
+  const { data: steps, error: stepsErr } = await service
     .from('approval_workflow_steps')
     .select('step_order, approver_role_id, approver_user_id')
     .eq('workflow_id', workflow.id)
     .order('step_order', { ascending: true })
+  // FIX (section-11 fresh pass, B1): a failed read used to land in the "no approvers configured" branch below and
+  // tell the requester to go fix Settings for what was a transient error.
+  if (stepsErr) throw new Error(`approval gate: could not read workflow steps — send halted for safety: ${stepsErr.message}`)
 
   // Fail closed: a matching workflow with no steps used to read as "no
   // approval needed" — the document sailed through as if ungoverned while the
@@ -360,11 +372,15 @@ const SEND_PERMISSION_FOR: Record<ApprovalDocumentType, string> = {
 async function requesterCanStillSend(
   service: any, workspaceId: string, requesterId: string, documentType: ApprovalDocumentType, projectId: string | null,
 ): Promise<boolean> {
-  const { data: member } = await service
+  const { data: member, error: memberErr } = await service
     .from('workspace_members')
     .select('effective_permissions')
     .eq('workspace_id', workspaceId).eq('user_id', requesterId).eq('status', 'active')
     .maybeSingle()
+  // FIX (section-11 fresh pass, B4): a failed read answered "no longer an active member" and parked a perfectly valid
+  // approval as 'approved — not sent' with that wrong reason. Throwing lands in dispatchSend's catch, which reports
+  // "the send failed unexpectedly — retry it" (true, and Retry works).
+  if (memberErr) throw new Error(`could not verify the requester's membership: ${memberErr.message}`)
   if (!member) return false
   if (member.effective_permissions?.[SEND_PERMISSION_FOR[documentType]] !== true) return false
 
@@ -386,11 +402,12 @@ async function requesterCanStillSend(
   // shape isn't worth it for two straightforward branches.
   if (!projectId) return true
   if (member.effective_permissions?.['VIEW_ALL_PROJECTS'] === true) return true
-  const { data: membership } = await service
+  const { data: membership, error: membershipErr } = await service
     .from('project_members_active')
     .select('project_id')
     .eq('project_id', projectId).eq('project_workspace_id', workspaceId).eq('member_user_id', requesterId)
     .limit(1)
+  if (membershipErr) throw new Error(`could not verify the requester's project access: ${membershipErr.message}`)
   return !!(membership && membership.length)
 }
 
@@ -498,13 +515,18 @@ export async function recordApprovalDecision(service: any, params: DecisionParam
   if (step.approver_user_id) {
     eligible = step.approver_user_id === params.actor.id
   } else if (step.approver_role_id) {
-    const { data: member } = await service
+    const { data: member, error: memberErr } = await service
       .from('workspace_members')
       .select('role_id')
       .eq('workspace_id', params.actor.workspaceId)
       .eq('user_id', params.actor.id)
       .eq('status', 'active')
       .maybeSingle()
+    // FIX (section-11 fresh pass, B2): a failed read told the real approver "You are not an approver for this step".
+    if (memberErr) {
+      console.error('recordApprovalDecision: approver role lookup failed:', memberErr)
+      return { ok: false, error: 'Could not verify your approver role — please try again.', status: 500 }
+    }
     eligible = member?.role_id === step.approver_role_id
   }
   if (!eligible) return { ok: false, error: 'You are not an approver for this step', status: 403 }
@@ -518,9 +540,16 @@ export async function recordApprovalDecision(service: any, params: DecisionParam
 
   // Four-eyes across steps: one person may clear at most one step.
   if (request.require_distinct_approvers) {
-    const { data: earlier } = await service
+    const { data: earlier, error: earlierErr } = await service
       .from('approval_steps').select('id')
       .eq('request_id', request.id).eq('status', 'approved').eq('decided_by', params.actor.id).limit(1)
+    // FIX (section-11 fresh pass, B2): the four-eyes check ignored a failed read — `earlier` came back null, the
+    // `earlier && …` test was false, and the SAME person cleared a second step of a require-distinct chain. A control
+    // that cannot be evaluated must refuse, not pass.
+    if (earlierErr) {
+      console.error('recordApprovalDecision: distinct-approver check failed:', earlierErr)
+      return { ok: false, error: 'Could not verify earlier approvals on this request — please try again.', status: 500 }
+    }
     if (earlier && earlier.length > 0)
       return { ok: false, error: 'You already approved an earlier step of this request — a different person needs to approve this one', status: 403 }
   }
@@ -706,7 +735,7 @@ export { SEND_CLAIM_WINDOW_MS, isSendClaimLive, SEND_IN_FLIGHT_MESSAGE }
 export async function approvalSendInFlight(
   service: any, workspaceId: string, documentTypes: ApprovalDocumentType[], documentId: string,
 ): Promise<boolean> {
-  const { data } = await service
+  const { data, error } = await service
     .from('approval_requests')
     .select('sending_started_at')
     .eq('workspace_id', workspaceId)
@@ -714,6 +743,9 @@ export async function approvalSendInFlight(
     .eq('document_id', documentId)
     .not('sending_started_at', 'is', null)
     .or('status.eq.pending,and(status.eq.approved,send_failed_at.not.is.null)')
+  // FIX (section-11 fresh pass, B3): a failed read answered "nothing is sending", so the caller (CO close / withdraw /
+  // revise / exception, invoice delete) changed or destroyed a document whose final-approval send was running.
+  if (error) throw new Error(`could not check for an in-flight approval send: ${error.message}`)
   return (data || []).some((r: any) => isSendClaimLive(r.sending_started_at))
 }
 
@@ -729,7 +761,8 @@ export async function projectApprovalSendInFlight(
     .not('sending_started_at', 'is', null)
     .or('status.eq.pending,and(status.eq.approved,send_failed_at.not.is.null)')
   if (documentTypes) q = q.in('document_type', documentTypes)
-  const { data } = await q
+  const { data, error } = await q
+  if (error) throw new Error(`could not check for an in-flight approval send: ${error.message}`)
   return (data || []).some((r: any) => isSendClaimLive(r.sending_started_at))
 }
 
@@ -1233,8 +1266,14 @@ export async function reassignApprovalStep(service: any, params: {
   if (request.allow_self_approval !== true) candidates = candidates.filter(c => c.id !== request.requested_by)
   let alreadyApproved: Set<string> | null = null
   if (request.require_distinct_approvers === true) {
-    const { data: earlier } = await service
+    const { data: earlier, error: earlierErr } = await service
       .from('approval_steps').select('decided_by').eq('request_id', request.id).eq('status', 'approved')
+    // FIX (section-11 fresh pass, B5): a failed read emptied the "already approved" set, so the reassignment could hand
+    // the step to someone who had already used their one step and strand the chain.
+    if (earlierErr) {
+      console.error('reassignApprovalStep: could not read earlier approvals:', earlierErr)
+      return { ok: false, error: 'Could not check earlier approvals on this request — please try again.', status: 500 }
+    }
     alreadyApproved = new Set((earlier || []).map((e: any) => e.decided_by))
     candidates = candidates.filter(c => !alreadyApproved!.has(c.id))
   }
@@ -1255,11 +1294,16 @@ export async function reassignApprovalStep(service: any, params: {
   // quota. This is a fail-closed pre-flight, same as at creation — it must not
   // commit the reassignment write below if it fails.
   if (request.require_distinct_approvers === true) {
-    const { data: remainingRows } = await service
+    const { data: remainingRows, error: remainingErr } = await service
       .from('approval_steps')
       .select('step_order, approver_role_id, approver_user_id')
       .eq('request_id', request.id).gte('step_order', request.current_step)
       .order('step_order', { ascending: true })
+    // FIX (section-11 fresh pass, B5): same — a failed read made the strand check run against zero steps and pass.
+    if (remainingErr) {
+      console.error('reassignApprovalStep: could not read remaining steps:', remainingErr)
+      return { ok: false, error: 'Could not check the remaining steps of this request — please try again.', status: 500 }
+    }
     const remainingSteps = (remainingRows || []).map((s: any) =>
       s.step_order === request.current_step
         ? { step_order: s.step_order, approver_role_id: targetRole, approver_user_id: targetUser }
@@ -1383,7 +1427,7 @@ export async function reassignApprovalStep(service: any, params: {
 export async function getPendingApprovalForDocument(
   service: any, documentType: ApprovalDocumentType, documentId: string
 ): Promise<{ id: string; current_step: number; total_steps: number; status: string; send_failed_at: string | null; sending_started_at: string | null } | null> {
-  const { data } = await service
+  const { data, error } = await service
     .from('approval_requests')
     .select('id, current_step, total_steps, status, send_failed_at, sending_started_at')
     .eq('document_type', documentType)
@@ -1391,6 +1435,10 @@ export async function getPendingApprovalForDocument(
     .or('status.eq.pending,and(status.eq.approved,send_failed_at.not.is.null)')
     .order('created_at', { ascending: false })
     .limit(1)
+  // FIX (section-11 fresh pass, B3): this is the edit lock for every SOW / CO / invoice mutation route. A failed read
+  // returned null = "not locked", so a draft could be edited, have attachments changed or be regenerated while an
+  // approver was signing off on the previous content. Fail closed — callers run inside their route's try/catch (500).
+  if (error) throw new Error(`could not check the approval lock: ${error.message}`)
   return (data && data[0]) || null
 }
 
