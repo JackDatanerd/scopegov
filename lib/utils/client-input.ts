@@ -73,6 +73,19 @@ export function hasUnstorableText(s: string): boolean {
   return /[\u0000\ud800-\udfff]/u.test(s)
 }
 export const UNSTORABLE_TEXT_ERROR = (label: string) => `${label} contains characters that can’t be saved`
+
+// FIX (independent pass, section 14 — B1): `.trim()` removes whitespace only, so a name made solely of zero-width /
+// invisible characters (U+200B, U+200C/D, U+2060, soft hyphen, BOM, bidi marks, variation selectors, the Hangul and
+// braille blanks, "tag" characters…) passed every "name is required" check and was stored — a client or contact that
+// renders as an empty heading and an empty roster cell. EMAIL_RE already refuses these in
+// addresses; names never got the equivalent. A value counts as blank when nothing visible is left once whitespace,
+// control characters and invisible characters are removed. Only ever used to decide "is there any real text"; the
+// stored value is still just the trimmed input, so a ZWJ/ZWNJ that is part of a real name is preserved.
+const INVISIBLE_ONLY = /^[\s\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u180b-\u180e\u200b-\u200f\u202a-\u202e\u2060-\u206f\u2800\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff9-\ufffb\u{e0000}-\u{e0fff}]*$/u
+/** True when `s` has no visible character (empty, whitespace, or only invisible / control characters). */
+export function isBlankText(s: unknown): boolean {
+  return typeof s !== 'string' || INVISIBLE_ONLY.test(s)
+}
 export const MAX_CC_EMAILS = 10
 
 export const CLIENT_LIMITS = {
@@ -101,7 +114,7 @@ function optionalText(v: unknown, label: string, max: number): { ok: true; value
   const t = v.trim()
   if (hasUnstorableText(t)) return { ok: false, error: UNSTORABLE_TEXT_ERROR(label) }
   if (t.length > max) return { ok: false, error: `${label} is too long (${max} characters max)` }
-  return { ok: true, value: t || null }
+  return { ok: true, value: isBlankText(t) ? null : t }
 }
 
 // FIX (independent pass, section 14 — B4): the address is replaced as a whole, so the edit card has to send every part
@@ -159,7 +172,7 @@ export function parseClientInput(
 
   // name — required, never blank
   if (mode === 'create' || body.name !== undefined) {
-    if (typeof body.name !== 'string' || !body.name.trim()) return fail('Name is required')
+    if (typeof body.name !== 'string' || isBlankText(body.name)) return fail('Name is required')
     if (hasUnstorableText(body.name)) return fail(UNSTORABLE_TEXT_ERROR('Name'))
     if (body.name.trim().length > CLIENT_LIMITS.name) return fail(`Name is too long (${CLIENT_LIMITS.name} characters max)`)
     updates.name = body.name.trim()

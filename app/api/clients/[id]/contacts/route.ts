@@ -24,7 +24,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
-import { EMAIL_RE, CLIENT_LIMITS, CONTACT_ROLE_TYPES, hasUnstorableText, UNSTORABLE_TEXT_ERROR, type ContactRoleType } from '@/lib/utils/client-input'
+import { EMAIL_RE, CLIENT_LIMITS, CONTACT_ROLE_TYPES, hasUnstorableText, isBlankText, UNSTORABLE_TEXT_ERROR, type ContactRoleType } from '@/lib/utils/client-input'
 // FIX (independent pass 13, section 14 — B1): the duplicate-email pre-check used an `ilike`, and PostgREST reads `*`
 // in an ilike value as `%` with no way to escape it (see lib/utils/escape-like.ts) — so `a*@x.com` was refused as a
 // "duplicate" of the unrelated `ab@x.com`. A client holds at most MAX_CONTACTS_PER_CLIENT contacts, so the check
@@ -88,7 +88,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     try { body = await request.json() } catch { return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 }) }
     // FIX (independent pass, section 14): fields were never type-checked (a non-string name threw a
     // TypeError → 500), and nothing capped lengths, the number of contacts, or repeated emails.
-    if (typeof body?.name !== 'string' || !body.name.trim() || typeof body?.email !== 'string' || !body.email.trim())
+    // (independent pass, section 14 — B1) isBlankText also refuses a name made only of invisible characters.
+    if (typeof body?.name !== 'string' || isBlankText(body.name) || typeof body?.email !== 'string' || !body.email.trim())
       return NextResponse.json({ error: 'Name and email required' }, { status: 400 })
     const name  = body.name.trim()
     const email = body.email.trim().toLowerCase()
@@ -103,7 +104,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // Payable and Procurement, EMEA region — approves all…" and got a truncated label with no hint. Reject it.
     if (typeof body.role === 'string' && body.role.trim().length > CLIENT_LIMITS.contactRole)
       return NextResponse.json({ error: `Role is too long (${CLIENT_LIMITS.contactRole} characters max)` }, { status: 400 })
-    const role = typeof body.role === 'string' ? body.role.trim() || null : null
+    const role = typeof body.role === 'string' && !isBlankText(body.role) ? body.role.trim() : null
     if (role && hasUnstorableText(role)) return NextResponse.json({ error: UNSTORABLE_TEXT_ERROR('Role') }, { status: 400 })
     const roleType: ContactRoleType = body.roleType === undefined ? 'other' : body.roleType
     if (!CONTACT_ROLE_TYPES.includes(roleType))

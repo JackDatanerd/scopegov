@@ -1,0 +1,21 @@
+Clients (section 14) — independent pass 16
+Base: a4c1859
+
+B1  A client or contact name made only of zero-width / invisible characters (U+200B, U+2060, BOM, soft hyphen,
+    bidi marks, variation selectors, Hangul / braille blanks, tag characters ...) passed every "name is required"
+    check, because String.trim() removes whitespace only. The record was stored and rendered as a blank heading
+    and a blank roster cell.
+    Fix: new isBlankText() in lib/utils/client-input.ts ("nothing visible left"). Used for:
+      - parseClientInput name (POST /api/clients, PATCH /api/clients/[id], and the new-client path of POST /api/projects)
+      - POST /api/clients/[id]/contacts and PATCH .../contacts/[contactId] name
+    Also: an invisible-only optional text field (company, phone, notes, VAT, payment terms) and an invisible-only
+    contact role are now stored as NULL instead of as junk. A ZWJ/ZWNJ inside a real name is preserved.
+
+Files
+  lib/utils/client-input.ts
+  app/api/clients/[id]/contacts/route.ts
+  app/api/clients/[id]/contacts/[contactId]/route.ts
+  tests/clients-independent-pass-16.test.ts   (new; 9 of its 10 tests fail on the pre-fix code)
+
+No migration. tsc and the full suite are clean except the pre-existing tests/guardian-unstorable-text.test.ts
+(embeddingText is no longer exported from lib/ai/guardian) — not part of Clients.
