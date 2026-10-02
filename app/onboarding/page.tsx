@@ -958,6 +958,14 @@ function OnboardingWizard() {
 
   async function submitBranding() {
     if (!workspaceId) return
+    // FIX (Onboarding independent pass 10 — B2): the colour text box accepts anything, and the
+    // server only rejects a non-#rrggbb value in the PATCH AFTER the logo has already been
+    // uploaded, linked to the workspace and cleared from local state — so a typo'd colour
+    // reported a branding failure while the logo had silently gone live. Validate first.
+    if (!/^#[0-9a-fA-F]{6}$/.test(brandColour)) {
+      setError('Brand colour must be a hex colour, e.g. #1A5C3A')
+      return
+    }
     setLoading(true)
     setError('')
     try {
@@ -1134,6 +1142,17 @@ function OnboardingWizard() {
         body: JSON.stringify({ workspaceId }),
       })
       const json = await res.json().catch(() => ({}))
+      // FIX (Onboarding independent pass 10 — B1): a repeat call (lost response, double submit from
+      // two tabs) arrives after onboarding is already complete, so for an MFA-mandatory owner with
+      // no factor yet the middleware answers its gated 401 before the route's own idempotent
+      // { ok: true } can run. That 401 means "you are past onboarding" (see isMfaGateResponse); it
+      // was shown as an error and left the person on step 4. Navigate onward like every other
+      // handler in this file — the page-level middleware forwards to /mfa-setup from there.
+      if (isMfaGateResponse(res.status, json)) {
+        clearSavedProgress()
+        router.push(redirectTo)
+        return true
+      }
       if (!res.ok) {
         setError(json.error || 'Could not finish setting up your workspace — try again.')
         return false

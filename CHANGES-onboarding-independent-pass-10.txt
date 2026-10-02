@@ -1,0 +1,12 @@
+Onboarding independent pass 10 (base commit bb0ca36)
+
+B1  app/onboarding/page.tsx complete(): a repeat completion call (lost response, second tab) is
+    answered by the middleware's gated 401 (mfa_enrollment_required / mfa_challenge_required) for a
+    new MFA-mandatory owner, before complete-onboarding's own idempotent { ok: true } can run. It was
+    shown as an error and the person stayed on step 4. Now treated as "past onboarding": clear saved
+    progress and navigate to the intended destination, like the other four handlers in this file.
+
+B2  app/onboarding/page.tsx submitBranding(): the brand-colour text box was only validated
+    server-side in the PATCH that runs AFTER the logo upload, so a malformed hex reported a branding
+    failure while the logo had already been uploaded, linked and cleared locally. Validated
+    client-side (#rrggbb) before anything is sent.
