@@ -6,6 +6,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
+import { stripUnstorableText, truncateText } from '@/lib/utils/sanitize'
 import { resolveEntity, canReadProject, canWriteGovernance, isValidEntityType } from '@/lib/utils/flag-governance'
 // FIX (independent pass round 2, section 13): the allowlist + magic-byte check used to live only
 // here, hand-typed; guardian/inbound's saved email attachments now need the exact same validation,
@@ -104,7 +105,10 @@ export async function POST(
     // Only [a-z0-9] survives; the display name is length-capped and stripped of path separators.
     const rawExt = file.name.includes('.') ? (file.name.split('.').pop() || '') : ''
     const ext = rawExt.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 10) || 'bin'
-    const displayName = file.name.replace(/[\\/]+/g, '_').slice(0, 200) || 'attachment'
+    // FIX (Guardian section 13, independent pass 7 - B2): `.slice(0, 200)` could cut an emoji in half, and a lone
+    // surrogate (or a NUL) in file_name fails the whole insert - an ordinary upload turned into "Upload failed" (the
+    // stored object is rolled back). truncateText never splits a pair; stripUnstorableText repairs what the browser sent.
+    const displayName = truncateText(stripUnstorableText(file.name.replace(/[\\/]+/g, '_')), 200).trim() || 'attachment'
     const storagePath = `${session.workspaceId}/${entityType}/${entityId}/${randomUUID()}.${ext}`
 
     const buffer = Buffer.from(await file.arrayBuffer())

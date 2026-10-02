@@ -131,6 +131,17 @@ export async function POST(request: NextRequest) {
     const clash = sourceList.some((d: any) => titleOf(d).toLowerCase() === lower && titleOf(d) !== previousTitle)
     if (clash)
       return NextResponse.json({ error: `Another ${fieldLabel} is already titled "${newValue}".` }, { status: 409 })
+    // FIX (Guardian section 13, independent pass 7 - B3): the clash test only looked at the list being edited, so renaming
+    // a deliverable to an excluded item's title (or the reverse) left the SAME title in both `deliverables` and
+    // `out_of_scope` - the contradiction migration 128 repairs after change orders, and one the classifier turns into a
+    // `borderline` human-review item for every later request about it. Refuse it; the other list is the opposite promise.
+    const otherList: any[] = (field === 'out_of_scope' ? snap.deliverables : snap.out_of_scope) || []
+    if (otherList.some((d: any) => titleOf(d).toLowerCase() === lower))
+      return NextResponse.json({
+        error: field === 'out_of_scope'
+          ? `"${newValue}" is already an in-scope deliverable, so it can't also be listed as excluded.`
+          : `"${newValue}" is already listed as excluded, so it can't also be an in-scope deliverable.`,
+      }, { status: 409 })
 
     // FIX (independent pass, section 13): the history row is now written FIRST and removed if the
     // snapshot write then fails. Previously the snapshot changed first and a failed history insert

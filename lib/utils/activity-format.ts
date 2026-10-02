@@ -138,6 +138,11 @@ const LABELS: Record<string, (c: Ctx) => string> = {
   'flag.exception_granted': () => 'granted a scope exception',
   'flag.converted_to_co':   () => 'converted a scope flag into a change order',
   'flag.reverted_to_open':  () => 're-opened a scope flag',
+  // FIX (Guardian section 13, independent pass 7 - B1): the flags route logs `flag.reopened` (the Reopen action), not
+  // `flag.reverted_to_open` (the change-order routes), so the Guardian tab's own action fell back to the raw event
+  // name ("Jane flag reopened"). Same for the exception correction and the two pipeline events below.
+  'flag.reopened':          () => 'reopened a scope flag',
+  'exception.edited':       () => 'corrected a scope exception',
   'flag_comment.added':     () => 'commented on a scope flag',
   'flag_attachment.added':  () => 'attached a file to a scope flag',
   'flag_attachment.removed':() => 'removed a flag attachment',
@@ -170,6 +175,8 @@ const LABELS: Record<string, (c: Ctx) => string> = {
   'check.duplicate_skipped':() => 'Guardian skipped a duplicate message',
   'check.classification_failed': () => 'Guardian could not classify a message',
   'check.retried':          () => 'Guardian retried a message check',
+  'check.swept':            () => 'Guardian re-checked a queued message automatically',
+  'check.flag_creation_failed': () => 'Guardian could not save a scope flag - the check will be retried',
   'reminder.sent':          () => 'a reminder was sent',
   'reminder.failed':        () => 'a reminder failed to send',
 }
@@ -187,6 +194,7 @@ const SENTENCE_EVENTS = new Set([
   'invoice.overdue', 'payment.milestone_generated', 'payment.milestone_overdue', 'retainer.ended',
   'flag.raised', 'flag.borderline_created', 'approval.no_reachable_approver',
   'check.classified', 'check.duplicate_skipped', 'check.classification_failed', 'check.retried',
+  'check.swept', 'check.flag_creation_failed',
   'reminder.sent', 'reminder.failed',
 ])
 

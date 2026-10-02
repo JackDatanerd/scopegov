@@ -275,10 +275,14 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         // trigger it. Match the sibling 'resolve'/'close' actions.
         if (!hasPermission(session, 'APPROVE_FLAGS'))
           return NextResponse.json({ error: 'Missing permission: APPROVE_FLAGS' }, { status: 403 })
-        if (escalationNote.length < 10)
-          return NextResponse.json({ error: 'Escalation note must be at least 10 characters' }, { status: 400 })
+        // FIX (Guardian section 13, independent pass 7 - B4): the 10-character minimum was measured on the RAW note, but
+        // what is stored and emailed is the sanitised text - "<b></b><b></b>" passed the check and became an empty
+        // escalation. Clean first, then validate the cleaned text.
         if (escalationNote.length > 2000)
           return NextResponse.json({ error: 'Escalation note is too long (2,000 characters max)' }, { status: 400 })
+        const safeNote = stripUnstorableText(sanitizePlainText(escalationNote)).trim()
+        if (safeNote.length < 10)
+          return NextResponse.json({ error: 'Escalation note must be at least 10 characters' }, { status: 400 })
 
         // FIX (deep audit, section 13, finding #7): this action had no
         // status guard at all — a resolved/closed/converted_to_co flag
@@ -343,7 +347,6 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           resolvedEscalateTo = member.users.id
           assignee = { name: member.users.name, email: member.users.email }
         }
-        const safeNote = stripUnstorableText(sanitizePlainText(escalationNote))
 
         // FIX (deep audit, section 13, finding #7): escalated_to/
         // escalation_note are a single overwritable slot, same as CO's —
