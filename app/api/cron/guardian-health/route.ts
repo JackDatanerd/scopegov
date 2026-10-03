@@ -141,8 +141,13 @@ async function sweepUnclassified(service: any) {
   // (e.g. the same forwarded email arriving several times before a SOW was signed) is visible as
   // exactly that, not indistinguishable from checks that were simply ineligible this round.
   const stats = { candidates: candidates.length, classified: 0, flagged: 0, failed: 0, duplicates: 0, skipped: 0 }
+  // FIX (independent pass 8, section 13 - B1): reclassifyCheck now throws on a failed read/claim instead of reporting a
+  // harmless skip. One bad row must not page anyone, but when EVERY item attempted this run threw (>= 3 of them) the
+  // database path itself is broken - fail the run (alert + no heartbeat) rather than log a healthy sweep.
+  let attempted = 0, errored = 0
   for (const c of candidates) {
     if (Date.now() - started > SWEEP_BUDGET_MS) break
+    attempted++
     try {
       // FIX (independent pass round 4, section 13): recordAiUsageByProject used to be called here
       // unconditionally, before reclassifyCheck even looked at the row — so a candidate that
@@ -160,10 +165,11 @@ async function sweepUnclassified(service: any) {
       else if (res.status === 'duplicate') stats.duplicates++
       else stats.skipped++
     } catch (e) {
-      stats.failed++
+      stats.failed++; errored++
       console.error('Guardian sweep item failed:', c.id, e)
     }
   }
+  if (errored >= 3 && errored === attempted) throw new Error(`every one of ${attempted} sweep items threw (last: see logs)`)
   return stats
 }
 

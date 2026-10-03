@@ -64,7 +64,8 @@ export async function POST(request: NextRequest) {
     // a second, independent read of the same table that never got the same treatment. PGRST116
     // stays a 404; anything else is a real failure worth a distinct, retryable error and a log line
     // that isn't drowned out by one firing on every ordinary bad project id.
-    if (projectErr && (projectErr as any).code !== 'PGRST116') {
+    // FIX (independent pass 8, section 13 - B2): a non-UUID projectId is Postgres 22P02 - a 404, not a 500 + error log.
+    if (projectErr && (projectErr as any).code !== 'PGRST116' && (projectErr as any).code !== '22P02') {
       console.error('Guardian check: project fetch failed', projectErr)
       return NextResponse.json({ error: 'Could not load the project — please try again.' }, { status: 500 })
     }

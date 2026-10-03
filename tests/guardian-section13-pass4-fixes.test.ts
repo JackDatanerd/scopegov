@@ -91,7 +91,7 @@ describe('B1 - net CO-added deliverables', () => {
   it('the amendments read selects the columns the net computation needs', () => {
     const src = read('lib/ai/guardian-pipeline.ts')
     expect(src).toMatch(/select\('id, title, added_deliverables, removed_deliverables, created_at'\)/)
-    expect(src).toContain('netAmendmentDeliverables(data || [])')
+    expect(src).toContain('netAmendmentDeliverables(data || [], renameRows || [])')
   })
 })
 

@@ -1,0 +1,27 @@
+Guardian / scope governance (section 13) - independent pass 8
+==============================================================
+Audited at 997cb00, fixed on a fresh clone at cfdd966.
+
+B1  lib/ai/guardian-pipeline.ts, app/api/cron/guardian-health/route.ts
+    reclassifyCheck never read `error` on its check read, project read or claim write. An outage answered Retry with
+    "Check not found" (404) / "already being retried" (409), and the sweep counted it as a harmless skip. Now: a real
+    error throws (22P02 on the check id stays not_found). Retry -> 500; the sweep records the item as failed, and fails
+    the whole run (alert, no heartbeat) when >= 3 items were attempted and every one threw.
+
+B2  app/api/guardian/check, scope-adjustment, checks/[id]/retry
+    A malformed (non-UUID) projectId / check id hit Postgres 22P02 and became a 500 + error log. Now a 404.
+
+B3  app/api/guardian/flags/[id] (escalate)
+    The assignee lookup used .single() and ignored `error`, so a real read failure was reported as "That person is not an
+    active member of this workspace" (400). Now maybeSingle(); a real error is a 500; a non-string escalateTo is a 400.
+
+B4  lib/ai/guardian.ts, lib/ai/guardian-pipeline.ts
+    scope-adjustment renames a snapshot deliverable, but the change order that added it keeps the old title. A later
+    credit/descope CO names the NEW title, so it never cancelled the old add: the old title stayed under "ACCEPTED CHANGE
+    ORDERS" and a request for the dropped work could come back covered_by_co with no flag. netAmendmentDeliverables now
+    takes the project's deliverable renames (scope_adjustments, field='deliverables') and compares titles after following
+    every rename made after the amendment. The signed amendment text is not modified.
+
+Tests: tests/guardian-section13-pass8-fixes.test.ts (14). tests/guardian-section13-pass4-fixes.test.ts updated for the new
+netAmendmentDeliverables call. No migration.
+(The stale embeddingText import in tests/guardian-unstorable-text.test.ts was already fixed in another session.)

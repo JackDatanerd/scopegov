@@ -50,7 +50,8 @@ export async function POST(request: NextRequest) {
       .from('projects').select('id,name,status').eq('id', projectId)
       .eq('workspace_id', session.workspaceId).is('deleted_at', null).single()
     // FIX (independent pass, section 13): a real read error (outage, timeout) used to look like a missing row — a 404 "Project not found". Only PGRST116 (no rows) is a genuine not-found.
-    if (projectErr && projectErr.code !== 'PGRST116') return NextResponse.json({ error: 'Could not load the project' }, { status: 500 })
+    // FIX (independent pass 8, section 13 - B2): a malformed projectId (22P02) is a 404, not a 500.
+    if (projectErr && projectErr.code !== 'PGRST116' && projectErr.code !== '22P02') return NextResponse.json({ error: 'Could not load the project' }, { status: 500 })
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
     if (!(await canReadProject(service, session, projectId)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })

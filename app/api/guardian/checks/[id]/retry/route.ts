@@ -37,7 +37,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .single()
 
     // FIX (independent pass, section 13): a real read error (outage, timeout) used to look like a missing row — a 404 "Check not found". Only PGRST116 (no rows) is a genuine not-found.
-    if (checkErr && checkErr.code !== 'PGRST116') return NextResponse.json({ error: 'Could not load the check' }, { status: 500 })
+    // FIX (independent pass 8, section 13 - B2): a malformed id (22P02) is a 404, not a 500.
+    if (checkErr && checkErr.code !== 'PGRST116' && checkErr.code !== '22P02') return NextResponse.json({ error: 'Could not load the check' }, { status: 500 })
     if (!check) return NextResponse.json({ error: 'Check not found' }, { status: 404 })
     if (!(await canReadProject(service, session, check.project_id)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })

@@ -320,13 +320,19 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         let resolvedEscalateTo: string | null = null
         let assignee: { name: string; email: string } | null = null
         if (escalateTo) {
-          const { data: member } = await (service as any)
+          // FIX (independent pass 8, section 13 - B3): `.single()` + ignoring `error` turned a real read failure into
+          // "That person is not an active member" (400). maybeSingle() leaves error for genuine failures only; a malformed
+          // (non-UUID / non-string) escalateTo is the caller's mistake and keeps the 400.
+          if (typeof escalateTo !== 'string')
+            return NextResponse.json({ error: 'That person is not an active member of this workspace.' }, { status: 400 })
+          const { data: member, error: memberErr } = await (service as any)
             .from('workspace_members')
             .select('user_id, effective_permissions, users!workspace_members_user_id_fkey!inner(id,name,email)')
             .eq('workspace_id', session.workspaceId)
             .eq('id', escalateTo)
             .eq('status', 'active')
-            .single()
+            .maybeSingle()
+          if (memberErr && memberErr.code !== '22P02') throw new Error(`escalate assignee lookup failed: ${memberErr.message}`)
           // FIX (Notifications & email fix round): an unknown / inactive assignee used to
           // fall through silently — the flag was escalated to the caller instead and nobody
           // was told. Reject it so the user knows the escalation didn't go where they chose.

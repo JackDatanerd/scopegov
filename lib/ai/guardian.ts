@@ -242,8 +242,34 @@ export interface Amendment {
  * add made after the removal (bought again) is kept. Amendments left with nothing are dropped entirely, so the
  * "no amendments" paths (hasAmendments, matchedAgainst:'amendment') see the real picture.
  */
-export function netAmendmentDeliverables(amendments: Amendment[]): Amendment[] {
+/**
+ * A deliverable title changed through POST /api/guardian/scope-adjustment (field 'deliverables'). The snapshot carries the
+ * NEW title, while amendments keep the title the change order was signed with.
+ */
+export interface ScopeRename { old_value: string; new_value: string; adjusted_at: string }
+
+/**
+ * FIX (independent pass 8, section 13 - B4): a rename of a CO-added deliverable left the amendment listing the OLD title
+ * while the snapshot (and so a later credit/descope CO, which names titles from the snapshot) used the NEW one. The removal
+ * therefore never matched the add, the old title stayed under "ACCEPTED CHANGE ORDERS", and a request for the dropped work
+ * read as `covered_by_co` - no flag. Titles are now compared after following every rename made AFTER the amendment that
+ * mentions them (chained, in time order), so both sides land on the same current title. The amendment's own text is
+ * untouched: it is the signed record.
+ */
+export function netAmendmentDeliverables(amendments: Amendment[], renames: ScopeRename[] = []): Amendment[] {
   const norm = (t: unknown) => String(t ?? '').trim().toLowerCase()
+  const orderedRenames = renames
+    .map(r => ({ from: norm(r.old_value), to: norm(r.new_value), at: Date.parse(r.adjusted_at) }))
+    .filter(r => r.from && r.to && Number.isFinite(r.at))
+    .sort((a, b) => a.at - b.at)
+  // Follow the renames made after `afterIso` (an amendment without a usable created_at keeps its title as written).
+  const current = (title: unknown, afterIso: string | null | undefined): string => {
+    let k = norm(title)
+    const after = afterIso ? Date.parse(afterIso) : NaN
+    if (!k || !Number.isFinite(after)) return k
+    for (const r of orderedRenames) if (r.at > after && r.from === k) k = r.to
+    return k
+  }
   const indexed = amendments.map((a, i) => ({ a, i }))
   indexed.sort((x, y) => {
     const tx = x.a.created_at ? Date.parse(x.a.created_at) : NaN
@@ -253,7 +279,7 @@ export function netAmendmentDeliverables(amendments: Amendment[]): Amendment[] {
   })
   const lastRemovedAt = new Map<string, number>() // title -> position (in time order) of the latest amendment that removed it
   indexed.forEach(({ a }, pos) => {
-    for (const r of a.removed_deliverables || []) { const k = norm(r); if (k) lastRemovedAt.set(k, pos) }
+    for (const r of a.removed_deliverables || []) { const k = current(r, a.created_at); if (k) lastRemovedAt.set(k, pos) }
   })
   const posById = new Map<string, number>()
   indexed.forEach(({ a }, pos) => posById.set(a.id, pos))
@@ -261,7 +287,7 @@ export function netAmendmentDeliverables(amendments: Amendment[]): Amendment[] {
   for (const { a } of indexed) {
     const pos = posById.get(a.id) as number
     const live = (a.added_deliverables || []).filter(d => {
-      const k = norm(d)
+      const k = current(d, a.created_at)
       if (!k) return false
       const removedAt = lastRemovedAt.get(k)
       return removedAt === undefined || removedAt < pos

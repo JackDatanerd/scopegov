@@ -188,7 +188,13 @@ export async function classifyAndRecord(service: any, p: {
     // would misclassify already-covered work as scope creep.
     if (error) throw new Error(`amendments read failed: ${error.message}`)
     // Only deliverables still live after any later credit/descope CO (see netAmendmentDeliverables).
-    amendments = netAmendmentDeliverables(data || [])
+    // Renames made through scope-adjustment, so an amendment's title and a later credit CO's title (taken from the
+    // snapshot) are compared as the same deliverable - see netAmendmentDeliverables.
+    const { data: renameRows, error: renameErr } = await service.from('scope_adjustments')
+      .select('old_value, new_value, adjusted_at').eq('project_id', project.id).eq('field', 'deliverables')
+      .order('adjusted_at', { ascending: true })
+    if (renameErr) throw new Error(`scope adjustments read failed: ${renameErr.message}`)
+    amendments = netAmendmentDeliverables(data || [], renameRows || [])
     classification = await classifyGuardianCheck({
       content: check.content,
       snapshot: { deliverables: snapshot.deliverables || [], outOfScope: snapshot.out_of_scope || [] },
@@ -357,7 +363,12 @@ export async function reclassifyCheck(service: any, checkId: string, opts: {
     .select('id, project_id, workspace_id, content, is_duplicate, outcome, classification_failed, classification_attempts, source, source_metadata, embedding')
     .eq('id', checkId)
   if (opts.workspaceId) q = q.eq('workspace_id', opts.workspaceId)
-  const { data: check } = await q.maybeSingle()
+  const { data: check, error: checkErr } = await q.maybeSingle()
+  // FIX (independent pass 8, section 13 - B1): the read errors in this function were never looked at, so an outage
+  // answered Retry with "Check not found" (404) / "already being retried" (409) and, in the sweep, was counted as a
+  // harmless skip. Only a missing row (or a malformed id, 22P02) is a genuine not-found; anything else throws so the
+  // retry route answers 500 and the sweep records the item as failed.
+  if (checkErr && checkErr.code !== '22P02') throw new Error(`reclassifyCheck: check read failed: ${checkErr.message}`)
   if (!check) return { status: 'skipped', reason: 'not_found' }
 
   if (check.is_duplicate || check.outcome !== 'pending') return { status: 'skipped', reason: 'not_eligible' }
@@ -365,9 +376,10 @@ export async function reclassifyCheck(service: any, checkId: string, opts: {
   const attempts = Number(check.classification_attempts || 0)
   if (attempts >= (opts.maxAttempts ?? Infinity)) return { status: 'skipped', reason: 'max_attempts' }
 
-  const { data: project } = await service.from('projects')
+  const { data: project, error: projectErr } = await service.from('projects')
     .select(`id, name, status, stall_reason, deleted_at, workspace_id, workspaces(id, guardian_sensitivity_tier, deleted_at), project_scope_snapshot(deliverables, out_of_scope)`)
     .eq('id', check.project_id).eq('workspace_id', check.workspace_id).maybeSingle()
+  if (projectErr) throw new Error(`reclassifyCheck: project read failed: ${projectErr.message}`)
   if (!project) return { status: 'skipped', reason: 'not_found' }
   // Same gates as live submission: nothing is classified, flagged or emailed for a deleted project,
   // a Complete/Archived one, or a suspended/deleted workspace. Checked BEFORE the claim so no
@@ -382,10 +394,12 @@ export async function reclassifyCheck(service: any, checkId: string, opts: {
   // Compare-and-swap claim: two concurrent retries/sweeps both read attempts=N;
   // only one can move it to N+1, the other backs off (previously both classified
   // and both raised a flag).
-  const { data: claimed } = await service.from('guardian_checks')
+  const { data: claimed, error: claimErr } = await service.from('guardian_checks')
     .update({ classification_attempts: attempts + 1, last_attempt_at: new Date().toISOString() })
     .eq('id', check.id).eq('classification_attempts', attempts).eq('outcome', 'pending')
     .select('id')
+  // A failed claim write is not a lost race: reporting it as `claimed` told the user someone else was already retrying.
+  if (claimErr) throw new Error(`reclassifyCheck: claim failed: ${claimErr.message}`)
   if (!claimed || claimed.length === 0) return { status: 'skipped', reason: 'claimed' }
 
   // Past this point a real attempt is genuinely underway (embedding-if-needed, dedup, and/or
