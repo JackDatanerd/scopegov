@@ -52,9 +52,23 @@ export function normalizeSearchText(input: string): string {
   return out.replace(/\s+/g, ' ').trim()
 }
 
+// FIX (Search section, round 10): invisible format characters — zero-width space / non-joiner / joiner, LRM/RLM, the bidi
+// embedding controls, word joiner and friends, BOM — are not whitespace to JS or to `\s`, so a query pasted from Slack, Notion,
+// Google Docs or a PDF ("Acme" + U+200B) became the token "acme\u200b", which no stored name contains: the palette said
+// "No results" for a name that was plainly there, and a query made of nothing but these counted as searchable and ran every
+// block. They are trimmed from the EDGES of each word only — inside a word U+200C/U+200D are real (Persian/Indic names, emoji
+// sequences) and the stored text keeps them, so removing them there would stop a correctly typed name from matching.
+const INVISIBLE = '\\u061C\\u180E\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u2064\\u2066-\\u206F\\uFEFF'
+const INVISIBLE_EDGE = new RegExp(`^[${INVISIBLE}]+|[${INVISIBLE}]+$`, 'g')
+function trimInvisible(word: string): string {
+  return word.replace(INVISIBLE_EDGE, '')
+}
+
 function clean(raw: string): string {
-  return String(raw ?? '')
-    .slice(0, MAX_QUERY_LENGTH)
+  // FIX (Search section, round 10): was `.slice(0, MAX_QUERY_LENGTH)` — a UTF-16 cut that, with an emoji or any other
+  // astral character straddling position 100, left a lone surrogate (the URL layer turns it into U+FFFD, a token that
+  // matches nothing). Cut by code point, like truncateByCodePoint below.
+  return Array.from(String(raw ?? '')).slice(0, MAX_QUERY_LENGTH).join('')
     // `*` is a wildcard alias for `%` in PostgREST like/ilike values and
     // there is no way to escape it, so it can't be searched for literally.
     .replace(/\*/g, ' ')
@@ -64,7 +78,8 @@ function clean(raw: string): string {
 function split(s: string): string[] {
   const seen = new Set<string>()
   const out: string[] = []
-  for (const t of s.split(/\s+/)) {
+  for (const raw of s.split(/\s+/)) {
+    const t = trimInvisible(raw)
     if (!t || seen.has(t)) continue
     seen.add(t)
     out.push(t)
@@ -77,7 +92,7 @@ function split(s: string): string[] {
 // by joining those de-duplicated tokens — so "yum yum" collapsed to "yum", the client called "Yum" outscored the client
 // actually named "Yum Yum" (150 vs 50), and the exact-name fetch looked for the wrong string. The phrase keeps repeats.
 function splitKeepRepeats(s: string): string[] {
-  return s.split(/\s+/).filter(Boolean).slice(0, MAX_TOKENS)
+  return s.split(/\s+/).map(trimInvisible).filter(Boolean).slice(0, MAX_TOKENS)
 }
 
 /** Accent-folded tokens — for the generated search_text columns. */
@@ -138,10 +153,22 @@ export function scoreMatch(text: string, tokens: string[], phrase: string = toke
   if (t === phrase) score += 100
   if (t.startsWith(tokens[0])) score += 40
   for (const tok of tokens) {
-    if (words.some(w => w.startsWith(tok))) score += 10
+    if (words.some(w => w.startsWith(tok)) || startsAtBoundary(t, tok)) score += 10
     else if (t.includes(tok)) score += 2
   }
   return score
+}
+
+// FIX (Search section, round 10): `words` is split on & ' + # @ . - etc., so a token that itself contains one of them
+// (r&d, o'brien, c++, a.b) can never be a prefix of any word — "Studio R&D" scored 2 for `r&d` (substring) while
+// "Studio Obrien" scored 10 for `obrien`, ranking the punctuation-free name above the one actually typed. A token also counts
+// as word-initial when it occurs at the start of the text or right after a separator.
+const BOUNDARY = /[\s\-_.,;:!?/\\()[\]{}&'"+#@]/
+function startsAtBoundary(text: string, tok: string): boolean {
+  for (let i = text.indexOf(tok); i !== -1; i = text.indexOf(tok, i + 1)) {
+    if (i === 0 || BOUNDARY.test(text[i - 1])) return true
+  }
+  return false
 }
 
 /** Stable sort by descending relevance. */

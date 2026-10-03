@@ -1,0 +1,37 @@
+Search section (20) - independent pass 10
+=========================================
+
+All three defects were in lib/search/query.ts. The route, palette and migrations needed no change.
+
+BUG 1: invisible format characters in the query broke matching.
+  Zero-width space / non-joiner / joiner, LRM/RLM, the bidi embedding controls, word joiner and the BOM are not
+  whitespace to JS (or to \s), so text pasted from Slack, Notion, Google Docs or a PDF ("Acme" + U+200B) became the token
+  "acme\u200b" which no stored name contains -> "No results" for a name that was there. A query made only of these
+  counted as searchable (isSearchable) and ran every block.
+FIX   trimInvisible(): stripped from the EDGES of each word only (split + splitKeepRepeats, so tokens, foldedPhrase and
+      plainPhrase agree). Mid-word U+200C/U+200D are kept: they are real in Persian/Indic names and emoji sequences, and the
+      stored search_text keeps them. U+00AD is not in the set (unaccent() folds it to '-', the query side already matches).
+
+BUG 2: the 100-character cap cut between UTF-16 surrogates.
+  clean() used .slice(0, MAX_QUERY_LENGTH); an emoji / astral character straddling position 100 left a lone surrogate
+  (the URL layer turns it into U+FFFD -> a token that matches nothing).
+FIX   Array.from(raw).slice(0, MAX_QUERY_LENGTH).join('') - cut by code point.
+
+BUG 3: ranking gave no word-start credit to tokens containing punctuation.
+  scoreMatch split text on & ' + # @ . - etc. and tested words.startsWith(token); a token such as r&d, o'brien, c++ or a.b
+  could never be a prefix of any word, so "Studio R&D" scored 2 for `r&d` while "Studio Obrien" scored 10 for `obrien`.
+FIX   startsAtBoundary(): a token also counts as word-initial when it occurs at the start of the text or right after a
+      separator. Mid-word hits stay at the substring score.
+
+FILES
+  lib/search/query.ts                          fixes 1-3
+  tests/search-independent-pass-10.test.ts     NEW (14 cases)
+  CHANGES-search-independent-pass-10.txt       this file
+
+NOTE (traced, not changed): app/api/admin/users and app/api/admin/workspaces also use .slice(0, 100) on a raw query. Those are
+platform-admin screens outside this section; the worst case is the same one-off U+FFFD on a 100+ character query.
+
+vitest could not be run in the sandbox (no node_modules). The new test file and tests/search-query.test.ts were run through a
+small shim and pass; tsc on query.ts is clean. Please run:
+  npx tsc --noEmit
+  npx vitest run tests/search-query.test.ts tests/search-route.test.ts tests/search-independent-pass-9.test.ts tests/search-independent-pass-10.test.ts
