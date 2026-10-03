@@ -2,13 +2,16 @@ export const runtime = 'nodejs'
 
 import { NextResponse, type NextRequest } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/server'
-import { verifyResendSignature, nextEmailStatus, classifyEmailKind, bounceAlertBody } from '@/lib/email/webhook'
+import {
+  verifyResendSignature, nextEmailStatus, classifyEmailKind, bounceAlertBody, failureKindForEvent,
+  suppressedAlertBody, failedAlertBody, type EmailFailureKind,
+} from '@/lib/email/webhook'
 import { notifyUsers, notifyMembersWithPermission } from '@/lib/utils/notify'
 import type { Permission } from '@/lib/supabase/types'
 import { escapeLike, sameEmail } from '@/lib/utils/escape-like'
 
 // Resend delivery webhook (configure in the Resend dashboard → Webhooks → this URL, events
-// email.delivered / email.delivery_delayed / email.bounced / email.complained / email.failed, and
+// email.delivered / email.delivery_delayed / email.bounced / email.complained / email.failed / email.suppressed, and
 // set RESEND_WEBHOOK_SECRET to the signing secret it shows).
 //
 // FEATURE (Notifications & email fix round): a client's mail server rejecting a SOW, invoice or
@@ -57,9 +60,14 @@ export async function POST(request: NextRequest) {
       .eq('provider_id', emailId).maybeSingle()
     if (error) throw new Error(error.message)
     if (!row) {
+      // Most internal mail (flag alerts, approvals, stall notices) is sent without an email_log row, and Resend still
+      // reports on it. Retrying those for two minutes only produced failed deliveries in the Resend dashboard, so a
+      // success event is retried only when the email was sent with the `tracked` tag (sendEmail adds it whenever it
+      // writes a log row) — see isTrackedSend. Failure events are always retried while fresh: losing one loses the alert.
+      const mightBeLogged = failureKindForEvent(type) !== null || isTrackedSend(event)
       // The log row is written right AFTER the send returns, so an event can beat it. Fail (Resend retries after a
       // few seconds) while the event is fresh; an old event for an email we never logged is simply not ours.
-      if (eventAgeMs(event) < UNLOGGED_RETRY_WINDOW_MS) return NextResponse.json({ error: 'Email not logged yet' }, { status: 503 })
+      if (mightBeLogged && eventAgeMs(event) < UNLOGGED_RETRY_WINDOW_MS) return NextResponse.json({ error: 'Email not logged yet' }, { status: 503 })
       return NextResponse.json({ ok: true, untracked: true })
     }
     const address = impacted || firstAddress(row.to_emails)
@@ -90,8 +98,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true, unchanged: true })
     }
 
-    if (next === 'bounced' || next === 'complained') {
-      const alerted = await alertSender(service, row, next, address)
+    const failure = failureKindForEvent(type)
+    if (failure) {
+      const alerted = await alertSender(service, row, failure, address)
       if (!alerted) {
         // The status already moved, so a retry would see "unchanged" and the alert would be lost for good. Put the
         // status back (guarded on what we wrote) and fail, so Resend redelivers the event and the alert is retried.
@@ -99,7 +108,7 @@ export async function POST(request: NextRequest) {
         throw new Error('bounce alert could not be written')
       }
     }
-    await trackClientEmailHealth(service, row, next, address)
+    await trackClientEmailHealth(service, row, healthStatusFor(failure, next), address)
     return NextResponse.json({ ok: true, status: next })
   } catch (err) {
     console.error('[resend-webhook] processing failed:', err)
@@ -123,12 +132,23 @@ async function applyAddressEffects(service: any, row: any, type: string, address
   // "not an advance", so that recipient raised no alert and never marked the client record. The alert and the marker are
   // per address, so they run regardless of whether the message status moved; the alert is deduplicated so a redelivered
   // event cannot raise it twice.
-  if (type === 'email.bounced' || type === 'email.complained') {
-    const failure = type === 'email.complained' ? 'complained' : 'bounced'
+  const failure = failureKindForEvent(type)
+  if (failure) {
     const alerted = await alertSender(service, row, failure, address, { dedupe: true })
     if (!alerted) throw new Error('bounce alert could not be written') // → 500, Resend retries
-    await trackClientEmailHealth(service, row, failure, address)
+    await trackClientEmailHealth(service, row, healthStatusFor(failure, 'failed'), address)
   }
+}
+
+/**
+ * What the client-record marker should hear about. A suppressed address is one that already bounced or complained
+ * (that is the only way onto the suppression list), so it keeps the red marker as a plain bounce; a provider-side
+ * `failed` says nothing about the address and leaves the record alone.
+ */
+function healthStatusFor(failure: EmailFailureKind | null, fallback: string): string {
+  if (failure === 'suppressed') return 'bounced'
+  if (failure === 'failed') return 'failed'
+  return failure ?? fallback
 }
 
 const UNLOGGED_RETRY_WINDOW_MS = 2 * 60 * 1000
@@ -138,6 +158,13 @@ function firstAddress(v: unknown): string {
   return typeof first === 'string' ? first.trim().toLowerCase() : ''
 }
 
+/** sendEmail tags every send it logs with tracked=1; Resend echoes the tags back on each event. */
+function isTrackedSend(event: any): boolean {
+  const tags = event?.data?.tags
+  if (Array.isArray(tags)) return tags.some((t: any) => t?.name === 'tracked' && String(t?.value) === '1')
+  return !!tags && typeof tags === 'object' && String((tags as any).tracked) === '1'
+}
+
 function eventAgeMs(event: any): number {
   const t = Date.parse(event?.created_at || event?.data?.created_at || '')
   return Number.isFinite(t) ? Date.now() - t : Infinity
@@ -145,19 +172,21 @@ function eventAgeMs(event: any): number {
 
 /** Resolves true when the alert was written (or no one was eligible to receive it). */
 async function alertSender(
-  service: any, row: any, status: 'bounced' | 'complained', address: string, opts: { dedupe?: boolean } = {},
+  service: any, row: any, status: EmailFailureKind, address: string, opts: { dedupe?: boolean } = {},
 ): Promise<boolean> {
   const { docKind, role } = classifyEmailKind(row.kind)
   const doc = DOC_BY_KIND[docKind]
   const to = address || (row.to_emails || [])[0] || 'the client'
   const what = doc ? doc.label : 'email'
 
-  const title = status === 'bounced'
-    ? `Email to ${to} bounced`
-    : `${to} marked your email as spam`
-  const body = status === 'bounced'
-    ? bounceAlertBody(role, what)
-    : `Your ${what} email was reported as spam. Avoid further emails to this address until you have spoken to them.`
+  const title = status === 'bounced' ? `Email to ${to} bounced`
+    : status === 'complained' ? `${to} marked your email as spam`
+    : status === 'suppressed' ? `Email to ${to} was not sent`
+    : `Email to ${to} could not be sent`
+  const body = status === 'bounced' ? bounceAlertBody(role, what)
+    : status === 'complained' ? `Your ${what} email was reported as spam. Avoid further emails to this address until you have spoken to them.`
+    : status === 'suppressed' ? suppressedAlertBody(what)
+    : failedAlertBody(what)
 
   const shared = {
     workspaceId: row.workspace_id,

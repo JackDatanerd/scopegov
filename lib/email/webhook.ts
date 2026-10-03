@@ -77,6 +77,9 @@ const EVENT_STATUS: Record<string, EmailLogStatus> = {
   'email.bounced': 'bounced',
   'email.complained': 'complained',
   'email.failed': 'failed',
+  // Resend refused to send because the address is on its suppression list (it hard-bounced or complained before).
+  // The message never left, so it is a failure of this email — see failureKindForEvent.
+  'email.suppressed': 'failed',
 }
 
 /** The status the row should move to, or null if the event is irrelevant or would not advance it. */
@@ -85,4 +88,31 @@ export function nextEmailStatus(current: string, eventType: string): EmailLogSta
   if (!target) return null
   const cur = (current in RANK ? current : 'sent') as EmailLogStatus
   return RANK[target] > RANK[cur] ? target : null
+}
+
+/** The kinds of delivery failure a sender has to be told about. */
+export type EmailFailureKind = 'bounced' | 'complained' | 'suppressed' | 'failed'
+
+const EVENT_FAILURE: Record<string, EmailFailureKind> = {
+  'email.bounced': 'bounced',
+  'email.complained': 'complained',
+  'email.suppressed': 'suppressed',
+  'email.failed': 'failed',
+}
+
+/**
+ * Which failure (if any) an event reports. A bounce and a complaint were the only two that raised an alert; a
+ * suppressed send (every email to an address that has bounced before) and a provider-side failure left the sender
+ * believing the message went out.
+ */
+export function failureKindForEvent(eventType: string): EmailFailureKind | null {
+  return EVENT_FAILURE[eventType] ?? null
+}
+
+export function suppressedAlertBody(what: string): string {
+  return `Your ${what} email was not sent: the address is on the email provider's suppression list because an earlier email to it bounced or was reported as spam. Correct the address on the client record, or reach them another way.`
+}
+
+export function failedAlertBody(what: string): string {
+  return `Your ${what} email could not be sent by the email provider. Resend it from the document, and if it keeps failing, contact support.`
 }

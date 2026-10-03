@@ -64,8 +64,11 @@ export async function GET() {
       // A locked default is authoritative — a stored row (even a stale one from before an admin
       // locked this event) never takes effect once locked, matching the read side exactly.
       if (locked[row.event_type]) continue
-      prefs[row.event_type] = inAppOnly.has(row.event_type) ? row.in_app_enabled : row.email_enabled
-      if (!inAppOnly.has(row.event_type)) inAppPrefs[row.event_type] = row.in_app_enabled
+      // NULL = the member never chose that channel (migration 142): keep the workspace default resolved above.
+      const own = inAppOnly.has(row.event_type) ? row.in_app_enabled : row.email_enabled
+      if (own !== null && own !== undefined) prefs[row.event_type] = own
+      if (!inAppOnly.has(row.event_type) && row.in_app_enabled !== null && row.in_app_enabled !== undefined)
+        inAppPrefs[row.event_type] = row.in_app_enabled
     }
 
     return NextResponse.json({ prefs, inAppPrefs, locked, inAppOnlyEventTypes: IN_APP_ONLY_EVENT_TYPES })
@@ -129,23 +132,27 @@ export async function PATCH(request: NextRequest) {
       console.error('Notification preferences PATCH read failed:', existingErr.message)
       return NextResponse.json({ error: 'Could not save this preference. Try again.' }, { status: 500 })
     }
-    const currentEmail = existing ? existing.email_enabled  : (defaultRow ? defaultRow.email_enabled  : true)
-    const currentInApp = existing ? existing.in_app_enabled : (defaultRow ? defaultRow.in_app_enabled : true)
-
-    // FIX (Notifications & email pass 6): this wrote BOTH columns from the row read above. Toggling Email and then Bell
-    // in quick succession (two overlapping PATCHes) let the second request write back the first one's stale Email
-    // value. An existing row now has only the targeted column updated; a missing row is created from the resolved
-    // baseline (ignoring a concurrent creator) and then has only the targeted column set.
+    // FIX (Notifications & email pass 6): this wrote BOTH columns from the row read above, so two overlapping PATCHes
+    // let the second write back the first one's stale value. Only the targeted column is ever updated now.
+    // FIX (Notifications & email, independent pass): a missing row used to be created with the channel being LEFT ALONE
+    // resolved against today's workspace default and stored as the person's explicit choice — a later change to that
+    // default never reached them for that channel. The untouched channel is now NULL ("follow the workspace default",
+    // migration 142); only the channel the person actually toggled is stored.
     const targetColumn = targetChannel === 'in_app' ? 'in_app_enabled' : 'email_enabled'
     const where = { user_id: session.id, workspace_id: session.workspaceId, event_type: eventType }
-    let error: { message?: string } | null = null
+    let error: { message?: string; code?: string } | null = null
     if (!existing) {
-      const created = await (service as any)
-        .from('notification_preferences')
-        .upsert(
-          { ...where, email_enabled: inAppOnly ? true : currentEmail, in_app_enabled: currentInApp },
-          { onConflict: 'user_id,workspace_id,event_type', ignoreDuplicates: true }
-        )
+      const conflict = { onConflict: 'user_id,workspace_id,event_type', ignoreDuplicates: true }
+      let created = await (service as any).from('notification_preferences')
+        .upsert({ ...where, email_enabled: null, in_app_enabled: null }, conflict)
+      // Migration 142 not applied yet (columns still NOT NULL): fall back to the old behaviour — baseline from the
+      // workspace default for the channel left alone — rather than failing the save.
+      if (created.error?.code === '23502') {
+        const baseEmail = defaultRow ? defaultRow.email_enabled : true
+        const baseInApp = defaultRow ? defaultRow.in_app_enabled : true
+        created = await (service as any).from('notification_preferences')
+          .upsert({ ...where, email_enabled: baseEmail, in_app_enabled: baseInApp }, conflict)
+      }
       error = created.error
     }
     if (!error) {

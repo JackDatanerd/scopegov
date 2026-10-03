@@ -218,7 +218,8 @@ export async function filterByNotificationPreference<T extends { id: string }>(
       .eq('event_type', eventType)
       .in('user_id', ids.slice(i, i + PREF_LOOKUP_CHUNK))
     if (prefsErr) { console.error('filterByNotificationPreference: preference read failed:', prefsErr.message); continue }
-    for (const p of prefs || []) overrides.set(p.user_id, p[column])
+    // NULL = the member never chose this channel (migration 142): the workspace default applies.
+    for (const p of prefs || []) if (p[column] !== null && p[column] !== undefined) overrides.set(p.user_id, p[column])
   }
   return recipients.filter(r => (overrides.has(r.id) ? overrides.get(r.id) : orgDefault) !== false)
 }

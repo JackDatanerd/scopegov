@@ -93,7 +93,14 @@ export default function NotificationsClient() {
     setItems(prev => prev.filter(x => x.id !== n.id))
     if (!n.read) setUnreadCount(c => Math.max(0, c - 1))
     try { await call('DELETE', { ids: [n.id] }) }
-    catch (e: unknown) { setItems(before); setError(e instanceof Error ? e.message : 'Could not delete') ; reload(filter) }
+    catch (e: unknown) {
+      // reload() clears the error banner as its first step, so the message has to be set AFTER it (and must not
+      // hide a load error the reload itself produced) — set before, the person never saw why the row came back.
+      const msg = e instanceof Error ? e.message : 'Could not delete'
+      setItems(before)
+      await reload(filter)
+      setError(prev => prev || msg)
+    }
   }
 
   async function open(n: AppNotification) {

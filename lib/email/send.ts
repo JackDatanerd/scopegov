@@ -99,6 +99,9 @@ export async function sendEmail(payload: EmailPayload, log?: EmailLogContext): P
   if (cc.length) body.cc = cc
   if (payload.replyTo && isDeliverableAddress(payload.replyTo)) body.replyTo = payload.replyTo.trim()
   if (payload.attachments?.length) body.attachments = payload.attachments
+  // Marks a send that has an email_log row, so the delivery webhook knows an event that arrives before the row is
+  // written is worth retrying (see app/api/webhooks/resend). Untracked mail carries no tag and is ignored right away.
+  if (log) body.tags = [{ name: 'tracked', value: '1' }]
 
   let result: SendResult
   try {

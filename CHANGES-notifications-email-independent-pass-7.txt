@@ -1,0 +1,24 @@
+Notifications & email — independent pass 7
+==========================================
+
+B1  email.suppressed / email.failed never reached the sender.
+    lib/email/webhook.ts (failureKindForEvent, EVENT_STATUS 'email.suppressed' -> 'failed', alert bodies),
+    app/api/webhooks/resend/route.ts (alerts for all four failure kinds; a suppressed address keeps the client's
+    bounce marker; a provider-side failure leaves the client record alone).
+    ACTION: tick `email.suppressed` on the Resend webhook in the Resend dashboard.
+
+B2  First toggle of one channel froze the other channel at that day's workspace default.
+    supabase/migrations/142_notification_preferences_inherit.sql (columns nullable; NULL = inherit),
+    app/api/notifications/preferences/route.ts (only the toggled channel is stored; falls back to the old write if the
+    migration is not applied yet), lib/utils/permissions-query.ts (NULL ignored when resolving overrides).
+    APPLY MIGRATION 142 (the code works before it is applied, but the fix only takes effect after).
+
+B3  Webhook returned 503 for every success event on mail that was never logged (most internal mail).
+    lib/email/send.ts tags logged sends tracked=1; the webhook retries a success event only when tagged.
+    Failure events are still retried while fresh.
+
+B4  Inbox delete failure message vanished instantly (reload() cleared it).
+    components/notifications/NotificationsClient.tsx.
+
+Tests: tests/notifications-email-independent-pass-7.test.ts (new); tests/notifications-email-pass6.test.ts (two
+expectations updated for NULL = inherit).

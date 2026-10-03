@@ -122,7 +122,7 @@ describe('preferences PATCH — column-targeted write', () => {
     expect(r.in_app_enabled).toBe(false)
   })
 
-  it('a first-ever toggle creates the row from the workspace default baseline, then sets only the target', async () => {
+  it('a first-ever toggle stores only the toggled channel — the other stays NULL (follow the workspace default)', async () => {
     h.db = createFakeSupabase({
       notification_preferences: [],
       workspace_notification_defaults: [{ workspace_id: 'ws1', event_type: 'sow_signed', email_enabled: false, in_app_enabled: true, locked: false }],
@@ -130,7 +130,7 @@ describe('preferences PATCH — column-targeted write', () => {
     expect((await patch({ eventType: 'sow_signed', enabled: false, channel: 'in_app' })).status).toBe(200)
     expect(h.db.tables.notification_preferences).toHaveLength(1)
     const r = h.db.tables.notification_preferences[0]
-    expect(r.email_enabled).toBe(false)   // baseline from the org default, not reset to true
+    expect(r.email_enabled).toBeNull()    // never chosen: inherits the org default instead of freezing today's value
     expect(r.in_app_enabled).toBe(false)  // the toggled channel
   })
 
@@ -139,6 +139,6 @@ describe('preferences PATCH — column-targeted write', () => {
     expect((await patch({ eventType: 'member_joined', enabled: false })).status).toBe(200)
     const r = h.db.tables.notification_preferences[0]
     expect(r.in_app_enabled).toBe(false)
-    expect(r.email_enabled).toBe(true)
+    expect(r.email_enabled).toBeNull()
   })
 })
