@@ -1,0 +1,23 @@
+Section 12 (Invoicing) — independent pass 18 fix round
+
+B1  Emailed invoice PDF ignored the workspace timezone (lib/documents/send-invoice.ts)
+    The workspaces select omitted `timezone` and renderInvoicePdf was called without `timeZone`, so "Issued" and
+    "Generated" printed in UTC on the PDF attached to the send email (and the approval auto-send), while the
+    downloadable and portal PDFs used the workspace zone. Sending 00:00-03:00 EAT stamped the previous day.
+    Now selects workspaces.timezone and passes it.
+
+B2  Open dispute survived a void (app/api/invoices/[id]/void/route.ts + migration 139)
+    "Resolve dispute" is hidden on void invoices, so a dispute open at void time stayed flagged forever (pill,
+    registry Disputed filter, CSV Disputed column). Void now closes it in the same compare-and-swap write
+    (note "Invoice voided", resolved_by = the voider; no client email). Migration 139 backfills existing
+    void invoices (data only, idempotent).
+
+B3  (traced, change-order side) Executed CO PDF ignored the workspace timezone (lib/documents/finalize-co.ts)
+    Same class as B1: the frozen executed copy printed "Accepted"/"Generated" in UTC. finalizeCo now looks up
+    workspaces.timezone itself (callers' selects don't all carry it) and passes timeZone to renderCoPdf.
+    Only newly executed COs change; already-stored PDFs are untouched.
+
+Tests: tests/invoice-void-closes-dispute.test.ts (new). Could not run npm test / tsc in the assistant's sandbox
+(npm registry blocked) — run `npm test` and `npx tsc --noEmit` locally before committing.
+
+RUN migration 139 (any time; data-only). No other deploy ordering.

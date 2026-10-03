@@ -37,7 +37,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // no longer valid. Everything else in this route is unchanged.
     const { data: invoice } = await (service as any)
       .from('invoices')
-      .select(`id, title, status, amount, amount_paid, currency, token, milestone_id, project_id, sent_at,
+      .select(`id, title, status, amount, amount_paid, currency, token, milestone_id, project_id, sent_at, disputed_at, dispute_resolved_at,
         projects(name, client_id, clients(name, email, cc_emails), workspaces(agency_name, brand_colour))`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
@@ -79,11 +79,17 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // CAS on amount_paid = 0 (guaranteed by the check above at read time)
     // closes the window the same way every other money-mutating route in
     // this app already guards its writes.
+    // FIX (section-12 independent pass — bug): an open client dispute survived the void. "Resolve dispute" is
+    // hidden on a void invoice, so the red "Client disputed" pill, the registry's Disputed filter and the CSV
+    // "Disputed" column kept flagging it forever. Nothing is left to answer on a voided invoice: close it in the
+    // same write (no client email — the void notice already went out).
+    const openDispute = !!invoice.disputed_at && !invoice.dispute_resolved_at
     const { data: voided, error } = await (service as any).from('invoices').update({
       status:      'void',
       voided_at:   now,
       void_reason: reason || null,
       updated_at:  now,
+      ...(openDispute ? { dispute_resolved_at: now, dispute_resolution_note: 'Invoice voided', dispute_resolved_by: session.id } : {}),
     }).eq('id', id).eq('amount_paid', paidSoFar).in('status', ['sent', 'partially_paid', 'overdue']).select('id').maybeSingle()
 
     if (error) return NextResponse.json({ error: 'Failed to void invoice' }, { status: 500 })

@@ -67,7 +67,7 @@ export async function sendInvoiceDocument(service: any, params: {
     .select(`id, title, amount, currency, status, due_date, payment_instructions, invoice_number,
       po_number, milestone_id, project_id, subtotal, tax_rate, tax_inclusive, line_items, sow_id, co_id,
       projects(id, name, client_id, deleted_at, clients(name, email, cc_emails, company_name, billing_address, vat_number, payment_terms_note),
-        workspaces(id, agency_name, brand_colour, logo_storage_path, legal_address, tax_id, phone, website)),
+        workspaces(id, timezone, agency_name, brand_colour, logo_storage_path, legal_address, tax_id, phone, website)),
       sow_documents(document_number), change_orders(document_number, title)`)
     .eq('id', invoiceId).eq('workspace_id', workspaceId).single()
 
@@ -173,7 +173,10 @@ export async function sendInvoiceDocument(service: any, params: {
         .from('payment_milestones').select('trigger').eq('id', invoice.milestone_id).single()
       milestoneTrigger = milestone?.trigger || null
     }
+    // FIX (section-12 independent pass — bug): timeZone was never passed, so the emailed PDF printed "Issued"
+    // and "Generated" in UTC while the downloadable and portal copies print them in the workspace's own zone.
     const pdfBuffer = await renderInvoicePdf({
+      timeZone:      workspace.timezone,
       agencyName:    workspace.agency_name || actorAgencyName,
       logoUrl,
       brandColour:   workspace.brand_colour || '#1A5C3A',
