@@ -293,6 +293,21 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       return NextResponse.json({ error: 'This invoice was just sent or changed — refresh and try again.' }, { status: 409 })
     }
 
+    // FIX (Invoicing independent pass 20): every other invoice mutation (create, delete, send, void, payments,
+    // dispute-resolve) is audited; editing a draft's amount / tax / title / payment instructions was not. Field
+    // names only — the activity feed never ships raw metadata, and the new figures live on the invoice itself.
+    await logAudit(service, {
+      workspaceId: session.workspaceId,
+      actorId: session.id, actorEmail: session.email, actorName: session.name,
+      eventType: 'invoice.updated', entityType: 'invoice',
+      entityId: id, entityName: update.title ?? invoice.title,
+      metadata: {
+        fields: Object.keys(update).filter(k => k !== 'updated_at'),
+        ...(touchesMoney ? { amount: update.amount, subtotal: update.subtotal } : {}),
+        project_id: invoice.project_id,
+      },
+    })
+
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error('Invoice update error:', err)

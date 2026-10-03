@@ -1,0 +1,14 @@
+Invoicing — independent pass 20 (two low-severity fixes)
+
+1. app/api/invoices/[id]/route.ts (PATCH)
+   Editing a draft invoice was the only invoice mutation with no audit row.
+   Now logs 'invoice.updated' (changed fields; amount/subtotal when money
+   changed). project_id is derived by the migration-056 audit trigger.
+
+2. lib/utils/activity-format.ts
+   - 'invoice.payment_claimed' (client's "I've paid this" notice) had no
+     label and rendered as a humanized event name; now labelled and treated
+     as a client event.
+   - New label for 'invoice.updated'.
+
+Tests: tests/invoicing-independent-pass-20.test.ts

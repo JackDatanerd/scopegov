@@ -157,6 +157,10 @@ const LABELS: Record<string, (c: Ctx) => string> = {
   'invoice.dispute_resolved': ({ name }) => name ? `resolved the dispute on ${name}` : 'resolved an invoice dispute',
   'invoice.voided':         ({ name }) => name ? `voided invoice ${name}` : 'voided an invoice',
   'invoice.deleted':        ({ name }) => name ? `deleted draft invoice ${name}` : 'deleted a draft invoice',
+  // FIX (Invoicing independent pass 20): editing a draft was never audited, and the client's "I've paid this" notice
+  // (api/portal/invoice/[token]/paid) had no label — it fell through to the humanized event name.
+  'invoice.updated':        ({ name }) => name ? `edited draft invoice ${name}` : 'edited a draft invoice',
+  'invoice.payment_claimed':({ name }) => name ? `told us invoice ${name} has been paid` : 'told us an invoice has been paid',
   'invoice.exported':       () => 'exported an invoice',
   'invoice.link_renewed':   ({ name }) => name ? `renewed the client link for ${name}` : 'renewed an invoice link',
   'payment.milestone_generated': () => 'payment milestones were generated',
@@ -184,7 +188,7 @@ const LABELS: Record<string, (c: Ctx) => string> = {
 // Events where the client (not a team member) is the actor. The portal doesn't always record a name.
 const CLIENT_EVENTS = new Set([
   'sow.signed', 'sow.declined', 'sow.changes_requested', 'sow.link_viewed',
-  'co.accepted', 'co.declined', 'co.countered', 'co.counter_accepted', 'co.link_viewed', 'invoice.disputed',
+  'co.accepted', 'co.declined', 'co.countered', 'co.counter_accepted', 'co.link_viewed', 'invoice.disputed', 'invoice.payment_claimed',
 ])
 
 // Events that are complete sentences on their own (something the SYSTEM observed or did) — no "System"
