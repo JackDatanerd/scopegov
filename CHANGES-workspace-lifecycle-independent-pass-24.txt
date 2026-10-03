@@ -1,0 +1,15 @@
+Workspace lifecycle — independent pass 24 (cc3)
+No migration. No new dependencies.
+
+B1 (low) app/api/workspace/delete/route.ts
+  A failed Paystack cancel returned cancelResult.error (Paystack's message or a raw exception string) to the browser.
+  Now a fixed message; the detail was already logged server-side. Status stays 502.
+
+B2 (low) components/layout/Sidebar.tsx
+  The workspace switcher list (and the "Recently deleted" list) was fetched only while empty, so it showed a stale
+  agency name / plan label / logo after a rename or upgrade in the same session. Both now refetch on every open;
+  a failed refresh keeps the previous list.
+
+Not fixed (not bugs / out of scope): leave has no orphaned-approval-workflow or sole-project warning (feature gap);
+upgrading within 24h of creation allows a second trial (narrow, left alone).
+Could not run npm test / tsc in the sandbox (no registry access) - run the suite locally before committing.

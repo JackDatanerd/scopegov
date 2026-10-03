@@ -365,7 +365,10 @@ export async function DELETE(request: Request) {
         if (un.error) console.error('Workspace delete: could not clear the billing marker after a failed cancel (non-fatal):', un.error.message)
       }
       return NextResponse.json({
-        error: cancelResult.error || 'Could not cancel this workspace\u2019s billing subscription. Try again, or contact support@scopegov.app.',
+        // FIX (Workspace lifecycle independent pass 24 — B1): this returned cancelResult.error verbatim — Paystack's
+        // own message or a raw exception string ("fetch failed", an abort error). The detail is logged above;
+        // billing/cancel answers the same failure with a fixed message. Same here.
+        error: 'Could not cancel this workspace\u2019s billing subscription, so nothing was deleted. Try again, or contact support@scopegov.app.',
       }, { status: 502 })
     }
 

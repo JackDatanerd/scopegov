@@ -181,12 +181,16 @@ export default function Sidebar({ session }: { session: SessionUser }) {
 
   function openSwitcher() {
     setSwitcherOpen(o => !o)
-    if (!switcherOpen && workspaces.length === 0) loadWorkspaces()
+    // FIX (Workspace lifecycle independent pass 24 — B2): the list was fetched only while empty, so after a rename,
+    // an upgrade or a logo change in this same session the switcher kept showing the old agency name, plan label
+    // and logo (the header above it uses fresh session data and disagreed). Refetch on every open; a failed
+    // refresh keeps the last list (the error row only renders when the list is empty).
+    if (!switcherOpen) loadWorkspaces()
     // Best-effort, same as the workspace list fetch above — a failed
     // lookup just means the "recently deleted" section doesn't show,
     // never a blocker for the switcher itself.
-    if (!switcherOpen && restorable.length === 0) {
-      fetch('/api/workspace/restore').then(r => r.json()).then(json => setRestorable(json.restorable || [])).catch(() => {})
+    if (!switcherOpen) {
+      fetch('/api/workspace/restore').then(r => r.json()).then(json => { if (Array.isArray(json.restorable)) setRestorable(json.restorable) }).catch(() => {})
     }
   }
 
