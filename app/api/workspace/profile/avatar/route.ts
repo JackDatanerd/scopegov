@@ -67,7 +67,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'No file provided' }, { status: 400 })
     }
 
-    const ext = ALLOWED_TYPES[file.type]
+    // FIX (Workspace lifecycle independent pass 8 — B2): file.type is client-supplied, and a plain-object lookup also
+    // matches inherited keys. '__proto__' got past this check and then threw in the magic-byte step below (500
+    // instead of 400) — the same hole workspace/branding/logo already closed with this guard.
+    const ext = Object.prototype.hasOwnProperty.call(ALLOWED_TYPES, file.type) ? ALLOWED_TYPES[file.type] : undefined
     if (!ext) {
       return NextResponse.json({ error: 'Please upload a PNG or JPG file.' }, { status: 400 })
     }

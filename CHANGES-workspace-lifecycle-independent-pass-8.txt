@@ -1,0 +1,4 @@
+Workspace lifecycle independent pass 8
+B1 (LOW) sanitizeDisplayName: an unpaired surrogate anywhere in the string (not only at the length cut) passed through and made Postgres reject the JSON, so workspace/create and workspace/profile (and every other caller: workspace/settings agencyName, auth/signup, team invite accept/signup, team/roles, role-names) returned 500 instead of a clean 400. Lone surrogates are now removed; valid pairs are untouched and a name of only lone halves is empty (existing "required" checks reject it).
+B2 (LOW) profile/avatar POST: the declared file type was looked up in a plain object, so '__proto__' matched and then threw in the magic-byte step (500). Now guarded with hasOwnProperty, same as branding/logo.
+Files: lib/utils/sanitize.ts, app/api/workspace/profile/avatar/route.ts, tests/workspace-lifecycle-pass8.test.ts (new).

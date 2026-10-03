@@ -177,6 +177,12 @@ export function sanitizeDisplayName(text: string | null | undefined, maxLength =
     // eslint-disable-next-line no-control-regex
     .replace(/[\r\n\x00-\x1F\x7F]/g, ' ')
     .replace(/(?![\u200C\u200D])\p{Cf}/gu, '')
+    // FIX (Workspace lifecycle independent pass 8 — B1): an unpaired surrogate (half an emoji) anywhere in the
+    // string, not just at the length cut handled below, is not valid in the JSON body Postgres receives, so the
+    // whole write failed (500 from workspace/create and workspace/profile, and every other caller of this helper)
+    // instead of the clean 400. Valid surrogate pairs are untouched; a name made only of lone halves comes out
+    // empty and the callers' existing "required" checks reject it.
+    .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '')
     .replace(/[\u115F\u1160\u3164\uFFA0\u2800]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
