@@ -14,12 +14,17 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
     const service = createServiceClient()
-    const { data: req } = await (service as any)
+    // FIX (approvals pass 14): .single() + an unread `error` answered 404 "not found" for a transient read failure.
+    const { data: req, error: reqErr } = await (service as any)
       .from('approval_requests')
       .select('id, requested_by, status, document_type, document_id, project_id, send_failed_at, sending_started_at')
       .eq('id', id)
       .eq('workspace_id', session.workspaceId)
-      .single()
+      .maybeSingle()
+    if (reqErr) {
+      console.error('Approval cancel: request lookup failed:', reqErr)
+      return NextResponse.json({ error: 'Could not load this approval request — please try again.' }, { status: 500 })
+    }
 
     if (!req) return NextResponse.json({ error: 'Approval request not found' }, { status: 404 })
     // FIX (section-11 audit, pass 2): cancelApprovalRequest() has handled the
@@ -66,6 +71,18 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // override above to cancel someone else's request got the exact same
     // audit-log text as the requester cancelling their own, making the
     // audit trail actively misleading about who acted.
+    // FIX (approvals pass 14): "it is now an editable draft again" was claimed for every non-counter cancel. After a send
+    // that died mid-flight is healed into "approved — not sent", the document may in fact have gone out (the heal reason
+    // says so): a SOW that is 'awaiting_signature' is not an editable draft. Only claim it when the document still is one.
+    let returnedToDraft = req.document_type !== 'co_counter'
+    if (returnedToDraft && sendFailed) {
+      const table = req.document_type === 'sow' ? 'sow_documents' : req.document_type === 'invoice' ? 'invoices' : 'change_orders'
+      const { data: doc, error: docErr } = await (service as any)
+        .from(table).select('status').eq('id', req.document_id).eq('workspace_id', session.workspaceId).maybeSingle()
+      if (docErr) console.error('Approval cancel: could not read the document status:', docErr)
+      returnedToDraft = !docErr && doc?.status === 'draft'
+    }
+
     const cancelResult = await cancelApprovalRequest(service, {
       documentType: req.document_type, documentId: req.document_id,
       workspaceId: session.workspaceId,
@@ -80,7 +97,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       // clears). Cancelling one of those doesn't return anything to draft — the
       // CO just stays 'countered', still awaiting the agency's decision — so the
       // notification text this drives must not claim it does.
-      returnedToDraft: req.document_type !== 'co_counter',
+      returnedToDraft,
     })
 
     // FIX (section-11 independent pass 9, B1): the result was ignored, so this answered { ok: true } even when

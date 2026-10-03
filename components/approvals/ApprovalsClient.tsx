@@ -84,6 +84,10 @@ function cancelConfirmMessage(documentType: ApprovalRequest['document_type'], se
   const subject = sendFailed ? 'this approved request' : 'this pending approval request'
   return documentType === 'co_counter'
     ? `Cancel ${subject}? The change order stays as-is, still awaiting a decision on the counter-offer — accepting it again will need a fresh approval.`
+    : sendFailed
+    // FIX (approvals pass 14): a send that died mid-flight may have actually gone out (the request then reads "approved —
+    // not sent"); only claim an editable draft when it did not.
+    ? `Cancel ${subject}? If the document did not go out it goes back to being an editable draft; if it already did, it stays as sent. Sending a draft again will need a fresh approval.`
     : `Cancel ${subject}? The document goes back to being an editable draft, and sending it again will need a fresh approval.`
 }
 
@@ -533,7 +537,7 @@ function ApprovalDetailModal({ request, session, canManageWorkflows, onClose, on
             <div style={{ marginTop: 6, fontSize: 12 }}>
               Retry once the problem is fixed — no re-approval is needed. Or cancel this request{request.document_type === 'co_counter'
                 ? ' — the change order stays as-is, still awaiting a decision on the counter-offer (accepting it again will need a new approval).'
-                : ' to make the document editable again (sending it afterwards will need a new approval).'}
+                : ' to make the document editable again if it did not go out (sending it afterwards will need a new approval).'}
             </div>
           </div>
         )}

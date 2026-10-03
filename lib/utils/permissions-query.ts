@@ -27,7 +27,12 @@ import type { Permission } from '@/lib/supabase/types'
 import { fetchAll } from '@/lib/utils/fetch-all'
 
 export async function filterToProjectAccess<T extends { id: string }>(
-  service: any, projectId: string, recipients: T[], permissionMap: Map<string, Record<string, boolean>>
+  service: any, projectId: string, recipients: T[], permissionMap: Map<string, Record<string, boolean>>,
+  // FIX (approvals pass 14): `strict` makes an unreadable member list THROW instead of returning "nobody has access".
+  // The default (log, fail closed) stays for post-commit callers outside a try/catch. The approval engine's recipient
+  // resolution and chain-feasibility pre-flight pass strict: there an empty answer was read as "no reachable approver"
+  // (a false stall-cron alert) or "nobody can approve this" (a 409 blaming Settings) for what was a transient error.
+  opts: { strict?: boolean } = {},
 ): Promise<T[]> {
   if (recipients.length === 0) return recipients
 
@@ -56,7 +61,10 @@ export async function filterToProjectAccess<T extends { id: string }>(
     // (an unreadable member list must never widen who is told a project's amounts and titles), but it is now
     // logged. It deliberately does not throw: the approval engine calls this after a decision has already
     // committed, outside any try/catch.
-    if (error) console.error('filterToProjectAccess: project_members_active read failed:', error.message)
+    if (error) {
+      if (opts.strict) throw new Error(`could not load project members: ${error.message}`)
+      console.error('filterToProjectAccess: project_members_active read failed:', error.message)
+    }
     projectMemberIds = new Set((data || []).map((r: any) => r.member_user_id))
   }
   return recipients.filter(r => viewAllIds.has(r.id) || projectMemberIds.has(r.id))
@@ -263,7 +271,10 @@ export async function getMembersWithRole(
   // that could only 403, and (worse) they counted as a reachable approver,
   // so the stall cron kept "reminding" the one person who could never act
   // instead of escalating. Callers that know who must be left out pass it.
-  excludeUserId?: string
+  excludeUserId?: string,
+  // See filterToProjectAccess: the approval engine's throwing path passes strict so a failed project-members read is
+  // reported rather than read as "no approver can open this project".
+  opts: { strict?: boolean } = {},
 ): Promise<Array<{ id: string; name: string; email: string }>> {
   // FIX (deep audit, RLS+permissions re-pass): this reintroduced the exact
   // "cap applied before the final filter" bug already fixed for the
@@ -312,7 +323,7 @@ export async function getMembersWithRole(
   )
   let recipients = approvers.map((m: any) => ({ id: m.users.id, name: m.users.name, email: m.users.email }))
 
-  if (projectId) recipients = await filterToProjectAccess(service, projectId, recipients, permissionMap)
+  if (projectId) recipients = await filterToProjectAccess(service, projectId, recipients, permissionMap, opts)
   if (eventType) recipients = await filterByNotificationPreference(service, workspaceId, eventType, recipients, channel)
 
   return recipients.slice(0, limit)

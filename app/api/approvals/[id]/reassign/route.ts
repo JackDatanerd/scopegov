@@ -34,9 +34,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Please keep the reason under 500 characters' }, { status: 400 })
 
     const service = createServiceClient()
-    const { data: req } = await (service as any)
+    const { data: req, error: reqErr } = await (service as any)
       .from('approval_requests').select('id, project_id')
-      .eq('id', id).eq('workspace_id', session.workspaceId).single()
+      .eq('id', id).eq('workspace_id', session.workspaceId).maybeSingle()
+    // FIX (approvals pass 14): a failed read answered 404 "not found" (.single() with `error` unread).
+    if (reqErr) {
+      console.error('Approval reassign: request lookup failed:', reqErr)
+      return NextResponse.json({ error: 'Could not load this approval request — please try again.' }, { status: 500 })
+    }
     if (!req) return NextResponse.json({ error: 'Approval request not found' }, { status: 404 })
     // MANAGE_WORKSPACE_SETTINGS is a workspace-wide admin permission, not
     // project visibility — same boundary as cancel/retry-send.

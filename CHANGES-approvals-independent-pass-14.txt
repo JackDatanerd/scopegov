@@ -1,0 +1,27 @@
+Approvals engine — independent pass 14 (bugs only)
+
+Run: no migration needed. Deploy with the code.
+
+F1  Failed approver / project-members lookups were read as "nobody to notify".
+    lib/utils/permissions-query.ts  filterToProjectAccess + getMembersWithRole take { strict } (throw instead of
+                                    returning an empty list; default behaviour unchanged for other callers)
+    lib/approvals/engine.ts         notifyStepApproversOrThrow: named-approver read error is thrown; role + project
+                                    lookups run strict -> stall cron records a row error, not a false
+                                    "no reachable approver" alert; post-commit callers log instead of losing it silently
+    lib/approvals/eligibility.ts    candidate lookup strict -> the gate / reassign picker fail with a retryable 500,
+                                    not "nobody can approve this" blamed on Settings
+F2  Audit trail gaps.
+    healStuckSends({ auditHealed }) writes approval.send_failed_stale; the gate and GET /api/approvals (the lazy,
+    common path) opt in. The cron keeps writing its own row (unchanged).
+    recordApprovalDecision logs approval.send_failed; retryFailedSend logs approval.send_retry_failed.
+F3  cancel / reassign / retry-send / approvers routes: .single() with unread error -> maybeSingle + 500 on a failed
+    read; approvers also checks its roles read.
+F4  reassignApprovalStep: step-clock reset (step_started_at, reminder_count, escalated_at) is checked, retried once.
+F5  cancelApprovalRequest / reassignApprovalStep "no action needed" notices no longer go to the requester, and the
+    reassign notice no longer goes to the new assignee.
+F6  Cancel of an approved-not-sent request only says "editable draft again" when the document is still a draft
+    (cancel route reads its status); the client confirm / banner text is hedged accordingly.
+
+Tests: tests/approvals-pass-14-fixes.test.ts (new, 17); tests/approvals-independent-pass-10.test.ts (two source
+assertions now allow the extra heal option).
+NOT changed (shared by ~40 callers, deliberately out of scope): canReadProject still maps a failed read to "no access".

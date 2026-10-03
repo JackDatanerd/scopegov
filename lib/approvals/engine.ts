@@ -23,7 +23,7 @@
 // to change it — everything downstream just checks the return value.
 
 import { insertNotificationRows } from '@/lib/utils/notify'
-import { logAudit } from '@/lib/utils/audit'
+import { logAudit, insertAuditRow } from '@/lib/utils/audit'
 import { getMembersWithRole, filterByNotificationPreference, filterToProjectAccess } from '@/lib/utils/permissions-query'
 import { sendApprovalRequestedEmail, sendApprovalDecisionEmail } from '@/lib/email/templates'
 import { sendSowDocument } from '@/lib/documents/send-sow'
@@ -186,7 +186,7 @@ export async function evaluateApprovalGate(service: any, params: GateParams): Pr
   // retryable 'approved — not sent' state right here, instead of waiting out healStuckSends' 10-minute default (the
   // claim window — the point after which cancel already treats it as dead — is 2 minutes; sends are capped at 60s).
   if (active && active.status === 'pending' && active.sending_started_at && !isSendClaimLive(active.sending_started_at)) {
-    try { await healStuckSends(service, SEND_CLAIM_WINDOW_MS / 60000, workspaceId) } catch (e) { console.error('gate: heal of a dead send claim failed:', e) }
+    try { await healStuckSends(service, SEND_CLAIM_WINDOW_MS / 60000, workspaceId, { auditHealed: true }) } catch (e) { console.error('gate: heal of a dead send claim failed:', e) }
     active = await findActiveRequest(service, workspaceId, documentType, documentId)
   }
   if (active) return activeRequestResult(active)
@@ -710,6 +710,19 @@ export async function recordApprovalDecision(service: any, params: DecisionParam
   if (!sendOutcome.ok) console.error('Auto-send after final approval failed:', sendOutcome.error)
 
   const finalized = await finalizeSend(service, request.id, sendOutcome, deliveryWarning)
+  // FIX (approvals pass 14): a failed auto-send left the audit log with "approval.approved" and nothing else — the
+  // failure lived only in send_failed_* columns and a notification, so the trail read as a clean approval until the
+  // stall cron escalated it days later.
+  if (!sendOutcome.ok) {
+    await logAudit(service, {
+      workspaceId: params.actor.workspaceId,
+      actorId: params.actor.id, actorEmail: params.actor.email, actorName: params.actor.name,
+      eventType: 'approval.send_failed',
+      entityType: entityTypeFor(request.document_type),
+      entityId: request.document_id, entityName: docTitle,
+      metadata: { approval_request_id: request.id, reason: sendOutcome.error },
+    })
+  }
   if (!finalized) {
     // Cancelled while the send was in flight — the document may have gone out
     // anyway; leave a trail rather than pretend nothing happened.
@@ -956,6 +969,10 @@ export async function cancelApprovalRequest(service: any, params: {
           service, params.workspaceId, 'approval_requested', stepRecipients, 'in_app'
         )
       }
+      // FIX (approvals pass 14): the requester is never told a step is waiting on them (the step notification excludes
+      // them), so "no action needed" about it is noise — and when someone else cancels they get the dedicated
+      // "your request was cancelled" notice below as well, i.e. two for one event.
+      stepRecipients = stepRecipients.filter(r => r.id !== request.requested_by)
       if (stepRecipients.length) {
         const docTitle    = request.context?.title || documentLabelFor(params.documentType)
         const projectName = request.context?.project_name || ''
@@ -1204,6 +1221,13 @@ export async function retryFailedSend(service: any, params: {
     send_failed_reason: outcome.error, sending_started_at: null, updated_at: now,
   }).eq('id', request.id)
   if (reasonErr) console.error('retryFailedSend: could not release the send claim after a failed retry:', reasonErr)
+  await logAudit(service, {
+    workspaceId: params.workspaceId,
+    actorId: params.actor.id, actorEmail: params.actor.email, actorName: params.actor.name,
+    eventType: 'approval.send_retry_failed', entityType: entityTypeFor(request.document_type),
+    entityId: request.document_id, entityName: request.context?.title || '',
+    metadata: { approval_request_id: request.id, reason: outcome.error },
+  })
   return { ok: false, error: outcome.error, status: 400 }
 }
 
@@ -1235,7 +1259,11 @@ export async function retryFailedSend(service: any, params: {
 // GET /api/approvals, where a thrown error would break a page load) failures are logged instead of vanishing.
 export async function healStuckSends(
   service: any, olderThanMinutes = 10, workspaceId?: string,
-  opts: { strict?: boolean; onError?: (label: string, err: unknown) => void } = {},
+  // auditHealed: write the approval.send_failed_stale audit row for every request healed. The stall cron writes that row
+  // itself (so it can count a failed write as a row error) and leaves this off; the lazy callers (the gate, GET
+  // /api/approvals) discard the returned list, so before this the audit log never recorded a request healed that way —
+  // the common path now that the lazy window is 2 minutes.
+  opts: { strict?: boolean; onError?: (label: string, err: unknown) => void; auditHealed?: boolean } = {},
 ): Promise<Array<{ id: string; workspace_id: string; project_id: string | null }>> {
   const cutoff = new Date(Date.now() - olderThanMinutes * 60 * 1000).toISOString()
   let q = service
@@ -1264,6 +1292,15 @@ export async function healStuckSends(
     }
     if (ok !== true) continue // false = the request was resolved concurrently; nothing left to heal
     healed.push({ id: r.id, workspace_id: r.workspace_id, project_id: r.project_id ?? null })
+    if (opts.auditHealed) {
+      const logged = await insertAuditRow(service, {
+        workspace_id: r.workspace_id, actor_id: null, project_id: r.project_id ?? null,
+        actor_email: 'system@scopegov.app', actor_name: 'ScopeGov',
+        event_type: 'approval.send_failed_stale', entity_type: 'approval_request', entity_id: r.id,
+        metadata: { reason: 'send did not finish; request moved to the retryable approved-not-sent state' },
+      })
+      if (!logged) console.error(`healStuckSends: could not write the approval.send_failed_stale audit row for ${r.id}`)
+    }
     try {
       const [inAppOn] = await filterByNotificationPreference(
         service, r.workspace_id, 'approval_decision', [{ id: r.requested_by }], 'in_app'
@@ -1394,9 +1431,17 @@ export async function reassignApprovalStep(service: any, params: {
   if (!updated) return { ok: false, error: 'This step has already been decided', status: 409 }
 
   const now = new Date().toISOString()
-  await service.from('approval_requests')
-    .update({ updated_at: now, step_started_at: now, reminder_count: 0, escalated_at: null })
-    .eq('id', request.id).eq('status', 'pending')
+  // FIX (approvals pass 14): this result was never read. The reassignment itself is committed, but if this reset fails the
+  // step clock (step_started_at) and reminder counters stay on the OLD step's values: the dashboard keeps flagging the
+  // request as stuck from before the handover, and the next cron run can remind/escalate the new approver immediately.
+  // Retry once, then leave a trail.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const { error: clockErr } = await service.from('approval_requests')
+      .update({ updated_at: now, step_started_at: now, reminder_count: 0, escalated_at: null })
+      .eq('id', request.id).eq('status', 'pending')
+    if (!clockErr) break
+    console.error(`reassignApprovalStep: could not reset the step clock (attempt ${attempt + 1}):`, clockErr, request.id)
+  }
 
   await logAudit(service, {
     workspaceId: params.workspaceId,
@@ -1450,6 +1495,10 @@ export async function reassignApprovalStep(service: any, params: {
         service, params.workspaceId, 'approval_requested', outgoingRecipients, 'in_app'
       )
     }
+    // FIX (approvals pass 14): leave out the requester (never told this step was theirs to decide) and the new assignee
+    // (who gets "awaiting your approval" right below — "reassigned away from you, no action needed" to the same person
+    // contradicts it, e.g. a role -> person reassignment to a holder of the old role).
+    outgoingRecipients = outgoingRecipients.filter(r => r.id !== request.requested_by && r.id !== targetUser)
     if (outgoingRecipients.length) {
       const docTitle    = request.context?.title || documentLabelFor(request.document_type)
       const projectName = request.context?.project_name || ''
@@ -1582,13 +1631,18 @@ async function notifyStepApproversOrThrow(service: any, args: {
     // getMembersWithRole already checks workspace_members.status='active'
     // for the role-assignment path below; a specific-user assignment
     // needs the same check.
-    const { data: m } = await service
+    const { data: m, error: approverErr } = await service
       .from('workspace_members')
       .select('user_id, effective_permissions, users!workspace_members_user_id_fkey(id, name, email)')
       .eq('workspace_id', args.workspaceId)
       .eq('user_id', args.step.approver_user_id)
       .eq('status', 'active')
       .maybeSingle()
+    // FIX (approvals pass 14): `error` was never read, so a transient failure left `m` null and the named approver read as
+    // "not an active member" -> 0 recipients -> the stall cron raised a false "no reachable approver" alert (this function's
+    // own contract, above, is that a failed lookup surfaces as a cron row error), and after a step advance / reassign the
+    // approver was silently never told. Throw: notifyStepApprovers logs it, the cron records a row error.
+    if (approverErr) throw new Error(`approval approver lookup failed: ${approverErr.message}`)
     // FIX (section-11 audit): a named approver who has since lost APPROVE_DOCUMENTS can never
     // decide this step — the role-based branch below already filters on this permission via
     // getMembersWithRole, but a specific-user assignment never did, so they kept getting
@@ -1605,16 +1659,17 @@ async function notifyStepApproversOrThrow(service: any, args: {
       // notification just emailed them the title/amount for.
       recipients = await filterToProjectAccess(
         service, args.projectId, recipients,
-        new Map([[m.user_id, m.effective_permissions || {}]])
+        new Map([[m.user_id, m.effective_permissions || {}]]),
+        { strict: true }
       )
     }
   } else if (args.step.approver_role_id) {
     // Over-fetch by the number of excluded earlier approvers so dropping them can't push a real approver
     // past the 25 cap, then trim back to 25.
     const cap = 25 + earlierApprovers.size
-    inAppRecipients = (await getMembersWithRole(service, args.workspaceId, args.step.approver_role_id, cap, args.projectId, 'approval_requested', 'in_app', excludeId))
+    inAppRecipients = (await getMembersWithRole(service, args.workspaceId, args.step.approver_role_id, cap, args.projectId, 'approval_requested', 'in_app', excludeId, { strict: true }))
       .filter(r => !earlierApprovers.has(r.id)).slice(0, 25)
-    emailRecipients = (await getMembersWithRole(service, args.workspaceId, args.step.approver_role_id, cap, args.projectId, 'approval_requested', 'email', excludeId))
+    emailRecipients = (await getMembersWithRole(service, args.workspaceId, args.step.approver_role_id, cap, args.projectId, 'approval_requested', 'email', excludeId, { strict: true }))
       .filter(r => !earlierApprovers.has(r.id)).slice(0, 25)
   }
   if (args.step.approver_user_id) {

@@ -59,7 +59,7 @@ export async function GET(request: NextRequest) {
     if (!light) {
       // FIX (section-11 independent pass 10, B2): same window the cancel route and the gate treat as "dead" (2 min), not
       // 10 — between the two the request showed "Sending…" with no Cancel/Retry offered.
-      try { await healStuckSends(service, SEND_CLAIM_WINDOW_MS / 60000, session.workspaceId) } catch (e) { console.error('lazy healStuckSends failed:', e) }
+      try { await healStuckSends(service, SEND_CLAIM_WINDOW_MS / 60000, session.workspaceId, { auditHealed: true }) } catch (e) { console.error('lazy healStuckSends failed:', e) }
     }
     const respond = (rows: any[], scopeName: string) => light
       ? NextResponse.json({ count: rows.length, scope: scopeName })

@@ -44,7 +44,9 @@ async function loadCandidates(
     holders.map((m: any) => [m.user_id, m.effective_permissions || {}])
   )
   let people: ApproverPerson[] = holders.map((m: any) => ({ id: m.users.id, name: m.users.name, email: m.users.email }))
-  if (projectId) people = await filterToProjectAccess(service, projectId, people, permissionMap)
+  // strict: an unreadable member list must fail the lookup (the callers' route try/catch -> retryable 500), not read as
+  // "nobody on this project can approve" and blame the workflow in Settings.
+  if (projectId) people = await filterToProjectAccess(service, projectId, people, permissionMap, { strict: true })
   return people
 }
 

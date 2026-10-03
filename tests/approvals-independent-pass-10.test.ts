@@ -39,12 +39,12 @@ describe('B2 — a dead send claim is not answered with "Sent for approval"', ()
   const route  = read('app/api/approvals/route.ts')
   it('the gate heals a stale pending-with-claim request before deciding', () => {
     expect(engine).toMatch(/active\.status === 'pending' && active\.sending_started_at && !isSendClaimLive\(active\.sending_started_at\)/)
-    expect(engine).toMatch(/healStuckSends\(service, SEND_CLAIM_WINDOW_MS \/ 60000, workspaceId\)/)
+    expect(engine).toMatch(/healStuckSends\(service, SEND_CLAIM_WINDOW_MS \/ 60000, workspaceId(, \{ auditHealed: true \})?\)/)
   })
   it('activeRequestResult refuses (409) a pending request that still carries a claim', () => {
     expect(engine).toMatch(/if \(active\.status === 'pending' && active\.sending_started_at\)\s*\n\s*return \{[^}]*blocked: true[^}]*status: 409/)
   })
   it('the lazy heal on GET /api/approvals uses the claim window, not 10 minutes', () => {
-    expect(route).toMatch(/healStuckSends\(service, SEND_CLAIM_WINDOW_MS \/ 60000, session\.workspaceId\)/)
+    expect(route).toMatch(/healStuckSends\(service, SEND_CLAIM_WINDOW_MS \/ 60000, session\.workspaceId(, \{ auditHealed: true \})?\)/)
   })
 })

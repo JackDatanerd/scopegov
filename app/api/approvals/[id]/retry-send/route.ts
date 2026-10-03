@@ -25,12 +25,17 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
     const service = createServiceClient()
-    const { data: req } = await (service as any)
+    const { data: req, error: reqErr } = await (service as any)
       .from('approval_requests')
       .select('id, requested_by, status, send_failed_at, project_id')
       .eq('id', id)
       .eq('workspace_id', session.workspaceId)
-      .single()
+      .maybeSingle()
+    // FIX (approvals pass 14): a failed read answered 404 "not found" (.single() with `error` unread).
+    if (reqErr) {
+      console.error('Approval retry-send: request lookup failed:', reqErr)
+      return NextResponse.json({ error: 'Could not load this approval request — please try again.' }, { status: 500 })
+    }
 
     if (!req) return NextResponse.json({ error: 'Approval request not found' }, { status: 404 })
     // Same requester-or-admin authorization as cancel — it's the same
