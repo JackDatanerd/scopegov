@@ -501,7 +501,13 @@ function parseClassifierJson(raw: string): Record<string, any> {
 function requireUnit(v: unknown, field: string): number {
   const n = typeof v === 'string' && v.trim() !== '' ? Number(v) : v
   if (typeof n !== 'number' || !Number.isFinite(n)) throw new Error(`Classifier verdict missing/invalid ${field}`)
-  return Math.max(0, Math.min(1, n))
+  // FIX (section 13 pass, B4): out-of-range values used to be clamped into [0,1]. A reply on the wrong scale
+  // (percent: { match: 5, creep: 90 }) became 1.0 / 1.0 — a confident, wrong verdict that only landed on the
+  // right-looking "borderline" by luck ({ match: 2, creep: 85 } is the same case and a real out-of-scope request
+  // would be waved to borderline). An out-of-range confidence means the model broke the contract; reject it so the
+  // check goes to classification_failed and is retried, exactly like a missing or non-numeric one.
+  if (n < 0 || n > 1) throw new Error(`Classifier verdict ${field} out of range [0,1]: ${n}`)
+  return n
 }
 
 // ── Embedding for dedup ───────────────────────────────────────

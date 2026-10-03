@@ -18,10 +18,24 @@ describe('interpretClassifierOutput', () => {
     expect(() => interpretClassifierOutput('null', opts)).toThrow()
   })
 
-  it('accepts numeric strings and clamps to 0..1', () => {
-    const r = interpretClassifierOutput(reply({ matchConfidence: '0.9', creepConfidence: 7, matchedAgainst: 'sow' }), opts)
+  it('accepts numeric strings', () => {
+    const r = interpretClassifierOutput(reply({ matchConfidence: '0.9', creepConfidence: '0.05', matchedAgainst: 'sow' }), opts)
     expect(r.matchConfidence).toBe(0.9)
-    expect(r.creepConfidence).toBe(1)
+    expect(r.creepConfidence).toBe(0.05)
+  })
+
+  // BEFORE: out-of-range values were clamped into [0,1], so a percent-scale reply ({ match: 2, creep: 85 }) became
+  // 1.0 / 1.0 — a confident wrong verdict. A reply that breaks the 0..1 contract is rejected instead, so the caller
+  // marks classification_failed and the sweep retries.
+  it('rejects out-of-range confidences instead of clamping them (fails closed)', () => {
+    expect(() => interpretClassifierOutput(reply({ matchConfidence: 2, creepConfidence: 85 }), opts)).toThrow(/out of range/)
+    expect(() => interpretClassifierOutput(reply({ matchConfidence: 0.9, creepConfidence: 7 }), opts)).toThrow(/creepConfidence/)
+    expect(() => interpretClassifierOutput(reply({ matchConfidence: -0.1, creepConfidence: 0.2 }), opts)).toThrow(/matchConfidence/)
+  })
+
+  it('accepts the exact bounds 0 and 1', () => {
+    const r = interpretClassifierOutput(reply({ matchConfidence: 0, creepConfidence: 1 }), opts)
+    expect(r.outcome).toBe('out_of_scope')
   })
 
   it('recovers JSON wrapped in prose or fences', () => {

@@ -35,6 +35,7 @@ export default function FlagCollaboration({
 }: { entityType: 'flag' | 'exception'; entityId: string; canWrite: boolean }) {
   const [open, setOpen] = useState(false)
   const [loaded, setLoaded] = useState(false)
+  const [loadFailed, setLoadFailed] = useState(false)
   const [comments, setComments] = useState<Comment[]>([])
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [draft, setDraft] = useState('')
@@ -46,15 +47,25 @@ export default function FlagCollaboration({
   const base = `/api/scope-governance/${entityType}/${entityId}`
 
   async function load() {
+    setLoadFailed(false)
     try {
       const [cRes, aRes] = await Promise.all([
         fetch(`${base}/comments`), fetch(`${base}/attachments`),
       ])
+      // FIX (section 13 pass, B1): a non-2xx used to be read as "nothing here" (json.comments || []), so a 403/500
+      // showed "No notes or evidence attached yet" with the composer open — evidence looked deleted. A non-JSON
+      // body threw into a catch whose message only rendered inside the loaded branch, i.e. never: the panel sat on
+      // "Loading…" forever. A failed read is now an explicit, retryable error state.
+      if (!cRes.ok || !aRes.ok) throw new Error('load failed')
       const [cJson, aJson] = await Promise.all([cRes.json(), aRes.json()])
       setComments(cJson.comments || [])
       setAttachments(aJson.attachments || [])
+      setError('')
       setLoaded(true)
-    } catch { setError('Could not load activity.') }
+    } catch {
+      setLoadFailed(true)
+      setError('Could not load notes and evidence.')
+    }
   }
 
   useEffect(() => { if (open && !loaded) load() }, [open, loaded]) // eslint-disable-line
@@ -125,7 +136,14 @@ export default function FlagCollaboration({
       {open && (
         <div style={{ marginTop: 10, paddingLeft: 4 }}>
           {!loaded ? (
-            <div style={{ fontSize: 12, color: 'var(--text-3)', padding: '6px 0' }}>Loading…</div>
+            loadFailed ? (
+              <div style={{ fontSize: 12, color: 'var(--red)', padding: '6px 0', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span>{error || 'Could not load notes and evidence.'}</span>
+                <button className="btn btn-ghost btn-xs" onClick={() => load()}>Retry</button>
+              </div>
+            ) : (
+              <div style={{ fontSize: 12, color: 'var(--text-3)', padding: '6px 0' }}>Loading…</div>
+            )
           ) : (
             <>
               {comments.length === 0 && attachments.length === 0 && (

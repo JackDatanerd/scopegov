@@ -7,7 +7,7 @@ import { getSession } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
 import { stripUnstorableText, truncateText } from '@/lib/utils/sanitize'
-import { resolveEntity, canReadProject, canWriteGovernance, isValidEntityType } from '@/lib/utils/flag-governance'
+import { resolveEntity, canReadProject, canWriteGovernance, canViewGovernance, isValidEntityType } from '@/lib/utils/flag-governance'
 // FIX (independent pass round 2, section 13): the allowlist + magic-byte check used to live only
 // here, hand-typed; guardian/inbound's saved email attachments now need the exact same validation,
 // so it's factored out into one shared implementation (see lib/utils/file-signature.ts for why).
@@ -27,6 +27,8 @@ export async function GET(
     const { entityType, entityId } = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!canViewGovernance(session))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     if (!isValidEntityType(entityType))
       return NextResponse.json({ error: 'Invalid entity type' }, { status: 400 })
 

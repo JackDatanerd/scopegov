@@ -3,7 +3,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { getClientIp } from '@/lib/utils/request-ip'
-import { resolveEntity, canReadProject, canWriteGovernance, isValidEntityType } from '@/lib/utils/flag-governance'
+import { resolveEntity, canReadProject, canWriteGovernance, canViewGovernance, isValidEntityType } from '@/lib/utils/flag-governance'
 import { notifyUsers } from '@/lib/utils/notify'
 import { stripUnstorableText, truncateText } from '@/lib/utils/sanitize'
 import { getMembersWithPermission } from '@/lib/utils/permissions-query'
@@ -16,6 +16,8 @@ export async function GET(
     const { entityType, entityId } = await params
     const session = await getSession()
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!canViewGovernance(session))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     if (!isValidEntityType(entityType))
       return NextResponse.json({ error: 'Invalid entity type' }, { status: 400 })
 

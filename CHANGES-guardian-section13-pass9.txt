@@ -1,0 +1,25 @@
+Section 13 (Guardian / scope governance) — independent pass 9
+=============================================================
+
+B1  components/projects/FlagCollaboration.tsx
+    Notes & evidence panel treated a failed read as "nothing attached" (json.comments || []) and, on a non-JSON body,
+    sat on "Loading..." forever because the error only rendered inside the loaded branch. Now checks res.ok on both
+    reads and shows an explicit error with a Retry button.
+
+B2  app/api/guardian/check/route.ts
+    The no-signed-SOW branch stored unlimited pending checks (up to 20k chars each) with no cap, while guardian/inbound
+    caps the same backlog at 200. Added the same per-project cap (manual submissions only, email keeps its own) ->
+    429 with a clear message; fails open on a count error.
+
+B3  lib/utils/flag-governance.ts, app/api/scope-governance/.../comments + attachments (GET)
+    Reads of a flag's notes/evidence only needed project read access; sibling reads of the same material require one of
+    APPROVE_FLAGS / GRANT_EXCEPTIONS / CREATE_CHANGE_ORDERS / ACCESS_GUARDIAN_HISTORY. Added canViewGovernance() with
+    that list and applied it to both GET handlers.
+
+B4  lib/ai/guardian.ts (requireUnit)
+    Out-of-range classifier confidences were clamped into [0,1], turning a wrong-scale reply into a confident verdict.
+    Now rejected -> classification_failed -> retried by the sweep.
+    tests/guardian-verdict.test.ts updated (it asserted the old clamping).
+
+Tests: tests/guardian-section13-pass9-fixes.test.ts (new), tests/guardian-verdict.test.ts (updated).
+No migrations.

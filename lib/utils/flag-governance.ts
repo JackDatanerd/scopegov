@@ -18,6 +18,14 @@ export { canReadProject }
 
 export type GovEntityType = 'flag' | 'exception'
 
+// FIX (section 13 pass, B3): reading a flag's notes and evidence only required project read access, while every
+// sibling read of the same material (guardian/flags/[id] GET source panel, guardian/checks/[id]/attachments) requires
+// one of these four — the evidence is often the client's own email/screenshots. Same list, one definition.
+export const GOVERNANCE_VIEW_PERMISSIONS = ['APPROVE_FLAGS', 'GRANT_EXCEPTIONS', 'CREATE_CHANGE_ORDERS', 'ACCESS_GUARDIAN_HISTORY'] as const
+export function canViewGovernance(session: SessionUser): boolean {
+  return GOVERNANCE_VIEW_PERMISSIONS.some(p => hasPermission(session, p))
+}
+
 export interface ResolvedEntity {
   projectId: string
   severity: string | null // only present for 'flag'; 'exception' borrows nothing by default

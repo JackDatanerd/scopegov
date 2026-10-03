@@ -85,6 +85,19 @@ export async function POST(request: NextRequest) {
     // The stored row is re-classified automatically by the guardian-health sweep once the
     // SOW is signed — it used to sit `pending` forever.
     if (!snapshot) {
+      // FIX (section 13 pass, B2): this branch stored every submission — up to MAX_CHECK_CONTENT_CHARS each — with
+      // no rate limit and no bound, while guardian/inbound caps the same "keep it, classify later" backlog at 200
+      // per project. Once the SOW is signed the sweep classifies every queued row, so an unbounded queue is also an
+      // unbounded AI bill later. Cap the manually-submitted backlog per project (email has its own cap; the two
+      // don't starve each other). Fail open on a count error — better to keep a note than to refuse one.
+      const MAX_QUEUED_PER_PROJECT = 200
+      const { count: queued, error: queuedErr } = await (service as any).from('guardian_checks')
+        .select('id', { count: 'exact', head: true })
+        .eq('project_id', projectId).neq('source', 'email').eq('outcome', 'pending').eq('is_duplicate', false)
+      if (!queuedErr && (queued || 0) >= MAX_QUEUED_PER_PROJECT)
+        return NextResponse.json({
+          error: `This project already has ${MAX_QUEUED_PER_PROJECT} requests waiting for a signed SOW. They will be checked automatically once it is signed — no need to submit more until then.`,
+        }, { status: 429 })
       const { data: pendingRow, error: pendingErr } = await (service as any).from('guardian_checks').insert({
         project_id: projectId, workspace_id: session.workspaceId, content, source,
         submitted_by: session.id, submitted_at: new Date().toISOString(),
