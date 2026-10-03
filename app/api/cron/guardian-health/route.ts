@@ -9,7 +9,7 @@ import { systemFrom } from '@/lib/email/from'
 import { alertCronFailure } from '@/lib/utils/cron-alert'
 import { recordCronHeartbeat } from '@/lib/utils/cron-heartbeat'
 import {
-  reclassifyCheck, GUARDIAN_SYSTEM_ACTOR, MAX_AUTO_CLASSIFICATION_ATTEMPTS,
+  reclassifyCheck, GUARDIAN_SYSTEM_ACTOR, MAX_AUTO_CLASSIFICATION_ATTEMPTS, GUARDIAN_SWEEP_MAX_AGE_DAYS,
   sweepAttemptCutoffs, sweepDueFilter, isSweepDue,
 } from '@/lib/ai/guardian-pipeline'
 import { recordAiUsageByProject } from '@/lib/utils/rate-limit'
@@ -79,7 +79,7 @@ async function markAlerted(service: any, key: string): Promise<void> {
 
 const SWEEP_BATCH = 10               // AI calls per run (cost + duration bound)
 const SWEEP_BUDGET_MS = 90_000       // stop starting new work after this
-const SWEEP_MAX_AGE_DAYS = 90        // don't resurrect very old backlog
+const SWEEP_MAX_AGE_DAYS = GUARDIAN_SWEEP_MAX_AGE_DAYS // don't resurrect very old backlog
 
 function groupByWorkspace(rows: Array<{ workspace_id: string }>): string {
   const counts = new Map<string, number>()

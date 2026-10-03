@@ -31,6 +31,9 @@ export const DEDUP_THRESHOLD = 0.85
 export const DEDUP_WINDOW_DAYS = 30
 /** Automatic (cron) attempts stop here; a person can still retry by hand. */
 export const MAX_AUTO_CLASSIFICATION_ATTEMPTS = 5
+// Checks older than this are never picked up by the guardian-health sweep (see cron/guardian-health) - the history
+// panel uses the same cut-off so it never promises an automatic check that will not happen.
+export const GUARDIAN_SWEEP_MAX_AGE_DAYS = 90
 
 // FIX (independent pass 4, section 13 - B5): the sweep fetched the 40 OLDEST candidate rows and only THEN dropped the
 // ones still inside their backoff window. Rows waiting out a long backoff (15m, 30m, 1h, 2h, 4h per attempt) kept

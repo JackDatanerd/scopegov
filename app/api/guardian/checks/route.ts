@@ -14,6 +14,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { canReadProject } from '@/lib/utils/project-access'
+import { GUARDIAN_SWEEP_MAX_AGE_DAYS } from '@/lib/ai/guardian-pipeline'
 
 const PAGE_SIZE = 30
 
@@ -65,6 +66,10 @@ export async function GET(request: NextRequest) {
     if (error) throw new Error(error.message)
 
     const rows = checks || []
+    // A never-classified check older than the sweep's age limit is not "queued" - nothing will ever pick it up.
+    const sweepCutoff = Date.now() - GUARDIAN_SWEEP_MAX_AGE_DAYS * 86400000
+    const isUnchecked = (c: any) => !c.is_duplicate && !c.classification_failed && c.outcome === 'pending'
+      && new Date(c.created_at).getTime() < sweepCutoff
 
     return NextResponse.json({
       checks: rows.map((c: any) => ({
@@ -77,7 +82,9 @@ export async function GET(request: NextRequest) {
         attachmentNames:    Array.isArray(c.source_metadata?.attachments) ? c.source_metadata.attachments : [],
         // Stored but not yet classified because no SOW was signed / the inbound rate limit was hit —
         // the guardian-health sweep classifies these automatically.
-        queued:             !c.is_duplicate && !c.classification_failed && c.outcome === 'pending',
+        queued:             !c.is_duplicate && !c.classification_failed && c.outcome === 'pending' && !isUnchecked(c),
+        // Stored without a verdict and too old for the automatic sweep (it stops at GUARDIAN_SWEEP_MAX_AGE_DAYS).
+        unchecked:          isUnchecked(c),
         classificationAttempts: c.classification_attempts ?? 0,
         submittedByName:    c.users?.name || (c.source === 'email' ? null : 'Unknown'),
         submittedAt:        c.submitted_at,

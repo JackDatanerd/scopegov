@@ -1364,6 +1364,7 @@ const VERDICT_COPY: Record<string, { icon: string; color: string; bg: string; ti
   pending:               { icon: 'ti-clock', color: 'var(--text-3)', bg: 'var(--surface-2)', title: 'No signed SOW yet — nothing to check against' },
   // FEATURE (independent pass, section 13): a check saved without a verdict (no signed SOW yet, or an
   // inbound rate limit) is no longer stranded — the guardian-health sweep classifies it automatically.
+  unchecked:             { icon: 'ti-clock-off', color: 'var(--text-4)', bg: 'var(--surface-2)', title: 'Never checked — too old for automatic checking' },
   queued:                { icon: 'ti-hourglass', color: 'var(--text-3)', bg: 'var(--surface-2)', title: 'Saved — will be checked automatically' },
   classification_failed: { icon: 'ti-alert-triangle', color: 'var(--red)', bg: 'var(--red-lt)', title: 'Classification failed — try again in a moment' },
 }
@@ -1802,7 +1803,9 @@ function GuardianHistoryPanel({ projectId, canRetry }: { projectId: string; canR
       // changes the one row that was retried, and refetching would also
       // silently discard anything loaded via "Load more" beyond page one.
       setChecks(prev => prev.map(c => c.id === checkId
-        ? { ...c, outcome: json.outcome, classificationFailed: false, matchedReference: json.matchedReference, flagId: json.flagId }
+        ? { ...c, outcome: json.outcome, classificationFailed: false, matchedReference: json.matchedReference, flagId: json.flagId,
+            // A retry that resolves as a duplicate must show the duplicate note straight away, not after a reload.
+            isDuplicate: json.isDuplicate === true, duplicateOfId: json.duplicateOfId ?? null }
         : c))
     } catch (err: unknown) {
       setRetryError({ id: checkId, message: err instanceof Error ? err.message : 'Retry failed' })
@@ -1837,7 +1840,7 @@ function GuardianHistoryPanel({ projectId, canRetry }: { projectId: string; canR
             // already gets this right by returning a synthetic outcome
             // string for these two cases (see lastResult above) — apply
             // the same derivation to the history rows.
-            const displayOutcome = c.isDuplicate ? 'duplicate' : c.classificationFailed ? 'classification_failed' : c.queued ? 'queued' : c.outcome
+            const displayOutcome = c.isDuplicate ? 'duplicate' : c.classificationFailed ? 'classification_failed' : c.queued ? 'queued' : c.unchecked ? 'unchecked' : c.outcome
             const v = VERDICT_COPY[displayOutcome] || VERDICT_COPY.pending
             return (
               <div key={c.id} style={{

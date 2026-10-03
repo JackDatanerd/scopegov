@@ -350,6 +350,9 @@ export async function classifyGuardianCheck({
   sensitivity?: Sensitivity
 }): Promise<ClassificationResult> {
   const { autoFlag, borderlineMin } = THRESHOLDS[sensitivity]
+  // An explicit exclusion must clear the tier's auto-flag line, or the prompt's fixed 0.90 floor would leave it
+  // `borderline` on the Conservative tier (autoFlag 0.92) - the one case the clause is meant to settle.
+  const excludedFloor = Math.max(0.9, autoFlag).toFixed(2)
 
   const deliverablesText = snapshot.deliverables
     .map(d => `- ${d.title}${d.description ? `: ${d.description}` : ''}`)
@@ -409,7 +412,7 @@ Return ONLY valid JSON, no markdown fences:
 Rules:
 - matchConfidence: 0–1 probability this request is covered by an existing signed deliverable or accepted CO. 1.0 = exact match.
 - creepConfidence: 0–1 probability this is scope creep / out-of-scope request. 1.0 = definitely out of scope.
-  Items matching an EXPLICITLY EXCLUDED (out of scope) clause should receive creepConfidence >= 0.90.
+  Items matching an EXPLICITLY EXCLUDED (out of scope) clause should receive creepConfidence >= ${excludedFloor}.
 - matchedAgainst: "amendment" if matched a CO deliverable, "sow" if matched original scope, null if no match.
 - matchedReference: the specific deliverable name matched, or null.
 - reasoning: factual, one sentence. Do not interpret intent. Describe what matched or didn't match.

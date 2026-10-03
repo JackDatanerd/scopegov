@@ -1,0 +1,18 @@
+-- 140_guardian_dedup_drop_ivfflat_index.sql
+--
+-- FIX (Guardian section 13, independent pass 9 - B1): guardian_checks_embedding (migration 001) is an ivfflat
+-- index built with lists = 100 on an EMPTY table (ivfflat centroids are trained from the rows present at build
+-- time, so it was trained on nothing) and ivfflat.probes was never raised from its default of 1.
+--
+-- guardian_find_duplicate_check (migration 077) filters by project_id / is_duplicate / outcome / created_at and
+-- THEN orders by `embedding <=> p_embedding LIMIT 1`. Once the planner picks the ivfflat index for that ORDER BY,
+-- the index returns candidates from only the one probed list and the WHERE clause is applied to those candidates
+-- afterwards - so the project's own recent checks are usually not among them and the function returns NULL.
+-- The caller reads NULL as "no duplicate": the same client request is then classified, flagged and e-mailed to
+-- the team again, with no error anywhere.
+--
+-- The lookup is already narrowed to one project and a 30-day window by guardian_checks_project
+-- (project_id, created_at DESC) - a few hundred rows at most - so an exact scan over those is both cheap and
+-- correct. Dropping the approximate index removes the wrong-answer path; nothing else in the schema or the app
+-- orders by this column.
+DROP INDEX IF EXISTS public.guardian_checks_embedding;
