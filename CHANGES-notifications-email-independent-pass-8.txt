@@ -1,0 +1,11 @@
+Notifications & email — independent pass 8
+==========================================
+
+B1  `next build` type-check failed: tests/notifications-email-independent-pass-7.test.ts called
+    sendEmail({ ...base, log }) but the log context is the SECOND argument (sendEmail(payload, log)).
+    tsconfig includes **/*.ts, so TS2353 blocked the build; the tracked=1 tag test also failed at runtime.
+B2  Same file: expected the bounce-alert title with the address as typed (Client@Acme.test); the webhook
+    lowercases the address (firstAddress), so the title is client@acme.test. Expectation corrected.
+
+Test file only. No application code, no migration.
+Verified: tsc --noEmit clean, full vitest 2518 passed / 0 failed (base 023b6c7).
