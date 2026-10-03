@@ -79,7 +79,7 @@ export function sanitizePdfText(text: string): string {
  */
 export function sanitizeForPdf<T>(value: T): T {
   if (typeof value === 'string') {
-    return (value.startsWith('data:') ? value : sanitizePdfText(value)) as unknown as T
+    return (value.startsWith('data:image/') ? value : sanitizePdfText(value)) as unknown as T
   }
   if (Array.isArray(value)) return value.map(v => sanitizeForPdf(v)) as unknown as T
   if (value && typeof value === 'object') {

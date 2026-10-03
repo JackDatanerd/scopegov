@@ -16,7 +16,7 @@ const SYMBOL_RE = new RegExp(`[${Object.keys(SYMBOLS).join('')}]`, 'g')
 
 export function mapPdfSymbols<T>(value: T): T {
   if (typeof value === 'string') {
-    return (value.startsWith('data:') ? value : value.replace(SYMBOL_RE, ch => SYMBOLS[ch])) as unknown as T
+    return (value.startsWith('data:image/') ? value : value.replace(SYMBOL_RE, ch => SYMBOLS[ch])) as unknown as T
   }
   if (Array.isArray(value)) return value.map(v => mapPdfSymbols(v)) as unknown as T
   if (value && typeof value === 'object') {

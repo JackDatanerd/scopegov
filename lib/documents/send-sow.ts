@@ -66,7 +66,7 @@ export async function sendSowDocument(service: any, params: {
 
   const { data: sow } = await (service as any)
     .from('sow_documents')
-    .select(`id, version, status, project_id, document_number, sections, metadata,
+    .select(`id, version, status, project_id, document_number, sections, metadata, updated_at,
       projects(id, name, disc, status, contract_value, currency, client_id, deleted_at,
         clients(name, email, cc_emails),
         workspaces(id, agency_name, brand_colour, logo_storage_path))`)
@@ -168,7 +168,12 @@ export async function sendSowDocument(service: any, params: {
     token,
     expires_at:      expiresAt.toISOString(),
     updated_at:      now,
-  }).eq('id', sowId).eq('status', 'draft').select('id').maybeSingle()
+  }).eq('id', sowId).eq('status', 'draft')
+    // The sections validated above are the ones this read returned. An autosave that landed between that read and
+    // this claim bumps updated_at; without this the SOW would go out with content nobody validated (e.g. a payment
+    // schedule edited so it no longer foots to the contract value). Same compare-and-swap, one more column.
+    .eq('updated_at', sow.updated_at)
+    .select('id').maybeSingle()
 
   // A database error is not "someone else won the race" — report it as what it is.
   if (claimErr) {
@@ -176,6 +181,11 @@ export async function sendSowDocument(service: any, params: {
     return { ok: false, error: 'Could not send the SOW. Please try again.', status: 500 }
   }
   if (!sent) {
+    // Lost the claim: either someone else sent it, or it was edited after it was validated. Say which, so the person
+    // is not told "already sent" about a draft that is still a draft.
+    const { data: current } = await (service as any).from('sow_documents').select('status').eq('id', sowId).maybeSingle()
+    if (current?.status === 'draft')
+      return { ok: false, error: 'This SOW was edited while it was being sent. Review the latest changes and send again.', status: 409 }
     return { ok: false, error: 'This SOW was already sent by another action', status: 409 }
   }
 

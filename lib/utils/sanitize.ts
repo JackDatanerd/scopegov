@@ -84,8 +84,35 @@ export function decodeHtmlEntities(text: string | null | undefined): string {
  */
 export function sanitizePlainText(text: string | null | undefined): string {
   if (!text) return ''
-  const stripped = sanitizeHtml(text, { allowedTags: [], allowedAttributes: {} })
+  const stripped = sanitizeHtml(protectPlaceholders(text), { allowedTags: [], allowedAttributes: {} })
   return decodeHtmlEntities(stripped).trim()
+}
+
+// Real HTML element names. A bracketed word that is one of these is markup and is stripped; any other
+// plain bracketed phrase (`<client name>`, `<email>`, `<TBC>`) is ordinary text a person typed as a
+// placeholder, and deleting it left a client-facing document with words silently missing.
+const HTML_TAG_NAMES = new Set((
+  'a abbr acronym address applet area article aside audio b base basefont bdi bdo bgsound big blink blockquote body br button ' +
+  'canvas caption center cite code col colgroup data datalist dd del details dfn dialog dir div dl dt em embed fieldset ' +
+  'figcaption figure font footer form frame frameset h1 h2 h3 h4 h5 h6 head header hgroup hr html i iframe img input ins kbd ' +
+  'label legend li link main map mark marquee menu meta meter nav nobr noembed noframes noscript object ol optgroup option ' +
+  'output p param picture plaintext pre progress q rp rt ruby s samp script search section select slot small source span ' +
+  'strike strong style sub summary sup svg table tbody td template textarea tfoot th thead time title tr track tt u ul var ' +
+  'video wbr math xmp'
+).split(' '))
+
+/**
+ * Pre-escapes `<...>` runs that are plainly placeholder text so sanitize-html leaves them alone (it then
+ * emits `&lt;...&gt;`, which decodeHtmlEntities turns back into the literal characters). Deliberately narrow:
+ * letters, digits, spaces and a few separators only — no `=`, quotes, `/` or `!` — and the first word must not
+ * be a real HTML element name. Anything that could carry an attribute or close a tag is still stripped.
+ */
+function protectPlaceholders(text: string): string {
+  return text.replace(/<([A-Za-z][A-Za-z0-9 _.@-]{0,59})>/g, (whole, inner: string) => {
+    const first = inner.split(/[ _.@-]/)[0].toLowerCase()
+    if (HTML_TAG_NAMES.has(first)) return whole
+    return `&lt;${inner}&gt;`
+  })
 }
 
 /**
