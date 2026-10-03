@@ -4,7 +4,8 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
-import { cancelApprovalRequest, approvalSendInFlight, SEND_IN_FLIGHT_MESSAGE } from '@/lib/approvals/engine'
+import { approvalSendInFlight, SEND_IN_FLIGHT_MESSAGE } from '@/lib/approvals/engine'
+import { cancelCoApprovals } from '@/lib/documents/co-approval-cancel'
 import { sendDocumentCancelledEmail } from '@/lib/email/templates'
 import { cleanTextField } from '@/lib/utils/sanitize'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
@@ -99,6 +100,22 @@ async function handleTerminalCoState(
   const now = new Date().toISOString()
   const updates: Record<string, unknown> = { status: newStatus, updated_at: now, close_reason: reason }
 
+  // FIX (CO logic, independent pass 6): a 'draft' CO can have a pending 'co' approval request in flight (gated send)
+  // and a 'countered' CO a pending 'co_counter' one (gated counter-acceptance) — closing the CO out from under either
+  // one left it orphaned (pending forever, in the approver's queue, nagged by the stall cron). Both share this CO's id;
+  // cancelling a kind with no pending row is a no-op. This now runs BEFORE the status write and its result is honoured:
+  // the approvalSendInFlight check above reads the request earlier, so the last approver clearing the final step in
+  // the gap stamped the send claim, cancelApprovalRequest refused (blockedBySend) and — running after the write and
+  // ignoring that — this route closed the CO anyway. The auto-send then failed against a closed CO and left a false
+  // "Approved — not sent" request that can never be retried. Refuse instead, like invoice DELETE does.
+  const cancelled = await cancelCoApprovals(service, {
+    workspaceId: session.workspaceId, coId: id,
+    actorId: session.id, actorEmail: session.email, actorName: session.name,
+    reason: 'CO closed',
+  })
+  if (cancelled.blockedBySend)
+    return NextResponse.json({ error: SEND_IN_FLIGHT_MESSAGE }, { status: 409 })
+
   // FIX (section-10 audit, cross-cutting with withdraw): same missing CAS
   // — this wrote unconditionally on `.eq('id', id)` after only reading
   // co.status above (a read-then-write gap), while TERMINAL_FROM.closed
@@ -118,28 +135,6 @@ async function handleTerminalCoState(
 
   if (!closedCo || closedCo.length === 0)
     return NextResponse.json({ error: 'This change order was already acted on by another action' }, { status: 409 })
-
-  // FIX (section-11 audit): a 'draft' CO can have a pending 'co' approval
-  // request in flight (gated send), and a 'countered' CO can have a
-  // pending 'co_counter' request (gated counter-acceptance) — see
-  // lib/approvals/engine.ts. withdraw() already cancels these; this route
-  // closed the CO out from under either one with no equivalent call,
-  // leaving the approval request orphaned: still 'pending' forever, still
-  // showing in the approver's queue, still getting reminded about by the
-  // stall cron every 2 days, referencing a CO that no longer exists in
-  // any open state. Both document_types share this CO's id, so both are
-  // checked — cancelApprovalRequest itself is a no-op if neither has a
-  // pending row.
-  await cancelApprovalRequest(service, {
-    documentType: 'co', documentId: id, workspaceId: session.workspaceId,
-    actorId: session.id, actorEmail: session.email, actorName: session.name,
-    reason: 'CO closed',
-  })
-  await cancelApprovalRequest(service, {
-    documentType: 'co_counter', documentId: id, workspaceId: session.workspaceId,
-    actorId: session.id, actorEmail: session.email, actorName: session.name,
-    reason: 'CO closed',
-  })
 
   // BUG-048, spec §6.2: flag reversion fires on decline, close, AND withdraw
   // (decline/withdraw handle their own reversion independently — see

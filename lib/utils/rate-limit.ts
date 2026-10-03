@@ -74,6 +74,61 @@ export async function recordAiUsage(
   if (error) console.error('Failed to record AI usage:', error)
 }
 
+/**
+ * FIX (CO logic, independent pass 6): claim a rate-limit slot ATOMICALLY instead of check-then-record.
+ *
+ * checkAiRateLimit + recordAiUsage are two separate statements with the (slow, paid) model call between them, so a burst
+ * of parallel requests all read the same under-the-limit count, all passed, and only then each recorded itself — the
+ * limit did not bound a concurrent burst at all (simulated: 40 simultaneous requests against a limit of 20 made 40
+ * model calls). Recording just before the call only narrows that to one round trip, which a simultaneous burst still fits
+ * inside. This claims first and verifies after: insert the usage row, then count the window INCLUDING it, and if the
+ * count is over the limit, withdraw that row and refuse. However many requests race, the rows that survive are at most
+ * `max`, so at most `max` calls proceed.
+ *
+ * Trade-offs, deliberately accepted: (1) a burst that goes over the limit is refused as a whole, including the requests
+ * that would individually have fit — it only ever hurts the burst, never a user working within the limit; (2) the slot
+ * is consumed even if the model call later fails (the call may still have been billed, and a failing call must not be a
+ * free retry loop). Like the other limiters it fails OPEN on a database error — a broken limiter must not take the
+ * feature down.
+ */
+export async function claimAiRateSlot(
+  service: any, workspaceId: string, userId: string, routeKey: string
+): Promise<RateLimitResult> {
+  const { max, windowMinutes } = LIMITS[routeKey] || DEFAULT_LIMIT
+  const { data: row, error: insertError } = await service
+    .from('ai_usage_log')
+    .insert({ workspace_id: workspaceId, user_id: userId, route_key: routeKey })
+    .select('id')
+    .single()
+  if (insertError || !row) {
+    console.error('Rate limit claim failed (failing open):', insertError)
+    return { allowed: true }
+  }
+
+  const since = new Date(Date.now() - windowMinutes * 60 * 1000).toISOString()
+  const { count, error: countError } = await service
+    .from('ai_usage_log')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', userId)
+    .eq('route_key', routeKey)
+    .gte('created_at', since)
+  if (countError) {
+    console.error('Rate limit check failed (failing open):', countError)
+    return { allowed: true }
+  }
+
+  if ((count || 0) > max) {
+    // Over the limit: give the slot back so a refused request does not eat into the window.
+    const { error: releaseError } = await service.from('ai_usage_log').delete().eq('id', row.id)
+    if (releaseError) console.error('Failed to release an unused AI rate-limit slot:', releaseError)
+    return {
+      allowed: false,
+      message: `Too many requests — please wait a few minutes and try again (limit: ${max} per ${windowMinutes}m).`,
+    }
+  }
+  return { allowed: true }
+}
+
 // FIX (audit round 6): project-keyed variants for AI calls made with no
 // authenticated user in context (e.g. the Guardian inbound-email webhook).
 // Same sliding-window approach as the user-keyed functions above, just

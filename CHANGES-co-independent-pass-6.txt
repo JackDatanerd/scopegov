@@ -1,0 +1,66 @@
+CHANGES — Section 10 (CO logic: api/co/*, components/co, api/pdf/co), independent pass 6
+
+BUG CO-F1 (medium): close, withdraw, exception and revise-from-countered cancelled the CO's pending approval requests AFTER
+flipping the CO's status, and ignored cancelApprovalRequest's `blockedBySend`. The approvalSendInFlight pre-check reads the
+request earlier, so the last approver clearing the final step in the gap stamped the send claim; the cancel was refused (correctly,
+the engine says callers that remove the document must check it), the route carried on, and the auto-send then ran against a
+closed / withdrawn / excepted / superseded CO. Result: a terminal CO plus an "Approved — not sent" request that can never be
+retried, and the requester told their send failed. Invoice DELETE and approvals/[id]/cancel already honour blockedBySend.
+FIX: lib/documents/co-approval-cancel.ts cancelCoApprovals() cancels both request kinds ('co', 'co_counter') and reports whether
+any was refused. Each route now calls it BEFORE the status write and answers 409 SEND_IN_FLIGHT_MESSAGE when blocked.
+  - exception: the ledger row written earlier is removed again on a refused cancel (same as its lost-race path).
+  - revise: the revision draft is inserted before the supersede, so a refused cancel removes it again and leaves the original
+    countered. The lost-race cleanup branch is unchanged.
+Cancelling first is safe if the status write then loses its own race: the request belongs to a CO another action is already
+moving, and those actions cancel it themselves.
+
+BUG CO-F2 (low): exception's "newer version exists" guard counted EVERY newer sibling, including withdrawn/closed ones, and told
+the user to "grant the exception on that one instead" even when that version could not take one (not in EXCEPTION_FROM). With v1
+declined and v2 withdrawn/closed neither version could be excepted (the only way out was revising v2 into a v3 draft just to waive).
+FIX: withdrawn/closed newer versions no longer block (they are not billable and already released the flag). The NEWEST blocking
+version is named. When it is accepted / already excepted the message says an exception can't be granted on this one instead of
+pointing at a version that can't take it. Live, draft, declined, expired, accepted and excepted newer versions still block.
+
+BUG CO-F3 (low): Guardian draft_co wrote flag.description (the classifier's reasoning, stored up to 1000 chars) into a CO line
+whose description is capped at 500. computeCoTotals rejected it, so the flag-drafted CO could not be saved, autosaved or sent
+from the editor until the user found and trimmed the line.
+FIX: capped with truncateText(..., MAX_DESCRIPTION_LEN); the constant is now exported from lib/documents/co-totals.ts so the cap
+cannot drift from the editor's limit. (truncateText does not leave a lone surrogate on an emoji at the cut.)
+
+BUG CO-F4 (low, defense-in-depth): app/api/pdf/co/[id] passed co.note to the renderer unsanitized; the portal twin
+(portal/co/[token]/pdf) re-sanitizes on every read because the stored value reaches a PDF <Link src>. Every current writer
+sanitizes, but the two PDFs of the same CO were guarded differently.
+FIX: sanitizeRichTextOrNull(co.note), same call as the portal route.
+
+BUG CO-F5 (low): the one-live-version-per-lineage check ran only inside sendCoDocument, i.e. AFTER the approval gate. A CO needing
+approval while a sibling was still live created an approval request (edit-locking the draft, queueing approvers) for a send that
+was certain to be refused; the approval then fired the auto-send and left an "Approved — not sent" nobody could act on.
+FIX: lib/documents/co-live-sibling.ts liveCoSiblingMessage() (same query, same message, same fail-open on a lookup error — now
+logged). The send route runs it before the gate; sendCoDocument runs the same helper for the auto-send path.
+
+BUG CO-F6 (low, cost abuse): co/draft rate limiting was check -> multi-second model call -> record. A burst of parallel requests
+all read the same under-the-limit count and all made a paid model call (simulated: 40 simultaneous requests, limit 20 -> 40 calls).
+Recording just before the call only narrows the window to one round trip, which a simultaneous burst still fits inside.
+FIX: lib/utils/rate-limit.ts claimAiRateSlot() inserts the usage row, counts the window including it, and withdraws its row and
+refuses when over the limit, so at most `max` calls proceed however many race (simulated: <= 20 simultaneous and staggered).
+Trade-offs, deliberate: an over-limit burst is refused as a whole (it only hurts the burst); the slot is consumed even if the
+model call later fails; fails OPEN on a database error like the other limiters. co/draft now uses it; the other AI routes still
+use checkAiRateLimit/recordAiUsage and are unchanged (see TRACED).
+
+BUG CO-F8 (low): co/draft returned a title + note with NO usable line items as a success. The editor then replaced the user's
+title/note/impact fields and, having nothing for the lines, silently kept their OLD line items — a half-applied draft after a
+confirm that promised a full replacement. The draft prompt is also "extra billable work", which on a credit CO (scope removed)
+drafts the opposite of what the document is.
+FIX: the route answers 422 when no line survives sanitization; CoEditor applies a draft all-or-nothing (refuses before touching
+any field) and no longer offers "Draft with AI" on a credit CO.
+
+INVESTIGATED, NOT A DEFECT (CO-F7, no change): re-saving a revision cloned from a counter-accepted, tax-exclusive CO can move the
+total by one cent from the negotiated figure (~11% of such totals). That is structural to the 2-decimal net/gross model, not a
+rescale bug: for those totals NO 2-decimal net amount re-derives the negotiated gross (drift rate == unreachable rate, 11.25%,
+and the current nearest-net choice is never beaten by any alternative). Re-verified against the exact-decimal roundCurrency.
+
+TRACED, left alone: the other AI routes use the same checkAiRateLimit/recordAiUsage helpers, so they may share the CO-F6 pattern
+(not audited here: they belong to other sections); claimAiRateSlot is available to them.
+
+TEST: tests/co-independent-pass-6.test.ts (39 tests: route-level behaviour against an in-memory table with only the boundary
+modules mocked, the real claimAiRateSlot under simultaneous and staggered bursts, and source guards).

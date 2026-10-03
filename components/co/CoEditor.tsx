@@ -407,6 +407,11 @@ export default function CoEditor({ projId, coId }: Props) {
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error)
+      // FIX (CO logic, independent pass 6): apply the draft all-or-nothing. The title, note and impact fields used to be
+      // replaced before the line items were looked at, so a reply without line items left the user's OLD lines under a
+      // NEW title/note — a half-applied draft after a confirm that promised a full replacement. (The route now refuses to
+      // return one; this keeps the editor safe against any other shape of reply.)
+      if (!json.lineItems?.length) throw new Error('AI could not break that into line items. Add more detail about the work, or write it manually.')
       if (json.title) setTitle(json.title)
       if (json.note)  setNote(json.note)
       // The draft is a fresh reading of THIS request, so the impact fields are replaced too — when the AI can't tell
@@ -414,11 +419,9 @@ export default function CoEditor({ projId, coId }: Props) {
       // be sent to the client as a claim about this change order.
       setScopeImpactNote(json.scopeImpact || '')
       setTimelineImpactDays(json.timelineImpactDays != null ? String(json.timelineImpactDays) : '')
-      if (json.lineItems?.length) {
-        setLineItems(json.lineItems.map((li: any) => ({
-          id: nanoid(), description: li.description, quantity: li.quantity || 1, rate: 0, total: 0,
-        })))
-      }
+      setLineItems(json.lineItems.map((li: any) => ({
+        id: nanoid(), description: li.description, quantity: li.quantity || 1, rate: 0, total: 0,
+      })))
       setAiOpen(false); setAiText('')
     } catch (err: unknown) {
       setAiError(err instanceof Error ? err.message : 'Could not draft this — try again or write it manually.')
@@ -488,7 +491,9 @@ export default function CoEditor({ projId, coId }: Props) {
           </div>
         )}
 
-        {!isLocked && !financialsHidden && !aiOpen && (
+        {/* FIX (CO logic, independent pass 6): the draft prompt is "extra billable work outside the original scope" — on a
+            credit CO (scope REMOVED, amounts reduce the contract) it drafted the opposite of what the document is. */}
+        {!isLocked && !financialsHidden && !isCredit && !aiOpen && (
           <button className="btn btn-ghost btn-sm" onClick={() => {
             // Pre-fill from the flag that spawned this CO, if any — but
             // only the first time; don't clobber something the user
@@ -499,7 +504,7 @@ export default function CoEditor({ projId, coId }: Props) {
             <i className="ti ti-sparkles" style={{ fontSize: 12 }} /> Draft with AI
           </button>
         )}
-        {!isLocked && !financialsHidden && aiOpen && (
+        {!isLocked && !financialsHidden && !isCredit && aiOpen && (
           <div className="surface surface-p" style={{ marginBottom: 20 }}>
             <label className="flbl">Describe what the client is asking for</label>
             <textarea className="finp" style={{ minHeight: 80, resize: 'vertical', marginTop: 6 }} autoFocus

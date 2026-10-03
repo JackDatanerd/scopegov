@@ -6,6 +6,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { sendCoDocument, validateCoForSend, renewalNeedsTerm } from '@/lib/documents/send-co'
 import { evaluateApprovalGate } from '@/lib/approvals/engine'
 import { sendBlockedReason } from '@/lib/documents/preflight'
+import { liveCoSiblingMessage } from '@/lib/documents/co-live-sibling'
 import { canReadProject } from '@/lib/utils/project-access'
 import { isTerminalStatus } from '@/lib/utils/project-status'
 import { coGateAmount } from '@/lib/approvals/gate-amount'
@@ -27,7 +28,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // whole query (42703), which silently surfaces as "CO not found".
     const { data: co, error: coFetchErr } = await (service as any)
       .from('change_orders')
-      .select(`id,title,status,total,line_items,version,project_id,is_retainer_renewal,renewal_term_months,is_credit,
+      .select(`id,title,status,total,line_items,version,root_co_id,project_id,is_retainer_renewal,renewal_term_months,is_credit,
         projects(id,name,status,currency,type,retainer_duration_months)`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
@@ -91,6 +92,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const blockedReason = await sendBlockedReason(service, project.id)
     if (blockedReason) return NextResponse.json({ error: blockedReason }, { status: 400 })
+
+    // FIX (CO logic, independent pass 6): the one-live-version-per-lineage check only ran inside sendCoDocument, i.e.
+    // AFTER the approval gate below. A CO that needed approval while another version was still live therefore created
+    // an approval request (edit-locking the draft, queueing it for approvers) for a send that was certain to be refused
+    // — the approver's decision fired the auto-send, which failed, leaving an "Approved — not sent" nobody could act on.
+    // Checked here, up front, like the other hoisted preflights; sendCoDocument still runs it for the auto-send path.
+    const siblingBlock = await liveCoSiblingMessage(service, co)
+    if (siblingBlock) return NextResponse.json({ error: siblingBlock }, { status: 409 })
 
     // Phase 3 — Approval Chains: gate on the CO's own total, not the
     // project's overall contract value — a $500 CO on a $200k retainer

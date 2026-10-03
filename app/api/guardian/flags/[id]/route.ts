@@ -9,6 +9,7 @@ import { sanitizePlainText, stripUnstorableText, truncateText } from '@/lib/util
 import { canReadProject } from '@/lib/utils/project-access'
 import { isTerminalStatus } from '@/lib/utils/project-status'
 import { workspaceTaxDefaults } from '@/lib/documents/tax-defaults'
+import { MAX_DESCRIPTION_LEN } from '@/lib/documents/co-totals'
 import { sendEscalationEmail, sendGuardianFlagEmail } from '@/lib/email/templates'
 import { checkedSend } from '@/lib/email/delivery'
 import { filterByNotificationPreference, filterToProjectAccess, getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
@@ -515,7 +516,12 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           // native array directly, matching every other CO-creating path.
           line_items:   [{
             id:          randomUUID(),
-            description: flag.description,
+            // FIX (CO logic, independent pass 6): flag.description is the classifier's reasoning, stored at up to 1000
+            // characters, but a CO line description is capped at MAX_DESCRIPTION_LEN (500). computeCoTotals rejects a longer
+            // one, so a flag-drafted CO whose reasoning ran long could not be saved, autosaved or sent from the editor
+            // until the user hunted down and trimmed the line ("Line item descriptions must be under 500 characters").
+            // Cap it here like the title above.
+            description: truncateText(String(flag.description ?? ''), MAX_DESCRIPTION_LEN),
             quantity:    1,
             rate:        0,
             total:       0,

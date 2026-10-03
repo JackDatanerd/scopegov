@@ -8,6 +8,7 @@ import { coWatermarkLabel } from '@/lib/pdf/co-watermark'
 import { coPdfFilename } from '@/lib/documents/co-pdf-name'
 import { parseStoredLineItems } from '@/lib/documents/co-totals'
 import { canReadProject } from '@/lib/utils/project-access'
+import { sanitizeRichTextOrNull } from '@/lib/utils/sanitize'
 import { getContractValueBefore } from '@/lib/documents/co-contract-value'
 import { fetchExecutedPdf } from '@/lib/documents/executed-pdf'
 
@@ -108,7 +109,11 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       clientVatNumber:      co.projects?.clients?.vat_number || null,
       projectName: co.projects?.name || '',
       coTitle:     co.title,
-      note:        co.note,
+      // FIX (CO logic, independent pass 6): the portal twin of this route (portal/co/[token]/pdf) re-sanitizes the note on
+      // every read — defense-in-depth against a write that bypassed the sanitizing writers (the stored value reaches a PDF
+      // <Link src>, so an unsanitized href is a live link in a document the agency sends on). This internal render passed
+      // `co.note` straight through, so the two PDFs of the same CO were guarded differently. Same call, same result.
+      note:        sanitizeRichTextOrNull(co.note),
       lineItems,
       subtotal:    co.subtotal || 0,
       taxRate:     co.tax_rate || 0,

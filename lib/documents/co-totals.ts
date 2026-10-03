@@ -51,7 +51,7 @@ export type CoTotalsResult =
   | { ok: false; error: string }
 
 const MAX_LINE_ITEMS       = 50
-const MAX_DESCRIPTION_LEN  = 500
+export const MAX_DESCRIPTION_LEN = 500
 const MAX_QUANTITY         = 1_000_000
 const MAX_RATE             = 1_000_000_000
 

@@ -25,7 +25,8 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
-import { cancelApprovalRequest, approvalSendInFlight, SEND_IN_FLIGHT_MESSAGE } from '@/lib/approvals/engine'
+import { approvalSendInFlight, SEND_IN_FLIGHT_MESSAGE } from '@/lib/approvals/engine'
+import { cancelCoApprovals } from '@/lib/documents/co-approval-cancel'
 import { sendCoExceptionGrantedEmail } from '@/lib/email/templates'
 import { cleanTextField } from '@/lib/utils/sanitize'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
@@ -36,6 +37,14 @@ const MAX_VALUE = 1e12
 // Same source set close() allows into 'closed' from — anything that isn't already accepted (a signed,
 // binding CO can't retroactively become free) or already a terminal exception/closed/withdrawn state.
 const EXCEPTION_FROM = ['draft', 'awaiting_response', 'declined', 'countered', 'stalled', 'awaiting_countersignature', 'expired']
+
+// FIX (CO logic, independent pass 6): a newer version that was withdrawn or closed out is dead — it is not billable and
+// it already released the flag, so it must not stop an exception being granted on the version before it. The guard
+// below counted EVERY newer sibling, but a withdrawn/closed one is not in EXCEPTION_FROM, so the message told the user
+// to "grant the exception on that one instead" when that version could not take one either: with v1 declined and v2
+// withdrawn/closed, neither version could be given the exception (the only way out was revising v2 into a v3 draft just
+// to waive it). Live, accepted and already-excepted newer versions still block, exactly as before.
+const ABANDONED_STATUSES = ['withdrawn', 'closed']
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -74,11 +83,20 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     {
       const rootId = (co as any).root_co_id || co.id
       const { data: siblings } = await (service as any)
-        .from('change_orders').select('id, version')
+        .from('change_orders').select('id, version, status')
         .or(`id.eq.${rootId},root_co_id.eq.${rootId}`).neq('id', co.id)
-      const newer = (siblings || []).find((o: any) => Number(o.version) > Number((co as any).version))
-      if (newer)
-        return NextResponse.json({ error: `A newer version (v${newer.version}) of this change order exists — grant the exception on that one instead.` }, { status: 409 })
+      // The NEWEST blocking version is the one to name: that is where the exception has to be granted.
+      const newer = (siblings || [])
+        .filter((o: any) => Number(o.version) > Number((co as any).version) && !ABANDONED_STATUSES.includes(o.status))
+        .sort((a: any, b: any) => Number(b.version) - Number(a.version))[0]
+      if (newer) {
+        // Only point at that version when it can actually take the exception; an accepted or already-excepted newest
+        // version is settled, so the honest answer is that this one can't be waived.
+        const message = EXCEPTION_FROM.includes(newer.status)
+          ? `A newer version (v${newer.version}) of this change order exists — grant the exception on that one instead.`
+          : `A newer version (v${newer.version}) of this change order is ${String(newer.status).replace(/_/g, ' ')}, so an exception can't be granted on this one.`
+        return NextResponse.json({ error: message }, { status: 409 })
+      }
     }
 
     // FIX (section-11 audit, pass 1 — B4): a final approval's auto-send (or counter-acceptance) is running right
@@ -128,6 +146,23 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }).select('id').single()
     if (excErr || !excRow) throw new Error(`exceptions_log insert failed: ${excErr?.message || 'no row'}`)
 
+    // FIX (CO logic, independent pass 6): cancel the in-flight approval request(s) BEFORE the status flip and honour a
+    // refused cancel. A 'draft' CO can have a pending 'co' request and a 'countered' one a pending 'co_counter' (both
+    // would otherwise sit in the approver's queue forever). This used to run after the flip and ignore `blockedBySend`:
+    // the last approver clearing the final step after the approvalSendInFlight check above stamped the send claim, the
+    // cancel was refused, the exception was granted anyway, and the auto-send then failed against an
+    // 'exception_granted' CO — a false "Approved — not sent". The ledger row written above is removed again, exactly as
+    // for a lost status race below, because nothing was granted.
+    const cancelled = await cancelCoApprovals(service, {
+      workspaceId: session.workspaceId, coId: id,
+      actorId: session.id, actorEmail: session.email, actorName: session.name,
+      reason: 'CO granted as an exception',
+    })
+    if (cancelled.blockedBySend) {
+      await (service as any).from('exceptions_log').delete().eq('id', excRow.id)
+      return NextResponse.json({ error: SEND_IN_FLIGHT_MESSAGE }, { status: 409 })
+    }
+
     // CAS, same shape as close()'s: only the request that actually observes and flips this exact status
     // proceeds — a concurrent close/withdraw/client-response can't be silently overwritten.
     // Token deliberately left alone (matching close()'s own reasoning, see that file): the portal's
@@ -142,20 +177,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       if (grantErr) throw new Error(grantErr.message)
       return NextResponse.json({ error: 'This change order was already acted on by another action' }, { status: 409 })
     }
-
-    // Same orphaned-approval-request cleanup close() does: a 'draft' CO can have a pending 'co' approval
-    // in flight, a 'countered' one a pending 'co_counter' — both would otherwise sit in the approver's
-    // queue forever, still nagged about by approval-stall, referencing a CO no longer in any open state.
-    await cancelApprovalRequest(service, {
-      documentType: 'co', documentId: id, workspaceId: session.workspaceId,
-      actorId: session.id, actorEmail: session.email, actorName: session.name,
-      reason: 'CO granted as an exception',
-    })
-    await cancelApprovalRequest(service, {
-      documentType: 'co_counter', documentId: id, workspaceId: session.workspaceId,
-      actorId: session.id, actorEmail: session.email, actorName: session.name,
-      reason: 'CO granted as an exception',
-    })
 
     // Resolve the linked flag as an EXCEPTION — not the 'open'/change_order_id:null reversion close()
     // and withdraw() do. Those represent "this CO went away, the underlying request is unresolved

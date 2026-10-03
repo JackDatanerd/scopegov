@@ -2,6 +2,7 @@
 // Same extraction as lib/documents/send-sow.ts, for change orders.
 // See that file's header for why this exists as a standalone function.
 
+import { liveCoSiblingMessage } from '@/lib/documents/co-live-sibling'
 import { SignJWT } from 'jose'
 import { nanoid } from 'nanoid'
 import { sendCoEmail } from '@/lib/email/templates'
@@ -124,15 +125,9 @@ export async function sendCoDocument(service: any, params: {
   if (!signedSow)
     return { ok: false, status: 409, error: 'This project has no signed SOW yet — a change order can only be sent once the original scope of work is signed.' }
 
-  // One live version per change-order lineage. Two live siblings (e.g. two revisions of the same
-  // declined CO) could both be accepted — billing the same extra work twice.
-  const rootId = co.root_co_id || co.id
-  const { data: liveSiblings } = await (service as any)
-    .from('change_orders').select('id, version, status')
-    .or(`id.eq.${rootId},root_co_id.eq.${rootId}`).neq('id', coId)
-    .in('status', ['awaiting_response', 'stalled', 'countered', 'awaiting_countersignature', 'accepted']).limit(1)
-  if (liveSiblings && liveSiblings.length > 0)
-    return { ok: false, status: 409, error: `Version ${liveSiblings[0].version} of this change order is still open (${String(liveSiblings[0].status).replace(/_/g, ' ')}). Withdraw or close it before sending another version.` }
+  // One live version per change-order lineage (shared with the send route, which runs it before the approval gate).
+  const siblingBlock = await liveCoSiblingMessage(service, { id: coId, root_co_id: co.root_co_id })
+  if (siblingBlock) return { ok: false, status: 409, error: siblingBlock }
 
   // FIX (deep audit, section 14 — flagship finding): see
   // lib/utils/client-contacts.ts — CC the client's designated primary

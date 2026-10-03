@@ -4,7 +4,8 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
 import { canReadProject } from '@/lib/utils/project-access'
 import { isTerminalStatus } from '@/lib/utils/project-status'
-import { cancelApprovalRequest, approvalSendInFlight, SEND_IN_FLIGHT_MESSAGE } from '@/lib/approvals/engine'
+import { approvalSendInFlight, SEND_IN_FLIGHT_MESSAGE } from '@/lib/approvals/engine'
+import { cancelCoApprovals } from '@/lib/documents/co-approval-cancel'
 import { insertNextCoVersion } from '@/lib/documents/co-version'
 import { parseStoredLineItems } from '@/lib/documents/co-totals'
 import { sendDocumentCancelledEmail } from '@/lib/email/templates'
@@ -180,6 +181,30 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // flag reverts through the normal close path rather than being left
     // pointing at an abandoned CO).
     if (co.status === 'countered') {
+      // The revision draft above was inserted BEFORE the supersede below, so every early exit from here on must remove
+      // it again (it can never be sent while the original is live, and the caller must not be told it succeeded).
+      const dropOrphanRevision = async () => {
+        await (service as any).from('co_attachments').delete().eq('co_id', revision.id)
+        const { error: orphanErr } = await (service as any).from('change_orders').delete().eq('id', revision.id).eq('status', 'draft')
+        if (orphanErr) console.error('CO revise: could not remove the orphaned revision draft', orphanErr.message)
+      }
+
+      // FIX (CO logic, independent pass 6): a gated counter-acceptance leaves a pending 'co_counter' approval request
+      // while this CO stays 'countered'. It used to be cancelled AFTER the supersede write with `blockedBySend`
+      // ignored: the last approver clearing the final step after the approvalSendInFlight check near the top of this
+      // handler stamped the send claim, the cancel was refused, the original was closed anyway, and the auto
+      // counter-acceptance then failed against a closed CO — a false "Approved — not sent" that can never be retried.
+      // Cancel FIRST, and when a send is live back out (drop the draft, leave the original countered).
+      const cancelled = await cancelCoApprovals(service, {
+        workspaceId: session.workspaceId, coId: co.id,
+        actorId: session.id, actorEmail: session.email, actorName: session.name,
+        reason: `Superseded by revision v${revision.version}`, types: ['co_counter'],
+      })
+      if (cancelled.blockedBySend) {
+        await dropOrphanRevision()
+        return NextResponse.json({ error: SEND_IN_FLIGHT_MESSAGE }, { status: 409 })
+      }
+
       // FIX (section-11 fix round, real bug): this write had no
       // compare-and-swap verification — every other status transition in
       // this file (and its siblings, close/withdraw/accept-counter) checks
@@ -204,19 +229,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         .select('id').maybeSingle()
 
       if (superseded) {
-        // FIX (section-11 audit): accepting a counter-offer on a gated
-        // workflow creates a pending 'co_counter' approval request while
-        // this CO stays 'countered' (see accept-counter/route.ts +
-        // lib/approvals/engine.ts) — superseding it here with a revision,
-        // same gap as close/route.ts, left that request orphaned: still
-        // pending, still in the approver's queue, referencing a CO that's
-        // now closed. Cancel it the same way withdraw() and close() do.
-        await cancelApprovalRequest(service, {
-          documentType: 'co_counter', documentId: co.id, workspaceId: session.workspaceId,
-          actorId: session.id, actorEmail: session.email, actorName: session.name,
-          reason: `Superseded by revision v${revision.version}`,
-        })
-
         // FIX (deep audit, CO logic re-pass round 4 — flagship finding):
         // the comment on the flag re-claim below this block ("released
         // back to 'open' when the earlier version was declined/withdrawn/

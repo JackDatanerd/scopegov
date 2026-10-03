@@ -1,11 +1,12 @@
 // app/api/co/draft/route.ts
 export const runtime = 'nodejs'
 
+import { MAX_DESCRIPTION_LEN } from '@/lib/documents/co-totals'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { canReadProject } from '@/lib/utils/project-access'
-import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
+import { claimAiRateSlot } from '@/lib/utils/rate-limit'
 import { isTerminalStatus } from '@/lib/utils/project-status'
 import Anthropic from '@anthropic-ai/sdk'
 import { sanitizePlainText, truncateText } from '@/lib/utils/sanitize'
@@ -117,7 +118,11 @@ Flag description (agency's summary, not the client's own words): ${flag.descript
     }
 
     // FIX (audit round 3): no rate limiting existed on this route.
-    const limited = await checkAiRateLimit(service, session.id, 'co.draft')
+    // FIX (CO logic, independent pass 6): the slot is CLAIMED here (insert, then count, back out if over) rather than
+    // checked here and recorded after the model call. Check-then-record let a burst of parallel requests all read the same
+    // under-the-limit count and all make a paid model call; see claimAiRateSlot. The slot stays used even if the call below
+    // fails or returns an unusable draft — the call may still have been billed, and retries must not run past the limit.
+    const limited = await claimAiRateSlot(service, session.workspaceId, session.id, 'co.draft')
     if (!limited.allowed) return NextResponse.json({ error: limited.message }, { status: 429 })
 
     const snapshot     = project.project_scope_snapshot
@@ -152,10 +157,6 @@ Rules:
       messages:    [{ role: 'user', content: prompt }],
     })
 
-    // The model call has been paid for whether or not its answer is usable — count it, so retries of
-    // an unusable draft cannot run past the rate limit for free.
-    await recordAiUsage(service, session.workspaceId, session.id, 'co.draft')
-
     const toolUse = msg.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use')
     if (!toolUse) {
       console.error('CO draft: no tool_use block in response', msg.stop_reason)
@@ -178,11 +179,20 @@ Rules:
     const lineItems = (Array.isArray(parsed.lineItems) ? parsed.lineItems : []).slice(0, 6).map(l => {
       const q = Number(l?.quantity)
       return {
-        description: truncateText(sanitizePlainText(String(l?.description ?? '')), 500),
+        description: truncateText(sanitizePlainText(String(l?.description ?? '')), MAX_DESCRIPTION_LEN),
         quantity: Number.isFinite(q) && q > 0 && q <= 10_000 ? q : 1,
         rate: 0,
       }
     }).filter(l => l.description)
+    // FIX (CO logic, independent pass 6): a draft with a title and note but no usable line items was returned as a success.
+    // The editor then replaced the user's title/note/impact fields and — having nothing to put in them — silently kept
+    // their OLD line items, leaving a half-applied draft whose lines no longer matched its own title (and a confirm
+    // dialog that had promised everything would be replaced). A change order with no work lines is not a usable draft
+    // (the tool schema requires them; this is the model ignoring it or every line failing sanitization), so say so.
+    if (lineItems.length === 0) {
+      console.error('CO draft: model returned no usable line items', msg.stop_reason)
+      return NextResponse.json({ error: 'AI could not break that into line items. Add more detail about the work, or write it manually.' }, { status: 422 })
+    }
     // The tool schema tells the model to return null when it can't tell. Number(null) is 0, which would pass the
     // integer check and turn "unknown" into a "0 days — no change to the timeline" claim to the client, so null /
     // undefined / blank are mapped to null before any coercion.

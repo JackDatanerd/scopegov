@@ -3,7 +3,8 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
-import { cancelApprovalRequest, approvalSendInFlight, SEND_IN_FLIGHT_MESSAGE } from '@/lib/approvals/engine'
+import { approvalSendInFlight, SEND_IN_FLIGHT_MESSAGE } from '@/lib/approvals/engine'
+import { cancelCoApprovals } from '@/lib/documents/co-approval-cancel'
 import { canReadProject } from '@/lib/utils/project-access'
 import { sendDocumentCancelledEmail } from '@/lib/email/templates'
 import { cleanTextField } from '@/lib/utils/sanitize'
@@ -57,6 +58,21 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const wasSentToClient = co.status !== 'draft'
 
+    // FIX (CO logic, independent pass 6): a draft CO can have an approval chain in flight (that's the whole point of
+    // gating send, not create) — it must not be left dangling for an approver once the CO is withdrawn. This ran AFTER
+    // the status write and ignored cancelApprovalRequest's `blockedBySend`: the last approver clearing the final step
+    // between the approvalSendInFlight check above and the write stamped the send claim, the cancel was refused, and
+    // the CO was withdrawn anyway — the auto-send then failed against a withdrawn CO and left an unretryable
+    // "Approved — not sent" request. Cancel FIRST and refuse when a send is live (same as invoice DELETE). Only a
+    // draft can hold a 'co' request, so only that kind is looked up.
+    const cancelled = await cancelCoApprovals(service, {
+      workspaceId: session.workspaceId, coId: id,
+      actorId: session.id, actorEmail: session.email, actorName: session.name,
+      reason: 'CO withdrawn', types: ['co'],
+    })
+    if (cancelled.blockedBySend)
+      return NextResponse.json({ error: SEND_IN_FLIGHT_MESSAGE }, { status: 409 })
+
     const now = new Date().toISOString()
     // FIX (section-10 audit, cross-cutting with app/api/sow/[id]/withdraw
     // — same missing CAS, same fix): this wrote unconditionally on
@@ -79,15 +95,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     if (!withdrawnCo || withdrawnCo.length === 0)
       return NextResponse.json({ error: 'This change order was already acted on by another action' }, { status: 409 })
-
-    // Phase 3: a draft CO can have an approval chain in flight (that's the
-    // whole point of gating send, not create) — don't leave it dangling
-    // for an approver once the CO itself is withdrawn.
-    await cancelApprovalRequest(service, {
-      documentType: 'co', documentId: id, workspaceId: session.workspaceId,
-      actorId: session.id, actorEmail: session.email, actorName: session.name,
-      reason: 'CO withdrawn',
-    })
 
     // Revoke token
     if (co.token) {
