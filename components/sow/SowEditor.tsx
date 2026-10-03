@@ -7,7 +7,7 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
-import { countWords, formatCurrency } from '@/lib/utils/format'
+import { countWords, formatCurrencyExact } from '@/lib/utils/format'
 import { isTableSection, SOW_TABLE_SCHEMAS, blankRow, columnLabel, parseTableAmount, type SowTableRow, type SowTableSectionId } from '@/lib/sow/table-schema'
 import { SOW_SECTION_DEFS } from '@/lib/ai/sow-content'
 
@@ -937,16 +937,20 @@ function TableSectionEditor({
         <div style={{
           marginTop: 16, paddingTop: 12, borderTop: '1px solid var(--border)', fontSize: 12.5,
         }}>
+          {/* FIX (SOW lifecycle, independent pass): these figures used the whole-unit formatCurrency, but
+              validateSowForSend blocks the send at a difference of 0.01 or more — so a schedule that was 30 cents
+              out showed two identical totals and "Under by $0" in red, with nothing to say what to fix. Exact
+              (minor-unit) formatting, same as the invoice screens. */}
           <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', color: 'var(--text-2)' }}>
             <span>Schedule total</span>
             <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>
-              {formatCurrency(scheduleTotal, currency || 'USD')}
+              {formatCurrencyExact(scheduleTotal, currency || 'USD')}
             </span>
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', color: 'var(--text-3)' }}>
             <span>Contract value</span>
             <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>
-              {formatCurrency(contractValue as number, currency || 'USD')}
+              {formatCurrencyExact(contractValue as number, currency || 'USD')}
             </span>
           </div>
           <div style={{
@@ -963,7 +967,7 @@ function TableSectionEditor({
             </span>
             {unreadable === 0 && !footsExactly && (
               <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>
-                {formatCurrency(Math.abs(variance), currency || 'USD')}
+                {formatCurrencyExact(Math.abs(variance), currency || 'USD')}
               </span>
             )}
             {footsExactly && <i className="ti ti-check" style={{ fontSize: 13 }} />}

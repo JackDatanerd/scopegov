@@ -148,42 +148,56 @@ export async function sendSowDocument(service: any, params: {
 
   const now = new Date().toISOString()
 
-  // Phase 0: assign the SOW its sequential document number now — send is
-  // the point of no return for numbering (a draft that never gets sent
-  // shouldn't burn a number). Never re-assign if one already exists.
-  let documentNumber: string
-  try {
-    documentNumber = sow.document_number || await assignDocumentNumber(service, workspaceId, 'sow')
-  } catch (e) {
-    // Thrown (not returned) — without this the approval-chain caller had no result to record
-    // as a failed send, leaving the request "approved" with nothing sent and no retry path.
-    console.error('SOW send: could not assign a document number', e)
-    return { ok: false, error: 'Could not assign a document number. Please try again.', status: 500 }
-  }
-
-  // Update SOW: draft → awaiting_signature. Note: 'sent' is NOT a status (spec §1.3)
+  // Claim the send FIRST (compare-and-swap on status), and only then take a document number. The number
+  // used to be assigned before the swap, so every request that lost the race (a double-click, or a manual
+  // send racing the approval engine's auto-send) still burned one — leaving a gap in the SOW sequence that
+  // lib/utils/document-number.ts promises stays continuous for anything a client actually saw. A draft that
+  // never gets sent still doesn't burn a number. Same order as send-co.ts.
   // FIX (re-audit, race-condition finding): every client-portal action
   // (sign/decline/counter/accept/countersign) already guards its status
   // transition with a CAS (.eq('status', <expected>)) to survive a
   // double-click or two near-simultaneous triggers — this send path,
   // called from both the manual "Send" button and the approval engine's
-  // auto-send-on-final-approval, never got the same guard. Two racing
-  // callers could both pass the earlier `status !== 'draft'` read and both
-  // reach here, burning two document numbers and emailing the client two
-  // different tokens (only the last write's token stays valid — the first
-  // email's link silently 404s). Guard the transition itself and bail if
-  // another caller already won the race.
-  const { data: sent } = await (service as any).from('sow_documents').update({
+  // auto-send-on-final-approval, needs the same guard: two racing callers could both pass the earlier
+  // `status !== 'draft'` read and both reach here, emailing the client two different tokens (only the last
+  // write's token stays valid — the first email's link silently 404s).
+  // Update SOW: draft → awaiting_signature. Note: 'sent' is NOT a status (spec §1.3)
+  const { data: sent, error: claimErr } = await (service as any).from('sow_documents').update({
     status:          'awaiting_signature',
     sent_at:         now,
     token,
     expires_at:      expiresAt.toISOString(),
-    document_number: documentNumber,
     updated_at:      now,
   }).eq('id', sowId).eq('status', 'draft').select('id').maybeSingle()
 
+  // A database error is not "someone else won the race" — report it as what it is.
+  if (claimErr) {
+    console.error('SOW send: could not claim the send', claimErr.message)
+    return { ok: false, error: 'Could not send the SOW. Please try again.', status: 500 }
+  }
   if (!sent) {
     return { ok: false, error: 'This SOW was already sent by another action', status: 409 }
+  }
+
+  // Never re-assign if one already exists (a revision of a numbered draft keeps its number).
+  let documentNumber: string
+  try {
+    documentNumber = sow.document_number || await assignDocumentNumber(service, workspaceId, 'sow')
+    if (!sow.document_number) {
+      const { error: numErr } = await (service as any).from('sow_documents')
+        .update({ document_number: documentNumber }).eq('id', sowId).eq('token', token)
+      if (numErr) throw new Error(numErr.message)
+    }
+  } catch (e) {
+    // Thrown (not returned) — without this the approval-chain caller had no result to record
+    // as a failed send, leaving the request "approved" with nothing sent and no retry path.
+    // The claim is released so the SOW is a draft again (nothing was emailed yet, and the token was
+    // never shown to anyone).
+    console.error('SOW send: could not assign a document number', e)
+    await (service as any).from('sow_documents').update({
+      status: 'draft', sent_at: null, token: null, expires_at: null, updated_at: new Date().toISOString(),
+    }).eq('id', sowId).eq('status', 'awaiting_signature').eq('token', token)
+    return { ok: false, error: 'Could not assign a document number. Please try again.', status: 500 }
   }
 
   // Only move projects that are still pre-signature. An Active/Complete/Archived project

@@ -1,0 +1,36 @@
+SOW lifecycle (section 9) — independent pass 7
+Built against the live repo snapshot taken after the Search round 8 changes
+(app/(app)/sow/page.tsx member-scope embed re-read and found sound).
+
+FILES
+  lib/documents/send-sow.ts                           (B1)
+  components/sow/SowEditor.tsx                        (B2)
+  tests/sow-lifecycle-independent-pass-7.test.ts      (new, 8 tests)
+
+B1  SOW send burned document numbers on every lost race
+    sendSowDocument assigned the SOW number BEFORE the draft -> awaiting_signature
+    compare-and-swap. Any request that lost the race (double-click, manual send vs
+    the approval engine's auto-send) had already taken a number, leaving a gap in
+    the SOW sequence. A database error on the claim write was also reported as
+    "already sent by another action" (409) although nothing had been sent.
+    Now: claim first, then number (stored with an eq('token') guard), same order as
+    send-co.ts. If numbering or the number write fails the claim is released
+    (back to draft, token/sent_at/expires_at cleared) before returning 500, so
+    nothing is emailed and the project status is untouched. A failed claim write
+    returns 500, not 409.
+
+B2  Payment Schedule footer hid sub-dollar mismatches
+    Schedule total / Contract value / "Over|Under by" used whole-unit
+    formatCurrency while validateSowForSend blocks at a difference >= 0.01, so a
+    30-cent mismatch read "Under by $0" in red. Now formatCurrencyExact (minor
+    units), as on the invoice screens.
+
+NOT CHANGED (noted, low risk)
+    PATCH /api/sow/[id] checks for a pending approval and then writes; the write
+    is guarded on draft + sent_at IS NULL but not on approval state. Millisecond
+    window, unreachable from the UI. Attachments already recheck under a row lock.
+
+VERIFIED
+    All 8 new tests pass on the fixed files; against the unfixed originals the
+    lost-race, claim-error, number-write-release and editor tests fail.
+    No schema change, no migration.
