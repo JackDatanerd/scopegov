@@ -175,7 +175,7 @@ export function sanitizeDisplayName(text: string | null | undefined, maxLength =
   if (!text) return ''
   const cleaned = text
     // eslint-disable-next-line no-control-regex
-    .replace(/[\r\n\x00-\x1F\x7F]/g, ' ')
+    .replace(/[\r\n\x00-\x1F\x7F-\x9F]/g, ' ')
     .replace(/(?![\u200C\u200D])\p{Cf}/gu, '')
     // FIX (Workspace lifecycle independent pass 8 — B1): an unpaired surrogate (half an emoji) anywhere in the
     // string, not just at the length cut handled below, is not valid in the JSON body Postgres receives, so the
@@ -186,8 +186,15 @@ export function sanitizeDisplayName(text: string | null | undefined, maxLength =
     .replace(/[\u115F\u1160\u3164\uFFA0\u2800]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-  // Nothing but whitespace / joiners left → no visible name.
-  if (!/[^\s\u200C\u200D]/u.test(cleaned)) return ''
+  // Nothing but whitespace / joiners / combining marks left → no visible name.
+  // FIX (Workspace lifecycle independent pass 9 — B1): the control-character strip above stopped at
+  // \x7F, so the C1 controls (U+0080-U+009F, including U+0085 NEL, which JS \s does not match) survived
+  // into stored names and email headers, and a name made of nothing but them counted as present. The
+  // visibility test also only excluded whitespace and the joiners, so a name made only of combining or
+  // variation characters (U+034F, U+17B4/U+17B5, U+180B-U+180D, U+FE00-U+FE0F, U+E0100..., a lone accent)
+  // passed as non-empty yet drew as a blank. Marks (\p{M}) only ever decorate a base character, so a
+  // string with no base character at all is not a name; real names always contain one.
+  if (!/[^\s\u200C\u200D\p{M}]/u.test(cleaned)) return ''
   return cleaned
     .slice(0, maxLength)
     .replace(/[\uD800-\uDBFF]$/, '')   // don't leave half an emoji at the cut
