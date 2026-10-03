@@ -901,6 +901,8 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
       const res  = await fetch(`/api/sow/${sowId}/withdraw`, { method: 'POST' })
       const json = await res.json().catch(() => ({}))
       if (!res.ok) { setError(json.error || 'Failed to withdraw'); return }
+      if (json.clientNotified === false)
+        alert('The SOW is withdrawn, but the notification email to the client was not sent (the address may be rejected, or your own email is not verified yet). You may want to let them know directly.')
       router.refresh()
     } catch {
       setError('Failed to withdraw')

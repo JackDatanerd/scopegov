@@ -34,6 +34,18 @@ export function formatAmount(amount: number | string | null | undefined, currenc
   return safe.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d })
 }
 
+/**
+ * A unit price / rate: the currency's own minor units at minimum, but any extra decimals the stored rate
+ * actually has are kept (up to 6) instead of being rounded away. An invoice line total is quantity × the EXACT
+ * rate, so printing 0.125 as "0.13" made a client's quantity × rate check disagree with the printed total.
+ */
+export function formatRate(rate: number | string | null | undefined, currency?: string | null): string {
+  const n = Number(rate)
+  const safe = Number.isFinite(n) ? n : 0
+  const d = fractionDigits(currencyCode(currency))
+  return safe.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: Math.max(d, 6) })
+}
+
 /** "USD 1,234.50" */
 export function formatMoney(amount: number | string | null | undefined, currency?: string | null): string {
   return `${currencyCode(currency)} ${formatAmount(amount, currency)}`

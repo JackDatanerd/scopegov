@@ -18,6 +18,7 @@ import { PDF_FONT, sanitizeForPdf } from '@/lib/pdf/fonts'
 import { mapPdfSymbols } from '@/lib/pdf/pdf-symbols'
 import { coWatermarkLabel, CO_STATUS_LABEL } from '@/lib/pdf/co-watermark'
 import { invoiceSingleLineAmount } from '@/lib/pdf/invoice-line'
+import { formatRate } from '@/lib/utils/money'
 
 // Phase 11: the ScopeGov credit in the footer of every document is a real
 // hyperlink now, not plain text — same URL everywhere so it's one place to
@@ -984,7 +985,7 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
               <View key={i} style={[s.itemsRow, i === data.lineItems!.length - 1 ? { borderBottom: 'none' } : {}]}>
                 <Text style={[s.itemsTd, { flex: 1 }]}>{item.description}</Text>
                 <Text style={[s.itemsTd, { width: 40, textAlign: 'center', fontFamily: 'Courier' }]}>{item.quantity}</Text>
-                <Text style={[s.itemsTd, { width: 90, textAlign: 'right', fontFamily: 'Courier' }]}>{item.rate ? `${data.currency} ${fmtInv(item.rate)}` : '—'}</Text>
+                <Text style={[s.itemsTd, { width: 90, textAlign: 'right', fontFamily: 'Courier' }]}>{item.rate ? `${data.currency} ${formatRate(item.rate, data.currency)}` : '—'}</Text>
                 <Text style={[s.itemsTd, { width: 90, textAlign: 'right', fontFamily: 'Courier-Bold' }]}>{data.currency} {fmtInv(item.total)}</Text>
               </View>
             ))}

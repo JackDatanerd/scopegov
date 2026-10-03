@@ -123,7 +123,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // if we got here they have a live link/email — tell them it's dead.
     const client = sow.projects?.clients
     let emailed = true
-    if (client?.email) {
+    // An unverified member never triggers outbound client email (same rule as sending and CO withdraw/close) — the
+    // withdrawal itself still goes through, and the caller is told the client was not notified.
+    if (client?.email && !session.emailVerifiedAt) emailed = false
+    else if (client?.email) {
       const cc = await withPrimaryContactCc(service, sow.projects?.client_id, client.email, client.cc_emails, 'sow')
       const replyTo = await resolveReplyTo(service, session.workspaceId, session.email)
       const delivery = await checkedSend(() => sendDocumentCancelledEmail({

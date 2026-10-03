@@ -72,7 +72,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const project = invoice.projects
     const client = project?.clients
     // A void invoice's portal link is dead (409), so don't email the client a link to nowhere.
-    if (client?.email && invoice.token && invoice.status !== 'void') {
+    // An unverified member never triggers outbound client email (same rule as sending) — the dispute is still resolved.
+    if (client?.email && invoice.token && invoice.status !== 'void' && session.emailVerifiedAt) {
       const cc = await withPrimaryContactCc(service, project?.client_id, client.email, client.cc_emails, 'invoice')
       // FIX (Notifications & email pass 6): the only client-facing send that never resolved a Reply-To, so a client
       // answering "if anything is still unclear…" wrote to noreply@. Same resolution as void / remind.

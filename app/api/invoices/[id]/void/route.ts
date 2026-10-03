@@ -159,7 +159,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // was rejected, nobody was told the client never actually heard about it.
     const client = invoice.projects?.clients
     let clientNotified = true
-    if (invoice.sent_at && client?.email) {
+    // An unverified member never triggers outbound client email (same rule as sending and CO withdraw/close) — the void
+    // itself still goes through, and the caller is told the client was not notified.
+    if (invoice.sent_at && client?.email && !session.emailVerifiedAt) clientNotified = false
+    else if (invoice.sent_at && client?.email) {
       // FIX (deep audit, section 14 — traced bug): same missing
       // withPrimaryContactCc call as invoices/[id]/remind — see that
       // route's comment.

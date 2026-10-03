@@ -5,7 +5,7 @@ import PortalShell from '@/components/portal/PortalShell'
 // FIX (deep audit, client-facing/signing section): see the identical fix and comment on the SOW
 // portal page — this page had the same raw .toLocaleString() money formatting bug, and had by far
 // the most instances of it (every line-item, the running balance, and the contract-position box).
-import { formatAmount } from '@/lib/utils/money'
+import { formatAmount, formatRate } from '@/lib/utils/money'
 import { formatDate } from '@/lib/utils/format'
 
 type PortalState = 'loading' | 'error' | 'ready'
@@ -279,7 +279,7 @@ export default function InvoicePortalPage() {
                   <div key={i} style={{ display: 'flex', padding: '10px 14px', fontSize: 13, borderTop: i > 0 ? '1px solid #F0F0EA' : 'none' }}>
                     <span style={{ flex: 1, color: '#333' }}>{item.description}</span>
                     <span style={{ width: 50, textAlign: 'center', fontFamily: 'IBM Plex Mono, monospace', color: '#555' }}>{item.quantity}</span>
-                    <span style={{ width: 100, textAlign: 'right', fontFamily: 'IBM Plex Mono, monospace', color: '#555' }}>{item.rate ? `${invoice.currency} ${formatAmount(item.rate, invoice.currency)}` : '—'}</span>
+                    <span style={{ width: 100, textAlign: 'right', fontFamily: 'IBM Plex Mono, monospace', color: '#555' }}>{item.rate ? `${invoice.currency} ${formatRate(item.rate, invoice.currency)}` : '—'}</span>
                     <span style={{ width: 100, textAlign: 'right', fontFamily: 'IBM Plex Mono, monospace', fontWeight: 600 }}>{invoice.currency} {formatAmount(item.total, invoice.currency)}</span>
                   </div>
                 ))}

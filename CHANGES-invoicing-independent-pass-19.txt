@@ -1,0 +1,18 @@
+Invoicing (section 12) — independent pass 19
+
+B1  Unverified members could email clients through routes that skip the verified-email gate send / CO routes already apply.
+    - api/invoices/[id]/remind    : 403 "Please verify your email before sending reminders" (same as CO remind)
+    - api/sow/[id]/remind         : same 403 (traced, outside section 12)
+    - api/invoices/[id]/void      : void still succeeds; client email skipped, clientNotified:false
+    - api/invoices/[id]/dispute-resolve : dispute still resolved; email skipped, emailed:false
+    - api/sow/[id]/withdraw       : withdraw still succeeds; email skipped, clientNotified:false
+    - components/projects/ProjectDetail.tsx : SOW withdraw now alerts when clientNotified is false (it ignored it)
+
+B2  Invoice line "Rate" was rounded to the currency's minor units (0.125 printed as 0.13) while the line total is
+    quantity x exact rate, so quantity x printed rate did not match the printed total.
+    - lib/utils/money.ts : new formatRate() keeps up to 6 decimals, never fewer than the currency's own
+    - lib/pdf/renderer.tsx (agency PDF, emailed PDF, portal PDF) and app/portal/invoice/[token]/page.tsx use it
+
+Test: tests/invoicing-pass19-rate-display-and-email-gates.test.ts
+Not run here (no node_modules / network in this sandbox): changed files syntax-checked with esbuild, formatRate output
+verified by hand. Run `npm test` and `npx tsc --noEmit` before pushing.
