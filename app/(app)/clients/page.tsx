@@ -3,6 +3,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import ClientsClient from '@/components/clients/ClientsClient'
 import { fetchPaged } from '@/lib/utils/paginate'
+import { loadMemberProjectIds } from '@/lib/utils/member-project-ids'
 import { getWorkspaceTimeZone } from '@/lib/utils/workspace-time'
 import { effectiveContractValue, monthlyRetainerRate, loadRetainerMonthsBilled } from '@/lib/utils/contract-value'
 
@@ -53,12 +54,8 @@ export default async function ClientsPage() {
   if (!canViewAllProjects) {
     // FIX (independent pass 1, section 14 — B5): the error was dropped, so a failed read looked like "this member
     // has no projects" and every client showed 0 projects. The detail page already throws here; so does this.
-    const { data: ids, error: idsErr } = await (service as any)
-      .from('project_members')
-      .select('project_id, workspace_members!inner(user_id)')
-      .eq('workspace_members.user_id', session.id)
-    if (idsErr) throw new Error(idsErr.message)
-    accessibleProjectIds = new Set((ids || []).map((r: { project_id: string }) => r.project_id))
+    // Paged (a plain select is silently capped at 1000 rows) and throws on a read error — see lib/utils/member-project-ids.ts.
+    accessibleProjectIds = new Set(await loadMemberProjectIds(service, session.id))
   }
 
   // FIX (audit round 4, finding #3): this page shipped email, phone, and

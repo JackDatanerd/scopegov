@@ -14,6 +14,7 @@ import { effectiveContractValue, monthlyRetainerRate, loadRetainerMonthsBilled }
 import { fetchAll } from '@/lib/utils/fetch-all'
 import { summarizeClientMoney, type ClientMoney } from '@/lib/reports/client-money'
 import { isUuidString } from '@/lib/utils/uuid'
+import { loadMemberProjectIds } from '@/lib/utils/member-project-ids'
 import { getWorkspaceTimeZone } from '@/lib/utils/workspace-time'
 import { formatDateInZone } from '@/lib/utils/timezone'
 
@@ -130,12 +131,8 @@ export default async function ClientDetailPage({ params }: Props) {
   const canViewAllProjects = hasPermission(session, 'VIEW_ALL_PROJECTS')
   let accessibleProjectIds: Set<string> | null = null
   if (!canViewAllProjects) {
-    const { data: ids, error: idsErr } = await (service as any)
-      .from('project_members')
-      .select('project_id, workspace_members!inner(user_id)')
-      .eq('workspace_members.user_id', session.id)
-    if (idsErr) throw new Error(idsErr.message)
-    accessibleProjectIds = new Set((ids || []).map((r: { project_id: string }) => r.project_id))
+    // Paged (a plain select is silently capped at 1000 rows) and throws on a read error — see lib/utils/member-project-ids.ts.
+    accessibleProjectIds = new Set(await loadMemberProjectIds(service, session.id))
   }
 
   const { data: projectsAll = [], error: projectsErr } = await (service as any)

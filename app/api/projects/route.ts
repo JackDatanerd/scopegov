@@ -4,6 +4,7 @@ import { getSession, hasPermission } from '@/lib/auth/session'
 import { wouldExceedLimit, isProjectBeyondLimit, projectLimitMessage } from '@/lib/utils/project-limit'
 import { insertAuditRow } from '@/lib/utils/audit'
 import { fetchPaged, fetchPagedIn } from '@/lib/utils/paginate'
+import { loadMemberProjectIds } from '@/lib/utils/member-project-ids'
 import { parseClientInput } from '@/lib/utils/client-input'
 import { escapeLike, sameEmail } from '@/lib/utils/escape-like'
 import {
@@ -279,11 +280,8 @@ export async function GET() {
       // project_members links to workspace_members via member_id (which links
       // to users via user_id) — it has no user_id / workspace_id columns of
       // its own.
-      const { data: ids } = await (service as any)
-        .from('project_members')
-        .select('project_id, workspace_members!inner(user_id)')
-        .eq('workspace_members.user_id', session.id)
-      restrictedIds = (ids || []).map((r: any) => r.project_id)
+      // Paged (a plain select is silently capped at 1000 rows) — see lib/utils/member-project-ids.ts.
+      restrictedIds = await loadMemberProjectIds(service, session.id)
     }
 
     // FIX (Projects & Dashboard independent pass): fetchPaged so this can

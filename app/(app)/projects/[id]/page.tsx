@@ -68,6 +68,10 @@ export default async function ProjectPage({ params, searchParams }: Props) {
   // ProjectDetail's "Regenerate from brief" action can prefill GenerateSowModal
   // from metadata.brief/paymentStructure/revisionRounds. Small jsonb object,
   // already readable by anyone who can read the SOW itself.
+  // FIX (Projects & Dashboard independent pass 6 — B1): project_scope_snapshot.last_updated_by ('signing' |
+  // 'amendment' | 'scope_adjustment') was not selected, so the Overview tab's "Scope snapshot" provenance label
+  // (ProjectDetail.tsx — "Updated by amendment" / "Manually adjusted" / "From signed SOW") always fell through to
+  // "From signed SOW", even right after an accepted change order or a manual scope adjustment rewrote the snapshot.
   // NEVER put // comments inside the select template literal below: they are
   // sent to PostgREST verbatim, the query fails, and every project 404s.
   const { data: project } = await (service as any)
@@ -82,7 +86,7 @@ export default async function ProjectPage({ params, searchParams }: Props) {
       change_orders(id, title, status, parent_co_id, total, subtotal, sent_at, accepted_at, version, document_number,
         counter_amount, counter_note, declined_reason, close_reason, tax_rate, tax_inclusive, is_retainer_renewal, is_credit),
       sow_documents(id, version, status, sent_at, signed_at, created_at, document_number, metadata),
-      project_scope_snapshot(id, deliverables, out_of_scope, last_updated_at)
+      project_scope_snapshot(id, deliverables, out_of_scope, last_updated_at, last_updated_by)
     `)
     // FIX (re-audit, "current SOW" finding): the sow_documents/change_orders
     // embeds had no explicit order, so PostgREST returned them in whatever

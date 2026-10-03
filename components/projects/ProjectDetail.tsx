@@ -107,7 +107,10 @@ export default function ProjectDetail({
   defaultPaymentInstructions = '', billingDefaults,
 }: Props) {
   const router = useRouter()
-  const [tab,        setTab]        = useState(initialTab)
+  // FIX (Projects & Dashboard independent pass 6 — B3): `initialTab` is the raw ?tab= value. The urlTab effect below only
+  // accepts known keys, but this seed did not, so /projects/<id>?tab=foo (a hand-edited or stale link) left no tab active and
+  // an empty content area. An unknown key now opens Overview.
+  const [tab,        setTab]        = useState(TABS.some(t => t.key === initialTab) ? initialTab : 'overview')
   // FIX (Search section, round 5): `tab` was seeded from the server's `initialTab` once and never followed the URL
   // again, and the tab buttons never wrote to it. Picking this project's own SOW / change order / invoice / flag in
   // the command palette is a push to the SAME route with a different ?tab= — the component stays mounted, so

@@ -8,6 +8,7 @@ import { IN_PROGRESS_STATUSES } from '@/lib/utils/project-status'
 import { effectiveContractValue, monthlyRetainerRate, loadRetainerMonthsBilled } from '@/lib/utils/contract-value'
 import { shapeActivityRow, DASHBOARD_NOISE_EVENT_PATTERNS } from '@/lib/utils/activity-format'
 import { fetchPaged, fetchPagedIn, queryInChunks } from '@/lib/utils/paginate'
+import { loadMemberProjectIds } from '@/lib/utils/member-project-ids'
 import type { SessionUser } from '@/lib/supabase/types'
 
 export const metadata = { title: 'Dashboard' }
@@ -96,10 +97,8 @@ export default async function DashboardPage() {
     // FIX: project_members has neither workspace_id nor user_id columns —
     // see app/api/projects/route.ts for the full explanation. This
     // silently returned nothing for anyone without VIEW_ALL_PROJECTS.
-    const { data: myIds } = await (service as any)
-      .from('project_members').select('project_id, workspace_members!inner(user_id)')
-      .eq('workspace_members.user_id', session.id)
-    accessibleProjectIds = (myIds || []).map((r: any) => r.project_id)
+    // Paged (a plain select is silently capped at 1000 rows) — see lib/utils/member-project-ids.ts.
+    accessibleProjectIds = await loadMemberProjectIds(service, session.id)
     if (!accessibleProjectIds?.length) return <EmptyDash session={session} canCreate={canCreate} daysLeft={daysLeft} greetingText={greeting(ws?.timezone)} />
   }
 

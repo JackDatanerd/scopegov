@@ -281,7 +281,10 @@ export default function ProjectDiscussion({
       // an unhandled rejection, no message shown, and the Send button simply un-spun. The draft is kept so it can be resent.
       const json = await res.json().catch(() => ({} as any))
       if (!res.ok || !json.message) { setError(json.error || 'Could not send that message.'); return }
-      setMessages(prev => [...prev, json.message])
+      // FIX (Projects & Dashboard independent pass 6 — B2): the 30s poll can fetch this very message (and add it, de-duplicated
+      // against what it already holds) between the server inserting it and this response arriving — the POST also awaits
+      // the mention notifications. Appending unconditionally then showed it twice (and tripped React's duplicate-key warning).
+      setMessages(prev => prev.some(m => m.id === json.message.id) ? prev : [...prev, json.message])
       setDraft('')
       pickedRef.current = {}
     } catch {

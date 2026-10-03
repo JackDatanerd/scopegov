@@ -1,0 +1,36 @@
+Projects & Dashboard (section 7) — independent pass 6
+=====================================================
+
+Bugs
+----
+B1  Overview "Scope snapshot" provenance label was stuck on "From signed SOW".
+    app/(app)/projects/[id]/page.tsx did not select project_scope_snapshot.last_updated_by, which
+    ProjectDetail.tsx reads to show "Updated by amendment" / "Manually adjusted". Selected now.
+
+B2  A Discussion message could be shown twice.
+    components/projects/ProjectDiscussion.tsx appended the POST response unconditionally; the 30s poll could
+    already have delivered the same message (the POST awaits mention notifications before responding).
+    The append now skips an id that is already in the list.
+
+B3  An unknown ?tab= value left the project page with no active tab and an empty body.
+    components/projects/ProjectDetail.tsx seeded its tab state from the raw URL value. Unknown keys now open Overview.
+
+Hardening (traced across sections)
+----------------------------------
+H1  The restricted-member project-id read (project_members joined to workspace_members) was an unpaged select in
+    five places, so PostgREST's silent 1000-row cap dropped a member's oldest projects from every screen once they
+    had >1000 assignments (the list only grows: rows are never removed on complete/archive).
+    New lib/utils/member-project-ids.ts (loadMemberProjectIds: paged via fetchAll, de-duplicated, throws on error)
+    now backs: app/api/projects/route.ts (GET), app/(app)/dashboard/page.tsx, app/(app)/projects/page.tsx and,
+    outside section 7, app/(app)/clients/page.tsx and app/(app)/clients/[id]/page.tsx (same bug, same fix; both
+    already threw on a read error and still do). Search and the SOW/invoice registries already avoid the id list.
+    Behaviour change: the three section-7 readers used to treat a failed read as "no projects"; they now throw
+    (500 from the API, error boundary on the pages) — consistent with the Clients pages.
+
+Tests
+-----
+tests/projects-dashboard-pass-6.test.ts — 17 cases (B1/B2/B3 source guards; H1 behavioural tests against a fake
+PostgREST capped at 1000 rows: 2500 ids, exactly 1000, empty, de-dupe, ordering/range, error propagation; and a
+guard that all five readers use the helper).
+
+No migrations. No dependency changes.

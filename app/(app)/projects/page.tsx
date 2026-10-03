@@ -7,6 +7,7 @@ import { isAttentionWorthy, attentionReason } from '@/lib/utils/attention'
 import { effectiveContractValue, monthlyRetainerRate, loadRetainerMonthsBilled } from '@/lib/utils/contract-value'
 import { loadUnreadMessageCounts } from '@/lib/utils/project-unread'
 import { fetchPaged, fetchPagedIn, queryInChunks } from '@/lib/utils/paginate'
+import { loadMemberProjectIds } from '@/lib/utils/member-project-ids'
 
 export const metadata = { title: 'Projects' }
 
@@ -31,11 +32,8 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
     // FIX: project_members has neither workspace_id nor user_id columns —
     // see app/api/projects/route.ts for the full explanation. This
     // silently returned nothing for anyone without VIEW_ALL_PROJECTS.
-    const { data: ids } = await (service as any)
-      .from('project_members')
-      .select('project_id, workspace_members!inner(user_id)')
-      .eq('workspace_members.user_id', session.id)
-    restrictedIds = ((ids || []) as { project_id: string }[]).map(r => r.project_id)
+    // Paged (a plain select is silently capped at 1000 rows) — see lib/utils/member-project-ids.ts.
+    restrictedIds = await loadMemberProjectIds(service, session.id)
     if (restrictedIds.length === 0) return <EmptyProjects canCreate={canCreate} />
   }
 
