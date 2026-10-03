@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import ApprovalWorkflowsClient from '@/components/settings/ApprovalWorkflowsClient'
+import { fetchPaged } from '@/lib/utils/paginate'
 
 export const metadata = { title: 'Approval Workflows' }
 
@@ -87,12 +88,21 @@ export default async function ApprovalWorkflowsPage() {
     // FIX (section-11 audit, pass 2): the currencies projects are ACTUALLY billed in, so
     // the editor can warn when a value threshold would silently leave some of them
     // ungated (a threshold only ever compares documents in its own currency).
-    (service as any)
-      .from('projects')
-      .select('currency')
-      .eq('workspace_id', session.workspaceId)
-      .is('deleted_at', null)
-      .limit(5000),
+    // FIX (Settings independent pass 7): this was `.limit(5000)`, but PostgREST silently caps a read at its Max Rows
+    // setting (1000 by default), so past ~1000 projects a currency that only appears later was missing from the
+    // "these currencies won't be gated" warning. Paged, like the audit page's project list. Failure is tolerated
+    // (the warning is advisory) and keeps the { data, error } shape the code below reads.
+    fetchPaged<any>(
+      (f, t) => (service as any)
+        .from('projects')
+        .select('id, currency', { count: 'exact' })
+        .eq('workspace_id', session.workspaceId)
+        .is('deleted_at', null)
+        .order('id')
+        .range(f, t),
+      { maxRows: 50000 },
+    ).then(r => ({ data: r.rows as any[], error: null as any }))
+     .catch(error => ({ data: null as any[] | null, error })),
   ])
 
   // FIX (Settings independent pass 5 — B2): none of these reads' errors were checked, so a failed workflows
@@ -162,6 +172,7 @@ export default async function ApprovalWorkflowsPage() {
         roles={roles}
         members={members}
         workspaceCurrency={workspaceCurrency}
+        workspaceId={session.workspaceId}
         projectCurrencies={projectCurrencies}
       />
     </div>

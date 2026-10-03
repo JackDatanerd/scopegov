@@ -14,7 +14,7 @@ const PREFIX_RE = /^[A-Z0-9]([A-Z0-9-]{0,10}[A-Z0-9])?$/
 const preview = (prefix: string, next: number) =>
   `${prefix}-${String(Math.max(1, Math.floor(next) || 1)).padStart(4, '0')}`
 
-export default function DocumentNumberingSection() {
+export default function DocumentNumberingSection({ workspaceId }: { workspaceId?: string }) {
   const [rows, setRows] = useState<Sequence[] | null>(null)
   const [loadErr, setLoadErr] = useState('')
   // Editable copies, keyed by document type.
@@ -56,7 +56,7 @@ export default function DocumentNumberingSection() {
     try {
       const res = await fetch('/api/workspace/numbering', {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ documentType: s.documentType, prefix, nextNumber: next }),
+        body: JSON.stringify({ documentType: s.documentType, prefix, nextNumber: next, ...(workspaceId ? { workspaceId } : {}) }),
       })
       const json = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(json.error || 'Save failed')

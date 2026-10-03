@@ -1,0 +1,8 @@
+Settings independent pass 7
+- Stale-tab guard (lib/utils/workspace-guard.ts) on every Settings write that lacked one: numbering PUT, notification-defaults PATCH,
+  approval-workflows POST, defaults DELETE. SettingsClient now sends workspaceId on every settings/branding/defaults save.
+- Approvals page: project currencies read with fetchPaged (was .limit(5000), capped at 1000 by PostgREST).
+- settings route: replyToEmail redacted in audit; NUL/lone-surrogate stripped from governingLaw, taxId, phone, website,
+  payment instructions and address fields (was a generic 500).
+- defaults GET: standard-terms wording only returned to members who can manage settings.
+- Dropped: legacy revision-rounds trap (migration 130 already clamps and constrains).

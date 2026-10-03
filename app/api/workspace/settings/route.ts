@@ -10,6 +10,7 @@ import { sanitizeDisplayName } from '@/lib/utils/sanitize'
 import { INDUSTRIES, CURRENCIES } from '@/lib/constants/workspace-options'
 import { isValidTimeZone, formatDateInZone } from '@/lib/utils/timezone'
 import { diffFields, sameValue } from '@/lib/utils/audit-diff'
+import { stripUnstorableText } from '@/lib/utils/sanitize'
 
 // FEATURE (deep audit, Settings independent re-pass — feature gap):
 // workspaces.slug/slug_changed_at (migration 001) have existed since day
@@ -68,7 +69,9 @@ const COLUMNS: Record<string, string> = {
 // required) and included as-is in JSON/CSV/PDF audit exports, since
 // lib/audit/redact.ts's money-word matcher has no reason to catch address
 // fields either.
-const AUDIT_REDACT = ['taxId', 'defaultPaymentInstructions', 'phone', 'legalAddress']
+// FIX (Settings independent pass 7): replyToEmail is a contact address, the same class as phone — it was written
+// verbatim (from/to) into audit metadata readable with VIEW_AUDIT_LOG alone and exported as-is.
+const AUDIT_REDACT = ['taxId', 'defaultPaymentInstructions', 'phone', 'legalAddress', 'replyToEmail']
 
 const SUPPORTED_SOW_LANGUAGES = ['en', 'es', 'fr', 'pt', 'de', 'sw']
 const SENSITIVITY_TIERS = ['conservative', 'medium', 'aggressive']
@@ -142,7 +145,7 @@ function parseField(key: string, value: unknown): unknown {
       return base
     }
     case 'governingLaw': {
-      const v = requireString(value, 'Governing law').trim()
+      const v = stripUnstorableText(requireString(value, 'Governing law')).trim()
       if (v.length > 200) throw new FieldError('Governing law must be under 200 characters')
       return v
     }
@@ -203,7 +206,7 @@ function parseField(key: string, value: unknown): unknown {
       for (const field of ['line1', 'line2', 'city', 'region', 'postalCode', 'country'] as const) {
         const raw = (value as Record<string, unknown>)[field]
         if (typeof raw !== 'string') continue
-        const trimmed = raw.trim()
+        const trimmed = stripUnstorableText(raw).trim()
         if (trimmed.length > 200) throw new FieldError(`Address ${field} must be under 200 characters`)
         if (trimmed) clean[field] = trimmed
       }
@@ -213,7 +216,8 @@ function parseField(key: string, value: unknown): unknown {
       const spec = OPTIONAL_TEXT[key]
       if (!spec) throw new FieldError(`Unknown setting: ${key}`)
       if (value === null) return null
-      const v = requireString(value, spec.label).trim()
+      // FIX (Settings independent pass 7): a pasted NUL or half-emoji made Postgres reject the whole save (generic 500).
+      const v = stripUnstorableText(requireString(value, spec.label)).trim()
       if (v.length > spec.max) throw new FieldError(`${spec.label} must be under ${spec.max} characters`)
       return v
     }

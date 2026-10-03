@@ -8,6 +8,7 @@ import { diffFields, sameValue } from '@/lib/utils/audit-diff'
 import { parseStandardsInput } from '@/lib/utils/agency-standards'
 import { SOW_LANGUAGE_NAMES, isSowLanguage } from '@/lib/ai/sow-content'
 import type { SessionUser } from '@/lib/supabase/types'
+import { staleWorkspaceResponse } from '@/lib/utils/workspace-guard'
 
 const PROJECT_TYPES = ['web', 'mobile', 'brand', 'ecomm', 'marketing', 'retainer', 'video', 'other'] as const
 type ProjectType = typeof PROJECT_TYPES[number]
@@ -407,6 +408,9 @@ export async function DELETE(request: NextRequest) {
     const session = auth.session!
 
     const { searchParams } = new URL(request.url)
+    // FIX (Settings independent pass 7): stale-tab guard — a removal must not hit another workspace's override.
+    const stale = staleWorkspaceResponse(searchParams.get('workspaceId'), session.workspaceId)
+    if (stale) return stale
     const projectType = normalizeProjectType(searchParams.get('projectType'))
     if (!projectType || projectType === 'invalid') {
       return NextResponse.json({ error: 'projectType is required and must be a specific type (the global default cannot be deleted)' }, { status: 400 })
@@ -475,6 +479,11 @@ export async function GET(request: NextRequest) {
     // true. parseText/parseClauses no longer collapse a submitted '' or []
     // to null on the way in, so a real empty value now persists and is
     // honoured here rather than masked.
+    // FIX (Settings independent pass 7): the agency's standard-terms wording (and the per-type override flag) was
+    // readable by every member, although settings/page.tsx withholds the same data from anyone without
+    // MANAGE_WORKSPACE_SETTINGS. Members creating a project only need rounds, payment structure and currency;
+    // SOW generation reads the standards server-side.
+    const canSeeStandards = hasPermission(session, 'MANAGE_WORKSPACE_SETTINGS')
     const own = (field: string) => {
       if (!typeDefaults) return globalDefaults?.[field]
       const v = typeDefaults[field]
@@ -484,10 +493,10 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       revisionRounds:    typeDefaults?.revision_rounds ?? globalDefaults?.revision_rounds ?? 2,
       paymentStructure:  typeDefaults?.payment_structure ?? globalDefaults?.payment_structure ?? '50_50',
-      revisionPolicy:    own('revision_policy') ?? '',
-      paymentTerms:      own('payment_terms') ?? '',
-      outOfScopeClauses: own('out_of_scope_clauses') ?? [],
-      assumptions:       own('assumptions') ?? [],
+      revisionPolicy:    canSeeStandards ? (own('revision_policy') ?? '') : '',
+      paymentTerms:      canSeeStandards ? (own('payment_terms') ?? '') : '',
+      outOfScopeClauses: canSeeStandards ? (own('out_of_scope_clauses') ?? []) : [],
+      assumptions:       canSeeStandards ? (own('assumptions') ?? []) : [],
       governingLaw:      workspace?.governing_law ?? null,
       sowLanguage:       workspace?.sow_language ?? 'en',
       currency:          workspace?.currency ?? 'USD',

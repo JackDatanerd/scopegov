@@ -61,8 +61,8 @@ function newStep(): StepDraft {
   return { key: Math.random().toString(36).slice(2), kind: '', id: '' }
 }
 
-export default function ApprovalWorkflowsClient({ initialWorkflows, roles, members, workspaceCurrency, projectCurrencies = [] }: {
-  initialWorkflows: Workflow[]; roles: Role[]; members: Member[]; workspaceCurrency?: string; projectCurrencies?: string[]
+export default function ApprovalWorkflowsClient({ initialWorkflows, roles, members, workspaceCurrency, projectCurrencies = [], workspaceId }: {
+  initialWorkflows: Workflow[]; roles: Role[]; members: Member[]; workspaceCurrency?: string; projectCurrencies?: string[]; workspaceId?: string
 }) {
   const router = useRouter()
   const [workflows, setWorkflows] = useState<Workflow[]>(initialWorkflows)
@@ -198,6 +198,7 @@ export default function ApprovalWorkflowsClient({ initialWorkflows, roles, membe
           members={members}
           workspaceCurrency={workspaceCurrency}
           projectCurrencies={projectCurrencies}
+          workspaceId={workspaceId}
           onClose={() => setEditing(null)}
           onSaved={() => { setEditing(null); refresh() }}
         />
@@ -206,10 +207,10 @@ export default function ApprovalWorkflowsClient({ initialWorkflows, roles, membe
   )
 }
 
-function WorkflowEditorModal({ workflow, defaultType, roles, members, workspaceCurrency, projectCurrencies, onClose, onSaved }: {
+function WorkflowEditorModal({ workflow, defaultType, roles, members, workspaceCurrency, projectCurrencies, workspaceId, onClose, onSaved }: {
   workflow: Workflow | null
   defaultType: 'sow' | 'co' | 'invoice'
-  roles: Role[]; members: Member[]; workspaceCurrency?: string; projectCurrencies: string[]
+  roles: Role[]; members: Member[]; workspaceCurrency?: string; projectCurrencies: string[]; workspaceId?: string
   onClose: () => void; onSaved: () => void
 }) {
   const isEdit = !!workflow
@@ -297,6 +298,8 @@ function WorkflowEditorModal({ workflow, defaultType, roles, members, workspaceC
     setSaving(true)
     try {
       const payload = {
+        // Stale-tab guard (Settings independent pass 7): a create must not land on a different workspace.
+        ...(!isEdit && workspaceId ? { workspaceId } : {}),
         documentType: documentType,
         name: name.trim(),
         thresholdAmount: hasThreshold && threshold !== '' ? Number(threshold) : null,

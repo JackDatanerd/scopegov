@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { staleWorkspaceResponse } from '@/lib/utils/workspace-guard'
 
 // Document numbering (SOW / change order / invoice): a per-workspace prefix and the next number.
 // The counter itself lives in workspace_document_sequences and is advanced atomically by
@@ -63,6 +64,10 @@ export async function PUT(request: NextRequest) {
     const body = await request.json().catch(() => null)
     if (!body || typeof body !== 'object' || Array.isArray(body))
       return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+
+    // FIX (Settings independent pass 7): stale-tab guard — see lib/utils/workspace-guard.ts.
+    const stale = staleWorkspaceResponse((body as any).workspaceId, session.workspaceId)
+    if (stale) return stale
 
     const documentType = (body as any).documentType as DocType
     if (!TYPES.includes(documentType)) return NextResponse.json({ error: 'Invalid document type' }, { status: 400 })

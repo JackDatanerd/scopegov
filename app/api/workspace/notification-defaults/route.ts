@@ -18,6 +18,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { logAudit } from '@/lib/utils/audit'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
+import { staleWorkspaceResponse } from '@/lib/utils/workspace-guard'
 import { ALL_EVENT_TYPES as ALL_EVENTS, EMAIL_EVENT_TYPES as EMAIL_EVENTS, IN_APP_ONLY_EVENT_TYPES as IN_APP_ONLY } from '@/lib/constants/notification-events'
 
 // Lists live in lib/constants/notification-events.ts (they were hand-synced in four places).
@@ -90,6 +91,9 @@ export async function PATCH(request: NextRequest) {
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
       return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
     }
+    // FIX (Settings independent pass 7): stale-tab guard — see lib/utils/workspace-guard.ts.
+    const stale = staleWorkspaceResponse((body as any).workspaceId, session.workspaceId)
+    if (stale) return stale
     const { eventType, enabled, locked, inAppEnabled } = body as Record<string, unknown>
     if (typeof eventType !== 'string' || !ALL_EVENT_TYPES.includes(eventType)) {
       return NextResponse.json({ error: 'Unknown event type' }, { status: 400 })

@@ -417,7 +417,10 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
     setSaving(true); setError(''); setConflict(false); setWarning('')
     lastPatchJson.current = null
     try {
-      const res  = await fetch(path, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      // Stale-tab guard (Settings independent pass 7): say which workspace this page is showing, so a tab left open
+      // across a workspace switch is refused (409) instead of saving onto the workspace that is active now.
+      const payload = workspace?.id ? { ...body, workspaceId: workspace.id } : body
+      const res  = await fetch(path, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
       const json = await res.json().catch(() => ({}))
       lastPatchJson.current = json
       if (!res.ok) {
@@ -516,7 +519,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
 
         {tab === 'workspace' && (
           <WorkspaceTab form={wsForm} setForm={setWsForm} permissions={permissions} onSave={patchWorkspace} saving={saving}
-            slugChangedAt={workspace?.slug_changed_at || null} savedTimezone={workspace?.timezone || null} />
+            slugChangedAt={workspace?.slug_changed_at || null} savedTimezone={workspace?.timezone || null} workspaceId={workspace?.id} />
         )}
 
         {tab === 'branding' && (
@@ -533,7 +536,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
         )}
 
         {tab === 'defaults' && (
-          <DefaultsTab form={defaultsForm} setForm={setDefaultsForm} permissions={permissions} onSave={patch} saving={saving} setTab={setTab} globalLoadFailed={loadFailed.defaults} />
+          <DefaultsTab form={defaultsForm} setForm={setDefaultsForm} permissions={permissions} onSave={patch} saving={saving} setTab={setTab} globalLoadFailed={loadFailed.defaults} workspaceId={workspace?.id} />
         )}
 
         {tab === 'guardian' && (
@@ -542,7 +545,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
 
         {tab === 'billing' && <BillingTab workspace={workspace} billing={billing} billingLoadFailed={!!loadFailed.billing} session={session} permissions={permissions} />}
 
-        {tab === 'notifications' && <NotificationsTab permissions={permissions} />}
+        {tab === 'notifications' && <NotificationsTab permissions={permissions} workspaceId={workspace?.id} />}
 
         {tab === 'integrations' && <IntegrationsTab session={session} />}
 
@@ -819,7 +822,7 @@ function AccountTab({ session, supabase, router, mfaMandatory }: any) {
 }
 
 // ── WORKSPACE ─────────────────────────────────────────────────
-function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedAt, savedTimezone }: any) {
+function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedAt, savedTimezone, workspaceId }: any) {
   // Full runtime timezone list, read after mount (see runtimeTimezones).
   const [zones, setZones] = useState<string[]>(FALLBACK_TIMEZONES)
   useEffect(() => { setZones(runtimeTimezones()) }, [])
@@ -1052,7 +1055,7 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedA
           onClick={() => onSave('/api/workspace/settings', form)}>
           {saving ? <span className="spin" /> : 'Save changes'}
         </button>
-        <DocumentNumberingSection />
+        <DocumentNumberingSection workspaceId={workspaceId} />
       </div>
     </div>
   )
@@ -1384,7 +1387,7 @@ function StandardsFields({ value, onChange, disabled }: { value: StandardsForm; 
 // never shows a value that isn't what's stored.
 const REVISION_ROUND_CHOICES = Array.from({ length: 10 }, (_, i) => String(i + 1))
 
-function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab, globalLoadFailed }: any) {
+function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab, globalLoadFailed, workspaceId }: any) {
   function set(key: string, value: string) {
     setForm((f: any) => ({ ...f, [key]: value }))
   }
@@ -1499,7 +1502,7 @@ function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab, globa
     if (!confirm(`Remove the ${PROJECT_TYPE_LABELS[scope]} override? New ${PROJECT_TYPE_LABELS[scope]} projects will go back to using the global default.`)) return
     setTypeLoading(true); setLocalError('')
     try {
-      const res = await fetch(`/api/workspace/defaults?projectType=${scope}`, { method: 'DELETE' })
+      const res = await fetch(`/api/workspace/defaults?projectType=${scope}${workspaceId ? `&workspaceId=${encodeURIComponent(workspaceId)}` : ''}`, { method: 'DELETE' })
       if (res.ok) await refetchType()
       else { const json = await res.json().catch(() => ({})); setLocalError(json.error || 'Could not remove that override. Try again.') }
     } catch { setLocalError('Could not remove that override. Try again.') }
@@ -2187,7 +2190,7 @@ function BillingTab({ workspace, billing, billingLoadFailed = false, session, pe
 }
 
 // ── NOTIFICATIONS ─────────────────────────────────────────────
-function NotificationsTab({ permissions }: { permissions: { manageWorkspace: boolean } }) {
+function NotificationsTab({ permissions, workspaceId }: { permissions: { manageWorkspace: boolean }; workspaceId?: string }) {
   const [prefs,   setPrefs]   = useState<Record<string, boolean> | null>(null)
   // The bell channel of the EMAIL events (each can now be muted independently of its email).
   const [inAppPrefs, setInAppPrefs] = useState<Record<string, boolean>>({})
@@ -2312,7 +2315,7 @@ function NotificationsTab({ permissions }: { permissions: { manageWorkspace: boo
         </div>
       )}
 
-      {permissions.manageWorkspace && <WorkspaceNotificationDefaultsSection />}
+      {permissions.manageWorkspace && <WorkspaceNotificationDefaultsSection workspaceId={workspaceId} />}
     </div>
   )
 }
@@ -2324,7 +2327,7 @@ function NotificationsTab({ permissions }: { permissions: { manageWorkspace: boo
 // read-side logic that makes it take effect. Reuses the same NOTIF_ITEMS/
 // IN_APP_NOTIF_ITEMS label lists as the personal section above rather than
 // a third copy.
-function WorkspaceNotificationDefaultsSection() {
+function WorkspaceNotificationDefaultsSection({ workspaceId }: { workspaceId?: string }) {
   const [defaults, setDefaults] = useState<Record<string, { emailEnabled: boolean; inAppEnabled: boolean; locked: boolean }> | null>(null)
   const [saving,   setSaving]   = useState<string | null>(null)
   const [loadErr,  setLoadErr]  = useState('')
@@ -2355,7 +2358,7 @@ function WorkspaceNotificationDefaultsSection() {
     try {
       const res = await fetch('/api/workspace/notification-defaults', {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ eventType: key, enabled, locked, ...(inAppEnabled !== undefined ? { inAppEnabled } : {}) }),
+        body: JSON.stringify({ eventType: key, enabled, locked, ...(inAppEnabled !== undefined ? { inAppEnabled } : {}), ...(workspaceId ? { workspaceId } : {}) }),
       })
       if (!res.ok) throw new Error()
     } catch {

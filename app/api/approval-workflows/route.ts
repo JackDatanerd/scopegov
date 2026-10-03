@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
+import { staleWorkspaceResponse } from '@/lib/utils/workspace-guard'
 import { CURRENCIES } from '@/lib/constants/workspace-options'
 import { parseWorkflowSteps, parseThresholdAmount } from '@/lib/approvals/workflow-input'
 
@@ -63,6 +64,9 @@ export async function POST(request: NextRequest) {
     const body = await request.json().catch(() => null)
     if (!body || typeof body !== 'object' || Array.isArray(body))
       return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+    // FIX (Settings independent pass 7): stale-tab guard — see lib/utils/workspace-guard.ts.
+    const stale = staleWorkspaceResponse(body?.workspaceId, session.workspaceId)
+    if (stale) return stale
     const documentType: string = body?.documentType
     const name: string = typeof body?.name === 'string' ? body.name.trim() : ''
     // FIX (section-11 audit, pass 1 — B5): shared parsers, see lib/approvals/workflow-input.ts. A threshold
