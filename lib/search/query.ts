@@ -72,11 +72,29 @@ function split(s: string): string[] {
   return out.slice(0, MAX_TOKENS)
 }
 
+// FIX (Search section, round 9): `split` de-duplicates (the per-word AND filters gain nothing from "yum AND yum"), but the
+// WHOLE-PHRASE the route uses for its exact-name / prefix fetches and the ranker uses for its exact-match bonus was built
+// by joining those de-duplicated tokens — so "yum yum" collapsed to "yum", the client called "Yum" outscored the client
+// actually named "Yum Yum" (150 vs 50), and the exact-name fetch looked for the wrong string. The phrase keeps repeats.
+function splitKeepRepeats(s: string): string[] {
+  return s.split(/\s+/).filter(Boolean).slice(0, MAX_TOKENS)
+}
+
 /** Accent-folded tokens — for the generated search_text columns. */
 export function foldedTokens(raw: string): string[] {
   // `*` is stripped AFTER folding as well as before (clean): unaccent() maps × ⁎ ＊ to a literal `*`, which
   // PostgREST would then read as a `%` wildcard that cannot be escaped.
   return split(normalizeSearchText(clean(raw)).replace(/\*/g, ' '))
+}
+
+/** The accent-folded query as typed — repeated words kept (capped at MAX_TOKENS words like the tokens). */
+export function foldedPhrase(raw: string): string {
+  return splitKeepRepeats(normalizeSearchText(clean(raw)).replace(/\*/g, ' ')).join(' ')
+}
+
+/** The lower-cased (accents kept) query as typed — repeated words kept. */
+export function plainPhrase(raw: string): string {
+  return splitKeepRepeats(clean(raw).toLowerCase()).join(' ')
 }
 
 /** Lower-cased (accents kept) tokens — for plain columns such as titles. */
@@ -112,12 +130,12 @@ export function isSearchable(raw: string | null | undefined): boolean {
  * the few rows each block fetches, since a bare LIMIT returned an arbitrary
  * subset.
  */
-export function scoreMatch(text: string, tokens: string[]): number {
+export function scoreMatch(text: string, tokens: string[], phrase: string = tokens.join(' ')): number {
   if (tokens.length === 0) return 0
   const t = normalizeSearchText(text)
   const words = t.split(/[\s\-_.,;:!?/\\()[\]{}&'"+#@]+/).filter(Boolean)
   let score = 0
-  if (t === tokens.join(' ')) score += 100
+  if (t === phrase) score += 100
   if (t.startsWith(tokens[0])) score += 40
   for (const tok of tokens) {
     if (words.some(w => w.startsWith(tok))) score += 10
@@ -127,9 +145,9 @@ export function scoreMatch(text: string, tokens: string[]): number {
 }
 
 /** Stable sort by descending relevance. */
-export function rankBy<T>(items: T[], tokens: string[], textOf: (item: T) => string): T[] {
+export function rankBy<T>(items: T[], tokens: string[], textOf: (item: T) => string, phrase?: string): T[] {
   return items
-    .map((item, i) => ({ item, i, s: scoreMatch(textOf(item), tokens) }))
+    .map((item, i) => ({ item, i, s: scoreMatch(textOf(item), tokens, phrase) }))
     .sort((a, b) => b.s - a.s || a.i - b.i)
     .map(x => x.item)
 }

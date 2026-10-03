@@ -1,0 +1,21 @@
+Search section (20) - independent pass 9
+========================================
+
+BUG: repeated words in a query were collapsed before the whole-phrase string was built.
+  lib/search/query.ts split() de-duplicates tokens (right for the per-word AND filters), but the route built its
+  whole-phrase strings (exact-name equality fetch, prefix fetch, document-number pattern) and scoreMatch built its
+  exact-match bonus from those de-duplicated tokens. "yum yum" became "yum": the exact-name fetch looked for the wrong
+  string and the client called "Yum" scored 150 against 50 for the client actually named "Yum Yum" (same for
+  "Bora Bora", "Walla Walla", "Chop Chop" ...). Results were found, but ordered wrongly.
+
+FIX
+  lib/search/query.ts   foldedPhrase() / plainPhrase() keep repeated words (capped at MAX_TOKENS words);
+                        scoreMatch / rankBy take an optional phrase (default = tokens joined, so nothing else changes).
+  app/api/search/route.ts  wholeFolded / wholePlain built from the phrase helpers; every rankBy call passes wholeFolded;
+                        unused `plain` tokens removed.
+  tests/search-independent-pass-9.test.ts  NEW
+
+NOTE: the per-word filters still use the de-duplicated tokens, and isSearchable is unchanged ("a a" stays unsearchable).
+vitest / tsc could not be run in the sandbox (no node_modules): run
+  npx tsc --noEmit
+  npx vitest run tests/search-query.test.ts tests/search-route.test.ts tests/search-independent-pass-9.test.ts
