@@ -326,3 +326,25 @@ describe('portfolio pass 6 — client identity and cross-currency ordering', () 
     expect(h.projectRisk.map(r => r.projectId)).toEqual(['big', 'small'])
   })
 })
+
+describe('portfolio data — projects-by-risk ordering without VIEW_FINANCIALS', () => {
+  const flag = (id: string, project_id: string, severity: string) =>
+    ({ id, project_id, severity, status: 'open', description: id, sow_reference: 's', created_at: '2026-09-02T00:00:00Z' })
+  const tables = () => ({
+    ...empty,
+    // "rich" carries by far the most money at risk but the fewest high flags; "poor" has the most high flags.
+    projects: [proj('rich', { contract_value: 900000 }), proj('mid', { contract_value: 50000 }), proj('poor', { contract_value: 1000 })],
+    guardian_flags: [flag('a', 'rich', 'low'), flag('b', 'mid', 'high'), flag('c', 'poor', 'high'), flag('d', 'poor', 'high')],
+  })
+
+  it('a viewer with financials sees biggest exposure first', async () => {
+    const d = await getPortfolioData(fakeService(tables()), 'w', '90d', true, true)
+    expect(d.projectRisk.map(r => r.projectId)).toEqual(['rich', 'mid', 'poor'])
+  })
+
+  it('a viewer without financials gets money masked AND an order that does not encode money (high flags, then open flags)', async () => {
+    const d = await getPortfolioData(fakeService(tables()), 'w', '90d', false, true)
+    expect(d.projectRisk.map(r => r.projectId)).toEqual(['poor', 'mid', 'rich'])
+    expect(d.projectRisk.every(r => r.atRisk === null && r.flagRisk === null && r.effectiveValue === null)).toBe(true)
+  })
+})

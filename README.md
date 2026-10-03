@@ -277,7 +277,7 @@ Per Bug Catalogue — verify these before deploying:
 - [ ] Embedding computed for all submissions, persisted only for non-duplicates (BUG-060)
 - [ ] `VIEW_OWN_PROJECTS` vs `VIEW_ALL_PROJECTS` are distinct query paths (BUG-058)
 - [ ] Onboarding page at `app/onboarding/` — OUTSIDE `(app)/` group (BUG-001)
-- [ ] Portfolio dashboard (`/portfolio`) is gated on `VIEW_ALL_PROJECTS` server-side (page) AND in the API route — never trust the sidebar link being hidden as the actual gate
+- [ ] Portfolio dashboard (`/portfolio`) is gated on `VIEW_PORTFOLIO` server-side (page) AND in the API route — never trust the sidebar link being hidden as the actual gate
 - [ ] `scope_health_snapshots` upsert uses `onConflict: 'workspace_id,snapshot_date'` — safe to re-run the rollup cron the same day without duplicating rows
 - [ ] `flag_comments`/`flag_attachments` `entity_type` is validated against `isValidEntityType` before every DB read/write — never interpolated from the URL unchecked
 - [ ] `contract_value_at_risk` is single-currency per snapshot (resolved the same way `/api/reports` picks a currency) — never summed across currencies
@@ -307,8 +307,8 @@ Per Bug Catalogue — verify these before deploying:
 - [ ] Invite email → new user → accept → workspace member active
 - [ ] Invite email → existing user → sign in → accept
 - [ ] Trigger `POST /api/cron/scope-health-rollup` manually (with `CRON_SECRET`) → `scope_health_snapshots` row appears for today
-- [ ] Visit `/portfolio` as a VIEW_ALL_PROJECTS holder → metrics, trend chart, and drill-down tables render
-- [ ] Visit `/portfolio` as a member without VIEW_ALL_PROJECTS → sees the permission-required message, not the dashboard, and the sidebar link is hidden
+- [ ] Visit `/portfolio` as a VIEW_PORTFOLIO holder → metrics, trend chart, and drill-down tables render
+- [ ] Visit `/portfolio` as a member without VIEW_PORTFOLIO → sees the permission-required message, not the dashboard, and the sidebar link is hidden
 - [ ] Open a Guardian flag → "Notes & evidence" → post a comment as an APPROVE_FLAGS holder → appears immediately, flag owner gets a notification
 - [ ] Upload a file under "Notes & evidence" → appears in the list with a working signed download link
 
@@ -373,7 +373,7 @@ alerts but keeps the heartbeat. Every run is also appended to `cron_run_history`
    (`high=1.0 / medium=0.5 / low=0.2`) — see comments in
    `app/api/cron/scope-health-rollup/route.ts` for the exact formula. The
    multiplier values are a tuning knob, not a schema decision.
-3. `/portfolio` (gated on `VIEW_ALL_PROJECTS`) reads snapshots for the
+3. `/portfolio` (gated on `VIEW_PORTFOLIO`) reads snapshots for the
    trend chart and live tables (`guardian_flags`, stalled `projects`/
    `change_orders`) for drill-down, via `GET /api/reports/portfolio`.
 4. The governance-scoped collaboration addendum — `flag_comments` and

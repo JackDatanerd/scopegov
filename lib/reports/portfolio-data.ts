@@ -139,6 +139,35 @@ const DEFAULT_STUCK_DOCS_LIMIT = 100
 // below), rather than no cap at all.
 const HISTORY_MAX_ROWS = 20000
 
+/**
+ * Projects-by-risk ordering for a viewer WITHOUT VIEW_FINANCIALS.
+ *
+ * computeScopeHealth ranks rows by money exposure (within currency). Masking `atRisk` to null in the payload
+ * is not enough on its own: the server-side order -- and the PDF/CSV "top 20" cut that follows it -- would still
+ * leak which projects carry the most contract value at risk. For these viewers the rows are re-ranked on
+ * non-monetary signals only: currency group (headline currency first, same order as the rollup), then high
+ * flags, open flags, stuck docs, and name as the stable tie-break.
+ */
+function rankProjectRiskWithoutMoney<R extends { projectId: string; highFlags: number; openFlags: number; stuckDocs: number }>(
+  rows: R[],
+  projectById: Map<string, { name: string; currency: string }>,
+): R[] {
+  const groupOrder = new Map<string, number>()
+  for (const r of rows) {
+    const cur = projectById.get(r.projectId)?.currency || 'USD'
+    if (!groupOrder.has(cur)) groupOrder.set(cur, groupOrder.size)
+  }
+  const keyOf = (r: R) => ({
+    group: groupOrder.get(projectById.get(r.projectId)?.currency || 'USD') ?? 0,
+    name: projectById.get(r.projectId)?.name || '',
+  })
+  return [...rows].sort((a, b) => {
+    const ka = keyOf(a), kb = keyOf(b)
+    return ka.group - kb.group || b.highFlags - a.highFlags || b.openFlags - a.openFlags || b.stuckDocs - a.stuckDocs
+      || ka.name.localeCompare(kb.name) || a.projectId.localeCompare(b.projectId)
+  })
+}
+
 export async function getPortfolioData(
   service: any,
   workspaceId: string,
@@ -311,7 +340,7 @@ export async function getPortfolioData(
         since: d.since,
       }
     }),
-    projectRisk: health.projectRisk.map(r => {
+    projectRisk: (canViewFinancials ? health.projectRisk : rankProjectRiskWithoutMoney(health.projectRisk, projectById)).map(r => {
       const p = projectById.get(r.projectId)
       return {
         projectId: r.projectId, projectName: p?.name || 'Unknown project',

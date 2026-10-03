@@ -317,7 +317,7 @@ export default function PortfolioDashboard({ canViewFinancials, agencyName, canO
 
           <div>
             <div className="sec-hd">
-              <div className="sec-title">Open scope flags ({filteredFlags.length}{flagsTotal > filteredFlags.length ? ` of ${flagsTotal} · highest severity first` : ''})</div>
+              <div className="sec-title">Open scope flags ({filteredFlags.length}{flagsTotal > filteredFlags.length ? ` of ${flagsTotal}${flagFilter === 'all' ? ' · highest severity first' : ''}` : ''})</div>
               <div style={{ display: 'flex', gap: 4 }}>
                 {(['all', 'high', 'medium', 'low'] as const).map(s => (
                   <button key={s}
