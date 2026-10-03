@@ -43,6 +43,7 @@
 import { fetchPaged } from '@/lib/utils/paginate'
 import { IN_PROGRESS_STATUSES, isInProgressStatus } from '@/lib/utils/project-status'
 import { amendmentImpact, baseContractValue, loadRetainerMonthsBilled } from '@/lib/utils/contract-value'
+import { getWorkspaceCurrency } from '@/lib/utils/workspace-currency'
 
 export { IN_PROGRESS_STATUSES }
 
@@ -303,7 +304,12 @@ export async function computeScopeHealth(
     if (!Object.keys(fallback).length) {
       for (const p of Object.values(projectById)) fallback[p.currency] = (fallback[p.currency] || 0) + 1
     }
-    currency = Object.keys(fallback).sort((a, b) => fallback[b] - fallback[a] || a.localeCompare(b))[0] || 'USD'
+    currency = Object.keys(fallback).sort((a, b) => fallback[b] - fallback[a] || a.localeCompare(b))[0]
+    // FIX (Portfolio pass 2, section 8): a workspace with NO projects (every new workspace) fell through to a
+    // hard-coded 'USD', so its tiles/CSV/PDF showed $ and the nightly cron stored 'USD' snapshots that no longer
+    // matched once the first project arrived in the workspace's own currency (the trend then dropped them as
+    // "a different dominant currency"). Use the workspace's configured currency; 'USD' only if it can't be read.
+    if (!currency) currency = (await getWorkspaceCurrency(service, workspaceId)) || 'USD'
   }
 
   const roll: Record<string, CurrencyRollup> = {}

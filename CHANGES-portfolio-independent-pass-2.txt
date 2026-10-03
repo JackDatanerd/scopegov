@@ -1,0 +1,13 @@
+Portfolio (section 8) - independent pass, bugs only
+
+P1  An empty workspace was reported (and snapshotted) in a hard-coded USD instead of its configured currency.
+    - lib/reports/scope-health.ts: with no in-progress project, no exception and no project at all, the dominant
+      currency now falls back to workspaces.currency (via the new never-throwing getWorkspaceCurrency helper),
+      'USD' only if that cannot be read. Feeds the Portfolio tiles, CSV, PDF and the nightly scope-health snapshot
+      cron, so early snapshots no longer mismatch (and get dropped from the trend) once the first project exists.
+    - lib/reports/scope-financial-data.ts: Reports' pickCurrency had the same hard-coded USD for an empty
+      workspace; getScopeReportData / getFinancialReportData now pass the workspace currency when there are no projects.
+    - lib/utils/workspace-currency.ts (new)
+    - tests/portfolio-risk.test.ts: 4 new tests (configured currency, unusable value, failed read, data wins).
+
+Not run here: vitest / tsc (no node_modules in the tarball). Changed files were syntax-checked only.

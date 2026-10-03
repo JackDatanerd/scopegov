@@ -89,6 +89,7 @@
 
 import { PROJECT_TYPE_LABELS } from '@/lib/utils/format'
 import { fetchPaged } from '@/lib/utils/paginate'
+import { getWorkspaceCurrency } from '@/lib/utils/workspace-currency'
 export { PERIOD_LABELS, periodSince, parsePeriod, type PeriodKey } from './period'
 
 const MAX_ROLLUP_ROWS = 5000
@@ -107,12 +108,12 @@ async function loadAll<T = any>(
 
 const NO_CURRENCY = '__no_active_project__'
 
-export function pickCurrency(currencyCounts: Record<string, number>, requested: string | null) {
+export function pickCurrency(currencyCounts: Record<string, number>, requested: string | null, emptyFallback: string | null = null) {
   const availableCurrencies = Object.keys(currencyCounts).sort()
   const byCount = [...availableCurrencies].sort((a, b) => currencyCounts[b] - currencyCounts[a])
   const currency = (requested && availableCurrencies.includes(requested))
     ? requested
-    : (byCount[0] || 'USD')
+    : (byCount[0] || emptyFallback || 'USD')
   return { availableCurrencies, mixedCurrencies: availableCurrencies.length > 1, currency }
 }
 
@@ -197,7 +198,7 @@ export async function getScopeReportData(
 
   const currencyCounts: Record<string, number> = {}
   for (const c of Object.values(projCurrencyById)) currencyCounts[c] = (currencyCounts[c] || 0) + 1
-  const { availableCurrencies, mixedCurrencies, currency } = pickCurrency(currencyCounts, requestedCurrency)
+  const { availableCurrencies, mixedCurrencies, currency } = pickCurrency(currencyCounts, requestedCurrency, Object.keys(currencyCounts).length ? null : await getWorkspaceCurrency(service, wsId))
 
   // A project missing from projCurrencyById (soft-deleted, or otherwise gone)
   // must never match ANY selected currency.
@@ -288,7 +289,7 @@ export async function getFinancialReportData(
 
   const currencyCounts: Record<string, number> = {}
   for (const p of allProjects) currencyCounts[p.currency || 'USD'] = (currencyCounts[p.currency || 'USD'] || 0) + 1
-  const { availableCurrencies, mixedCurrencies, currency } = pickCurrency(currencyCounts, requestedCurrency)
+  const { availableCurrencies, mixedCurrencies, currency } = pickCurrency(currencyCounts, requestedCurrency, Object.keys(currencyCounts).length ? null : await getWorkspaceCurrency(service, wsId))
 
   const projects = allProjects.filter(p => (p.currency || 'USD') === currency)
   const projectById = new Map(projects.map(p => [p.id, p]))

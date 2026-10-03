@@ -348,3 +348,42 @@ describe('portfolio data — projects-by-risk ordering without VIEW_FINANCIALS',
     expect(d.projectRisk.every(r => r.atRisk === null && r.flagRisk === null && r.effectiveValue === null)).toBe(true)
   })
 })
+
+describe('empty-workspace currency (Portfolio pass 2)', () => {
+  // Fake whose `workspaces` read resolves to a configured currency; every other table is empty.
+  const svcWithCurrency = (currency: any) => {
+    const base = fakeService({ ...empty, projects: [] })
+    return {
+      from(name: string) {
+        if (name !== 'workspaces') return base.from(name)
+        const b: any = {}
+        for (const m of ['select', 'eq']) b[m] = () => b
+        b.maybeSingle = () => Promise.resolve({ data: { currency }, error: null })
+        return b
+      },
+    }
+  }
+
+  it('a workspace with no projects reports in its configured currency, not a hard-coded USD', async () => {
+    const h = await computeScopeHealth(svcWithCurrency('kes'), 'w')
+    expect(h.currency).toBe('KES')
+  })
+
+  it('falls back to USD when the configured currency is unusable', async () => {
+    expect((await computeScopeHealth(svcWithCurrency('not-a-code'), 'w')).currency).toBe('USD')
+    expect((await computeScopeHealth(svcWithCurrency(null), 'w')).currency).toBe('USD')
+  })
+
+  it('falls back to USD when the workspace read itself fails (never fails the rollup)', async () => {
+    // fakeService's builder has no maybeSingle -> the helper must swallow the TypeError.
+    const h = await computeScopeHealth(fakeService({ ...empty, projects: [] }), 'w')
+    expect(h.currency).toBe('USD')
+  })
+
+  it('a workspace that HAS projects still takes its currency from the data', async () => {
+    const h = await computeScopeHealth(svcWithCurrency('KES'), 'w')
+    expect(h.currency).toBe('KES')
+    const svc = fakeService({ ...empty, projects: [proj('a', { currency: 'EUR' })] })
+    expect((await computeScopeHealth(svc, 'w')).currency).toBe('EUR')
+  })
+})
