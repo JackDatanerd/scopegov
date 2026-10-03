@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { Pool, type PoolClient } from 'pg'
+import type { Pool, PoolClient } from 'pg'
 import fs from 'fs'
 import path from 'path'
 
@@ -67,6 +67,9 @@ async function addMember(w: number, user: number, roleName: string, status = 'ac
 
 describe.skipIf(!URL_)('Postgres replay (migrations 001..latest on a real database)', () => {
   beforeAll(async () => {
+    // Imported lazily: a static import made the whole file fail when `pg` was not installed, even though
+    // the suite is meant to be skipped without PG_REPLAY_URL.
+    const { Pool } = await import('pg')
     admin = new Pool({ connectionString: URL_, max: 1 })
     admin.on('error', () => {})
     dbName = `sg_replay_${Date.now()}_${Math.floor(Math.random() * 1e6)}`

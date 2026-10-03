@@ -1,0 +1,10 @@
+Test-suite failures (npx vitest run, 7 files / 6 tests failed) — fixes
+1. 4 tests "timed out in 5000ms" (workspace-lifecycle-pass6, team-invites-independent-pass-3,
+   settings-team-repass-2, settings-team-round): first dynamic import of a route module transforms the
+   whole graph under ~230 parallel files; 5-7s cold. vitest.config: testTimeout 30s, hookTimeout 60s.
+2. 2 brute-force sweeps (co-independent-pass-3, invoicing-pass17 rounding) took 11-13s because of one expect()
+   per iteration. Hot loops now use plain comparisons and assert once on a (capped) mismatch list. Same coverage.
+3. pg-replay.test.ts crashed the file at import ("Cannot find package 'pg'") even though the suite is skipped
+   without PG_REPLAY_URL. pg is imported lazily inside beforeAll now (types only at top). Local fix: npm install.
+4. vitest.config.ts -> vitest.config.mts (removes the "ESM syntax in a file loaded as CommonJS" warning).
+   DELETE the old vitest.config.ts (git rm) — the tarball cannot remove files.

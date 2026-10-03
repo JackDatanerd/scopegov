@@ -1,5 +1,9 @@
 import { defineConfig } from 'vitest/config'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+// .mts so Vite loads this as native ESM (no CJS-loader warning); __dirname does not exist in ESM.
+const root = path.dirname(fileURLToPath(import.meta.url))
 
 // FIX (re-audit): this repo had no test infrastructure at all — no
 // vitest config, no vitest dependency, no test files, and no
@@ -20,10 +24,15 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['tests/**/*.{test,spec}.ts'],
+    // Route tests dynamically import real route modules; the first import in a file has to transform the
+    // whole module graph, which takes 5-7s on a cold cache when ~230 files run in parallel (Windows/Defender
+    // makes it worse). The 5s default made those tests flaky-fail with "Test timed out in 5000ms".
+    testTimeout: 30_000,
+    hookTimeout: 60_000,
   },
   resolve: {
     alias: {
-      '@': path.resolve(__dirname, '.'),
+      '@': path.resolve(root, '.'),
     },
   },
 })

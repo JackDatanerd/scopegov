@@ -11,9 +11,14 @@ describe('roundCurrency — exact decimal half-up', () => {
     expect(roundCurrency(1234567.895)).toBe(1234567.9)
   })
   it('matches exact integer half-up over every qty (0.01–5.00) × rate (0.01–40.00) pair', () => {
+    // Plain comparisons in the hot loop (~286k pairs); one expect() per pair made this take 13s.
+    const bad: string[] = []
     for (let q = 1; q <= 500; q++) for (let r = 1; r <= 4000; r += 7) {
-      expect(Math.round(roundCurrency((q / 100) * (r / 100)) * 100)).toBe(Math.floor((q * r + 50) / 100))
+      const got = Math.round(roundCurrency((q / 100) * (r / 100)) * 100)
+      const want = Math.floor((q * r + 50) / 100)
+      if (got !== want && bad.length < 10) bad.push(`q=${q} r=${r}: got ${got}, want ${want}`)
     }
+    expect(bad).toEqual([])
   })
   it('is symmetric for credits, never returns -0, and passes non-finite through', () => {
     expect(roundCurrency(-2.055)).toBe(-2.06)

@@ -27,7 +27,7 @@ import path from 'node:path'
 //     the same identity Postgres itself uses — so a signature change starts a
 //     fresh (unrevoked-by-default) exposure record, exactly matching reality.
 
-// vitest runs from the repo root (vitest.config.ts include: tests/**).
+// vitest runs from the repo root (vitest.config.mts include: tests/**).
 const ROOT = process.cwd()
 
 function walk(dir: string, out: string[] = []): string[] {

@@ -16,15 +16,19 @@ describe('credit CO is the exact mirror of the same charge (half-cent ties)', ()
     expect(totals(10.5, 5, false, true).total).toBe(-11.03)
   })
   it('credit totals are the negation of charge totals across a wide sweep', () => {
+    // Plain comparisons in the hot loop (72k combinations); one expect() each made this take 11s.
+    const close = (a: number, b: number) => Math.abs(a - b) < 5e-10 // toBeCloseTo(_, 9)
+    const bad: string[] = []
     for (let c = 1; c <= 3000; c++) {
       for (const t of [5, 7.5, 8.25, 16]) for (const inc of [false, true]) for (const qty of [1, 1.33, 3]) {
         const p = totals(c / 100, t, inc, false, qty)
         const n = totals(c / 100, t, inc, true, qty)
-        expect(n.total).toBeCloseTo(-p.total, 9)
-        expect(n.subtotal).toBeCloseTo(-p.subtotal, 9)
-        expect(n.lineItems[0].total).toBeCloseTo(-p.lineItems[0].total, 9)
+        if (!close(n.total, -p.total) || !close(n.subtotal, -p.subtotal) || !close(n.lineItems[0].total, -p.lineItems[0].total)) {
+          if (bad.length < 10) bad.push(`rate=${c / 100} tax=${t} inc=${inc} qty=${qty}`)
+        }
       }
     }
+    expect(bad).toEqual([])
   })
   it('never produces negative zero', () => {
     const t = totals(0, 16, false, true)
