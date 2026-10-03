@@ -351,7 +351,10 @@ export default function ProjectDetail({
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-            {permissions.createCo && isActive && (
+            {/* FIX (Projects & Dashboard independent pass — B3): a project stalled with reason 'sow_unsigned' is Stalled
+                but has no signed SOW, and POST /api/co refuses with 409 "no signed SOW yet" — the button walked the
+                person through building a whole change order before that. Gated on a signed SOW, like the API. */}
+            {permissions.createCo && isActive && hasSignedSow && (
               <Link href={`/projects/${project.id}/co/new`}>
                 <button className="btn btn-ghost btn-sm"><i className="ti ti-plus" style={{ fontSize: 12 }} /> New CO</button>
               </Link>
@@ -476,7 +479,7 @@ export default function ProjectDetail({
         {tab === 'overview' && <OverviewTab project={project} milestones={milestones} amendments={amendments} permissions={permissions} currency={currency} router={router} baseValue={baseValue} />}
         {tab === 'sow'      && <SowTab project={project} sows={project.sow_documents || []} amendments={amendments} permissions={permissions} router={router} pendingApprovals={pendingApprovals} />}
         {tab === 'guardian' && <GuardianTab project={project} flags={project.guardian_flags || []} exceptions={project.exceptions_log || []} permissions={permissions} router={router} team={team} />}
-        {tab === 'co'       && <CoTab project={project} cos={project.change_orders || []} permissions={permissions} currency={currency} pendingApprovals={pendingApprovals} team={team} />}
+        {tab === 'co'       && <CoTab project={project} cos={project.change_orders || []} permissions={permissions} currency={currency} pendingApprovals={pendingApprovals} team={team} hasSignedSow={hasSignedSow} />}
         {tab === 'billing'  && <BillingTab project={project} milestones={milestones} invoices={invoices} reconciliation={reconciliation} permissions={permissions} currency={currency} router={router} defaultPaymentInstructions={defaultPaymentInstructions} billingDefaults={billingDefaults} pendingApprovals={pendingApprovals} />}
         {tab === 'discussion' && (
           <ProjectDiscussion
@@ -530,6 +533,10 @@ function ScopeAdjustModal({ projectId, deliverable, field = 'deliverables', onCl
       const json = await res.json().catch(() => ({}))
       if (res.ok) onDone()
       else setError(json.error || 'Could not save that adjustment.')
+    } catch {
+      // FIX (Projects & Dashboard independent pass — B2): try/finally with no catch — an offline fetch became an
+      // unhandled rejection and the modal just stopped spinning with no message.
+      setError('Could not save that adjustment — check your connection and try again.')
     } finally { setBusy(false) }
   }
 
@@ -1754,6 +1761,8 @@ function GuardianHistoryPanel({ projectId, canRetry }: { projectId: string; canR
   const [checks,   setChecks]   = useState<any[]>([])
   const [loading,  setLoading]  = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
+  // Kept apart from `error` (which replaces the whole list) so a failed "Load more" doesn't hide checks already loaded.
+  const [loadMoreError, setLoadMoreError] = useState('')
   const [error,    setError]    = useState('')
   const [hasMore,  setHasMore]  = useState(false)
   const [cursor,   setCursor]   = useState<string | null>(null)
@@ -1784,14 +1793,18 @@ function GuardianHistoryPanel({ projectId, canRetry }: { projectId: string; canR
 
   async function loadMore() {
     if (!cursor) return
-    setLoadingMore(true)
+    setLoadingMore(true); setLoadMoreError('')
     try {
       const res  = await fetch(`/api/guardian/checks?projectId=${projectId}&before=${encodeURIComponent(cursor)}`)
-      const json = await res.json()
-      if (json.error) { setError(json.error); return }
+      const json = await res.json().catch(() => ({} as any))
+      if (!res.ok || json.error) { setLoadMoreError(json.error || 'Could not load older checks — try again.'); return }
       setChecks(prev => [...prev, ...(json.checks || [])])
       setHasMore(!!json.hasMore)
       setCursor(json.nextCursor || null)
+    } catch {
+      // FIX (Projects & Dashboard independent pass — B2): res.json() was unguarded and there was no catch, so a
+      // gateway 502/504 (HTML body) or an offline fetch became an unhandled rejection with no message shown.
+      setLoadMoreError('Could not load older checks — try again.')
     } finally { setLoadingMore(false) }
   }
 
@@ -1898,6 +1911,7 @@ function GuardianHistoryPanel({ projectId, canRetry }: { projectId: string; canR
               </div>
             )
           })}
+          {loadMoreError && <p style={{ fontSize: 12, color: 'var(--red)', marginTop: 10 }}>{loadMoreError}</p>}
           {hasMore && (
             <button className="btn btn-ghost btn-sm" style={{ marginTop: 10 }} onClick={loadMore} disabled={loadingMore}>
               {loadingMore ? <span className="spin" /> : 'Load more'}
@@ -2271,12 +2285,13 @@ function CloseFlagModal({ onClose, onSubmit }: any) {
 }
 
 // ── CO TAB ────────────────────────────────────────────────────
-function CoTab({ project, cos, permissions, currency, pendingApprovals, team }: any) {
+function CoTab({ project, cos, permissions, currency, pendingApprovals, team, hasSignedSow }: any) {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <div className="sec-title">Change orders ({cos.length})</div>
-        {permissions.createCo && ['Active', 'Stalled'].includes(project.status) && (
+        {/* B3: same gate as the header button — the API refuses a change order on a project with no signed SOW. */}
+        {permissions.createCo && ['Active', 'Stalled'].includes(project.status) && hasSignedSow && (
           <Link href={`/projects/${project.id}/co/new`}>
             <button className="btn btn-primary btn-sm"><i className="ti ti-plus" style={{ fontSize: 12 }} /> New CO</button>
           </Link>
@@ -2329,6 +2344,9 @@ function EscalateCoModal({ co, team, onClose, onDone }: any) {
       const json = await res.json().catch(() => ({}))
       if (res.ok) onDone()
       else setError(json.error || 'Could not escalate — try again.')
+    } catch {
+      // FIX (Projects & Dashboard independent pass — B2): see ScopeAdjustModal.submit.
+      setError('Could not escalate — check your connection and try again.')
     } finally { setBusy(false) }
   }
 
@@ -2845,6 +2863,10 @@ function TeamTab({ project, team, permissions }: any) {
       const json = await res.json().catch(() => ({}))
       if (res.ok) { setAdding(false); router.refresh() }
       else setAddError(json.error || 'Could not add that member — try again.')
+    } catch {
+      // FIX (Projects & Dashboard independent pass — B2): see ScopeAdjustModal.submit. removeMember beside it
+      // already had its catch; this one did not.
+      setAddError('Could not add that member — try again.')
     } finally { setAddingId(null) }
   }
 

@@ -156,15 +156,21 @@ export default async function ProjectPage({ params, searchParams }: Props) {
   // ── Fetch amendments ──────────────────────────────────────────────────
   const { data: amendmentsRaw = [] } = await (service as any)
     .from('amendments')
-    .select('*, change_orders(is_retainer_renewal)')
+    // FIX (Projects & Dashboard independent pass — B1): was select('*'), which carried every column to the browser —
+    // including previous_contract_value (the monthly rate a retainer-renewal CO replaced, migration 061) and
+    // pdf_path — while only financial_impact was redacted for a viewer without VIEW_FINANCIALS. Only what
+    // amendmentImpact() needs is read here; the client-bound list is narrowed again below.
+    .select('id, title, effective_at, added_deliverables, financial_impact, change_orders(is_retainer_renewal)')
     .eq('project_id', id)
     .order('created_at', { ascending: true })
 
   // financial_impact is a dollar figure — redact it the same way as the
   // rest of the financial surface when the viewer lacks VIEW_FINANCIALS.
-  const amendments = viewFinancials
-    ? amendmentsRaw
-    : (amendmentsRaw || []).map((a: any) => ({ ...a, financial_impact: null }))
+  // Narrowed to the fields the Overview/SOW tabs render (no raw embed, no storage path, no prior rate).
+  const amendments = (amendmentsRaw || []).map((a: any) => ({
+    id: a.id, title: a.title, effective_at: a.effective_at, added_deliverables: a.added_deliverables,
+    financial_impact: viewFinancials ? a.financial_impact : null,
+  }))
 
   // ── Fetch team members ────────────────────────────────────────────────
   // FIX (Projects & Dashboard independent pass, round 2): this was the one place in the

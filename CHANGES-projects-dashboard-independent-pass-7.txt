@@ -1,0 +1,32 @@
+Projects & Dashboard (section 7) — independent pass 7
+=====================================================
+
+Bugs
+----
+B1  Amendment columns beyond financial_impact reached the browser for every viewer.
+    app/(app)/projects/[id]/page.tsx read amendments with select('*'), then blanked only financial_impact for a
+    member without VIEW_FINANCIALS. previous_contract_value (migration 061 — the monthly rate a retainer-renewal
+    change order replaced) and pdf_path still travelled in the page payload, defeating the redaction the same page
+    applies to contract_value, CO totals and exception values.
+    The query now selects an explicit column list (only what amendmentImpact needs), and the list handed to
+    ProjectDetail is narrowed to id / title / effective_at / added_deliverables / financial_impact (null without
+    VIEW_FINANCIALS). The contract maths still receives the unredacted rows server-side; its output stays gated.
+
+B2  Four handlers failed silently on a network error or non-JSON reply (try/finally with no catch).
+    components/projects/ProjectDetail.tsx: ScopeAdjustModal.submit, EscalateCoModal.submit, TeamTab.addMember and
+    GuardianHistoryPanel.loadMore (which also called res.json() unguarded and never read res.ok). Each now catches and
+    shows the message in its existing error slot. A failed "Load more" on Check history uses its own error line under
+    the list, so it does not replace the checks already loaded.
+
+B3  "New CO" was offered on a project that cannot take one.
+    A project stalled with reason 'sow_unsigned' is Stalled but has no signed SOW; POST /api/co refuses it (409). The
+    header button and the Change orders tab button were gated on Active/Stalled only, so the person built a whole
+    change order before hitting that. Both are now gated on a signed SOW (hasSignedSow, passed to CoTab as a prop).
+
+Tests
+-----
+tests/projects-dashboard-pass-7.test.ts — 14 source-guard cases (B1 query/shape/redaction, B2 per-handler catch,
+B3 both gates + the API rule they mirror).
+
+No migrations. No dependency changes. Files touched: app/(app)/projects/[id]/page.tsx,
+components/projects/ProjectDetail.tsx, tests/projects-dashboard-pass-7.test.ts, this file.
