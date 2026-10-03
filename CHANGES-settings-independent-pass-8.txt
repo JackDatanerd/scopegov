@@ -1,0 +1,10 @@
+Settings independent pass 8 (base 317fc85)
+
+B1  lib/utils/agency-standards.ts, app/api/workspace/defaults/route.ts
+    Standard terms (revision policy, payment terms, exclusions, assumptions) and governing law kept NUL and
+    unpaired surrogates, which Postgres rejects, so a pasted one failed Save defaults with a generic 500.
+    Both now go through stripUnstorableText, as workspace/settings already did.
+B2  components/settings/SettingsClient.tsx
+    Saved signature state moved from BrandingTab into SettingsClient. Signature save/remove never refreshed the
+    page prop, so after a tab switch a saved signature looked unsaved and a removed one reappeared as saved.
+Test: tests/settings-independent-pass-8.test.ts

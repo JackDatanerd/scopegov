@@ -378,6 +378,11 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
   // file was gone — 'Save branding' silently uploaded nothing and 'Remove logo' (shown because !logoFile) deleted the
   // saved logo instead.
   const [logoFile, setLogoFile] = useState<File | null>(null)
+  // FIX (Settings independent pass 8): the saved signature lived in BrandingTab's own state, seeded from the
+  // `workspace` prop, which only changes on router.refresh() — and signature saves/removals never refresh. Leaving
+  // the tab and coming back re-read the stale prop: a just-saved signature looked unsaved and a just-removed one
+  // reappeared as "saved". Lifted here like the logo and colour so it survives tab switches.
+  const [sigSaved, setSigSaved] = useState<string | null>(workspace?.agency_signature_data || null)
 
   const [defaultsForm, setDefaultsForm] = useState(() => ({
     revRounds:      String(defaults?.revision_rounds ?? 2),
@@ -528,7 +533,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
             colour={brandColour} setColour={setBrandColour}
             preview={logoPreview} setPreview={setLogoPreview}
             logoFile={logoFile} setLogoFile={setLogoFile}
-            savedSignature={workspace?.agency_signature_data || null}
+            sigSaved={sigSaved} setSigSaved={setSigSaved}
             baseRef={brandingBase}
             loadFailed={loadFailed.workspace}
             permissions={permissions} onSave={patch} saving={saving}
@@ -1062,11 +1067,10 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedA
 }
 
 // ── BRANDING ──────────────────────────────────────────────────
-function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, logoFile, setLogoFile, savedSignature, baseRef, loadFailed, permissions, onSave, saving }: any) {
+function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, logoFile, setLogoFile, sigSaved, setSigSaved, baseRef, loadFailed, permissions, onSave, saving }: any) {
   const [uploading, setUploading] = useState(false)
   const [fileError, setFileError] = useState('')
   const [removingLogo, setRemovingLogo] = useState(false)
-  const [sigSaved,   setSigSaved]   = useState<string | null>(savedSignature)
   const [savingSig,  setSavingSig]  = useState(false)
   const [sigError,   setSigError]   = useState('')
   const sigPadRef = useRef<SignaturePadHandle>(null)

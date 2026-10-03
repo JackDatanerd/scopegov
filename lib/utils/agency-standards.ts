@@ -5,7 +5,7 @@
 // applied by the SOW generator. Limits here match what lib/ai/sow-content.ts
 // keeps when it reads them back, so nothing a user saves is silently cut.
 
-import { sanitizePlainText } from '@/lib/utils/sanitize'
+import { sanitizePlainText, stripUnstorableText } from '@/lib/utils/sanitize'
 import type { AgencyStandards } from '@/lib/ai/sow-content'
 
 export const STANDARD_TEXT_MAX = 1500
@@ -44,7 +44,9 @@ export type StandardsParse =
 function parseText(value: unknown, label: string): { ok: true; value: string | null } | { ok: false; error: string } {
   if (value === null) return { ok: true, value: null }
   if (typeof value !== 'string') return { ok: false, error: `${label} must be text` }
-  const clean = sanitizePlainText(value)
+  // FIX (Settings independent pass 8): sanitizePlainText leaves NUL and unpaired surrogates in place, and Postgres
+  // rejects either, so a pasted one failed the whole save with a generic 500. Same strip workspace/settings applies.
+  const clean = sanitizePlainText(stripUnstorableText(value))
   if (clean.length > STANDARD_TEXT_MAX) return { ok: false, error: `${label} must be ${STANDARD_TEXT_MAX} characters or fewer` }
   return { ok: true, value: clean }
 }
@@ -55,7 +57,7 @@ function parseClauses(value: unknown, label: string): { ok: true; value: string[
   const out: string[] = []
   for (const item of value) {
     if (typeof item !== 'string') return { ok: false, error: `${label} must be a list of text items` }
-    const clean = sanitizePlainText(item)
+    const clean = sanitizePlainText(stripUnstorableText(item))
     if (!clean) continue
     if (clean.length > CLAUSE_MAX) return { ok: false, error: `Each item in ${label} must be ${CLAUSE_MAX} characters or fewer` }
     out.push(clean)
