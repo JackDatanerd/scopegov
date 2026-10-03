@@ -32,7 +32,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         accepted_at, accepted_by, client_signature_data, project_id,
         projects(id, name, type, currency, contract_value, retainer_duration_months,
           clients(name, company_name, billing_address, vat_number),
-          workspaces(agency_name, brand_colour, logo_storage_path, agency_signature_data,
+          workspaces(timezone, agency_name, brand_colour, logo_storage_path, agency_signature_data,
             legal_address, tax_id, phone, website))`)
       .eq('id', id)
       .eq('workspace_id', session.workspaceId)
@@ -94,6 +94,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     )
 
     const pdfBuffer = await renderCoPdf({
+      timeZone: ws?.timezone,
       agencyName:  ws?.agency_name || session.agencyName,
       logoUrl,
       brandColour: ws?.brand_colour || '#1A5C3A',

@@ -1,0 +1,21 @@
+Section 12 (Invoicing) — independent pass 17 — 2 bugs, 0 feature gaps
+
+B1  PDF dates used server (UTC) time instead of the workspace timezone.
+    lib/pdf/renderer.tsx fmtDate() formatted every instant in the server zone, so a document sent/accepted/signed
+    between 00:00-03:00 EAT printed the PREVIOUS day (Issued / Accepted / Signed / Generated). Reports + audit PDFs
+    already used the workspace zone; the invoice/SOW/CO PDFs were missed. fmtDate(iso, tz) now prints real instants in
+    resolveTimeZone(workspace.timezone) and keeps date-only values (due dates, payment dates, milestone dates) in UTC;
+    an unparseable date prints an em dash instead of throwing. InvoicePdfData / SowPdfData / CoPdfData gained
+    timeZone; all 7 render call sites (api/pdf/{invoice,sow,co}, api/portal/{invoice,sow,co}/.../pdf, sow sign) now
+    select workspaces.timezone and pass it.
+
+B2  roundCurrency() mis-rounded ~0.33% of qty x rate products by a cent.
+    Math.round((n + EPSILON) * 100) — EPSILON is meaningless above 1, so 0.06 x 34.25 (=2.055) gave 2.05 and
+    2.5 x 19.99 (=49.975) gave 49.97. Now exact decimal half-up (half away from zero, matching Postgres round(),
+    symmetric for credits, never -0) via toPrecision(15) + string decimal shift. Verified exhaustively against integer
+    arithmetic over 2,000,000 qty/rate pairs. The parallel copies that must agree with it were pointed at the same
+    helper: components/co/CoEditor.tsx rq, lib/utils/rescale-line-items.ts round2, lib/pdf/invoice-line.ts r2,
+    lib/pdf/renderer.tsx r2 + CO tax line (otherwise the CO editor would have disagreed with the server by a cent).
+
+Tests: tests/invoice-pass15-rounding-and-strict-numbers.test.ts expected the float artefact (49.97 / 149.91) — updated
+to 49.98 / 149.94. New: tests/invoicing-pass17-exact-rounding-and-pdf-dates.test.ts. Full suite 2300 passed, tsc clean.

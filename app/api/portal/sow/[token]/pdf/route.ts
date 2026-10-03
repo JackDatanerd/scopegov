@@ -15,7 +15,7 @@ const SOW_PDF_COLUMNS = `id, version, document_number, sections, metadata, statu
   client_signature_data, workspace_id, pdf_path,
   projects(id, name, disc, contract_value, currency,
     clients(name, company_name, billing_address, vat_number),
-    workspaces(agency_name, brand_colour, logo_storage_path, agency_signature_data,
+    workspaces(timezone, agency_name, brand_colour, logo_storage_path, agency_signature_data,
       legal_address, tax_id, phone, website))`
 
 // FIX (audit): no portal-scoped PDF route existed for SOWs at all. The only
@@ -135,6 +135,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     }
 
     const pdfBuffer = await renderSowPdf({
+      timeZone: ws?.timezone,
       agencyName:    ws?.agency_name || 'Agency',
       agencyLogoUrl: logoUrl,
       brandColour:   ws?.brand_colour || '#1A5C3A',

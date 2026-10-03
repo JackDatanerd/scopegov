@@ -25,6 +25,7 @@
 // showing the true original pricing on every other line.
 
 import { nanoid } from 'nanoid'
+import { roundCurrency } from '@/lib/utils/format'
 
 export interface RescaleLineItem {
   id: string
@@ -61,7 +62,7 @@ export interface RescaleResult {
   total: number
 }
 
-const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100
+const round2 = roundCurrency
 
 /**
  * Reconciles lineItems to the subtotal implied by newTotal (back-solving

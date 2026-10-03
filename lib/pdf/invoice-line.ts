@@ -11,7 +11,9 @@
  * - tax-inclusive           -> the line carries the GROSS; the "Tax included" row follows
  * - no tax                  -> amount (subtotal === amount)
  */
-const r2 = (n: number) => Math.round((Number(n) || 0) * 100) / 100
+import { roundCurrency } from '@/lib/utils/format'
+
+const r2 = (n: number) => roundCurrency(Number(n) || 0)
 
 export function invoiceSingleLineAmount(input: {
   amount: number

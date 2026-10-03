@@ -12,7 +12,8 @@ import { safeFetch } from '@/lib/utils/safe-fetch'
 import { RichText } from '@/lib/pdf/rich-text'
 import { SowTable } from '@/lib/pdf/sow-table'
 import { isTableSection, milestoneBlockLabels, type SowTableRow } from '@/lib/sow/table-schema'
-import { formatAddressLines, type LegalAddress } from '@/lib/utils/format'
+import { formatAddressLines, roundCurrency, type LegalAddress } from '@/lib/utils/format'
+import { resolveTimeZone } from '@/lib/utils/timezone'
 import { PDF_FONT, sanitizeForPdf } from '@/lib/pdf/fonts'
 import { mapPdfSymbols } from '@/lib/pdf/pdf-symbols'
 import { coWatermarkLabel, CO_STATUS_LABEL } from '@/lib/pdf/co-watermark'
@@ -32,6 +33,7 @@ function formatAddress(a: LegalAddress | null | undefined): string[] {
 }
 
 export interface SowPdfData {
+  timeZone?:     string | null
   agencyName:    string
   agencyLogoUrl: string | null
   brandColour:   string
@@ -72,6 +74,7 @@ export interface SowPdfData {
 }
 
 export interface CoPdfData {
+  timeZone?:     string | null
   agencyName:   string
   logoUrl:      string | null
   brandColour:  string
@@ -141,6 +144,7 @@ export interface CoPdfData {
 }
 
 export interface InvoicePdfData {
+  timeZone?:     string | null
   agencyName:   string
   logoUrl:      string | null
   brandColour:  string
@@ -230,8 +234,17 @@ function stripHtml(html: string): string {
     .trim()
 }
 
-function fmtDate(iso: string) {
-  return new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
+// Calendar dates ('2026-10-05', or a UTC-midnight timestamp of one) have no zone: print them in UTC so they never
+// shift a day. Real instants (sent/accepted/signed/generated) print in the workspace's own timezone — the server
+// runs in UTC, so without this a document stamped 00:00–03:00 EAT printed the previous day.
+function fmtDate(iso: string, tz?: string | null) {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '—'
+  const dateOnly = /^\d{4}-\d{2}-\d{2}(T00:00:00(\.0+)?(Z|\+00:00)?)?$/.test(String(iso))
+  return new Intl.DateTimeFormat('en-GB', {
+    day: 'numeric', month: 'long', year: 'numeric',
+    timeZone: dateOnly ? 'UTC' : resolveTimeZone(tz),
+  }).format(d)
 }
 
 // Whole amounts print without decimals ("1,500"); anything with cents always prints BOTH digits
@@ -387,7 +400,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
             <Text style={s.h1}>Statement of Work</Text>
             <Text style={s.meta}>{data.documentNumber ? `${data.documentNumber} · ` : ''}Version {data.version} · {data.projectName}</Text>
             {data.msaReference && <Text style={[s.meta, { marginTop: 2 }]}>{data.msaReference}</Text>}
-            {data.signedAt && <Text style={[s.meta, { color: c, marginTop: 2 }]}>Signed {fmtDate(data.signedAt)}</Text>}
+            {data.signedAt && <Text style={[s.meta, { color: c, marginTop: 2 }]}>Signed {fmtDate(data.signedAt, data.timeZone)}</Text>}
           </View>
           <View style={{ alignItems: 'flex-end' }}>
             {logo
@@ -470,7 +483,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
                 </View>
                 <Text style={[s.td, s.mono, { width: 90, textAlign: 'right' }]}>{data.currency} {fmtMoney(m.amount)}</Text>
                 <Text style={[s.td, { width: 90, textAlign: 'right', color: '#909090', fontSize: 9 }]}>
-                  {m.dueDate ? fmtDate(m.dueDate) : '—'}
+                  {m.dueDate ? fmtDate(m.dueDate, data.timeZone) : '—'}
                 </Text>
               </View>
             ))}
@@ -518,7 +531,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
             {data.signedBy
               ? <>
                   <Text style={[s.sigName, { color: c }]}>{data.signedBy}</Text>
-                  {data.signedAt && <Text style={s.sigDate}>{fmtDate(data.signedAt)}</Text>}
+                  {data.signedAt && <Text style={s.sigDate}>{fmtDate(data.signedAt, data.timeZone)}</Text>}
                 </>
               : <Text style={[s.sigName, { color: '#B0B0B0' }]}>Not yet signed</Text>}
           </View>
@@ -527,7 +540,7 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
         {/* Footer */}
         <View style={s.footer}>
           <Text>Scope governance by <Link src={SCOPEGOV_URL} style={s.footerLink}>ScopeGov</Link></Text>
-          <Text>Generated {fmtDate(new Date().toISOString())}</Text>
+          <Text>Generated {fmtDate(new Date().toISOString(), data.timeZone)}</Text>
         </View>
 
         {/* Page numbers — fixed, only shown once the document actually
@@ -614,7 +627,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
   // of tax on both paths now (see lib/documents/co-totals.ts), so the tax
   // component is simply total − subtotal and can be stated either way.
   const tax = data.taxRate > 0
-    ? Math.round((data.total - data.subtotal + Number.EPSILON) * 100) / 100
+    ? roundCurrency(data.total - data.subtotal)
     : 0
 
   // Section numbering — computed from which optional sections are
@@ -647,7 +660,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
             <Text style={s.meta}>{data.documentNumber ? `${data.documentNumber} · ` : ''}{data.coTitle}{data.version && data.version > 1 ? ` · v${data.version}` : ''}</Text>
             <Text style={s.meta}>{data.projectName}</Text>
             {data.sowNumber && <Text style={[s.meta, { marginTop: 2 }]}>Amends SOW No. {data.sowNumber}</Text>}
-            {data.acceptedAt && <Text style={[s.meta, { color: c, marginTop: 2 }]}>Accepted {fmtDate(data.acceptedAt)}</Text>}
+            {data.acceptedAt && <Text style={[s.meta, { color: c, marginTop: 2 }]}>Accepted {fmtDate(data.acceptedAt, data.timeZone)}</Text>}
           </View>
           <View style={{ alignItems: 'flex-end' }}>
             {logo
@@ -811,7 +824,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
             {data.acceptedBy
               ? <>
                   <Text style={[s.sigName, { color: c }]}>{data.acceptedBy}</Text>
-                  {data.acceptedAt && <Text style={{ fontSize: 9, color: '#909090' }}>{fmtDate(data.acceptedAt)}</Text>}
+                  {data.acceptedAt && <Text style={{ fontSize: 9, color: '#909090' }}>{fmtDate(data.acceptedAt, data.timeZone)}</Text>}
                 </>
               : <Text style={[s.sigName, { color: '#B0B0B0' }]}>Pending</Text>}
           </View>
@@ -819,7 +832,7 @@ function CoDocument({ data, logo }: { data: CoPdfData; logo: string | null }) {
 
         <View style={s.footer}>
           <Text>Scope governance by <Link src={SCOPEGOV_URL} style={s.footerLink}>ScopeGov</Link></Text>
-          <Text>Generated {fmtDate(new Date().toISOString())}</Text>
+          <Text>Generated {fmtDate(new Date().toISOString(), data.timeZone)}</Text>
         </View>
 
         <Text
@@ -850,7 +863,7 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
   // rounded independently, so subtotal + tax could disagree with the total by a
   // cent. Invoices print the currency's own minor units on every line (2 for USD/EUR/KES,
   // 0 for JPY, 3 for KWD), from figures rounded once.
-  const r2 = (n: number) => Math.round((Number(n) || 0) * 100) / 100
+  const r2 = (n: number) => roundCurrency(Number(n) || 0)
   const digits = (() => {
     try { return new Intl.NumberFormat('en-US', { style: 'currency', currency: data.currency }).resolvedOptions().maximumFractionDigits ?? 2 }
     catch { return 2 }
@@ -915,7 +928,7 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
           <View>
             <Text style={s.h1}>Invoice</Text>
             <Text style={s.meta}>{data.invoiceNumber ? `${data.invoiceNumber} · ` : ''}{data.projectName}</Text>
-            {data.sentAt && <Text style={[s.meta, { marginTop: 2 }]}>Issued {fmtDate(data.sentAt)}{data.dueDate ? ` · Due ${fmtDate(data.dueDate)}` : ''}</Text>}
+            {data.sentAt && <Text style={[s.meta, { marginTop: 2 }]}>Issued {fmtDate(data.sentAt, data.timeZone)}{data.dueDate ? ` · Due ${fmtDate(data.dueDate, data.timeZone)}` : ''}</Text>}
             {data.poNumber && <Text style={[s.meta, { marginTop: 2 }]}>PO {data.poNumber}</Text>}
             {(data.sowNumber || data.coNumber) && (
               <Text style={[s.meta, { marginTop: 2 }]}>
@@ -1065,7 +1078,7 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
             <Text style={s.secTitle}>Payments received</Text>
             {data.payments.map((p, i) => (
               <View key={i} style={s.payRow}>
-                <Text>{fmtDate(p.paidAt)} · {INVOICE_METHOD_LABEL[p.method] || p.method}{p.referenceNote ? ` · ${p.referenceNote}` : ''}</Text>
+                <Text>{fmtDate(p.paidAt, data.timeZone)} · {INVOICE_METHOD_LABEL[p.method] || p.method}{p.referenceNote ? ` · ${p.referenceNote}` : ''}</Text>
                 <Text style={{ fontFamily: 'Courier' }}>{data.currency} {fmtInv(p.amount)}</Text>
               </View>
             ))}
@@ -1104,7 +1117,7 @@ function InvoiceDocument({ data, logo }: { data: InvoicePdfData; logo: string | 
           <Text>This is a payment record, not a payment portal — pay per the instructions above.</Text>
           <View style={s.footerRow}>
             <Text>Scope governance by <Link src={SCOPEGOV_URL} style={s.footerLink}>ScopeGov</Link></Text>
-            <Text>Generated {fmtDate(new Date().toISOString())}</Text>
+            <Text>Generated {fmtDate(new Date().toISOString(), data.timeZone)}</Text>
           </View>
         </View>
 

@@ -66,7 +66,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       .select(`id, version, status, sections, metadata, expires_at, project_id, workspace_id, document_number,
         projects(id, name, disc, currency, contract_value, client_id, created_by, guardian_email,
           clients(name, email, cc_emails, company_name, billing_address, vat_number),
-          workspaces(id, agency_name, brand_colour, logo_storage_path, agency_signature_data,
+          workspaces(timezone, id, agency_name, brand_colour, logo_storage_path, agency_signature_data,
             first_sow_signed_at, legal_address, tax_id, phone, website))`)
       .eq('token', token).single()
 
@@ -321,6 +321,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         .eq('sow_id', sow.id)
         .order('due_date', { ascending: true, nullsFirst: false })
       pdfBuffer = await renderSowPdf({
+      timeZone: ws?.timezone,
         agencyName:    ws.agency_name,
         agencyLogoUrl: logoUrl,
         brandColour:   ws.brand_colour || '#1A5C3A',

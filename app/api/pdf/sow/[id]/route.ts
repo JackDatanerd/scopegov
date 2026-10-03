@@ -31,7 +31,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       .select(`id, version, document_number, sections, metadata, status, signed_at, signed_by, client_signature_data, project_id, pdf_path,
         projects(id, name, disc, contract_value, currency,
           clients(name, company_name, billing_address, vat_number),
-          workspaces(agency_name, brand_colour, logo_storage_path, agency_signature_data,
+          workspaces(timezone, agency_name, brand_colour, logo_storage_path, agency_signature_data,
             legal_address, tax_id, phone, website))`)
       .eq('id', id)
       .eq('workspace_id', session.workspaceId)
@@ -85,6 +85,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       .order('due_date', { ascending: true, nullsFirst: false })
 
     const pdfBuffer = await renderSowPdf({
+      timeZone: ws?.timezone,
       agencyName:    ws?.agency_name || session.agencyName,
       agencyLogoUrl: logoUrl,
       brandColour:   ws?.brand_colour || '#1A5C3A',

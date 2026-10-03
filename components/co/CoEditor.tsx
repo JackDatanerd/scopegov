@@ -4,6 +4,7 @@ import RichTextField from '@/components/ui/RichTextField'
 import { useRouter } from 'next/navigation'
 import { formatCoAmount } from '@/lib/documents/co-money'
 import { nanoid } from 'nanoid'
+import { roundCurrency } from '@/lib/utils/format'
 
 // `kind: 'adjustment'` marks a system-written negotiation line ("Negotiated discount…") from an accepted
 // counter-offer: it may be negative, and its quantity is fixed at 1.
@@ -97,7 +98,7 @@ export default function CoEditor({ projId, coId }: Props) {
   // exactly what gets stored and printed.
   // Mirrors lib/documents/co-totals.ts exactly (round the inputs, derive the line total from the rounded values, round
   // the sums) so the figures shown here are the figures that get stored and printed, not a near miss.
-  const rq       = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100
+  const rq       = roundCurrency
   const lineSum  = rq(lineItems.reduce((s, l) => s + rq(rq(l.quantity) * rq(l.rate)), 0))
   const rate     = parseFloat(taxRate) || 0
   const subtotal = taxInclusive && rate > 0 ? rq(lineSum / (1 + rate / 100)) : lineSum

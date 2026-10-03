@@ -56,7 +56,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         timeline_impact_days,scope_impact_note,
         document_number,accepted_by,accepted_at,client_signature_data,workspace_id,project_id,pdf_path,is_retainer_renewal,
         projects(id,name,type,currency,contract_value,retainer_duration_months,clients(name,email,company_name,billing_address,vat_number),
-          workspaces(id,agency_name,brand_colour,logo_storage_path,agency_signature_data,
+          workspaces(timezone, id,agency_name,brand_colour,logo_storage_path,agency_signature_data,
             legal_address,tax_id,phone,website))`
 
     let { data: co } = await (service as any)
@@ -148,6 +148,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     )
 
     const pdfBuffer = await renderCoPdf({
+      timeZone: ws?.timezone,
       agencyName:    ws?.agency_name || 'Agency',
       logoUrl,
       brandColour:   ws?.brand_colour || '#1A5C3A',

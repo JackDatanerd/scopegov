@@ -26,7 +26,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         payment_instructions, invoice_number, po_number, project_id, milestone_id, sow_id, co_id, workspace_id,
         subtotal, tax_rate, tax_inclusive, line_items,
         projects(id, name, clients(name, company_name, billing_address, vat_number, payment_terms_note),
-          workspaces(agency_name, brand_colour, logo_storage_path,
+          workspaces(timezone, agency_name, brand_colour, logo_storage_path,
             legal_address, tax_id, phone, website)),
         sow_documents(document_number), change_orders(document_number, title)`)
     if (!resolved.ok) return NextResponse.json({ error: resolved.error }, { status: resolved.status })
@@ -64,6 +64,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     }
 
     const pdfBuffer = await renderInvoicePdf({
+      timeZone: workspace?.timezone,
       agencyName:   workspace?.agency_name || 'Agency',
       logoUrl,
       brandColour:  workspace?.brand_colour || '#1A5C3A',

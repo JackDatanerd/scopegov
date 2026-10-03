@@ -56,7 +56,16 @@ export function formatAddress(a: LegalAddress | null | undefined): string {
 // dispute at all — it's just not a valid currency amount. Round to the cent
 // at every point money is captured or computed, not just at display time.
 export function roundCurrency(n: number): number {
-  return Math.round((n + Number.EPSILON) * 100) / 100
+  // Exact decimal half-up (half away from zero, matching Postgres round()). The old
+  // Math.round((n + EPSILON) * 100) mis-rounded ~0.3% of qty × rate products by a cent
+  // (0.06 × 34.25 = 2.0549999… → 2.05 instead of 2.06) because EPSILON is meaningless above 1.
+  // toPrecision(15) washes float noise, then the decimal shift is done on the string.
+  if (!Number.isFinite(n)) return n
+  const abs = Math.abs(n)
+  if (abs < 1e-6) return 0
+  if (abs >= 1e15) return n
+  const rounded = Number(Math.round(Number(abs.toPrecision(15) + 'e2')) + 'e-2')
+  return rounded === 0 ? 0 : n < 0 ? -rounded : rounded
 }
 
 // ── CURRENCY ──────────────────────────────────────────────────────────────────
