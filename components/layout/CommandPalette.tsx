@@ -206,7 +206,12 @@ export default function CommandPalette({ permissions = [] }: Props) {
                     borderBottom: '1px solid var(--surface-2)',
                     transition: 'background .1s',
                   }}
-                  onMouseEnter={() => setIdx(i)}
+                  // FIX (Search section, round 12): was onMouseEnter. The list scrolls under a resting pointer
+                  // (arrowing down scrolls the selected row into view; fresh results re-render the rows), and the
+                  // browser fires mouseenter for whichever row lands under it — so selection jumped off the row the
+                  // keyboard had just chosen, or off row 0 after a new query, and Enter opened the wrong result.
+                  // mousemove only fires when the pointer itself moves.
+                  onMouseMove={() => { if (idx !== i) setIdx(i) }}
                 >
                   <div style={{
                     width: 30, height: 30, borderRadius: 6, flexShrink: 0,

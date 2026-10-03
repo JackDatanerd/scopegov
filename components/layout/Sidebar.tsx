@@ -12,7 +12,11 @@ const NAV_ITEMS = [
   { href: '/projects',  icon: 'ti-folder-open',      label: 'Projects' },
   { href: '/clients',   icon: 'ti-users',             label: 'Clients' },
   { href: '/sow',       icon: 'ti-file-description',  label: 'SOW Registry' },
-  { href: '/invoices',  icon: 'ti-receipt-2',         label: 'Invoices' },
+  // FIX (Search section, round 12 — traced from the command palette): this entry had no `permission`, but
+  // app/(app)/invoices/page.tsx redirects to /dashboard for anyone without VIEW_FINANCIALS — so those members saw an
+  // Invoices link that just bounced them. The palette's quick-nav already gates it this way ("match the sidebar
+  // exactly"); the sidebar itself was the one left behind.
+  { href: '/invoices',  icon: 'ti-receipt-2',         label: 'Invoices', permission: 'VIEW_FINANCIALS' as const },
   { href: '/approvals', icon: 'ti-shield-check',      label: 'Approvals' },
   // FIX (deep audit, Reports & Audit re-pass): both tabs behind /reports
   // (api/reports's scope and financial modes) require VIEW_ALL_PROJECTS —

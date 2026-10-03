@@ -1,0 +1,19 @@
+Search section (c20) - independent pass 12
+==========================================
+Base: a4ad9ee. Bugs only. No migrations. The route (app/api/search) and lib/search/* came back clean.
+
+B1 (Low, traced out of Search)  components/layout/Sidebar.tsx
+  The Invoices entry in NAV_ITEMS had no `permission`, so every member saw the link, but app/(app)/invoices/page.tsx
+  redirects to /dashboard for anyone without VIEW_FINANCIALS - they clicked and bounced with no explanation. The
+  command palette's quick-nav was already gated this way (its own comment: match the sidebar exactly); the sidebar
+  was the one left behind. Entry now carries permission: 'VIEW_FINANCIALS'.
+
+B2 (Low)  components/layout/CommandPalette.tsx
+  Result rows used onMouseEnter to set the selection. The list scrolls under a resting pointer (arrowing down scrolls
+  the selected row into view; fresh results re-render the rows) and the browser fires mouseenter for whichever row
+  lands under it, so selection jumped off the row the keyboard had just chosen - or off row 0 after a new query - and
+  Enter opened the wrong result. Now onMouseMove, which only fires when the pointer itself moves.
+
+Tests: tests/search-independent-pass-12.test.ts (4; two fail on the old code, two pin the surrounding contract).
+Full suite: 250 files / 2538 tests pass (1 file / 78 tests skipped, unrelated). tsc --noEmit clean.
+Not verified in a real browser: B2's behavior is from code + browser event semantics; worth a 30-second manual check.
