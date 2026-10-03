@@ -1,0 +1,10 @@
+Settings independent pass 9 — bug fixes only
+
+1. Signature save/remove now send workspaceId so a stale tab (switched workspace) gets 409 instead of writing to the wrong workspace.
+2. Global SOW defaults save is compare-and-swap on updated_at (expectedUpdatedAt); a colleague's concurrent edit returns 409 rather than being silently overwritten. GET/PUT return updatedAt.
+3. Signature pad ink is fixed dark (#111827), no longer the brand colour (pale brands made it invisible on white).
+4. Workspace tab omits clientReminderAfterDays/clientReminderMax when auto reminders are off (hidden fields caused a confusing 400).
+5. Blank default tax rate is sent as null (server 400) instead of silently saving 0.
+6. api/workspace/settings PATCH re-reads and retries once or twice when the CAS lost only to writes on unrelated columns, instead of a false 409.
+
+Tests: tests/settings-independent-pass-9.test.ts (source-grep).

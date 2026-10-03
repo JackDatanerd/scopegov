@@ -377,17 +377,39 @@ export async function PATCH(request: NextRequest) {
     // Compare-and-swap on updated_at: the conflict check above and this write are two round
     // trips, so two admins saving in the same instant could both pass it. Only write if the row
     // is still the one we read.
-    let write = (service as any).from('workspaces').update(updates).eq('id', session.workspaceId)
-    if (current.updated_at) write = write.eq('updated_at', current.updated_at)
-    let { data: written, error } = await write.select('id')
+    const attemptWrite = (baseUpdatedAt: string | null | undefined) => {
+      let w = (service as any).from('workspaces').update(updates).eq('id', session.workspaceId)
+      if (baseUpdatedAt) w = w.eq('updated_at', baseUpdatedAt)
+      return w.select('id')
+    }
+    let baseUpdatedAt: string | null | undefined = current.updated_at
+    let { data: written, error } = await attemptWrite(baseUpdatedAt)
 
     // The auto-generated handle's 6-character suffix collided with an existing one (≈1 in 2 billion per
     // name) — draw another instead of failing a rename the person made no mistake in.
     if (error && (error as any).code === '23505' && autoSlug) {
       updates.slug = generateSlug(proposed.name as string)
-      let retry = (service as any).from('workspaces').update(updates).eq('id', session.workspaceId)
-      if (current.updated_at) retry = retry.eq('updated_at', current.updated_at)
-      ;({ data: written, error } = await retry.select('id'))
+      ;({ data: written, error } = await attemptWrite(baseUpdatedAt))
+    }
+
+    // Settings pass (bug 7): losing the compare-and-swap above is not always a real conflict. updated_at is moved by
+    // every write to the workspace row — a billing webhook, a logo upload, the defaults governing-law write-through —
+    // so a save could be refused as "changed by someone else at the same moment" although nothing it writes had
+    // changed (and the editor's own per-field `expected` check had already passed). Branding re-reads and retries in
+    // that case; do the same here: re-read, and write again against the new timestamp only if none of the fields this
+    // save touches (nor the handle cooldown / onboarding state it depends on) differ from what was read the first time.
+    for (let attempt = 0; attempt < 2 && !error && (!written || written.length === 0); attempt++) {
+      const { data: fresh, error: freshErr } = await (service as any)
+        .from('workspaces')
+        .select(`${Object.values(COLUMNS).join(', ')}, slug_changed_at, onboarding_completed_at, updated_at`)
+        .eq('id', session.workspaceId).single()
+      if (freshErr || !fresh) break
+      const touched = changedKeys.map(k => COLUMNS[k])
+      const sameRow = [...touched, 'slug_changed_at', 'onboarding_completed_at']
+        .every(col => sameValue(fresh[col], (current as any)[col]))
+      if (!sameRow) break
+      baseUpdatedAt = fresh.updated_at
+      ;({ data: written, error } = await attemptWrite(baseUpdatedAt))
     }
 
     if (error) {

@@ -153,7 +153,9 @@ function toServerValue(key: string, value: any): unknown {
     case 'autoClientReminders':
     case 'defaultTaxInclusive':
     case 'proactiveRiskAlertsEnabled': return !!value
-    case 'defaultTaxRate':             return Math.round(Number(value) * 100) / 100
+    // Settings pass (bug 6): a blank box used to become 0 and silently replace a saved rate (say 16). Blank is sent as
+    // null, which the server refuses with "Default tax rate must be a number from 0 to 100" — the person types 0 on purpose.
+    case 'defaultTaxRate':             return trimText(value) === '' ? null : Math.round(Number(value) * 100) / 100
     case 'defaultPaymentTermsDays':    return trimText(value) === '' ? null : Number(value)
     case 'clientReminderAfterDays':
     case 'clientReminderMax':
@@ -393,6 +395,11 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
     assumptions:    stdText(defaults?.assumptions),
   }))
 
+  // Settings pass (bug 2): when the global defaults row was last written, as this page loaded it (advanced by our own
+  // saves). Sent with a global save so the server refuses it if a colleague saved different defaults in between,
+  // instead of overwriting their standard terms with this form's older copy. null = no row existed yet.
+  const defaultsBase = useRef<string | null>(defaults?.updated_at ?? null)
+
   const [guardianForm, setGuardianForm] = useState(() => ({
     sensitivity:   workspace?.guardian_sensitivity_tier || 'medium',
     riskEnabled:   workspace?.proactive_risk_alerts_enabled ?? true,
@@ -433,6 +440,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
         throw new Error(json.error || 'Save failed')
       }
       setSaved('Changes saved.'); setTimeout(() => setSaved(''), 2000)
+      if (isGlobalDefaults && json.updatedAt !== undefined) defaultsBase.current = json.updatedAt
       // FIX (independent re-audit, Settings section — flagship finding):
       // when this save changed the workspace's currency, the server may have
       // just reset proactive_risk_threshold back to its default (see
@@ -541,7 +549,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
         )}
 
         {tab === 'defaults' && (
-          <DefaultsTab form={defaultsForm} setForm={setDefaultsForm} permissions={permissions} onSave={patch} saving={saving} setTab={setTab} globalLoadFailed={loadFailed.defaults} workspaceId={workspace?.id} />
+          <DefaultsTab form={defaultsForm} setForm={setDefaultsForm} permissions={permissions} onSave={patch} saving={saving} setTab={setTab} globalLoadFailed={loadFailed.defaults} workspaceId={workspace?.id} globalBase={defaultsBase} />
         )}
 
         {tab === 'guardian' && (
@@ -859,6 +867,14 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedA
     setForm((f: any) => ({ ...f, legalAddress: { ...f.legalAddress, [key]: value } }))
   }
 
+  // Settings pass (bug 4): the two reminder numbers are only on screen while automatic reminders are on. A value typed
+  // while they were visible (say 0) used to ride along after the switch was turned off and fail the save with an error
+  // about a field the person could no longer see. They are only sent while their inputs are showing.
+  function saveForm() {
+    const { clientReminderAfterDays, clientReminderMax, ...rest } = form
+    return onSave('/api/workspace/settings', form.autoClientReminders ? form : rest)
+  }
+
   return (
     <div>
       <h2 style={{ fontFamily: 'Cormorant Garamond, Georgia, serif', fontSize: 22, fontWeight: 400, marginBottom: 20 }}>Workspace settings</h2>
@@ -968,7 +984,7 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedA
           </div>
         )}
         <button className="btn btn-primary btn-sm" disabled={saving}
-          onClick={() => onSave('/api/workspace/settings', form)}>
+          onClick={saveForm}>
           {saving ? <span className="spin" /> : 'Save changes'}
         </button>
       </div>
@@ -1057,7 +1073,7 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedA
             placeholder="e.g. 14" onChange={(e: React.ChangeEvent<HTMLInputElement>) => set('defaultPaymentTermsDays', e.target.value)} />
         </div>
         <button className="btn btn-primary btn-sm" disabled={saving}
-          onClick={() => onSave('/api/workspace/settings', form)}>
+          onClick={saveForm}>
           {saving ? <span className="spin" /> : 'Save changes'}
         </button>
         <DocumentNumberingSection workspaceId={workspaceId} />
@@ -1183,6 +1199,8 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, logo
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           agencySignatureData: dataUrl,
+          // Settings pass (bug 1): the stale-tab guard every other Settings write carries.
+          ...(workspaceId ? { workspaceId } : {}),
           expected: { hasSignature: baseRef.current.hasSignature },
         }),
       })
@@ -1205,6 +1223,7 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, logo
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           agencySignatureData: null,
+          ...(workspaceId ? { workspaceId } : {}),
           expected: { hasSignature: baseRef.current.hasSignature },
         }),
       })
@@ -1311,7 +1330,9 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, logo
         ) : (
           <div>
             <div style={{ maxWidth: 400 }}>
-              <SignaturePad ref={sigPadRef} strokeColour={colour} />
+              {/* Settings pass (bug 3): a fixed dark ink. It used the brand-colour box (even unsaved or half-typed), so a pale
+                  brand colour produced a signature that was nearly invisible on a white document. */}
+              <SignaturePad ref={sigPadRef} strokeColour="#111827" />
             </div>
             {sigError && <p className="ferr" style={{ marginTop: 6 }}>{sigError}</p>}
             <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
@@ -1391,13 +1412,13 @@ function StandardsFields({ value, onChange, disabled }: { value: StandardsForm; 
 // never shows a value that isn't what's stored.
 const REVISION_ROUND_CHOICES = Array.from({ length: 10 }, (_, i) => String(i + 1))
 
-function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab, globalLoadFailed, workspaceId }: any) {
+function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab, globalLoadFailed, workspaceId, globalBase }: any) {
   function set(key: string, value: string) {
     setForm((f: any) => ({ ...f, [key]: value }))
   }
 
   const [scope, setScope] = useState<string>('global')
-  const [typeData, setTypeData] = useState<{ revisionRounds: number; paymentStructure: string; isOverride: boolean } | null>(null)
+  const [typeData, setTypeData] = useState<{ revisionRounds: number; paymentStructure: string; isOverride: boolean; updatedAt?: string | null } | null>(null)
   const [typeStd, setTypeStd] = useState<StandardsForm>({ revisionPolicy: '', paymentTerms: '', outOfScope: '', assumptions: '' })
   const [typeLoading, setTypeLoading] = useState(false)
   // A failed load must NOT fall through to the hardcoded 2 rounds / 50_50 / blank standards below:
@@ -1449,7 +1470,7 @@ function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab, globa
   function setTypeField(patch: Partial<{ revisionRounds: number; paymentStructure: string }>) {
     setTypeData(d => ({
       revisionRounds: d?.revisionRounds ?? 2, paymentStructure: d?.paymentStructure ?? '50_50',
-      isOverride: d?.isOverride ?? false, ...patch,
+      isOverride: d?.isOverride ?? false, updatedAt: d?.updatedAt ?? null, ...patch,
     }))
   }
 
@@ -1489,7 +1510,11 @@ function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab, globa
       assumptions:       stdLines(std.assumptions),
     }
     if (isGlobal) {
-      await onSave('/api/workspace/defaults', { revisionRounds: parseInt(form.revRounds), paymentStructure: form.payStructure, ...standards })
+      // Settings pass (bug 2): say which version of the row this form was built from — see defaultsBase.
+      await onSave('/api/workspace/defaults', {
+        revisionRounds: parseInt(form.revRounds), paymentStructure: form.payStructure, ...standards,
+        expectedUpdatedAt: globalBase?.current ?? null,
+      })
       return
     }
     const ok = await onSave('/api/workspace/defaults', {
@@ -1497,6 +1522,7 @@ function DefaultsTab({ form, setForm, permissions, onSave, saving, setTab, globa
       paymentStructure: typeData?.paymentStructure ?? '50_50',
       projectType: scope,
       ...standards,
+      expectedUpdatedAt: typeData?.updatedAt ?? null,
     })
     if (ok) await refetchType()
   }

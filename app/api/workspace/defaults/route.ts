@@ -10,6 +10,7 @@ import { SOW_LANGUAGE_NAMES, isSowLanguage } from '@/lib/ai/sow-content'
 import type { SessionUser } from '@/lib/supabase/types'
 import { staleWorkspaceResponse } from '@/lib/utils/workspace-guard'
 import { stripUnstorableText } from '@/lib/utils/sanitize'
+import { sameInstant } from '@/lib/utils/timestamps'
 
 const PROJECT_TYPES = ['web', 'mobile', 'brand', 'ecomm', 'marketing', 'retainer', 'video', 'other'] as const
 type ProjectType = typeof PROJECT_TYPES[number]
@@ -41,6 +42,8 @@ function normalizeProjectType(value: unknown): ProjectType | null | undefined | 
 }
 
 class DefaultsValidationError extends Error {}
+// Settings pass (bug 2): the row being saved is no longer the version the editor was built from.
+class DefaultsConflictError extends Error {}
 
 const SELECT_COLUMNS =
   'id, project_type, revision_rounds, payment_structure, governing_law, revision_policy, payment_terms, out_of_scope_clauses, assumptions, updated_at'
@@ -65,7 +68,7 @@ function parseRevisionRounds(value: unknown): number | undefined {
   return n
 }
 
-async function saveDefaults(workspaceId: string, body: any, actor: SessionUser) {
+async function saveDefaults(workspaceId: string, body: any, actor: SessionUser): Promise<{ updatedAt: string | null }> {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     throw new DefaultsValidationError('Invalid request body')
   }
@@ -130,6 +133,22 @@ async function saveDefaults(workspaceId: string, body: any, actor: SessionUser) 
   // already resolves to. Genuinely different values still get stored,
   // and still take precedence, exactly as before.
   const globalDefaults = scope ? await findRow(service, workspaceId, null) : existing
+
+  // Settings pass (bug 2): optimistic-concurrency check. The Defaults form sends every field on every save, so a form
+  // built from an older copy would silently overwrite a colleague's newer standard terms with its stale ones. When the
+  // caller says which version it was built from (`expectedUpdatedAt`: the row's updated_at, or null for "no row yet"),
+  // refuse the save if the row has moved on. Callers that do not send it (the onboarding wizard) are unaffected.
+  const expectedRaw = body.expectedUpdatedAt
+  const checkExpected = expectedRaw !== undefined
+  if (checkExpected && expectedRaw !== null && typeof expectedRaw !== 'string') {
+    throw new DefaultsValidationError('Invalid request body')
+  }
+  if (checkExpected) {
+    const moved = expectedRaw === null
+      ? !!existing
+      : (!existing || !sameInstant(expectedRaw, existing.updated_at))
+    if (moved) throw new DefaultsConflictError()
+  }
 
   // FIX (independent re-audit, Settings section — flagship finding): sameValue
   // (imported above) deliberately treats null/''/[]/{} as all equal to each
@@ -233,18 +252,23 @@ async function saveDefaults(workspaceId: string, body: any, actor: SessionUser) 
     // !existing: nothing to create and nothing to remove — a genuine no-op,
     // exactly as if the person had opened this project type, changed
     // nothing, and saved.
-    return
+    return { updatedAt: null }
   }
 
   // Persist. If two saves race to create the same row, the unique index makes
   // one insert fail; that one is retried as an update of the row that won.
   let saved = existing
   if (existing) {
-    const { error } = await service.from('workspace_defaults').update(payload).eq('id', existing.id)
+    // With a baseline the write is also compare-and-swap on updated_at: the check above and this write are two round
+    // trips, so two admins saving at the same instant could both pass it.
+    let write = service.from('workspace_defaults').update(payload).eq('id', existing.id)
+    if (checkExpected && existing.updated_at) write = write.eq('updated_at', existing.updated_at)
+    const { data: written, error } = await write.select('id')
     if (error) {
       console.error('workspace_defaults update failed:', error)
       throw new Error('Could not save your defaults. Try again.')
     }
+    if (checkExpected && (!written || written.length === 0)) throw new DefaultsConflictError()
   } else {
     const { error } = await service.from('workspace_defaults').insert(payload)
     if (error) {
@@ -252,6 +276,8 @@ async function saveDefaults(workspaceId: string, body: any, actor: SessionUser) 
         console.error('workspace_defaults insert failed:', error)
         throw new Error('Could not save your defaults. Try again.')
       }
+      // Someone created the row between our read and our insert: with a baseline that is a conflict, not a retry.
+      if (checkExpected) throw new DefaultsConflictError()
       saved = await findRow(service, workspaceId, scope)
       if (!saved) throw new Error('Could not save your defaults. Try again.')
       const { error: retryErr } = await service.from('workspace_defaults').update(payload).eq('id', saved.id)
@@ -352,6 +378,7 @@ async function saveDefaults(workspaceId: string, body: any, actor: SessionUser) 
       metadata: { projectType: scope || 'global', created: !existing, fields: changedKeys, changes },
     })
   }
+  return { updatedAt: payload.updated_at as string }
 }
 
 async function authorised() {
@@ -388,11 +415,17 @@ async function handleSave(request: NextRequest, label: string) {
         error: 'You\u2019re no longer working on that workspace. Reload the page and try again.',
       }, { status: 409 })
     }
-    await saveDefaults(auth.session!.workspaceId, body, auth.session!)
-    return NextResponse.json({ ok: true })
+    const { updatedAt } = await saveDefaults(auth.session!.workspaceId, body, auth.session!)
+    return NextResponse.json({ ok: true, updatedAt })
   } catch (err) {
     if (err instanceof DefaultsValidationError) {
       return NextResponse.json({ error: err.message }, { status: 400 })
+    }
+    if (err instanceof DefaultsConflictError) {
+      return NextResponse.json({
+        error: 'These defaults were changed by someone else while you were editing. Reload the page to see the latest values, then re-apply your change.',
+        conflicts: ['defaults'],
+      }, { status: 409 })
     }
     console.error(`Workspace defaults ${label} error:`, err)
     return NextResponse.json({ error: (err as Error)?.message?.startsWith('Could not') || (err as Error)?.message?.startsWith('Your defaults')
@@ -504,6 +537,9 @@ export async function GET(request: NextRequest) {
       currency:          workspace?.currency ?? 'USD',
       isOverride:        !!typeDefaults,
       projectType:       requested || null,
+      // Version of the row the editor is looking at (the type's own row, else the workspace-wide one) — sent back as
+      // expectedUpdatedAt on save. For a type with no override of its own it is null ("no row yet").
+      updatedAt:         (requested ? typeDefaults : globalDefaults)?.updated_at ?? null,
     })
   } catch (err) {
     console.error('Workspace defaults GET error:', err)
