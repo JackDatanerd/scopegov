@@ -81,7 +81,12 @@ export const UNSTORABLE_TEXT_ERROR = (label: string) => `${label} contains chara
 // addresses; names never got the equivalent. A value counts as blank when nothing visible is left once whitespace,
 // control characters and invisible characters are removed. Only ever used to decide "is there any real text"; the
 // stored value is still just the trimmed input, so a ZWJ/ZWNJ that is part of a real name is preserved.
-const INVISIBLE_ONLY = /^[\s\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u180b-\u180e\u200b-\u200f\u202a-\u202e\u2060-\u206f\u2800\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff9-\ufffb\u{e0000}-\u{e0fff}]*$/u
+// FIX (independent pass 17, section 14 — B1): the hand-listed ranges missed invisible characters outside them — the Khmer
+// inherent vowels U+17B4 / U+17B5 (and the other Default_Ignorable ones: U+180F, the musical-format controls
+// U+1D173–1D17A, the shorthand-format controls U+1BCA0–1BCA3), so a name made only of those was still stored as a blank
+// heading. The class now also takes every Unicode Default_Ignorable_Code_Point and format (Cf) character, so a future
+// invisible code point is covered without another list edit. Still only an "is anything visible left" test.
+const INVISIBLE_ONLY = /^[\s\p{Default_Ignorable_Code_Point}\p{Cf}\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u180b-\u180e\u200b-\u200f\u202a-\u202e\u2060-\u206f\u2800\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff9-\ufffb\u{e0000}-\u{e0fff}]*$/u
 /** True when `s` has no visible character (empty, whitespace, or only invisible / control characters). */
 export function isBlankText(s: unknown): boolean {
   return typeof s !== 'string' || INVISIBLE_ONLY.test(s)

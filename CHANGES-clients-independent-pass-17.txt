@@ -1,0 +1,24 @@
+Clients (section 14) — independent pass 17
+Base: snapshot uploaded 2026-10-03 (after other sessions' member-project-ids paging, which already closed this pass's
+      "restricted member > 1000 project_members rows" finding on both Clients pages — not repeated here)
+
+B1  lib/utils/client-input.ts
+    isBlankText() listed its invisible ranges by hand and missed some (Khmer inherent vowels U+17B4/17B5, U+180F, the
+    musical / shorthand format controls). A client or contact name made only of those was stored as a blank heading.
+    The class now also takes every Unicode Default_Ignorable_Code_Point and Cf character. A ZWJ/ZWNJ inside a real name is
+    still preserved (the test only decides "is anything visible left"; the stored value is the trimmed input).
+
+B2  app/api/clients/[id]/route.ts (PATCH)
+    (a) The audit before/after comparison used JSON.stringify, which is key-order sensitive; billing_address comes back from
+        jsonb in jsonb's key order but is written in line1/line2/city… order, so a whitespace-only edit was logged as a
+        client.updated with identical from/to. Compared with sorted keys now.
+    (b) A body carrying nothing this route writes ({} or unknown keys) still ran the RPC and bumped updated_at. It now
+        returns { ok: true, unchanged: true } without writing.
+
+Files
+  lib/utils/client-input.ts
+  app/api/clients/[id]/route.ts
+  tests/clients-independent-pass-17.test.ts   (new)
+
+No migration. No new dependencies.
+Verify after extracting:  npx tsc --noEmit && npx vitest run tests/clients-independent-pass-17.test.ts && npx vitest run

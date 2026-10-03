@@ -23,6 +23,21 @@ import { isUuidString } from '@/lib/utils/uuid'
 // Free-text fields whose VALUE is not copied into the audit trail (only "changed").
 const AUDIT_REDACT = new Set(['notes'])
 
+// FIX (independent pass 17, section 14 — B2): the before/after comparison below used JSON.stringify, which is key-ORDER
+// sensitive. billing_address comes back from jsonb in jsonb's key order (shorter keys first) while the parser writes it in
+// line1, line2, city, … order, so a save that changed nothing but whitespace (trimmed server-side) was audited as a
+// `client.updated` whose "from" and "to" were identical. Compared with object keys sorted instead.
+function stableJson(v: unknown): string {
+  const norm = (x: unknown): unknown => {
+    if (Array.isArray(x)) return x.map(norm)
+    if (x && typeof x === 'object') {
+      return Object.fromEntries(Object.entries(x as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([k, val]) => [k, norm(val)]))
+    }
+    return x ?? null
+  }
+  return JSON.stringify(norm(v))
+}
+
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id }  = await params
@@ -68,6 +83,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         return NextResponse.json({ error: 'status must be "active" or "archived"' }, { status: 400 })
       updates.status = body.status
     }
+
+    // FIX (independent pass 17, section 14 — B2): a body that carried nothing this route writes (`{}`, or only unknown keys)
+    // still ran the RPC and bumped updated_at. Nothing to save → nothing written.
+    if (!Object.keys(updates).some(k => k !== 'updated_at'))
+      return NextResponse.json({ ok: true, unchanged: true })
 
     // Email changes go through the same duplicate check as creation (case-insensitive).
     const emailChanged = typeof updates.email === 'string' && updates.email !== String(existing.email || '').toLowerCase()
@@ -115,7 +135,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     for (const [col, next] of Object.entries(updates)) {
       if (col === 'updated_at' || col === 'email_bounced_at' || col === 'email_bounce_kind') continue
       const prev = existing[col]
-      if (JSON.stringify(prev ?? null) === JSON.stringify(next ?? null)) continue
+      if (stableJson(prev) === stableJson(next)) continue
       changes[col] = AUDIT_REDACT.has(col) ? { changed: true } : { from: prev ?? null, to: next ?? null }
     }
     // FIX (independent pass 12, section 14 — B2): archiving / reactivating a client is its own decision (it hides the client
