@@ -145,13 +145,21 @@ export function isSearchable(raw: string | null | undefined): boolean {
  * the few rows each block fetches, since a bare LIMIT returned an arbitrary
  * subset.
  */
-export function scoreMatch(text: string, tokens: string[], phrase: string = tokens.join(' ')): number {
+export function scoreMatch(text: string, tokens: string[], phrase: string = tokens.join(' '), primaries?: readonly (string | null | undefined)[]): number {
   if (tokens.length === 0) return 0
   const t = normalizeSearchText(text)
   const words = t.split(/[\s\-_.,;:!?/\\()[\]{}&'"+#@]+/).filter(Boolean)
+  // FIX (Search section, round 11): the exact-match bonus compared the WHOLE ranking text to the phrase, but for every block except
+  // team members that text is several fields joined (project name + discipline + ref + client name, CO number + title + project
+  // name …), so it essentially never equalled what was typed. The exact-name / exact-number fetches added in round 5 retrieved the
+  // row whose name IS the query, and the ranker then gave it no credit: with more rows than the block's cut-off sharing the
+  // prefix ("Website" vs six newer "Website Redesign N"), the exact row was fetched and dropped. `primaries` are the row's own
+  // identifying fields (name, title, number, ref); an exact match on any of them earns the bonus, and a primary that starts with
+  // the first token earns the start-of-text bonus too (the joined text starts with the number, not the title).
+  const prim = (primaries ?? []).map(x => normalizeSearchText(x ?? '')).filter(Boolean)
   let score = 0
-  if (t === phrase) score += 100
-  if (t.startsWith(tokens[0])) score += 40
+  if (t === phrase || prim.includes(phrase)) score += 100
+  if (t.startsWith(tokens[0]) || prim.some(x => x.startsWith(tokens[0]))) score += 40
   for (const tok of tokens) {
     if (words.some(w => w.startsWith(tok)) || startsAtBoundary(t, tok)) score += 10
     else if (t.includes(tok)) score += 2
@@ -171,10 +179,13 @@ function startsAtBoundary(text: string, tok: string): boolean {
   return false
 }
 
-/** Stable sort by descending relevance. */
-export function rankBy<T>(items: T[], tokens: string[], textOf: (item: T) => string, phrase?: string): T[] {
+/** Stable sort by descending relevance. `primariesOf` lists the row's own identifying fields (see scoreMatch). */
+export function rankBy<T>(
+  items: T[], tokens: string[], textOf: (item: T) => string, phrase?: string,
+  primariesOf?: (item: T) => readonly (string | null | undefined)[],
+): T[] {
   return items
-    .map((item, i) => ({ item, i, s: scoreMatch(textOf(item), tokens, phrase) }))
+    .map((item, i) => ({ item, i, s: scoreMatch(textOf(item), tokens, phrase, primariesOf?.(item)) }))
     .sort((a, b) => b.s - a.s || a.i - b.i)
     .map(x => x.item)
 }

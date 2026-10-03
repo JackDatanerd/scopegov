@@ -52,7 +52,7 @@ describe('the route builds its whole-phrase strings from the phrase helpers', ()
   })
   it('every rankBy call passes the phrase', () => {
     const calls = src.match(/rankBy\(/g) || []
-    const withPhrase = src.match(/rankBy\([^\n]*wholeFolded\)/g) || []
+    const withPhrase = src.match(/rankBy\([^\n]*wholeFolded[,)]/g) || []
     expect(calls.length).toBeGreaterThan(0)
     expect(withPhrase.length).toBe(calls.length)
   })

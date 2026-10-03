@@ -95,6 +95,12 @@ import {
 //     Flags' text column also covers the cited SOW clause, replacing the separate sow_reference query.
 //   • Flag result titles were cut with slice(0, 80), which can split an emoji and leave a lone surrogate.
 
+// Round 11 (Search section, independent pass) — what this pass found and fixes:
+//   • The ranker's exact-match bonus compared the whole joined ranking text (name + discipline + ref + client …) to the phrase, so it
+//     never fired for projects, clients, contacts, change orders, SOWs, invoices or flags: the exact-name rows the round-5 fetches
+//     retrieve were then cut by the per-block limit behind newer prefix siblings. Each block now passes its identifying fields
+//     (name / title / number / ref) to rankBy as `primaries` — see scoreMatch in lib/search/query.ts.
+
 type Result = { type: string; id: string; title: string; sub: string; href: string }
 
 const FETCH = 15 // rows fetched per query before ranking
@@ -180,7 +186,7 @@ export async function GET(request: NextRequest) {
       ])
       return dedupe([...must<any[]>(a), ...must<any[]>(b), ...must<any[]>(c)])
     })
-    const clientMatches = rankBy(clientRows, folded, c => `${c.name} ${c.company_name || ''}`, wholeFolded)
+    const clientMatches = rankBy(clientRows, folded, c => `${c.name} ${c.company_name || ''}`, wholeFolded, c => [c.name])
     const clientIds = clientMatches.slice(0, FETCH).map(c => c.id)
     const clientResults: Result[] = clientMatches.slice(0, 4).map(c => ({
       type: 'client', id: c.id, title: c.name,
@@ -216,7 +222,7 @@ export async function GET(request: NextRequest) {
           base().ilike('name', escapeIlike(wholePlain)).limit(FETCH),
         ])
         const rows = dedupe([...must<any[]>(a), ...must<any[]>(b), ...must<any[]>(c), ...must<any[]>(d), ...must<any[]>(e)])
-        return rankBy(rows, folded, p => `${p.name} ${p.disc || ''} ${p.internal_ref || ''} ${p.clients?.name || ''}`, wholeFolded).slice(0, 5).map(p => ({
+        return rankBy(rows, folded, p => `${p.name} ${p.disc || ''} ${p.internal_ref || ''} ${p.clients?.name || ''}`, wholeFolded, p => [p.name, p.internal_ref]).slice(0, 5).map(p => ({
           type: 'project', id: p.id,
           title: p.name + (p.disc ? ` — ${p.disc}` : ''),
           sub: [p.clients?.name || '', p.status, p.internal_ref ? `Ref ${p.internal_ref}` : ''].filter(Boolean).join(' · '),
@@ -236,7 +242,7 @@ export async function GET(request: NextRequest) {
         // take one of the three slots, whatever the database returned.
         const rows = dedupe(must<any[]>(await cq.order('created_at', NEWEST).limit(FETCH)))
           .filter(c => !listedClientIds.includes(c.client_id))
-        return rankBy(rows, folded, c => `${c.name} ${c.email || ''}`, wholeFolded).slice(0, 3).map(c => ({
+        return rankBy(rows, folded, c => `${c.name} ${c.email || ''}`, wholeFolded, c => [c.name, c.email]).slice(0, 3).map(c => ({
           type: 'contact', id: c.id,
           title: c.name,
           sub: `Contact at ${c.clients?.name || 'client'}${c.role ? ` · ${c.role}` : ''}`,
@@ -295,7 +301,7 @@ export async function GET(request: NextRequest) {
         // Ranked with `folded` (not `plain`): a row can now be here purely because it matched the
         // *project's* search_text via a folded token, and plain tokens keep accents SOW's own
         // ranking already avoids for the same reason — see that block below.
-        return rankBy(rows, folded, co => `${co.document_number || ''} ${co.title} ${co.projects?.name || ''}`, wholeFolded).slice(0, 4).map(co => ({
+        return rankBy(rows, folded, co => `${co.document_number || ''} ${co.title} ${co.projects?.name || ''}`, wholeFolded, co => [co.title, co.document_number]).slice(0, 4).map(co => ({
           type: 'change_order', id: co.id,
           title: co.document_number ? `${co.document_number} — ${co.title}` : co.title,
           sub: `${co.projects?.name || ''} · CO · ${coStatusLabel(String(co.status))}`,
@@ -318,7 +324,7 @@ export async function GET(request: NextRequest) {
           clientIds.length ? byClientIds(base()).order('created_at', NEWEST).limit(FETCH) : none,
         ])
         const rows = dedupe([...must<any[]>(a), ...must<any[]>(b), ...must<any[]>(c)])
-        return rankBy(rows, folded, s => `${s.document_number || ''} ${s.projects.name}`, wholeFolded).slice(0, 4).map(s => ({
+        return rankBy(rows, folded, s => `${s.document_number || ''} ${s.projects.name}`, wholeFolded, s => [s.document_number]).slice(0, 4).map(s => ({
           type: 'sow', id: s.id,
           title: s.document_number ? `${s.document_number} — ${s.projects.name}` : `SOW — ${s.projects.name}`,
           sub: `v${s.version} · ${sowStatusLabel(String(s.status))}`,
@@ -348,7 +354,7 @@ export async function GET(request: NextRequest) {
         ])
         const rows = dedupe([...must<any[]>(a), ...must<any[]>(b), ...must<any[]>(c), ...must<any[]>(d), ...must<any[]>(e), ...must<any[]>(f)])
         // Ranked with `folded` — see the change-orders block above for why.
-        return rankBy(rows, folded, inv => `${inv.invoice_number || ''} ${inv.title} ${inv.projects?.name || ''}`, wholeFolded).slice(0, 4).map(inv => ({
+        return rankBy(rows, folded, inv => `${inv.invoice_number || ''} ${inv.title} ${inv.projects?.name || ''}`, wholeFolded, inv => [inv.title, inv.invoice_number]).slice(0, 4).map(inv => ({
           type: 'invoice', id: inv.id,
           title: inv.invoice_number ? `${inv.invoice_number} — ${inv.title}` : inv.title,
           sub: `${inv.projects?.name || ''} · Invoice · ${invoiceStatusLabel(String(inv.status))}`,
@@ -378,7 +384,7 @@ export async function GET(request: NextRequest) {
         ])
         const rows = dedupe([...must<any[]>(a), ...must<any[]>(b), ...must<any[]>(c)])
         // Ranked with `folded` — see the change-orders block above for why.
-        return rankBy(rows, folded, f => `${f.description} ${f.projects?.name || ''}`, wholeFolded).slice(0, 4).map(f => ({
+        return rankBy(rows, folded, f => `${f.description} ${f.projects?.name || ''}`, wholeFolded, f => [f.description]).slice(0, 4).map(f => ({
           type: 'guardian_flag', id: f.id,
           title: truncateByCodePoint(f.description, 80),
           sub: `${f.projects?.name || ''} · ${f.severity} severity · ${flagStatusLabel(String(f.status))}`,

@@ -1,0 +1,20 @@
+SEARCH — independent pass 11
+============================
+Bug S-1: the ranker's exact-match bonus never fired for projects, clients, contacts, change orders, SOWs,
+invoices or flags. scoreMatch compared the WHOLE joined ranking text (name + discipline + ref + client name,
+number + title + project name, ...) to the typed phrase, so it essentially never matched. The exact-name /
+exact-number fetches (round 5) retrieved the row whose name IS the query, then the per-block cut-off
+(5 projects, 4 clients/COs/SOWs/invoices/flags) dropped it behind newer prefix siblings
+("Website" vs six newer "Website Redesign N"; client "Acme" vs five "Acme Labs N"; INV-0001 vs INV-00010..).
+
+Fix
+- lib/search/query.ts: scoreMatch / rankBy take optional `primaries` (the row's own identifying fields).
+  An exact match on any primary earns the +100 bonus; a primary starting with the first token earns +40.
+  Behaviour is unchanged when no primaries are passed.
+- app/api/search/route.ts: every rankBy call passes its block's primaries
+  (client name; project name + internal_ref; contact name + email; CO title + number; SOW number;
+  invoice title + number; flag description). Members already ranked on name alone.
+- tests/search-independent-pass-11.test.ts (new); tests/search-independent-pass-9.test.ts structural regex
+  updated for the new call shape.
+
+Verified: 9 search test files / 105 tests pass; full suite 243 files / 2484 tests pass; tsc --noEmit clean.
