@@ -153,11 +153,21 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // cancel was refused, the exception was granted anyway, and the auto-send then failed against an
     // 'exception_granted' CO — a false "Approved — not sent". The ledger row written above is removed again, exactly as
     // for a lost status race below, because nothing was granted.
-    const cancelled = await cancelCoApprovals(service, {
-      workspaceId: session.workspaceId, coId: id,
-      actorId: session.id, actorEmail: session.email, actorName: session.name,
-      reason: 'CO granted as an exception',
-    })
+    // cancelCoApprovals THROWS on a failed approval lookup/cancel write (it does not return blockedBySend for that). The
+    // ledger row above is already written, so a throw here used to leave a phantom "given away free" row for a CO that
+    // was never excepted — and a retry then wrote a second one (the per-flag unique row is taken, so the retry's row has
+    // flag_id null and is not stopped by the index). Remove the row before surfacing the error.
+    let cancelled: Awaited<ReturnType<typeof cancelCoApprovals>>
+    try {
+      cancelled = await cancelCoApprovals(service, {
+        workspaceId: session.workspaceId, coId: id,
+        actorId: session.id, actorEmail: session.email, actorName: session.name,
+        reason: 'CO granted as an exception',
+      })
+    } catch (cancelErr) {
+      await (service as any).from('exceptions_log').delete().eq('id', excRow.id)
+      throw cancelErr
+    }
     if (cancelled.blockedBySend) {
       await (service as any).from('exceptions_log').delete().eq('id', excRow.id)
       return NextResponse.json({ error: SEND_IN_FLIGHT_MESSAGE }, { status: 409 })

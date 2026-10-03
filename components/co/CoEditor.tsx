@@ -366,6 +366,11 @@ export default function CoEditor({ projId, coId }: Props) {
     // it here too so it's not a round-trip-only error.
     if (lineItems.some(l => l.total !== 0 && !l.description.trim())) { setError('Every line item with a value needs a description'); return }
     setSending(true); setError('')
+    // Send saves the current state itself. A still-armed autosave timer would fire a second PATCH after the CO has left
+    // 'draft' (409 → a spurious "Save failed" flash while navigating away).
+    if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null }
+    pendingSave.current = false
+    setSaveStatus('idle')
     try {
       const id = await doSave(false, false)
       if (!id) throw new Error('Failed to save CO before sending')
@@ -405,8 +410,10 @@ export default function CoEditor({ projId, coId }: Props) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ projectId: projId, request: aiText, flagId: flagId || undefined }),
       })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error)
+      // A non-JSON reply (gateway timeout page) or an error body with no `error` field used to surface as a raw parse
+      // error or an empty message that showed nothing at all.
+      const json = await res.json().catch(() => ({} as any))
+      if (!res.ok) throw new Error(json.error || 'Could not draft this — try again or write it manually.')
       // FIX (CO logic, independent pass 6): apply the draft all-or-nothing. The title, note and impact fields used to be
       // replaced before the line items were looked at, so a reply without line items left the user's OLD lines under a
       // NEW title/note — a half-applied draft after a confirm that promised a full replacement. (The route now refuses to
