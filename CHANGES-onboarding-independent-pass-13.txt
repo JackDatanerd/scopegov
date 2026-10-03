@@ -1,0 +1,18 @@
+CHANGES — Onboarding independent pass 13 (c4: app/onboarding + complete-onboarding)
+
+Result: two independent passes on the section found no defect in the wizard, complete-onboarding,
+onboarding-status, or the middleware gate. Two small items fixed:
+
+1. app/api/workspace/create/route.ts
+   The welcome email was awaited with no time limit (lib/email/send.ts has none either). The
+   workspace, membership and active-workspace pointer are already committed by then, so a stalled mail
+   provider held the wizard's step 0 -> 1 until the platform killed the request; the person saw a
+   failure for a workspace that existed and re-submitted into the one-trial-per-creator 409.
+   The send is now best-effort with a 4s ceiling; the response no longer waits past it.
+
+2. tests/guardian-unstorable-text.test.ts (outside the section, found while verifying)
+   Imported embeddingText from @/lib/ai/guardian; it lives in guardian-pipeline. This was the one
+   `tsc --noEmit` error and made one test fail ("embeddingText is not a function").
+
+Tests: tests/onboarding-independent-pass-13.test.ts (new, 2 cases).
+Verified on fbbdb05: tsc clean; vitest 224 files passed, 1 skipped.

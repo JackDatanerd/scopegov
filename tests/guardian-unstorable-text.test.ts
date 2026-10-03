@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { stripUnstorableText, truncateText } from '@/lib/utils/sanitize'
-import { toPlainText, embeddingText, MAX_CHECK_CONTENT_CHARS } from '@/lib/ai/guardian'
+import { toPlainText, MAX_CHECK_CONTENT_CHARS } from '@/lib/ai/guardian'
+// embeddingText lives in guardian-pipeline (it was moved out of guardian.ts; this import was left stale).
+import { embeddingText } from '@/lib/ai/guardian-pipeline'
 import { cleanSubject } from '@/lib/ai/guardian-email'
 
 const hasBad = (s: string) => /[\u0000]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(s)

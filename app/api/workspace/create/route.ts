@@ -201,10 +201,27 @@ export async function POST(request: NextRequest) {
     // lib/email/templates.ts. Best-effort, same as the audit-log insert
     // above and sendWorkspaceDeletedEmail's own call site — must never
     // fail an already-successful workspace creation.
+    // FIX (Onboarding independent pass 13): this awaited the provider call with no time limit, and
+    // lib/email/send.ts has none either. The workspace, its membership and the active-workspace
+    // pointer are already committed by this point, so a slow or stalled mail provider held the
+    // wizard's step 0 -> 1 transition until the platform killed the request — the person then saw a
+    // failure for a workspace that existed and re-submitted into the one-trial-per-creator 409.
+    // The welcome email is best-effort: give it a few seconds, then answer without waiting for it.
     if (user.email) {
-      await sendWorkspaceCreatedEmail({
-        to: user.email, name: userRow?.name || user.email, agencyName,
-      }).catch(e => console.error('Workspace created email failed (non-fatal):', e))
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try {
+        await Promise.race([
+          sendWorkspaceCreatedEmail({
+            to: user.email, name: userRow?.name || user.email, agencyName,
+          }).catch(e => console.error('Workspace created email failed (non-fatal):', e)),
+          new Promise<void>(resolve => {
+            timer = setTimeout(() => {
+              console.error('Workspace created email still pending after 4s — not waiting (non-fatal)')
+              resolve()
+            }, 4000)
+          }),
+        ])
+      } finally { if (timer) clearTimeout(timer) }
     }
 
     return NextResponse.json({ workspaceId, slug, activeSet: !activeWsError })
