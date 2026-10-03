@@ -170,9 +170,20 @@ export type SowTableRow = Record<string, string>
  * anything that still isn't a finite number, so callers can distinguish
  * "blank/unparseable" from "zero".
  */
-export function parseTableAmount(raw: unknown): number | null {
-  if (typeof raw === 'number') return Number.isFinite(raw) ? raw : null
-  if (typeof raw !== 'string') return null
+// FIX (SOW lifecycle, round 8, B1): only the ASCII hyphen-minus was ever read as a minus sign. Pasted or
+// auto-formatted amounts routinely carry the typographic one — U+2212 MINUS SIGN, U+2012 FIGURE DASH,
+// U+FE63 / U+FF0D (small / fullwidth hyphen-minus) — and "\u2212500" parsed as +500: a credit milestone entered that
+// way silently counted as a charge, so a schedule that was meant to foot at 1,000 totalled 1,400 (send then blocked
+// with a message that never mentioned the sign), or, worse, footed to a wrong contract value and was signed with a
+// +200 milestone where a -200 credit was meant. These are all unambiguous minus signs, so they are normalised to
+// '-' up front. An en dash (U+2013) is also a dash in prose ("Deposit \u2013 $500"), so it only counts as a minus
+// when nothing but a currency symbol sits between it and the number (see `leadingEnDash` below).
+const TRUE_MINUS_RE = /[\u2212\u2012\uFE63\uFF0D]/g
+
+export function parseTableAmount(input: unknown): number | null {
+  if (typeof input === 'number') return Number.isFinite(input) ? input : null
+  if (typeof input !== 'string') return null
+  const raw = input.replace(TRUE_MINUS_RE, '-')
 
   // Find every numeric token ("1.500,00", "1 500,00", "$2,500", "12"). A cell that
   // holds more than one ("Net 30: 500", "10-15", "1e3") is ambiguous, so it is
@@ -222,7 +233,12 @@ export function parseTableAmount(raw: unknown): number | null {
   const before = raw.slice(0, raw.indexOf(tokens[0]))
   const leadingMinus = /-\s*[^\d]*$/.test(before) && !/\d/.test(before)
   const wrappedInParens = /\([^\d]*$/.test(before) && /^[^\d]*\)/.test(after)
-  if (leadingMinus || wrappedInParens) n = -n
+  // En dash as a minus: only when the cell is just the dash, an optional currency symbol and the number.
+  const leadingEnDash = /^\s*\u2013\s*[^\d\s\p{L}]?\s*$/u.test(before)
+  // Trailing-minus accounting style ("500-", "500 -"): only when the minus is all that follows the number, so a
+  // cell like "500 - on signing" is left alone.
+  const trailingMinus = /^\s*[-\u2013]\s*$/.test(after)
+  if (leadingMinus || leadingEnDash || trailingMinus || wrappedInParens) n = -n
   return n
 }
 

@@ -87,6 +87,12 @@ beforeEach(() => {
 const del = () => DELETE({ headers: new Headers() } as any, { params: Promise.resolve({ id: 's2', attachmentId: 'a1' }) })
 
 describe('DELETE /api/sow/[id]/attachments/[attachmentId] — shared storage objects', () => {
+  // SOW lifecycle round 8 (B4): removal now goes through sow_attachment_remove (migration 138), which returns the
+  // removed row's storage_path / file_name. These cases assert the shared-object rule on top of that.
+  beforeEach(() => {
+    h.rpcResult = { data: { storage_path: 'w1/sow/s1/abc.pdf', file_name: 'brief.pdf' }, error: null }
+  })
+
   it('removes the Storage object when no other row references it', async () => {
     h.remaining = 0
     const res = await del()
@@ -113,6 +119,52 @@ describe('DELETE /api/sow/[id]/attachments/[attachmentId] — shared storage obj
     h.sow = { id: 's2', project_id: 'p1', sent_at: '2026-01-01' }
     const res = await del()
     expect(res.status).toBe(409)
+    expect(h.removed).toHaveLength(0)
+  })
+
+  // SOW lifecycle round 8 (B4): the read-then-delete gap against a send / approval request is closed under a lock.
+  it('removes through the sow_attachment_remove RPC, scoped to this SOW', async () => {
+    const res = await del()
+    expect(res.status).toBe(200)
+    expect(h.rpcCalls).toHaveLength(1)
+    expect(h.rpcCalls[0].name).toBe('sow_attachment_remove')
+    expect(h.rpcCalls[0].args).toEqual({ p_sow_id: 's2', p_attachment_id: 'a1' })
+  })
+
+  it('answers 409 and keeps the object when the SOW was sent between the fast-path check and the delete', async () => {
+    h.rpcResult = { data: null, error: { message: 'sow_locked' } }
+    const res = await del()
+    expect(res.status).toBe(409)
+    expect(h.removed).toHaveLength(0)
+  })
+
+  it('answers 409 when an approval request opened in that gap', async () => {
+    h.rpcResult = { data: null, error: { message: 'sow_approval_pending' } }
+    const res = await del()
+    expect(res.status).toBe(409)
+    expect(h.removed).toHaveLength(0)
+  })
+
+  it('answers 404 for an attachment that is not on this SOW (or a malformed id)', async () => {
+    h.rpcResult = { data: null, error: { message: 'attachment_not_found' } }
+    expect((await del()).status).toBe(404)
+    h.rpcResult = { data: null, error: { message: 'invalid input syntax for type uuid: "x"' } }
+    expect((await del()).status).toBe(404)
+    expect(h.removed).toHaveLength(0)
+  })
+
+  it('falls back to the plain delete while migration 138 is not applied', async () => {
+    h.rpcResult = { data: null, error: { message: 'Could not find the function public.sow_attachment_remove(p_attachment_id, p_sow_id) in the schema cache', code: 'PGRST202' } }
+    h.remaining = 0
+    const res = await del()
+    expect(res.status).toBe(200)
+    expect(h.removed).toEqual([['w1/sow/s1/abc.pdf']])
+  })
+
+  it('does not paper over an unrelated RPC failure with the fallback', async () => {
+    h.rpcResult = { data: null, error: { message: 'connection reset' } }
+    const res = await del()
+    expect(res.status).toBe(500)
     expect(h.removed).toHaveLength(0)
   })
 })

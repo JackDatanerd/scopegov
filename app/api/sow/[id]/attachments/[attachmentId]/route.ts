@@ -43,15 +43,39 @@ export async function DELETE(
     if (await getPendingApprovalForDocument(service, 'sow', id))
       return NextResponse.json({ error: 'This SOW has a pending approval request — cancel it before changing attachments.' }, { status: 409 })
 
-    // Scoped by sow_id, not just id — an attachmentId that belongs to a
-    // different SOW (even one in this same workspace) must 404, not delete.
-    const { data: attachment } = await (service as any)
-      .from('sow_attachments').select('id, storage_path, file_name').eq('id', attachmentId).eq('sow_id', id).single()
-    if (!attachment) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-
-    const { error: deleteError } = await (service as any)
-      .from('sow_attachments').delete().eq('id', attachmentId).eq('sow_id', id)
-    if (deleteError) throw new Error(deleteError.message)
+    // FIX (SOW lifecycle, round 8, B4): the checks above are only a fast path. Adding an attachment has been
+    // atomic since migration 109/117 (sow_attachment_add rechecks the draft lock and the approval lock under a row
+    // lock); this delete used to be a bare read-then-delete, so one landing between a send (or an approval request)
+    // and this write still removed a file from a document that had just been locked. sow_attachment_remove (migration
+    // 138) takes the same lock, applies the same two refusals, and scopes the delete to this SOW — an attachmentId
+    // that belongs to a different SOW (even one in this workspace) is "attachment_not_found", not a delete.
+    let attachment: { storage_path: string; file_name: string } | null = null
+    const { data: removed, error: removeRpcErr } = await (service as any)
+      .rpc('sow_attachment_remove', { p_sow_id: id, p_attachment_id: attachmentId })
+    if (!removeRpcErr && removed) {
+      attachment = { storage_path: removed.storage_path, file_name: removed.file_name }
+    } else {
+      const msg = String(removeRpcErr?.message || '')
+      // A malformed attachmentId is just "no such attachment" (the old select answered 404 for it too).
+      if (msg.includes('attachment_not_found') || msg.includes('sow_not_found') || /invalid input syntax/i.test(msg))
+        return NextResponse.json({ error: 'Not found' }, { status: 404 })
+      if (msg.includes('sow_locked'))
+        return NextResponse.json({ error: 'SOW is locked — attachments can only be removed from a draft.' }, { status: 409 })
+      if (msg.includes('sow_approval_pending'))
+        return NextResponse.json({ error: 'This SOW has a pending approval request — cancel it before changing attachments.' }, { status: 409 })
+      // Function not installed yet (migration 138 not applied): fall back to the guarded-by-fast-path delete this
+      // route always had, rather than making attachments undeletable until the migration is run.
+      if (!/could not find the function|PGRST202|does not exist/i.test(msg + String((removeRpcErr as any)?.code || '')))
+        throw new Error(removeRpcErr?.message || 'sow_attachment_remove returned no row')
+      console.error('sow_attachment_remove unavailable, falling back to non-atomic delete:', msg)
+      const { data: found } = await (service as any)
+        .from('sow_attachments').select('id, storage_path, file_name').eq('id', attachmentId).eq('sow_id', id).single()
+      if (!found) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+      const { error: deleteError } = await (service as any)
+        .from('sow_attachments').delete().eq('id', attachmentId).eq('sow_id', id)
+      if (deleteError) throw new Error(deleteError.message)
+      attachment = { storage_path: found.storage_path, file_name: found.file_name }
+    }
 
     // FIX (section-9 independent pass): a storage_path is NOT unique per row. Reopening a SOW (and
     // the portal's request-changes) copies attachment rows onto the new draft via

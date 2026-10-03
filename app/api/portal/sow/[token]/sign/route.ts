@@ -343,6 +343,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         sections:      hydrateSections(sow.sections || [], sow.metadata),
         language:      sow.metadata?.language || 'en',
         msaReference:  sow.metadata?.msaReference || null,
+        // createSowMilestones() defaults a missing structure to 50_50; mirror that so the milestone block is only
+        // used when the agreement really is a milestone one (renderer.tsx, SOW lifecycle round 8 B3).
+        paymentStructure: sow.metadata?.paymentStructure || '50_50',
         paymentSchedule: (milestones || []).map((m: any) => ({
           title: m.title, amount: m.amount, percentage: m.percentage,
           trigger: m.trigger, dueDate: m.due_date, status: m.status,

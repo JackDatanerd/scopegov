@@ -111,6 +111,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       // added — while no route ever passed it. A fully dead feature.
       // Wire it to the field its own doc comment names.
       msaReference:  sow.metadata?.msaReference || null,
+      // createSowMilestones() defaults a missing structure to 50_50; mirror that so the milestone block is only
+      // used when the agreement really is a milestone one (renderer.tsx, SOW lifecycle round 8 B3).
+      paymentStructure: sow.metadata?.paymentStructure || '50_50',
       paymentSchedule: (milestones || []).map((m: any) => ({
         title: m.title, amount: m.amount, percentage: m.percentage,
         trigger: m.trigger, dueDate: m.due_date, status: m.status,

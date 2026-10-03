@@ -71,6 +71,13 @@ export interface SowPdfData {
   // when explicitly present. Renders under the masthead, same placement
   // pattern as a firm-issued SOW referencing its parent MSA.
   msaReference?: string | null
+  // FIX (SOW lifecycle, round 8, B3): sow_documents.metadata.paymentStructure. The signed-SOW milestone block (built
+  // from payment_milestones) may only stand in for the authored Payment Schedule table when the agreement actually
+  // IS a milestone structure. Without this the block replaced a visible, hand-written schedule on any structure:
+  // a 50/50 SOW whose agency un-hid and filled the schedule showed the client that table before signing, then
+  // printed the generated "Upfront payment (50%) / Final payment (50%)" rows in its place on the signed copy.
+  // Absent (callers that predate this field) keeps the old behaviour.
+  paymentStructure?: string | null
 }
 
 export interface CoPdfData {
@@ -351,7 +358,8 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
   // "Payment Schedule" section anyway — one the client never reviewed — and shifted every later
   // section number in the signed copy.
   const scheduleSectionVisible = data.sections.find(sec => sec.id === 'payment_schedule')?.visible !== false
-  const hasMilestoneBlock = !!(data.paymentSchedule && data.paymentSchedule.length > 0) && scheduleSectionVisible
+  const structureAllowsMilestoneBlock = data.paymentStructure === undefined || data.paymentStructure === 'milestones'
+  const hasMilestoneBlock = !!(data.paymentSchedule && data.paymentSchedule.length > 0) && scheduleSectionVisible && structureAllowsMilestoneBlock
   const sections = data.sections
     .filter(sec => sec.visible && !['parties','signature'].includes(sec.id))
     // FIX (SOW lifecycle pass, B4): a visible prose section with no text (e.g. Assumptions cleared in the

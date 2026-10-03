@@ -48,6 +48,31 @@ export function amountsMentioned(text: string): number[] {
   return out
 }
 
+// FIX (SOW lifecycle, round 8, B2): amountsMentioned() reads EVERY number in the prose, which is right for a
+// tokenizer but wrong for "does this text state the contract value?". A percentage ("100% due upfront"), a
+// day count ("net 30", "within 14 days") or a round count ("2 rounds") is not an amount, yet a contract value that
+// happened to equal one of them (a $100 contract with "100% due before work commences", a $30 one with "net 30")
+// counted as stated: the send-time warning stayed silent, and api/sow/generate's ensureContractValueStated left the
+// value out of the Payment Terms it had just drafted. This keeps only figures that are not followed by a percent
+// sign or a duration/count word, and not preceded by "net". amountsMentioned itself is unchanged.
+const NOT_AN_AMOUNT_AFTER =
+  /^\s*(?:%|percent\b|per\s?cent\b|(?:business\s+|working\s+|calendar\s+)?(?:days?|weeks?|months?|years?|hours?)\b|rounds?\b)/i
+const NET_BEFORE = /\bnet\s*$/i
+
+export function amountsStated(text: string): number[] {
+  const out: number[] = []
+  const re = new RegExp(AMOUNT_TOKEN_RE.source, 'g')
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text))) {
+    const token = m[0]
+    if (NOT_AN_AMOUNT_AFTER.test(text.slice(m.index + token.length))) continue
+    if (NET_BEFORE.test(text.slice(0, m.index))) continue
+    const n = parseTableAmount(token)
+    if (n !== null) out.push(n)
+  }
+  return out
+}
+
 export function validateSowForSend(input: {
   sections: any[]
   metadata: any
@@ -112,7 +137,7 @@ export function validateSowForSend(input: {
   // figure printed in the signed document.
   const paymentText = textOf(byId('payment')?.content)
   if (paymentText && Number.isFinite(contractValue) && contractValue > 0) {
-    const mentioned = amountsMentioned(paymentText)
+    const mentioned = amountsStated(paymentText)
     const states = mentioned.some(n => Math.abs(n - contractValue) < 0.01)
     if (!states) {
       warnings.push(

@@ -1,0 +1,39 @@
+SOW lifecycle — independent pass 8 (fresh, from the Oct 3 re-clone)
+====================================================================
+Section 9: app/(app)/sow, api/sow/*, lib/sow, lib/pdf (SOW portion), api/pdf/sow.
+Four bugs, all fixed. No feature changes.
+
+B1  parseTableAmount read only the ASCII "-" as a minus (lib/sow/table-schema.ts)
+    "−500" (U+2212), figure dash, small/fullwidth hyphen-minus parsed as +500, so a credit milestone typed or pasted
+    with a typographic minus counted as a charge: a schedule meant to foot at 1,000 totalled 1,400 (send blocked with a
+    message that never mentioned the sign) — or footed to a wrong contract value and was signed with +200 where -200
+    was meant (createSowMilestones uses the same parser). True minus characters are normalised to "-"; an en dash is a
+    minus only when just a currency symbol sits between it and the number ("Deposit – $500" stays +500); a trailing
+    accounting minus ("500-") is negative, "500 - on signing" is not.
+
+B2  A percentage / day count equal to the contract value counted as "stating" it
+    (lib/sow/validate-send.ts, lib/ai/sow-content.ts)
+    A $100 contract with "100% due before work commences", $50 with "50% upfront", $30 with "net 30" got no
+    "Payment Terms do not state the contract value" warning, and api/sow/generate's ensureContractValueStated left the
+    value out of the Payment Terms it had just drafted. New amountsStated() ignores figures followed by %, percent,
+    day/week/month/year/hour or "rounds", and figures preceded by "net". amountsMentioned() is unchanged.
+
+B3  Signed SOW PDF replaced the authored Payment Schedule with generated milestones on non-milestone structures
+    (lib/pdf/renderer.tsx + the three SOW render sites)
+    The milestone block stood in for the schedule table whenever the section was visible. A 50/50 SOW whose agency
+    un-hid and filled the schedule showed the client that table before signing, then printed "Upfront payment (50%) /
+    Final payment (50%)" in its place on the signed copy. SowPdfData gains paymentStructure; the block is used only for
+    a 'milestones' structure. api/pdf/sow, api/portal/sow/pdf and api/portal/sow/sign pass it (missing -> '50_50',
+    matching createSowMilestones). Already-frozen executed PDFs are untouched.
+
+B4  Attachment DELETE was not atomic against send / approval
+    (api/sow/[id]/attachments/[attachmentId]/route.ts, migration 138)
+    POST has been atomic since migrations 109/117; DELETE was a bare read-then-delete, so a delete landing between a
+    send (or an approval request) and its own write still removed a file from a just-locked document. New
+    sow_attachment_remove(p_sow_id, p_attachment_id) takes the same FOR UPDATE lock, applies the same two refusals,
+    scopes the delete to the SOW. The route maps its errors (sow_locked / sow_approval_pending -> 409, not found or
+    malformed id -> 404) and falls back to the old delete only while the function is not installed yet.
+    >>> RUN supabase/migrations/138_sow_attachment_remove_under_lock.sql <<<
+
+Tests: tests/sow-lifecycle-independent-pass-8.test.ts (new, 13 cases);
+       tests/sow-attachments-integrity.test.ts (DELETE mocks updated for the RPC + 6 new cases).

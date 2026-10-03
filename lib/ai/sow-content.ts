@@ -37,7 +37,7 @@
 // malformed it's dropped, not fatal to the whole document.
 
 import { escapeHtml, sanitizePlainText, truncateText } from '@/lib/utils/sanitize'
-import { amountsMentioned } from '@/lib/sow/validate-send'
+import { amountsStated } from '@/lib/sow/validate-send'
 import { SOW_TABLE_SCHEMAS, type SowTableSectionId, type SowTableRow } from '@/lib/sow/table-schema'
 import { roundCurrency } from '@/lib/utils/format'
 
@@ -215,7 +215,7 @@ export function applyAgencyStandards(
  */
 export function ensureContractValueStated(paymentHtml: string, contractValue: number, currency: string): string {
   if (!Number.isFinite(contractValue) || contractValue <= 0) return paymentHtml
-  const stated = amountsMentioned(norm(paymentHtml)).some(n => Math.abs(n - contractValue) < 0.01)
+  const stated = amountsStated(norm(paymentHtml)).some(n => Math.abs(n - contractValue) < 0.01)
   if (stated) return paymentHtml
   const pretty = contractValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   return `${paymentHtml}<p><strong>${escapeHtml(currency)} ${pretty}</strong></p>`
