@@ -36,10 +36,16 @@ export async function GET() {
       return NextResponse.json({ error: 'Missing permission: MANAGE_WORKSPACE_SETTINGS' }, { status: 403 })
     }
     const service = createServiceClient()
-    const { data: rows } = await (service as any)
+    const { data: rows, error: rowsErr } = await (service as any)
       .from('workspace_notification_defaults')
       .select('event_type, email_enabled, in_app_enabled, locked')
       .eq('workspace_id', session.workspaceId)
+    // FIX (Notifications & email pass 6): `error` was never read, so a failed read answered 200 with every event
+    // "enabled, unlocked" — an admin then saw (and could re-save over) defaults that were never loaded.
+    if (rowsErr) {
+      console.error('Workspace notification-defaults GET read failed:', rowsErr.message)
+      return NextResponse.json({ error: 'Could not load notification defaults' }, { status: 500 })
+    }
 
     // Absence of a row means "enabled, unlocked" — same default the read
     // side (filterByNotificationPreference) falls back to.
@@ -110,12 +116,18 @@ export async function PATCH(request: NextRequest) {
     // already assumes about those events). `locked` applies to both
     // columns at once — an admin locking an event makes the whole thing
     // mandatory, not just one channel of it.
-    const { data: existing } = await (service as any)
+    const { data: existing, error: existingErr } = await (service as any)
       .from('workspace_notification_defaults')
       .select('id')
       .eq('workspace_id', session.workspaceId)
       .eq('event_type', eventType)
       .maybeSingle()
+    // FIX (Notifications & email pass 6): a failed lookup read as "no row yet" and took the INSERT branch — which
+    // hits the unique (workspace_id, event_type) constraint for an event that already has a default.
+    if (existingErr) {
+      console.error('Workspace notification-defaults PATCH read failed:', existingErr.message)
+      return NextResponse.json({ error: 'Could not save this notification default. Try again.' }, { status: 500 })
+    }
 
     const payload: Record<string, unknown> = {
       workspace_id:   session.workspaceId,
@@ -127,9 +139,17 @@ export async function PATCH(request: NextRequest) {
     else if (typeof inAppEnabled === 'boolean') payload.in_app_enabled = inAppEnabled
     else if (!existing?.id) payload.in_app_enabled = true   // brand-new row; an existing row keeps its value
 
-    const { error } = existing?.id
+    let { error } = existing?.id
       ? await (service as any).from('workspace_notification_defaults').update(payload).eq('id', existing.id)
       : await (service as any).from('workspace_notification_defaults').insert(payload)
+    // Two admins saving the same brand-new event at once: the loser's INSERT trips the unique key. The row exists
+    // now, so apply this change to it instead of failing a save the admin made in good faith.
+    if (error && !existing?.id && (error as any).code === '23505') {
+      // (The brand-new-row default of in_app_enabled=true must not overwrite what the winning admin just stored.)
+      if (!isInAppOnly && typeof inAppEnabled !== 'boolean') delete payload.in_app_enabled
+      ;({ error } = await (service as any).from('workspace_notification_defaults').update(payload)
+        .eq('workspace_id', session.workspaceId).eq('event_type', eventType))
+    }
 
     if (error) {
       console.error('Workspace notification-defaults write failed:', error)

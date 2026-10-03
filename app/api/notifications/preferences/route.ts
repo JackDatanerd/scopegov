@@ -132,16 +132,29 @@ export async function PATCH(request: NextRequest) {
     const currentEmail = existing ? existing.email_enabled  : (defaultRow ? defaultRow.email_enabled  : true)
     const currentInApp = existing ? existing.in_app_enabled : (defaultRow ? defaultRow.in_app_enabled : true)
 
-    const { error } = await (service as any)
-      .from('notification_preferences')
-      .upsert(
-        {
-          user_id: session.id, workspace_id: session.workspaceId, event_type: eventType,
-          email_enabled:  inAppOnly ? true : (targetChannel === 'email'  ? enabled : currentEmail),
-          in_app_enabled: inAppOnly ? enabled : (targetChannel === 'in_app' ? enabled : currentInApp),
-        },
-        { onConflict: 'user_id,workspace_id,event_type' }
-      )
+    // FIX (Notifications & email pass 6): this wrote BOTH columns from the row read above. Toggling Email and then Bell
+    // in quick succession (two overlapping PATCHes) let the second request write back the first one's stale Email
+    // value. An existing row now has only the targeted column updated; a missing row is created from the resolved
+    // baseline (ignoring a concurrent creator) and then has only the targeted column set.
+    const targetColumn = targetChannel === 'in_app' ? 'in_app_enabled' : 'email_enabled'
+    const where = { user_id: session.id, workspace_id: session.workspaceId, event_type: eventType }
+    let error: { message?: string } | null = null
+    if (!existing) {
+      const created = await (service as any)
+        .from('notification_preferences')
+        .upsert(
+          { ...where, email_enabled: inAppOnly ? true : currentEmail, in_app_enabled: currentInApp },
+          { onConflict: 'user_id,workspace_id,event_type', ignoreDuplicates: true }
+        )
+      error = created.error
+    }
+    if (!error) {
+      const updated = await (service as any)
+        .from('notification_preferences')
+        .update({ [targetColumn]: enabled })
+        .eq('user_id', where.user_id).eq('workspace_id', where.workspace_id).eq('event_type', eventType)
+      error = updated.error
+    }
 
     if (error) {
       console.error('Notification preferences write failed:', error)

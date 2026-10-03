@@ -1,0 +1,31 @@
+Notifications & email — independent pass 6 (bugs only)
+=======================================================
+Audited against the 2026-10-03 snapshot; no section-19 file had changed since the first read.
+
+1. lib/utils/permissions-query.ts
+   - filterByNotificationPreference: the per-user lookup was ONE .in('user_id', <every eligible member>) run BEFORE the
+     25-recipient cap. Ids ride in the URL (lib/utils/retention.ts documents ~220 as the practical ceiling), so in a large
+     workspace the request failed, its error was never read, and every member's opt-out silently stopped applying.
+     Now chunked (100 ids per read). Every read's `error` is logged. On failure it fails OPEN (deliver) by design — see the
+     comment — and does NOT throw, because the approval engine (notifyStepApprovers / notifyRequester) calls it after the
+     decision has committed, outside any try/catch.
+   - filterToProjectAccess: the project_members_active read's `error` was ignored (a failed read looked like "no members").
+     Stays fail-CLOSED, now logged.
+
+2. app/api/invoices/[id]/dispute-resolve/route.ts
+   - The one client-facing send that never resolved a Reply-To; a client replying to "your question has been answered" wrote
+     to noreply@. Now uses resolveReplyTo like void / remind.
+
+3. app/api/workspace/notification-defaults/route.ts
+   - GET: read error ignored -> 200 with every event "enabled, unlocked". Now 500.
+   - PATCH: existing-row lookup error read as "no row" and took the INSERT branch (unique-key violation / wrong write).
+     Now 500 with no write. A duplicate-key INSERT from two admins saving a new event at once falls back to an UPDATE
+     (without overwriting the winner's bell default).
+
+4. app/api/notifications/preferences/route.ts + components/settings/SettingsClient.tsx
+   - PATCH wrote BOTH columns from a row read earlier in the request. Two overlapping toggles (Email then Bell) let the
+     second write back the first's stale value. Existing rows now have only the targeted column updated; a missing row is
+     created from the resolved baseline (ignoreDuplicates) and then has only the target set.
+   - Settings UI: one event's Email and Bell toggles are disabled while either is saving.
+
+Tests: tests/notifications-email-pass6.test.ts (new). Not executed in the audit sandbox (no node_modules / network): run `npm test`.

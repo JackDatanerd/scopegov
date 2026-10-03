@@ -14,6 +14,7 @@ import { cleanTextField } from '@/lib/utils/sanitize'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
 import { sendInvoiceDisputeResolvedEmail } from '@/lib/email/templates'
 import { checkedSend } from '@/lib/email/delivery'
+import { resolveReplyTo } from '@/lib/email/reply-to'
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -73,7 +74,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // A void invoice's portal link is dead (409), so don't email the client a link to nowhere.
     if (client?.email && invoice.token && invoice.status !== 'void') {
       const cc = await withPrimaryContactCc(service, project?.client_id, client.email, client.cc_emails, 'invoice')
+      // FIX (Notifications & email pass 6): the only client-facing send that never resolved a Reply-To, so a client
+      // answering "if anything is still unclear…" wrote to noreply@. Same resolution as void / remind.
+      const replyTo = await resolveReplyTo(service, session.workspaceId, session.email)
       const delivery = await checkedSend(() => sendInvoiceDisputeResolvedEmail({
+        replyTo,
         to: client.email, cc, clientName: client.name || 'there',
         agencyName: project?.workspaces?.agency_name || session.agencyName,
         projectName: project?.name || invoice.title, invoiceNumber: invoice.invoice_number, note,

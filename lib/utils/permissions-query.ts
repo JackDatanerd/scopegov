@@ -47,10 +47,16 @@ export async function filterToProjectAccess<T extends { id: string }>(
     // is the same data narrowed to currently-active members; queried by its
     // flattened column rather than PostgREST embedding, which a view isn't
     // guaranteed to support for its underlying tables' foreign keys.
-    const { data } = await service
+    const { data, error } = await service
       .from('project_members_active')
       .select('member_user_id')
       .eq('project_id', projectId)
+    // FIX (Notifications & email pass 6): `error` was never read, so a failed lookup looked like "this project has
+    // no members" and silently dropped every recipient who relies on a project assignment. It stays FAIL-CLOSED
+    // (an unreadable member list must never widen who is told a project's amounts and titles), but it is now
+    // logged. It deliberately does not throw: the approval engine calls this after a decision has already
+    // committed, outside any try/catch.
+    if (error) console.error('filterToProjectAccess: project_members_active read failed:', error.message)
     projectMemberIds = new Set((data || []).map((r: any) => r.member_user_id))
   }
   return recipients.filter(r => viewAllIds.has(r.id) || projectMemberIds.has(r.id))
@@ -157,6 +163,8 @@ export async function getMembersWithPermission(
 // now work: an unlocked default changes what "no row exists" resolves to
 // for that event/channel; a locked default is authoritative and skips the
 // per-user lookup entirely — nothing after this point can override it.
+const PREF_LOOKUP_CHUNK = 100
+
 export async function filterByNotificationPreference<T extends { id: string }>(
   service: any,
   workspaceId: string,
@@ -167,12 +175,18 @@ export async function filterByNotificationPreference<T extends { id: string }>(
   if (recipients.length === 0) return recipients
   const column = channel === 'in_app' ? 'in_app_enabled' : 'email_enabled'
 
-  const { data: workspaceDefault } = await service
+  const { data: workspaceDefault, error: defaultErr } = await service
     .from('workspace_notification_defaults')
     .select(`${column}, locked`)
     .eq('workspace_id', workspaceId)
     .eq('event_type', eventType)
     .maybeSingle()
+  // FIX (Notifications & email pass 6): none of this function's reads had their `error` looked at, so a failed read
+  // quietly resolved to "no default, nobody opted out" and notified everyone. The direction on failure is
+  // deliberate: FAIL-OPEN (deliver) — a lost approval / invoice / escalation notice is worse than one the person had
+  // muted — and it is no longer silent. It does not throw because callers such as the approval engine run it
+  // after the decision has committed, outside any try/catch.
+  if (defaultErr) console.error('filterByNotificationPreference: workspace default read failed:', defaultErr.message)
 
   // A locked default is mandatory workspace-wide — no member can override
   // it, so there's no need to even look at notification_preferences.
@@ -182,14 +196,22 @@ export async function filterByNotificationPreference<T extends { id: string }>(
 
   const orgDefault = workspaceDefault ? workspaceDefault[column] : true
 
-  const { data: prefs } = await service
-    .from('notification_preferences')
-    .select(`user_id, ${column}`)
-    .eq('workspace_id', workspaceId)
-    .eq('event_type', eventType)
-    .in('user_id', recipients.map(r => r.id))
-
-  const overrides = new Map<string, boolean>((prefs || []).map((p: any) => [p.user_id, p[column]]))
+  // FIX (Notifications & email pass 6): this was ONE `.in('user_id', <every recipient>)`. The recipient list is the
+  // whole eligible workspace (the 25-recipient cap is applied after this filter), and ids ride in the URL — the
+  // same ~220-id limit lib/utils/retention.ts documents. In a large workspace the request failed, the error was
+  // ignored, and every member's opt-out stopped applying. Chunked.
+  const overrides = new Map<string, boolean>()
+  const ids = recipients.map(r => r.id)
+  for (let i = 0; i < ids.length; i += PREF_LOOKUP_CHUNK) {
+    const { data: prefs, error: prefsErr } = await service
+      .from('notification_preferences')
+      .select(`user_id, ${column}`)
+      .eq('workspace_id', workspaceId)
+      .eq('event_type', eventType)
+      .in('user_id', ids.slice(i, i + PREF_LOOKUP_CHUNK))
+    if (prefsErr) { console.error('filterByNotificationPreference: preference read failed:', prefsErr.message); continue }
+    for (const p of prefs || []) overrides.set(p.user_id, p[column])
+  }
   return recipients.filter(r => (overrides.has(r.id) ? overrides.get(r.id) : orgDefault) !== false)
 }
 

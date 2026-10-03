@@ -2214,7 +2214,8 @@ function NotificationsTab({ permissions }: { permissions: { manageWorkspace: boo
   const inAppOnlyKeys = new Set<string>(IN_APP_NOTIF_ITEMS.map(i => i.key))
 
   async function toggle(key: string, channel: 'email' | 'in_app' = 'email') {
-    if (!prefs || locked[key]) return
+    // FIX (Notifications & email pass 6): one event's Email and Bell toggles must not have two writes in flight at once.
+    if (!prefs || locked[key] || saving?.startsWith(`${key}:`)) return
     const inAppOnly = inAppOnlyKeys.has(key)
     const isBell = !inAppOnly && channel === 'in_app'
     const current = isBell ? inAppPrefs[key] !== false : !!prefs[key]
@@ -2265,7 +2266,7 @@ function NotificationsTab({ permissions }: { permissions: { manageWorkspace: boo
                 <button
                   className={`toggle ${prefs[item.key] ? 'on' : 'off'}`}
                   aria-label={`${item.label}: email`}
-                  disabled={saving === `${item.key}:email` || locked[item.key]}
+                  disabled={!!saving?.startsWith(`${item.key}:`) || locked[item.key]}
                   style={locked[item.key] ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
                   onClick={() => toggle(item.key, 'email')}
                 />
@@ -2275,7 +2276,7 @@ function NotificationsTab({ permissions }: { permissions: { manageWorkspace: boo
                 <button
                   className={`toggle ${inAppPrefs[item.key] !== false ? 'on' : 'off'}`}
                   aria-label={`${item.label}: in-app`}
-                  disabled={saving === `${item.key}:in_app` || locked[item.key]}
+                  disabled={!!saving?.startsWith(`${item.key}:`) || locked[item.key]}
                   style={locked[item.key] ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
                   onClick={() => toggle(item.key, 'in_app')}
                 />
