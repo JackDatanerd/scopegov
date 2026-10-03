@@ -26,7 +26,10 @@ export async function generateMetadata({ params }: Props) {
   const service = createServiceClient()
   // FIX (Projects & Dashboard pass 2, B5): workspace scoping alone still let a limited-access member (VIEW_OWN_PROJECTS,
   // not on this project) read its name from the tab title while the page body 404s. Same visibility rule as the page.
-  if (!(await canReadProject(service, session, id))) return { title: 'Project' }
+  // canReadProject throws on a failed lookup (approvals pass 3, B1) — a tab title must never take the page down.
+  try {
+    if (!(await canReadProject(service, session, id))) return { title: 'Project' }
+  } catch { return { title: 'Project' } }
   const { data: p } = await (service as any)
     .from('projects').select('name').eq('id', id).eq('workspace_id', session.workspaceId).is('deleted_at', null).maybeSingle()
   return { title: p?.name || 'Project' }

@@ -1514,8 +1514,27 @@ export async function reassignApprovalStep(service: any, params: {
     }
   } catch { /* never let a notification failure break reassignment */ }
 
-  const { data: requester } = await service
-    .from('users').select('id, name, email').eq('id', request.requested_by).maybeSingle()
+  // FIX (approvals pass 3, B2): this lookup's `error` was never read. The reassignment is already committed, so a
+  // transient failure left `requester` null and the NEW approver was silently never told the step is theirs (the
+  // route still answered ok). Retry once, then leave an audit trail instead of vanishing.
+  let requester: { id: string; name: string; email: string } | null = null
+  let requesterLookupFailed = false
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const { data: requesterRow, error: requesterErr } = await service
+      .from('users').select('id, name, email').eq('id', request.requested_by).maybeSingle()
+    if (!requesterErr) { requester = requesterRow || null; requesterLookupFailed = false; break }
+    requesterLookupFailed = true
+    console.error(`reassignApprovalStep: requester lookup failed (attempt ${attempt + 1}):`, requesterErr, request.id)
+  }
+  if (requesterLookupFailed) {
+    await logAudit(service, {
+      workspaceId: params.workspaceId,
+      actorId: params.actor.id, actorEmail: params.actor.email, actorName: params.actor.name,
+      eventType: 'approval.reassign_notify_skipped', entityType: entityTypeFor(request.document_type),
+      entityId: request.document_id, entityName: request.context?.title || '',
+      metadata: { approval_request_id: request.id, step: step.step_order, reason: 'requester lookup failed' },
+    })
+  }
   if (requester) {
     await notifyStepApprovers(service, {
       workspaceId: params.workspaceId, requestId: request.id,

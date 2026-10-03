@@ -121,12 +121,26 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       }
     }
 
-    const { count: existingStepCount, error: stepCountErr } = await (service as any)
-      .from('approval_workflow_steps').select('id', { count: 'exact', head: true }).eq('workflow_id', id)
-    // FIX (approvals pass 13): a failed count read as zero steps and answered 409 "no approver steps".
+    // FIX (approvals pass 3, B4): this used to be a head-only COUNT. The editor always posts the full step list, so
+    // every save — even a rename or a flag toggle — replaced the step rows and logged `steps` as changed in the
+    // audit trail (and never reached the `unchanged` shortcut below). Read the rows instead, so an identical list
+    // can be recognised and dropped.
+    // (approvals pass 13: a failed read used to count as zero steps and answered 409 "no approver steps".)
+    const { data: existingStepRows, error: stepCountErr } = await (service as any)
+      .from('approval_workflow_steps').select('step_order, approver_role_id, approver_user_id')
+      .eq('workflow_id', id).order('step_order', { ascending: true })
     if (stepCountErr) {
       console.error('Approval workflow PATCH: step count failed:', stepCountErr)
       return NextResponse.json({ error: 'Could not load this workflow — please try again.' }, { status: 500 })
+    }
+    const existingStepCount = (existingStepRows || []).length
+    if (steps && existingStepCount > 0 && steps.length === existingStepCount
+        && steps.every((st, i) => {
+          const cur = (existingStepRows as any[])[i]
+          return (st.approverRoleId || null) === (cur.approver_role_id || null)
+              && (st.approverUserId || null) === (cur.approver_user_id || null)
+        })) {
+      steps = undefined // same approvers in the same order — nothing to replace, nothing to log
     }
 
     const resultingActive    = 'is_active' in patch ? (patch.is_active as boolean) : existing.is_active

@@ -224,7 +224,13 @@ export async function POST(request: NextRequest) {
         allow_self_approval: allowSelfApproval,
         require_distinct_approvers: requireDistinctApprovers,
         apply_to_other_currencies: applyToOtherCurrencies,
-        is_active: true,
+        // FIX (approvals pass 3, B3): created INACTIVE and switched on only once its steps exist. It used to be
+        // inserted active and given its steps in a second call — a crash or timeout between the two (which the
+        // rollback below cannot catch: it only runs for errors this code sees) left a step-less ACTIVE rule, and
+        // the fail-closed gate then answered 409 to every send of this document type; a send landing in the gap
+        // between the two calls got the same 409. The partial unique indexes (migration 117) only look at active
+        // rows, so a duplicate is now reported when the rule is activated, below.
+        is_active: false,
         created_by: session.id,
       })
       .select('id')
@@ -284,6 +290,24 @@ export async function POST(request: NextRequest) {
         }
       }
       return NextResponse.json({ error: 'Could not save approval steps — try again' }, { status: 500 })
+    }
+
+    // Switch the rule on now that it is complete. Two simultaneous saves can both pass the count() guards above;
+    // migration 117's partial unique indexes decide that race HERE (they ignore inactive rows).
+    const { data: activated, error: activateErr } = await (service as any)
+      .from('approval_workflows').update({ is_active: true, updated_at: new Date().toISOString() })
+      .eq('id', workflow.id).eq('workspace_id', session.workspaceId).select('id').maybeSingle()
+    if (activateErr || !activated) {
+      if (activateErr && activateErr.code !== '23505') console.error('Approval workflow activation failed:', activateErr)
+      // Never leave a half-made rule around: it is inactive (harmless), but it would clutter the settings list.
+      const { error: cleanupErr } = await (service as any).from('approval_workflows').delete().eq('id', workflow.id)
+      if (cleanupErr) console.error('Approval workflow cleanup after a failed activation also failed (row stays inactive):', workflow.id, cleanupErr)
+      if (activateErr?.code === '23505') {
+        return NextResponse.json({
+          error: 'An active workflow for this document type already exists at this threshold (or is already a catch-all). Edit or deactivate the existing rule instead.',
+        }, { status: 409 })
+      }
+      return NextResponse.json({ error: 'Could not activate the workflow — nothing was saved, please try again' }, { status: 500 })
     }
 
     await logAudit(service, {

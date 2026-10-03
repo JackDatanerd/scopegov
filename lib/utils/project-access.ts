@@ -49,9 +49,14 @@ export async function canReadProject(service: any, session: SessionUser, project
   // never cleans up — even though the project 404s everywhere else, including its own detail page.
   if (hasPermission(session, 'VIEW_ALL_PROJECTS')) {
     if (typeof projectId !== 'string' || !projectId) return false
-    const { data } = await service
+    const { data, error } = await service
       .from('projects').select('id').eq('id', projectId).eq('workspace_id', session.workspaceId)
       .is('deleted_at', null).limit(1)
+    // FIX (approvals pass 3, B1): supabase-js never throws — a failed read returns { data: null, error } — and
+    // this used to read that as "no access". Every caller then answered 403/404 ("You do not have access to
+    // this project") to a person who had it, on a transient outage. A failed lookup is not an answer: throw, so
+    // the caller's own try/catch reports a 500 instead of a false denial.
+    if (error) throw new Error(`canReadProject: project lookup failed: ${error.message ?? error}`)
     return !!(data && data.length)
   }
   // FIX (deep audit, RLS+permissions re-pass round 3): this queried
@@ -72,12 +77,13 @@ export async function canReadProject(service: any, session: SessionUser, project
   // as the branch above — project_members rows are never removed when a
   // project is deleted, so a restricted member who was on the team before
   // deletion kept a permanent grant through this view otherwise.
-  const { data } = await service
+  const { data, error } = await service
     .from('project_members_active')
     .select('project_id')
     .eq('project_id', projectId)
     .eq('project_workspace_id', session.workspaceId)
     .eq('member_user_id', session.id)
     .limit(1)
+  if (error) throw new Error(`canReadProject: membership lookup failed: ${error.message ?? error}`)
   return !!(data && data.length)
 }
