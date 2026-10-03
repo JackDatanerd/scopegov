@@ -4,32 +4,48 @@ import { useEffect, useState, useCallback } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import styles from '@/styles/admin.module.css'
 import { fetchWithStepUp } from '@/lib/client/step-up'
+import AdminHistory, { type HistoryRow } from '../../AdminHistory'
 
 interface Detail {
-  user: { id: string; email: string; name: string; is_platform_admin: boolean; created_at: string; deleted_at: string | null }
+  user: {
+    id: string; email: string; name: string; is_platform_admin: boolean; created_at: string
+    deleted_at: string | null; suspended_by_admin: boolean
+  }
+  // null = the read failed (distinct from "none" / "not enrolled" / "not banned")
   memberships: Array<{
     id: string; status: string; created_at: string
     workspaces: { id: string; name: string; agency_name: string; plan_tier: string; deleted_at: string | null } | null
     roles: { name: string } | null
-  }>
-  mfaEnrolled: boolean
-  banned: boolean
+  }> | null
+  mfaEnrolled: boolean | null
+  banned: boolean | null
+  erased: boolean
+  history: HistoryRow[] | null
 }
+
+type Msg = { kind: 'ok' | 'warn' | 'error'; text: string }
 
 export default function AdminUserDetailPage() {
   const { id } = useParams<{ id: string }>()
   const router = useRouter()
   const [data, setData] = useState<Detail | null>(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [notFound, setNotFound] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [message, setMessage] = useState<string | null>(null)
+  const [message, setMessage] = useState<Msg | null>(null)
   const [reason, setReason] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
-    const res = await fetch(`/api/admin/users/${id}`)
-    if (res.ok) setData(await res.json())
-    setLoading(false)
+    try {
+      const res = await fetch(`/api/admin/users/${id}`)
+      const json = await res.json().catch(() => ({}))
+      if (res.ok) { setData(json); setLoadError(null); setNotFound(false) }
+      else if (res.status === 404) { setNotFound(true); setData(null) }
+      else { setLoadError(res.status === 401 ? 'Your session expired — reload and sign in again.' : (json.error || `Request failed (${res.status}).`)) }
+    } catch { setLoadError('Network error — could not reach the server.') }
+    finally { setLoading(false) }
   }, [id])
 
   useEffect(() => { load() }, [load])
@@ -42,15 +58,44 @@ export default function AdminUserDetailPage() {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}),
       })
       const json = await res.json().catch(() => ({}))
-      setMessage(res.ok ? 'Done.' : (json.error || 'Something went wrong.'))
-      if (res.ok) await load()
+      if (!res.ok) { setMessage({ kind: 'error', text: json.error || 'Something went wrong.' }); return }
+      const warnings: string[] = []
+      if (json.sessionsRevoked === false) warnings.push('Existing sessions could not be signed out — use “Sign out of all sessions”.')
+      if (json.emailSent === false) warnings.push('The user was NOT e-mailed about this change.')
+      if (json.auditLogged === false) warnings.push('The action succeeded but could NOT be written to the admin audit log (ops has been paged).')
+      setMessage(warnings.length ? { kind: 'warn', text: `Done, with problems: ${warnings.join(' ')}` } : { kind: 'ok', text: 'Done.' })
+      await load()
     } finally { setBusy(false) }
   }
 
-  if (loading) return <div className={styles.empty}>Loading…</div>
-  if (!data) return <div className={styles.empty}>User not found.</div>
+  async function restore() {
+    if (!data) return
+    const { user } = data
+    if (!user.suspended_by_admin) {
+      if (!confirm(`${user.email} was not suspended from this panel — they deleted the account themselves (or it was suspended before suspensions were tracked).\n\nRestoring brings back their login but NOT their workspace memberships.\n\nRestore anyway?`)) return
+      await runAction('restore', { confirmSelfDeleted: true })
+    } else {
+      await runAction('restore')
+    }
+  }
 
-  const { user, memberships, mfaEnrolled, banned } = data
+  if (loading && !data) return <div className={styles.empty}>Loading…</div>
+  if (notFound) return <div className={styles.empty}>User not found.</div>
+  if (loadError && !data) {
+    return (
+      <div className={`${styles.notice} ${styles.noticeBad}`}>
+        {loadError} <button className="btn btn-ghost btn-sm" onClick={() => load()}>Retry</button>
+      </div>
+    )
+  }
+  if (!data) return null
+
+  const { user, memberships, mfaEnrolled, banned, erased, history } = data
+  const statusBadge = !user.deleted_at
+    ? <span className={`${styles.badge} ${styles.badgeGreen}`}>Active</span>
+    : erased ? <span className={`${styles.badge} ${styles.badgeGray}`}>Erased</span>
+    : user.suspended_by_admin ? <span className={`${styles.badge} ${styles.badgeRed}`}>Suspended</span>
+    : <span className={`${styles.badge} ${styles.badgeGold}`}>Deleted by user</span>
 
   return (
     <div>
@@ -60,33 +105,36 @@ export default function AdminUserDetailPage() {
           <div className={styles.title}>{user.name || user.email}</div>
           <div className={styles.subtitle}>{user.email} · joined {new Date(user.created_at).toLocaleDateString()}</div>
         </div>
-        <div>
-          {user.deleted_at
-            ? <span className={`${styles.badge} ${styles.badgeRed}`}>Suspended</span>
-            : <span className={`${styles.badge} ${styles.badgeGreen}`}>Active</span>}
-        </div>
+        <div>{statusBadge}</div>
       </div>
 
-      {message && <div className={styles.card} style={{ padding: 12, fontSize: 12.5 }}>{message}</div>}
+      {loadError && <div className={`${styles.notice} ${styles.noticeBad}`}>Could not refresh: {loadError}</div>}
+      {message && (
+        <div className={`${styles.notice} ${message.kind === 'error' ? styles.noticeBad : message.kind === 'warn' ? styles.noticeWarn : ''}`}>{message.text}</div>
+      )}
 
       <div className={styles.grid}>
         <div className={styles.statCard}>
           <div className={styles.statLabel}>Two-factor auth</div>
-          <div className={styles.statValue} style={{ fontSize: 16 }}>{mfaEnrolled ? 'Enrolled' : 'Not enrolled'}</div>
+          <div className={styles.statValue} style={{ fontSize: 16 }}>{mfaEnrolled == null ? 'Unknown' : mfaEnrolled ? 'Enrolled' : 'Not enrolled'}</div>
+          {mfaEnrolled == null && <div className={styles.statHint}>could not read factors</div>}
         </div>
         <div className={styles.statCard}>
           <div className={styles.statLabel}>Auth status</div>
-          <div className={styles.statValue} style={{ fontSize: 16 }}>{banned ? 'Banned' : 'Normal'}</div>
+          <div className={styles.statValue} style={{ fontSize: 16 }}>{banned == null ? 'Unknown' : banned ? 'Banned' : 'Normal'}</div>
+          {banned == null && <div className={styles.statHint}>could not read the auth record</div>}
         </div>
         <div className={styles.statCard}>
           <div className={styles.statLabel}>Workspaces</div>
-          <div className={styles.statValue} style={{ fontSize: 16 }}>{memberships.length}</div>
+          <div className={styles.statValue} style={{ fontSize: 16 }}>{memberships == null ? '?' : memberships.length}</div>
         </div>
       </div>
 
       <div className={styles.card}>
         <div className={styles.cardHead}>Workspace memberships</div>
-        {memberships.length === 0 ? (
+        {memberships == null ? (
+          <div className={`${styles.notice} ${styles.noticeBad}`} style={{ margin: 12 }}>Could not load memberships — reload to retry.</div>
+        ) : memberships.length === 0 ? (
           <div className={styles.empty}>No workspace memberships.</div>
         ) : (
           <table className={styles.table}>
@@ -98,7 +146,8 @@ export default function AdminUserDetailPage() {
                   className={m.workspaces ? styles.clickable : ''}
                   onClick={() => m.workspaces && router.push(`/admin/workspaces/${m.workspaces.id}`)}
                 >
-                  <td>{m.workspaces?.agency_name || m.workspaces?.name || <span className={styles.muted}>Deleted workspace</span>}</td>
+                  <td>{m.workspaces?.agency_name || m.workspaces?.name || <span className={styles.muted}>Deleted workspace</span>}
+                    {m.workspaces?.deleted_at && <span className={`${styles.badge} ${styles.badgeRed}`} style={{ marginLeft: 6 }}>Suspended/deleted</span>}</td>
                   <td>{m.roles?.name || '—'}</td>
                   <td>{m.status}</td>
                   <td style={{ textTransform: 'capitalize' }}>{m.workspaces?.plan_tier || '—'}</td>
@@ -113,10 +162,12 @@ export default function AdminUserDetailPage() {
         <div className={styles.cardHead}>Admin actions</div>
         <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-            <button className="btn btn-ghost btn-sm" disabled={busy || !mfaEnrolled} onClick={() => runAction('reset-mfa')}>
+            {/* Disabled only when we KNOW there is no factor — an unreadable factor list must not block the reset. */}
+            <button className="btn btn-ghost btn-sm" disabled={busy || mfaEnrolled === false} onClick={() => runAction('reset-mfa')}>
               Reset two-factor auth
             </button>
-            {!mfaEnrolled && <span className={styles.muted}>No factor enrolled</span>}
+            {mfaEnrolled === false && <span className={styles.muted}>No factor enrolled</span>}
+            {mfaEnrolled == null && <span className={styles.muted}>Factors could not be read — the reset will check again</span>}
           </div>
           <div>
             <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => runAction('revoke-sessions')}>
@@ -125,9 +176,14 @@ export default function AdminUserDetailPage() {
           </div>
           <div style={{ borderTop: '1px solid var(--border)', paddingTop: 14, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             {user.deleted_at ? (
-              <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => runAction('restore')}>
-                Restore account
-              </button>
+              erased ? (
+                <span className={styles.muted}>This account was permanently erased and cannot be restored.</span>
+              ) : (
+                <>
+                  <button className="btn btn-ghost btn-sm" disabled={busy} onClick={restore}>Restore account</button>
+                  {!user.suspended_by_admin && <span className={styles.muted}>Deleted by the user — restoring needs confirmation</span>}
+                </>
+              )
             ) : user.is_platform_admin ? (
               <span className={styles.muted}>Platform admins can&rsquo;t be suspended from here.</span>
             ) : (
@@ -151,6 +207,8 @@ export default function AdminUserDetailPage() {
           </div>
         </div>
       </div>
+
+      <AdminHistory rows={history} />
     </div>
   )
 }

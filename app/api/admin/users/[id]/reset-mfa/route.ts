@@ -77,7 +77,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   )
   if (!delivery.ok) console.error('[admin] MFA reset email failed (non-fatal):', delivery.error)
 
-  await logAdminAction(service, {
+  const auditLogged = await logAdminAction(service, {
     actor,
     eventType: 'user.mfa_reset',
     targetType: 'user',
@@ -86,5 +86,5 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     metadata: { factorsRemoved: totpFactors.length, sessionsRevoked: !revokeErr, emailSent: delivery.ok },
   })
 
-  return NextResponse.json({ ok: true })
+  return NextResponse.json({ ok: true, auditLogged, emailSent: delivery.ok, sessionsRevoked: !revokeErr })
 }

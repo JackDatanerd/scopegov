@@ -23,8 +23,8 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   if (target.is_platform_admin) return NextResponse.json({ error: 'Cannot suspend another platform admin from here' }, { status: 400 })
   if (target.deleted_at) return NextResponse.json({ error: 'Already suspended' }, { status: 409 })
 
-  const body = await request.json().catch(() => ({})) as { reason?: string }
-  const reason = (body.reason || '').trim().slice(0, 500)
+  const body = await request.json().catch(() => ({})) as { reason?: unknown }
+  const reason = typeof body.reason === 'string' ? body.reason.trim().slice(0, 500) : ''
 
   const banResult = await banAuthUser(service, target.id)
   if (!banResult.ok) {
@@ -32,20 +32,36 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     return NextResponse.json({ error: 'Could not suspend this account' }, { status: 500 })
   }
 
-  const { error } = await (service as any)
-    .from('users').update({ deleted_at: new Date().toISOString() }).eq('id', target.id)
+  // Conditional on deleted_at IS NULL so two admins suspending at once cannot both "win". suspended_by_admin is what
+  // lets Restore tell this apart from the person deleting their own account, and keeps invite-cleanup from erasing
+  // the account after 30 days (Admin panel audit — G4/B3).
+  const now = new Date().toISOString()
+  const { data: marked, error } = await (service as any)
+    .from('users')
+    .update({ deleted_at: now, suspended_by_admin: true, suspended_by_admin_at: now })
+    .eq('id', target.id).is('deleted_at', null)
+    .select('id')
   if (error) {
-    console.error('[admin] mark user deleted_at failed:', error.message)
+    console.error('[admin] mark user suspended failed:', error.message)
     return NextResponse.json({ error: 'Could not suspend this account' }, { status: 500 })
   }
+  if (!marked || marked.length === 0) {
+    return NextResponse.json({ error: 'Already suspended' }, { status: 409 })
+  }
 
-  await (service as any).rpc('revoke_user_sessions', { p_user: target.id, p_except: null }).catch(() => {})
+  // FIX (Admin panel independent audit — B2): this was `await rpc(...).catch(() => {})`. supabase-js query builders
+  // are thenables with no .catch(), so it threw a TypeError AFTER the ban and deleted_at were applied: every user
+  // suspension answered 500, never reached logAdminAction (no audit row) and never sent the revoke request. The
+  // outcome is now read from `{ error }` like every other rpc call here; a failed revoke does not undo the
+  // suspension (the ban already stops refresh) but is reported so the admin can run "Sign out of all sessions".
+  const { error: revokeErr } = await (service as any).rpc('revoke_user_sessions', { p_user: target.id, p_except: null })
+  if (revokeErr) console.error('[admin] suspend: session revoke failed (non-fatal):', revokeErr.message)
 
-  await logAdminAction(service, {
+  const auditLogged = await logAdminAction(service, {
     actor, eventType: 'user.suspended', targetType: 'user',
     targetId: target.id, targetLabel: target.email,
-    metadata: { reason: reason || null },
+    metadata: { reason: reason || null, sessionsRevoked: !revokeErr },
   })
 
-  return NextResponse.json({ ok: true })
+  return NextResponse.json({ ok: true, sessionsRevoked: !revokeErr, auditLogged })
 }

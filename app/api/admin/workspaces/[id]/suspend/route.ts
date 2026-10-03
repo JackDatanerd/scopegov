@@ -34,6 +34,12 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
 
   const { error } = await (service as any).rpc('admin_suspend_workspace', { p_workspace_id: params.id })
   if (error) {
+    // FIX (Admin panel independent audit — B11): the RPC raises when another admin (or the owner's own delete) got
+    // there first, between the read above and now. That is a conflict, not a server fault — and it must stop here,
+    // before the Paystack cancel / checkout purge / e-mails below run a second time.
+    if (/already_suspended|not_found/.test(error.message || '')) {
+      return NextResponse.json({ error: 'Already suspended' }, { status: 409 })
+    }
     console.error('[admin] suspend workspace failed:', error.message)
     return NextResponse.json({ error: 'Could not suspend workspace' }, { status: 500 })
   }
@@ -124,7 +130,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     }
   }
 
-  await logAdminAction(service, {
+  const auditLogged = await logAdminAction(service, {
     actor,
     eventType: 'workspace.suspended',
     targetType: 'workspace',
@@ -133,5 +139,5 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     metadata: { reason: reason || null, paystackCancelOk: cancelResult.ok, membersNotified: notified },
   })
 
-  return NextResponse.json({ ok: true })
+  return NextResponse.json({ ok: true, paystackCancelOk: cancelResult.ok, membersNotified: notified, auditLogged })
 }

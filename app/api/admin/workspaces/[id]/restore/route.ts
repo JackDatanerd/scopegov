@@ -10,12 +10,29 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   const { actor, service } = guard
 
   const { data: workspace } = await (service as any)
-    .from('workspaces').select('id, name, agency_name, deleted_at').eq('id', params.id).maybeSingle()
+    .from('workspaces').select('id, name, agency_name, deleted_at, suspended_by_admin').eq('id', params.id).maybeSingle()
   if (!workspace) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })
   if (!workspace.deleted_at) return NextResponse.json({ error: 'Not suspended' }, { status: 409 })
 
+  // FIX (Admin panel independent audit — G4): deleted_at is shared with the owner's own "delete workspace". Restore
+  // used to undo that on a plain click. Only an admin suspension restores unprompted; a self-deleted workspace needs
+  // an explicit confirmation (which also re-enables a subscription the delete cancelled — the confirm text says so).
+  const body = await request.json().catch(() => ({})) as { confirmSelfDeleted?: unknown }
+  const restoredSelfDeleted = !workspace.suspended_by_admin
+  if (restoredSelfDeleted && body.confirmSelfDeleted !== true) {
+    return NextResponse.json({
+      error: 'This workspace was deleted by its owner, not suspended from the panel. Restoring it reactivates its members and re-enables any subscription the deletion cancelled. Confirm to restore anyway.',
+      code: 'self_deleted',
+    }, { status: 409 })
+  }
+
   const { error } = await (service as any).rpc('admin_restore_workspace', { p_workspace_id: params.id })
   if (error) {
+    // B11: the RPC raises when a concurrent restore already won — a conflict, and it must stop before the Paystack
+    // resume / member e-mails below run twice.
+    if (/not_suspended|not_found/.test(error.message || '')) {
+      return NextResponse.json({ error: 'Not suspended' }, { status: 409 })
+    }
     console.error('[admin] restore workspace failed:', error.message)
     return NextResponse.json({ error: 'Could not restore workspace' }, { status: 500 })
   }
@@ -109,14 +126,14 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     }
   } catch (e) { console.error('[admin] Workspace restored notification sweep failed (non-fatal):', e) }
 
-  await logAdminAction(service, {
+  const auditLogged = await logAdminAction(service, {
     actor,
     eventType: 'workspace.restored',
     targetType: 'workspace',
     targetId: workspace.id,
     targetLabel: workspace.agency_name || workspace.name,
-    metadata: { paystackResumeOk: resumeResult.ok, ...(resumeResult.skipped ? { paystackResumeSkipped: true } : {}), membersNotified: notified },
+    metadata: { paystackResumeOk: resumeResult.ok, ...(resumeResult.skipped ? { paystackResumeSkipped: true } : {}), ...(restoredSelfDeleted ? { restoredSelfDeleted: true } : {}), membersNotified: notified },
   })
 
-  return NextResponse.json({ ok: true })
+  return NextResponse.json({ ok: true, paystackResumeOk: resumeResult.ok, membersNotified: notified, auditLogged })
 }

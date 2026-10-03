@@ -9,6 +9,7 @@ const LINKS = [
   { href: '/admin/workspaces', label: 'Workspaces' },
   { href: '/admin/users', label: 'Users' },
   { href: '/admin/billing', label: 'Billing' },
+  { href: '/admin/finance', label: 'Finance' },
   { href: '/admin/system', label: 'System health' },
   { href: '/admin/audit', label: 'Admin audit log' },
 ]

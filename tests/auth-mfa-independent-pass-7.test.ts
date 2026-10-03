@@ -159,12 +159,17 @@ describe('B1: adminNeedsMfaEnrolment()', () => {
     expect(await run()).toEqual({ name: 'S' })
   })
 
-  it('admin layout sends an un-enrolled admin to /mfa-setup, and keeps the silent /dashboard redirect for everyone else', () => {
-    const src = read('app/(admin)/admin/layout.tsx')
-    expect(src).toContain("import { getAdminActor, adminNeedsMfaEnrolment } from '@/lib/auth/admin'")
-    const i = src.indexOf('if (!actor) {')
+  it('the admin guard sends an un-enrolled admin to /mfa-setup, and keeps the silent /dashboard redirect for everyone else', () => {
+    // Moved out of the layout into lib/admin/page-guard.ts (Admin panel audit — B1): a layout redirect does not protect
+    // the pages' own data, so the same guard now runs in the layout AND at the top of every admin Server Component.
+    const layout = read('app/(admin)/admin/layout.tsx')
+    expect(layout).toContain("import { requireAdminPage } from '@/lib/admin/page-guard'")
+    expect(layout).toContain('await requireAdminPage()')
+    const src = read('lib/admin/page-guard.ts')
+    expect(src).toContain("import { getAdminActor, adminNeedsMfaEnrolment, type AdminActor } from '@/lib/auth/admin'")
+    const i = src.indexOf('const actor = await getAdminActor()')
     expect(i).toBeGreaterThan(-1)
-    const block = src.slice(i, src.indexOf('\n  }\n', i))
+    const block = src.slice(i)
     expect(block).toContain("if (await adminNeedsMfaEnrolment()) redirect('/mfa-setup?next=%2Fadmin')")
     expect(block.indexOf('adminNeedsMfaEnrolment')).toBeLessThan(block.indexOf("redirect('/dashboard')"))
   })

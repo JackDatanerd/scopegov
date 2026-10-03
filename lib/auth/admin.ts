@@ -142,7 +142,7 @@ function isGuardFailure(x: AdminGuardResult | NextResponse): x is NextResponse {
 }
 export { isGuardFailure as isAdminGuardFailure }
 
-interface AdminAuditParams {
+export interface AdminAuditParams {
   actor: AdminActor
   eventType: string
   targetType: 'workspace' | 'user' | 'billing' | 'system'
@@ -154,13 +154,13 @@ interface AdminAuditParams {
 // Same non-fatal-but-never-silent contract as lib/utils/audit.ts's
 // logAudit(): a failed write here must not fail the admin's action, but
 // must never vanish without a trace either.
-export async function logAdminAction(service: any, params: AdminAuditParams): Promise<boolean> {
-  let ipAddress: string | undefined
-  try {
-    ipAddress = getClientIpFromHeaders(nextHeaders())
-  } catch {
-    ipAddress = undefined
-  }
+//
+// FIX (Admin panel independent audit — B12): a failed insert used to be a console.error and `false` that every
+// caller dropped, so an action could succeed with no admin audit row, no alert and an "ok" response. It is now
+// retried once, and if it still fails (a) the full row is written to the log as ONE structured line so it can be
+// replayed by hand, and (b) ops is paged. Callers return the boolean to the panel as `auditLogged` so the admin
+// sees the gap immediately.
+async function insertAdminAudit(service: any, params: AdminAuditParams, ipAddress: string | undefined): Promise<string | null> {
   try {
     const { error } = await service.from('platform_admin_audit_log').insert({
       admin_id: params.actor.id,
@@ -173,13 +173,89 @@ export async function logAdminAction(service: any, params: AdminAuditParams): Pr
       metadata: params.metadata || {},
       ip_address: ipAddress || null,
     })
-    if (error) {
-      console.error(`[admin-audit] insert failed for ${params.eventType}:`, error.message ?? error)
-      return false
-    }
-    return true
-  } catch (err) {
-    console.error(`[admin-audit] insert threw for ${params.eventType}:`, err)
-    return false
+    return error ? String(error.message ?? error) : null
+  } catch (err: any) {
+    return String(err?.message ?? err)
+  }
+}
+
+export async function logAdminAction(service: any, params: AdminAuditParams): Promise<boolean> {
+  let ipAddress: string | undefined
+  try {
+    ipAddress = getClientIpFromHeaders(nextHeaders())
+  } catch {
+    ipAddress = undefined
+  }
+  let failure = await insertAdminAudit(service, params, ipAddress)
+  if (failure) {
+    await new Promise(r => setTimeout(r, 200))
+    failure = await insertAdminAudit(service, params, ipAddress)
+  }
+  if (!failure) return true
+
+  console.error(`[admin-audit] insert failed for ${params.eventType}: ${failure}`)
+  console.error('[admin-audit] UNRECORDED ADMIN ACTION ' + JSON.stringify({
+    admin_id: params.actor.id, admin_email: params.actor.email, event_type: params.eventType,
+    target_type: params.targetType, target_id: params.targetId ?? null, target_label: params.targetLabel ?? null,
+    metadata: params.metadata ?? {}, ip_address: ipAddress ?? null, at: new Date().toISOString(),
+  }))
+  try {
+    // Lazy import: keeps the e-mail stack out of every module that only needs the guard.
+    const { alertBillingOps } = await import('@/lib/billing/ops-alert')
+    await alertBillingOps(service, `admin-audit-write:${params.eventType}:${params.actor.id}`,
+      'Platform admin action was NOT recorded in the admin audit log', [
+        `admin: ${params.actor.email}`, `event: ${params.eventType}`,
+        `target: ${params.targetType} ${params.targetId ?? '-'} ${params.targetLabel ?? ''}`,
+        `error: ${failure}`,
+        'The action itself succeeded. The full row is in the application log as "UNRECORDED ADMIN ACTION".',
+      ])
+  } catch (e) {
+    console.error('[admin-audit] could not page ops about the unrecorded action:', e)
+  }
+  return false
+}
+
+// FIX (Admin panel independent audit — G2): reading another tenant's members, e-mails and billing was not
+// recorded anywhere, although migration 090's own header lists "searched for email z" as an auditable action.
+// Reads are logged too, but de-duplicated per (admin, event, target, label) inside `dedupeWithinMs` so a page
+// refresh or a detail page that re-fetches does not bury the real actions. A failed de-dupe lookup logs anyway.
+export async function logAdminRead(
+  service: any, params: AdminAuditParams, opts: { dedupeWithinMs?: number } = {},
+): Promise<boolean> {
+  const windowMs = opts.dedupeWithinMs ?? 10 * 60_000
+  try {
+    let q = service.from('platform_admin_audit_log').select('id')
+      .eq('admin_id', params.actor.id).eq('event_type', params.eventType)
+      .gte('created_at', new Date(Date.now() - windowMs).toISOString())
+    q = params.targetId ? q.eq('target_id', params.targetId) : q.is('target_id', null)
+    if (params.targetLabel) q = q.eq('target_label', params.targetLabel)
+    const { data, error } = await q.limit(1)
+    if (!error && data && data.length > 0) return true
+  } catch { /* fall through and log */ }
+  return logAdminAction(service, params)
+}
+
+export interface AdminHistoryRow {
+  id: string; admin_name: string; admin_email: string; event_type: string
+  target_label: string | null; metadata: Record<string, unknown>; created_at: string
+}
+
+// FIX (Admin panel independent audit — G1): the audit log had no per-target view, so "what has been done to this
+// account/workspace?" meant paging the global log. Views and searches are excluded (they are noise here).
+export async function loadAdminHistory(
+  service: any, targetType: 'workspace' | 'user', targetId: string, limit = 20,
+): Promise<AdminHistoryRow[] | null> {
+  try {
+    const { data, error } = await service.from('platform_admin_audit_log')
+      .select('id, admin_name, admin_email, event_type, target_label, metadata, created_at')
+      .eq('target_type', targetType).eq('target_id', targetId)
+      .not('event_type', 'like', '%.viewed')
+      .order('created_at', { ascending: false }).order('id', { ascending: false })
+      .limit(limit)
+    if (error) { console.error('[admin] history read failed:', error.message); return null }
+    return data || []
+  } catch (e) {
+    console.error('[admin] history read threw:', e)
+    return null
   }
 }

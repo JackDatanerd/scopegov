@@ -35,7 +35,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   await notifySecurityEvent(service, target.id, 'You were signed out everywhere',
     'ScopeGov support signed your account out of every active session as a precaution.').catch(() => {})
 
-  await logAdminAction(service, {
+  const auditLogged = await logAdminAction(service, {
     actor,
     eventType: 'user.sessions_revoked',
     targetType: 'user',
@@ -44,5 +44,5 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     metadata: { sessionsRevoked: revokedCount ?? null },
   })
 
-  return NextResponse.json({ ok: true, sessionsRevoked: revokedCount ?? null })
+  return NextResponse.json({ ok: true, sessionsRevoked: revokedCount ?? null, auditLogged })
 }

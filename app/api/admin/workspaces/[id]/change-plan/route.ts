@@ -33,8 +33,13 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   }
 
   const { data: workspace } = await (service as any)
-    .from('workspaces').select('id, name, agency_name, plan_tier').eq('id', params.id).maybeSingle()
+    .from('workspaces').select('id, name, agency_name, plan_tier, deleted_at').eq('id', params.id).maybeSingle()
   if (!workspace) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })
+  // FIX (Admin panel independent audit — B10): both plan routes ran on a suspended or deleted workspace, silently
+  // writing entitlement for a tenant nobody can reach (and a restore would then come back on a plan nobody chose).
+  if (workspace.deleted_at) {
+    return NextResponse.json({ error: 'This workspace is suspended or deleted — restore it before changing its plan.' }, { status: 409 })
+  }
   if (workspace.plan_tier === plan) {
     return NextResponse.json({ error: `Already on ${plan}` }, { status: 409 })
   }
@@ -46,7 +51,9 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   // stuck webhook, or unblocking someone while a real billing question gets
   // sorted out by hand) — the admin is expected to reconcile Paystack
   // separately via the Billing tab when that's the actual intent.
-  const { error } = await (service as any)
+  // Pinned to the plan that was read: the Paystack webhook / payment-overdue cron can change plan_tier between the
+  // read and this write, and an unpinned update would overwrite their change without a trace.
+  const { data: changed, error } = await (service as any)
     .from('workspaces')
     .update({
       plan_tier: plan,
@@ -54,20 +61,34 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
       trial_ends_at: plan === 'trial' ? new Date(Date.now() + trialDays * 86400_000).toISOString() : null,
       updated_at: new Date().toISOString(),
     })
-    .eq('id', params.id)
+    .eq('id', params.id).eq('plan_tier', workspace.plan_tier).is('deleted_at', null)
+    .select('id')
 
   if (error) {
     console.error('[admin] change plan failed:', error.message)
     return NextResponse.json({ error: 'Could not change plan' }, { status: 500 })
   }
+  if (!changed || changed.length === 0) {
+    return NextResponse.json({ error: 'The workspace changed while you were editing (plan or suspension). Reload and try again.' }, { status: 409 })
+  }
 
-  await logAdminAction(service, {
+  // FIX (Admin panel independent audit — B10): an open payment-failure grace window survived a manual plan change, so
+  // payment-overdue still enforced it when it expired and flipped the comped plan straight back to Solo — the same
+  // "silently undone" failure the trial branch above already fixed for trial_ends_at. A manual override ends it.
+  const { data: graceRows, error: graceErr } = await (service as any).from('billing')
+    .update({ grace_period_started_at: null, updated_at: new Date().toISOString() })
+    .eq('workspace_id', params.id).not('grace_period_started_at', 'is', null)
+    .select('workspace_id')
+  if (graceErr) console.error('[admin] change plan: could not clear grace period (non-fatal):', graceErr.message)
+  const graceCleared = !graceErr && (graceRows?.length ?? 0) > 0
+
+  const auditLogged = await logAdminAction(service, {
     actor,
     eventType: 'workspace.plan_changed',
     targetType: 'workspace',
     targetId: workspace.id,
     targetLabel: workspace.agency_name || workspace.name,
-    metadata: { previousPlan: workspace.plan_tier, newPlan: plan, reason: reason || null, ...(plan === 'trial' ? { trialDays } : {}) },
+    metadata: { previousPlan: workspace.plan_tier, newPlan: plan, reason: reason || null, ...(plan === 'trial' ? { trialDays } : {}), ...(graceCleared ? { graceCleared: true } : {}), ...(graceErr ? { graceClearFailed: true } : {}) },
   })
 
   // FIX (deep audit, Reports & Audit / Billing re-pass — independent redo):
@@ -94,5 +115,5 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     },
   })
 
-  return NextResponse.json({ ok: true, plan })
+  return NextResponse.json({ ok: true, plan, graceCleared, auditLogged })
 }

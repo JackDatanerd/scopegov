@@ -15,8 +15,11 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   }
 
   const { data: workspace } = await (service as any)
-    .from('workspaces').select('id, name, agency_name, plan_tier, trial_ends_at').eq('id', params.id).maybeSingle()
+    .from('workspaces').select('id, name, agency_name, plan_tier, trial_ends_at, deleted_at').eq('id', params.id).maybeSingle()
   if (!workspace) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })
+  if (workspace.deleted_at) {
+    return NextResponse.json({ error: 'This workspace is suspended or deleted — restore it before extending its trial.' }, { status: 409 })
+  }
   if (workspace.plan_tier !== 'trial') {
     return NextResponse.json({ error: 'Workspace is not on the trial plan. To start a fresh trial (e.g. after it expired and the workspace moved to Solo), use Change plan → trial.' }, { status: 409 })
   }
@@ -29,17 +32,24 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     : new Date()
   const newTrialEndsAt = new Date(base.getTime() + days * 86400_000).toISOString()
 
-  const { error } = await (service as any)
+  // Pinned to the trial state that was read, so two admins extending at once (or a conversion to a paid plan landing
+  // in between) cannot both apply — the second one would silently stack on / overwrite the first.
+  let upd = (service as any)
     .from('workspaces')
     .update({ trial_ends_at: newTrialEndsAt, updated_at: new Date().toISOString() })
-    .eq('id', params.id)
+    .eq('id', params.id).eq('plan_tier', 'trial').is('deleted_at', null)
+  upd = workspace.trial_ends_at ? upd.eq('trial_ends_at', workspace.trial_ends_at) : upd.is('trial_ends_at', null)
+  const { data: changed, error } = await upd.select('id')
 
   if (error) {
     console.error('[admin] extend trial failed:', error.message)
     return NextResponse.json({ error: 'Could not extend trial' }, { status: 500 })
   }
+  if (!changed || changed.length === 0) {
+    return NextResponse.json({ error: 'The trial changed while you were editing. Reload and try again.' }, { status: 409 })
+  }
 
-  await logAdminAction(service, {
+  const auditLogged = await logAdminAction(service, {
     actor,
     eventType: 'workspace.trial_extended',
     targetType: 'workspace',
@@ -48,5 +58,5 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     metadata: { days, previousTrialEndsAt: workspace.trial_ends_at, newTrialEndsAt },
   })
 
-  return NextResponse.json({ ok: true, trialEndsAt: newTrialEndsAt })
+  return NextResponse.json({ ok: true, trialEndsAt: newTrialEndsAt, auditLogged })
 }

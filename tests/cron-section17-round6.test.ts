@@ -33,7 +33,8 @@ import { POST as adminSuspend } from '@/app/api/admin/workspaces/[id]/suspend/ro
 import { healStuckSends } from '@/lib/approvals/engine'
 
 const rpcOk = { admin_restore_workspace: () => ({ data: null, error: null }), admin_suspend_workspace: () => ({ data: true, error: null }) }
-const restore = (id: string) => adminRestore({} as any, { params: { id } })
+// The route now reads a JSON body (confirmSelfDeleted) — a request without .json() is no longer a valid caller.
+const restore = (id: string) => adminRestore({ json: async () => ({}) } as any, { params: { id } })
 const suspend = (id: string) => adminSuspend({ json: async () => ({}) } as any, { params: { id } })
 const billingOf = (id: string) => h.db.tables.billing.find((r: any) => r.workspace_id === id)
 

@@ -110,6 +110,11 @@ export async function POST(request: NextRequest) {
         .not('deleted_at', 'is', null)
         .lt('deleted_at', iso(30))
         .not('email', 'like', 'deleted-%@deleted.scopegov.app')
+        // FIX (Admin panel independent audit — B3): an ADMIN suspension is reversible by design (workspaces already
+        // work this way: workspace-purge skips suspended_by_admin). Without this the 30-day sweep erased a
+        // suspended user's PII exactly as if they had deleted themselves, and the panel's Restore then "succeeded"
+        // on an anonymized zombie with a random password. Erasure of a suspended account is a deliberate, manual call.
+        .neq('suspended_by_admin', true)
         .order('id').range(from, to))
 
     // Never scrub someone who is currently an active member of a workspace: that is a live person whose

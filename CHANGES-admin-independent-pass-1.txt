@@ -1,0 +1,36 @@
+Admin panel — independent audit, round 1  (base: de3fece)
+
+DEPLOY ORDER: apply supabase/migrations/141_admin_panel_hardening.sql BEFORE (or with) the code. The Overview and Finance
+pages call two new RPCs and the user routes read/write two new users columns; without the migration those show a
+"Could not load" notice (the routes themselves fail closed).
+
+GAPS
+G1  Audit log: metadata now visible (summary + expandable JSON), filters (action, admin, target, include views), per-target
+    "history" link, per-record "Admin actions on this record" panel on user + workspace pages.
+G2  Admin READS are audited (user.viewed, workspace.viewed, users.searched, workspaces.searched, billing.viewed,
+    finance.viewed), de-duplicated per 10 min; hidden from the log by default.
+G3  Billing page: views (failing / cancelling / Paystack cancel pending / paid-no-subscription / suspended), pagination,
+    needs_paystack_cancel surfaced, suspended workspaces no longer counted "Healthy".
+G4  users.suspended_by_admin(+_at): Restore can no longer silently undo a self-deletion (explicit confirm required),
+    erased accounts show as Erased, workspace members show "Account suspended/deleted".
+G5  NEW Finance page (/admin/finance): est. MRR (list price), MRR at risk, MRR churning, paid-plan-without-subscription,
+    monthly collected/refunded/failed/disputed per currency (from webhook audit rows), recent money events.
+
+BUGS
+B1  HIGH   every admin Server Component now guards itself (lib/admin/page-guard.ts) — layout redirect alone did not.
+B2  HIGH   user suspend: rpc(...).catch() threw TypeError -> 500, no audit row, sessions never revoked. Fixed + regression.
+B3  MED    restore of an erased user reported success (now 409 'erased'); invite-cleanup no longer erases admin-suspended users.
+B4  MED    separate plan-change / suspend reason fields; extend-days input can be cleared.
+B5  MED    list pages debounced + sequenced + show errors; detail pages distinguish 404 / 500 / network.
+B6  MED    audit + system + overview pages show read failures instead of "no data" / "all stale"; pager links really disable;
+           out-of-range page redirects; timestamps labelled UTC.
+B7  MED    user detail: unknown ban / MFA state shown as Unknown (and no longer disables Reset MFA).
+B8  LOW    plan counts via SQL GROUP BY, project counts + billing paged (no silent 1000-row truncation).
+B9  LOW    workspace/billing detail uses column allow-lists (no Paystack e-mail tokens sent to the browser).
+B10 LOW    change-plan/extend-trial refuse suspended workspaces, are pinned to the state read (409 on race); change-plan
+           clears an open grace period so payment-overdue cannot revert a comped plan.
+B11 LOW    concurrent workspace suspend/restore -> 409 before Paystack/e-mails run twice.
+B12 LOW    failed admin-audit write: retried, row logged for replay, ops paged, `auditLogged:false` returned and shown.
+
+TESTS  tests/admin-panel-audit.test.ts, tests/admin-audit-writer.test.ts (new); tests/auth-mfa-independent-pass-7 and
+       tests/cron-section17-round6 updated for the moved guard / new request body.

@@ -1,4 +1,5 @@
 import { createServiceClient } from '@/lib/supabase/server'
+import { requireAdminPage } from '@/lib/admin/page-guard'
 import { heartbeatExpectations } from '@/lib/cron/manifest'
 import styles from '@/styles/admin.module.css'
 
@@ -12,23 +13,26 @@ function daysAgoIso(days: number): string {
 }
 
 export default async function AdminOverviewPage() {
+  // B1: a layout redirect does not protect this page's data — guard here, before any service-role read.
+  await requireAdminPage()
   const service = createServiceClient() as any
   const weekAgo = daysAgoIso(7)
 
   const [
-    { count: totalWorkspaces },
-    { count: deletedWorkspaces },
-    { data: byPlan },
-    { count: newWorkspacesThisWeek },
-    { count: totalUsers },
-    { count: staleSows },
-    { count: staleCos },
-    { count: pastDueTrials },
-    { data: heartbeats },
+    totalWorkspacesRes,
+    deletedWorkspacesRes,
+    byPlanRes,
+    newWorkspacesRes,
+    totalUsersRes,
+    staleSowsRes,
+    staleCosRes,
+    pastDueTrialsRes,
+    heartbeatsRes,
   ] = await Promise.all([
     service.from('workspaces').select('id', { count: 'exact', head: true }).is('deleted_at', null),
     service.from('workspaces').select('id', { count: 'exact', head: true }).not('deleted_at', 'is', null),
-    service.from('workspaces').select('plan_tier').is('deleted_at', null),
+    // GROUP BY in SQL: selecting every row and counting here was silently truncated at PostgREST's 1000-row cap (B8).
+    service.rpc('admin_workspace_plan_counts'),
     service.from('workspaces').select('id', { count: 'exact', head: true }).is('deleted_at', null).gte('created_at', weekAgo),
     service.from('users').select('id', { count: 'exact', head: true }).is('deleted_at', null),
     service.from('sow_documents').select('id', { count: 'exact', head: true }).eq('status', 'awaiting_signature').lt('updated_at', daysAgoIso(STALE_SOW_DAYS)),
@@ -37,8 +41,24 @@ export default async function AdminOverviewPage() {
     service.from('cron_heartbeats').select('cron_name, last_ok_at, last_result').order('cron_name'),
   ])
 
+  // B5/B6: `?? 0` on a failed query rendered a believable zero. Any failed read is listed instead.
+  const failed = ([
+    ['active workspaces', totalWorkspacesRes], ['deleted workspaces', deletedWorkspacesRes], ['plan breakdown', byPlanRes],
+    ['new workspaces', newWorkspacesRes], ['users', totalUsersRes], ['stuck SOWs', staleSowsRes],
+    ['stuck change orders', staleCosRes], ['past-due trials', pastDueTrialsRes], ['cron heartbeats', heartbeatsRes],
+  ] as const).filter(([, r]) => (r as any).error).map(([label]) => label)
+  if (failed.length) console.error('[admin] overview reads failed:', failed.join(', '))
+  const { count: totalWorkspaces } = totalWorkspacesRes
+  const { count: deletedWorkspaces } = deletedWorkspacesRes
+  const { count: newWorkspacesThisWeek } = newWorkspacesRes
+  const { count: totalUsers } = totalUsersRes
+  const { count: staleSows } = staleSowsRes
+  const { count: staleCos } = staleCosRes
+  const { count: pastDueTrials } = pastDueTrialsRes
+  const heartbeats = heartbeatsRes.data
+
   const planCounts: Record<string, number> = {}
-  for (const w of byPlan || []) planCounts[w.plan_tier] = (planCounts[w.plan_tier] || 0) + 1
+  for (const r of (byPlanRes.data || []) as Array<{ plan_tier: string; n: number | string }>) planCounts[r.plan_tier] = Number(r.n) || 0
 
   // Same per-cron tolerance the watchdog itself pages on (lib/cron/manifest.ts)
   // rather than one blanket 24h — a 15-minute cron and a weekly one don't
@@ -60,6 +80,12 @@ export default async function AdminOverviewPage() {
           <div className={styles.subtitle}>Cross-workspace snapshot, refreshed on load</div>
         </div>
       </div>
+
+      {failed.length > 0 && (
+        <div className={`${styles.notice} ${styles.noticeBad}`}>
+          Could not load: {failed.join(', ')}. The figures below for those are missing, not zero — reload to retry.
+        </div>
+      )}
 
       <div className={styles.grid}>
         <div className={styles.statCard}>
@@ -91,9 +117,9 @@ export default async function AdminOverviewPage() {
           <div className={styles.statValue}>{staleCos ?? 0}</div>
           <div className={styles.statHint}>awaiting response &gt;{STALE_CO_DAYS}d</div>
         </div>
-        <div className={`${styles.statCard} ${staleCronCount > 0 ? styles.statBad : styles.statGood}`}>
+        <div className={`${styles.statCard} ${heartbeatsRes.error || staleCronCount > 0 ? styles.statBad : styles.statGood}`}>
           <div className={styles.statLabel}>Cron jobs stale</div>
-          <div className={styles.statValue}>{staleCronCount}</div>
+          <div className={styles.statValue}>{heartbeatsRes.error ? '?' : staleCronCount}</div>
           <div className={styles.statHint}>past their own tolerance, of {Object.keys(expectations).length} crons</div>
         </div>
       </div>

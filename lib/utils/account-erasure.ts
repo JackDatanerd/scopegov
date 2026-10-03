@@ -45,6 +45,11 @@ export function anonymizedEmail(userId: string): string {
   return `deleted-${userId}@deleted.scopegov.app`
 }
 
+/** True for an account that invite-cleanup has already erased (its e-mail was replaced by anonymizedEmail). */
+export function isAnonymizedEmail(email: string | null | undefined): boolean {
+  return typeof email === 'string' && /^deleted-[0-9a-f-]{36}@deleted\.scopegov\.app$/i.test(email)
+}
+
 /**
  * Returns ok:true when the auth record is anonymized (or no longer exists). On failure the caller must
  * NOT anonymize public.users, so the next daily run finds the row again and retries.

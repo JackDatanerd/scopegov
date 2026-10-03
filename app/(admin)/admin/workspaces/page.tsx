@@ -1,8 +1,9 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import styles from '@/styles/admin.module.css'
+import { useAdminList, useDebounced } from '@/lib/client/admin-list'
 
 interface WorkspaceRow {
   id: string
@@ -27,37 +28,21 @@ function planBadgeClass(plan: string): string {
 
 export default function AdminWorkspacesPage() {
   const router = useRouter()
-  const [rows, setRows] = useState<WorkspaceRow[]>([])
-  const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [q, setQ] = useState('')
   const [plan, setPlan] = useState('')
   const [status, setStatus] = useState('active')
-  const [loading, setLoading] = useState(true)
+  const dq = useDebounced(q.trim())
   const pageSize = 30
 
-  const load = useCallback(async (opts?: { page?: number }) => {
-    setLoading(true)
-    const p = opts?.page ?? page
-    const params = new URLSearchParams({ page: String(p) })
-    if (q) params.set('q', q)
-    if (plan) params.set('plan', plan)
-    if (status) params.set('status', status)
-    try {
-      const res = await fetch(`/api/admin/workspaces?${params}`)
-      const data = await res.json()
-      if (res.ok) {
-        setRows(data.workspaces)
-        setTotal(data.total)
-        setPage(p)
-      }
-    } finally {
-      setLoading(false)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q, plan, status])
-
-  useEffect(() => { load({ page: 1 }) }, [q, plan, status]) // eslint-disable-line react-hooks/exhaustive-deps
+  const params = new URLSearchParams({ page: String(page) })
+  if (dq) params.set('q', dq)
+  if (plan) params.set('plan', plan)
+  if (status) params.set('status', status)
+  // Debounced + sequenced + error-aware (Admin audit — B5): see lib/client/admin-list.ts.
+  const { rows, total, loading, error, reload } = useAdminList<WorkspaceRow>(
+    `/api/admin/workspaces?${params}`, j => ({ rows: j.workspaces || [], total: j.total ?? 0 }),
+  )
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
 
@@ -66,7 +51,7 @@ export default function AdminWorkspacesPage() {
       <div className={styles.header}>
         <div>
           <div className={styles.title}>Workspaces</div>
-          <div className={styles.subtitle}>{total} matching</div>
+          <div className={styles.subtitle}>{error ? '—' : `${total} matching`}</div>
         </div>
       </div>
 
@@ -75,9 +60,9 @@ export default function AdminWorkspacesPage() {
           className={styles.input}
           placeholder="Search name, slug, or agency…"
           value={q}
-          onChange={e => setQ(e.target.value)}
+          onChange={e => { setQ(e.target.value); setPage(1) }}
         />
-        <select className={styles.select} value={plan} onChange={e => setPlan(e.target.value)}>
+        <select className={styles.select} value={plan} onChange={e => { setPlan(e.target.value); setPage(1) }}>
           <option value="">All plans</option>
           <option value="trial">Trial</option>
           <option value="solo">Solo</option>
@@ -85,20 +70,27 @@ export default function AdminWorkspacesPage() {
           <option value="pro">Pro</option>
           <option value="agency">Agency</option>
         </select>
-        <select className={styles.select} value={status} onChange={e => setStatus(e.target.value)}>
+        <select className={styles.select} value={status} onChange={e => { setStatus(e.target.value); setPage(1) }}>
           <option value="active">Active only</option>
-          <option value="deleted">Suspended/deleted only</option>
+          <option value="suspended">Suspended by an admin</option>
+          <option value="deleted">Deleted by the owner</option>
           <option value="">All</option>
         </select>
       </div>
 
+      {error && (
+        <div className={`${styles.notice} ${styles.noticeBad}`}>
+          {error} <button className="btn btn-ghost btn-sm" onClick={() => reload()}>Retry</button>
+        </div>
+      )}
+
       <div className={styles.card}>
-        {loading ? (
+        {loading && rows.length === 0 ? (
           <div className={styles.empty}>Loading…</div>
-        ) : rows.length === 0 ? (
+        ) : error ? null : rows.length === 0 ? (
           <div className={styles.empty}>No workspaces match.</div>
         ) : (
-          <table className={styles.table}>
+          <table className={styles.table} style={loading ? { opacity: 0.6 } : undefined}>
             <thead>
               <tr>
                 <th>Workspace</th>
@@ -131,9 +123,9 @@ export default function AdminWorkspacesPage() {
           </table>
         )}
         <div className={styles.pager}>
-          <button className="btn btn-ghost btn-sm" disabled={page <= 1} onClick={() => load({ page: page - 1 })}>Previous</button>
+          <button className="btn btn-ghost btn-sm" disabled={page <= 1 || loading} onClick={() => setPage(p => Math.max(1, p - 1))}>Previous</button>
           <span>Page {page} of {totalPages}</span>
-          <button className="btn btn-ghost btn-sm" disabled={page >= totalPages} onClick={() => load({ page: page + 1 })}>Next</button>
+          <button className="btn btn-ghost btn-sm" disabled={page >= totalPages || loading} onClick={() => setPage(p => p + 1)}>Next</button>
         </div>
       </div>
     </div>

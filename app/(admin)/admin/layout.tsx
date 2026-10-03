@@ -1,5 +1,4 @@
-import { redirect } from 'next/navigation'
-import { getAdminActor, adminNeedsMfaEnrolment } from '@/lib/auth/admin'
+import { requireAdminPage } from '@/lib/admin/page-guard'
 import styles from '@/styles/admin.module.css'
 import AdminNav from './AdminNav'
 import StepUpHost from '@/components/auth/StepUpHost'
@@ -8,14 +7,9 @@ import StepUpHost from '@/components/auth/StepUpHost'
 // requireAdmin() in the API layer returns 404: a non-admin (including one
 // who guesses the URL) learns nothing about whether this surface exists.
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
-  const actor = await getAdminActor()
-  if (!actor) {
-    // A confirmed platform admin who simply hasn't enrolled a factor yet is sent to set
-    // one up (it works without any workspace — see app/mfa-setup/page.tsx). Anyone else
-    // gets the same silent redirect as before, so the surface's existence stays hidden.
-    if (await adminNeedsMfaEnrolment()) redirect('/mfa-setup?next=%2Fadmin')
-    redirect('/dashboard')
-  }
+  // The page-guard also runs inside every data page: a layout redirect alone does not protect them
+  // (see lib/admin/page-guard.ts).
+  const actor = await requireAdminPage()
 
   return (
     <div className={styles.shell}>
