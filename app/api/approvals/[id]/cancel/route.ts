@@ -75,7 +75,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // that died mid-flight is healed into "approved — not sent", the document may in fact have gone out (the heal reason
     // says so): a SOW that is 'awaiting_signature' is not an editable draft. Only claim it when the document still is one.
     let returnedToDraft = req.document_type !== 'co_counter'
-    if (returnedToDraft && sendFailed) {
+    // (approvals pass 15, B2) A request still 'pending' whose send claim went stale (the process died mid-send) can
+    // equally have delivered the document before dying, so any request that ever stamped a claim needs the real check.
+    if (returnedToDraft && (sendFailed || !!req.sending_started_at)) {
       const table = req.document_type === 'sow' ? 'sow_documents' : req.document_type === 'invoice' ? 'invoices' : 'change_orders'
       const { data: doc, error: docErr } = await (service as any)
         .from(table).select('status').eq('id', req.document_id).eq('workspace_id', session.workspaceId).maybeSingle()

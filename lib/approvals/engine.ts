@@ -1436,10 +1436,18 @@ export async function reassignApprovalStep(service: any, params: {
   // request as stuck from before the handover, and the next cron run can remind/escalate the new approver immediately.
   // Retry once, then leave a trail.
   for (let attempt = 0; attempt < 2; attempt++) {
-    const { error: clockErr } = await service.from('approval_requests')
+    const { data: clockRow, error: clockErr } = await service.from('approval_requests')
       .update({ updated_at: now, step_started_at: now, reminder_count: 0, escalated_at: null })
-      .eq('id', request.id).eq('status', 'pending')
-    if (!clockErr) break
+      .eq('id', request.id).eq('status', 'pending').select('id').maybeSingle()
+    if (!clockErr) {
+      // (approvals pass 15, B1) The step write above is guarded on the STEP being pending, not the request. A cancel
+      // that landed between the request read and here flips the request first and skips its steps afterwards, so the
+      // step write could still succeed. No row back means the request is no longer pending: do not audit or notify a
+      // new approver about a dead request.
+      if (!clockRow)
+        return { ok: false, error: 'This request was cancelled or decided while you were reassigning it — refresh to see its current state.', status: 409 }
+      break
+    }
     console.error(`reassignApprovalStep: could not reset the step clock (attempt ${attempt + 1}):`, clockErr, request.id)
   }
 
