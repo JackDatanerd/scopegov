@@ -94,19 +94,21 @@ export async function PATCH(
     const toAdd = newMentions.filter(m => !existingIds.has(m.userId))
 
     if (toRemove.length) {
-      await (service as any).from('project_message_mentions')
+      const { error: rmErr } = await (service as any).from('project_message_mentions')
         .delete().eq('message_id', messageId).in('user_id', toRemove)
+      if (rmErr) console.error('Project message PATCH: could not remove stale mentions:', rmErr)
     }
     if (toAdd.length) {
-      await (service as any).from('project_message_mentions')
+      const { error: addErr } = await (service as any).from('project_message_mentions')
         .insert(toAdd.map(m => ({ message_id: messageId, user_id: m.userId })))
-      // FIX (deep audit, section 7): this comment always said net-new
-      // mentions on an edit should notify — but nothing ever called the
-      // notifier here, so someone freshly @mentioned by an edit (not the
-      // original post) was silently never told. notifyMentionedUsers
-      // already no-ops safely on failure and skips the editor themselves.
-      const projectName = await loadProjectName(service, session.workspaceId, projectId)
-      await notifyMentionedUsers(service, session, projectId, projectName, text, toAdd)
+      if (addErr) {
+        // Not notified without a stored row: the next edit re-derives the same diff and retries, so nobody is told
+        // twice and nobody is left permanently unmentioned.
+        console.error('Project message PATCH: could not save new mentions (will retry on next edit):', addErr)
+      } else {
+        const projectName = await loadProjectName(service, session.workspaceId, projectId)
+        await notifyMentionedUsers(service, session, projectId, projectName, text, toAdd)
+      }
     }
 
     await logAudit(service, {

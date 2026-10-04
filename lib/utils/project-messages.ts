@@ -132,7 +132,12 @@ export async function resolveMentions(
 // bracket text back to the sender's authoritative DB name before the message
 // is ever stored, so nobody else — and no other view of the same message —
 // ever sees it.
-export function uniqueMentionLabel(name: string, id: string, picked: Record<string, string>): string {
+export function uniqueMentionLabel(rawName: string, id: string, picked: Record<string, string>): string {
+  // The label becomes the text of an `@[label](uuid)` token, so it cannot contain `]`: a display name like
+  // "Jane [Acme]" produced a token MENTION_TOKEN cannot match — no mention row, no notification, raw token text
+  // shown. Only square brackets are removed (parentheses are legal inside the token), so every other name still
+  // round-trips through the composer exactly as typed.
+  const name = rawName.replace(/[\[\]]/g, '').replace(/\s+/g, ' ').trim() || 'User'
   const lowerId = id.toLowerCase()
   if (!(name in picked) || picked[name] === lowerId) return name
   let extra = 4

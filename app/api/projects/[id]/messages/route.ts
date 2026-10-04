@@ -185,9 +185,16 @@ export async function POST(
     if (error) throw new Error(error.message)
 
     if (validMentions.length) {
-      await (service as any).from('project_message_mentions').insert(
+      const { error: mentionErr } = await (service as any).from('project_message_mentions').insert(
         validMentions.map(m => ({ message_id: message.id, user_id: m.userId }))
       )
+      if (mentionErr) {
+        // Without the mention rows the people named in this message would be notified (below) yet absent from the
+        // table every later edit diffs against. Remove the message so it fails loudly — the composer keeps the draft.
+        console.error('Project message POST: could not save mentions, rolling back:', mentionErr)
+        await (service as any).from('project_messages').delete().eq('id', message.id)
+        return NextResponse.json({ error: 'Could not post the message. Please try again.' }, { status: 500 })
+      }
     }
 
     await logAudit(service, {

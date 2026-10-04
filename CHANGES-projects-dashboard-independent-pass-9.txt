@@ -1,0 +1,28 @@
+Projects & Dashboard — independent pass 9
+=========================================
+
+B1  @-mention of a teammate whose display name contains "[" or "]" (e.g. "Jane [Acme]")
+    The composer built the token @[Jane [Acme]](uuid), which MENTION_TOKEN cannot match: no
+    mention row, no notification, raw token text shown in the feed.
+    lib/utils/project-messages.ts — uniqueMentionLabel strips square brackets from the label
+    (parentheses stay: they are legal inside a token and the composer round-trip relies on them).
+
+B2  Mention rows were inserted without checking the result
+    POST /api/projects/[id]/messages — a failed mention insert still posted the message and
+    notified the people named, leaving no row for later edits to diff against. The message is now
+    removed and the request fails (500) so the composer keeps the draft.
+    PATCH /api/projects/[id]/messages/[messageId] — insert/delete errors are checked; a failed add
+    is not notified and retries on the next edit.
+
+B3  Project Overview tab labels
+    components/projects/ProjectDetail.tsx — "Type" showed the raw key ("ecomm"); now the label.
+    "Guardian" read "Not yet active" for paused and closed projects; now "Paused" for a manual
+    pause and "Ended — project is closed" for Complete/Archived.
+
+Not changed (decision): PATCH /api/projects/[id] does not require VIEW_FINANCIALS for
+contractValue / retainerDurationMonths — the new-project wizard re-sends both on Back-and-resubmit
+for members who set them at creation.
+
+Tests: tests/projects-dashboard-pass-9.test.ts
+Known unrelated failures at the time of this pass (HEAD 5797ddc, trial/plans work):
+tests/trial-plan-workspace-pass-1-cron.test.ts (2 tests).

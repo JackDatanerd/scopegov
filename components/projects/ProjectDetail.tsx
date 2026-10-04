@@ -16,7 +16,7 @@ import { liveChangeOrders } from '@/lib/utils/attention'
 import {
   formatCurrency, formatDate, formatRelative,
   projectStatusLabel, sowStatusLabel, coStatusLabel, flagStatusLabel,
-  PROJECT_TYPE_ICONS,
+  PROJECT_TYPE_ICONS, PROJECT_TYPE_LABELS,
 } from '@/lib/utils/format'
 
 const TABS = [
@@ -610,7 +610,7 @@ function OverviewTab({ project, milestones, amendments, permissions, currency, r
             </div>
             <div>
               <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 2 }}>Type</div>
-              <div>{project.type || '—'}</div>
+              <div>{PROJECT_TYPE_LABELS[project.type] || project.type || '—'}</div>
             </div>
             {permissions.viewFinancials && (
               <div>
@@ -647,7 +647,10 @@ function OverviewTab({ project, milestones, amendments, permissions, currency, r
             </div>
             <div>
               <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 2 }}>Guardian</div>
-              <div>{project.status === 'Active' ? (project.guardian_email || 'Active') : 'Not yet active'}</div>
+              <div>{project.status === 'Active' ? (project.guardian_email || 'Active')
+                : project.status === 'Stalled' && project.stall_reason === 'manual' ? 'Paused'
+                : ['Complete', 'Archived'].includes(project.status) ? 'Ended — project is closed'
+                : 'Not yet active'}</div>
             </div>
           </div>
           {project.disc && (
