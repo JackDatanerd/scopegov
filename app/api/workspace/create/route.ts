@@ -119,7 +119,9 @@ export async function POST(request: NextRequest) {
       // error once that window has passed.
       if (String(rpcError.message || '').includes('TRIAL_ALREADY_USED')) {
         return NextResponse.json({
-          error: 'You\u2019ve already used your free trial. Contact support@scopegov.app to discuss a plan.',
+          // FIX (Trial/plan/workspace pass): a new workspace always starts as a free trial, so this is also what a paying
+          // customer who wants a SECOND workspace hits. "Discuss a plan" read as if their own plan were the problem.
+          error: 'New workspaces start with a free trial, and you\u2019ve already used yours. To add another workspace to your account, contact support@scopegov.app.',
         }, { status: 409 })
       }
       // FIX (re-audit, minor finding): raw Postgres error message/code/hint

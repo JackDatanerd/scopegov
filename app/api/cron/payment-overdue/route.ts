@@ -9,6 +9,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { sendTrialWarningEmail, sendPaymentFailedEmail, sendInvoiceOverdueInternalEmail, sendPaymentMilestoneOverdueEmail, sendSubscriptionEndedEmail } from '@/lib/email/templates'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { getBillingRecipients as getBillingRecipientsShared } from '@/lib/billing/recipients'
+import { applyTrialEndingPreference } from '@/lib/billing/trial-audience'
 import { GRACE_DAYS, GRACE_REMINDER_DAYS_LEFT } from '@/lib/billing/plans'
 import { cancelPaystackSubscription } from '@/lib/integrations/paystack'
 import { alertBillingOps } from '@/lib/billing/ops-alert'
@@ -44,8 +45,8 @@ const ENDED_SUBSCRIPTION_FIELDS = {
 const WS_EMBED = 'workspaces(id,agency_name,plan_tier,deleted_at,created_by,creator:users!workspaces_created_by_fkey(name,email))'
 
 async function getBillingRecipients(
-  service: any, workspaceId: string, creator: { name?: string; email?: string } | null | undefined
-): Promise<Array<{ name: string; email: string }>> {
+  service: any, workspaceId: string, creator: { id?: string | null; name?: string; email?: string } | null | undefined
+): Promise<Array<{ id?: string; name: string; email: string }>> {
   return getBillingRecipientsShared(service, workspaceId, [creator])
 }
 
@@ -251,7 +252,10 @@ export async function POST(request: NextRequest) {
           metadata: { converted_to: 'solo' },
         })
 
-        const recipients = await getBillingRecipients(service, ws.id, ws.creator)
+        // FIX (Trial/plan/workspace pass): this day-0 email ignored the `trial_ending` preference the 3/2/1-day warnings
+        // honour — see lib/billing/trial-audience.ts. The creator carries their id so their own preference applies.
+        const allRecipients = await getBillingRecipients(service, ws.id, ws.creator ? { ...ws.creator, id: ws.created_by } : ws.creator)
+        const recipients = await applyTrialEndingPreference(service, ws.id, allRecipients)
         for (const r of recipients) {
           try {
             // FIX (re-audit, section 17): raw try/catch, not checkedSend — same missing-check class

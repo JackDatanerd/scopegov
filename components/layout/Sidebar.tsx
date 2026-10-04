@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import type { SessionUser } from '@/lib/supabase/types'
 import { PLAN_LABELS, initials, avatarColour } from '@/lib/utils/format'
+import { trialBarPercent } from '@/lib/billing/plans'
 import NotificationBell from './NotificationBell'
 
 const NAV_ITEMS = [
@@ -426,9 +427,11 @@ export default function Sidebar({ session }: { session: SessionUser }) {
             {session.planTier === 'trial' && daysLeft !== null && (
               <>
                 <div className="sb-trial-bar">
-                  <div className="sb-trial-fill" style={{ width: `${Math.round((daysLeft / 14) * 100)}%` }} />
+                  {/* FIX (Trial/plan/workspace pass): the bar and the label both hardcoded a 14-day total, so an
+                      admin-extended trial (extend-trial allows up to 365 days) read "60 of 14" with a bar wider than its track. */}
+                  <div className="sb-trial-fill" style={{ width: `${trialBarPercent(daysLeft)}%` }} />
                 </div>
-                <div className="sb-trial-txt">{daysLeft} of 14 trial days remaining</div>
+                <div className="sb-trial-txt">{daysLeft} trial day{daysLeft === 1 ? '' : 's'} remaining</div>
               </>
             )}
           </div>

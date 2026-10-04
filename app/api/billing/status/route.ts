@@ -11,6 +11,7 @@ export const runtime = 'nodejs'
 import { NextResponse } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { createServiceClient } from '@/lib/supabase/server'
+import { effectivePlanTier } from '@/lib/billing/plans'
 
 export async function GET() {
   try {
@@ -21,7 +22,7 @@ export async function GET() {
 
     const service = createServiceClient()
     const [ws, billing] = await Promise.all([
-      (service as any).from('workspaces').select('plan_tier').eq('id', session.workspaceId).maybeSingle(),
+      (service as any).from('workspaces').select('plan_tier, trial_ends_at').eq('id', session.workspaceId).maybeSingle(),
       (service as any).from('billing')
         .select('paystack_subscription_code, plan_interval, current_period_end, cancels_at_period_end, grace_period_started_at')
         .eq('workspace_id', session.workspaceId).maybeSingle(),
@@ -30,7 +31,10 @@ export async function GET() {
     if (billing.error) throw new Error(billing.error.message)
 
     return NextResponse.json({
-      planTier: ws.data?.plan_tier ?? null,
+      // FIX (Trial/plan/workspace pass): the Billing tab now shows the EFFECTIVE tier (an expired trial is Solo at once),
+      // and confirmPayment() compares this value with the one it started from — a stored 'trial' here against an
+      // effective 'solo' there read as "the plan changed" on the very first poll and reloaded before the webhook landed.
+      planTier: ws.data ? effectivePlanTier(ws.data.plan_tier, ws.data.trial_ends_at) : null,
       planInterval: billing.data?.plan_interval ?? null,
       currentPeriodEnd: billing.data?.current_period_end ?? null,
       cancelsAtPeriodEnd: !!billing.data?.cancels_at_period_end,

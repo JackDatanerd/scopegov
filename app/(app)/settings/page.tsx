@@ -222,9 +222,16 @@ export default async function SettingsPage() {
   const canManageBilling = hasPermission(session, 'MANAGE_BILLING')
   const billing = billingRes.data && !canManageBilling ? null : billingRes.data
 
+  // FIX (Trial/plan/workspace pass): the Billing tab read the STORED plan_tier, while getSession() — and so the Sidebar,
+  // the dashboard banner and every limit gate — report the EFFECTIVE one (an expired trial is Solo the moment it
+  // expires; the payment-overdue cron only makes the stored value match up to a day later). In that window Billing said
+  // "Trial · 0 trial days remaining" and offered "Upgrade" labels for a workspace everything else already treated as
+  // Solo. session.planTier is the effective tier of this same workspace.
+  const workspaceForClient = workspace ? { ...workspace, plan_tier: session.planTier } : workspace
+
   return (
     <SettingsClient
-      workspace={workspace}
+      workspace={workspaceForClient}
       billing={billing}
       defaults={canManageWorkspace ? (defaultsRes.data?.[0] ?? null) : null}
       logoUrl={logoUrl}

@@ -24,6 +24,20 @@ export type BillingInterval = (typeof BILLING_INTERVALS)[number]
 export const GRACE_DAYS = 5
 export const GRACE_REMINDER_DAYS_LEFT = 3
 
+// Length of the free trial a new workspace starts with (create_workspace_atomic: now() + 14 days). An admin can
+// extend a trial well past this (extend-trial allows up to 365 days), so never assume `daysLeft <= TRIAL_DAYS`.
+export const TRIAL_DAYS = 14
+
+/**
+ * Fill of the Sidebar's trial progress bar (0-100). Divides by the longer of the standard trial and the days left,
+ * so an admin-extended trial (e.g. 60 days left) shows a full bar instead of overflowing past 100%, and a normal
+ * trial still drains from 14/14 to 0.
+ */
+export function trialBarPercent(daysLeft: number): number {
+  if (!Number.isFinite(daysLeft) || daysLeft <= 0) return 0
+  return Math.round((daysLeft / Math.max(TRIAL_DAYS, daysLeft)) * 100)
+}
+
 // Paystack subscription statuses that mean "this subscription will not charge again". One list for the
 // reconciliation cron and billing/cancel's ambiguous-failure check (Billing independent pass 10 — B2), so the
 // two cannot drift apart.

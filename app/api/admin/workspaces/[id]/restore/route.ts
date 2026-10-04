@@ -3,6 +3,7 @@ import { requireAdmin, isAdminGuardFailure, logAdminAction } from '@/lib/auth/ad
 import { resumePaystackSubscription } from '@/lib/integrations/paystack'
 import { alertBillingOps } from '@/lib/billing/ops-alert'
 import { sendWorkspaceRestoredEmail } from '@/lib/email/templates'
+import { isOneActiveTrialConflict } from '@/lib/billing/trial-cap'
 
 export async function POST(request: NextRequest, { params }: { params: { id: string } }) {
   const guard = await requireAdmin({ requireStepUp: true })
@@ -36,6 +37,15 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     // resume / member e-mails below run twice.
     if (/not_suspended|not_found/.test(error.message || '')) {
       return NextResponse.json({ error: 'Not suspended' }, { status: 409 })
+    }
+    // FIX (Trial/plan/workspace pass): a suspended TRIAL workspace comes back live and can collide with
+    // one_active_trial_per_creator — its owner may have started another trial while it was suspended. Unmapped, this was
+    // the generic 500 below. (Change plan refuses a suspended workspace, so the way out is on the OTHER trial.)
+    if (isOneActiveTrialConflict(error)) {
+      return NextResponse.json({
+        error: 'This workspace is on the trial plan and its owner has since started another active trial — a person can own only one at a time. Ask the owner to upgrade or delete the other trial workspace, then restore this one.',
+        code: 'trial_conflict',
+      }, { status: 409 })
     }
     console.error('[admin] restore workspace failed:', error.message)
     return NextResponse.json({ error: 'Could not restore workspace' }, { status: 500 })

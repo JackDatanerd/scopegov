@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireAdmin, isAdminGuardFailure, logAdminAction } from '@/lib/auth/admin'
 import { logAudit } from '@/lib/utils/audit'
+import { isOneActiveTrialConflict } from '@/lib/billing/trial-cap'
 
 // Matches lib/supabase/types.ts's Plan union / the plan_tier enum
 // (001_initial_schema.sql). Kept as a local literal list rather than
@@ -68,6 +69,14 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     .eq('id', params.id).eq('plan_tier', workspace.plan_tier).is('deleted_at', null)
     .select('id')
 
+  // FIX (Trial/plan/workspace pass): moving a workspace TO the trial plan can trip one_active_trial_per_creator (its
+  // creator already owns another live trial). That surfaced as the generic 500 below, telling the admin nothing — the
+  // same conflict workspace/create, workspace/restore and transfer-ownership already explain.
+  if (error && plan === 'trial' && isOneActiveTrialConflict(error)) {
+    return NextResponse.json({
+      error: 'This workspace\u2019s owner already has another active trial workspace, and a person can own only one trial at a time. Move that one off the trial plan (or delete it) first, then try again.',
+    }, { status: 409 })
+  }
   if (error) {
     console.error('[admin] change plan failed:', error.message)
     return NextResponse.json({ error: 'Could not change plan' }, { status: 500 })

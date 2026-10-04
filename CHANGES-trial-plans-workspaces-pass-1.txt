@@ -1,0 +1,73 @@
+CHANGES — Trial end / plan changes / multiple workspaces, independent pass 1 (fresh audit)
+
+Scope audited: lib/billing/*, api/billing/* (upgrade, cancel, resume, update-card, status, history, webhook), the payment-overdue,
+trial-warning and billing-reconcile crons, api/workspace/* (create, list, switch, delete, restore, transfer-ownership, leave),
+api/admin/workspaces/* (change-plan, extend-trial, suspend, restore), migrations 019/048/052/133 (one-active-trial index, trial
+lifetime cap, spent-trial rule), the Billing tab, Sidebar, dashboard and Team page plan gating, and the project / seat limit paths.
+Five low-severity bugs found; two decisions made. The money paths (checkout attribution, webhook claims, grace, period-end, plan
+switch ordering, delete/restore of paid workspaces) held up.
+
+B1 (low) — Sidebar trial text/bar assumed every trial is 14 days
+  components/layout/Sidebar.tsx rendered "{daysLeft} of 14 trial days remaining" and sized the bar as daysLeft/14. Admin extend-trial
+  allows up to 365 days, so an extended trial read "60 of 14" with a bar wider than its track. Now "N trial day(s) remaining" and
+  trialBarPercent(daysLeft) (lib/billing/plans.ts: full bar until the days left drop below the standard 14, then drains; never > 100).
+
+B2 (low) — Billing tab showed the STORED plan, everything else the EFFECTIVE one
+  An expired trial is Solo the moment it expires (effectivePlanTier) but workspaces.plan_tier only follows when the daily
+  payment-overdue cron runs. In that window Billing said "Trial · 0 trial days remaining" and offered "Upgrade" labels while the
+  Sidebar and every gate said Solo. settings/page.tsx now passes plan_tier: session.planTier (the effective tier of the same
+  workspace). api/billing/status returns the effective tier too — otherwise confirmPayment()'s "did the plan change?" poll would
+  compare an effective starting tier with a stored 'trial' and reload on the first tick, before the webhook landed.
+
+B3 (low) — admin Change plan -> trial: unmapped one_active_trial_per_creator
+  If the workspace's creator already owns another live trial, the UPDATE trips the unique index and the route answered a generic 500.
+  Now a 409 that says why. New lib/billing/trial-cap.ts (isOneActiveTrialConflict) is the shared predicate.
+
+B4 (low) — admin Restore of a suspended trial workspace: same unmapped conflict
+  A creator can start a new trial while their old trial workspace is suspended; restoring the old one then collides with the index and
+  returned the generic 500. Now a 409 with code 'trial_conflict' and the way out (the owner upgrades/deletes the other trial — Change
+  plan refuses a suspended workspace, so the fix has to be on the other one).
+
+B5 (low) — day-0 "Your trial has ended" email ignored the trial_ending preference
+  The 3/2/1-day warnings honour each person's `trial_ending` setting (and the workspace default/lock); the day-0 email sent by
+  payment-overdue step 2 went to every billing recipient. getBillingRecipients now keeps each recipient's user id (optional `id`),
+  the step passes the creator WITH their id, and the new lib/billing/trial-audience.ts (applyTrialEndingPreference) applies the same
+  filterByNotificationPreference. Recipients without an id are kept and a failed preference read fails open (a lapsed-plan notice must
+  not be dropped by a lookup error).
+  The wrapper's declared return type in payment-overdue also gained `id?` so the id is visible to the type checker.
+
+Decisions
+  * Paying customer creating a SECOND workspace: left as a capability decision — a new workspace is always a free trial, and giving
+    one to a user whose trial is spent is the abuse the cap exists to stop. Only the message was wrong ("Contact support to discuss a
+    plan" read as if their plan were the problem). It now says new workspaces start with a free trial that has been used, and to
+    contact support to add another workspace.
+  * A trial the cron expires after 14 days counts as spent even if never onboarded: kept (the clock did run out; the abandoned
+    workspace remains usable on Solo).
+
+Traced and cleared (not bugs): unarchive can't bypass the Solo project cap (Archived -> Complete is not a counted status); complete's
+rollback can only restore an Active project; the creator is always an active member where billing emails add them unconditionally
+(owners can't leave or be deactivated); a plan-switch charge.success that lands before subscription.create briefly writes the old
+subscription's next date and is overwritten; admin MRR excludes trials and deleted workspaces.
+
+Files:
+  components/layout/Sidebar.tsx                                  (changed)
+  app/(app)/settings/page.tsx                                    (changed)
+  app/api/billing/status/route.ts                                (changed)
+  app/api/admin/workspaces/[id]/change-plan/route.ts             (changed)
+  app/api/admin/workspaces/[id]/restore/route.ts                 (changed)
+  app/api/cron/payment-overdue/route.ts                          (changed)
+  app/api/workspace/create/route.ts                              (changed — error copy only)
+  lib/billing/plans.ts                                           (changed — TRIAL_DAYS, trialBarPercent)
+  lib/billing/recipients.ts                                      (changed — optional id)
+  lib/billing/trial-cap.ts                                       (new)
+  lib/billing/trial-audience.ts                                  (new)
+  tests/trial-plan-workspace-pass-1.test.ts                      (new)
+  tests/trial-plan-workspace-pass-1-routes.test.ts               (new)
+  tests/trial-plan-workspace-pass-1-cron.test.ts                 (new)
+  CHANGES-trial-plans-workspaces-pass-1.txt                      (new)
+
+No migration. No other files touched.
+Apply
+-----
+  tar -xzf ~/Downloads/scopegov-trial-plans-workspaces-fixes.tar.gz --strip-components=1 -C .
+  git add -A && git commit -m "..." && git push
