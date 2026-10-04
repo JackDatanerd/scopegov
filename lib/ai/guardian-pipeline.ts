@@ -308,9 +308,10 @@ export async function classifyAndRecord(service: any, p: {
 
   try {
     if (!isBorderline) {
+      // A failed recipient lookup must not skip the bell notification below (it throws on a DB error).
       const emails = await getMemberEmailsWithPermission(
         service, project.workspace_id, 'APPROVE_FLAGS', 25, 'guardian_flag', project.id, p.excludeUserId,
-      )
+      ).catch((e: unknown) => { console.error('Guardian flag email recipients lookup failed:', e); return [] as string[] })
       if (emails.length) {
         // sendGuardianFlagEmail resolves { error } on a provider rejection instead of throwing —
         // checkedSend logs both failure shapes.

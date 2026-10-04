@@ -248,7 +248,9 @@ export async function sendSowSignedAgencyEmail(params: {
         <strong>Guardian:</strong> Now active on this project
       </div>
       <p style="font-size:13px;color:${C.text2};margin:0;">
-        A signed PDF copy has been attached to this email for your records.
+        ${attachments?.length
+          ? 'A signed PDF copy has been attached to this email for your records.'
+          : 'The signed PDF could not be attached to this email. You can download it from the project\'s SOW tab.'}
       </p>
     `,
     // The only caller passes the project deep link as `portalUrl` (and no projectId), so fall back to it:
@@ -295,7 +297,9 @@ export async function sendSowSignedClientEmail(params: {
       <p style="font-size:14px;color:${C.text};line-height:1.7;margin:0 0 16px;">Hi ${clientName},</p>
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
         This confirms you have signed the Statement of Work for <strong>${projectName}</strong>
-        with <strong>${agencyName}</strong>. A PDF copy is attached for your records.
+        with <strong>${agencyName}</strong>. ${attachments?.length
+          ? 'A PDF copy is attached for your records.'
+          : 'You can download a PDF copy from the link below.'}
       </p>
       <p style="font-size:13px;color:${C.text2};">
         If you have any questions about the project, please contact ${agencyName} directly.
@@ -1088,7 +1092,9 @@ export async function sendCoAcceptedClientEmail(params: {
         with <strong>${agencyName}</strong>, ${isCredit
           ? `as a credit of <strong>${money(Math.abs(Number(total) || 0), currency)}</strong>`
           : `for an additional <strong>${money(total, currency)}</strong>`}.
-        A PDF copy is attached for your records.
+        ${attachments?.length
+          ? 'A PDF copy is attached for your records.'
+          : 'You can download a PDF copy from the link below.'}
       </p>
       <p style="font-size:13px;color:${C.text2};">
         If you have any questions, please contact ${agencyName} directly.

@@ -179,7 +179,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         to: emails,
         subject: `${client.name} requested changes on the ${project.name} SOW`.replace(/[\r\n]+/g, ' '),
         html: `<p><strong>${escapeHtml(client.name)}</strong> has requested changes on the <strong>${escapeHtml(project.name)}</strong> SOW (v${sow.version}).</p>
-          <p><strong>Feedback:</strong> ${escapeHtml(note)}</p>
+          <p style="white-space:pre-line;"><strong>Feedback:</strong> ${escapeHtml(note)}</p>
           <p>A new draft (v${newSow.version}) is ready in ScopeGov for you to edit and resend.</p>
           <p><a href="${appUrl}/projects/${project.id}?tab=sow">Open project in ScopeGov →</a></p>
           <p style="font-size:11px;color:#909090;margin-top:20px;"><a href="${appUrl}/settings?tab=notifications" style="color:#909090;">Manage notification preferences</a></p>`,

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { notificationHref, timeAgo, announceNotificationsChanged, type AppNotification } from '@/lib/utils/notification-links'
+import { notificationHref, timeAgo, announceNotificationsChanged, notificationsChangedSource, NOTIFICATIONS_CHANGED_EVENT, type AppNotification } from '@/lib/utils/notification-links'
 
 type Filter = 'all' | 'unread'
 
@@ -48,6 +48,14 @@ export default function NotificationsClient() {
 
   useEffect(() => { reload(filter) }, [filter, reload])
 
+  // The sidebar bell can mark everything read while this page is open; refetch so the list and the
+  // unread count don't keep showing rows that are already read. Changes made here are not echoed back.
+  useEffect(() => {
+    const onChanged = (e: Event) => { if (notificationsChangedSource(e) !== 'inbox') reload(filter) }
+    window.addEventListener(NOTIFICATIONS_CHANGED_EVENT, onChanged)
+    return () => window.removeEventListener(NOTIFICATIONS_CHANGED_EVENT, onChanged)
+  }, [filter, reload])
+
   async function loadMore() {
     if (!cursor) return
     const mySeq = reloadSeq.current
@@ -72,7 +80,7 @@ export default function NotificationsClient() {
       const j = await res.json().catch(() => ({}))
       throw new Error(j.error || 'Request failed')
     }
-    announceNotificationsChanged() // the sidebar bell keeps its own badge — tell it now
+    announceNotificationsChanged('inbox') // the sidebar bell keeps its own badge — tell it now
   }
 
   async function markAllRead() {
@@ -115,7 +123,7 @@ export default function NotificationsClient() {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: [n.id] }),
       }).then(res => {
         if (!res.ok) throw new Error('mark-read failed')
-        announceNotificationsChanged()
+        announceNotificationsChanged('inbox')
       }).catch(() => {
         setItems(prev => prev.map(x => x.id === n.id ? { ...x, read: false } : x))
         setUnreadCount(c => c + 1)

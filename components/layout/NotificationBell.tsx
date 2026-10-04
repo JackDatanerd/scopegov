@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { notificationHref, timeAgo, NOTIFICATIONS_CHANGED_EVENT, type AppNotification } from '@/lib/utils/notification-links'
+import { notificationHref, timeAgo, announceNotificationsChanged, notificationsChangedSource, NOTIFICATIONS_CHANGED_EVENT, type AppNotification } from '@/lib/utils/notification-links'
 
 type Notification = AppNotification
 const entityHref = notificationHref
@@ -22,16 +22,21 @@ export default function NotificationBell() {
   // or 500 parsed as JSON with no `notifications`, so the list and the unread badge were
   // replaced with "empty" — indistinguishable from having no notifications. A failed refresh
   // now keeps what was already showing and says so only if there is nothing to show.
+  // A response that comes back for an older request (a poll that began before the person's click was written)
+  // must not overwrite newer state — only the latest request is applied.
+  const loadSeq = useRef(0)
   async function load() {
+    const mySeq = ++loadSeq.current
     try {
       const res = await fetch('/api/notifications')
       if (!res.ok) throw new Error(String(res.status))
       const json = await res.json()
+      if (mySeq !== loadSeq.current) return
       setItems(json.notifications || [])
       setUnreadCount(json.unreadCount ?? (json.notifications || []).filter((n: Notification) => !n.read).length)
       setLoadError(false)
-    } catch { setLoadError(true) }
-    finally { setLoaded(true) }
+    } catch { if (mySeq === loadSeq.current) setLoadError(true) }
+    finally { if (mySeq === loadSeq.current) setLoaded(true) }
   }
 
   useEffect(() => {
@@ -44,7 +49,7 @@ export default function NotificationBell() {
     document.addEventListener('visibilitychange', tick)
     window.addEventListener('focus', tick)
     // The /notifications inbox changed something (mark read, delete): refetch now rather than at the next poll.
-    const onChanged = () => { load() }
+    const onChanged = (e: Event) => { if (notificationsChangedSource(e) !== 'bell') load() }
     window.addEventListener(NOTIFICATIONS_CHANGED_EVENT, onChanged)
     return () => {
       window.removeEventListener(NOTIFICATIONS_CHANGED_EVENT, onChanged)
@@ -67,6 +72,7 @@ export default function NotificationBell() {
   // Optimistic updates, but a failed write resyncs from the server instead of leaving the badge
   // claiming everything is read while the next poll quietly brings the unread rows back.
   async function markAllRead() {
+    loadSeq.current++ // discard any poll already in flight: it was read before this write
     setItems(prev => prev.map(n => ({ ...n, read: true })))
     setUnreadCount(0)
     try {
@@ -75,17 +81,19 @@ export default function NotificationBell() {
         body: JSON.stringify({ all: true }),
       })
       if (!res.ok) throw new Error(String(res.status))
+      announceNotificationsChanged('bell') // the /notifications inbox may be open beside this bell
     } catch { load() }
   }
 
   async function handleClick(n: Notification) {
     if (!n.read) {
+      loadSeq.current++ // discard any poll already in flight: it was read before this write
       setItems(prev => prev.map(x => x.id === n.id ? { ...x, read: true } : x))
       setUnreadCount(prev => Math.max(0, prev - 1))
       fetch('/api/notifications', {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids: [n.id] }),
-      }).then(res => { if (!res.ok) load() }).catch(() => load())
+      }).then(res => { if (!res.ok) load(); else announceNotificationsChanged('bell') }).catch(() => load())
     }
     const href = entityHref(n)
     setOpen(false)

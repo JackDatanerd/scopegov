@@ -20,13 +20,20 @@ export interface AppNotification {
 
 /**
  * The bell (in the sidebar, mounted on every page) and the /notifications inbox keep separate copies of the list and the
- * unread count. The inbox announces every successful mutation with this window event so the bell refetches at once
+ * unread count. Both surfaces announce every successful mutation with this window event so the bell refetches at once
  * instead of showing the old badge for up to a minute (its poll interval).
  */
 export const NOTIFICATIONS_CHANGED_EVENT = 'scopegov:notifications-changed'
 
-export function announceNotificationsChanged(): void {
-  if (typeof window !== 'undefined') window.dispatchEvent(new Event(NOTIFICATIONS_CHANGED_EVENT))
+export type NotificationsChangedSource = 'bell' | 'inbox'
+
+/** `source` lets the surface that made the change skip the refetch it would otherwise trigger on itself. */
+export function announceNotificationsChanged(source?: NotificationsChangedSource): void {
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(NOTIFICATIONS_CHANGED_EVENT, { detail: { source } }))
+}
+
+export function notificationsChangedSource(e: Event): NotificationsChangedSource | undefined {
+  return (e as CustomEvent<{ source?: NotificationsChangedSource }>).detail?.source
 }
 
 export function notificationHref(n: Pick<AppNotification, 'type' | 'entity_type' | 'entity_id' | 'project_id'>): string | null {

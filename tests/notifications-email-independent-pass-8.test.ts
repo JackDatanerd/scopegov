@@ -63,7 +63,7 @@ describe('inbox → bell sync', () => {
 
   it('the inbox announces after successful writes and the bell subscribes', () => {
     const inbox = read('components/notifications/NotificationsClient.tsx')
-    expect(inbox.match(/announceNotificationsChanged\(\)/g)?.length).toBeGreaterThanOrEqual(2)
+    expect(inbox.match(/announceNotificationsChanged\('inbox'\)/g)?.length).toBeGreaterThanOrEqual(2)
     const bell = read('components/layout/NotificationBell.tsx')
     expect(bell).toContain('NOTIFICATIONS_CHANGED_EVENT')
     expect(bell).toContain("removeEventListener(NOTIFICATIONS_CHANGED_EVENT")

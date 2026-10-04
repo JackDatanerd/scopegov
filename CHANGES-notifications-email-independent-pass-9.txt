@@ -1,0 +1,12 @@
+Notifications & email — independent pass 9 (bugs only)
+
+1. lib/email/templates.ts — sendSowSignedAgencyEmail, sendSowSignedClientEmail, sendCoAcceptedClientEmail claimed "a PDF copy is attached"
+   even when PDF rendering failed and the caller sent without an attachment. Wording now depends on attachments?.length
+   (fallback points to the portal link / SOW tab).
+2. lib/ai/guardian-pipeline.ts — a throwing email-recipient lookup skipped the Guardian bell notification that follows it.
+   The lookup now falls back to [] (logged), so the bell is always attempted.
+3. components/layout/NotificationBell.tsx, components/notifications/NotificationsClient.tsx, lib/utils/notification-links.ts —
+   the bell now announces its writes and the inbox refetches (no self-echo, via event source); bell load() ignores stale
+   responses (sequence guard, bumped on optimistic writes).
+4. app/api/portal/sow/[token]/request-changes/route.ts — agency email keeps the client's line breaks in the feedback.
+Tests: tests/notifications-email-pass-9.test.ts (new); tests/notifications-email-independent-pass-8.test.ts assertion updated.
