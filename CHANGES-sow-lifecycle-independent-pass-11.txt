@@ -1,0 +1,30 @@
+SOW lifecycle — independent pass 11 (fixes)
+
+B1 (HIGH) Retainer + non-monthly payment structure billed the signing month twice.
+   The SOW's payment structure was never tied to the project's billing model. Signing created that structure's
+   milestones (50/50 halves, lump sum, itemised schedule) AND api/cron/retainer-milestones added the monthly row for
+   the same month. Reverse case: 'monthly' on a one-off project made one "Monthly retainer" milestone nothing repeats.
+   - lib/sow/payment-structure.ts (new): single definition of what is allowed (retainer <=> monthly).
+   - api/sow/generate: retainer forced to 'monthly'; 'monthly' on any other type -> 400.
+   - lib/sow/validate-send.ts + api/sow/[id]/send + lib/documents/send-sow.ts: send blocked on a mismatch, with
+     a "regenerate" instruction (covers drafts created before this fix).
+   - lib/documents/post-signing.ts createSowMilestones(projectType): a retainer ALWAYS creates only the signing-month
+     monthly row, whatever structure the SOW carries (backstop for SOWs already out for signature).
+     Callers updated: portal sign route, lib/documents/signing-integrity.ts (select now includes projects.type).
+   - New-project wizard and Regenerate modal: retainer shows only "Billed monthly"; 'monthly' hidden for other types.
+
+B2 (LOW) parseTableAmount read "2500.567" as 2,500,567; "1,2345" parsed as 1.2345.
+   A thousands group needs a 1-3 digit lead; a longer lead + 3 digits is a decimal. >3-digit fraction -> unreadable.
+   Indian grouping (1,00,000) and all existing cases unchanged.
+
+B4 (LOW) Whole-metadata read-modify-write lost concurrent keys.
+   Migration 145 adds sow_set_metadata_key (single-key jsonb merge under the draft guard).
+   Used by PATCH /api/sow/[id] (msaReference) and portal request-changes (changeRequest on an open draft), each with a
+   fallback to the previous guarded write if the function is not installed yet.
+
+Not changed — B3 (table cells entity-decoded on read): rows saved before sanitizePlainText stopped HTML-escaping are
+indistinguishable from rows where someone literally typed "&amp;"; removing the read-side decode would resurface
+"&amp;" in older documents. Impact is limited to literal entity text; left as is.
+
+Run migration 145 before/with deploy (the code falls back safely if it is not applied yet).
+Tests: tests/sow-lifecycle-independent-pass-11.test.ts

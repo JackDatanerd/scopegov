@@ -87,6 +87,16 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       const cleaned = cleanTextField(body.msaReference, 200)
       if (cleaned === null)
         return NextResponse.json({ error: 'msaReference must be text' }, { status: 400 })
+      // FIX (SOW lifecycle independent pass 11, B4): merged as ONE key inside the database (migration 145). The old
+      // read-modify-write of the whole metadata object lost any other key written between the read and the write.
+      // Falls back to the guarded whole-object write only when the function isn't installed yet.
+      const { data: merged, error: mergeErr } = await (service as any)
+        .rpc('sow_set_metadata_key', { p_sow_id: id, p_key: 'msaReference', p_value: cleaned || null })
+      if (!mergeErr) {
+        if (!merged) return NextResponse.json({ error: LOCKED_MSG }, { status: 409 })
+        return NextResponse.json({ ok: true })
+      }
+      console.error('sow_set_metadata_key unavailable, falling back to guarded metadata write:', mergeErr.message)
       const ok = await guardedUpdate({ metadata: { ...(sow.metadata || {}), msaReference: cleaned || null } })
       if (!ok) return NextResponse.json({ error: LOCKED_MSG }, { status: 409 })
       return NextResponse.json({ ok: true })

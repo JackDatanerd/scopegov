@@ -1,4 +1,5 @@
 'use client'
+import { effectiveFormStructure } from '@/lib/sow/payment-structure'
 import { useState, useEffect, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { PROJECT_TYPE_ICONS } from '@/lib/utils/format'
@@ -103,6 +104,8 @@ function NewProjectPageInner() {
   const [outOfScope,   setOutOfScope]   = useState('')
   const [timeline,     setTimeline]     = useState('')
   const [paymentStructure, setPaymentStructure] = useState('50_50')
+  // (pass 11, B1) a retainer is always billed monthly; a one-off project cannot be 'monthly'. The server enforces the same.
+  const effStructure = effectiveFormStructure(projectType, paymentStructure)
   const [revisionRounds,   setRevisionRounds]   = useState('2')
 
   const guardianItems = [
@@ -350,7 +353,7 @@ function NewProjectPageInner() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           projectId, projectType, objective, deliverables, outOfScope, timeline,
-          paymentStructure, revisionRounds: parseInt(revisionRounds),
+          paymentStructure: effStructure, revisionRounds: parseInt(revisionRounds),
           contractValue: parseFloat(contractValue) || 0, currency,
         }),
       })
@@ -626,12 +629,15 @@ function NewProjectPageInner() {
                 <div className="f2">
                   <div className="fgrp">
                     <label className="flbl">Payment structure</label>
-                    <select className="finp" value={paymentStructure} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => { setDefaultsTouched(true); setPaymentStructure(e.target.value) }}>
-                      <option value="50_50">50% upfront, 50% on delivery</option>
-                      <option value="100_upfront">100% upfront</option>
-                      <option value="milestones">Milestone-based</option>
-                      <option value="monthly">Monthly retainer</option>
-                      <option value="on_delivery">100% on delivery</option>
+                    <select className="finp" value={effStructure} disabled={projectType === 'retainer'} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => { setDefaultsTouched(true); setPaymentStructure(e.target.value) }}>
+                      {projectType === 'retainer' ? (
+                        <option value="monthly">Billed monthly (retainer)</option>
+                      ) : (<>
+                        <option value="50_50">50% upfront, 50% on delivery</option>
+                        <option value="100_upfront">100% upfront</option>
+                        <option value="milestones">Milestone-based</option>
+                        <option value="on_delivery">100% on delivery</option>
+                      </>)}
                     </select>
                   </div>
                   <div className="fgrp">
@@ -708,7 +714,7 @@ function NewProjectPageInner() {
               )}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px 20px', fontSize: 13 }}>
                 <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Timeline</div><div>{timeline || '—'}</div></div>
-                <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Payment</div><div>{paymentStructure.replace(/_/g, ' ')}</div></div>
+                <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Payment</div><div>{effStructure.replace(/_/g, ' ')}</div></div>
                 <div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>Revisions</div><div>{revisionRounds} round{revisionRounds !== '1' ? 's' : ''}</div></div>
               </div>
             </div>

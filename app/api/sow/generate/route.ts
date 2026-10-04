@@ -10,6 +10,7 @@ export const runtime = 'nodejs'
 export const maxDuration = 120
 
 import { sowRetainerTerms } from '@/lib/sow/retainer'
+import { structureForProject, paymentStructureError } from '@/lib/sow/payment-structure'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
@@ -94,8 +95,8 @@ export async function POST(request: NextRequest) {
     // client-supplied string into the Payment Terms section of a legal
     // document as though it were a real payment structure. It's a closed
     // set — treat it as one.
-    const paymentStructure = String(body.paymentStructure || '')
-    if (!Object.prototype.hasOwnProperty.call(PAYMENT_STRUCTURE_LABELS, paymentStructure))
+    const requestedStructure = String(body.paymentStructure || '')
+    if (!Object.prototype.hasOwnProperty.call(PAYMENT_STRUCTURE_LABELS, requestedStructure))
       return NextResponse.json({ error: 'Invalid payment structure' }, { status: 400 })
 
     // The prompt has always told the model "an integer between 1 and 5";
@@ -117,6 +118,15 @@ export async function POST(request: NextRequest) {
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
     if (!(await canReadProject(service, session, projectId)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
+    // FIX (SOW lifecycle independent pass 11, B1): the payment structure has to agree with how the project is billed.
+    // A retainer is billed by the monthly retainer cron, so its SOW is always 'monthly' whatever the form sent (the
+    // form no longer offers anything else); 'monthly' on any other project type is refused rather than silently
+    // changed, since it would otherwise promise recurring billing nothing performs. See lib/sow/payment-structure.ts.
+    const paymentStructure = structureForProject(project.type, requestedStructure)
+    const structureProblem = paymentStructureError(project.type, paymentStructure)
+    if (structureProblem)
+      return NextResponse.json({ error: structureProblem }, { status: 400 })
 
     // FIX (section-9 fix round): send-sow.ts already refuses to send a SOW to a
     // Complete/Archived project ("its scope of work has already been settled") — this

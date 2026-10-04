@@ -63,6 +63,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const validation = validateSowForSend({
       sections: sow.sections, metadata: sow.metadata, contractValue: project.contract_value,
       redactContractValue: !canSeeFinancials,
+      projectType: project.type,
     })
     if (validation.errors.length > 0)
       return NextResponse.json({ error: validation.errors[0], errors: validation.errors }, { status: 400 })

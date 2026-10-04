@@ -272,7 +272,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }
 
     // ── 6. Create payment milestones from SOW metadata ────────
-    await createSowMilestones(service, project.id, sow.id, sow.workspace_id, sow.metadata, project.contract_value, project.currency, sow.sections || [])
+    await createSowMilestones(service, project.id, sow.id, sow.workspace_id, sow.metadata, project.contract_value, project.currency, sow.sections || [],
+      undefined, project.type)
 
     // ── 6b. Fingerprint what was agreed ───────────────────────
     // SHA-256 over the exact content the client signed (sections incl. tables, metadata,

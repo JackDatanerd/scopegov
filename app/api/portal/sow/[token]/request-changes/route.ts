@@ -120,12 +120,25 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       // attached to nothing, with no new draft ever created to carry it and no sign
       // the request had failed. Fall through to creating a fresh version below in
       // that case, exactly as if there had been no open draft at all.
-      const { data: attached, error: attachErr } = await (service as any).from('sow_documents')
-        .update({ metadata: { ...(openDraft.metadata || {}), changeRequest }, updated_at: now })
-        .eq('id', openDraft.id).eq('status', 'draft')
-        .select('id')
-      if (attachErr) console.error('request-changes: attach to open draft failed', attachErr.message)
-      if (Array.isArray(attached) && attached.length > 0) newSow = { id: openDraft.id, version: openDraft.version }
+      // FIX (SOW lifecycle independent pass 11, B4): the changeRequest key is merged inside the database
+      // (migration 145) instead of rewriting the whole metadata object read a moment earlier, which dropped any
+      // other key (msaReference, the stored brief) written in between. Falls back to the old guarded write only when
+      // the function isn't installed yet.
+      let attachedOk = false
+      const { data: merged, error: mergeErr } = await (service as any)
+        .rpc('sow_set_metadata_key', { p_sow_id: openDraft.id, p_key: 'changeRequest', p_value: changeRequest })
+      if (!mergeErr) {
+        attachedOk = merged === true
+      } else {
+        console.error('request-changes: sow_set_metadata_key unavailable, falling back', mergeErr.message)
+        const { data: attached, error: attachErr } = await (service as any).from('sow_documents')
+          .update({ metadata: { ...(openDraft.metadata || {}), changeRequest }, updated_at: now })
+          .eq('id', openDraft.id).eq('status', 'draft')
+          .select('id')
+        if (attachErr) console.error('request-changes: attach to open draft failed', attachErr.message)
+        attachedOk = Array.isArray(attached) && attached.length > 0
+      }
+      if (attachedOk) newSow = { id: openDraft.id, version: openDraft.version }
     }
     if (!newSow) {
       const created = await insertNextSowVersion(service, project.id, {

@@ -3,6 +3,7 @@
 //      shows modal, posts to /api/projects/[id]/members
 
 'use client'
+import { effectiveFormStructure } from '@/lib/sow/payment-structure'
 import { useState, useEffect } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
@@ -1189,6 +1190,8 @@ function GenerateSowModal({ project, existingSow, onClose, onDone }: any) {
   const [paymentStructure, setPaymentStructure]  = useState(
     SOW_PAYMENT_STRUCTURES.includes(existingSow?.metadata?.paymentStructure) ? existingSow.metadata.paymentStructure : '50_50'
   )
+  // (pass 11, B1) a retainer is always billed monthly; a one-off project cannot be 'monthly'. The server enforces the same.
+  const effStructure = effectiveFormStructure(project?.type, paymentStructure)
   const [revisionRounds,   setRevisionRounds]    = useState(() => {
     const n = Number(existingSow?.metadata?.revisionRounds)
     return Number.isInteger(n) && n >= 1 && n <= 10 ? String(n) : '2'
@@ -1258,7 +1261,7 @@ function GenerateSowModal({ project, existingSow, onClose, onDone }: any) {
         body: JSON.stringify({
           projectId: project.id, projectType: project.type,
           objective, deliverables, outOfScope, timeline,
-          paymentStructure, revisionRounds: parseInt(revisionRounds) || 2,
+          paymentStructure: effStructure, revisionRounds: parseInt(revisionRounds) || 2,
           contractValue: project.contract_value || 0, currency: project.currency || 'USD',
         }),
       })
@@ -1339,12 +1342,15 @@ function GenerateSowModal({ project, existingSow, onClose, onDone }: any) {
             </div>
             <div className="fgrp">
               <label className="flbl">Payment structure</label>
-              <select className="finp" value={paymentStructure} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setPaymentStructure(e.target.value)}>
-                <option value="50_50">50% upfront, 50% on delivery</option>
-                <option value="100_upfront">100% upfront</option>
-                <option value="milestones">Milestones</option>
-                <option value="monthly">Monthly</option>
-                <option value="on_delivery">100% on delivery</option>
+              <select className="finp" value={effStructure} disabled={project?.type === 'retainer'} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setPaymentStructure(e.target.value)}>
+                {project?.type === 'retainer' ? (
+                  <option value="monthly">Billed monthly (retainer)</option>
+                ) : (<>
+                  <option value="50_50">50% upfront, 50% on delivery</option>
+                  <option value="100_upfront">100% upfront</option>
+                  <option value="milestones">Milestones</option>
+                  <option value="on_delivery">100% on delivery</option>
+                </>)}
               </select>
             </div>
             <div className="modal-footer">

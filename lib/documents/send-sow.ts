@@ -104,6 +104,7 @@ export async function sendSowDocument(service: any, params: {
   const validation = validateSowForSend({
     sections: sow.sections, metadata: sow.metadata, contractValue: project.contract_value,
     redactContractValue: params.redactContractValue !== false,
+    projectType: project.type,
   })
   if (validation.errors.length > 0)
     return { ok: false, error: validation.errors[0], status: 400 }

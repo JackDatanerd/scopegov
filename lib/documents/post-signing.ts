@@ -125,9 +125,13 @@ export async function createSowMilestones(
   service: any, projectId: string, sowId: string, workspaceId: string,
   metadata: any, contractValue: number, currency: string, sections: any[],
   signedAt?: Date,
+  // (pass 11, B1) The project's type. A retainer is billed month by month by api/cron/retainer-milestones, so
+  // whatever structure the SOW carries, signing creates ONLY the signing month's retainer row — any other structure
+  // here would add a second set of milestones on top of the cron's monthly ones (the signing month billed twice).
+  projectType?: string | null,
 ): Promise<{ ok: boolean; error?: string }> {
   try {
-    const structure = metadata?.paymentStructure || '50_50'
+    const structure = projectType === 'retainer' ? 'monthly' : (metadata?.paymentStructure || '50_50')
     const milestones = []
 
     if (structure === '50_50') {

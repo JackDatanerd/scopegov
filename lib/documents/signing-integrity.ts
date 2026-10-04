@@ -69,7 +69,7 @@ export async function runSigningIntegrity(service: any, opts: IntegrityOptions =
   // ── Signed SOWs ────────────────────────────────────────────────────────
   const sows = await fetchAll<any>('signing-integrity signed SOWs', (from, to) =>
     service.from('sow_documents')
-      .select('id, version, workspace_id, project_id, signed_at, sections, metadata, content_hash, pdf_path, document_number, projects!inner(id, name, status, stall_reason, contract_value, currency, guardian_email, deleted_at)')
+      .select('id, version, workspace_id, project_id, signed_at, sections, metadata, content_hash, pdf_path, document_number, projects!inner(id, name, status, stall_reason, contract_value, currency, type, guardian_email, deleted_at)')
       .eq('status', 'signed')
       .gte('signed_at', oldest)
       .lte('signed_at', newest)
@@ -104,6 +104,7 @@ export async function runSigningIntegrity(service: any, opts: IntegrityOptions =
           service, project.id, sow.id, sow.workspace_id, sow.metadata,
           Number(project.contract_value) || 0, project.currency || 'USD', sow.sections || [],
           sow.signed_at ? new Date(sow.signed_at) : undefined,
+          project.type,
         )
         if (!res.ok) throw new Error(`create milestones: ${res.error}`)
         await record('sow', sow.workspace_id, sow.id, project.name, 'milestones_created')

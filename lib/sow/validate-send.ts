@@ -14,6 +14,7 @@
 
 import { parseTableAmount, isTableSection } from '@/lib/sow/table-schema'
 import { roundCurrency } from '@/lib/utils/format'
+import { paymentStructureError, storedPaymentStructure } from '@/lib/sow/payment-structure'
 
 export interface SowSendValidation {
   errors: string[]
@@ -87,12 +88,20 @@ export function validateSowForSend(input: {
   // contract value is 12,500.00" — straight into the Send dialog. When true, the same checks run with the
   // same blocking behaviour but the contract value is left out of every message.
   redactContractValue?: boolean
+  // (pass 11, B1) The project's type. When given, the SOW's payment structure must agree with how the project is
+  // billed (retainer <=> monthly). Omitted by callers that cannot know it, which skips only that check.
+  projectType?: string | null
 }): SowSendValidation {
   const errors: string[] = []
   const warnings: string[] = []
   const sections: any[] = Array.isArray(input.sections) ? input.sections : []
   const contractValue = Number(input.contractValue)
   const byId = (id: string) => sections.find(s => s?.id === id)
+
+  if (input.projectType !== undefined) {
+    const structureProblem = paymentStructureError(input.projectType, storedPaymentStructure(input.metadata))
+    if (structureProblem) errors.push(structureProblem)
+  }
 
   if (!Number.isFinite(contractValue) || contractValue <= 0)
     errors.push('Set a contract value greater than zero before sending this SOW.')

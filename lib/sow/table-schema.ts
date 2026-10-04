@@ -213,8 +213,15 @@ export function parseTableAmount(input: unknown): number | null {
     const tail = parts[parts.length - 1]
     // Repeated separator ("1.500.000") or exactly three digits after a single one
     // ("1.500", "1,500") is a thousands grouping; one or two digits is a decimal.
-    if (parts.length === 2 && tail.length !== 3) decimalSep = sep
-    else if (parts.length === 2 && tail.length === 3 && parts[0] === '0') decimalSep = sep // "0.500"
+    // FIX (SOW lifecycle independent pass 11, B2): a thousands group is only ever preceded by a 1-3 digit lead, so
+    // "2500.567" cannot be "2,500,567" — it was read as two and a half MILLION. With a longer lead, three digits
+    // after the single separator are a (three-decimal currency) fraction. A fraction longer than three digits
+    // ("1,2345") is not an amount at all and is reported as unreadable instead of being guessed at.
+    if (parts.length === 2) {
+      if (tail.length > 3) return null
+      if (tail.length !== 3) decimalSep = sep
+      else if (parts[0] === '0' || parts[0].length > 3) decimalSep = sep // "0.500", "2500.567"
+    }
   }
 
   let normalized: string
