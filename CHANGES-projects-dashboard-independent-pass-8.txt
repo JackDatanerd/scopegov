@@ -1,0 +1,26 @@
+Projects & Dashboard (section 7) — independent pass 8
+=====================================================
+
+Bugs
+----
+B1  Retrying a failed Guardian check did not show the flag it created.
+    components/projects/ProjectDetail.tsx, GuardianHistoryPanel.retryCheck: POST /api/guardian/checks/[id]/retry returns
+    a flagId when the retry classifies the message out of scope / borderline, but the panel only patched its own row.
+    The panel said "flag created below" while the flag list and the Guardian tab badge (both fed by the server page)
+    stayed stale until a reload. The panel now takes onFlagCreated (wired to router.refresh() by GuardianTab) and calls
+    it when the retry returned a flagId — the same rule the paste-check path already followed.
+
+B2  The new-project wizard reported "contract value must be above zero" only on the last click.
+    app/(app)/projects/new/page.tsx: step 0 accepts a blank / 0 value, but POST /api/sow/generate refuses it, so the
+    refusal arrived after the brief and review steps. goToReview() now checks the value, shows the message on the brief
+    step, and stays there; "← Back" clears the message.
+
+Checked, no change needed
+-------------------------
+The two out-of-section findings from the audit (the pass-7 notifications test's sendEmail call / address-case
+expectation) were already corrected upstream in the clone used for this round.
+
+Tests
+-----
+tests/projects-dashboard-pass-8.test.ts — 6 source-guard cases (B1 wiring, flagId-only trigger, route contract;
+B2 guard, ordering, Back clears error, server rule).

@@ -1511,7 +1511,7 @@ function GuardianTab({ project, flags, exceptions = [], permissions, router, tea
       )}
 
       {permissions.viewGuardianHistory && historyOpen && (
-        <GuardianHistoryPanel projectId={project.id} canRetry={permissions.submitGuardian} />
+        <GuardianHistoryPanel projectId={project.id} canRetry={permissions.submitGuardian} onFlagCreated={() => router.refresh()} />
       )}
 
       {permissions.submitGuardian && (
@@ -1757,7 +1757,7 @@ function CheckAttachments({ checkId, fallbackNames }: { checkId: string | null |
 // doesn't produce a flag (in_scope, covered_by_co, duplicate, pending, and
 // critically classification_failed) was previously visible nowhere in the
 // product; this is the only place any of that is now surfaced.
-function GuardianHistoryPanel({ projectId, canRetry }: { projectId: string; canRetry: boolean }) {
+function GuardianHistoryPanel({ projectId, canRetry, onFlagCreated }: { projectId: string; canRetry: boolean; onFlagCreated?: () => void }) {
   const [checks,   setChecks]   = useState<any[]>([])
   const [loading,  setLoading]  = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -1822,6 +1822,10 @@ function GuardianHistoryPanel({ projectId, canRetry }: { projectId: string; canR
             // A retry that resolves as a duplicate must show the duplicate note straight away, not after a reload.
             isDuplicate: json.isDuplicate === true, duplicateOfId: json.duplicateOfId ?? null }
         : c))
+      // A retry that ends out of scope / borderline creates a scope flag. The flag list and the Guardian tab badge come from
+      // the server page, so without a refresh the panel said "flag created below" while no flag appeared until a reload
+      // (the paste-check path already refreshes on flagId).
+      if (json.flagId) onFlagCreated?.()
     } catch (err: unknown) {
       setRetryError({ id: checkId, message: err instanceof Error ? err.message : 'Retry failed' })
     } finally { setRetryingId(null) }

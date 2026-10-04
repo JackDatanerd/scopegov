@@ -331,6 +331,14 @@ function NewProjectPageInner() {
   // actual "Generate SOW" call now happens from here, not from step 1.
   function goToReview() {
     if (!objective && !deliverables) return
+    // POST /api/sow/generate refuses a project whose contract value is not above zero. Step 0 accepts a blank / 0 value, so
+    // that refusal used to arrive only on the very last click, after the brief and review steps were done. Say so here,
+    // while going back to fix it is one click away.
+    if (!(parseFloat(contractValue) > 0)) {
+      setError(`Set a ${projectType === 'retainer' ? 'monthly retainer amount' : 'contract value'} greater than zero before continuing — a SOW can't be generated without one. Use \u2190 Back to add it.`)
+      return
+    }
+    setError('')
     setStep(2)
   }
 
@@ -637,7 +645,7 @@ function NewProjectPageInner() {
             )}
 
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 20 }}>
-              <button className="btn btn-ghost" onClick={() => setStep(0)}>← Back</button>
+              <button className="btn btn-ghost" onClick={() => { setError(''); setStep(0) }}>← Back</button>
               <button className="btn btn-primary" onClick={goToReview} disabled={!objective && !deliverables}>
                 Review <i className="ti ti-arrow-right" style={{ fontSize: 12 }} />
               </button>
