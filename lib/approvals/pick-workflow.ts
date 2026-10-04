@@ -7,8 +7,14 @@ export function pickWorkflow<T extends {
   id: string; threshold_amount: number | string | null; threshold_currency: string | null
   apply_to_other_currencies?: boolean; allow_self_approval?: boolean; require_distinct_approvers?: boolean
 }>(
-  workflows: T[], amount: number, currency: string
+  workflows: T[], amount: number, currencyRaw: string
 ): T | null {
+  // FIX (approvals independent pass, B2): currencies were compared with a bare `===`. New writes are upper-cased (the
+  // workflow routes and parseCurrencyCode), but projects.currency has no database constraint, so a legacy lowercase
+  // value ('usd') never matched an 'USD' threshold — the rule silently did not apply and the document went out
+  // ungated, the fail-open direction. Compare normalised on both sides.
+  const norm = (c: string | null | undefined) => String(c ?? '').trim().toUpperCase()
+  const currency = norm(currencyRaw)
   // Highest threshold the amount still clears wins; a NULL-threshold
   // catch-all sorts last so a tiered rule always beats a blanket one. Ties
   // fall back to id so the same workflow wins every time — a strict total
@@ -20,7 +26,7 @@ export function pickWorkflow<T extends {
   // A thresholded workflow is only comparable against a document in the SAME
   // currency (see migration 023).
   const direct = ordered.find(w =>
-    w.threshold_amount != null && w.threshold_currency === currency && amount >= Number(w.threshold_amount)
+    w.threshold_amount != null && norm(w.threshold_currency) === currency && amount >= Number(w.threshold_amount)
   )
   if (direct) return direct
 
@@ -34,9 +40,9 @@ export function pickWorkflow<T extends {
   // document's own currency had an explicit thresholded rule it did not clear (EUR 1,000 under an explicit "EUR from
   // 5,000" rule) an opted-in USD workflow still captured it and held a document the admin deliberately left ungated.
   // A currency with its own thresholded rule is governed by that rule alone (or the catch-all, below).
-  const hasOwnCurrencyRule = ordered.some(w => w.threshold_amount != null && w.threshold_currency === currency)
+  const hasOwnCurrencyRule = ordered.some(w => w.threshold_amount != null && norm(w.threshold_currency) === currency)
   const fallback = hasOwnCurrencyRule ? [] : ordered.filter(w =>
-    w.threshold_amount != null && w.threshold_currency !== currency && w.apply_to_other_currencies === true
+    w.threshold_amount != null && norm(w.threshold_currency) !== currency && w.apply_to_other_currencies === true
   )
   // FIX (section-11 pass, finding 1): the catch-all used to be matched in the `direct` step above, so
   // when a workspace had a catch-all AND a workflow flagged "also gate other currencies", the flag never
@@ -60,7 +66,7 @@ export function pickWorkflow<T extends {
   // currency's number outranks another's.
   const bestPerCurrency = new Map<string, T>()
   for (const w of fallback) {
-    const cur = w.threshold_currency as string
+    const cur = norm(w.threshold_currency)
     const existing = bestPerCurrency.get(cur)
     if (!existing || rank(w) > rank(existing) || (rank(w) === rank(existing) && w.id < existing.id)) {
       bestPerCurrency.set(cur, w)

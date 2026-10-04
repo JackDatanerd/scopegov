@@ -285,11 +285,14 @@ export default async function ProjectPage({ params, searchParams }: Props) {
   // showed it. Broadened to match both states; sendFailed/sendFailedReason
   // let ProjectDetail render the retry banner instead of the ordinary
   // "awaiting approval" one.
-  const { data: pendingApprovalRows = [] } = await (service as any)
+  // FIX (approvals independent pass, B1): `error` was ignored, so a failed read hid the "awaiting approval" / retry banner
+  // on every document tab (and made Send look available again). The page still renders, but the failure is logged.
+  const { data: pendingApprovalRows = [], error: pendingApprovalErr } = await (service as any)
     .from('approval_requests')
     .select('id, document_type, document_id, current_step, total_steps, send_failed_at, send_failed_reason, requested_by')
     .eq('project_id', id)
     .or('status.eq.pending,and(status.eq.approved,send_failed_at.not.is.null)')
+  if (pendingApprovalErr) console.error('Project page: pending approvals read failed — approval banners are missing:', pendingApprovalErr.message)
 
   const pendingApprovals: Record<string, { id: string; current_step: number; total_steps: number; sendFailed: boolean; sendFailedReason: string | null; canManage: boolean }> = {}
   for (const r of pendingApprovalRows || []) {

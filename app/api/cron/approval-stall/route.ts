@@ -31,6 +31,11 @@ export async function POST(request: NextRequest) {
   // "no reachable approver" alert re-fired (bell + audit row) on every run for
   // as long as the request sat there. Both now use the request's own counters.
   const ESCALATE_AFTER_REMINDERS = 3
+  // FIX (approvals independent pass, B4): the "approved but still not sent" alert had no limit — every window (2 days) it
+  // re-notified every admin for as long as the request sat there, unlike the pending-decision reminders above (3, then
+  // one escalation). A request that was simply abandoned nagged forever. Alert this many times, then stop: the request
+  // stays visible in Approvals and the dashboard's needs-attention list, which is where it should be dealt with.
+  const MAX_SEND_FAILURE_ALERTS = 3
   const REALERT_AFTER_MS = 7 * 86400000
 
   // Step 0 — a request parked in its "sending" state by a process that died mid-send.
@@ -177,9 +182,10 @@ export async function POST(request: NextRequest) {
   await run.step('escalate stale send failures', async () => {
     const staleSendFailures = await fetchAll<any>('approval-stall send-failure select', (from, to) =>
       (service as any).from('approval_requests')
-        .select('id, workspace_id, project_id, requested_by, document_type, send_failed_reason, updated_at, workspaces!inner(deleted_at)')
+        .select('id, workspace_id, project_id, requested_by, document_type, send_failed_reason, updated_at, send_failure_alerts, workspaces!inner(deleted_at)')
         .eq('status', 'approved')
         .not('send_failed_at', 'is', null)
+        .lt('send_failure_alerts', MAX_SEND_FAILURE_ALERTS)
         .lt('updated_at', cutoff)
         .is('workspaces.deleted_at', null)
         .order('id')
@@ -198,13 +204,13 @@ export async function POST(request: NextRequest) {
         // (the request is not bumped out of the window) rather than counted as "escalated".
         if (!sendFailNotified) throw new Error('admin bell notification failed to write — will retry next run')
         const { error: bumpErr } = await (service as any).from('approval_requests')
-          .update({ updated_at: now.toISOString() }).eq('id', r.id)
+          .update({ updated_at: now.toISOString(), send_failure_alerts: (r.send_failure_alerts || 0) + 1 }).eq('id', r.id)
         if (bumpErr) throw new Error(`send-failure bookkeeping failed (admins WERE notified): ${bumpErr.message}`)
         await insertAuditRow(service, {
           workspace_id: r.workspace_id, actor_id: null, project_id: r.project_id,
           actor_email: 'cron@scopegov.app', actor_name: 'ScopeGov',
           event_type: 'approval.send_failure_escalated', entity_type: 'approval_request', entity_id: r.id,
-          metadata: { days_stale: threshold },
+          metadata: { days_stale: threshold, alert_number: (r.send_failure_alerts || 0) + 1 },
         })
         sendFailureEscalated++
       } catch (e) { run.rowError(`send-failure ${r.id}`, e) }

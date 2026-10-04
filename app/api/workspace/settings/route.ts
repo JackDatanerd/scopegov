@@ -176,7 +176,11 @@ function parseField(key: string, value: unknown): unknown {
       return n
     }
     case 'replyToEmail': {
-      const v = typeof value === 'string' ? value.trim() : ''
+      // FIX (Settings independent pass 11, bug 2): a non-string value (number, boolean, object) was coerced to '' and so
+      // silently CLEARED the saved reply-to address with a 200. Only null / a blank string mean "clear"; anything else
+      // that isn't an address is a 400, like every other field.
+      if (value !== null && typeof value !== 'string') throw new FieldError('Enter a valid reply-to email address')
+      const v = value === null ? '' : value.trim()
       if (v === '') return null
       if (v.length > 254 || !isDeliverableAddress(v)) throw new FieldError('Enter a valid reply-to email address')
       return v

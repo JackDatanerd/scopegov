@@ -209,9 +209,20 @@ export default async function DashboardPage() {
     .select('project_id, created_at, updated_at, step_started_at, send_failed_at')
     .eq('workspace_id', session.workspaceId)
     .or('status.eq.pending,and(status.eq.approved,send_failed_at.not.is.null)')
-  const pendingApprovalRows: any[] = !canViewAll
-    ? (await queryInChunks<any>(accessibleProjectIds || [], chunk => buildPendingApprovalsQuery().in('project_id', chunk))).data
-    : ((await buildPendingApprovalsQuery()).data || [])
+  // FIX (approvals independent pass, B1): neither branch looked at `error`, so a failed read quietly became "no request is
+  // pending" and every "awaiting approval" / "approved but not sent" attention flag vanished with nothing in the logs.
+  // The attention list is secondary to the page, so it still degrades rather than break the dashboard — but the failure
+  // is now logged.
+  let pendingApprovalRows: any[]
+  if (!canViewAll) {
+    const res = await queryInChunks<any>(accessibleProjectIds || [], chunk => buildPendingApprovalsQuery().in('project_id', chunk))
+    if (res.error) console.error('Dashboard: pending approvals read failed — approval attention flags are missing:', res.error.message)
+    pendingApprovalRows = res.data
+  } else {
+    const res = await buildPendingApprovalsQuery()
+    if (res.error) console.error('Dashboard: pending approvals read failed — approval attention flags are missing:', res.error.message)
+    pendingApprovalRows = res.data || []
+  }
   const pendingApprovalsByProject = new Map<string, Array<{ createdAt: string; sendFailed?: boolean }>>()
   for (const r of (pendingApprovalRows || [])) {
     const list = pendingApprovalsByProject.get(r.project_id) || []

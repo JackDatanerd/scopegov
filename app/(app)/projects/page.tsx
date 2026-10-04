@@ -84,9 +84,18 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
     .select('project_id, created_at, updated_at, step_started_at, send_failed_at')
     .eq('workspace_id', session.workspaceId)
     .or('status.eq.pending,and(status.eq.approved,send_failed_at.not.is.null)')
-  const pendingApprovalRows: any[] = !canViewAll
-    ? (await queryInChunks<any>(projects.map((p: any) => p.id), chunk => buildPendingApprovalsQuery().in('project_id', chunk))).data
-    : ((await buildPendingApprovalsQuery()).data || [])
+  // FIX (approvals independent pass, B1): the read's `error` was never looked at — a failed read became "nothing pending"
+  // and the approval attention flags disappeared silently. Still degrades (the list itself must load), but is logged.
+  let pendingApprovalRows: any[]
+  if (!canViewAll) {
+    const res = await queryInChunks<any>(projects.map((p: any) => p.id), chunk => buildPendingApprovalsQuery().in('project_id', chunk))
+    if (res.error) console.error('Projects list: pending approvals read failed — approval attention flags are missing:', res.error.message)
+    pendingApprovalRows = res.data
+  } else {
+    const res = await buildPendingApprovalsQuery()
+    if (res.error) console.error('Projects list: pending approvals read failed — approval attention flags are missing:', res.error.message)
+    pendingApprovalRows = res.data || []
+  }
   const pendingApprovalsByProject = new Map<string, Array<{ createdAt: string; sendFailed: boolean }>>()
   for (const r of (pendingApprovalRows || [])) {
     const list = pendingApprovalsByProject.get(r.project_id) || []

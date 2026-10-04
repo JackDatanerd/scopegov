@@ -76,6 +76,9 @@ const RANGE_PRESETS = [
 // Debounce for the free-text search. Export bypasses it (uses the live input)
 // so clicking Export right after typing can never export the previous filter.
 const SEARCH_DEBOUNCE_MS = 350
+// FIX (Settings independent pass 11, bug 1): mirrors MAX_ROWS_JSON in app/api/reports/audit-export/route.ts — the JSON view
+// never pages past this many rows, so "Load more (N remaining)" must count to the cap, not to totalCount.
+const JSON_VIEW_CAP = 2000
 
 function formatExact(iso: string, timeZone: string) {
   return formatDateTimeInZone(iso, timeZone, { seconds: true })
@@ -435,7 +438,7 @@ export default function AuditLogClient({ projects, members, timeZone, projectsCo
         {!loading && hasMore && (
           <div style={{ display: 'flex', justifyContent: 'center', padding: '14px 0' }}>
             <button className="btn btn-ghost btn-sm" disabled={loadingMore} onClick={handleLoadMore}>
-              {loadingMore ? <span className="spin spin-dark" /> : `Load more (${(totalCount - rows.length).toLocaleString()} remaining)`}
+              {loadingMore ? <span className="spin spin-dark" /> : `Load more (${Math.max(0, Math.min(totalCount, JSON_VIEW_CAP) - rows.length).toLocaleString()} remaining)`}
             </button>
           </div>
         )}

@@ -75,7 +75,10 @@ export function isAttentionWorthy({ project, workspace, now = Date.now() }: Atte
   // A declined/expired CO on a Complete or Archived project used to sit in
   // the dashboard's "Needs attention" list forever (the projects page counted
   // only its active/awaiting tabs, so the two disagreed).
-  if (isTerminalStatus(project.status)) return false
+  // FIX (approvals independent pass, B3): ...except an invoice whose approval cleared but whose auto-send failed. Billing
+  // after completion is a supported flow (POST /api/projects/[id]/complete deliberately leaves invoice approvals alone),
+  // and nothing else ever surfaces that request here: the invoice is still a draft the client has not received.
+  if (isTerminalStatus(project.status)) return project.pendingApprovals?.some(r => r.sendFailed) === true
   // 1. Stalled project (a recent MANUAL pause is a decision, not a problem — the other clauses below
   //    still apply to it)
   if (project.status === 'Stalled' && !isRecentManualPause(project, now)) return true
@@ -177,7 +180,8 @@ export function isAttentionWorthy({ project, workspace, now = Date.now() }: Atte
 }
 
 export function attentionReason({ project, now = Date.now() }: AttentionContext): string | null {
-  if (isTerminalStatus(project.status)) return null
+  if (isTerminalStatus(project.status))
+    return project.pendingApprovals?.some(r => r.sendFailed) ? 'Approved but not sent — needs a retry' : null
   if (project.status === 'Stalled' && !isRecentManualPause(project, now)) {
     if (project.stallReason === 'sow_unsigned') return 'SOW unsigned — project stalled'
     const days = project.stalledAt ? Math.floor((now - new Date(project.stalledAt).getTime()) / 86400000) : null

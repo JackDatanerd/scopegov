@@ -1,0 +1,26 @@
+APPROVALS WORKFLOW ENGINE — independent pass 15 (bugs only)
+=============================================================
+
+RUN BEFORE DEPLOYING: supabase/migrations/146_currency_codes_uppercase.sql
+  (adds approval_requests.send_failure_alerts; the stall cron selects and filters on it.
+   Also upper-cases stored currency codes — idempotent.)
+
+B1  Unchecked approval_requests reads on three pages
+    app/(app)/dashboard/page.tsx, app/(app)/projects/page.tsx, app/(app)/projects/[id]/page.tsx
+    A failed read silently became "nothing pending": attention flags / approval banners vanished
+    and Send looked available again. Pages still degrade, but the error is now logged.
+
+B2  pickWorkflow compared currencies case-sensitively (lib/approvals/pick-workflow.ts)
+    A legacy lowercase projects.currency ('usd') never matched an 'USD' threshold, so the rule
+    did not apply and the document went out ungated (fail-open). Now compared trimmed/upper-cased
+    on both sides; migration 146 normalises the stored data.
+
+B3  Approved-but-not-sent invoice on a Complete/Archived project never reached "needs attention"
+    (lib/utils/attention.ts). Terminal projects now surface sendFailed approvals, with the reason
+    "Approved but not sent — needs a retry".
+
+B4  Stall cron re-alerted admins about an unsent approved request forever
+    (app/api/cron/approval-stall/route.ts). Capped at 3 alerts (new column send_failure_alerts);
+    the request stays visible in Approvals and the dashboard attention list.
+
+Tests: tests/approvals-independent-pass-15.test.ts

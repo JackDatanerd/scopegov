@@ -380,6 +380,10 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
   // file was gone — 'Save branding' silently uploaded nothing and 'Remove logo' (shown because !logoFile) deleted the
   // saved logo instead.
   const [logoFile, setLogoFile] = useState<File | null>(null)
+  // FIX (Settings independent pass 11, bug 3): picking a logo replaced the preview with the new file and there was no way
+  // back to the saved logo short of a reload. The saved preview is parked here (lifted, like logoFile, so it survives
+  // leaving the tab) when the FIRST file is picked, and 'Discard selection' puts it back.
+  const savedLogoPreviewRef = useRef<string | null>(null)
   // FIX (Settings independent pass 8): the saved signature lived in BrandingTab's own state, seeded from the
   // `workspace` prop, which only changes on router.refresh() — and signature saves/removals never refresh. Leaving
   // the tab and coming back re-read the stale prop: a just-saved signature looked unsaved and a just-removed one
@@ -540,7 +544,7 @@ export default function SettingsClient({ workspace, billing, defaults, logoUrl, 
             workspaceId={workspace?.id}
             colour={brandColour} setColour={setBrandColour}
             preview={logoPreview} setPreview={setLogoPreview}
-            logoFile={logoFile} setLogoFile={setLogoFile}
+            logoFile={logoFile} setLogoFile={setLogoFile} savedLogoPreviewRef={savedLogoPreviewRef}
             sigSaved={sigSaved} setSigSaved={setSigSaved}
             baseRef={brandingBase}
             loadFailed={loadFailed.workspace}
@@ -1083,13 +1087,14 @@ function WorkspaceTab({ form, setForm, permissions, onSave, saving, slugChangedA
 }
 
 // ── BRANDING ──────────────────────────────────────────────────
-function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, logoFile, setLogoFile, sigSaved, setSigSaved, baseRef, loadFailed, permissions, onSave, saving }: any) {
+function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, logoFile, setLogoFile, savedLogoPreviewRef, sigSaved, setSigSaved, baseRef, loadFailed, permissions, onSave, saving }: any) {
   const [uploading, setUploading] = useState(false)
   const [fileError, setFileError] = useState('')
   const [removingLogo, setRemovingLogo] = useState(false)
   const [savingSig,  setSavingSig]  = useState(false)
   const [sigError,   setSigError]   = useState('')
   const sigPadRef = useRef<SignaturePadHandle>(null)
+  const logoInputRef = useRef<HTMLInputElement>(null)
 
   // (Concurrency baseline: see brandingBase in SettingsClient — Settings independent pass 5, B5.)
 
@@ -1116,10 +1121,20 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, logo
       e.target.value = ''
       return
     }
+    // Park the saved preview only on the first pick; a second pick must not overwrite it with the first pick's data URL.
+    if (!logoFile) savedLogoPreviewRef.current = preview
     setLogoFile(file)
     const reader = new FileReader()
     reader.onload = ev => setPreview(ev.target?.result as string)
     reader.readAsDataURL(file)
+  }
+
+  function discardLogoSelection() {
+    setLogoFile(null)
+    setPreview(savedLogoPreviewRef.current)
+    setFileError('')
+    // Clear the native input too, or re-picking the same file wouldn't fire onChange.
+    if (logoInputRef.current) logoInputRef.current.value = ''
   }
 
   async function saveBranding() {
@@ -1255,8 +1270,13 @@ function BrandingTab({ workspaceId, colour, setColour, preview, setPreview, logo
             <div style={{ display: 'flex', gap: 8 }}>
               <label className="btn btn-ghost btn-sm" style={{ cursor: 'pointer' }}>
                 <i className="ti ti-upload" style={{ fontSize: 12 }} /> {logoFile ? 'Change logo' : 'Upload logo'}
-                <input type="file" accept="image/png,image/jpeg" style={{ display: 'none' }} onChange={handleLogoChange} />
+                <input ref={logoInputRef} type="file" accept="image/png,image/jpeg" style={{ display: 'none' }} onChange={handleLogoChange} />
               </label>
+              {logoFile && (
+                <button type="button" className="btn btn-ghost btn-sm" disabled={uploading} onClick={discardLogoSelection}>
+                  Discard selection
+                </button>
+              )}
               {preview && !logoFile && (
                 <button type="button" className="btn btn-ghost btn-sm" style={{ color: 'var(--red)' }}
                   disabled={removingLogo} onClick={removeLogo}>
