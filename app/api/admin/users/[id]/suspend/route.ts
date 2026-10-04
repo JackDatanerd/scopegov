@@ -16,8 +16,12 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   if (isAdminGuardFailure(guard)) return guard
   const { actor, service } = guard
 
-  const { data: target } = await (service as any)
+  const { data: target, error: targetErr } = await (service as any)
     .from('users').select('id, email, name, is_platform_admin, deleted_at').eq('id', params.id).maybeSingle()
+  if (targetErr) {
+    console.error('[admin] suspend: user read failed:', targetErr.message)
+    return NextResponse.json({ error: 'Could not load this user' }, { status: 500 })
+  }
   if (!target) return NextResponse.json({ error: 'User not found' }, { status: 404 })
   if (target.id === actor.id) return NextResponse.json({ error: 'You cannot suspend your own account' }, { status: 400 })
   if (target.is_platform_admin) return NextResponse.json({ error: 'Cannot suspend another platform admin from here' }, { status: 400 })

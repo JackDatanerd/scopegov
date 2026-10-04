@@ -32,8 +32,12 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     trialDays = n
   }
 
-  const { data: workspace } = await (service as any)
+  const { data: workspace, error: wsErr } = await (service as any)
     .from('workspaces').select('id, name, agency_name, plan_tier, deleted_at').eq('id', params.id).maybeSingle()
+  if (wsErr) {
+    console.error('[admin] change plan: workspace read failed:', wsErr.message)
+    return NextResponse.json({ error: 'Could not load this workspace' }, { status: 500 })
+  }
   if (!workspace) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })
   // FIX (Admin panel independent audit — B10): both plan routes ran on a suspended or deleted workspace, silently
   // writing entitlement for a tenant nobody can reach (and a restore would then come back on a plan nobody chose).
@@ -113,6 +117,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
       reason: reason || undefined,
       ...(plan === 'trial' ? { trial_days: trialDays } : {}),
     },
+    omitClientIp: true, // staff IP must not appear in the customer's audit log / exports
   })
 
   return NextResponse.json({ ok: true, plan, graceCleared, auditLogged })

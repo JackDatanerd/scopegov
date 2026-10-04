@@ -7,8 +7,12 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   if (isAdminGuardFailure(guard)) return guard
   const { actor, service } = guard
 
-  const { data: target } = await (service as any)
+  const { data: target, error: targetErr } = await (service as any)
     .from('users').select('id, email, name, deleted_at, suspended_by_admin').eq('id', params.id).maybeSingle()
+  if (targetErr) {
+    console.error('[admin] restore: user read failed:', targetErr.message)
+    return NextResponse.json({ error: 'Could not load this user' }, { status: 500 })
+  }
   if (!target) return NextResponse.json({ error: 'User not found' }, { status: 404 })
   if (!target.deleted_at) return NextResponse.json({ error: 'Not suspended' }, { status: 409 })
 

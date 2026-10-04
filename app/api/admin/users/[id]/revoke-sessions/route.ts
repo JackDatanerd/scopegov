@@ -9,8 +9,12 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   if (isAdminGuardFailure(guard)) return guard
   const { actor, service } = guard
 
-  const { data: target } = await (service as any)
+  const { data: target, error: targetErr } = await (service as any)
     .from('users').select('id, email, name').eq('id', params.id).maybeSingle()
+  if (targetErr) {
+    console.error('[admin] revoke-sessions: user read failed:', targetErr.message)
+    return NextResponse.json({ error: 'Could not load this user' }, { status: 500 })
+  }
   if (!target) return NextResponse.json({ error: 'User not found' }, { status: 404 })
 
   const { data: revokedCount, error } = await (service as any)
@@ -27,6 +31,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
       eventType: 'security.other_sessions_revoked', entityType: 'user',
       entityId: target.id, entityName: target.name || target.email,
       metadata: { via: 'platform_admin' },
+      omitClientIp: true, // see reset-mfa: the staff member's IP must not land in the customer's audit log
     })))
   } catch (e) {
     console.error('[admin] revoke sessions: per-workspace audit failed (non-fatal):', e)

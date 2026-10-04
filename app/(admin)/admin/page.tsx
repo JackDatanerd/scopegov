@@ -35,8 +35,10 @@ export default async function AdminOverviewPage() {
     service.rpc('admin_workspace_plan_counts'),
     service.from('workspaces').select('id', { count: 'exact', head: true }).is('deleted_at', null).gte('created_at', weekAgo),
     service.from('users').select('id', { count: 'exact', head: true }).is('deleted_at', null),
-    service.from('sow_documents').select('id', { count: 'exact', head: true }).eq('status', 'awaiting_signature').lt('updated_at', daysAgoIso(STALE_SOW_DAYS)),
-    service.from('change_orders').select('id', { count: 'exact', head: true }).eq('status', 'awaiting_response').lt('updated_at', daysAgoIso(STALE_CO_DAYS)),
+    // Live workspaces only, like the sow-stall / co-stall crons: a suspended workspace's documents can never be actioned
+    // and would otherwise keep this tile lit forever.
+    service.from('sow_documents').select('id, workspaces!inner(deleted_at)', { count: 'exact', head: true }).eq('status', 'awaiting_signature').is('workspaces.deleted_at', null).lt('updated_at', daysAgoIso(STALE_SOW_DAYS)),
+    service.from('change_orders').select('id, workspaces!inner(deleted_at)', { count: 'exact', head: true }).eq('status', 'awaiting_response').is('workspaces.deleted_at', null).lt('updated_at', daysAgoIso(STALE_CO_DAYS)),
     service.from('workspaces').select('id', { count: 'exact', head: true }).is('deleted_at', null).eq('plan_tier', 'trial').lt('trial_ends_at', new Date().toISOString()),
     service.from('cron_heartbeats').select('cron_name, last_ok_at, last_result').order('cron_name'),
   ])

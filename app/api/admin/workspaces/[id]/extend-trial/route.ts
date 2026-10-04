@@ -14,8 +14,12 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     return NextResponse.json({ error: `days must be a whole number between 1 and ${MAX_EXTENSION_DAYS}` }, { status: 400 })
   }
 
-  const { data: workspace } = await (service as any)
+  const { data: workspace, error: wsErr } = await (service as any)
     .from('workspaces').select('id, name, agency_name, plan_tier, trial_ends_at, deleted_at').eq('id', params.id).maybeSingle()
+  if (wsErr) {
+    console.error('[admin] extend trial: workspace read failed:', wsErr.message)
+    return NextResponse.json({ error: 'Could not load this workspace' }, { status: 500 })
+  }
   if (!workspace) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })
   if (workspace.deleted_at) {
     return NextResponse.json({ error: 'This workspace is suspended or deleted — restore it before extending its trial.' }, { status: 409 })

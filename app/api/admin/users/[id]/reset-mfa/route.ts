@@ -20,8 +20,12 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   if (isAdminGuardFailure(guard)) return guard
   const { actor, service } = guard
 
-  const { data: target } = await (service as any)
+  const { data: target, error: targetErr } = await (service as any)
     .from('users').select('id, email, name, deleted_at').eq('id', params.id).maybeSingle()
+  if (targetErr) {
+    console.error('[admin] reset-mfa: user read failed:', targetErr.message)
+    return NextResponse.json({ error: 'Could not load this user' }, { status: 500 })
+  }
   if (!target) return NextResponse.json({ error: 'User not found' }, { status: 404 })
 
   const { data: factorsData, error: listErr } = await (service as any).auth.admin.mfa.listFactors({ userId: target.id })
@@ -62,6 +66,9 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
       eventType: 'security.mfa_reset_by_admin', entityType: 'user',
       entityId: target.id, entityName: target.name || target.email,
       metadata: { via: 'platform_admin_reset' },
+      // The actor is deliberately anonymous ("ScopeGov platform support"): do not stamp the staff member's own IP
+      // onto a row the customer can read and export.
+      omitClientIp: true,
     })))
   } catch (e) {
     console.error('[admin] MFA reset: per-workspace audit failed (non-fatal):', e)
@@ -72,7 +79,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     .catch(() => {})
 
   const delivery = await checkedSend(
-    () => sendMfaDisabledEmail({ to: target.email, name: target.name || target.email, via: 'admin_reset' }),
+    () => sendMfaDisabledEmail({ to: target.email, name: target.name || target.email, via: 'platform_support' }),
     'platform admin MFA reset notice',
   )
   if (!delivery.ok) console.error('[admin] MFA reset email failed (non-fatal):', delivery.error)

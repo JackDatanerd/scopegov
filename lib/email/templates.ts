@@ -2017,7 +2017,7 @@ export async function sendMfaEnabledEmail(params: { to: string; name: string }) 
 }
 
 // ── Security: MFA disabled ───────────────────────────────────
-export async function sendMfaDisabledEmail(params: { to: string; name: string; via: 'user' | 'backup_code_recovery' | 'admin_reset' }) {
+export async function sendMfaDisabledEmail(params: { to: string; name: string; via: 'user' | 'backup_code_recovery' | 'admin_reset' | 'platform_support' }) {
   const { to, name: nameRaw, via } = params
   const name = escapeHtml(nameRaw)
   const html = baseTemplate({
@@ -2031,12 +2031,16 @@ export async function sendMfaDisabledEmail(params: { to: string; name: string; v
       <p style="font-size:14px;color:${C.text2};line-height:1.7;margin:0 0 16px;">
         ${via === 'backup_code_recovery'
           ? 'Two-factor authentication on your ScopeGov account was just removed using a backup recovery code. If your workspace requires MFA for your role, you will be asked to set it up again the next time you sign in.'
+          : via === 'platform_support'
+          ? 'The ScopeGov support team just reset two-factor authentication on your account and signed you out everywhere. If your workspace requires MFA for your role, you will be asked to set it up again the next time you sign in.'
           : via === 'admin_reset'
           ? 'A workspace administrator just reset two-factor authentication on your ScopeGov account, most likely because you were locked out. If your workspace requires MFA for your role, you will be asked to set it up again the next time you sign in.'
           : 'Two-factor authentication on your ScopeGov account was just turned off.'}
       </p>
       <p style="font-size:13px;color:${C.text2};">
-        ${via === 'admin_reset'
+        ${via === 'platform_support'
+          ? 'Didn\u2019t expect this? Contact <a href="mailto:support@scopegov.app">support@scopegov.app</a> right away and change your password.'
+          : via === 'admin_reset'
           ? 'Didn\u2019t expect this? Check with your workspace administrator to confirm it was them.'
           : 'Didn\u2019t do this? Contact your workspace owner immediately and change your password.'}
       </p>

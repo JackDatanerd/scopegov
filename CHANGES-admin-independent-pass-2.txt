@@ -1,0 +1,20 @@
+Admin panel — independent audit, round 2  (bugs only; no feature work)
+
+DEPLOY ORDER: apply supabase/migrations/143_erase_user_pii_admin_audit.sql (it also backfills already-erased accounts). No other
+migration. The code changes do not depend on it, so order is not critical.
+
+B1  MED   Staff IP leaked into customers' audit logs: admin reset-mfa, revoke-sessions and change-plan write tenant audit_log rows
+          through logAudit(), which auto-fills the ambient request IP. The actor is deliberately anonymous ("ScopeGov platform
+          support") yet the row carried the staff member's real IP, visible in Settings -> Audit log, CSV and PDF. Now omitClientIp.
+B2  LOW   Platform MFA reset e-mail said "A workspace administrator just reset..." and told the user to check with their workspace
+          admin. New sendMfaDisabledEmail variant 'platform_support' (ScopeGov support, contact support@scopegov.app).
+B3  MED   erase_user_pii() never touched platform_admin_audit_log, so an erased user's e-mail stayed in target_label forever.
+          Migration 143 scrubs rows by target id and by typed e-mail, plus a one-time backfill for already-erased accounts.
+B4  LOW   Overview "Stuck SOWs / change orders" counted documents of suspended/deleted workspaces (never actionable, disagreed with
+          the stall crons) — now live workspaces only.
+B5  LOW   workspace suspend: non-string `reason` threw a TypeError (500).
+B6  LOW   user suspend/restore/reset-mfa/revoke-sessions and workspace suspend/restore/change-plan/extend-trial ignored the lookup
+          error, reporting a database failure as 404 "not found". Now 500 "Could not load ...".
+
+TESTS  tests/admin-independent-pass-2.test.ts (new). Not run in the authoring sandbox (no network / node_modules): run `npm test`
+       and `npm run typecheck` locally before committing.

@@ -9,13 +9,17 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   if (isAdminGuardFailure(guard)) return guard
   const { actor, service } = guard
 
-  const { data: workspace } = await (service as any)
+  const { data: workspace, error: wsErr } = await (service as any)
     .from('workspaces').select('id, name, agency_name, deleted_at').eq('id', params.id).maybeSingle()
+  if (wsErr) {
+    console.error('[admin] suspend workspace: read failed:', wsErr.message)
+    return NextResponse.json({ error: 'Could not load this workspace' }, { status: 500 })
+  }
   if (!workspace) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })
   if (workspace.deleted_at) return NextResponse.json({ error: 'Already suspended' }, { status: 409 })
 
-  const body = await request.json().catch(() => ({})) as { reason?: string }
-  const reason = (body.reason || '').trim().slice(0, 500)
+  const body = await request.json().catch(() => ({})) as { reason?: unknown }
+  const reason = typeof body.reason === 'string' ? body.reason.trim().slice(0, 500) : ''
 
   // FIX (deep audit, Workspace lifecycle independent re-pass — feature gap):
   // a suspension ended every member's access with no notice at all (the

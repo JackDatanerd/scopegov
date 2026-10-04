@@ -9,8 +9,12 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   if (isAdminGuardFailure(guard)) return guard
   const { actor, service } = guard
 
-  const { data: workspace } = await (service as any)
+  const { data: workspace, error: wsErr } = await (service as any)
     .from('workspaces').select('id, name, agency_name, deleted_at, suspended_by_admin').eq('id', params.id).maybeSingle()
+  if (wsErr) {
+    console.error('[admin] restore workspace: read failed:', wsErr.message)
+    return NextResponse.json({ error: 'Could not load this workspace' }, { status: 500 })
+  }
   if (!workspace) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })
   if (!workspace.deleted_at) return NextResponse.json({ error: 'Not suspended' }, { status: 409 })
 
