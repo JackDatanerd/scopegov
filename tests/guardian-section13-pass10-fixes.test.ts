@@ -31,14 +31,15 @@ describe('B1: duplicate window starts at the last scope change', () => {
     const since = Date.parse(rpc.mock.calls[0][1].p_since)
     expect(Math.abs(since - (Date.now() - 2 * DAY))).toBeLessThan(5000)
 
-    const gte = vi.fn()
+    const orFilter = vi.fn()
     const chain: any = {}
     for (const m of ['select', 'eq', 'not', 'neq', 'order']) chain[m] = vi.fn(() => chain)
-    chain.gte = gte.mockImplementation(() => chain)
+    chain.or = orFilter.mockImplementation(() => chain)
     chain.limit = vi.fn().mockResolvedValue({ data: [] })
     const service = { rpc: vi.fn().mockResolvedValue({ data: null, error: { message: 'boom' } }), from: vi.fn(() => chain) }
     await findDuplicateCheck(service as any, 'p1', [0.1, 0.2], new Date(Date.now() - 2 * DAY).toISOString())
-    expect(Math.abs(Date.parse(gte.mock.calls[0][1]) - (Date.now() - 2 * DAY))).toBeLessThan(5000)
+    const sinceIso = /classified_at\.gte\.([^,]+),/.exec(orFilter.mock.calls[0][0])![1]
+    expect(Math.abs(Date.parse(sinceIso) - (Date.now() - 2 * DAY))).toBeLessThan(5000)
   })
 
   it('every caller reads and passes the snapshot timestamp', () => {

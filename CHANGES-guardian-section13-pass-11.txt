@@ -1,0 +1,16 @@
+Guardian / scope governance (section 13) - independent pass 11
+
+B1 (medium) Backlog duplicates never detected.
+  guardian_find_duplicate_check (and the in-code fallback) matched on created_at >= max(30d, snapshot.last_updated_at).
+  Signing bumps last_updated_at AFTER every pre-signing backlog row was created, so when the sweep classified copy 2 and 3
+  of the same request, copy 1 (already classified against the current scope) was excluded by its creation date: every copy
+  was classified, flagged and emailed on its own. Window now uses COALESCE(classified_at, created_at).
+  Files: supabase/migrations/144_guardian_dedup_classified_window.sql (RUN IT in the SQL editor),
+         lib/ai/guardian-pipeline.ts (fallback scan).
+
+B2 (low-medium) source:'email' accepted on POST /api/guardian/check.
+  The no-SOW backlog cap there counts only non-email rows; inbound's cap counts only email rows. A direct API call with
+  source:'email' bypassed the first cap and filled the second, after which real client emails were dropped (backlog_full).
+  'email' is now reserved for guardian/inbound. File: app/api/guardian/check/route.ts
+
+Tests: tests/guardian-section13-pass11-fixes.test.ts (new); pass10 fallback-scan test updated for the .or() filter.

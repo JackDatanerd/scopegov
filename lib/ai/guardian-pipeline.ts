@@ -136,7 +136,9 @@ export async function findDuplicateCheck(
     .eq('is_duplicate', false)
     .not('embedding', 'is', null)
     .neq('outcome', 'pending')
-    .gte('created_at', since)
+    // Same window as the RPC (migration 144): measured from when the check was judged, so a backlog row classified
+    // after the last scope change counts even though it was created before it.
+    .or(`classified_at.gte.${since},and(classified_at.is.null,created_at.gte.${since})`)
     .order('created_at', { ascending: false })
     .limit(300)
   let best: { id: string; sim: number } | null = null
