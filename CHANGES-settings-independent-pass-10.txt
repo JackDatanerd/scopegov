@@ -1,0 +1,22 @@
+scopegov — Section 5 (Settings) independent pass 10 — fixes
+=============================================================
+Independent, cold audit of app/(app)/settings (+ approvals, audit tabs), api/workspace/settings,
+defaults and branding (+ logo). No bugs found in those routes; two small defects found in the
+surrounding Settings UI. No migration required.
+
+FIXES (2)
+---------
+1. components/settings/SettingsClient.tsx — BillingTab.handleCancel / handleResume had try/finally
+   with no catch, so a dropped connection threw out of the click handler and nothing appeared on
+   screen (the person could not tell whether the subscription had been cancelled/resumed).
+   Both now show an error, like handleUpdateCard already did.
+2. app/(app)/settings/approvals/page.tsx — the workflows read sorted by document_type only, while
+   GET /api/approval-workflows also sorts by threshold (highest first, catch-all last). Rules within
+   a type could reshuffle after an edit. Added the same threshold order plus created_at/id tie-breaks.
+
+TEST (1 new file)
+-----------------
+  tests/settings-independent-pass-10.test.ts   (source-level checks, same style as passes 5-9)
+
+NOT RUN: no node_modules in the audit sandbox, so `vitest` and `tsc` were not executed. Run
+`npx vitest run tests/settings-independent-pass-10.test.ts` and `npx tsc --noEmit` before pushing.

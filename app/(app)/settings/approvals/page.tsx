@@ -45,7 +45,13 @@ export default async function ApprovalWorkflowsPage() {
           user:users!approval_workflow_steps_approver_user_id_fkey(id, name, email))
       `)
       .eq('workspace_id', session.workspaceId)
-      .order('document_type', { ascending: true }),
+      // Settings pass: GET /api/approval-workflows also sorts by threshold (highest first, catch-all last); this read
+      // only sorted by type, so rules within a type came back in whatever order Postgres chose and could appear to
+      // reshuffle after an edit. created_at/id make the order fully deterministic.
+      .order('document_type', { ascending: true })
+      .order('threshold_amount', { ascending: false, nullsFirst: false })
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true }),
     // FIX (section-11 audit, flagship finding): this used to list every
     // role in the workspace with no permission filter — including ones
     // that don't carry APPROVE_DOCUMENTS at all (e.g. "Designer"), which

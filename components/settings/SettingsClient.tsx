@@ -1854,6 +1854,10 @@ function BillingTab({ workspace, billing, billingLoadFailed = false, session, pe
       const json = await res.json().catch(() => ({}))
       if (res.ok) { setJustCancelled(true); window.location.reload() }
       else setCancelError(json.error || 'Could not cancel — try again or contact support.')
+    } catch {
+      // Settings pass: a dropped connection used to throw out of this handler with nothing on screen, so the person
+      // could not tell whether the subscription had been cancelled. Same wording the failed-response branch uses.
+      setCancelError('Could not cancel — check your connection and try again, or contact support.')
     } finally { setCancelling(false) }
   }
 
@@ -1866,6 +1870,9 @@ function BillingTab({ workspace, billing, billingLoadFailed = false, session, pe
       const json = await res.json().catch(() => ({}))
       if (res.ok) window.location.reload()
       else setResumeError(json.error || 'Could not resume — try again or contact support.')
+    } catch {
+      // Settings pass: same silent-network-failure gap as handleCancel above.
+      setResumeError('Could not resume — check your connection and try again, or contact support.')
     } finally { setResuming(false) }
   }
 
