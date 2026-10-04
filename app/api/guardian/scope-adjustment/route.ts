@@ -175,7 +175,18 @@ export async function POST(request: NextRequest) {
       .select('id')
 
     if (snapErr || !updatedSnap || updatedSnap.length === 0) {
-      await (service as any).from('scope_adjustments').delete().eq('id', adjustment.id)
+      // FIX (independent pass 10, section 13 - B3): the result of this cleanup delete was never read. The history row was
+      // written FIRST and is the only trace of a rename that did NOT land; if the delete failed it stayed behind, and
+      // classifyAndRecord feeds every `deliverables` row of scope_adjustments into netAmendmentDeliverables as a real
+      // rename - so a phantom one could make a later credit CO's removal match (or miss) the wrong title. Retry the delete
+      // and say so loudly if it still cannot be removed, so the orphan can be found by its id.
+      let removed = false
+      for (let attempt = 0; attempt < 3 && !removed; attempt++) {
+        const { error: cleanupErr } = await (service as any).from('scope_adjustments').delete().eq('id', adjustment.id)
+        if (!cleanupErr) removed = true
+        else console.error(`Scope adjustment: could not remove the history row of a rename that did not land (attempt ${attempt + 1}/3):`, adjustment.id, cleanupErr.message)
+      }
+      if (!removed) console.error('Scope adjustment: ORPHANED scope_adjustments row left behind - delete it by hand:', adjustment.id)
       if (snapErr) throw new Error(snapErr.message)
       return NextResponse.json({
         error: 'The scope snapshot changed while processing this adjustment — please retry.',

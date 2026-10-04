@@ -99,13 +99,32 @@ export function embeddingText(content: string): string {
 // Falls back to an in-process scan — now ordered newest-first and reading the
 // text-literal vector correctly — so a deploy that lands before the migration
 // degrades instead of breaking submissions.
-export async function findDuplicateCheck(service: any, projectId: string, embedding: number[]): Promise<string | null> {
+/**
+ * FIX (independent pass 10, section 13 - B1): the duplicate window was a flat 30 days, so a check classified against the
+ * OLD scope kept swallowing new requests after the scope had changed. A client asks for "Mobile app" (covered_by_co); a
+ * credit/descope CO then moves it back to out_of_scope; the client asks again inside 30 days and the new message was marked
+ * a duplicate of the old `covered_by_co` check - never classified, never flagged, no email. A SOW re-sign or a rename through
+ * scope-adjustment does the same. The window now starts at the LATER of 30 days ago and the last time the scope snapshot
+ * changed (project_scope_snapshot.last_updated_at - every writer of the snapshot bumps it), so only checks judged against the
+ * current scope can be matched. Conservative on purpose: a change order that only ADDS scope also moves it, which at worst
+ * re-classifies a re-sent message once.
+ */
+export function dedupSinceIso(nowMs: number, scopeChangedAt?: string | null): string {
+  const windowStart = nowMs - DEDUP_WINDOW_DAYS * 86400000
+  const changed = scopeChangedAt ? Date.parse(scopeChangedAt) : NaN
+  return new Date(Number.isFinite(changed) ? Math.max(windowStart, changed) : windowStart).toISOString()
+}
+
+export async function findDuplicateCheck(
+  service: any, projectId: string, embedding: number[], scopeChangedAt?: string | null,
+): Promise<string | null> {
   const literal = `[${embedding.join(',')}]`
+  const since = dedupSinceIso(Date.now(), scopeChangedAt)
   const { data, error } = await service.rpc('guardian_find_duplicate_check', {
     p_project_id: projectId,
     p_embedding:  literal,
     p_threshold:  DEDUP_THRESHOLD,
-    p_since:      new Date(Date.now() - DEDUP_WINDOW_DAYS * 86400000).toISOString(),
+    p_since:      since,
   })
   if (!error) return typeof data === 'string' ? data : null
 
@@ -117,7 +136,7 @@ export async function findDuplicateCheck(service: any, projectId: string, embedd
     .eq('is_duplicate', false)
     .not('embedding', 'is', null)
     .neq('outcome', 'pending')
-    .gte('created_at', new Date(Date.now() - DEDUP_WINDOW_DAYS * 86400000).toISOString())
+    .gte('created_at', since)
     .order('created_at', { ascending: false })
     .limit(300)
   let best: { id: string; sim: number } | null = null
@@ -140,7 +159,7 @@ export function severityFor(outcome: 'out_of_scope' | 'borderline', creepConfide
 }
 
 export interface PipelineProject { id: string; name: string; workspace_id: string }
-export interface PipelineSnapshot { deliverables?: any[]; out_of_scope?: any[] }
+export interface PipelineSnapshot { deliverables?: any[]; out_of_scope?: any[]; last_updated_at?: string | null }
 
 export type PipelineResult =
   | { status: 'classified'; classification: ClassificationResult; flagId: string | null }
@@ -380,7 +399,7 @@ export async function reclassifyCheck(service: any, checkId: string, opts: {
   if (attempts >= (opts.maxAttempts ?? Infinity)) return { status: 'skipped', reason: 'max_attempts' }
 
   const { data: project, error: projectErr } = await service.from('projects')
-    .select(`id, name, status, stall_reason, deleted_at, workspace_id, workspaces(id, guardian_sensitivity_tier, deleted_at), project_scope_snapshot(deliverables, out_of_scope)`)
+    .select(`id, name, status, stall_reason, deleted_at, workspace_id, workspaces(id, guardian_sensitivity_tier, deleted_at), project_scope_snapshot(deliverables, out_of_scope, last_updated_at)`)
     .eq('id', check.project_id).eq('workspace_id', check.workspace_id).maybeSingle()
   if (projectErr) throw new Error(`reclassifyCheck: project read failed: ${projectErr.message}`)
   if (!project) return { status: 'skipped', reason: 'not_found' }
@@ -439,7 +458,7 @@ export async function reclassifyCheck(service: any, checkId: string, opts: {
   // treat as "this is a duplicate, not backlog" — so a match here also retires it from future
   // sweeps without adding a new outcome value anywhere those are read).
   if (embedding) {
-    const duplicateOfId = await findDuplicateCheck(service, check.project_id, embedding)
+    const duplicateOfId = await findDuplicateCheck(service, check.project_id, embedding, snapshot.last_updated_at)
     if (duplicateOfId) {
       const { error: dupErr } = await service.from('guardian_checks')
         // FIX (independent pass, section 13): also clear classification_failed. A check that failed classification

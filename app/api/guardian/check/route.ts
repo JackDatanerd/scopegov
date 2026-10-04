@@ -10,7 +10,7 @@ import { MAX_CHECK_CONTENT_CHARS, type Sensitivity } from '@/lib/ai/guardian'
 import { classifyAndRecord, findDuplicateCheck, tryEmbedding } from '@/lib/ai/guardian-pipeline'
 import { canReadProject } from '@/lib/utils/project-access'
 import { isTerminalStatus } from '@/lib/utils/project-status'
-import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
+import { claimAiRateSlot } from '@/lib/utils/rate-limit'
 
 const SOURCES = ['email', 'paste', 'slack', 'webhook']
 
@@ -48,7 +48,7 @@ export async function POST(request: NextRequest) {
       .from('projects')
       .select(`id, name, status, workspace_id,
         workspaces(id, guardian_sensitivity_tier),
-        project_scope_snapshot(deliverables, out_of_scope)`)
+        project_scope_snapshot(deliverables, out_of_scope, last_updated_at)`)
       .eq('id', projectId)
       .eq('workspace_id', session.workspaceId)
       .is('deleted_at', null) // a soft-deleted project is gone everywhere else; don't spend AI on it
@@ -116,16 +116,18 @@ export async function POST(request: NextRequest) {
     // no signed SOW yet — directly contradicting the "spend NOTHING" comment above it. Moved here,
     // immediately before the first step that actually costs anything, matching guardian/inbound's
     // ordering (which already checks the snapshot before rate-limiting).
-    const limited = await checkAiRateLimit(service, session.id, 'guardian.check')
+    // FIX (independent pass 10, section 13 - B2): this was checkAiRateLimit -> embedding -> recordAiUsage, so a burst of
+    // parallel submissions all read an under-the-limit count before any recorded itself and every one paid for an embedding
+    // and a classification. The slot is now claimed atomically BEFORE the first paid call (see claimAiRateSlot); it stays
+    // used even if the embedding fails, which matches the old "recorded as soon as a real paid attempt was made" rule.
+    const limited = await claimAiRateSlot(service, session.workspaceId, session.id, 'guardian.check')
     if (!limited.allowed) return NextResponse.json({ error: limited.message }, { status: 429 })
 
     // ── STEP 1: embedding (always — BUG-060) ──────────────────
     const embedding = await tryEmbedding(content)
-    // Usage is recorded as soon as a real paid attempt was made (not only on full success).
-    await recordAiUsage(service, session.workspaceId, session.id, 'guardian.check')
 
     // ── STEP 2: dedup (pgvector, cosine > 0.85, 30 days) ──────
-    const duplicateOfId = embedding ? await findDuplicateCheck(service, projectId, embedding) : null
+    const duplicateOfId = embedding ? await findDuplicateCheck(service, projectId, embedding, snapshot.last_updated_at) : null
     const isDuplicate = !!duplicateOfId
 
     // ── STEP 3: write the check row ───────────────────────────

@@ -1,0 +1,26 @@
+Section 13 (Guardian / scope governance) - independent pass 10
+==============================================================
+
+B1 (medium)  Duplicate detection ignored scope changes.
+  A check classified against the OLD scope (e.g. covered_by_co) kept absorbing the same request for 30 days after a credit/descope CO,
+  a SOW re-sign or a scope rename changed the scope, so the re-sent request was marked a duplicate: no classification, no flag, no email.
+  Fix: the duplicate window now starts at the LATER of 30 days ago and project_scope_snapshot.last_updated_at (new dedupSinceIso in
+  lib/ai/guardian-pipeline.ts; findDuplicateCheck takes the timestamp; used by the RPC call and the in-process fallback).
+  Callers: guardian/check, guardian/inbound, reclassifyCheck (sweep + manual retry) - each now selects last_updated_at on the snapshot.
+
+B2 (low)     Guardian AI rate limits were check -> paid call -> record.
+  A parallel burst all read an under-the-limit count and all made paid embedding + classification calls (claimAiRateSlot already
+  fixed this for co/draft). guardian/check now uses claimAiRateSlot; guardian/inbound uses the new project-keyed
+  claimAiRateSlotByProject (lib/utils/rate-limit.ts). Slot is claimed before the first paid call. The manual retry route is unchanged:
+  it only spends after its own per-check compare-and-swap claim.
+
+B3 (low)     scope-adjustment never checked its cleanup delete.
+  When the snapshot compare-and-swap failed, the pre-written scope_adjustments row was deleted without reading the result; a failed
+  delete left a phantom rename that netAmendmentDeliverables then applied. The delete is now retried (3x) and an orphan is logged by id.
+
+Not changed: B4 (a prose "From:" line followed by "Date:/Sent:" is read as a quoted header block) - rare, Postmark's StrippedTextReply
+covers most real mail, and tightening the heuristic risks cutting real Outlook headers.
+
+Files: lib/ai/guardian-pipeline.ts, lib/utils/rate-limit.ts, app/api/guardian/check/route.ts, app/api/guardian/inbound/route.ts,
+app/api/guardian/scope-adjustment/route.ts, tests/guardian-section13-pass10-fixes.test.ts (new), tests/guardian-section13-pass9-fixes.test.ts (anchor string).
+No migration needed.

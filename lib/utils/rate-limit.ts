@@ -129,6 +129,51 @@ export async function claimAiRateSlot(
   return { allowed: true }
 }
 
+/**
+ * FIX (independent pass 10, section 13 - B2): project-keyed twin of claimAiRateSlot, for the Guardian inbound-email path.
+ * guardian/inbound used checkAiRateLimitByProject -> (paid embedding) -> recordAiUsageByProject: the same check-then-record
+ * shape claimAiRateSlot's header describes, so a burst of parallel deliveries to one project address (the address is
+ * effectively unauthenticated) all read an under-the-limit count and all made paid calls. Claim first, verify after: insert
+ * the usage row, count the window INCLUDING it, and withdraw it and refuse when over. Same trade-offs as claimAiRateSlot
+ * (a refused burst is refused whole; the slot stays used if the call later fails; fails OPEN on a database error).
+ */
+export async function claimAiRateSlotByProject(
+  service: any, workspaceId: string, projectId: string, routeKey: string
+): Promise<RateLimitResult> {
+  const { max, windowMinutes } = LIMITS[routeKey] || DEFAULT_LIMIT
+  const { data: row, error: insertError } = await service
+    .from('ai_usage_log')
+    .insert({ workspace_id: workspaceId, project_id: projectId, route_key: routeKey })
+    .select('id')
+    .single()
+  if (insertError || !row) {
+    console.error('Rate limit claim failed (failing open):', insertError)
+    return { allowed: true }
+  }
+
+  const since = new Date(Date.now() - windowMinutes * 60 * 1000).toISOString()
+  const { count, error: countError } = await service
+    .from('ai_usage_log')
+    .select('id', { count: 'exact', head: true })
+    .eq('project_id', projectId)
+    .eq('route_key', routeKey)
+    .gte('created_at', since)
+  if (countError) {
+    console.error('Rate limit check failed (failing open):', countError)
+    return { allowed: true }
+  }
+
+  if ((count || 0) > max) {
+    const { error: releaseError } = await service.from('ai_usage_log').delete().eq('id', row.id)
+    if (releaseError) console.error('Failed to release an unused AI rate-limit slot:', releaseError)
+    return {
+      allowed: false,
+      message: `Too many inbound checks for this project — please wait a few minutes (limit: ${max} per ${windowMinutes}m).`,
+    }
+  }
+  return { allowed: true }
+}
+
 // FIX (audit round 6): project-keyed variants for AI calls made with no
 // authenticated user in context (e.g. the Guardian inbound-email webhook).
 // Same sliding-window approach as the user-keyed functions above, just

@@ -10,7 +10,7 @@ import {
 } from '@/lib/ai/guardian-email'
 import { logAudit } from '@/lib/utils/audit'
 import { stripUnstorableText, truncateText } from '@/lib/utils/sanitize'
-import { checkAiRateLimitByProject, recordAiUsageByProject } from '@/lib/utils/rate-limit'
+import { claimAiRateSlotByProject } from '@/lib/utils/rate-limit'
 import { EVIDENCE_BUCKET } from '@/lib/utils/storage-cleanup'
 import { ALLOWED_ATTACHMENT_TYPES, matchesDeclaredType, resolveAttachmentType } from '@/lib/utils/file-signature'
 import { sameEmail } from '@/lib/utils/escape-like'
@@ -97,7 +97,7 @@ export async function POST(request: NextRequest) {
       .from('projects')
       .select(`id, name, status, stall_reason, workspace_id, client_id,
         workspaces(id, agency_name, guardian_sensitivity_tier, deleted_at),
-        project_scope_snapshot(deliverables, out_of_scope)`)
+        project_scope_snapshot(deliverables, out_of_scope, last_updated_at)`)
       .ilike('guardian_email', `proj-${guardianPrefix}@%`)
       .is('deleted_at', null) // soft-deleted project: same as "no such project"
       .limit(1)
@@ -261,7 +261,8 @@ export async function POST(request: NextRequest) {
     }
 
     // ── Rate limit: KEEP the email (previously dropped with a 200 → lost forever) ──
-    const limited = await checkAiRateLimitByProject(service, project.id, 'guardian.inbound')
+    // FIX (independent pass 10, section 13 - B2): claimed atomically (see claimAiRateSlotByProject) instead of check -> paid call -> record.
+    const limited = await claimAiRateSlotByProject(service, project.workspace_id, project.id, 'guardian.inbound')
     if (!limited.allowed) {
       console.warn(`Guardian inbound rate limit hit for project ${project.id} — queued for sweep`)
       if (await queueFull()) {
@@ -275,8 +276,7 @@ export async function POST(request: NextRequest) {
 
     // ── Embedding + dedup ─────────────────────────────────────
     const embedding = await tryEmbedding(cleanContent)
-    await recordAiUsageByProject(service, project.workspace_id, project.id, 'guardian.inbound')
-    const duplicateOfId = embedding ? await findDuplicateCheck(service, project.id, embedding) : null
+    const duplicateOfId = embedding ? await findDuplicateCheck(service, project.id, embedding, snapshot.last_updated_at) : null
     const isDuplicate = !!duplicateOfId
 
     const row = await insertCheck({

@@ -31,7 +31,7 @@ describe('B3: notes/evidence reads need a Guardian view permission', () => {
 describe('B2: no-SOW queue is bounded', () => {
   it('check route caps manually queued checks before inserting a pending row', () => {
     const src = read('app/api/guardian/check/route.ts')
-    const branch = src.slice(src.indexOf('if (!snapshot) {'), src.indexOf('const limited = await checkAiRateLimit'))
+    const branch = src.slice(src.indexOf('if (!snapshot) {'), src.indexOf('const limited = await claimAiRateSlot'))
     expect(branch).toContain('MAX_QUEUED_PER_PROJECT')
     expect(branch).toContain('status: 429')
     expect(branch.indexOf('MAX_QUEUED_PER_PROJECT')).toBeLessThan(branch.indexOf(".insert({"))
