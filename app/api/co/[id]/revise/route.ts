@@ -1,4 +1,5 @@
 import { createServiceClient } from '@/lib/supabase/server'
+import { lookupMissResponse } from '@/lib/documents/co-lookup'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
@@ -49,7 +50,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Missing permission: CREATE_CHANGE_ORDERS' }, { status: 403 })
 
     const service = createServiceClient()
-    const { data: co } = await (service as any)
+    const { data: co, error: coLookupErr } = await (service as any)
       .from('change_orders')
       .select(`id, title, note, status, version, project_id, flag_id, root_co_id,
         projects(name, status, client_id, clients(name, email, cc_emails), workspaces(agency_name, brand_colour)),
@@ -58,7 +59,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         timeline_impact_days, scope_impact_note`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
-    if (!co) return NextResponse.json({ error: 'Change order not found' }, { status: 404 })
+    if (!co) return lookupMissResponse(coLookupErr, 'Change order not found')
     if (!(await canReadProject(service, session, co.project_id)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
@@ -102,9 +103,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // live. Revising v1 twice, or revising a superseded v1 while v2 is out, produced sibling COs
     // that could BOTH be accepted (the same extra work billed twice).
     const rootId = co.root_co_id || co.id
-    const { data: siblings } = await (service as any)
+    const { data: siblings, error: siblingsErr } = await (service as any)
       .from('change_orders').select('id, version, status')
       .or(`id.eq.${rootId},root_co_id.eq.${rootId}`).neq('id', co.id)
+    // A failed read is not "no other versions": it skipped the newer-version and live-sibling guards below and let a
+    // revision be created beside a live one. Surface it as the retryable error it is.
+    if (siblingsErr) throw new Error(`could not read the other versions of this change order: ${siblingsErr.message}`)
     const others: any[] = siblings || []
     const openDraft = others.find(o => o.status === 'draft')
     // CO logic pass 7: an open draft next to a COUNTERED original is not a finished revision - revising a countered CO also
@@ -351,9 +355,19 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // or (for 'countered') by the supersede block just above; re-claim it for this revision, otherwise the
     // same flag can be converted into a second CO.
     if (co.flag_id) {
-      await (service as any).from('guardian_flags')
-        .update({ status: 'converted_to_co', change_order_id: revision.id, updated_at: new Date().toISOString() })
-        .eq('id', co.flag_id).eq('status', 'open').is('change_order_id', null)
+      // The write's error used to be ignored: a transient failure left the flag 'open' and unlinked while the revision
+      // carried its id, so a second change order could still be drafted from the same flag. Retry once, then say so loudly
+      // (zero matched rows with no error just means the flag is not ours to claim - already linked or resolved).
+      let claimErr: any = null
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const r = await (service as any).from('guardian_flags')
+          .update({ status: 'converted_to_co', change_order_id: revision.id, updated_at: new Date().toISOString() })
+          .eq('id', co.flag_id).eq('status', 'open').is('change_order_id', null)
+          .select('id')
+        claimErr = r.error
+        if (!claimErr) break
+      }
+      if (claimErr) console.error('CO revise: could not re-claim the linked flag:', co.flag_id, revision.id, claimErr.message)
     }
 
     await logAudit(service, {

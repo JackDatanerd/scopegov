@@ -22,8 +22,12 @@ export async function liveCoSiblingMessage(
     .from('change_orders').select('id, version, status')
     .or(`id.eq.${rootId},root_co_id.eq.${rootId}`).neq('id', co.id)
     .in('status', LIVE_CO_STATUSES).limit(1)
-  // A failed lookup keeps the behaviour this check always had (it did not block); surface it so it is not invisible.
-  if (error) console.error('CO live-sibling check failed (not blocking):', error.message)
+  // A failed lookup must NOT read as "no live sibling": that let a second version go out beside a live one, and two live
+  // versions can both be accepted (the same extra work billed twice). Refuse and say why; the caller can simply retry.
+  if (error) {
+    console.error('CO live-sibling check failed (blocking the send):', error.message)
+    return 'Could not check whether another version of this change order is still open — please try again.'
+  }
   if (liveSiblings && liveSiblings.length > 0)
     return `Version ${liveSiblings[0].version} of this change order is still open (${String(liveSiblings[0].status).replace(/_/g, ' ')}). Withdraw or close it before sending another version.`
   return null

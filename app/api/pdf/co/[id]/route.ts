@@ -1,6 +1,7 @@
 export const runtime = 'nodejs'
 
 import { createServiceClient } from '@/lib/supabase/server'
+import { lookupMissResponse } from '@/lib/documents/co-lookup'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { renderCoPdf } from '@/lib/pdf/renderer'
@@ -26,7 +27,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       return NextResponse.json({ error: 'Missing permission: VIEW_FINANCIALS' }, { status: 403 })
 
     const service = createServiceClient()
-    const { data: co } = await (service as any)
+    const { data: co, error: coLookupErr } = await (service as any)
       .from('change_orders')
       .select(`id, title, note, version, status, document_number, pdf_path, is_retainer_renewal, is_credit, line_items, subtotal, tax_rate, tax_inclusive, total,
         timeline_impact_days, scope_impact_note,
@@ -39,7 +40,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       .eq('workspace_id', session.workspaceId)
       .single()
 
-    if (!co) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    if (!co) return lookupMissResponse(coLookupErr, 'Not found')
     // FIX (audit round 3): see lib/utils/project-access.ts.
     if (!(await canReadProject(service, session, co.project_id)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })

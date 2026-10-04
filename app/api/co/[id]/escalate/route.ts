@@ -1,5 +1,6 @@
 import { notifyUsers } from '@/lib/utils/notify'
 import { createServiceClient } from '@/lib/supabase/server'
+import { lookupMissResponse } from '@/lib/documents/co-lookup'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
@@ -31,12 +32,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Escalation note must be at least 10 characters' }, { status: 400 })
 
     const service = createServiceClient()
-    const { data: co } = await (service as any)
+    const { data: co, error: coLookupErr } = await (service as any)
       .from('change_orders')
       .select('id,title,status,project_id,escalated_to,escalation_note,projects(name)')
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
-    if (!co) return NextResponse.json({ error: 'CO not found' }, { status: 404 })
+    if (!co) return lookupMissResponse(coLookupErr, 'CO not found')
     // FIX (audit round 3): see lib/utils/project-access.ts.
     if (!(await canReadProject(service, session, co.project_id)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })

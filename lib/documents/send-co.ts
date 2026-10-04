@@ -14,6 +14,7 @@ import { checkedSend } from '@/lib/email/delivery'
 import { resolveReplyTo } from '@/lib/email/reply-to'
 import { isTerminalStatus } from '@/lib/utils/project-status'
 import { parseStoredLineItems } from '@/lib/documents/co-totals'
+import { coGateAmount } from '@/lib/approvals/gate-amount'
 
 export type SendCoResult =
   | {
@@ -63,6 +64,8 @@ export async function sendCoDocument(service: any, params: {
   actorName: string
   approvalRequestId?: string
   expiresInDays?: number
+  /** The amount the approval chain signed off on (context.amount). When given, a CO that has since changed size is not sent. */
+  approvedGateAmount?: number | null
 }): Promise<SendCoResult> {
   const { coId, workspaceId, actorId, actorEmail, actorName, approvalRequestId } = params
   const requestedDays = Number(params.expiresInDays)
@@ -119,6 +122,16 @@ export async function sendCoDocument(service: any, params: {
 
   const invalid = validateCoForSend({ total: co.total, lineItems: co.line_items, isCredit: !!co.is_credit })
   if (invalid) return { ok: false, error: invalid, status: 400 }
+
+  // The approvers signed off on a specific amount. PATCH checks for a pending approval and then writes as two separate
+  // statements, so an edit landing in the instant a send-for-approval was created (or a slow, reordered autosave) can change
+  // the CO AFTER it was submitted - and the auto-send would then put an unapproved figure in front of the client. Refuse it;
+  // the requester cancels the request and sends again at the real amount.
+  if (params.approvedGateAmount != null && Number.isFinite(Number(params.approvedGateAmount))) {
+    const current = Math.abs(coGateAmount(co, project))
+    if (Math.abs(current - Math.abs(Number(params.approvedGateAmount))) > 0.005)
+      return { ok: false, status: 409, error: 'This change order was edited after it was submitted for approval, so the approved amount no longer matches. Cancel this request and send it again for approval.' }
+  }
 
   const { data: signedSow } = await (service as any)
     .from('sow_documents').select('id').eq('project_id', co.project_id).eq('status', 'signed').limit(1).maybeSingle()

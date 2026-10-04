@@ -1,5 +1,6 @@
 import { resolveReplyTo } from '@/lib/email/reply-to'
 import { createServiceClient } from '@/lib/supabase/server'
+import { lookupMissResponse } from '@/lib/documents/co-lookup'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
@@ -33,13 +34,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const service = createServiceClient()
     // FIX (doc-completeness audit): added client/workspace so we can
     // notify the client if this CO had already reached them.
-    const { data: co } = await (service as any)
+    const { data: co, error: coLookupErr } = await (service as any)
       .from('change_orders')
       .select(`id,title,status,flag_id,token,project_id,
         projects(name,client_id,clients(name,email,cc_emails),workspaces(agency_name,brand_colour))`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
-    if (!co) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    if (!co) return lookupMissResponse(coLookupErr, 'Not found')
     if (!(await canReadProject(service, session, co.project_id)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     // FIX (doc-completeness audit, migration 014): the agency should be

@@ -1,4 +1,5 @@
 import { createServiceClient } from '@/lib/supabase/server'
+import { lookupMissResponse } from '@/lib/documents/co-lookup'
 import { parseRenewalTerm } from '@/lib/documents/renewal-term'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
@@ -16,7 +17,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
     const service = createServiceClient()
-    const { data: co } = await (service as any)
+    const { data: co, error: coLookupErr } = await (service as any)
       .from('change_orders')
       // FIX (regression, introduced same session as the flag-context AI
       // draft feature): guardian_flags <-> guardian_checks has TWO FKs —
@@ -37,7 +38,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       .select('*, projects(id,name,currency,type,retainer_duration_months), guardian_flags!fk_co_flag(description,severity,sow_reference,guardian_checks!fk_flag_check(content))')
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
-    if (!co) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    if (!co) return lookupMissResponse(coLookupErr, 'Not found')
     // FIX (audit round 3): workspace_id was the only scoping check — any
     // workspace member, regardless of project assignment, could fetch any
     // CO's full financial detail. See lib/utils/project-access.ts.
@@ -114,12 +115,12 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       return NextResponse.json({ error: 'Missing permission' }, { status: 403 })
 
     const service = createServiceClient()
-    const { data: co } = await (service as any)
+    const { data: co, error: coLookupErr } = await (service as any)
       .from('change_orders')
       .select('id,status,project_id,line_items,tax_rate,tax_inclusive,is_credit,is_retainer_renewal,projects(type)')
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
-    if (!co) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    if (!co) return lookupMissResponse(coLookupErr, 'Not found')
     if (!(await canReadProject(service, session, co.project_id)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     if (co.status !== 'draft')

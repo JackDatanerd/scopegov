@@ -1,0 +1,23 @@
+CO logic (c10) - independent pass 8
+
+B1  Every CO route answered a FAILED database read with 404 "not found" (supabase-js returns { error } instead of throwing).
+    Only PGRST116 (no row) / 22P02 (malformed id) are real not-founds; anything else is now a retryable 500.
+    lib/documents/co-lookup.ts (new); api/co/[id] GET+PATCH, send, close, withdraw, accept-counter, escalate, remind, link,
+    revise, exception, attachments GET/POST/DELETE (incl. the attachment row), api/pdf/co/[id].
+B2  A failed sibling-version read skipped the one-live-version / newer-version guards (two live versions can both be
+    accepted = same work billed twice). revise + exception now stop with a retryable error; liveCoSiblingMessage
+    (send route + sendCoDocument) now refuses instead of passing.
+B3  PATCH checks for a pending approval then writes as two statements, so an edit (or a reordered autosave) landing just
+    after send-for-approval could be auto-sent at an amount nobody approved. sendCoDocument takes approvedGateAmount
+    (approval context.amount, passed by dispatchSend) and refuses with a clear 409 if the CO's gate amount changed.
+    lib/documents/send-co.ts, lib/approvals/engine.ts (one argument).
+B4  revise: the flag re-claim write's error was ignored (a failed write left the flag open+unlinked so a second CO could be
+    drafted from it) - checked, retried once, logged. exception: the flag resolution is retried once (the CO is already
+    terminal, nothing could retry it later).
+B5  CoEditor: autosaves are now serialised (an older PATCH could land after a newer one while the UI said "Saved");
+    a failed attachment-list load no longer reads as "None yet".
+    components/co/CoEditor.tsx
+tests/co-independent-pass-8.test.ts (10 of 16 fail on pre-fix code); tests/co-section-10-pass-5.test.ts source-shape
+assertion updated for the retry loop (behaviour unchanged). No migration. tsc clean.
+Full suite: 2659 passed, 2 failed - both in tests/trial-plan-workspace-pass-1-cron.test.ts, which fail identically on the
+untouched clone (payment-overdue trial-expiry email audience; not part of c10, left alone).

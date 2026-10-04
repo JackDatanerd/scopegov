@@ -1,5 +1,6 @@
 import { resolveReplyTo } from '@/lib/email/reply-to'
 import { createServiceClient } from '@/lib/supabase/server'
+import { lookupMissResponse } from '@/lib/documents/co-lookup'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
@@ -32,7 +33,7 @@ async function handleTerminalCoState(
   // FIX (CO-logic fix round): expanded the select (client/workspace) so we
   // can notify the client below if this CO had already reached them —
   // same fields withdraw/route.ts already selects for the same reason.
-  const { data: co } = await (service as any)
+  const { data: co, error: coLookupErr } = await (service as any)
     .from('change_orders')
     .select(`id,title,status,flag_id,token,project_id,
       projects(id,name,client_id,clients(name,email,cc_emails),workspaces(agency_name,brand_colour))`)
@@ -45,7 +46,7 @@ async function handleTerminalCoState(
     return NextResponse.json({ error: 'reason must be text' }, { status: 400 })
   const reason: string | null = cleanedReason || null
 
-  if (!co) return NextResponse.json({ error: 'CO not found' }, { status: 404 })
+  if (!co) return lookupMissResponse(coLookupErr, 'CO not found')
   // FIX (audit round 3): see lib/utils/project-access.ts.
   if (!(await canReadProject(service, session, co.project_id)))
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })

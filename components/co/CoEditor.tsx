@@ -298,7 +298,17 @@ export default function CoEditor({ projId, coId }: Props) {
   // navigation, so /send fires against a still-mounted, stable component,
   // and the only navigation happens once, at the very end, after send
   // actually succeeds.
-  async function doSave(explicit = true, navigate = true): Promise<string | null> {
+  // Saves are SERIALISED. A slow PATCH followed by a newer edit put two requests in flight, and nothing guaranteed the
+  // server applied them in the order they were sent - an older autosave landing last silently overwrote the newer text
+  // while the editor showed "Saved". Each save now starts only after the previous one has settled.
+  const saveQueue = useRef<Promise<unknown>>(Promise.resolve())
+  function doSave(explicit = true, navigate = true): Promise<string | null> {
+    const run = saveQueue.current.catch(() => {}).then(() => doSaveNow(explicit, navigate))
+    saveQueue.current = run
+    return run
+  }
+
+  async function doSaveNow(explicit = true, navigate = true): Promise<string | null> {
     if (explicit) { setSaving(true); setError('') }
     try {
       // CO-C: a viewer without VIEW_FINANCIALS only ever holds redacted (blank) money state. Sending it would be refused
@@ -797,9 +807,13 @@ function CoAttachmentsPanel({ coId, canEdit }: { coId: string | null; canEdit: b
     if (!coId) { setLoading(false); return }
     setLoading(true)
     fetch(`/api/co/${coId}/attachments`)
-      .then(res => res.json())
-      .then(json => { if (mounted.current) setAttachments(Array.isArray(json.attachments) ? json.attachments : []) })
-      .catch(() => {})
+      .then(async res => {
+        const json = await res.json().catch(() => ({} as any))
+        // A failed load used to render as "None yet" - an attachment list that looked empty when it was merely unreadable.
+        if (!res.ok) { if (mounted.current) setError(json.error || 'Could not load attachments'); return }
+        if (mounted.current) setAttachments(Array.isArray(json.attachments) ? json.attachments : [])
+      })
+      .catch(() => { if (mounted.current) setError('Could not load attachments — check your connection.') })
       .finally(() => { if (mounted.current) setLoading(false) })
   }, [coId])
 

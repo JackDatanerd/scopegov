@@ -21,6 +21,7 @@ export const runtime = 'nodejs'
 
 import { resolveReplyTo } from '@/lib/email/reply-to'
 import { createServiceClient } from '@/lib/supabase/server'
+import { lookupMissResponse } from '@/lib/documents/co-lookup'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { logAudit } from '@/lib/utils/audit'
@@ -65,13 +66,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (grantedWhatInput === null) return NextResponse.json({ error: 'grantedWhat must be text' }, { status: 400 })
 
     const service = createServiceClient()
-    const { data: co } = await (service as any)
+    const { data: co, error: coLookupErr } = await (service as any)
       .from('change_orders')
       .select(`id,title,status,flag_id,project_id,total,version,root_co_id,
         projects(id,name,client_id,clients(name,email,cc_emails),workspaces(agency_name,brand_colour))`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
-    if (!co) return NextResponse.json({ error: 'CO not found' }, { status: 404 })
+    if (!co) return lookupMissResponse(coLookupErr, 'CO not found')
     if (!(await canReadProject(service, session, co.project_id)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     if (!EXCEPTION_FROM.includes(co.status))
@@ -82,9 +83,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // v2 stayed billable, left the flag with the live version, and logged a flag resolution that never happened.
     {
       const rootId = (co as any).root_co_id || co.id
-      const { data: siblings } = await (service as any)
+      const { data: siblings, error: siblingsErr } = await (service as any)
         .from('change_orders').select('id, version, status')
         .or(`id.eq.${rootId},root_co_id.eq.${rootId}`).neq('id', co.id)
+      // A failed read must not look like "no newer version": the exception would then be written for a superseded one.
+      if (siblingsErr) throw new Error(`could not read the other versions of this change order: ${siblingsErr.message}`)
       // The NEWEST blocking version is the one to name: that is where the exception has to be granted.
       const newer = (siblings || [])
         .filter((o: any) => Number(o.version) > Number((co as any).version) && !ABANDONED_STATUSES.includes(o.status))
@@ -200,13 +203,20 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       // value twice (once as at-risk, once as an exception). 'open' is resolvable too; the change_order_id
       // filter below still refuses a flag a newer revision has re-claimed.
       if (flag && ['converted_to_co', 'open'].includes(flag.status)) {
-        const { data: resolvedFlag, error: flagErr } = await (service as any).from('guardian_flags').update({
-          status: 'resolved', resolution: 'exception',
-          resolved_by: session.id, resolved_at: now, updated_at: now,
-        }).eq('id', co.flag_id).in('status', ['converted_to_co', 'open'])
-          // Only resolve a flag still linked to THIS CO (or to nothing) — see app/api/co/route.ts.
-          .or(`change_order_id.eq.${co.id},change_order_id.is.null`)
-          .select('id')
+        // The CO is already terminal here, so nothing can retry this later - a one-off failure left the flag open (and
+        // Reports counting the same value as at-risk AND as an exception). Retry once before giving up.
+        let resolvedFlag: any = null, flagErr: any = null
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const r = await (service as any).from('guardian_flags').update({
+            status: 'resolved', resolution: 'exception',
+            resolved_by: session.id, resolved_at: now, updated_at: now,
+          }).eq('id', co.flag_id).in('status', ['converted_to_co', 'open'])
+            // Only resolve a flag still linked to THIS CO (or to nothing) — see app/api/co/route.ts.
+            .or(`change_order_id.eq.${co.id},change_order_id.is.null`)
+            .select('id')
+          resolvedFlag = r.data; flagErr = r.error
+          if (!flagErr) break
+        }
         if (flagErr) console.error('CO exception grant: linked flag resolution failed (non-fatal):', flagErr.message)
         else if (resolvedFlag && resolvedFlag.length > 0) {
           await logAudit(service, {

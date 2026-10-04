@@ -1,6 +1,7 @@
 export const runtime = 'nodejs'
 
 import { createServiceClient } from '@/lib/supabase/server'
+import { isRealLookupFailure } from '@/lib/documents/co-lookup'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { sendCoDocument, validateCoForSend, renewalNeedsTerm } from '@/lib/documents/send-co'
@@ -34,6 +35,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     if (!co) {
       console.error('CO send: lookup failed', { id, workspaceId: session.workspaceId, error: coFetchErr })
+      if (isRealLookupFailure(coFetchErr))
+        return NextResponse.json({ error: 'Could not load this change order — please try again.' }, { status: 500 })
       return NextResponse.json({ error: 'CO not found' }, { status: 404 })
     }
     // FIX (audit round 3): see lib/utils/project-access.ts — same

@@ -1,4 +1,5 @@
 import { createServiceClient } from '@/lib/supabase/server'
+import { lookupMissResponse } from '@/lib/documents/co-lookup'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { canReadProject } from '@/lib/utils/project-access'
@@ -38,13 +39,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Please verify your email before accepting a counter-offer' }, { status: 403 })
 
     const service = createServiceClient()
-    const { data: co } = await (service as any)
+    const { data: co, error: coLookupErr } = await (service as any)
       .from('change_orders')
       .select(`id,title,status,flag_id,counter_amount,total,project_id,workspace_id,is_retainer_renewal,renewal_term_months,
         projects(id,name,status,currency,type)`)
       .eq('id', id).eq('workspace_id', session.workspaceId).single()
 
-    if (!co) return NextResponse.json({ error: 'CO not found' }, { status: 404 })
+    if (!co) return lookupMissResponse(coLookupErr, 'CO not found')
     // FIX (audit round 3): see lib/utils/project-access.ts.
     if (!(await canReadProject(service, session, co.project_id)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })

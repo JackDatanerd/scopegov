@@ -5,6 +5,7 @@ export const runtime = 'nodejs'
 // that has already gone out.
 
 import { createServiceClient } from '@/lib/supabase/server'
+import { lookupMissResponse } from '@/lib/documents/co-lookup'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { canReadProject } from '@/lib/utils/project-access'
@@ -25,9 +26,9 @@ export async function DELETE(
       return NextResponse.json({ error: 'Missing permission: CREATE_CHANGE_ORDERS' }, { status: 403 })
 
     const service = createServiceClient()
-    const { data: co } = await (service as any)
+    const { data: co, error: coLookupErr } = await (service as any)
       .from('change_orders').select('id, project_id, status').eq('id', id).eq('workspace_id', session.workspaceId).single()
-    if (!co) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    if (!co) return lookupMissResponse(coLookupErr, 'Not found')
     if (!(await canReadProject(service, session, co.project_id)))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     if (co.status !== 'draft')
@@ -36,9 +37,9 @@ export async function DELETE(
       return NextResponse.json({ error: 'This change order has a pending approval request — cancel it before changing attachments.' }, { status: 409 })
 
     // Scoped by co_id, not just id — an attachmentId from a different CO must 404, not delete.
-    const { data: attachment } = await (service as any)
+    const { data: attachment, error: attachmentErr } = await (service as any)
       .from('co_attachments').select('id, storage_path, file_name').eq('id', attachmentId).eq('co_id', id).single()
-    if (!attachment) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    if (!attachment) return lookupMissResponse(attachmentErr, 'Not found')
 
     const { error: deleteError } = await (service as any)
       .from('co_attachments').delete().eq('id', attachmentId).eq('co_id', id)
