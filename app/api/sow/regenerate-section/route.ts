@@ -10,6 +10,7 @@ import { checkAiRateLimit, recordAiUsage } from '@/lib/utils/rate-limit'
 import { getPendingApprovalForDocument } from '@/lib/approvals/engine'
 import { AI_SECTION_IDS, sowLanguageName, sectionTitle as canonicalSectionTitle } from '@/lib/ai/sow-content'
 import { MAX_SECTION_CONTENT_LENGTH } from '@/lib/sow/sections'
+import { figuresPreserved } from '@/lib/sow/figures'
 import Anthropic from '@anthropic-ai/sdk'
 
 // FIX (re-audit — build-blocking): was constructed at module scope, so an
@@ -105,6 +106,7 @@ ${stripHtml(currentContent || '')}
 
 HARD LIMIT: ${wordLimit} words maximum. Do NOT exceed this under any circumstances.
 If you cannot improve within the word limit, return the current version verbatim.
+Keep EVERY amount, percentage, number of days and number of revision rounds exactly as written in the current content — never add, remove, round or change a figure${instruction ? ' unless the instruction above explicitly asks for it' : ''}.
 
 Return ONLY the new section content as valid HTML (use <p>, <ul>, <li>, <strong>).
 No preamble, no explanation, no markdown fences. Just the HTML content.`
@@ -158,6 +160,18 @@ No preamble, no explanation, no markdown fences. Just the HTML content.`
         content: sanitizeRichText(currentContent || ''),
         wordCount: currentWords,
         truncated: true,
+      })
+    }
+
+    // B6 (pass 10): see lib/sow/figures.ts — a rewrite may not silently change or drop amounts / round counts.
+    if (!figuresPreserved(currentContent || '', raw, instruction)) {
+      console.warn('Section regeneration changed the figures in the section — keeping current content', { sowId, sectionId })
+      await recordAiUsage(service, session.workspaceId, session.id, 'sow.regenerateSection')
+      return NextResponse.json({
+        content: sanitizeRichText(currentContent || ''),
+        wordCount: currentWords,
+        truncated: true,
+        figuresChanged: true,
       })
     }
 

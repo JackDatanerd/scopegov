@@ -2,6 +2,7 @@ export const runtime = 'nodejs'
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
+import { sowRetainerTerms } from '@/lib/sow/retainer'
 import { getSession, hasPermission } from '@/lib/auth/session'
 import { renderSowPdf, resolveLogoDataUri } from '@/lib/pdf/renderer'
 import { canReadProject } from '@/lib/utils/project-access'
@@ -29,7 +30,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const { data: sow } = await (service as any)
       .from('sow_documents')
       .select(`id, version, document_number, sections, metadata, status, signed_at, signed_by, client_signature_data, project_id, pdf_path,
-        projects(id, name, disc, contract_value, currency,
+        projects(id, name, disc, contract_value, currency, type, retainer_duration_months,
           clients(name, company_name, billing_address, vat_number),
           workspaces(timezone, agency_name, brand_colour, logo_storage_path, agency_signature_data,
             legal_address, tax_id, phone, website))`)
@@ -99,6 +100,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       clientVatNumber:      sow.projects?.clients?.vat_number || null,
       projectName:   sow.projects?.name + (sow.projects?.disc ? ` — ${sow.projects.disc}` : ''),
       contractValue: sow.projects?.contract_value || 0,
+      // B1 (pass 10): a retainer's stored value is the monthly fee — see lib/sow/retainer.ts.
+      isRetainer:     sowRetainerTerms(sow.projects).isRetainer,
+      retainerMonths: sowRetainerTerms(sow.projects).months,
       currency:      sow.projects?.currency || 'USD',
       sections:      hydrateSections(sow.sections || [], sow.metadata),
       // FIX (section-9 audit, 9-G7): the document's drafting language,

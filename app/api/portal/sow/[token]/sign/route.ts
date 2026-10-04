@@ -8,6 +8,7 @@ import { nanoid } from 'nanoid'
 import { logAudit } from '@/lib/utils/audit'
 import { sendSowSignedAgencyEmail, sendSowSignedClientEmail } from '@/lib/email/templates'
 import { renderSowPdf } from '@/lib/pdf/renderer'
+import { sowRetainerTerms } from '@/lib/sow/retainer'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
 import { getWorkspaceJwtSecret, isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
@@ -64,7 +65,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { data: sow } = await (service as any)
       .from('sow_documents')
       .select(`id, version, status, sections, metadata, expires_at, project_id, workspace_id, document_number,
-        projects(id, name, disc, currency, contract_value, client_id, created_by, guardian_email,
+        projects(id, name, disc, currency, contract_value, type, retainer_duration_months, client_id, created_by, guardian_email,
           clients(name, email, cc_emails, company_name, billing_address, vat_number),
           workspaces(timezone, id, agency_name, brand_colour, logo_storage_path, agency_signature_data,
             first_sow_signed_at, legal_address, tax_id, phone, website))`)
@@ -335,6 +336,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         clientVatNumber:      client.vat_number || null,
         projectName:   project.name + (project.disc ? ` — ${project.disc}` : ''),
         contractValue: project.contract_value || 0,
+        // B1 (pass 10): the frozen executed copy must say the figure is monthly — see lib/sow/retainer.ts.
+        isRetainer:     sowRetainerTerms(project).isRetainer,
+        retainerMonths: sowRetainerTerms(project).months,
         currency:      project.currency || 'USD',
         // FIX (SOW lifecycle pass 3): hydrate like every other render path (internal PDF, portal PDF, portal page) so
         // the frozen executed PDF is exactly the document the client reviewed. The raw rows could omit a section the

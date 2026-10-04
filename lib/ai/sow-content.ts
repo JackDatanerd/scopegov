@@ -87,6 +87,8 @@ export interface SowContentInput {
   projectDisc?: string | null
   projectType: string
   contractValue: string | number
+  // B1 (pass 10): set for a retainer project, whose contractValue is the MONTHLY fee. months null = open-ended.
+  retainer?: { months: number | null } | null
   currency: string
   objective?: string
   deliverables?: string
@@ -213,12 +215,13 @@ export function applyAgencyStandards(
  * not state the agreed value (the model paraphrased, skipped it, or the value changed after
  * drafting), append one deterministic sentence so the document can never disagree with itself.
  */
-export function ensureContractValueStated(paymentHtml: string, contractValue: number, currency: string): string {
+export function ensureContractValueStated(paymentHtml: string, contractValue: number, currency: string, retainer?: { months: number | null } | null): string {
   if (!Number.isFinite(contractValue) || contractValue <= 0) return paymentHtml
   const stated = amountsStated(norm(paymentHtml)).some(n => Math.abs(n - contractValue) < 0.01)
   if (stated) return paymentHtml
   const pretty = contractValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-  return `${paymentHtml}<p><strong>${escapeHtml(currency)} ${pretty}</strong></p>`
+  // B1 (pass 10): a retainer's stored value is the MONTHLY fee — never append it as if it were a one-off total.
+  return `${paymentHtml}<p><strong>${escapeHtml(currency)} ${pretty}${retainer ? ' / month' : ''}</strong></p>`
 }
 
 // Supported SOW languages and the model-facing name used in the prompt
@@ -365,6 +368,22 @@ const SECTION_MARKER = (id: string) => `<<<SECTION:${id}>>>`
 const TABLE_MARKER   = (id: string) => `<<<TABLE:${id}>>>`
 const TABLE_END      = '<<<ENDTABLE>>>'
 
+function retainerTotalText(input: SowContentInput): string | null {
+  const months = input.retainer?.months
+  const monthly = Number(input.contractValue)
+  if (!input.retainer || !months || !Number.isFinite(monthly)) return null
+  return `${input.currency} ${Math.round(monthly * months * 100) / 100}`
+}
+
+function retainerPromptLines(input: SowContentInput): string {
+  if (!input.retainer) return `Contract value: ${input.currency} ${input.contractValue}`
+  const total = retainerTotalText(input)
+  return `Monthly retainer fee: ${input.currency} ${input.contractValue} per month (this is a recurring monthly fee, NOT a one-off contract total)\n` +
+    (input.retainer.months
+      ? `Retainer term: ${input.retainer.months} month${input.retainer.months === 1 ? '' : 's'} (total commitment ${total})`
+      : 'Retainer term: open-ended — billed monthly until either party ends it in writing')
+}
+
 export function buildSowContentPrompt(input: SowContentInput, opts?: { emphatic?: boolean }): string {
   const markerList = AI_SECTION_IDS.map(id => SECTION_MARKER(id)).join('\n')
   const reminder = opts?.emphatic
@@ -405,7 +424,7 @@ Agency: ${input.agencyName}
 Client: ${input.clientName}
 Project: ${input.projectName}${input.projectDisc ? ` (${input.projectDisc})` : ''}
 Project type: ${input.projectType}
-Contract value: ${input.currency} ${input.contractValue}
+${retainerPromptLines(input)}
 
 Scope brief:
 Objective: ${input.objective || 'Not specified'}
@@ -447,7 +466,7 @@ Do not add any other commentary before, between, or after sections/tables.
 
 Rules:
 - Every prose section's content must be proper HTML (use <p>, <ul>, <li>, <strong>). No raw text outside tags.
-- Payment section must state exactly "${input.currency} ${input.contractValue}" and the exact payment structure above. Do NOT invent percentages or amounts beyond what's stated.
+- Payment section must state exactly "${input.currency} ${input.contractValue}"${input.retainer ? ' as the MONTHLY retainer fee ("per month"), never as a one-off total,' : ''} and the exact payment structure above.${input.retainer ? ' State the retainer term exactly as given above.' : ''} Do NOT invent percentages or amounts beyond what's stated.
 - Out of scope section must list every item from the out-of-scope brief as explicit exclusions. Be specific.
 - Revision policy must reference exactly ${input.revisionRounds} revision round(s).
 - Deliverables table rows must cover every item in the deliverables brief above — one row per deliverable, not grouped.
@@ -606,6 +625,11 @@ interface FallbackStrings {
   assumptions: string
   paymentTotal: string
   paymentStructure: string
+  // B1 (pass 10): retainer wording — the stored value is a monthly fee, not a contract total.
+  paymentMonthly: string
+  perMonth: string
+  paymentTerm: (months: number, total: string) => string
+  paymentOpenEnded: string
   revisions:  (rounds: number) => string
   ip:         (agency: string) => string
   confidentiality: string
@@ -621,6 +645,10 @@ const FALLBACK_STRINGS: Record<string, FallbackStrings> = {
     assumptions: 'This Statement of Work assumes timely feedback, approvals, and provision of any required materials or access from the Client. Delays in Client responsiveness may affect the timeline above.',
     paymentTotal: 'Total contract value',
     paymentStructure: 'Payment structure',
+    paymentMonthly: 'Monthly retainer fee',
+    perMonth: 'per month',
+    paymentTerm: (m, t) => `Term: ${m} month${m === 1 ? '' : 's'} (total commitment ${t})`,
+    paymentOpenEnded: 'Term: open-ended, billed monthly until either party ends it in writing',
     revisions: r => `This engagement includes ${r} round${r === 1 ? '' : 's'} of revisions per deliverable. Additional revision rounds beyond this may be billed separately or handled via a Change Order.`,
     ip: a => `Upon receipt of full payment, all final deliverables become the property of the Client. ${a} retains the right to display the work in its portfolio unless otherwise agreed in writing.`,
     confidentiality: 'Both parties agree to keep confidential any proprietary or non-public information shared during the course of this engagement.',
@@ -634,6 +662,10 @@ const FALLBACK_STRINGS: Record<string, FallbackStrings> = {
     assumptions: 'Este Acuerdo de Alcance de Trabajo presupone comentarios, aprobaciones y la entrega de los materiales o accesos necesarios por parte del Cliente de forma oportuna. Los retrasos en la respuesta del Cliente pueden afectar al cronograma anterior.',
     paymentTotal: 'Valor total del contrato',
     paymentStructure: 'Estructura de pago',
+    paymentMonthly: 'Cuota mensual de la iguala',
+    perMonth: 'al mes',
+    paymentTerm: (m, t) => `Plazo: ${m} mes${m === 1 ? '' : 'es'} (compromiso total ${t})`,
+    paymentOpenEnded: 'Plazo: indefinido, facturado mensualmente hasta que cualquiera de las partes lo termine por escrito',
     revisions: r => `Este encargo incluye ${r} ronda${r === 1 ? '' : 's'} de revisiones por entregable. Las rondas adicionales podrán facturarse por separado o gestionarse mediante una Orden de Cambio.`,
     ip: a => `Tras el pago íntegro, todos los entregables finales pasan a ser propiedad del Cliente. ${a} conserva el derecho a mostrar el trabajo en su portafolio salvo acuerdo escrito en contrario.`,
     confidentiality: 'Ambas partes se comprometen a mantener la confidencialidad de toda información propietaria o no pública compartida durante este encargo.',
@@ -647,6 +679,10 @@ const FALLBACK_STRINGS: Record<string, FallbackStrings> = {
     assumptions: 'Le présent Énoncé des travaux suppose des retours, validations et la fourniture des matériaux ou accès nécessaires par le Client dans des délais raisonnables. Tout retard du Client peut affecter le calendrier ci-dessus.',
     paymentTotal: 'Valeur totale du contrat',
     paymentStructure: 'Modalités de paiement',
+    paymentMonthly: 'Honoraires mensuels du forfait récurrent',
+    perMonth: 'par mois',
+    paymentTerm: (m, t) => `Durée : ${m} mois (engagement total ${t})`,
+    paymentOpenEnded: 'Durée : indéterminée, facturée mensuellement jusqu\'à résiliation écrite par l\'une des parties',
     revisions: r => `La présente mission comprend ${r} série${r === 1 ? '' : 's'} de révisions par livrable. Toute série supplémentaire pourra être facturée séparément ou traitée par Avenant.`,
     ip: a => `Après paiement intégral, l'ensemble des livrables finaux devient la propriété du Client. ${a} conserve le droit de présenter le travail dans son portfolio, sauf accord écrit contraire.`,
     confidentiality: 'Les deux parties s\'engagent à préserver la confidentialité de toute information propriétaire ou non publique échangée dans le cadre de la présente mission.',
@@ -660,6 +696,10 @@ const FALLBACK_STRINGS: Record<string, FallbackStrings> = {
     assumptions: 'Este Termo de Abertura de Escopo pressupõe retorno, aprovações e o fornecimento de quaisquer materiais ou acessos necessários pelo Cliente em tempo hábil. Atrasos na resposta do Cliente podem afetar o cronograma acima.',
     paymentTotal: 'Valor total do contrato',
     paymentStructure: 'Estrutura de pagamento',
+    paymentMonthly: 'Valor mensal do retainer',
+    perMonth: 'por mês',
+    paymentTerm: (m, t) => `Prazo: ${m} ${m === 1 ? 'mês' : 'meses'} (compromisso total ${t})`,
+    paymentOpenEnded: 'Prazo: indeterminado, faturado mensalmente até ser encerrado por escrito por qualquer das partes',
     revisions: r => `Este trabalho inclui ${r} rodada${r === 1 ? '' : 's'} de revisões por entregável. Rodadas adicionais poderão ser cobradas separadamente ou tratadas por Ordem de Mudança.`,
     ip: a => `Mediante o pagamento integral, todos os entregáveis finais tornam-se propriedade do Cliente. A ${a} mantém o direito de exibir o trabalho em seu portfólio, salvo acordo escrito em contrário.`,
     confidentiality: 'Ambas as partes concordam em manter sigilo sobre qualquer informação proprietária ou não pública compartilhada durante este trabalho.',
@@ -673,6 +713,10 @@ const FALLBACK_STRINGS: Record<string, FallbackStrings> = {
     assumptions: 'Diese Leistungsbeschreibung setzt zeitnahe Rückmeldungen, Freigaben sowie die Bereitstellung erforderlicher Materialien oder Zugänge durch den Kunden voraus. Verzögerungen seitens des Kunden können den obigen Zeitplan beeinflussen.',
     paymentTotal: 'Gesamtauftragswert',
     paymentStructure: 'Zahlungsstruktur',
+    paymentMonthly: 'Monatliche Retainer-Gebühr',
+    perMonth: 'pro Monat',
+    paymentTerm: (m, t) => `Laufzeit: ${m} Monat${m === 1 ? '' : 'e'} (Gesamtverpflichtung ${t})`,
+    paymentOpenEnded: 'Laufzeit: unbefristet, monatlich abgerechnet, bis eine Partei schriftlich kündigt',
     revisions: r => `Dieser Auftrag umfasst ${r} Überarbeitungsrunde${r === 1 ? '' : 'n'} je Leistung. Darüber hinausgehende Runden können gesondert berechnet oder über einen Änderungsauftrag abgewickelt werden.`,
     ip: a => `Nach vollständiger Zahlung gehen alle finalen Leistungen in das Eigentum des Kunden über. ${a} behält das Recht, die Arbeit im eigenen Portfolio zu zeigen, sofern nicht schriftlich anders vereinbart.`,
     confidentiality: 'Beide Parteien verpflichten sich, alle im Rahmen dieses Auftrags ausgetauschten vertraulichen oder nicht öffentlichen Informationen geheim zu halten.',
@@ -686,6 +730,10 @@ const FALLBACK_STRINGS: Record<string, FallbackStrings> = {
     assumptions: 'Hati hii ya Wigo wa Kazi inachukulia kwamba Mteja atatoa maoni, idhini, na vifaa au ufikiaji unaohitajika kwa wakati. Ucheleweshaji wa Mteja unaweza kuathiri ratiba iliyo hapo juu.',
     paymentTotal: 'Thamani jumla ya mkataba',
     paymentStructure: 'Mpangilio wa malipo',
+    paymentMonthly: 'Ada ya kila mwezi ya huduma endelevu',
+    perMonth: 'kwa mwezi',
+    paymentTerm: (m, t) => `Muda: miezi ${m} (jumla ya ahadi ${t})`,
+    paymentOpenEnded: 'Muda: usio na kikomo, hutozwa kila mwezi hadi upande wowote usitishe kwa maandishi',
     revisions: r => `Kazi hii inajumuisha mzunguko ${r} wa marekebisho kwa kila kinachotolewa. Mizunguko ya ziada inaweza kutozwa kando au kushughulikiwa kupitia Agizo la Mabadiliko.`,
     ip: a => `Baada ya malipo kamili, matokeo yote ya mwisho yatakuwa mali ya Mteja. ${a} inabaki na haki ya kuonyesha kazi hiyo katika kumbukumbu zake za kazi isipokuwa kama imekubaliwa vinginevyo kwa maandishi.`,
     confidentiality: 'Pande zote mbili zinakubali kutunza siri taarifa zozote za kimiliki au zisizo za umma zilizoshirikiwa wakati wa kazi hii.',
@@ -707,7 +755,11 @@ export function buildFallbackSections(input: SowContentInput): Record<string, st
       ? `<p>${t.oosIntro}</p><ul>${outOfScopeItems}</ul>`
       : `<p>${t.oosNone}</p>`,
     assumptions: `<p>${t.assumptions}</p>`,
-    payment: `<p>${t.paymentTotal}: <strong>${escapeHtml(String(input.currency))} ${escapeHtml(String(input.contractValue))}</strong>. ${t.paymentStructure}: ${escapeHtml(input.paymentLabel)}.</p>`,
+    payment: input.retainer
+      ? `<p>${t.paymentMonthly}: <strong>${escapeHtml(String(input.currency))} ${escapeHtml(String(input.contractValue))}</strong> ${t.perMonth}. ${
+          input.retainer.months ? t.paymentTerm(input.retainer.months, escapeHtml(retainerTotalText(input) || '')) : t.paymentOpenEnded
+        }. ${t.paymentStructure}: ${escapeHtml(input.paymentLabel)}.</p>`
+      : `<p>${t.paymentTotal}: <strong>${escapeHtml(String(input.currency))} ${escapeHtml(String(input.contractValue))}</strong>. ${t.paymentStructure}: ${escapeHtml(input.paymentLabel)}.</p>`,
     revisions: `<p>${t.revisions(input.revisionRounds)}</p>`,
     ip: `<p>${t.ip(escapeHtml(input.agencyName))}</p>`,
     confidentiality: `<p>${t.confidentiality}</p>`,

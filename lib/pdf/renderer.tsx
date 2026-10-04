@@ -79,6 +79,11 @@ export interface SowPdfData {
   // printed the generated "Upfront payment (50%) / Final payment (50%)" rows in its place on the signed copy.
   // Absent (callers that predate this field) keeps the old behaviour.
   paymentStructure?: string | null
+  // FIX (SOW lifecycle independent pass 10, B1): see lib/sow/retainer.ts. For a retainer `contractValue` is the
+  // MONTHLY fee; the header says so (and states the term and total when there is one) instead of calling it the
+  // contract value.
+  isRetainer?: boolean
+  retainerMonths?: number | null
 }
 
 export interface CoPdfData {
@@ -415,8 +420,13 @@ function SowDocument({ data, logo }: { data: SowPdfData; logo: string | null }) 
             {logo
               ? <Image src={logo} style={s.logo} />
               : <Text style={s.agencyText}>{data.agencyName}</Text>}
-            <Text style={s.value}>{data.currency} {fmtMoney(data.contractValue)}</Text>
-            <Text style={s.valueLabel}>Contract value</Text>
+            <Text style={s.value}>{data.currency} {fmtMoney(data.contractValue)}{data.isRetainer ? ' / mo' : ''}</Text>
+            <Text style={s.valueLabel}>{data.isRetainer ? 'Monthly retainer fee' : 'Contract value'}</Text>
+            {data.isRetainer && (data.retainerMonths || 0) > 0 && (
+              <Text style={[s.valueLabel, { marginTop: 2 }]}>
+                {data.retainerMonths} months · {data.currency} {fmtMoney(Math.round(data.contractValue * (data.retainerMonths as number) * 100) / 100)} total
+              </Text>
+            )}
           </View>
         </View>
 

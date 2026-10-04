@@ -50,7 +50,7 @@ export default async function SowPage() {
   let sowQuery = (service as any)
     .from('sow_documents')
     .select(`id, version, document_number, status, sent_at, signed_at, created_at,
-      projects!inner(id, name, contract_value, currency, deleted_at, clients(name)${memberEmbed})`)
+      projects!inner(id, name, contract_value, currency, type, deleted_at, clients(name)${memberEmbed})`)
     .eq('workspace_id', session.workspaceId)
     // FIX (SOW lifecycle independent pass, S2): SOWs of soft-deleted projects were listed and
     // counted (and linked to a project page that 404s). Same filter the invoices registry uses.
@@ -211,7 +211,7 @@ export default async function SowPage() {
                           financials. Null-check instead, so only a genuinely missing value (no
                           project, or a null contract_value) falls back to the dash. */}
                       {s.projects?.contract_value != null
-                        ? formatCurrency(s.projects.contract_value, s.projects.currency)
+                        ? formatCurrency(s.projects.contract_value, s.projects.currency) + (s.projects.type === 'retainer' ? '/mo' : '')
                         : '—'}
                     </td>
                   )}

@@ -23,6 +23,7 @@ import { validateSowForSend } from '@/lib/sow/validate-send'
 import { checkedSend } from '@/lib/email/delivery'
 import { resolveReplyTo } from '@/lib/email/reply-to'
 import { isTerminalStatus } from '@/lib/utils/project-status'
+import { sowRetainerTerms } from '@/lib/sow/retainer'
 
 export type SendSowResult =
   | {
@@ -67,7 +68,7 @@ export async function sendSowDocument(service: any, params: {
   const { data: sow } = await (service as any)
     .from('sow_documents')
     .select(`id, version, status, project_id, document_number, sections, metadata, updated_at,
-      projects(id, name, disc, status, contract_value, currency, client_id, deleted_at,
+      projects(id, name, disc, status, contract_value, currency, type, retainer_duration_months, client_id, deleted_at,
         clients(name, email, cc_emails),
         workspaces(id, agency_name, brand_colour, logo_storage_path))`)
     .eq('id', sowId).eq('workspace_id', workspaceId).single()
@@ -227,6 +228,8 @@ export async function sendSowDocument(service: any, params: {
     projectName:   project.name + (project.disc ? ` — ${project.disc}` : ''),
     contractValue: project.contract_value,
     currency:      project.currency,
+    isRetainer:     sowRetainerTerms(project).isRetainer,
+    retainerMonths: sowRetainerTerms(project).months,
     portalUrl,
     brandColour:   workspace.brand_colour,
     expiresAt:     expiresAt.toISOString(),

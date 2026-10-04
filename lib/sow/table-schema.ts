@@ -188,7 +188,13 @@ export function parseTableAmount(input: unknown): number | null {
   // Find every numeric token ("1.500,00", "1 500,00", "$2,500", "12"). A cell that
   // holds more than one ("Net 30: 500", "10-15", "1e3") is ambiguous, so it is
   // reported as unreadable instead of being silently concatenated into one number.
-  const tokens = raw.match(/\d[\d.,\s'\u2019\u00a0\u202f]*/g)
+  // FIX (SOW lifecycle independent pass 10, B2): the old token pattern let ANY run of spaces sit between digits,
+  // so "Phase 1 5000" fused to 15000, "Net 30 500"-style labels to 30500 and "Q1 2026" to 12026 — a milestone
+  // with a stray number in its label was silently read as a different amount, and could even foot to the contract
+  // value and be signed. A space (or NBSP / narrow NBSP / apostrophe) now groups digits only the way thousands are
+  // written: a 1-3 digit lead followed by exact 3-digit groups ("1 500", "12 345 678,90"). Anything else is a
+  // second number, which the check below reports as unreadable. Same shape validate-send's AMOUNT_TOKEN_RE uses.
+  const tokens = raw.match(/\d{1,3}(?:[ \u00a0\u202f'\u2019]\d{3})+(?:[.,]\d{1,2})?(?!\d)|\d[\d.,]*/g)
   if (!tokens) return null
   const cleanedTokens = tokens.map(t => t.replace(/[\s'\u2019\u00a0\u202f]+$/g, ''))
   if (cleanedTokens.length !== 1) return null
@@ -221,8 +227,12 @@ export function parseTableAmount(input: unknown): number | null {
   let n = Number(normalized)
   if (!Number.isFinite(n)) return null
 
-  // "1.5k" / "2K" shorthand.
   const after = raw.slice(raw.indexOf(tokens[0]) + tokens[0].length)
+  // FIX (SOW lifecycle independent pass 10, B4): "50%" is a share, not an amount, yet it parsed as 50 currency
+  // units — two rows of "50%" footed to a $100 contract and passed validation, and anything else was blocked with
+  // a total that never mentioned percentages. Reported as unreadable so the editor and the send check say so.
+  if (/^\s*(?:%|percent\b|per\s?cent\b)/i.test(after)) return null
+  // "1.5k" / "2K" shorthand.
   if (/^\s*k\b/i.test(after)) n *= 1000
 
   // Accounting-style negatives: "(500)"/"($500)" or a leading minus ("-500", "-$500").
@@ -231,7 +241,16 @@ export function parseTableAmount(input: unknown): number | null {
   // claimed "(500)" was handled. A row like "(500)" (a common way to write a credit/
   // refund milestone) silently parsed as +500.
   const before = raw.slice(0, raw.indexOf(tokens[0]))
-  const leadingMinus = /-\s*[^\d]*$/.test(before) && !/\d/.test(before)
+  // FIX (SOW lifecycle independent pass 10, B3): any ASCII hyphen anywhere before the number counted as a minus,
+  // so "Deposit - $500", "Fee - 1,500.00 USD" and "Total - 12,500" (a hyphen used as a SEPARATOR) were read
+  // as negative amounts. A hyphen is a sign only when no digit or label precedes it and either (a) the cell starts
+  // with it ("-500", "- 500", "-$500"), or (b) it is written directly against the number, after whitespace, a
+  // colon, a currency symbol or an upper-case code ("$ -500", "USD -1,200.50", "Credit: -$500"). A hyphen
+  // followed by a space ("Deposit - 500") or fused to a word ("Final-500") is punctuation.
+  const leadingMinus = !/\d/.test(before) && (
+    /^\s*-\s*(?:\p{Sc}|[A-Z]{3})?\s*$/u.test(before) ||
+    /(?:^|[\s:]|\p{Sc}|\b[A-Z]{3})-(?:\p{Sc}|[A-Z]{3})?$/u.test(before)
+  )
   const wrappedInParens = /\([^\d]*$/.test(before) && /^[^\d]*\)/.test(after)
   // En dash as a minus: only when the cell is just the dash, an optional currency symbol and the number.
   const leadingEnDash = /^\s*\u2013\s*[^\d\s\p{L}]?\s*$/u.test(before)

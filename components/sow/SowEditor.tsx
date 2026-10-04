@@ -327,7 +327,9 @@ export default function SowEditor({ sowId, sections: initialSections, isLocked, 
       if (json.truncated) {
         // The model's answer was cut off or ran past the length limit. The server kept the current
         // text; do not overwrite anything.
-        setRegenNotice('The AI reply was too long or was cut off, so this section was left unchanged. Try a narrower instruction.')
+        setRegenNotice(json.figuresChanged
+          ? 'The AI rewrite changed or dropped an amount or number in this section, so it was left unchanged. Edit figures yourself, or include the new figure in your instruction.'
+          : 'The AI reply was too long or was cut off, so this section was left unchanged. Try a narrower instruction.')
         return
       }
       setSections(prev => prev.map(s => s.id === sectionId ? { ...s, content: json.content } : s))

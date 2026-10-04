@@ -2,6 +2,7 @@ export const runtime = 'nodejs'
 
 import { markFirstViewed } from '@/lib/utils/client-viewed'
 import { hydrateSections } from '@/lib/sow/sections'
+import { sowRetainerTerms } from '@/lib/sow/retainer'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { formatAddress } from '@/lib/utils/format'
@@ -9,7 +10,7 @@ import { checkRevokedToken, verifySowJwt } from './_shared'
 import { isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
 
 const SOW_COLUMNS = `id, version, status, sections, metadata, expires_at, signed_at, signed_by, client_signature_data, first_viewed_at,
-  projects(id, name, disc, contract_value, currency, client_id,
+  projects(id, name, disc, contract_value, currency, type, retainer_duration_months, client_id,
     clients(name, email, company_name, billing_address, vat_number),
     workspaces(id, agency_name, brand_colour, logo_storage_path, agency_signature_data,
       legal_address, tax_id, phone, website))`
@@ -214,6 +215,9 @@ async function buildSowResponse(sow: any, service: any, userAgent: string | null
       agencyWebsite: workspace?.website || null,
       agencySignatureData: workspace?.agency_signature_data || null,
       contractValue: project?.contract_value || 0,
+      // B1 (pass 10): for a retainer the value above is the MONTHLY fee — the page labels it so (lib/sow/retainer.ts).
+      isRetainer:     sowRetainerTerms(project).isRetainer,
+      retainerMonths: sowRetainerTerms(project).months,
       currency:      project?.currency || 'USD',
       // FIX (section-9 audit, 9-G7): the portal renders the same
       // schema-driven tables the PDF does, so it needs the drafting

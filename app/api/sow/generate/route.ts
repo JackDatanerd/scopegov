@@ -9,6 +9,7 @@ export const runtime = 'nodejs'
 // 3 sequential attempts (see retry loop below), so this needs more room.
 export const maxDuration = 120
 
+import { sowRetainerTerms } from '@/lib/sow/retainer'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSession, hasPermission } from '@/lib/auth/session'
@@ -111,7 +112,7 @@ export async function POST(request: NextRequest) {
     // Fetch project + client + workspace for context
     const { data: project } = await (service as any)
       .from('projects')
-      .select('id,name,disc,type,status,contract_value,currency,clients(name,email,company_name),workspaces(agency_name,governing_law,sow_language)')
+      .select('id,name,disc,type,retainer_duration_months,status,contract_value,currency,clients(name,email,company_name),workspaces(agency_name,governing_law,sow_language)')
       .eq('id', projectId).eq('workspace_id', session.workspaceId).is('deleted_at', null).single()
     if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
     if (!(await canReadProject(service, session, projectId)))
@@ -228,6 +229,8 @@ export async function POST(request: NextRequest) {
     const contentInput: SowContentInput = {
       agencyName, clientName, projectName: project.name, projectDisc: project.disc,
       projectType, contractValue, currency: curr, objective, deliverables,
+      // B1 (pass 10): a retainer's contract_value is the monthly fee — the prompt and fallback must say so.
+      retainer: (() => { const t = sowRetainerTerms(project); return t.isRetainer ? { months: t.months } : null })(),
       outOfScope, timeline, paymentLabel, paymentStructure, revisionRounds, governingLaw,
       // FIX (deep audit, section 5 re-pass): sow_language was already
       // being selected right above (line 76) and then dropped on the
@@ -313,7 +316,7 @@ export async function POST(request: NextRequest) {
     // real one — see that function's own comment.
     const allContent: Record<string, string> = applyAgencyStandards({ ...boilerplate, ...aiSections }, standards, revisionRounds)
     // The contract value is data, the payment prose is model-written: never let them disagree.
-    allContent.payment = ensureContractValueStated(allContent.payment || '', contractValue, curr)
+    allContent.payment = ensureContractValueStated(allContent.payment || '', contractValue, curr, contentInput.retainer)
 
     const parsed: { sections: any[]; metadata: any } = {
       sections: SOW_SECTION_DEFS.map(def => ({

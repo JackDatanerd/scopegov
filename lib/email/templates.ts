@@ -151,10 +151,16 @@ export async function sendSowEmail(params: {
   replyTo?: string | null; log?: EmailLogContext
   to: string; cc?: string[]; clientName: string; agencyName: string
   projectName: string; contractValue: number; currency: string
+  // B1 (pass 10): for a retainer contractValue is the MONTHLY fee (lib/sow/retainer.ts).
+  isRetainer?: boolean; retainerMonths?: number | null
   portalUrl: string; brandColour?: string; expiresAt: string
 }) {
   const { to, cc, clientName: clientNameRaw, agencyName: agencyNameRaw, projectName: projectNameRaw, contractValue,
-    currency, portalUrl, brandColour, expiresAt } = params
+    currency, portalUrl, brandColour, expiresAt, isRetainer, retainerMonths } = params
+  const valueLabel = isRetainer ? 'Monthly retainer fee' : 'Contract value'
+  const valueText = isRetainer
+    ? `${money(contractValue, currency)} / month${(retainerMonths || 0) > 0 ? ` · ${retainerMonths} months (${money(Math.round(contractValue * (retainerMonths as number) * 100) / 100, currency)} total)` : ''}`
+    : money(contractValue, currency)
   const clientName  = escapeHtml(clientNameRaw)
   const agencyName  = escapeHtml(agencyNameRaw)
   const projectName = escapeHtml(projectNameRaw)
@@ -186,8 +192,8 @@ export async function sendSowEmail(params: {
           <span style="font-weight:500;color:${C.text};">${agencyName}</span>
         </div>
         <div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;">
-          <span style="color:${C.text2};">Contract value</span>
-          <span style="font-weight:600;color:${brandColour || C.green};">${money(contractValue, currency)}</span>
+          <span style="color:${C.text2};">${valueLabel}</span>
+          <span style="font-weight:600;color:${brandColour || C.green};">${valueText}</span>
         </div>
       </div>
       <p style="font-size:12px;color:${C.text3};margin:0;">

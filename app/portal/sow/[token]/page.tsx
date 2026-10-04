@@ -30,6 +30,9 @@ interface SowData {
   agencySignatureData: string | null
   contractValue: number
   currency:    string
+  // B1 (pass 10): retainer => contractValue is the monthly fee.
+  isRetainer?: boolean
+  retainerMonths?: number | null
   // Drafting language, for localized table headers (9-G7).
   language?:   string
   // FIX (portal audit, section 18 — feature gap): see the identical comment on
@@ -281,9 +284,14 @@ export default function SowPortalPage() {
               </div>
               <div style={{ textAlign: 'right', flexShrink: 0 }}>
                 <div style={{ fontSize: 22, fontFamily: 'Georgia,serif', color: accent, fontWeight: 400 }}>
-                  {sow.currency} {formatAmount(sow.contractValue, sow.currency)}
+                  {sow.currency} {formatAmount(sow.contractValue, sow.currency)}{sow.isRetainer ? ' / mo' : ''}
                 </div>
-                <div style={{ fontSize: 11, color: '#909090', marginTop: 2 }}>Contract value</div>
+                <div style={{ fontSize: 11, color: '#909090', marginTop: 2 }}>{sow.isRetainer ? 'Monthly retainer fee' : 'Contract value'}</div>
+                {sow.isRetainer && (sow.retainerMonths || 0) > 0 && (
+                  <div style={{ fontSize: 11, color: '#909090', marginTop: 1 }}>
+                    {sow.retainerMonths} months · {sow.currency} {formatAmount(Math.round(sow.contractValue * (sow.retainerMonths as number) * 100) / 100, sow.currency)} total
+                  </div>
+                )}
                 {/* A watermarked, unsigned copy for the signer's own review (counsel, finance).
                     Until now the PDF was only available after signing. */}
                 <a href={`/api/portal/sow/${token}/pdf`} style={{ display: 'inline-block', marginTop: 10, fontSize: 12, color: accent }}>

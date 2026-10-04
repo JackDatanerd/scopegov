@@ -66,7 +66,11 @@ export function amountsStated(text: string): number[] {
   while ((m = re.exec(text))) {
     const token = m[0]
     if (NOT_AN_AMOUNT_AFTER.test(text.slice(m.index + token.length))) continue
-    if (NET_BEFORE.test(text.slice(0, m.index))) continue
+    // FIX (SOW lifecycle independent pass 10, B5): "net" before a number only means a payment TERM ("net 30") when
+    // the number is a plain day count. "Total fee net 5,000 USD" states an amount: it was skipped, so a contract
+    // value of 5,000 raised a false "does not state the contract value" warning and ensureContractValueStated
+    // appended a redundant value line to text that already had it.
+    if (NET_BEFORE.test(text.slice(0, m.index)) && /^\d{1,3}$/.test(token)) continue
     const n = parseTableAmount(token)
     if (n !== null) out.push(n)
   }

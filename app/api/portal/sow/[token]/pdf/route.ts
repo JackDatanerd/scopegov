@@ -10,10 +10,11 @@ import { sowWatermarkLabel } from '@/lib/pdf/sow-watermark'
 import { getWorkspaceJwtSecret, isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
 import { fetchExecutedPdf } from '@/lib/documents/executed-pdf'
 import { hydrateSections } from '@/lib/sow/sections'
+import { sowRetainerTerms } from '@/lib/sow/retainer'
 
 const SOW_PDF_COLUMNS = `id, version, document_number, sections, metadata, status, signed_at, signed_by,
   client_signature_data, workspace_id, pdf_path,
-  projects(id, name, disc, contract_value, currency,
+  projects(id, name, disc, contract_value, currency, type, retainer_duration_months,
     clients(name, company_name, billing_address, vat_number),
     workspaces(timezone, agency_name, brand_colour, logo_storage_path, agency_signature_data,
       legal_address, tax_id, phone, website))`
@@ -149,6 +150,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       clientVatNumber:      client?.vat_number || null,
       projectName:   (project?.name || '') + (project?.disc ? ` — ${project.disc}` : ''),
       contractValue: project?.contract_value || 0,
+      // B1 (pass 10): a retainer's stored value is the monthly fee — see lib/sow/retainer.ts.
+      isRetainer:     sowRetainerTerms(project).isRetainer,
+      retainerMonths: sowRetainerTerms(project).months,
       currency:      project?.currency || 'USD',
       sections:      hydrateSections(sow.sections || [], sow.metadata),
       // FIX (section-9 audit, 9-G7): the document's drafting language,
