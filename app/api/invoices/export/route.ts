@@ -3,6 +3,12 @@ export const maxDuration = 60
 
 // GET /api/invoices/export?status=&q=
 //
+// FIX (section-12 independent pass, B1): Issued / Voided-on are real instants (sent_at, voided_at) and were cut to
+// their first 10 characters, i.e. the UTC date — a workspace east of UTC (e.g. Nairobi) saw an invoice sent at
+// 01:00 local time dated the previous day in the CSV while its PDF said the right day. They now print in the
+// workspace timezone, as does the file-name date. Paid on stays a plain UTC slice: paid_at is the date-received
+// date stored as UTC midnight (migration 125), so converting it would shift it a day west of UTC.
+//
 // FEATURE (section-12 audit, pass 2): the invoice registry had no way out of the
 // browser — an agency's accountant or bookkeeper could not get the ledger without
 // screenshotting it. Same filters as the registry page (lib/utils/invoice-registry.ts),
@@ -18,6 +24,8 @@ import { logAudit } from '@/lib/utils/audit'
 import { fetchAll } from '@/lib/utils/fetch-all'
 import { csvCell, CSV_BOM } from '@/lib/utils/csv'
 import { parseRegistryFilters, projectIdsMatching, applyRegistryFilters } from '@/lib/utils/invoice-registry'
+import { getWorkspaceTimeZone } from '@/lib/utils/workspace-time'
+import { isoDateInZone } from '@/lib/utils/timezone'
 
 export async function GET(request: NextRequest) {
   try {
@@ -42,6 +50,7 @@ export async function GET(request: NextRequest) {
     if (textMatch.truncated)
       return NextResponse.json({ error: 'That search matches too many projects to export reliably — make it more specific and try again.' }, { status: 422 })
     const textProjectIds = textMatch.ids
+    const timeZone = await getWorkspaceTimeZone(service, session.workspaceId)
 
     const rows = await fetchAll<any>('invoice export', (from, to) => {
       let q = (service as any)
@@ -74,8 +83,8 @@ export async function GET(request: NextRequest) {
         r.invoice_number || '', r.title, r.status, r.projects?.name || '',
         r.projects?.clients?.company_name || r.projects?.clients?.name || '', r.currency,
         money(subtotal), Number(r.tax_rate) || 0, money(total - subtotal), money(total), money(paid), money(balance),
-        r.sent_at ? String(r.sent_at).slice(0, 10) : '', r.due_date || '',
-        r.paid_at ? String(r.paid_at).slice(0, 10) : '', r.voided_at ? String(r.voided_at).slice(0, 10) : '',
+        isoDateInZone(r.sent_at, timeZone), r.due_date || '',
+        r.paid_at ? String(r.paid_at).slice(0, 10) : '', isoDateInZone(r.voided_at, timeZone),
         r.po_number || '', r.disputed_at && !r.dispute_resolved_at ? 'Yes' : '',
       ].map(csvCell).join(','))
     }
@@ -87,7 +96,7 @@ export async function GET(request: NextRequest) {
       metadata: { rows: rows.length, status: filters.status || 'all', search: filters.q || null },
     })
 
-    const day = new Date().toISOString().slice(0, 10)
+    const day = isoDateInZone(new Date(), timeZone)
     return new NextResponse(new Uint8Array(Buffer.from(CSV_BOM + lines.join('\r\n') + '\r\n', 'utf-8')), {
       headers: {
         'Content-Type': 'text/csv; charset=utf-8',

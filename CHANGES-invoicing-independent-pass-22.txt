@@ -1,0 +1,18 @@
+CHANGES — Section 12 Invoicing, independent pass 22 (fresh audit)
+
+Scope audited: api/invoices/*, components/invoices/BillingTab.tsx, app/(app)/invoices, api/pdf/invoice, plus the lib code
+and DB functions/triggers behind them. One bug found.
+
+B1 (low) — invoice CSV export dated Issued / Voided-on in UTC
+  app/api/invoices/export/route.ts printed String(sent_at).slice(0, 10) and String(voided_at).slice(0, 10), the UTC date of a
+  real instant. A workspace east of UTC (e.g. Nairobi, UTC+3) saw an invoice sent 00:00–03:00 local dated the previous day in the
+  CSV while the invoice PDF showed the right day. Issued, Voided on and the file-name date now use the workspace timezone
+  (getWorkspaceTimeZone + isoDateInZone, same helpers as the other CSV exports). Paid on is intentionally unchanged: paid_at is
+  the date-received date stored as UTC midnight (migration 125), so converting it would shift it a day west of UTC.
+
+Files:
+  app/api/invoices/export/route.ts                       (changed)
+  tests/invoicing-export-workspace-timezone.test.ts      (new)
+  CHANGES-invoicing-independent-pass-22.txt              (new)
+
+No migration. No other files touched.
