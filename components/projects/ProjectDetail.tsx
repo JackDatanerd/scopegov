@@ -1011,7 +1011,7 @@ function SowTab({ project, sows, amendments, permissions, router, pendingApprova
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: 8 }}>
-                  {currentSow.status === 'draft' && permissions.editSow && (
+                  {currentSow.status === 'draft' && permissions.editSow && !pendingApproval && (
                     <Link href={`/projects/${project.id}/sow/${currentSow.id}`}>
                       <button className="btn btn-ghost btn-sm"><i className="ti ti-pencil" style={{ fontSize: 12 }} /> Edit</button>
                     </Link>

@@ -15,6 +15,8 @@ export default function SowEditorPage() {
   const [sending,  setSending]  = useState(false)
   const [error,    setError]    = useState('')
   const [isLocked, setIsLocked] = useState(false)
+  // (approvals pass 16, B4) A draft waiting on (or approved-but-unsent from) an approval request is edit-locked server-side.
+  const [approval, setApproval] = useState<{ id: string; sendFailed: boolean } | null>(null)
   // The editor registers a function that writes every outstanding edit and reports success.
   const flushRef = useRef<null | (() => Promise<boolean>)>(null)
   const registerFlush = useCallback((fn: () => Promise<boolean>) => { flushRef.current = fn }, [])
@@ -30,6 +32,7 @@ export default function SowEditorPage() {
           setIsLocked(!!json.sow.sent_at)
         }
         if (json.permissions) setPerms(json.permissions)
+        setApproval(json.pendingApproval ?? null)
       })
       .finally(() => setLoading(false))
   }, [sowId])
@@ -136,7 +139,7 @@ export default function SowEditorPage() {
               {isLocked ? 'Download PDF' : 'Preview PDF'}
             </a>
           )}
-          {!isLocked && perms.canSend && (
+          {!isLocked && !approval && perms.canSend && (
             <button className="btn btn-primary btn-sm" onClick={handleSend} disabled={sending}>
               {sending
                 ? <><span className="spin" style={{ width: 12, height: 12 }} /> Sending…</>
@@ -179,14 +182,22 @@ export default function SowEditorPage() {
         </div>
       </div>
 
+      {approval && !isLocked && (
+        <div className="banner banner-info" style={{ margin: '12px 24px 0' }}>
+          {approval.sendFailed
+            ? <>This SOW was approved but couldn&rsquo;t be sent, so it can&rsquo;t be edited. Retry or cancel the request from <a href={`/approvals?highlight=${approval.id}`}><strong>Approvals</strong></a> to unlock it.</>
+            : <>This SOW is waiting on an approval request and can&rsquo;t be edited. Decide or cancel the request from <a href={`/approvals?highlight=${approval.id}`}><strong>Approvals</strong></a> to unlock it.</>}
+        </div>
+      )}
+
       {/* Editor */}
       <div style={{ flex: 1, overflow: 'hidden' }}>
         <SowEditor
           sowId={sowId}
           sections={sow.sections || []}
           isLocked={isLocked}
-          canSend={!isLocked && perms.canSend}
-          canEdit={!isLocked && perms.canEdit}
+          canSend={!isLocked && !approval && perms.canSend}
+          canEdit={!isLocked && !approval && perms.canEdit}
           canViewFinancials={perms.canViewFinancials}
           // FIX (section-9 audit, 9-G6 / 9-G7 / 9-G8): the Payment
           // Schedule editor needs the contract value to show a running

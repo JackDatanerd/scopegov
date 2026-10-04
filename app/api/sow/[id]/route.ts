@@ -208,7 +208,11 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     // permissions saw a fully "live" editor that just 403'd on save,
     // surfacing as a confusing generic "Save failed". Return the real
     // permission flags so the page can gate itself too.
+    // (approvals pass 16, B4) PATCH refuses every edit while an approval request is pending or approved-but-unsent, so
+    // the editor must be told up front (the CO route already does this) instead of opening editable and failing each save.
+    const pending = sow.status === 'draft' ? await getPendingApprovalForDocument(service, 'sow', id) : null
     return NextResponse.json({
+      pendingApproval: pending ? { id: pending.id, sendFailed: !!pending.send_failed_at } : null,
       // FIX (section-9 audit, 9-G9): backfill any section this SOW
       // predates, so an older document can still be completed and sent.
       sow: {
