@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { notificationHref, timeAgo, type AppNotification } from '@/lib/utils/notification-links'
+import { notificationHref, timeAgo, announceNotificationsChanged, type AppNotification } from '@/lib/utils/notification-links'
 
 type Filter = 'all' | 'unread'
 
@@ -72,6 +72,7 @@ export default function NotificationsClient() {
       const j = await res.json().catch(() => ({}))
       throw new Error(j.error || 'Request failed')
     }
+    announceNotificationsChanged() // the sidebar bell keeps its own badge — tell it now
   }
 
   async function markAllRead() {
@@ -114,6 +115,7 @@ export default function NotificationsClient() {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: [n.id] }),
       }).then(res => {
         if (!res.ok) throw new Error('mark-read failed')
+        announceNotificationsChanged()
       }).catch(() => {
         setItems(prev => prev.map(x => x.id === n.id ? { ...x, read: false } : x))
         setUnreadCount(c => c + 1)

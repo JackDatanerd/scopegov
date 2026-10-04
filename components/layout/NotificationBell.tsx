@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { notificationHref, timeAgo, type AppNotification } from '@/lib/utils/notification-links'
+import { notificationHref, timeAgo, NOTIFICATIONS_CHANGED_EVENT, type AppNotification } from '@/lib/utils/notification-links'
 
 type Notification = AppNotification
 const entityHref = notificationHref
@@ -43,7 +43,11 @@ export default function NotificationBell() {
     const interval = setInterval(tick, 60000)
     document.addEventListener('visibilitychange', tick)
     window.addEventListener('focus', tick)
+    // The /notifications inbox changed something (mark read, delete): refetch now rather than at the next poll.
+    const onChanged = () => { load() }
+    window.addEventListener(NOTIFICATIONS_CHANGED_EVENT, onChanged)
     return () => {
+      window.removeEventListener(NOTIFICATIONS_CHANGED_EVENT, onChanged)
       clearInterval(interval)
       document.removeEventListener('visibilitychange', tick)
       window.removeEventListener('focus', tick)

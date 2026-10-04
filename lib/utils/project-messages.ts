@@ -1,5 +1,6 @@
 // lib/utils/project-messages.ts
 import { notifyUsers } from './notify'
+import { truncateText } from './sanitize'
 
 //
 // Mentions are stored inline in the message body as tokens of the form
@@ -195,7 +196,7 @@ export async function notifyMentionedUsers(
   // "open the project's Discussion tab" is the right destination for a mention.
   try {
     const plain = mentionsToPlainText(rawBody)
-    const snippet = plain.length > 120 ? `${plain.slice(0, 117)}…` : plain
+    const snippet = plain.length > 120 ? `${truncateText(plain, 117)}…` : plain
     await notifyUsers(service, {
       workspaceId: session.workspaceId, recipientIds: candidates.map(m => m.userId),
       type: 'project_message_mention', eventType: 'project_message_mention',

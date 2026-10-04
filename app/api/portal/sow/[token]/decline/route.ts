@@ -11,7 +11,7 @@ import { checkRevokedToken, verifySowJwt } from '../_shared'
 import { isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
 import { checkPortalRateLimit, recordPortalAction } from '@/lib/utils/portal-rate-limit'
 import { getClientIp } from '@/lib/utils/request-ip'
-import { cleanTextField } from '@/lib/utils/sanitize'
+import { cleanTextField, truncateText } from '@/lib/utils/sanitize'
 import { checkedSend } from '@/lib/email/delivery'
 import { sendClientResponseReceivedEmail } from '@/lib/email/templates'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
@@ -138,14 +138,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         replyTo,
         to: client.email, cc, clientName: client.name, agencyName: project.workspaces.agency_name,
         projectName: project.name, documentLabel: 'Statement of Work', response: 'declined',
-        note: reason ? reason.slice(0, 500) : null, brandColour: project.workspaces.brand_colour,
+        note: reason ? truncateText(reason, 500) : null, brandColour: project.workspaces.brand_colour,
         log: { workspaceId: sow.workspace_id, kind: 'sow.decline_receipt', entityType: 'sow', entityId: sow.id, projectId: project.id },
       }), 'SOW declined (client receipt)')
     }
     await notifyMembersWithPermission(service, {
       workspaceId: sow.workspace_id, permission: 'SEND_SOW', eventType: 'sow_declined',
       type: 'sow_declined', title: `SOW declined — ${project.name}`,
-      body: reason ? `${client.name} declined: ${reason.slice(0, 200)}` : `${client.name} declined the Statement of Work.`,
+      body: reason ? `${client.name} declined: ${truncateText(reason, 200)}` : `${client.name} declined the Statement of Work.`,
       entityType: 'project', entityId: project.id, projectId: project.id,
     })
 

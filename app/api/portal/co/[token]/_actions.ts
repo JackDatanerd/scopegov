@@ -12,7 +12,7 @@ import { sendCoDeclinedEmail, sendCoCounteredEmail } from '@/lib/email/templates
 import { getWorkspaceJwtSecret, isWorkspaceDeleted } from '@/lib/utils/workspace-secret'
 import { checkPortalRateLimit, recordPortalAction } from '@/lib/utils/portal-rate-limit'
 import { getClientIp } from '@/lib/utils/request-ip'
-import { cleanTextField } from '@/lib/utils/sanitize'
+import { cleanTextField, truncateText } from '@/lib/utils/sanitize'
 import { checkedSend } from '@/lib/email/delivery'
 import { sendClientResponseReceivedEmail } from '@/lib/email/templates'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
@@ -192,7 +192,7 @@ export async function POST_DECLINE(request: NextRequest, token: string) {
   await notifyMembersWithPermission(service, {
     workspaceId: co.workspace_id, permission: 'SEND_CHANGE_ORDERS', eventType: 'co_declined',
     type: 'co_declined', title: `CO declined — ${co.title}`,
-    body: reason ? `${co.projects?.clients?.name}: ${reason.slice(0, 200)}` : `${co.projects?.clients?.name} declined this change order.`,
+    body: reason ? `${co.projects?.clients?.name}: ${truncateText(reason, 200)}` : `${co.projects?.clients?.name} declined this change order.`,
     entityType: 'project', entityId: co.project_id, projectId: co.project_id,
   })
   // FIX (re-audit, section 18 — feature gap): every other client-initiated portal response (SOW
@@ -206,7 +206,7 @@ export async function POST_DECLINE(request: NextRequest, token: string) {
       replyTo,
       to: client.email, cc, clientName: client.name, agencyName: co.projects?.workspaces?.agency_name || '',
       projectName: co.projects?.name || '', documentLabel: 'Change Order', response: 'declined',
-      note: reason ? reason.slice(0, 500) : null, brandColour: co.projects?.workspaces?.brand_colour,
+      note: reason ? truncateText(reason, 500) : null, brandColour: co.projects?.workspaces?.brand_colour,
       log: { workspaceId: co.workspace_id, kind: 'co.decline_receipt', entityType: 'change_order', entityId: co.id, projectId: co.project_id },
     }), 'CO declined (client receipt)')
   }
@@ -321,7 +321,7 @@ export async function POST_COUNTER(request: NextRequest, token: string) {
         replyTo,
         to: client.email, cc, clientName: client.name, agencyName: co.projects?.workspaces?.agency_name || '',
         projectName: co.projects?.name || '', documentLabel: 'Change Order', response: 'countered',
-        note: `${formatMoney(parsedAmount, co.projects?.currency)}${counterNote ? ` — ${counterNote.slice(0, 400)}` : ''}`,
+        note: `${formatMoney(parsedAmount, co.projects?.currency)}${counterNote ? ` — ${truncateText(counterNote, 400)}` : ''}`,
         brandColour: co.projects?.workspaces?.brand_colour,
         log: { workspaceId: co.workspace_id, kind: 'co.counter_receipt', entityType: 'change_order', entityId: co.id, projectId: co.project_id },
       }), 'CO countered (client receipt)')

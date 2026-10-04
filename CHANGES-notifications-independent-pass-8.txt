@@ -1,0 +1,18 @@
+Notifications & email — independent pass 8
+
+BUG 1 (medium): notification bodies cut mid-emoji.
+  Portal/team routes built the bell body with a raw .slice(0, N). A cut through an emoji leaves a lone surrogate, which
+  Postgres cannot store, so the whole notifications insert failed; notify helpers only log and return false, and no
+  caller checks it — the bell row silently never existed. Replaced with truncateText (backs off the dangling half) at:
+    app/api/portal/invoice/[token]/dispute/route.ts     (body 160, email note 500)
+    app/api/portal/invoice/[token]/paid/route.ts        (body 200, email note 500)
+    app/api/portal/sow/[token]/request-changes/route.ts (body 160, email note 500)
+    app/api/portal/sow/[token]/decline/route.ts         (body 200, email note 500)
+    app/api/portal/co/[token]/_actions.ts               (decline body 200, notes 500 / 400)
+    lib/utils/project-messages.ts                       (@mention snippet 117)
+
+BUG 2 (low): sidebar bell badge stale after actions on /notifications.
+  Inbox now dispatches a window event after every successful mark-read / delete / clear; the bell refetches on it.
+    lib/utils/notification-links.ts, components/notifications/NotificationsClient.tsx, components/layout/NotificationBell.tsx
+
+TEST: tests/notifications-email-independent-pass-8.test.ts

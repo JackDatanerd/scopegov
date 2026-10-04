@@ -6,7 +6,7 @@ import { logAudit } from '@/lib/utils/audit'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
 import { insertNextSowVersion } from '@/lib/documents/sow-version'
 import { notifyMembersWithPermission } from '@/lib/utils/notify'
-import { escapeHtml, cleanTextField } from '@/lib/utils/sanitize'
+import { escapeHtml, cleanTextField, truncateText } from '@/lib/utils/sanitize'
 import { checkedSend } from '@/lib/email/delivery'
 import { sendEmail } from '@/lib/email/send'
 import { formatFrom } from '@/lib/email/from'
@@ -193,14 +193,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         replyTo,
         to: client.email, cc, clientName: client.name, agencyName: project.workspaces.agency_name,
         projectName: project.name, documentLabel: 'Statement of Work', response: 'requested changes to',
-        note: note.slice(0, 500), brandColour: project.workspaces.brand_colour,
+        note: truncateText(note, 500), brandColour: project.workspaces.brand_colour,
         log: { workspaceId: sow.workspace_id, kind: 'sow.changes_receipt', entityType: 'sow', entityId: sow.id, projectId: project.id },
       }), 'SOW changes requested (client receipt)')
     }
     await notifyMembersWithPermission(service, {
       workspaceId: sow.workspace_id, permission: 'SEND_SOW', eventType: 'sow_changes_requested',
       type: 'sow_changes_requested', title: `Changes requested — ${project.name}`,
-      body: `${client.name}: ${note}`.slice(0, 160),
+      body: truncateText(`${client.name}: ${note}`, 160),
       entityType: 'project', entityId: project.id, projectId: project.id,
     })
 

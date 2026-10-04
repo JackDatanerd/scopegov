@@ -14,7 +14,7 @@ import { resolveReplyTo } from '@/lib/email/reply-to'
 import { withPrimaryContactCc } from '@/lib/utils/client-contacts'
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
-import { cleanTextField } from '@/lib/utils/sanitize'
+import { cleanTextField, truncateText } from '@/lib/utils/sanitize'
 import { resolveInvoiceToken } from '@/lib/documents/invoice-token'
 import { logAudit } from '@/lib/utils/audit'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
@@ -104,7 +104,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     await notifyMembersWithPermission(service, {
       workspaceId: invoice.workspace_id, permission: 'VIEW_FINANCIALS', eventType: 'invoice_disputed',
       type: 'invoice_disputed', title: `Invoice question — ${project?.name || invoice.title}`,
-      body: `${client?.name || 'The client'}: ${note}`.slice(0, 160),
+      body: truncateText(`${client?.name || 'The client'}: ${note}`, 160),
       entityType: 'project', entityId: project?.id, projectId: project?.id,
     })
 
@@ -136,7 +136,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         replyTo,
         to: client.email, cc, clientName: client.name, agencyName: project?.workspaces?.agency_name || '',
         projectName: project?.name || invoice.title, documentLabel: 'Invoice', response: 'disputed',
-        note: note.trim().slice(0, 500), brandColour: project?.workspaces?.brand_colour,
+        note: truncateText(note.trim(), 500), brandColour: project?.workspaces?.brand_colour,
         log: { workspaceId: invoice.workspace_id, kind: 'invoice.dispute_receipt', entityType: 'invoice', entityId: invoice.id, projectId: invoice.project_id },
       }), 'Invoice disputed (client receipt)')
     }

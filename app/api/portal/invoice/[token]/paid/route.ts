@@ -14,7 +14,7 @@ export const runtime = 'nodejs'
 
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse, type NextRequest } from 'next/server'
-import { cleanTextField } from '@/lib/utils/sanitize'
+import { cleanTextField, truncateText } from '@/lib/utils/sanitize'
 import { resolveInvoiceToken } from '@/lib/documents/invoice-token'
 import { logAudit } from '@/lib/utils/audit'
 import { getMemberEmailsWithPermission } from '@/lib/utils/permissions-query'
@@ -111,7 +111,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     await notifyMembersWithPermission(service, {
       workspaceId: invoice.workspace_id, permission: 'VIEW_FINANCIALS', eventType: 'invoice_payment_claimed',
       type: 'invoice_payment_claimed', title: `Client says they've paid — ${project?.name || invoice.title}`,
-      body: `${client?.name || 'The client'} says invoice ${invoice.invoice_number || invoice.title} has been paid${reference.trim() ? ` (ref: ${reference.trim()})` : ''}. Check your account and record the payment.`.slice(0, 200),
+      body: truncateText(`${client?.name || 'The client'} says invoice ${invoice.invoice_number || invoice.title} has been paid${reference.trim() ? ` (ref: ${reference.trim()})` : ''}. Check your account and record the payment.`, 200),
       entityType: 'project', entityId: project?.id, projectId: project?.id,
     })
 
@@ -141,7 +141,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         replyTo,
         to: client.email, cc, clientName: client.name, agencyName: project?.workspaces?.agency_name || '',
         projectName: project?.name || invoice.title, documentLabel: 'Invoice', response: "told us you've paid",
-        note: note.trim() ? note.trim().slice(0, 500) : (reference.trim() ? `Reference: ${reference.trim()}` : null),
+        note: note.trim() ? truncateText(note.trim(), 500) : (reference.trim() ? `Reference: ${reference.trim()}` : null),
         brandColour: project?.workspaces?.brand_colour,
         log: { workspaceId: invoice.workspace_id, kind: 'invoice.paid_receipt', entityType: 'invoice', entityId: invoice.id, projectId: invoice.project_id },
       }), 'Invoice payment claimed (client receipt)')
